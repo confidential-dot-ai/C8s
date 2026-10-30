@@ -45,6 +45,12 @@ const history = "/run/nri-image-policy/pod-recovery/state.json"
 const manifest = "/run/c8s-pod/manifests/pod.yaml"
 const policy = "/etc/nri/conf.d/image-policy.yaml"
 
+const baselineTimeout = 25 * time.Minute
+const baselineGrace = 2 * time.Minute
+const phaseTimeout = 7 * time.Minute
+const snapshotTimeout = 4 * time.Minute
+const phaseInterval = 20 * time.Second
+
 type controller struct {
 	mu      sync.RWMutex
 	receipt fixture.Receipt
@@ -53,7 +59,7 @@ type controller struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 50*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, fixture.ControllerTimeout)
 	defer cancel()
 	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "recovery fixture failed")
@@ -120,7 +126,7 @@ func (c *controller) fail(stage, reason string, before, after fixture.Snapshot) 
 	c.receipt.FailedPhase = &fixture.Phase{Name: stage, Before: before, After: after}
 }
 func (c *controller) exercise(ctx context.Context) {
-	before, err := waitSnapshot(ctx, 25*time.Minute)
+	before, err := waitSnapshot(ctx, baselineTimeout)
 	if err != nil {
 		c.fail("baseline", "healthy baseline unavailable", before, fixture.Snapshot{})
 		return
@@ -130,45 +136,55 @@ func (c *controller) exercise(ctx context.Context) {
 	c.receipt.Baseline, c.receipt.State = &initial, "baseline"
 	c.mu.Unlock()
 	// The runner must independently attest this baseline before any fault.
-	if !wait(ctx, 120*time.Second) {
+	if !wait(ctx, baselineGrace) {
 		c.fail("baseline", "baseline deadline", before, fixture.Snapshot{})
 		return
 	}
 	for _, name := range fixture.Phases {
-		current, err := snapshot(ctx)
-		if err != nil || !reflect.DeepEqual(before, current) {
-			c.fail(name, "pre-restart snapshot changed or unavailable", before, current)
-			return
-		}
-		c.mu.Lock()
-		c.receipt.State = "restarting"
-		c.mu.Unlock()
-		if err := restart(ctx, name); err != nil {
-			c.fail(name, "fixed systemd restart failed", before, fixture.Snapshot{})
-			return
-		}
-		after, err := waitSnapshot(ctx, 4*time.Minute)
-		phase := fixture.Phase{Name: name, Before: before, After: after}
-		if err != nil {
-			c.fail(name, "healthy post-restart snapshot unavailable", before, after)
-			return
-		}
-		if fixture.ValidatePhase(phase) != nil {
-			c.fail(name, "post-restart identity or generation changed", before, after)
+		phase, reason := c.recoverPhase(ctx, name, before)
+		if reason != "" {
+			c.fail(name, reason, phase.Before, phase.After)
 			return
 		}
 		c.mu.Lock()
 		c.receipt.Phases = append(c.receipt.Phases, phase)
 		c.mu.Unlock()
-		before = after
-		if !wait(ctx, 20*time.Second) {
-			c.fail(name, "post-restart deadline", before, after)
+		before = phase.After
+		if !wait(ctx, phaseInterval) {
+			c.fail(name, "post-restart deadline", phase.Before, phase.After)
 			return
 		}
 	}
 	c.mu.Lock()
 	c.receipt.State = "complete"
 	c.mu.Unlock()
+}
+
+func (c *controller) recoverPhase(ctx context.Context, name string, before fixture.Snapshot) (fixture.Phase, string) {
+	ctx, cancel := context.WithTimeout(ctx, phaseTimeout)
+	defer cancel()
+	phase := fixture.Phase{Name: name, Before: before}
+	// The connected workload intentionally withdraws readiness for 180 seconds.
+	// Wait for recovery before each fault while preserving the complete identity.
+	current, err := waitSnapshot(ctx, snapshotTimeout)
+	if err != nil || !reflect.DeepEqual(before, current) {
+		phase.After = current
+		return phase, "pre-restart snapshot changed or unavailable"
+	}
+	c.mu.Lock()
+	c.receipt.State = "restarting"
+	c.mu.Unlock()
+	if err := restart(ctx, name); err != nil {
+		return phase, "fixed systemd restart failed"
+	}
+	phase.After, err = waitSnapshot(ctx, snapshotTimeout)
+	if err != nil {
+		return phase, "healthy post-restart snapshot unavailable"
+	}
+	if fixture.ValidatePhase(phase) != nil {
+		return phase, "post-restart identity or generation changed"
+	}
+	return phase, ""
 }
 
 func wait(ctx context.Context, d time.Duration) bool {
@@ -359,8 +375,8 @@ func pod(ctx context.Context, uid string) (*corev1.Pod, error) {
 		return nil, err
 	}
 	state, err := podcvmtest.PodStateFrom(projection, uid)
-	if err != nil || !state.Complete || !state.Ready {
-		return nil, errors.New("assigned workload is not healthy and complete")
+	if err != nil || !fixture.LiveWorkload(state) {
+		return nil, errors.New("assigned workload is not healthy and running")
 	}
 	return p, nil
 }
@@ -426,10 +442,15 @@ func snapshot(ctx context.Context) (fixture.Snapshot, error) {
 	}
 	s.CredentialID = (workloadclaims.PodClaims{BootID: state.BootID, RuntimePodUID: state.Sandbox.UID, SandboxID: state.Sandbox.ID}).InstanceID()
 	s.Tasks = map[string]fixture.Process{}
+	names := map[string]bool{}
 	for id, known := range state.Processes {
-		if known.Removed || (known.Name != "app" && known.Name != workloadclaims.MeshContainerName) {
+		if known.Removed || (known.Name != "app" && known.Name != "checker" && known.Name != workloadclaims.MeshContainerName) {
 			continue
 		}
+		if names[known.Name] {
+			return s, errors.New("duplicate retained workload task")
+		}
+		names[known.Name] = true
 		current, err := process(known.PID)
 		if err != nil || current.Birth != known.Birth {
 			return s, errors.New("retained task process changed")

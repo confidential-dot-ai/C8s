@@ -265,12 +265,15 @@ plus the CDS scratch disk. For the `2026.10.30-1` publication, use
 `05211a8b106415a0aefd5f47bc40b266b0c1dacd`, with that publication's matching pins
 and CLI. Use the same input, run and cleanup commands above and below.
 
-The immutable base admits only the mesh; the driver signs and applies the app
-rule to CDS before normal Kubernetes scheduling. It removes only the run-owned
-CDS ingress on port 30808, waits for the change to apply, and preserves status
-access. The app first proves CDS reachability, then requires 120 seconds of
-continuous connection failures before its one controlled exit. Acceptance
-requires fresh admission during the outage, unchanged guest boot and mesh
+The immutable tenant launch policy admits only the mesh. CDS also includes
+baked component entries: before adding the app rule, the driver freezes its
+complete authenticated export and verifies the exact mesh rule and absence of
+any app admission. Adding or removing the app must preserve every other entry.
+The signed app update precedes normal Kubernetes scheduling. The driver removes
+only the run-owned CDS ingress on port 30808, waits for the change to apply, and
+preserves status access. The app first proves CDS reachability, then requires
+120 seconds of continuous connection failures before its one controlled exit.
+Acceptance requires fresh admission during the outage, unchanged guest boot and mesh
 identity, and exact measured digests. The driver restores the original ingress
 and endpoint, authenticates the same CA, deletes the signed app rule and observes
 at least 70 seconds without readmission, with Kubernetes readiness withdrawn.
@@ -403,6 +406,11 @@ kubelet. Its bounded read-only receipt is fetched over an attested connection;
 there is no remote restart API. Acceptance requires the expected service/NRI
 process changes, unchanged boot, assignment, admission history and running task
 identities, recovered authenticated readiness and stable workload/CA identity.
+The app, mesh and checker must all remain running, with unchanged container
+starts and task PID/birth identities. Bounded waits accommodate the workload's
+intentional readiness dip before a restart. Recovery finishes while the checker
+is still live; the connected lane separately validates its 65-minute soak and
+certificate renewal.
 
 The `pod-service-recovery-<run>-<attempt>` artifact retains image identity,
 authenticated baseline/completion receipts and cleanup evidence for seven days.

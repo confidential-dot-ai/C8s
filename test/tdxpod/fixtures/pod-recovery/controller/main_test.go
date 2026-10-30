@@ -13,7 +13,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +158,42 @@ func TestKubeletTLSUsesLocalLeafIdentityAndStandardVerification(t *testing.T) {
 				t.Fatalf("accept=%v, handshake error=%v", tc.accept, err)
 			}
 		})
+	}
+}
+
+func TestRecoveryDeadlineFitsBeforeCheckerCompletion(t *testing.T) {
+	app, err := os.ReadFile("../../pod-connected/app.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seconds := func(pattern string, index int) time.Duration {
+		t.Helper()
+		match := regexp.MustCompile(pattern).FindSubmatch(app)
+		if len(match) <= index {
+			t.Fatal("connected checker timing unavailable")
+		}
+		n, err := strconv.Atoi(string(match[index]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Duration(n) * time.Second
+	}
+	soak := seconds(`if age >= ([0-9]+) and healthy`, 1)
+	dip := seconds(`if healthy and ([0-9]+) <= age < ([0-9]+) and not`, 2) - seconds(`if healthy and ([0-9]+) <= age < ([0-9]+) and not`, 1)
+	budget := baselineTimeout + baselineGrace + time.Duration(len(fixture.Phases))*(phaseTimeout+phaseInterval)
+	if budget >= fixture.ControllerTimeout || fixture.ControllerTimeout >= soak || snapshotTimeout <= dip {
+		t.Fatalf("incompatible recovery budgets: total=%v controller=%v soak=%v snapshot=%v dip=%v", budget, fixture.ControllerTimeout, soak, snapshotTimeout, dip)
+	}
+	unit, err := os.ReadFile("../profile/mkosi.extra/etc/systemd/system/pod-recovery-fixture.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := regexp.MustCompile(`(?m)^RuntimeMaxSec=([0-9]+)min$`).FindSubmatch(unit)
+	if len(limit) != 2 {
+		t.Fatal("fixture systemd deadline unavailable")
+	}
+	minutes, err := strconv.Atoi(string(limit[1]))
+	if err != nil || time.Duration(minutes)*time.Minute != fixture.ControllerTimeout {
+		t.Fatal("controller and systemd deadlines differ")
 	}
 }

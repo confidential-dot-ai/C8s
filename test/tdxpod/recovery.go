@@ -231,7 +231,7 @@ func (r *recoveryAcceptance) observeRecovery() error {
 	starts := map[string]map[string]string{}
 	leaves := map[string]*leaf{}
 	done := map[string]bool{}
-	deadline = r.deadline(35 * time.Minute)
+	deadline = r.deadline(fixture.ControllerTimeout)
 	for now().Before(deadline) {
 		for _, side := range []string{"a", "b"} {
 			if done[side] {
@@ -266,7 +266,7 @@ func (r *recoveryAcceptance) observeRecovery() error {
 					continue
 				}
 				state, err := podStateOf(status, r.name)
-				if err != nil || !state.Complete || !state.Ready {
+				if err != nil || !fixture.LiveWorkload(state) {
 					continue
 				}
 				l, err := r.leafFn(side, "certless")
@@ -292,7 +292,7 @@ func (r *recoveryAcceptance) observeRecovery() error {
 				return err
 			}
 			state, err := podStateOf(status, r.name)
-			if err != nil || !state.Complete || !state.Ready || !sameStarts(starts[side], state.Starts) {
+			if err != nil || !fixture.LiveWorkload(state) || !sameStarts(starts[side], state.Starts) {
 				return errors.New("external workload identity or health changed after recovery")
 			}
 			l, err := r.leafFn(side, "certless")

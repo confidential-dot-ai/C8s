@@ -61,3 +61,30 @@ func TestRecoveryReceiptCannotEnterProductionOrSelectAnotherBaseline(t *testing.
 		t.Fatal("accepted a changed explicit receipt")
 	}
 }
+
+func TestRecoveryAcceptsLiveCheckerBeforeSoakCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options readinessOptions
+		accept  bool
+	}{
+		{"all three running", readinessOptions{}, true},
+		{"intentional readiness dip", readinessOptions{unready: true}, false},
+		{"checker already completed", readinessOptions{complete: true}, false},
+		{"readiness recovered with checker running", readinessOptions{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := readinessStatus(t, "True", "2026-01-01T00:10:00Z", tc.options)
+			state, err := podStateOf(raw, "pod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture.LiveWorkload(state) != tc.accept {
+				t.Fatalf("unexpected recovery gate: %+v", state)
+			}
+			if len(state.Starts) != 3 {
+				t.Fatal("three container starts not retained")
+			}
+		})
+	}
+}

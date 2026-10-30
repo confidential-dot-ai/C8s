@@ -9,6 +9,9 @@ import (
 	"io"
 	"reflect"
 	"regexp"
+	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/podcvmtest"
 )
 
 const Baseline = "05211a8b106415a0aefd5f47bc40b266b0c1dacd"
@@ -16,6 +19,21 @@ const Port = 8444
 const ReceiptPath = "/v1/recovery"
 const Scope = "native TDX production runtime components under a measured test overlay; not exact production image or Cloud acceptance"
 const MaxReceipt = 64 << 10
+const ControllerTimeout = 50 * time.Minute
+
+// LiveWorkload gates recovery before the connected fixture's 65-minute checker
+// completes. All three starts remain part of the external continuity proof.
+func LiveWorkload(state podcvmtest.PodState) bool {
+	if !state.Ready || !state.Running || state.Complete || len(state.Starts) != 3 {
+		return false
+	}
+	for _, started := range state.Starts {
+		if started == "" {
+			return false
+		}
+	}
+	return true
+}
 
 var Phases = []string{"status", "kubelet", "runtime"}
 var Units = []string{"podcvm-status.service", "podcvm-kubelet.service", "podcvm-containerd.service"}
@@ -89,7 +107,7 @@ func (s Snapshot) Validate() error {
 			return errors.New("incomplete recovery hashes")
 		}
 	}
-	if len(s.KernelBootID) != 36 || s.AssignedUID == "" || s.RuntimeUID == "" || len(s.CredentialID) != 69 || len(s.Tasks) != 2 || len(s.Services) != 3 {
+	if len(s.KernelBootID) != 36 || s.AssignedUID == "" || s.RuntimeUID == "" || len(s.CredentialID) != 69 || len(s.Tasks) != 3 || len(s.Services) != 3 {
 		return errors.New("incomplete recovery identity")
 	}
 	for _, unit := range Units {
