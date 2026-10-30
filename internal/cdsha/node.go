@@ -30,8 +30,11 @@ import (
 type Timing struct {
 	Heartbeat time.Duration
 	Election  time.Duration
-	Apply     time.Duration
-	Tick      time.Duration
+	// Lease is how long a replica answers reads under one watermark its
+	// leader confirmed. It confirms another at a third of it.
+	Lease time.Duration
+	Apply time.Duration
+	Tick  time.Duration
 	// DeadAfter is how long an answer counts as live. Within it, an address
 	// several members answer at belongs to none of them.
 	DeadAfter time.Duration
@@ -41,6 +44,7 @@ type Timing struct {
 var releaseTiming = Timing{
 	Heartbeat: time.Second,
 	Election:  time.Second,
+	Lease:     5 * time.Second,
 	Apply:     10 * time.Second,
 	Tick:      time.Second,
 	DeadAfter: 20 * time.Second,
@@ -50,6 +54,7 @@ func (t Timing) orRelease() Timing {
 	return Timing{
 		Heartbeat: cmp.Or(t.Heartbeat, releaseTiming.Heartbeat),
 		Election:  cmp.Or(t.Election, releaseTiming.Election),
+		Lease:     cmp.Or(t.Lease, releaseTiming.Lease),
 		Apply:     cmp.Or(t.Apply, releaseTiming.Apply),
 		Tick:      cmp.Or(t.Tick, releaseTiming.Tick),
 		DeadAfter: cmp.Or(t.DeadAfter, releaseTiming.DeadAfter),
@@ -59,8 +64,9 @@ func (t Timing) orRelease() Timing {
 // minRaftTimer is the shortest timer Raft takes.
 const minRaftTimer = 5 * time.Millisecond
 
-// check refuses the timers Raft refuses, and a tick that outlasts the wait a
-// peer gives the next control request. The leader lease is half the heartbeat.
+// check refuses the timers Raft refuses, a tick that outlasts the wait a peer
+// gives the next control request, and a read lease the replica's own loop
+// cannot confirm a read within. The leader lease is half the heartbeat.
 func (t Timing) check() error {
 	switch {
 	case t.Heartbeat < 2*minRaftTimer:
@@ -69,6 +75,8 @@ func (t Timing) check() error {
 		return fmt.Errorf("cds-ha: an election timer of %s is shorter than the %s heartbeat", t.Election, t.Heartbeat)
 	case t.Tick >= controlDeadline:
 		return fmt.Errorf("cds-ha: a tick of %s outlasts the %s a replica waits for a peer's next control request", t.Tick, controlDeadline)
+	case t.Lease < 3*t.Tick:
+		return fmt.Errorf("cds-ha: a read lease of %s is not three turns of a %s loop", t.Lease, t.Tick)
 	}
 	return nil
 }
@@ -153,6 +161,14 @@ type Node struct {
 	genesisLog   changedReason
 	joinLog      changedReason
 
+	// lease is the read lease this replica answers reads under, and outage
+	// is why it has none (lease.go). barriers holds the one barrier a leader
+	// has in flight, and clockJumps counts the clock jumps this replica saw.
+	lease      atomic.Pointer[readLease]
+	outage     atomic.Pointer[readOutage]
+	barriers   oneBarrier
+	clockJumps atomic.Uint64
+
 	allowlist *allowlist.Handle
 	secrets   *secrets.Handle
 	bindings  *sandboxledger.Handle
@@ -191,6 +207,7 @@ func NewNode(cfg Config) (*Node, error) {
 		logs:      newMemLog(),
 		snaps:     &snapStore{},
 		genesisCA: sync.OnceValues(mintMeshCA),
+		barriers:  newOneBarrier(),
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -388,6 +405,8 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.stop()
 	stopReaching := n.reachingMembers(ctx)
 	defer stopReaching()
+	stopReads := n.serveReads(ctx)
+	defer stopReads()
 	tick := time.NewTicker(n.cfg.Timing.Tick)
 	defer tick.Stop()
 	n.admitting = n.fsm.ClusterState().Version
@@ -488,14 +507,6 @@ func (n *Node) proposable(e Entry, entry []byte) error {
 }
 
 const appliedPoll = 2 * time.Millisecond
-
-// appliedKnownCommitted waits for this replica to apply every entry it knows
-// the cluster committed. A replica hearing no leader knows only what it heard
-// last.
-func (n *Node) appliedKnownCommitted(within time.Duration) bool {
-	committed := n.raft.CommitIndex()
-	return n.awaitApplied(committed, within)
-}
 
 func (n *Node) awaitApplied(index uint64, within time.Duration) bool {
 	return await(within, func() bool { return n.fsm.AppliedIndex() >= index })

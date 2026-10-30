@@ -33,6 +33,7 @@ import (
 var testTiming = Timing{
 	Heartbeat: 150 * time.Millisecond,
 	Election:  150 * time.Millisecond,
+	Lease:     time.Second,
 	Apply:     3 * time.Second,
 	Tick:      50 * time.Millisecond,
 }
