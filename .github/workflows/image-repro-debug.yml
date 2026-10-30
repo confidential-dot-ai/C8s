@@ -57,7 +57,7 @@ jobs:
           toolchain: "1.98.0"
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Setup mkosi
         uses: ./c8s/.github/actions/setup-mkosi
@@ -72,7 +72,7 @@ jobs:
         run: bash c8s/.github/scripts/host-deps.sh
 
       - name: Setup ORAS
-        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Fetch vendored libnvat
         env:
