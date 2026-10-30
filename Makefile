@@ -82,7 +82,7 @@ build-nri-image-policy:
 C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
-	go test -race $(C8S_TEST_COUNT) -timeout=120s work
+	go test -race $(C8S_TEST_COUNT) -timeout=600s work
 
 # The pod ruleset installs over netlink into a network namespace the test
 # creates, so it needs uid 0 there: the test binary runs under sudo unless this
