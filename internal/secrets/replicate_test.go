@@ -238,3 +238,53 @@ func TestLocalHandleAppliesToItsOwnStore(t *testing.T) {
 		t.Fatalf("store holds %q (%v)", v, err)
 	}
 }
+
+// A replica that joins a cluster takes every path, its value and the holder
+// it is charged to, so quotas hold there as they do at its peers.
+func TestASnapshotCarriesEveryPathAndItsHolder(t *testing.T) {
+	ctx := context.Background()
+	source := NewMemoryStore(4, 2, 64)
+	web := WorkloadHolder("web")
+	if _, _, err := source.Local().PutIfAbsent(ctx, "/web/one", []byte("one"), web); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.Local().PutIfAbsent(ctx, "/web/two", []byte("two"), web); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Local().Put(ctx, "/operator", []byte("three")); err != nil {
+		t.Fatal(err)
+	}
+
+	joining := NewMemoryStore(4, 2, 64)
+	joining.Restore(source.Dump())
+
+	for path, want := range map[string]string{"/web/one": "one", "/web/two": "two", "/operator": "three"} {
+		value, err := joining.Get(ctx, path)
+		if err != nil || string(value) != want {
+			t.Fatalf("%s holds %q: %v", path, value, err)
+		}
+	}
+	if _, _, err := joining.Local().PutIfAbsent(ctx, "/web/three", []byte("four"), web); !errors.Is(err, ErrHolderQuota) {
+		t.Fatalf("a holder at its quota = %v, want ErrHolderQuota", err)
+	}
+	if paths := joining.TopHolders(1); len(paths) != 1 || paths[0].Paths != 2 {
+		t.Fatalf("the busiest holder is %+v", paths)
+	}
+}
+
+// Restoring replaces what the store held: a replica installing a snapshot
+// holds the cluster's paths and none of its own.
+func TestASnapshotReplacesTheStoreItIsInstalledOn(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore(4, 2, 64)
+	if _, err := store.Local().Put(ctx, "/its/own", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	store.Restore(nil)
+	if _, err := store.Get(ctx, "/its/own"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the path survived the snapshot: %v", err)
+	}
+	if store.Len() != 0 {
+		t.Fatalf("the store holds %d paths", store.Len())
+	}
+}

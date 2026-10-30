@@ -139,7 +139,7 @@ func (f *FSM) Apply(index uint64, entry []byte) Result {
 	defer f.began()()
 
 	var e Entry
-	if err := decodeEntry(entry, &e); err != nil {
+	if err := decodeStrict(entry, &e); err != nil {
 		return Result{Stop: f.stop(fmt.Errorf("decode log entry %d: %w", index, err))}
 	}
 	if format := cmp.Or(e.Format, baseFormat); format > f.readable {
@@ -190,11 +190,11 @@ func (f *FSM) apply(e Entry) Result {
 	return Result{Stop: f.stop(fmt.Errorf("malformed log entry of kind %q", e.Kind))}
 }
 
-// decodeEntry decodes exactly one JSON value into v, refusing fields v does
+// decodeStrict decodes exactly one JSON value into v, refusing fields v does
 // not have: a replica that dropped a field it does not know would apply
 // something else than the replicas that know it.
-func decodeEntry(entry []byte, v any) error {
-	d := json.NewDecoder(bytes.NewReader(entry))
+func decodeStrict(document []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(document))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
 		return err

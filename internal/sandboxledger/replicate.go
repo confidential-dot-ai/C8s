@@ -63,6 +63,43 @@ type Command struct {
 	AtMS      int64  `json:"at_ms"`
 }
 
+// Binding is one entry of a CDS HA snapshot.
+type Binding struct {
+	SandboxID string `json:"sandbox_id"`
+	Host      string `json:"host"`
+	ExpiresMS int64  `json:"expires_ms"`
+}
+
+// Dump is every binding the ledger holds, expired ones included: a replica
+// drops a binding only when a command needs its room, so every replica holds
+// the same set.
+func (l *Ledger) Dump() []Binding {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Binding, 0, len(l.bindings))
+	for id, b := range l.bindings {
+		out = append(out, Binding{
+			SandboxID: id,
+			Host:      b.host,
+			ExpiresMS: b.expires.UnixMilli(),
+		})
+	}
+	return out
+}
+
+// Restore replaces every binding the ledger holds with a snapshot's.
+func (l *Ledger) Restore(bindings []Binding) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.bindings = make(map[string]binding, len(bindings))
+	for _, b := range bindings {
+		l.bindings[b.SandboxID] = binding{
+			host:    b.Host,
+			expires: time.UnixMilli(b.ExpiresMS),
+		}
+	}
+}
+
 // Apply records a binding at the command's time, so every replica judges its
 // expiry and the ledger's capacity the same way.
 func (l *Ledger) Apply(cmd Command) Held {
