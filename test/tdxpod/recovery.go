@@ -231,16 +231,24 @@ func (r *recoveryAcceptance) observeRecovery() error {
 	starts := map[string]map[string]string{}
 	leaves := map[string]*leaf{}
 	done := map[string]bool{}
+	finalDeadlines := map[string]time.Time{}
 	deadline = r.deadline(fixture.ControllerTimeout)
 	for now().Before(deadline) {
 		for _, side := range []string{"a", "b"} {
 			if done[side] {
 				continue
 			}
-			if _, err := r.instanceFn(side, deadline); err != nil {
+			readDeadline := deadline
+			if limit := finalDeadlines[side]; !limit.IsZero() {
+				if !now().Before(limit) {
+					return errors.New("external readiness did not recover before the final observation deadline")
+				}
+				readDeadline = limit
+			}
+			if _, err := r.instanceFn(side, readDeadline); err != nil {
 				return err
 			}
-			receipt, proof, err := r.receipt(side, deadline)
+			receipt, proof, err := r.receipt(side, readDeadline)
 			if err != nil {
 				continue
 			} // An unattested response is never evidence.
@@ -284,16 +292,34 @@ func (r *recoveryAcceptance) observeRecovery() error {
 			if receipt.State != "complete" {
 				continue
 			}
+			if finalDeadlines[side].IsZero() {
+				finalDeadlines[side] = r.deadline(4 * time.Minute)
+				if deadline.Before(finalDeadlines[side]) {
+					finalDeadlines[side] = deadline
+				}
+			}
+			status, statusErr := r.cliReadFn(side, []string{"pod-status", "get"}, finalDeadlines[side], true)
+			observedAt := now()
+			observation := map[string]any{"receipt": receipt, "attestation": proof, "status": status, "observedAt": observedAt}
+			if statusErr != nil {
+				observation["statusError"] = "authenticated status read failed"
+			}
+			// Retain the decisive authenticated inputs even when validation fails.
+			if err := write(filepath.Join(r.evidence, side+"-recovery-final-observation.json"), observation); err != nil {
+				return err
+			}
 			if err := receipt.ValidateComplete(before[side]); err != nil {
 				return err
 			}
-			status, err := r.cliReadFn(side, []string{"pod-status", "get"}, deadline, true)
+			if statusErr != nil {
+				return statusErr
+			}
+			ready, err := finalRecoveryReady(status, r.name, starts[side], observedAt, finalDeadlines[side])
 			if err != nil {
 				return err
 			}
-			state, err := podStateOf(status, r.name)
-			if err != nil || !fixture.LiveWorkload(state) || !sameStarts(starts[side], state.Starts) {
-				return errors.New("external workload identity or health changed after recovery")
+			if !ready {
+				continue
 			}
 			l, err := r.leafFn(side, "certless")
 			if err != nil {
@@ -330,6 +356,29 @@ func (r *recoveryAcceptance) observeRecovery() error {
 		return errors.New("CDS CA changed")
 	}
 	return write(filepath.Join(r.evidence, "result.json"), map[string]any{"schema": 1, "passed": true, "scope": fixture.Scope, "phases": fixture.Phases, "vmiUIDs": r.vmiUIDs, "genericAssignment": true})
+}
+
+// Only readiness may converge after the final fault. The checker deliberately
+// keeps running through a 180-second readiness withdrawal; exits or new starts
+// are never treated as transient recovery.
+func finalRecoveryReady(status json.RawMessage, uid string, starts map[string]string, observedAt, deadline time.Time) (bool, error) {
+	state, err := podStateOf(status, uid)
+	if err != nil {
+		return false, fmt.Errorf("external status after recovery: %w", err)
+	}
+	if !sameStarts(starts, state.Starts) {
+		return false, errors.New("external container starts changed after recovery")
+	}
+	if state.Complete {
+		return false, errors.New("external checker exited after recovery")
+	}
+	if !state.Running {
+		return false, errors.New("external containers are not all running after recovery")
+	}
+	if !observedAt.Before(deadline) {
+		return false, errors.New("external readiness did not recover before the final observation deadline")
+	}
+	return state.Ready, nil
 }
 
 func runRecovery(mode string) error {

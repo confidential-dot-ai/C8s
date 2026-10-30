@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	fixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-recovery"
 )
@@ -86,5 +87,66 @@ func TestRecoveryAcceptsLiveCheckerBeforeSoakCompletion(t *testing.T) {
 				t.Fatal("three container starts not retained")
 			}
 		})
+	}
+}
+
+func TestFinalRecoveryWaitsOnlyForReadinessWithinBound(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	baseline := readinessDocument("True", start.Format(time.RFC3339), readinessOptions{})
+	state, err := podStateFrom(rawDocument(t, baseline), "pod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First completion at age 305s may land inside the connected app's 300–480s
+	// withdrawal. Its recovery at 481s must fit the fixed four-minute window.
+	deadline := start.Add(305*time.Second + 4*time.Minute)
+	for _, tc := range []struct {
+		age            int
+		unready, ready bool
+	}{
+		{305, true, false}, {479, true, false}, {481, false, true},
+	} {
+		raw := readinessStatus(t, "True", start.Format(time.RFC3339), readinessOptions{unready: tc.unready})
+		ready, err := finalRecoveryReady(raw, "pod", state.Starts, start.Add(time.Duration(tc.age)*time.Second), deadline)
+		if err != nil || ready != tc.ready {
+			t.Fatalf("age %d: ready=%v, err=%v", tc.age, ready, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, reason string
+		edit         func(map[string]any)
+	}{
+		{"changed start", "starts changed", func(d map[string]any) {
+			c := d["status"].(map[string]any)["containerStatuses"].([]any)[0].(map[string]any)
+			c["state"] = map[string]any{"running": map[string]any{"startedAt": "2026-01-01T00:00:01Z"}}
+		}},
+		{"restart", "workload restarted", func(d map[string]any) {
+			d["status"].(map[string]any)["containerStatuses"].([]any)[0].(map[string]any)["restartCount"] = 1
+		}},
+		{"checker exited", "checker exited", func(d map[string]any) {
+			c := d["status"].(map[string]any)["containerStatuses"].([]any)[1].(map[string]any)
+			c["state"] = map[string]any{"terminated": map[string]any{"exitCode": 0, "startedAt": "2026-01-01T00:00:00Z"}}
+		}},
+		{"app exited", "endpoint exited", func(d map[string]any) {
+			d["status"].(map[string]any)["containerStatuses"].([]any)[0].(map[string]any)["state"] = map[string]any{"terminated": map[string]any{"exitCode": 0}}
+		}},
+		{"not running", "starts changed", func(d map[string]any) {
+			d["status"].(map[string]any)["containerStatuses"].([]any)[0].(map[string]any)["state"] = map[string]any{"waiting": map[string]any{}}
+		}},
+		{"different identity", "UID differs", func(d map[string]any) { d["metadata"].(map[string]any)["uid"] = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := readinessDocument("False", start.Format(time.RFC3339), readinessOptions{unready: true})
+			tc.edit(doc)
+			ready, err := finalRecoveryReady(rawDocument(t, doc), "pod", state.Starts, start.Add(306*time.Second), deadline)
+			if ready || err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("ready=%v, err=%v", ready, err)
+			}
+		})
+	}
+	for _, raw := range []json.RawMessage{[]byte("{"), readinessStatus(t, "False", start.Format(time.RFC3339), readinessOptions{unready: true})} {
+		if ready, err := finalRecoveryReady(raw, "pod", state.Starts, deadline, deadline); ready || err == nil {
+			t.Fatal("accepted malformed or timed-out final status")
+		}
 	}
 }

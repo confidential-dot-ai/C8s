@@ -277,11 +277,15 @@ Acceptance requires fresh admission during the outage, unchanged guest boot and 
 identity, and exact measured digests. The driver restores the original ingress
 and endpoint, authenticates the same CA, deletes the signed app rule and observes
 at least 70 seconds without readmission, with Kubernetes readiness withdrawn.
+Post-revocation acceptance also requires mesh readiness to remain withdrawn
+for that interval. Its process identity and start time, and the guest boot
+identity, must remain unchanged despite credential withdrawal.
 
 Private evidence includes `cds-outage.json`, numbered `cds-observation-*.json`,
-and policy/ingress intents and receipts. All 11 scenario assertions, provider
-deletion and owned cleanup must pass. This tests CDS network outage and served
-policy retention; guest service restart, CDS process restart and long-outage
+and policy/ingress intents and receipts. Authenticated observations are retained
+before phase validation, including samples that fail. All 11 scenario assertions,
+provider deletion and owned cleanup must pass. This tests CDS network outage and
+served policy retention; guest service restart, CDS process restart and long-outage
 certificate renewal require separate acceptance.
 
 All scenarios compile the provider from the current checkout. Its commit,
@@ -408,12 +412,16 @@ process changes, unchanged boot, assignment, admission history and running task
 identities, recovered authenticated readiness and stable workload/CA identity.
 The app, mesh and checker must all remain running, with unchanged container
 starts and task PID/birth identities. Bounded waits accommodate the workload's
-intentional readiness dip before a restart. Recovery finishes while the checker
-is still live; the connected lane separately validates its 65-minute soak and
-certificate renewal.
+intentional readiness dip before a restart and during final external observation.
+The final readiness wait is at most four minutes, capped by the existing
+observation and run deadlines; identity, admission history and process continuity
+remain required throughout.
+Recovery finishes while the checker is still live; the connected lane separately
+validates its 65-minute soak and certificate renewal.
 
 The `pod-service-recovery-<run>-<attempt>` artifact retains image identity,
-authenticated baseline/completion receipts and cleanup evidence for seven days.
+authenticated baseline/completion receipts, failed authenticated observations and
+cleanup evidence for seven days.
 A pass requires `result.json` with `passed: true`, `cleanup.json` with
 `complete: true` and a successful workflow. Owned cleanup always runs;
 `keep_cvm` does not apply. Local tests or a successful fixture build alone do
