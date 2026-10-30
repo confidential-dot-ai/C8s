@@ -53,70 +53,6 @@ func treeAt(t *testing.T, tree map[string]any, path ...string) any {
 	return cur
 }
 
-func TestPreflightCDSNodeExec(t *testing.T) {
-	values := "cds:\n  node:\n    selector:\n      role: cds\n"
-
-	t.Run("labelled node passes", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "kubectl", `echo node/node-a`)
-		if err := preflightCDSNode(context.Background(), writeChart(t, values)); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// The label requirement is read from the chart selector verbatim.
-		mustContainLine(t, f.calls(t), "kubectl get nodes -l role=cds -o name")
-	})
-
-	t.Run("no labelled node fails with the label command", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "kubectl", "")
-		err := preflightCDSNode(context.Background(), writeChart(t, values))
-		if err == nil {
-			t.Fatal("want error when no node carries the CDS label")
-		}
-		if !strings.Contains(err.Error(), "kubectl label node <node> role=cds") {
-			t.Errorf("error %q should carry the exact label command", err)
-		}
-	})
-
-	t.Run("customized selector shape skips", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "kubectl", "")
-		chart := writeChart(t, "cds:\n  node:\n    selector:\n      a: \"1\"\n      b: \"2\"\n")
-		if err := preflightCDSNode(context.Background(), chart); err != nil {
-			t.Fatalf("multi-pair selector must skip, got %v", err)
-		}
-		mustNotContainPrefix(t, f.calls(t), "kubectl")
-	})
-
-	t.Run("kubectl failure surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "kubectl", "exit 1")
-		if err := preflightCDSNode(context.Background(), writeChart(t, values)); err == nil {
-			t.Fatal("want error when kubectl fails")
-		}
-	})
-
-	t.Run("helm failure surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", "exit 1")
-		if err := preflightCDSNode(context.Background(), writeChart(t, values)); err == nil {
-			t.Fatal("want error when helm fails")
-		}
-	})
-
-	t.Run("bad chart values surface", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		if err := preflightCDSNode(context.Background(), writeChart(t, "\t")); err == nil {
-			t.Fatal("want error for unparseable chart values")
-		}
-	})
-}
-
 // notBakedKubectl returns a namespace response only for the expected read.
 func notBakedKubectl(out string) string {
 	return `case "$*" in
@@ -705,28 +641,19 @@ esac`)
 }
 
 func TestPrintAttestVerifyHint(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
+	resetCLIState(t)
 
 	var buf bytes.Buffer
-	installMeasurements = nil
 	printAttestVerifyHint(&buf, false)
 	if buf.Len() != 0 {
 		t.Errorf("--attest=false must print nothing, got %q", buf.String())
 	}
 
 	buf.Reset()
+	installCDS = &cdsPin{path: "cds-pin.json"}
 	printAttestVerifyHint(&buf, true)
-	if out := buf.String(); !strings.Contains(out, "--image-policy-file") || strings.Contains(out, "pinned to --measurements") {
-		t.Errorf("no measurements: want the other pin sources named, got %q", out)
-	}
-
-	buf.Reset()
-	installMeasurements = []string{strings.Repeat("aa", 48)}
-	printAttestVerifyHint(&buf, true)
-	out := buf.String()
-	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "--image-policy-file") {
-		t.Errorf("with measurements: want the pinned hint only, got %q", out)
+	if out := buf.String(); !strings.Contains(out, "--image-policy-file cds-pin.json") {
+		t.Errorf("want the install's own pin named, got %q", out)
 	}
 }
 
@@ -754,6 +681,7 @@ func newInstallStubs(t *testing.T, kubectlBody string, helmUpgradeFails bool) *i
 	}
 	f.tool(t, "helm", `case "$1" in
 show) /bin/cat "$3/values.yaml" ;;
+template) /bin/echo '`+installSeedConfigMap+`' ;;
 upgrade)
   prev=; last=
   for a in "$@"; do
@@ -770,24 +698,34 @@ esac`)
 }
 
 // clusterKubectl is a healthy single-node cluster: one vanilla linux node that
-// carries the CDS and SNP labels, no pods, and namespace applies captured.
+// carries the SNP label, no pods, and namespace applies captured.
 // extra case arms are matched first, so scenarios override single answers.
 func clusterKubectl(applied, extra string) string {
 	return `case "$*" in
 ` + extra + `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
-"get nodes -l role=cds -o name") echo node/node-a ;;
 "get nodes -l confidential.ai/sev-snp=true -o name") echo node/node-a ;;
 "get nodes -o json") echo '{"items":[{"metadata":{"name":"node-a"},"spec":{"podCIDR":"10.42.0.0/24"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
 "get pods --all-namespaces -o json") echo '{"items":[]}' ;;
+"version -o json") echo '{"serverVersion":{"gitVersion":"v1.31.0"}}' ;;
 "apply -f -") /bin/cat >> '` + applied + `' ;;
 esac`
 }
 
-// runInstall runs c8s install with a CDS pin, which cdsPinPreflight
-// otherwise demands.
+// pipedCDS names the stubs' CDS in a values file, as an operator's -f does:
+// the install reads the pin from the values it renders with, so a piped one is
+// held to the same shape as --cds-pin.
+func pipedCDS(t *testing.T) string {
+	t.Helper()
+	return "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: |\n    " +
+		string(cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
+}
+
+// runInstall runs c8s install against the CDS the stubs render and serve,
+// which cdsPreflight otherwise demands.
 func runInstall(t *testing.T, args ...string) error {
 	t.Helper()
-	return runC8s(t, append([]string{"install", "--measurements", strings.Repeat("ab", 48)}, args...)...)
+	pin := cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
+	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), "10.9.9.9:8443", flagArg(flagCDSPin), pin}, args...)...)
 }
 
 func TestInstallBareMetalModeHappyPath(t *testing.T) {
@@ -818,7 +756,6 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	// Preflights and the namespace apply all happen before helm mutates the
 	// cluster via the chart.
 	for _, prefix := range []string{
-		"kubectl get nodes -l role=cds -o name",
 		"kubectl get pods --all-namespaces -o json",
 		"kubectl apply -f -",
 	} {
@@ -832,10 +769,11 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	// them: the baked installer runs from that image, and its digest is what
 	// derives it into the seed the node's plugin admits it from.
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
+	// The CDS runs outside the cluster, so the install deploys no CDS image.
+	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds")
 	// volumed stays off without --volumes.
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/volumed")
 
@@ -911,38 +849,6 @@ func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 	}
 	if got := treeAt(t, tree, "volumed", "image", "digest"); got != testDigest {
 		t.Errorf("volumed.image.digest = %#v, want %s", got, testDigest)
-	}
-}
-
-func TestInstallFailsFastWhenCDSNodeUnlabelled(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l role=cds -o name") : ;;
-`))
-	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
-	if err == nil || !strings.Contains(err.Error(), "role=cds") {
-		t.Fatalf("want the CDS label preflight failure, got %v", err)
-	}
-	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
-}
-
-func TestInstallSingleNodeSkipsCDSNodePreflight(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	// No node carries role=cds; --single-node clears the selector so the
-	// preflight must not even ask.
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l role=cds -o name") : ;;
-`))
-	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false", "--single-node"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	calls := s.f.calls(t)
-	mustNotContainPrefix(t, calls, "kubectl get nodes -l role=cds")
-	if lineIndex(calls, "helm upgrade ") < 0 {
-		t.Fatal("helm upgrade did not run")
-	}
-	tree := readYAMLTree(t, s.computed)
-	sel, ok := treeAt(t, tree, "cds", "node").(map[string]any)
-	if !ok || sel["selector"] != nil {
-		t.Errorf("cds.node = %#v, want a cleared (null) selector", sel)
 	}
 }
 
@@ -1081,6 +987,7 @@ func helmValuesCapture(t *testing.T, s *installStubs, captureFile string) {
 	t.Helper()
 	s.f.tool(t, "helm", `case "$1" in
 show) /bin/cat "$3/values.yaml" ;;
+template) /bin/echo '`+installSeedConfigMap+`' ;;
 upgrade)
   prev=; last=
   for a in "$@"; do
@@ -1100,7 +1007,7 @@ esac`)
 // effectiveValues must read it, and helm must receive the piped bytes as a
 // -f file ahead of the computed values.
 func TestInstallValuesFromStdin(t *testing.T) {
-	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\ncds:\n  measurements: [" + strings.Repeat("ab", 48) + "]\n"
+	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\n" + pipedCDS(t)
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
@@ -1157,7 +1064,7 @@ func TestInstallStdinValuesMaterializeFailure(t *testing.T) {
 	rootCmd.SetIn(strings.NewReader("router:\n  enabled: false\n"))
 	rootCmd.SetArgs([]string{"install", "--cvm-mode=bare-metal", "-f", "-"})
 	err := rootCmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "create stdin values file") {
+	if err == nil || !strings.Contains(err.Error(), "stdin values file") {
 		t.Fatalf("want the temp-file error, got %v", err)
 	}
 	if got := f.calls(t); len(got) != 0 {
@@ -1430,7 +1337,7 @@ func TestInstallNodeLaneReportsNoExemption(t *testing.T) {
 // `-f -` is such a file: the exempt scan runs after stdin is materialized, so
 // it reads the piped bytes rather than a literal "-".
 func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
-	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\ncds:\n  measurements: [" + strings.Repeat("ab", 48) + "]\n"
+	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n" + pipedCDS(t)
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))

@@ -1,20 +1,29 @@
 #!/bin/bash
-# Run the production finalize hook with both attester configurations from the
-# pinned confos tree. No image build or TEE is needed; GNU sed runs in Linux.
+# Run each image's production finalize hook against both attester
+# configurations from the pinned confos tree. No image build or TEE is
+# needed; GNU sed runs in Linux.
 set -euo pipefail
 
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [[ "${1:-}" != --inside ]]; then
+    # The node and CDS images each narrow a composed attester.
+    FINALIZE_SCRIPTS=(/ngi/c8s/mkosi.finalize /cgi/cds/mkosi.finalize)
     CONFOS_DIR=${CONFOS_DIR:-"$TESTS_DIR/../../confos"}
     [[ -d "$CONFOS_DIR" ]] || { echo "CONFOS_DIR must name the pinned confos checkout" >&2; exit 2; }
     CONFOS_DIR=$(cd "$CONFOS_DIR" && pwd)
-    exec docker run --rm --network=none \
-        -v "$TESTS_DIR/..:/ngi:ro" -v "$CONFOS_DIR:/confos:ro" \
-        debian:12 bash /ngi/tests/attester-finalize-test.sh --inside
+    for script in "${FINALIZE_SCRIPTS[@]}"; do
+        docker run --rm --network=none \
+            -v "$TESTS_DIR/..:/ngi:ro" \
+            -v "$TESTS_DIR/../../images/cds-guest:/cgi:ro" \
+            -v "$CONFOS_DIR:/confos:ro" \
+            -e "FINALIZE_SCRIPT=$script" \
+            debian:12 bash /ngi/tests/attester-finalize-test.sh --inside
+    done
+    exit 0
 fi
 [[ $(uname -s) == Linux ]] || { echo "--inside requires Linux" >&2; exit 2; }
 . "$TESTS_DIR/lib.sh"
-SCRIPT=$TESTS_DIR/../c8s/mkosi.finalize
+SCRIPT=${FINALIZE_SCRIPT:?FINALIZE_SCRIPT must name the finalize hook under test}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 export BUILDROOT=$WORK/root
@@ -60,4 +69,4 @@ run_finalize
 ok "missing source configuration fails the build" test "$RC" -ne 0
 ok "missing source configuration is not synthesized" test ! -e "$CONFIG"
 
-summarize "attester finalize"
+summarize "attester finalize ($SCRIPT)"

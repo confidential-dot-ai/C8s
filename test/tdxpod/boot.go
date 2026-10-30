@@ -122,6 +122,10 @@ func newBootDiagnostic(root, run, attempt, repo string) (*bootDiagnostic, error)
 
 // prepare resolves the image, checks the paired CLI and signs the fixture.
 func (d *bootDiagnostic) prepare() error {
+	cli := filepath.Join(d.private, "c8s")
+	if err := requireLegacyDiagnosticCLI(cli, os.Getenv("POD_DIAGNOSTIC_SOURCE")); err != nil {
+		return err
+	}
 	bearer, err := bearerToken()
 	if err != nil {
 		return err
@@ -144,14 +148,6 @@ func (d *bootDiagnostic) prepare() error {
 	manifest := filepath.Join(d.evidence, "manifest.json")
 	if err := write(manifest, data); err != nil {
 		return err
-	}
-	cli := filepath.Join(d.private, "c8s")
-	version, err := command([]string{"go", "version", "-m", cli}, nil, 30*time.Second)
-	if err != nil {
-		return err
-	}
-	if !bytes.Contains(version, []byte("vcs.revision="+p.Source)) || !bytes.Contains(version, []byte("vcs.modified=false")) {
-		return errors.New("CLI does not match the clean diagnostic source")
 	}
 	var parts map[string]json.RawMessage
 	if err := json.Unmarshal(bootFixture, &parts); err != nil {
@@ -521,4 +517,30 @@ func errorClass(err error) string {
 		name = name[i+1:]
 	}
 	return name
+}
+
+// Diagnostics use historical v1 launch payloads. Refuse an external-CDS CLI
+// before registry access, signing or resource creation; no CDS trust is guessed.
+func requireLegacyDiagnosticCLI(cli, source string) error {
+	if !hexCommit.MatchString(source) {
+		return errors.New("POD_DIAGNOSTIC_SOURCE must be a full commit")
+	}
+	version, err := command([]string{"go", "version", "-m", cli}, nil, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(version, []byte("vcs.revision="+source)) || !bytes.Contains(version, []byte("vcs.modified=false")) {
+		return errors.New("CLI does not match the clean diagnostic source")
+	}
+	help, err := command([]string{cli, "node", "launch-config", "new-pod", "--help"}, nil, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(help, []byte("--cds-address")) || bytes.Contains(help, []byte("--cds-image-policy-file")) {
+		return errors.New("boot diagnostics require a c8s-launch/v1 CLI; external-CDS launch/v2 is unsupported")
+	}
+	if !bytes.Contains(help, []byte("--server-public-key")) || !bytes.Contains(help, []byte("--pod-manifest")) {
+		return errors.New("unsupported diagnostic launch CLI")
+	}
+	return nil
 }

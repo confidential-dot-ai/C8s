@@ -1,6 +1,6 @@
-# PERMANENT lint for node-guest-image/ — the invariants that moved here with
-# the c8s profile from confos bin/lint (c8s#264), plus the cloud-init
-# disable gate. These jobs lint content this repo owns. The fragment superset
+# PERMANENT lint for node-guest-image/ and images/cds-guest/ — the invariants
+# that moved here with the c8s profile from confos bin/lint (c8s#264), plus
+# the cloud-init disable gate. These jobs lint content this repo owns. The fragment superset
 # checks compare against confos's gpu/dev fragments at the pinned
 # CONFOS_REF — the exact tree the image builds with.
 #
@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - "node-guest-image/**"
+      - "images/cds-guest/**"
       - "internal/cmds/launchconfig/**"
       - "internal/cmds/nodeservices/**"
       - "cmd/c8s/node_image*.go"
@@ -34,6 +35,8 @@ on:
       # The invariants gate body; a script-only change must run the gate.
       - ".github/scripts/node-guest-image-invariants.sh"
       - ".github/scripts/tests/test-node-guest-image-invariants.sh"
+      - ".github/scripts/cds-guest-image-invariants.sh"
+      - ".github/scripts/tests/test-cds-guest-image-invariants.sh"
       - ".github/scripts/tdx-image-acceptance.sh"
       - ".github/scripts/snp-node-image.sh"
       - ".github/scripts/tests/test-snp-node-image.sh"
@@ -107,6 +110,49 @@ jobs:
           rel=$(sed -n 's/^Release=[[:space:]]*//p' "$conf" | head -1)
           [ -n "$rel" ] || { echo "::error::no Release= in $conf"; exit 1; }
           echo "release=$rel" >> "$GITHUB_OUTPUT"
+
+  cds-image:
+    name: cds-guest-image invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve this checkout's node-image pin
+        id: pins
+        run: |
+          bash .github/scripts/pin-manifest.sh export \
+            --manifest .github/build-pins.json \
+            --domain node-image \
+            --format github-output >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: confidential-dot-ai/confidential-os-builder
+          ref: ${{ steps.pins.outputs.confos }}
+          path: confos
+          persist-credentials: false
+
+      - name: cds-guest-image invariants
+        run: |
+          .github/scripts/cds-guest-image-invariants.sh
+          bash .github/scripts/tests/test-cds-guest-image-invariants.sh
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - name: The unit's arguments are the ones `c8s cds` accepts
+        # ci.yml is gated on Go paths, so a unit-only change reaches this
+        # check here.
+        run: go test -count=1 -run TestCDSImageServiceArguments ./internal/cmds/cds
+
+      - name: Shellcheck the CDS image scripts
+        run: |
+          shellcheck images/cds-guest/build \
+            images/cds-guest/cds/mkosi.sync \
+            images/cds-guest/cds/mkosi.finalize \
+            .github/scripts/cds-guest-image-invariants.sh \
+            .github/scripts/tests/test-cds-guest-image-invariants.sh
 
   immutable-root:
     name: immutable root and c8s writable state
@@ -197,18 +243,17 @@ jobs:
           echo "$CILIUM_SHA256  cilium.tar.zst" | sha256sum -c -
 
       - name: The baked base allowlist matches the pinned bundles
-        # systemfloor re-derives the system block from the pinned
-        # bundles; -check fails when image-policy.yaml.in is stale, so an RKE2
-        # pin bump without a regen cannot merge and wedge node boot.
+        # systemfloor holds every system image in image-policy.yaml.in to the
+        # digest containerd stores for it from the pinned bundles, so an RKE2
+        # pin bump without updating the floor cannot merge and wedge node boot.
         run: |
           set -euo pipefail
           manifests=node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
-          go run ./node-guest-image/c8s/systemfloor -check \
-            -template node-guest-image/c8s/image-policy.yaml.in \
+          go run ./node-guest-image/c8s/systemfloor \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
-            -exclude-ref busybox
+            node-guest-image/c8s/image-policy.yaml.in
 
   containerd-runtime-handlers:
     name: every pod runtime reaches the measured wrapper

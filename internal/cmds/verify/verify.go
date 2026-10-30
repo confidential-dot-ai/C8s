@@ -239,15 +239,16 @@ responder chose).`,
 	f.StringVar(&cfg.expectedRTMR3Hex, "expected-rtmr3", "", "DEPRECATED, prefer --rtmr 3=<sha384-hex>: identical pin under identical rules, one flag for every register. Retained so existing invocations keep working")
 	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. A node that measures its allowlist policies reports the seed followed by them: verify then replays the list the evidence carries (an attest-pq or attest-lb bundle's measured_policies, or a TDX certificate's or discovery document's runtime extensions) and reports the longest prefix that matches as the node's policy history, which --pin-policy and --trust-operator check; without either, a non-empty history leaves the verdict partial. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins complete target identities; required for kind=cds, where every entry must bind the launch file that CDS runs on; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as `c8s routes show` prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
-	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
-	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
-	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
-	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own — for a cluster launched from a c8s launch-config bundle this is peers.json. It asks for the served-set equality check; --image-policy-file pins the target's own identity")
+	const refusedWithKindCDS = ". Refused with --kind cds: CDS's serving certificate is self-signed"
+	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindCDS)
+	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindCDS)
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
 	const tcbSNPOnly = " (SEV-SNP evidence only — TDX carries no such component, so against TDX evidence this is a policy error rather than an ignored flag)"
@@ -452,7 +453,16 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 	applyUncheckedHistoryPolicy(oc, cfg)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
-	applyCDSIdentityWarning(oc, cfg, plan.refValues)
+	applyServedSetNote(oc, cfg, plan)
+}
+
+// applyServedSetNote says so when the /measurements cross-check did not run:
+// a kind=cds verdict without --served-policy-file proves the target's own
+// identity and nothing about the node identities it admits.
+func applyServedSetNote(oc *Outcome, cfg config, plan *verifyPlan) {
+	if cfg.kind == "cds" && plan.served == nil {
+		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this CDS reports enforcing at /measurements was not checked")
+	}
 }
 
 // demoteToPartial turns a passing verdict into a partial one, naming the
@@ -524,12 +534,12 @@ func applyChainAnchorPolicy(oc *Outcome, cfg config, ev *evidence) {
 	demoteToPartial(oc, "the mesh chain anchor: the leaf chains to a CA the responder committed into its own attestation transcript — the evidence binds those CA bytes, but the anchor is responder-chosen, so which deployment this endpoint belongs to is not proven (pass --mesh-ca to pin it)")
 }
 
-// applyInitDataNote records what --init-data bound to, on the FINAL verdict:
-// it runs after applyVerdictPolicies (which can fail the verdict past
-// newOutcome) and skips a hard failure (oc.Error set) — the gate renderText
-// also applies. On az-* the pin binds vTPM PCR[8], not result.Claims.InitData
-// (the inner report's HOST_DATA), so a pinned az verdict reports the enforced
-// pin without presenting that field.
+// applyInitDataNote records what the init-data digest was compared against, on
+// the FINAL verdict: it runs after applyVerdictPolicies (which can fail the
+// verdict past newOutcome) and skips a hard failure (oc.Error set) — the gate
+// renderText also applies. On az-* the pin binds vTPM PCR[8], not
+// result.Claims.InitData (the inner report's HOST_DATA), so a pinned az verdict
+// reports the enforced pin without presenting that field.
 func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *verifyPlan) {
 	if oc.Error != "" {
 		return
@@ -541,12 +551,38 @@ func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *v
 		}
 	case len(result.Claims.InitData) > 0:
 		oc.InitData = hex.EncodeToString(result.Claims.InitData)
-		if plan.initDataHash != nil {
-			oc.InitDataNote = "verified: matches --init-data"
-		} else {
-			oc.InitDataNote = "not pinned: the digest the evidence commits, compared against nothing (pass --init-data to pin it)"
+		oc.InitDataNote = initDataNote(oc.Platform, plan)
+	}
+}
+
+// initDataNote says what stands behind the init-data digest the evidence
+// commits: the --init-data pin, the launch file an image policy binds, or
+// nothing at all.
+func initDataNote(platform string, plan *verifyPlan) string {
+	switch {
+	case plan.initDataHash != nil:
+		return "verified: matches --init-data"
+	case launchBindingPinned(platform, plan.refValues.Images):
+		return "verified: matches the launch file --image-policy-file pins (HOST_DATA)"
+	}
+	return "not pinned: the digest the evidence commits, compared against nothing (pass --init-data to pin it)"
+}
+
+// launchBindingPinned reports whether a launch-file pin enforced the init-data
+// field this verdict reports. On SEV-SNP that field is HOST_DATA, which such a
+// pin compares whole; TDX reports MR_CONFIG_ID there and carries its launch
+// binding in RTMR[3]. Every image must bind the file: the evidence matched one
+// of them, and another entry's binding says nothing about the one that did.
+func launchBindingPinned(platform string, images []remote.ImagePin) bool {
+	if isTDX(platform) || len(images) == 0 {
+		return false
+	}
+	for _, img := range images {
+		if len(img.LaunchFile) == 0 {
+			return false
 		}
 	}
+	return true
 }
 
 // verifyPlan is one run's parsed, validated policy: the verifier policy, the
@@ -565,22 +601,14 @@ type verifyPlan struct {
 	// refValues is the parsed --image-policy-file, empty when unset. It
 	// pins the target's own identity.
 	refValues refvalues.ReferenceValues
-	// served is the /measurements equality check's input, nil when neither
-	// --served-policy-file nor --image-policy-file asked for the check. It
-	// never feeds the target's own identity pin (refValues above).
-	served *servedSet
+	// served is the /measurements equality check's input, the set
+	// --served-policy-file named, nil when it named none. It never feeds the
+	// target's own identity pin (refValues above).
+	served *refvalues.ReferenceValues
 	// routes is the route digest check, nil when the run checks none.
 	routes *routeCheck
 	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
 	trustKeys []*ecdsa.PublicKey
-}
-
-// servedSet pairs the policy the target must serve and enforce at
-// /measurements with the flag it came from, so failure messages name the
-// file that disagrees.
-type servedSet struct {
-	flag string
-	want refvalues.ReferenceValues
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -588,6 +616,10 @@ type servedSet struct {
 // min-TCB are enforced on the verifier verdict (newOutcome / verifyInProcess);
 // only Measurements and AllowDebug are read by the verifier itself.
 func buildPolicy(cfg config) (*verifyPlan, error) {
+	if err := refuseMeshLeafFlagsWithKindCDS(cfg); err != nil {
+		return nil, err
+	}
+
 	// Each TCB component is a single byte; reject >255 rather than silently
 	// truncating it (byte(256)==0 would weaken the policy without warning).
 	for name, v := range map[string]uint{
@@ -619,9 +651,12 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	}
 
 	// Read once, keeping complete image policies separate from digest lists.
-	refValues, err := (cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}).LoadValues(
+	refValues, err := (cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}).ValuesExcluding(
 		cmdsutil.MeasurementPins{Measurements: cfg.measurements, MeasurementsFile: cfg.measurementsFile})
 	if err != nil {
+		return nil, err
+	}
+	if err := requireCDSIdentity(cfg, refValues); err != nil {
 		return nil, err
 	}
 	measurements, err := cmdsutil.LoadMeasurements(cfg.measurements, cfg.measurementsFile)
@@ -630,21 +665,14 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	}
 
 	// --served-policy-file supplies the served-set equality check's expected
-	// set; without it the check falls back to --image-policy-file.
-	var served *servedSet
+	// set: the node identities the target admits, which are not its own.
+	var served *refvalues.ReferenceValues
 	if cfg.servedPolicyFile != "" {
 		values, err := refvalues.Load(cfg.servedPolicyFile)
 		if err != nil {
 			return nil, fmt.Errorf("--served-policy-file: %w", err)
 		}
-		if cfg.measurementsConfig != "" {
-			if err := validateTargetInServedPolicy(refValues, values); err != nil {
-				return nil, err
-			}
-		}
-		served = &servedSet{flag: "--served-policy-file", want: values}
-	} else if cfg.measurementsConfig != "" {
-		served = &servedSet{flag: "--image-policy-file", want: refValues}
+		served = &values
 	}
 
 	// --image-manifest carries MRTD in the same tuple as RTMR[1]/[2]. It is
@@ -789,6 +817,26 @@ func (p rtmrPins) any() bool {
 	return p.image != nil || p.rtmr3 != nil || len(p.manual) > 0
 }
 
+// requireCDSIdentity holds a kind=cds target to the identity of one CDS VM: a
+// pin document binding every entry to the launch file that CDS runs on. A
+// launch digest, with or without registers, names the CDS image, which says
+// nothing about the cluster the VM serves.
+func requireCDSIdentity(cfg config, refValues refvalues.ReferenceValues) error {
+	if cfg.kind != "cds" {
+		return nil
+	}
+	if len(cfg.measurements) > 0 || cfg.measurementsFile != "" {
+		return fmt.Errorf("%s cannot pin a CDS, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>", allowlistFlagsUsed(cfg))
+	}
+	if cfg.imageManifest != "" {
+		return fmt.Errorf("--image-manifest cannot pin a CDS, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>")
+	}
+	if _, err := cmdsutil.CDSLaunchFile(refValues); err != nil {
+		return fmt.Errorf("--image-policy-file %w", err)
+	}
+	return nil
+}
+
 // allowlistFlagsUsed names the launch-measurement allowlist flags the operator
 // actually passed, so the --image-manifest conflict blames what was typed.
 func allowlistFlagsUsed(cfg config) string {
@@ -800,6 +848,31 @@ func allowlistFlagsUsed(cfg config) string {
 	default:
 		return "--measurements"
 	}
+}
+
+// refuseMeshLeafFlagsWithKindCDS refuses, under --kind cds, the flags that
+// check a leaf the mesh CA issued: its chain and the stamps CDS signs into it.
+func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
+	if cfg.kind != "cds" {
+		return nil
+	}
+	var used []string
+	if cfg.meshCA != "" {
+		used = append(used, "--mesh-ca")
+	}
+	if cfg.sandboxID != "" {
+		used = append(used, "--sandbox-id")
+	}
+	if cfg.workload != "" {
+		used = append(used, "--workload")
+	}
+	if cfg.allowlistFile != "" {
+		used = append(used, "--allowlist")
+	}
+	if len(used) == 0 {
+		return nil
+	}
+	return fmt.Errorf("a CDS target (--kind cds) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates CDS issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
 }
 
 // rtmr3FlagUsed names whichever flag supplied the RTMR[3] pin. Both feed one
@@ -1142,7 +1215,7 @@ type Outcome struct {
 
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
-	// or reported unpinned.
+	// enforced as a launch-file pin, or reported unpinned.
 	InitData     string `json:"init_data,omitempty"`
 	InitDataNote string `json:"init_data_note,omitempty"`
 
@@ -1348,7 +1421,7 @@ func checkServedPolicy(plan *verifyPlan, report measurementsReport, fail func(st
 	if plan.served == nil {
 		return
 	}
-	checkServedMeasurements(plan.served.flag, plan.served.want, report, fail)
+	checkServedMeasurements(*plan.served, report, fail)
 }
 
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces

@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,16 +55,7 @@ func TestPodRuntimeKubeletRecoveryIntegration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(recoveryRuntimeDir, "register"), seed[:], 0600); err != nil {
 		t.Fatal(err)
 	}
-	served := canonicalBody(t, anyAllowlist(map[string]string{}))
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `W/"1"`)
-		_, _ = w.Write(served)
-	}))
-	defer cds.Close()
-	if err := os.WriteFile(filepath.Join(recoveryRuntimeDir, "fixture-cds-url"), []byte(cds.URL), 0600); err != nil {
-		t.Fatal(err)
-	}
+	configureRecoveryCDS(t, cfg)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}

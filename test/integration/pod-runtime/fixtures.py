@@ -11,39 +11,54 @@ import uuid
 from pathlib import Path
 
 
-def prepare(source, stage, architecture):
-    pins = json.loads((Path(__file__).parent / "runtime-pins.json").read_text())
+def validate_runtime_inputs(source, pins, architecture):
     sync = (source / "node-guest-image/c8s/mkosi.sync").read_text()
     versions = re.findall(r'^RKE2_VERSION="([^"]+)"$', sync, re.MULTILINE)
     if versions != [pins["rke2Version"]]:
         raise ValueError("runtime pin must be updated with the guest RKE2 version")
     if architecture not in pins["platforms"]:
         raise ValueError("runtime integration supports native Linux amd64 and arm64")
+    # The guest extracts runtime binaries from these pinned amd64 bundles.
+    # rke2-runtime is unpacked, so it is not an executable floor entry.
+    for bundle in ("core", "cilium"):
+        checksums = re.findall(
+            rf'^RKE2_IMAGES_{bundle.upper()}_SHA256="([a-f0-9]{{64}})"$',
+            sync, re.MULTILINE,
+        )
+        if checksums != [pins["guestAirgapBundlesAMD64"][bundle]]:
+            raise ValueError("runtime pins must be reviewed with the guest " + bundle + " bundle")
     policy = (source / "node-guest-image/c8s/image-policy.yaml.in").read_text()
-    entries = re.findall(
-        r'label: "(docker.io/rancher/rke2-runtime:[^"]+)"\s+'
-        r'containers:\s+- digest: "(sha256:[a-f0-9]{64})"',
-        policy,
-    )
-    expected_ref = "docker.io/rancher/rke2-runtime:" + versions[0].replace("+", "-")
-    if entries != [(expected_ref, pins["airgapFloorDigest"])]:
-        raise ValueError("runtime registry pin must be reviewed with the measured airgap floor")
     cni = pins["cni"]
+    # Match the one current Cilium init rule, not a label or an arbitrary digest.
     cni_entries = re.findall(
-        r'label: "(docker.io/rancher/hardened-cni-plugins:[^"]+)"\s+'
-        r'containers:\s+- digest: "(sha256:[a-f0-9]{64})"', policy,
+        r'^      cilium:\n        initContainers:\n'
+        r'          - digest: "(sha256:[a-f0-9]{64})"\n'
+        r'            image: "(docker.io/rancher/hardened-cni-plugins:[^"]+)"$',
+        policy, re.MULTILINE,
     )
-    if cni_entries != [("docker.io/rancher/hardened-cni-plugins:" + cni["version"], cni["airgapFloorDigest"])]:
-        raise ValueError("CNI registry pin must be reviewed with the measured airgap floor")
+    expected_cni = "docker.io/rancher/hardened-cni-plugins:" + cni["version"]
+    cni_images = re.findall(
+        r'^\s*image: "(docker.io/rancher/hardened-cni-plugins:[^"]+)"$',
+        policy, re.MULTILINE,
+    )
+    if cni_entries != [(cni["airgapFloorDigest"], expected_cni)] or cni_images != [expected_cni]:
+        raise ValueError("CNI registry pin must be reviewed with the measured Cilium init rule")
     kind_lib = (source / "test/integration/cluster/lib.sh").read_text()
     runner = re.findall(r'NODE_IMAGE="\$\{C8S_IT_NODE_IMAGE:-([^}]+)\}"', kind_lib)
     if len(runner) != 1 or not re.fullmatch(
         r"kindest/node:[A-Za-z0-9.-]+@sha256:[a-f0-9]{64}", runner[0]
     ):
         raise ValueError("expected the existing digest-pinned kind runner image")
-    for digest in [pins["registryIndex"], *pins["platforms"].values(), cni["registryIndex"], *cni["platforms"].values()]:
+    for digest in [pins["registryIndex"], *pins["platforms"].values(), pins["historicalRuntimeAirgapDigest"], cni["registryIndex"], *cni["platforms"].values(), cni["airgapFloorDigest"]]:
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise ValueError("runtime inputs require sha256 pins")
+    return runner[0]
+
+
+def prepare(source, stage, architecture):
+    pins = json.loads((Path(__file__).parent / "runtime-pins.json").read_text())
+    runner = validate_runtime_inputs(source, pins, architecture)
+    cni = pins["cni"]
     inputs = {
         "runId": str(uuid.uuid4()),
         "sourceRevision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, timeout=10).decode().strip(),
@@ -57,8 +72,9 @@ def prepare(source, stage, architecture):
         "cniAirgapFloorDigest": cni["airgapFloorDigest"],
         "runtimeRegistryIndex": pins["registryIndex"],
         "runtimePlatformDigest": pins["platforms"][architecture],
-        "airgapFloorDigest": pins["airgapFloorDigest"],
-        "runnerImage": runner[0],
+        "historicalRuntimeAirgapDigest": pins["historicalRuntimeAirgapDigest"],
+        "guestAirgapBundlesAMD64": pins["guestAirgapBundlesAMD64"],
+        "runnerImage": runner,
         "architecture": architecture,
         "scope": "native snapshotter; simulated measurement register and credential broker",
         "runtimeProvenance": "digest-pinned registry release runtime; runtime/CNI guest airgap byte equivalence unverified",

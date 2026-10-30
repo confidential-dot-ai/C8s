@@ -20,6 +20,9 @@ inputs:
   suite_run:
     description: 'Command that runs the extra suite; empty skips it.'
     default: ''
+  node_cidr:
+    description: 'The launcher host''s pod network: the one range the CDS admits a node address in, and the range the guests boot on. A property of the host this lane runs on (tdx-gh-runner''s outer cluster is renumbered to 172.20/172.21), not of c8s, so the caller sets it for its host.'
+    default: '172.20.0.0/16'
 runs:
   using: composite
   steps:
@@ -83,6 +86,14 @@ runs:
     run: |
       set +e +o pipefail
       NOW=$(date -u +%s)
+      # Everything one run owns, whether it is the cluster's VM or its CDS VM:
+      # a resource the other kind never had is simply absent.
+      reap() {
+        kubectl -n "$NS" delete vm "$1" --ignore-not-found --wait=false
+        kubectl -n "$NS" delete pvc "$1-scratch" --ignore-not-found --wait=false
+        kubectl -n "$NS" delete secret "$1-opkey" --ignore-not-found
+        kubectl -n "$NS" delete svc "$1" --ignore-not-found
+      }
       for vm in $(kubectl -n "$NS" get vm -l ci.confidential.ai/managed=true -o name 2>/dev/null); do
         rid=$(kubectl -n "$NS" get "$vm" -o jsonpath='{.metadata.labels.ci\.confidential\.ai/run-id}' 2>/dev/null)
         standing=$(kubectl -n "$NS" get "$vm" -o jsonpath='{.metadata.labels.ci\.confidential\.ai/standing}' 2>/dev/null)
@@ -104,12 +115,10 @@ runs:
         st=$(gh api "repos/${orepo:-${{ github.repository }}}/actions/runs/$rid" -q .status 2>/dev/null)
         if [ "$st" = "completed" ]; then
           echo "reaping $vm (run ${orepo:-${{ github.repository }}}#$rid completed)"
-          kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
+          reap "${vm#virtualmachine.kubevirt.io/}"
         elif [ -z "$st" ] && [ "$age" -gt 10800 ]; then
           echo "reaping $vm (status unknown, age ${age}s > 3h -> orphaned)"
-          kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
+          reap "${vm#virtualmachine.kubevirt.io/}"
         else
           echo "keeping $vm (run ${orepo:-${{ github.repository }}}#$rid status=${st:-unknown} age=${age}s)"
         fi
@@ -121,9 +130,9 @@ runs:
          inuse=$(jq -nr --argjson vmis "$vmis" --argjson vms "$vms" '
            [$vmis.items[].spec.volumes[]?, $vms.items[].spec.template.spec.volumes[]?]
            | .[] | (.persistentVolumeClaim.claimName // .dataVolume.name // empty)'); then
-        for pvc in $(kubectl -n "$NS" get pvc -l ci.confidential.ai/managed=true,ci.confidential.ai/resource=tdx-node-root -o name); do
+        for pvc in $(kubectl -n "$NS" get pvc -l 'ci.confidential.ai/managed=true,ci.confidential.ai/resource in (tdx-node-root, tdx-cds-root)' -o name); do
           name=${pvc#persistentvolumeclaim/}
-          [[ "$name" =~ ^c8s-root-[0-9a-f]{12}$ ]] || continue
+          [[ "$name" =~ ^c8s-(cds-)?root-[0-9a-f]{12}$ ]] || continue
           grep -qx "$name" <<<"$inuse" && continue
           ct=$(kubectl -n "$NS" get "$pvc" -o jsonpath='{.metadata.creationTimestamp}')
           age=$(( NOW - $(date -u -d "$ct" +%s 2>/dev/null || echo "$NOW") ))
@@ -289,6 +298,52 @@ runs:
       } >> "$GITHUB_ENV"
       echo "c8s under test ${c8sRef} on its own node image rke2-tdx-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), mrtd $(jq -r '.tdx.mrtd[0:16]' /tmp/image-manifest.json)..."
 
+  - name: resolve the CDS image built from the commit under test
+    # The cluster's CDS runs in a VM of its own. One CDS image serves both TEE
+    # families, so it has a single variant, :cds[-cdi]-<ref>, published from
+    # the same commit as the node image; exact-image acceptance pins the node
+    # image alone, and takes this one from the same commit too.
+    env:
+      CDS_IMAGE_REPO: ghcr.io/confidential-dot-ai/cds-guest-base
+      # The launcher host's pod network, which both guests boot on: the one
+      # range the CDS may dial a node's admission inventory in, and the range
+      # the boot below refuses a guest address outside. A host property (see the
+      # node_cidr input), not 10.42/16 as SNP's host happens to use: this host's
+      # outer cluster is renumbered to 172.20/172.21.
+      LAUNCHER_POD_CIDR: ${{ inputs.node_cidr }}
+    shell: bash
+    run: |
+      set -euo pipefail
+      . "$GITHUB_WORKSPACE/bin/retry.sh"
+      oci=${CDS_IMAGE_REPO#ghcr.io/}
+      tok=$(retry curl -fsSL --max-time 20 "https://ghcr.io/token?scope=repository:${oci}:pull" | jq -er .token)
+      accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
+      CDS_DIGEST=""; code=""
+      for attempt in 1 2 3 4; do
+        hdr=$(curl -sI --max-time 20 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+          "https://ghcr.io/v2/${oci}/manifests/cds-cdi-${c8sRef}" | tr -d '\r')
+        code=$(awk 'NR==1{print $2}' <<<"$hdr")
+        case "$code" in
+          200) CDS_DIGEST=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' <<<"$hdr"); break ;;
+          404) echo "::error::no CDS image for the commit under test: ${CDS_IMAGE_REPO}:cds-cdi-${c8sRef} is not published. The lane needs the pair this commit built; wait for its c8s-image run, or dispatch with a c8s_ref whose images exist"; exit 1 ;;
+          *)   sleep $((attempt * 3)) ;;
+        esac
+      done
+      [[ "$CDS_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for cds-cdi-${c8sRef} on 4 attempts"; exit 1; }
+      oras=$(retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" "https://ghcr.io/v2/${oci}/manifests/cds-${c8sRef}")
+      mlayer=$(jq -er '[.layers[] | select(.annotations["org.opencontainers.image.title"]=="manifest.json")] | if length == 1 then .[0].digest else error("expected one manifest.json layer") end' <<<"$oras")
+      [[ "$mlayer" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::invalid CDS manifest layer digest"; exit 1; }
+      retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/cds-manifest.json
+      short12=${CDS_DIGEST#sha256:}; short12=${short12:0:12}
+      {
+        echo "CDS_VM=$VM-cds"
+        echo "CDS_IMAGE_MANIFEST=/tmp/cds-manifest.json"
+        echo "NODE_CIDR=$LAUNCHER_POD_CIDR"
+        echo "cdsImage=${CDS_IMAGE_REPO}@${CDS_DIGEST}"
+        echo "cdsRootPvc=c8s-cds-root-${short12}"
+      } >> "$GITHUB_ENV"
+      echo "CDS image cds-cdi-${c8sRef} (${CDS_DIGEST:0:19}...)"
+
   - name: stage the node image on the host (no-op when already staged)
     if: inputs.exact_image != 'true'
     shell: bash
@@ -331,13 +386,64 @@ runs:
         resources: {requests: {storage: 4Gi}}
       EOF
       fi
+      # Reported once a minute, and in full when it fails, so a slow import
+      # leaves its pace and its importer's state in the log.
+      status() { bash .github/scripts/tdx-image-acceptance.sh import-status "$NS" "$rootPvc" "$@" || true; }
       for i in $(seq 1 120); do
         phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
         case "$phase" in
           Succeeded) echo "root disk $rootPvc ready"; break ;;
-          Failed) kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image failed"; exit 1 ;;
+          Failed) status full; echo "::error::CDI import of $image failed"; exit 1 ;;
         esac
-        [ "$i" -lt 120 ] || { kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"; exit 1; }
+        [ "$i" -lt 120 ] || { status full; echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"; exit 1; }
+        [ $((i % 6)) -ne 1 ] || status
+        sleep 10
+      done
+
+  - name: stage the CDS image on the host (no-op when already staged)
+    shell: bash
+    run: |
+      set -euo pipefail
+      # The node image's import, for the CDS image: its own digest-keyed claim
+      # and resource label, so neither is ever adopted for the other.
+      existing=$(kubectl -n "$NS" get pvc "$cdsRootPvc" --ignore-not-found -o json)
+      if [ -n "$existing" ]; then
+        jq -e --arg image "docker://$cdsImage" '
+          .metadata.labels["ci.confidential.ai/managed"] == "true" and
+          .metadata.labels["ci.confidential.ai/resource"] == "tdx-cds-root" and
+          .metadata.annotations["cdi.kubevirt.io/storage.import.endpoint"] == $image
+        ' <<<"$existing" >/dev/null || { echo "::error::existing CDS root PVC does not match the selected image"; exit 1; }
+      else
+        kubectl create -f - <<EOF
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: $cdsRootPvc
+        namespace: $NS
+        labels:
+          ci.confidential.ai/managed: "true"
+          ci.confidential.ai/resource: tdx-cds-root
+          confai.confidential.ai/source-digest-sha256: "${cdsRootPvc#c8s-cds-root-}"
+        annotations:
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+          cdi.kubevirt.io/storage.import.source: registry
+          cdi.kubevirt.io/storage.import.endpoint: "docker://$cdsImage"
+          cdi.kubevirt.io/storage.import.secretName: ghcr-pull
+          cdi.kubevirt.io/storage.contentType: kubevirt
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        volumeMode: Filesystem
+        resources: {requests: {storage: 4Gi}}
+      EOF
+      fi
+      for i in $(seq 1 120); do
+        phase=$(kubectl -n "$NS" get pvc "$cdsRootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
+        case "$phase" in
+          Succeeded) echo "CDS root disk $cdsRootPvc ready"; break ;;
+          Failed) kubectl -n "$NS" describe pvc "$cdsRootPvc" | tail -15; echo "::error::CDI import of $cdsImage failed"; exit 1 ;;
+        esac
+        [ "$i" -lt 120 ] || { kubectl -n "$NS" describe pvc "$cdsRootPvc" | tail -15; echo "::error::CDI import of $cdsImage did not finish in 20 min (phase ${phase:-none})"; exit 1; }
         sleep 10
       done
 
@@ -363,20 +469,137 @@ runs:
         echo "no node read permission (expected: bm-e2e is namespace-scoped); relying on the scheduling gate below"
       fi
 
+  - name: render the component entries this commit's images bake
+    # The CDS serves the cluster's component entries, which the launch below
+    # carries: the seed this commit's node image bakes, rendered from its own
+    # component images and the Helm version its build pins.
+    shell: bash
+    run: |
+      set -euo pipefail
+      . "$GITHUB_WORKSPACE/bin/retry.sh"
+      sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+      helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
+      helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
+      retry curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"
+      echo "$helm_sha  /tmp/helm.tgz" | sha256sum -c -
+      tar -xzf /tmp/helm.tgz -C "$GITHUB_WORKSPACE/bin" --strip-components 1 linux-amd64/helm
+      registry=ghcr.io/confidential-dot-ai
+      bash "$C8S_SOURCE_DIR/.github/scripts/release-seeds.sh" render "$(command -v c8s)" /tmp/seed \
+        "$(crane digest "$registry/c8s-operator:$c8sRef")" "$(crane digest "$registry/armtls-mesh:$c8sRef")" tdx
+
   - name: sign the server launch and attach opkeydata
     # The same exact public PEM is signed into launch.yaml, bound by the
     # measured initrd into RTMR3, and pinned by the external clients.
     shell: bash
     run: |
       set -euo pipefail
-      # The published manifest pins the image before its launch is signed.
-      c8s launch-config new --out /tmp/launch-data --cluster-id "$VM" --server-name c8s-node \
-        --image-manifest /tmp/image-manifest.json
+      # The launch file names the CDS before either VM boots, so the cluster
+      # takes an address from the launcher up front; the VM that answers it
+      # carries the matching label.
+      kubectl apply -f - <<EOF
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: $CDS_VM
+        namespace: $NS
+        labels:
+          ci.confidential.ai/managed: "true"
+          ci.confidential.ai/run-id: "${{ github.run_id }}"
+      spec:
+        selector: {kubevirt.io/domain: $CDS_VM}
+        ports: [{port: 8443, targetPort: 8443}]
+      EOF
+      CDS_IP=$(kubectl -n "$NS" get svc "$CDS_VM" -o jsonpath='{.spec.clusterIP}')
+      [ -n "$CDS_IP" ] || { echo "::error::the CDS Service got no address"; exit 1; }
+      echo "CDS_ADDRESS=$CDS_IP:8443" >> "$GITHUB_ENV"
+      # The published manifests pin both images before the launch is signed;
+      # its cds-config.yaml is what the CDS VM boots on.
+      c8s launch-config new \
+        --out /tmp/launch-data \
+        --cluster-id "$VM" \
+        --server-name c8s-node \
+        --image-manifest /tmp/image-manifest.json \
+        --cds-address "$CDS_IP:8443" \
+        --cds-image-manifest "$CDS_IMAGE_MANIFEST" \
+        --cds-platform tdx \
+        --cds-node-cidr "$NODE_CIDR" \
+        --cds-allowlist-seed /tmp/seed/allowlist-seed-tdx.json
       kubectl -n "$NS" create secret generic "$VM-opkey" \
         --from-file=pubkey=/tmp/launch-data/server/pubkey \
         --from-file=launch.yaml=/tmp/launch-data/server/launch.yaml \
         --from-file=launch.yaml.sig=/tmp/launch-data/server/launch.yaml.sig \
         --dry-run=client -o yaml | kubectl apply -f -
+      # The CDS VM's opkeydata disk holds its launch file alone; its initrd
+      # seeds RTMR[3] with those bytes, which the pin names.
+      kubectl -n "$NS" create secret generic "$CDS_VM-opkey" \
+        --from-file=pubkey=/tmp/launch-data/cds-config.yaml \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+  - name: boot the CDS VM
+    # It serves only once its own boot self-check passes: a fresh report from
+    # the attester on its loopback must bind the configuration file it parsed,
+    # which is what RTMR[3] carries and the pin names. So an answer on :8443
+    # is the binding, asserted by the wait below.
+    shell: bash
+    run: |
+      set -euo pipefail
+      kubectl apply -f - <<EOF
+      apiVersion: kubevirt.io/v1
+      kind: VirtualMachine
+      metadata:
+        name: $CDS_VM
+        namespace: $NS
+        labels:
+          ci.confidential.ai/managed: "true"
+          ci.confidential.ai/run-id: "${{ github.run_id }}"
+        annotations:
+          ci.confidential.ai/repo: "${{ github.repository }}"
+          ci.confidential.ai/run-url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      spec:
+        runStrategy: Always
+        template:
+          metadata:
+            labels: {kubevirt.io/domain: $CDS_VM}
+          spec:
+            nodeSelector:
+              kubevirt.io/tdx: "true"
+            domain:
+              cpu:
+                model: host-passthrough
+                cores: 4
+              devices:
+                autoattachVSOCK: true
+                disks:
+                  - name: rootdisk
+                    disk: {bus: virtio, readonly: true}
+                  - name: opkey
+                    disk: {bus: virtio}
+                interfaces: [{name: default, masquerade: {}}]
+                rng: {}
+              firmware: {bootloader: {efi: {secureBoot: false}}}
+              launchSecurity: {tdx: {}}
+              # The size the CDS image was built for; the trust root keeps its
+              # state in memory and no disk of its own.
+              memory: {guest: 4Gi}
+              resources: {requests: {memory: 4Gi}}
+            networks: [{name: default, pod: {}}]
+            volumes:
+              - name: rootdisk
+                persistentVolumeClaim: {claimName: $cdsRootPvc}
+              - name: opkey
+                secret: {secretName: $CDS_VM-opkey, volumeLabel: opkeydata}
+      EOF
+      for _ in $(seq 1 120); do
+        code=$(curl -sk --connect-timeout 2 --max-time 4 -o /dev/null -w '%{http_code}' "https://$CDS_ADDRESS/healthz" 2>/dev/null || true)
+        [ "${code:-000}" = 200 ] && break
+        sleep 5
+      done
+      [ "${code:-000}" = 200 ] || {
+        kubectl -n "$NS" describe vmi "$CDS_VM" | tail -25
+        echo "::error::the CDS does not serve at $CDS_ADDRESS: its launch file, the binding its initrd checks, or the route to Intel's certificate service"
+        exit 1
+      }
+      echo "OK: the CDS serves the cluster its own launch binds it to, at $CDS_ADDRESS"
 
   - name: boot the TDX CVM
     shell: bash
@@ -453,7 +676,13 @@ runs:
                     disk: {bus: virtio}
                   - name: cloudinit
                     disk: {bus: virtio}
-                interfaces: [{name: default, masquerade: {}}]
+                # The guest takes the launcher pod's own IP (the 172.20 the CDS
+                # admits), so node-ip, the inventory host and kube-apiserver's
+                # advertise address all resolve to one routable address: no
+                # Service in front, no advertise-host override. The SNP lane
+                # bridges its node VM the same way. masquerade here instead gives
+                # the guest a NAT-internal address no component can be reached at.
+                interfaces: [{name: default, bridge: {}}]
                 rng: {}
               firmware: {bootloader: {efi: {secureBoot: false}}}
               # Empty object: TDX takes no per-VM policy. Cluster config
@@ -484,6 +713,18 @@ runs:
       fi
       IP=$(kubectl -n "$NS" get vmi "$VM" -o jsonpath='{.status.interfaces[0].ipAddress}')
       [ -n "$IP" ] || { echo "::error::no guest IP"; exit 1; }
+      # Both reduced to the two octets of the /16 the launch file lets the CDS
+      # dial a node's admission inventory in.
+      if [ "${IP%.*.*}" != "${NODE_CIDR%.*.*/*}" ]; then
+        # The guest took an address the CDS will not admit. Dump what the
+        # launcher assigned (both namespaced, so readable without node rights)
+        # so the next reader sees whether node_cidr is stale or the launcher
+        # placed the VM off its expected network.
+        echo "launcher pod IPs: $(kubectl -n "$NS" get pod -l kubevirt.io/domain="$VM" -o jsonpath='{.items[*].status.podIP}' 2>/dev/null)"
+        kubectl -n "$NS" get vmi "$VM" -o jsonpath='{.status.interfaces}' 2>/dev/null; echo
+        echo "::error::the guest came up at $IP, outside NODE_CIDR $NODE_CIDR: the CDS admits no node address there. If the host's pod network moved, set the node_cidr input to match."
+        exit 1
+      fi
       echo "GUEST_IP=$IP" >> "$GITHUB_ENV"
       echo "VMI Running at $IP"
 
@@ -521,7 +762,13 @@ runs:
       WHO=$(KUBECONFIG=/tmp/guest.kubeconfig kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
       [ "$WHO" = operator ] || { echo "::error::unexpected identity '$WHO'"; exit 1; }
       echo "OK: attested kubeconfig, identity=$WHO"
-      KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes
+      KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes -o wide
+      # The address the node registered is the inventory host it signs into
+      # sandbox tokens; the CDS admits a cert only when it falls inside
+      # --cds-node-cidr. Under masquerade the guest's default-route interface is
+      # not the pod IP, so print what the node actually advertised.
+      echo "node addresses: $(KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes -o jsonpath='{.items[*].status.addresses}')"
+      echo "lane GUEST_IP=$GUEST_IP NODE_CIDR=$NODE_CIDR"
 
   - name: assert the host cidata disk is inert
     shell: bash
@@ -557,10 +804,15 @@ runs:
     # through the c8s-operator admission webhook, so run it after the
     # components converge.
     # Keep on re-vendor; the source workflow does not ship this script.
-    env:
-      KUBECONFIG: /tmp/guest.kubeconfig
+    # Its probe image is admitted by a signed allowlist entry.
     shell: bash
-    run: bash node-guest-image/tests/apparmor-runtime-test.sh
+    run: |
+      set -euo pipefail
+      export KUBECONFIG=/tmp/guest.kubeconfig
+      export C8S_ALLOWLIST_URL="https://$GUEST_IP:443"
+      export C8S_MEASUREMENTS_CONFIG=/tmp/launch-data/server.json
+      export C8S_OPERATOR_KEY=/tmp/launch-data/server.key
+      bash node-guest-image/tests/apparmor-runtime-test.sh
 
   - name: assert the image floor denies, then opens to a signed write
     # Baked nginx fronts /allowlist; clients pin the complete image tuple
@@ -600,8 +852,8 @@ runs:
       platform: tdx-metal
 
   - name: assert the router matches its seeded entry in acme front-door mode
-    # Boots a second CVM in place of the lane's, so it runs last, and not
-    # when the lane's CVM is kept for debugging.
+    # Boots a second CVM and a CDS VM of its own in place of the lane's, so it
+    # runs last, and not when the lane's CVM is kept for debugging.
     if: ${{ !cancelled() && env.GUEST_IP != '' && inputs.keep_cvm != 'true' }}
     # Reported, not gating, while the per-pod mesh contract settles.
     continue-on-error: true
@@ -626,6 +878,7 @@ runs:
         echo "| c8s ref | \`${c8sRef:-?}\` |"
         echo "| MRTD | \`${mrtd:0:32}...\` |"
         echo "| guest | \`${GUEST_IP:-?}\` |"
+        echo "| CDS | \`${CDS_ADDRESS:-?}\` on \`${cdsImage:-?}\` |"
       } >> "$GITHUB_STEP_SUMMARY"
 
   - name: teardown
@@ -636,8 +889,10 @@ runs:
     run: |
       set +e
       cleanup_failed=0
-      kubectl -n "$NS" delete vm "$VM" "$VM-acme" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
-      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-acme-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
+      kubectl -n "$NS" delete vm "$VM" "$VM-acme" "$CDS_VM" "$CDS_VM-acme" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
+      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-acme-opkey" "$VM-cloudinit" \
+        "$CDS_VM-opkey" "$CDS_VM-acme-opkey" --ignore-not-found || cleanup_failed=1
+      kubectl -n "$NS" delete svc "$CDS_VM" "$CDS_VM-acme" --ignore-not-found || cleanup_failed=1
       kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-acme-scratch" --ignore-not-found --wait=false || cleanup_failed=1
       # The helper ignores absent disks and refuses anything not owned by
       # this run, including the shared staged root PVC.

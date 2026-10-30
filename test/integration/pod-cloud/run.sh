@@ -5,12 +5,17 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo_root"
+mode="${1:-}"
+[[ "${C8S_PODCLOUD_LIVE:-}" == 1 ]] || { echo 'Set C8S_PODCLOUD_LIVE=1 to enable this live lane.' >&2; exit 1; }
+if [[ "$mode" == run ]]; then
+    # Reject unsupported source before acquiring a lock, creating state, reading
+    # credentials or invoking build/provisioning tools. Cleanup uses its runner.
+    python3 "$repo_root/test/integration/pod-cloud/compatibility.py"
+fi
 if [[ "${C8S_PODCLOUD_LOCKED:-}" != 1 ]]; then
     exec python3 "$repo_root/test/integration/pod-cloud/lock.py" "$repo_root/test/integration/pod-cloud/run.sh" "$@"
 fi
 python3 "$repo_root/test/integration/pod-cloud/lock.py" --verify "$repo_root/test/integration/pod-cloud/run.sh" "$@"
-mode="${1:-}"
-[[ "${C8S_PODCLOUD_LIVE:-}" == 1 ]] || { echo 'Set C8S_PODCLOUD_LIVE=1 to enable this live lane.' >&2; exit 1; }
 for tool in docker kind jq; do
     command -v "$tool" >/dev/null || { echo "required tool missing: $tool" >&2; exit 1; }
 done

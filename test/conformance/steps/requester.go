@@ -261,7 +261,7 @@ func (w *world) relay(r *requester, method, route string, body []byte, socket st
 		}
 		url := "http://localhost"
 		if socket == "" {
-			if url, err = w.requesterCDSURL(); err != nil {
+			if url, err = w.be.call("cds_pod_url"); err != nil {
 				return err
 			}
 		}
@@ -641,16 +641,6 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 		return err
 	}
 	return w.attest(r, body)
-}
-
-// requesterCDSURL is where a requester outside the mesh dials the CDS: the
-// address an injected client dials, unless IP SAN binding needs the
-// requester's own address as the request's source.
-func (w *world) requesterCDSURL() (string, error) {
-	if w.issuance.sourceBound {
-		return w.be.call("cds_service_url")
-	}
-	return w.be.call("cds_pod_url")
 }
 
 // attest sends an attest body and records what the CDS answered.

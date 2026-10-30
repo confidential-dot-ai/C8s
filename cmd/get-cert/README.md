@@ -54,7 +54,7 @@ a changed CA certificate only under the pod's bound issuer key.
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--cds-url` | | *(required)* | URL of the running cds service |
-| `--cds-measurements` | | *(empty)* | Comma-separated SHA-384 hex launch measurements for CDS armTLS verification; required unless the node or `--image-policy-file` pins CDS |
+| `--image-policy-file` | | *(empty)* | JSON pin document for the CDS endpoint, every entry bound to the launch file CDS runs on; required unless the node pins CDS |
 | `--attestation-api-url` | | *(required)* | URL of the node attestation-api; pods use its mounted Unix socket |
 | `--san` | | | Subject Alternative Name — IP address or hostname; one of `--san`, `--san-file` or `--no-san` is required |
 | `--no-san` | | `false` | Request a certificate with no SAN |

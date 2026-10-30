@@ -4,13 +4,16 @@ Requires=attestation-api.service
 After=network-online.target attestation-api.service
 Wants=network-online.target
 Before=rke2-server.service rke2-agent.service
+# A node that cannot authenticate its launch powers off.
+FailureAction=poweroff-force
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/rke2-role.sh
-TimeoutStartSec=180
+# Bounds rke2-role.sh's verification retries and disk waits.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

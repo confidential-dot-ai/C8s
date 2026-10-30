@@ -1,11 +1,14 @@
 # Run the integration tests
 
-Exercise C8s on a plain Linux or macOS host with no TEE hardware, so neither of
-the first two harnesses proves a confidential property: docker-compose, for the
-armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry TEE
-evidence), and kind, for a whole cluster. CI runs both as the **Integration**
-and **Integration (cluster)** jobs; terms are defined in
-[glossary.md](glossary.md).
+The first two harnesses exercise C8s on a plain Linux or macOS host without
+TEE hardware, so they do not prove a confidential property:
+
+- **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
+  TLS whose certificates carry TEE evidence.
+- **kind**: a whole cluster.
+
+CI runs both as the Integration and Integration (cluster) jobs; terms are
+defined in [glossary.md](glossary.md).
 
 The Pod CVM lanes at the end of this page add scheduler and runtime harnesses
 to ordinary CI, plus explicit acceptance runs on Cloud and metal TDX, which do
@@ -48,9 +51,15 @@ The TEE is replaced at exactly one point: evidence generation.
 measurement on the node IP `:8400`, the address `bare-metal` consumers dial for
 the node-baked attestation-api. It answers verification requests too, so no hop
 proves a hardware property; what matches production is the pinning — that
-measurement is the pinned CDS measurement, compared exactly as in production —
-and every component delegating verification to the attestation-api works
-unchanged.
+measurement is the one this cluster's CDS pin and node pins carry, compared
+exactly as in production — and every component delegating verification to the
+attestation-api works unchanged.
+
+The CDS runs outside the cluster, as a container of the kind network with an
+attestation-api of its own reporting the launch binding of the configuration it
+boots on (`HOST_DATA` = SHA-256 of that file). That is what the pin the install
+carries names, so every client holds it to the configuration it serves, exactly
+as it holds a CDS VM to its launch file.
 
 The rest is real: the admission webhook and validating admission policies in a
 real API server, the admission plugin registered against the node's containerd,
@@ -87,9 +96,9 @@ The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for the kept
 cluster whatever kubectl's current context is. Source
 `test/integration/cluster/lib.sh` and then that file to drive the cluster with
 the harness's own helpers (`cds_write`, `cds_get`, `node_exec`, `run_pod`, and
-the rest). They open the shared CDS port-forward on demand with `cds_pf_start`,
-record its pid in `$C8S_IT_WORKDIR/cds-pf.pid`, and `cds_pf_stop` ends it.
-Delete the cluster with `kind delete cluster --name c8s-it`.
+the rest). They address the CDS at `$C8S_IT_WORKDIR/cds-address`, which the run
+wrote. Delete the cluster with `kind delete cluster --name c8s-it`, and the CDS
+with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
 
 ## When a run fails
 
@@ -161,6 +170,14 @@ Set `C8S_PODPROVIDER_ARTIFACTS` or `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
 directory. CI retains those artifacts for seven days.
 
 ## Pod Cloud acceptance
+
+The current provider uses `c8s-launch/v2` and an external measured CDS guest.
+New Cloud runs are blocked before creating local or Cloud resources until the
+Cloud API, operator and catalog support that contract and a matching Pod/CDS
+image pair is available. See the [compatibility gate](../test/integration/pod-cloud/README.md).
+The scenarios and input below describe the historical `c8s-launch/v1` harness;
+`2026.10.30-1` results do not validate the current v2 provider. Cleanup of retained
+runs remains available with their original provider binary and ownership records.
 
 The live lane needs Go, Docker, kind, jq, Python 3 and GNU timeout, an authorized Cloud
 credential, and an admitted matching production Pod/CDS image pair. Supply an
@@ -288,12 +305,12 @@ provider deletion and owned cleanup must pass. This tests CDS network outage and
 served policy retention; guest service restart, CDS process restart and long-outage
 certificate renewal require separate acceptance.
 
-All scenarios compile the provider from the current checkout. Its commit,
-dirty status and executable hash are recorded in `provider-build.json`; the
-result's executable hash must match the runner that was built and executed.
-The input `source` still identifies the paired guest/CLI publication. This lets
-provider-only scenarios run before merging the provider or publishing new guest
-images, without claiming coverage of guest features absent from the pinned image.
+In a retained v1-compatible checkout, these scenarios compile that checkout's
+provider. Its commit, dirty status and executable hash are recorded in
+`provider-build.json`; the result's hash must match the executable that ran.
+The input `source` identifies the paired guest/CLI publication. Provider-only
+changes can be tested against an existing image only while their launch contracts
+remain compatible. The current v2 checkout rejects these new runs at preflight.
 The `warm-assignment` scenario requires those guest features in its pinned image;
 a successful static or timeout run does not establish warm-assignment acceptance.
 
@@ -333,6 +350,10 @@ a paired production image build; the harness does not accept a development
 image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
 CLI build with the dispatched commit's Go toolchain, so the pinned source's
 `go` directive must not exceed the dispatched tree's.
+
+This lane deliberately builds the CLI from the pinned historical source and
+continues to validate that image's `c8s-launch/v1` contract. A pass does not
+validate the current provider or measured-CDS `c8s-launch/v2` contract.
 
 The current pins select production publication `2026.10.30-1`, source
 `05211a8b106415a0aefd5f47bc40b266b0c1dacd`, from
@@ -471,7 +492,9 @@ The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` boots the
 console, its own measurement) with the Pod fixture signed by the CLI built from
 that same commit, so the serial log shows which unit or admission step stops a
 Pod that the production image only reports as Pending. `pod_image_source`
-names that commit by full SHA; empty means the dispatched commit. The source
+names that commit by full SHA; empty means the dispatched commit. This legacy
+fixture requires a v1-compatible paired CLI; the lane rejects an unsupported
+v2 CLI before registry resolution, signing or provisioning. The source
 must be that commit or one of its ancestors, checked before toolchain setup or
 building the paired CLI. For another lineage, dispatch a matching branch or
 historical workflow ref that contains this lane. The lane resolves

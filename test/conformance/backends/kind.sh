@@ -29,11 +29,8 @@ setup() {
     rm -f "$entry"
 }
 
-# Each function runs in its own process, so the CDS port-forward lib.sh shares
-# through WORKDIR outlives the call that opened it.
 teardown_backend() {
     allowlist_delete "$nginx_entry" || true
-    cds_pf_stop
 }
 
 scratch_encrypted() { echo no; }
@@ -63,9 +60,6 @@ image_alias() {
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
 
-# The CDS through the port-forward lib.sh shares; the harness's operator key
-# and token minter beside it.
-cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
 # The router's hostPort 443 on the kind node, reachable on the kind network.
 router_url() {
     local ip
@@ -73,148 +67,90 @@ router_url() {
     [ -n "$ip" ] || { echo "backend: node $NODE has no InternalIP" >&2; return 1; }
     echo "https://$ip:443"
 }
+# The CDS outside the cluster is lib.sh's (cds_url), and so are the harness's
+# operator key and token minter.
 operator_key() { echo "$WORKDIR/operator.key"; }
 optoken_bin() { echo "$WORKDIR/optoken"; }
 scratch() { echo "$WORKDIR"; }
 
-# The same forward dialled without TLS; the listener is TLS-only.
+# The same address dialled without TLS; the listener is TLS-only.
 cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
 cds_pins() { echo "$MOCK_MEASUREMENT"; }
+# Every client of this cluster dials the one CDS, pods included.
+cds_pod_url() { cds_url; }
 
-CDS_SELECTOR=app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=cds
-CDS_ARGS_ANNOTATION=c8s-conformance/cds-args
+# The flags the harness runs the CDS with (lib.sh, cds_serve); empty for one it
+# leaves at the CDS's own default.
+cds_arg() {
+    docker inspect -f '{{json .Args}}' "$CDS_CONTAINER" |
+        jq -r --arg p "--$1=" '.[] | select(startswith($p)) | ltrimstr($p)' | tail -1
+}
 
-# The CDS container's args are edited in place; the installed ones are kept
-# in an annotation on the Deployment, so default restores them from any
-# process. A change applies on top of the running args, so two in one
-# scenario compose; one that changes nothing needs no new pod. The
-# Deployment's strategy is Recreate: the old pod goes before the new one
-# comes, and a pod that never becomes ready is still the only one, so a
-# reconfigured CDS is waited for as a running pod answering /healthz, not as
-# a completed rollout.
+# The CDS runs from the configuration its launch binds it to, so only a
+# parameter outside that file can be changed here: the harness replaces the
+# container with one that carries it (lib.sh, cds_serve), and default brings
+# the installed command line back. Node pins, the operator key and the
+# inventory range are the configuration's, which a restart cannot change
+# without breaking the binding every client checks.
 cds_restart_with() {
-    local state installed current args annotation pods
-    state="$(kubectl -n "$NS" get deploy c8s-cds -o json | jq -c --arg a "$CDS_ARGS_ANNOTATION" \
-        '{installed: (.metadata.annotations[$a] // ""), current: (.spec.template.spec.containers[] | select(.name == "cds") | .args)}')"
-    installed="$(jq -r .installed <<<"$state")"
-    current="$(jq -c .current <<<"$state")"
-    if [ -z "$installed" ]; then
-        [ "$1" != default ] || return 0 # nothing was changed
-        installed="$current"
-    fi
-    local flag=
     case "$1" in
-        default) args="$installed" ;;
-        pins) flag=--measurements ;;
-        operator-keys) flag=--operator-keys ;;
-        san-validation) flag=--san-validation ;;
-        inventory-cidr) flag=--sandbox-inventory-cidr ;;
+        default) cds_serve ;;
+        san-validation) cds_serve "--san-validation=$2" ;;
+        pins | operator-keys | inventory-cidr) return "$UNSUPPORTED" ;;
         *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
     esac
-    # A change applies on top of the running args, so two in one scenario
-    # compose; one that changes nothing needs no new pod.
-    if [ "$2" = none ]; then
-        args="$(cds_arg_set "$current" "$flag")"
-    elif [ -n "$flag" ]; then
-        args="$(cds_arg_set "$current" "$flag" "$2")"
-    fi
-    # The annotation travels with the patch: set while the args differ from
-    # the installed ones, gone once they are back.
-    if [ "$1" = default ]; then
-        annotation="{\"$CDS_ARGS_ANNOTATION\":null}"
-    else
-        annotation="$(jq -c --arg a "$CDS_ARGS_ANNOTATION" --arg v "$installed" '{($a): $v}' <<<'{}')"
-    fi
-    if [ "$(jq -c . <<<"$args")" = "$current" ]; then
-        [ "$1" != default ] || kubectl -n "$NS" patch deploy c8s-cds --type strategic \
-            -p "{\"metadata\":{\"annotations\":$annotation}}" >/dev/null
-        return 0
-    fi
-    pods="$(kubectl -n "$NS" get pods -l "$CDS_SELECTOR" -o jsonpath='{.items[*].metadata.uid}')"
-    cds_pf_stop
-    kubectl -n "$NS" patch deploy c8s-cds --type strategic \
-        -p "{\"metadata\":{\"annotations\":$annotation},\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"cds\",\"args\":$args}]}}}}" >/dev/null
-    if [ "$1" = default ]; then
-        kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
-    else
-        cds_await_running "$pods"
-    fi
+    cds_wait
 }
 
-# The args JSON with --<flag>= replaced by --<flag>=<value>, or removed when
-# no value is given.
-cds_arg_set() {
-    local flag="$2="
-    if [ $# -ge 3 ]; then
-        jq -c --arg p "$flag" --arg v "$flag$3" 'map(select(startswith($p) | not)) + [$v]' <<<"$1"
-    else
-        jq -c --arg p "$flag" 'map(select(startswith($p) | not))' <<<"$1"
-    fi
-}
-
-# Wait for the one CDS pod that is none of the given UIDs (the pods before
-# the change) to run and answer /healthz through the forward, then for the
-# Service to route to it: that takes its readiness probe, which runs some
-# seconds after the pod does. A CDS that reports itself not ready never
-# joins the Service, and is not waited for.
-cds_await_running() {
-    local deadline=$(($(date +%s) + 180)) pods uid phase
-    while :; do
-        pods="$(kubectl -n "$NS" get pods -l "$CDS_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.uid} {.status.phase}{"\n"}{end}')"
-        read -r uid phase <<<"$pods"
-        if [ "$(printf '%s\n' "$pods" | grep -c .)" -eq 1 ] && [[ " $1 " != *" $uid "* ]] && [ "$phase" = Running ]; then
-            cds_pf_start
-            break
-        fi
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the reconfigured CDS is not running: $pods" >&2; return 1; }
-        sleep 2
-    done
-    while [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT/readyz")" = 200 ]; do
-        [ -z "$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')" ] || return 0
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the Service does not route to the ready CDS" >&2; return 1; }
-        sleep 2
-    done
-}
-
-# The mock attestation-api is the local attestation service of every
-# component here, the CDS's readiness check included.
+# The CDS reads its attestation-api over loopback in CDS_ATTESTATION_CONTAINER's
+# network namespace (lib.sh, cds_serve: --network container, --attestation-api-url
+# http://127.0.0.1:8400); the cluster's kube-system mock serves the node-baked
+# api that the node's mesh members and the host plugin use, not the CDS. So the
+# scenario that takes the CDS's own attestation away pauses that container: the
+# process stops answering while the namespace and the CDS's network stay up, so
+# the CDS stays reachable and its background readiness probe (bounded per
+# interval) flips /readyz to 503. docker rm/stop would instead drop the shared
+# namespace and the CDS with it.
 attestation_service_stop() {
-    kubectl -n "$MOCK_ATTESTATION_NS" scale "deploy/$MOCK_ATTESTATION_NAME" --replicas=0 >/dev/null
-    kubectl -n "$MOCK_ATTESTATION_NS" wait --for=delete pod -l "app=$MOCK_ATTESTATION_NAME" --timeout=120s >/dev/null 2>&1 || true
+    docker pause "$CDS_ATTESTATION_CONTAINER" >/dev/null
 }
 
+# Unpause, then wait for the CDS to report ready again before returning, so the
+# next scenario does not inherit a 503. /readyz, not /healthz: readiness is what
+# the probe drives and what the scenario read.
 attestation_service_start() {
-    kubectl -n "$MOCK_ATTESTATION_NS" scale "deploy/$MOCK_ATTESTATION_NAME" --replicas=1 >/dev/null
-    kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=180s >/dev/null
+    docker unpause "$CDS_ATTESTATION_CONTAINER" >/dev/null
+    local deadline=$(($(date +%s) + 60))
+    until [ "$(curl -sk -o /dev/null -w '%{http_code}' "$(cds_url)/readyz")" = 200 ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS did not report ready 60s after its attestation returned" >&2; return 1; }
+        sleep 1
+    done
 }
 
 # PEM private keys outside CDS process memory: in the Secrets and ConfigMaps
 # of every namespace, and in the files of the node. The files are emitted
 # as they are, binary ones included, and the reader picks the PEM blocks
 # out of them. "Every file on the node" is the directories where
-# configuration, state and the CDS container's root filesystem and volumes
-# live, which a scan of the whole overlay would only add time to; /proc,
-# /sys and /dev are not files.
+# configuration and state live, which a scan of the whole overlay would only
+# add time to; /proc, /sys and /dev are not files. The CDS runs outside the
+# cluster, so its own filesystem is as out of reach here as a CDS VM's.
 private_keys() {
     kubectl get secrets,configmaps -A -o json |
         jq -r '.items[] | (.data // {})[] as $v | if .kind == "Secret" then ($v | @base64d) else $v end'
     # shellcheck disable=SC2016  # expands on the node
-    node_exec sh -c '
-        cds="$(crictl ps -q --name "^cds$" | head -1)"
-        [ -n "$cds" ] || { echo "backend: no cds container on the node" >&2; exit 1; }
-        grep -rla -e "PRIVATE KEY-----" "$@" "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$cds/rootfs" 2>/dev/null | xargs -r cat' _ \
+    node_exec sh -c 'grep -rla -e "PRIVATE KEY-----" "$@" 2>/dev/null | xargs -r cat' _ \
         /etc /run /root /opt /tmp /var/lib/kubelet
 }
 
 # One issuance from this host, with the CLI the harness built: the mock
-# admits it like any requester, and the CSR carries a DNS SAN the CDS's
-# Service pattern admits and no IP SAN (the source address the CDS sees is
-# the forward's).
+# admits it like any requester, the CDS is pinned by the document the cluster
+# trusts it under, and the CSR carries a DNS SAN the CDS's Service pattern
+# admits and no IP SAN (the source address the CDS sees is this host's).
 attest_direct() {
     local bin="$C8S_ROOT/build/c8s"
     [ -x "$bin" ] || make -C "$C8S_ROOT" build-c8s >&2 || return 1
     "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "$(mock_attestation_url)" \
-        --cds-measurements "$MOCK_MEASUREMENT" --san "requester.$NS.svc" 2>/dev/null
+        --image-policy-file "$WORKDIR/cds/cds-pin.json" --san "requester.$NS.svc" 2>/dev/null
 }
 
 # The mock issues a version-2 SNP report over any report data, with an
@@ -292,43 +228,63 @@ base_declares() {
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
-# The plugin pulls from https://127.0.0.1:<node port of the CDS Service>
-# (the chart's nriImagePolicy.allowlist.pull.url default), from the node's
-# own network namespace; every pod's get-cert dials the node's address from
-# its own. A reject rule on connections the node itself opens to that port on
-# loopback refuses each pull at once and leaves issuance, and so every pod's
-# start, alone. Matched on the original destination, since kube-proxy has
-# rewritten it by the filter table.
-CDS_BLOCK_RULE=(OUTPUT -p tcp -m conntrack --ctorigdst 127.0.0.1 --ctorigdstport PORT
-    -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset)
+# The plugin pulls from the CDS the install mounted on the node, out of the
+# node's own network namespace; every pod's get-cert dials that same address
+# from its own. A reject rule on the connections the node itself opens
+# refuses each pull at once and leaves issuance, and so every pod's start,
+# alone: a pod's packets are forwarded, never the node's own output.
 cds_block_rule() {
-    local port
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
-    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
-    echo "$port" "${CDS_BLOCK_RULE[@]/PORT/$port}"
+    echo OUTPUT -p tcp -d "$(cds_host)" --dport "$CDS_PORT" \
+        -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset
 }
 cds_block() {
-    local port rule
-    read -r port rule < <(cds_block_rule) || return
+    local rule
+    rule="$(cds_block_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule || return
     local deadline=$(($(date +%s) + 60))
-    until [ "$(node_refuses "$port")" = yes ]; do
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
+    until [ "$(node_refuses)" = yes ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $CDS_PORT after 60s" >&2; return 1; }
         sleep 1
     done
 }
 cds_unblock() {
-    local port rule
-    read -r port rule < <(cds_block_rule) || return
+    local rule
+    rule="$(cds_block_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
 }
 
-# A connect that fails or hangs is refused: a reset to a node-port connection
-# may never reach the socket, so the dial times out instead.
+# A connect that fails or hangs is refused: a reset may never reach the
+# socket, so the dial times out instead.
 node_refuses() {
-    if node_exec timeout 2 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; then echo no; else echo yes; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/$(cds_host)/$CDS_PORT" 2>/dev/null; then echo no; else echo yes; fi
+}
+
+# The same reject, on the router pod's packets alone: they are forwarded by
+# the node, so the relay loses the CDS while the plugin's pulls and every
+# other pod's issuance keep it. A rule left behind for a router pod that has
+# since been replaced names an address nothing holds.
+cds_relay_rule() {
+    local selector pod
+    selector="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json |
+        jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')" || return
+    pod="$(kubectl -n "$ROUTER_NS" get pods -l "$selector" -o jsonpath='{.items[*].status.podIP}')" || return
+    [ "$(wc -w <<<"$pod")" = 1 ] || { echo "backend: want one router pod address in $ROUTER_NS, got '$pod'" >&2; return 1; }
+    echo FORWARD -p tcp -s "$pod" -d "$(cds_host)" --dport "$CDS_PORT" \
+        -m comment --comment c8s-conformance-relay-block -j REJECT --reject-with tcp-reset
+}
+cds_relay_block() {
+    local rule
+    rule="$(cds_relay_rule)" || return
+    # shellcheck disable=SC2086  # the rule's words
+    node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule
+}
+cds_relay_unblock() {
+    local rule
+    rule="$(cds_relay_rule)" || return
+    # shellcheck disable=SC2086  # the rule's words
+    while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
 }
 
 # The pids running the plugin binary; the kind node image ships procps.
@@ -384,12 +340,11 @@ plugin_start() {
     return 1
 }
 
-# The CDS data volume is an emptyDir here (cds_volatile answers yes): the new
-# pod serves the seed at version 1. The port-forward followed the old pod.
+# The store does not outlive the container (cds_volatile answers yes): the new
+# one serves the configuration's entries at version 1.
 cds_restart() {
-    kubectl -n "$NS" rollout restart deploy/c8s-cds >/dev/null
-    kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
-    cds_pf_stop
+    cds_serve
+    cds_wait
 }
 
 # The number in the weak entity tag W/"<n>" of GET /allowlist.

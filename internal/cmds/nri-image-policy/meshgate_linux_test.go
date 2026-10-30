@@ -32,17 +32,14 @@ const (
 )
 
 // The pod ruleset comes from trusted policy alone: the mesh endpoint's
-// reserved UID owns the capture ports, and every other role carries only the
-// destinations its binding names.
+// reserved UID owns the capture ports, every other role carries only the port
+// its binding names, and the ranges that port stops at are this cluster's.
 func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
 		Name: testDialRole,
 		UID:  testDialUID,
-		Destinations: []netip.AddrPort{
-			netip.MustParseAddrPort("10.43.0.6:8443"),
-			netip.MustParseAddrPort("10.43.0.7:9443"),
-		},
+		Port: 9443,
 	})
 
 	want := ruleset.Policy{
@@ -52,30 +49,11 @@ func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 			Inbound:  15006,
 			Health:   15021,
 		},
-		MeshUID: testMeshUID,
+		MeshUID:       testMeshUID,
+		ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")},
 		Roles: []ruleset.Role{
-			{
-				UID: testCertUID,
-				Destinations: []ruleset.Destination{
-					{
-						Addr: netip.MustParseAddr("10.43.0.5"),
-						Port: 8443,
-					},
-				},
-			},
-			{
-				UID: testDialUID,
-				Destinations: []ruleset.Destination{
-					{
-						Addr: netip.MustParseAddr("10.43.0.6"),
-						Port: 8443,
-					},
-					{
-						Addr: netip.MustParseAddr("10.43.0.7"),
-						Port: 9443,
-					},
-				},
-			},
+			{UID: testCertUID, OutsidePort: 8443},
+			{UID: testDialUID, OutsidePort: 9443},
 		},
 	}
 	if got := policy.podRuleset("default", nil); !reflect.DeepEqual(got, want) {

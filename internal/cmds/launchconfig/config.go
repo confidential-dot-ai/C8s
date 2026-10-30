@@ -32,11 +32,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
-	SchemaVersion            = "c8s-launch/v1"
+	SchemaVersion            = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -156,17 +155,16 @@ type Document struct {
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
-	// PodOperatorPublicKey verifies pod documents; Server still pins CDS.
+	// PodOperatorPublicKey verifies Pod documents independently of the cluster server and external CDS.
 	PodOperatorPublicKey string `yaml:"podOperatorPublicKey,omitempty" json:"pod_operator_public_key,omitempty"`
 	TLSSAN               string `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
-	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
-	// its existing wire schema avoids an independent YAML policy language.
-	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+	// CDS is the confidential data service this cluster's nodes trust.
+	CDS CDS `yaml:"cds" json:"cds"`
 
-	// PodImagePolicy authorizes Pod workload issuance, separately from node
-	// peer trust. Only a signed server document may supply this JSON policy.
-	PodImagePolicy string `yaml:"podImagePolicy,omitempty" json:"pod_image_policy,omitempty"`
+	// Workloads is the Pod role's signed cold-boot base. Cluster node
+	// workload entries belong in the external CDS configuration.
+	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
 
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
@@ -327,6 +325,16 @@ type Node struct {
 	ExternalIP string `yaml:"externalIP,omitempty" json:"external_ip,omitempty"`
 }
 
+// AdvertiseAddress is the address RKE2 has kube-apiserver advertise for this
+// node: its external IP, else its node IP (k3s pkg/cli/server). It is empty
+// when the node has neither, and RKE2 then passes no --advertise-address.
+func (n Node) AdvertiseAddress() string {
+	if n.ExternalIP != "" {
+		return n.ExternalIP
+	}
+	return n.IP
+}
+
 type RKE2 struct {
 	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
 	AgentToken  string `yaml:"agentToken" json:"agent_token"`
@@ -368,7 +376,6 @@ type Verified struct {
 	document    Document
 	operatorPub []byte
 	pins        refvalues.ReferenceValues
-	cdsPins     refvalues.ReferenceValues
 }
 
 // Verify checks the signature before parsing host input and compares all image
@@ -443,8 +450,9 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 		return nil, err
 	}
 	return &Verified{
-		document: *doc, operatorPub: pub, pins: pins,
-		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]},
+		document:    *doc,
+		operatorPub: pub,
+		pins:        pins,
 	}, nil
 }
 
@@ -453,6 +461,12 @@ var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
+	}
+	if err := d.validateCDS(); err != nil {
+		return err
+	}
+	if d.Role != Pod && d.Workloads != "" {
+		return fmt.Errorf("workloads is not a node's to apply: give the cluster's tenant entries to `c8s launch-config new --tenant-workloads`, which writes them into the CDS configuration")
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
@@ -496,7 +510,7 @@ func (d *Document) validate() error {
 		}
 	}
 	if !rules.joinsCluster {
-		if d.RKE2.AgentToken != "" || d.RKE2.ServerToken != "" || d.serverTokenPresent {
+		if d.RKE2.AgentToken != "" || d.RKE2.ServerToken != "" || d.RKE2.NodePassword != "" || d.serverTokenPresent {
 			return fmt.Errorf("%s must not carry rke2 tokens", d.Role)
 		}
 	} else if !tokenRE.MatchString(d.RKE2.AgentToken) {
@@ -566,9 +580,6 @@ func (d *Document) validate() error {
 			}
 		}
 		seen = append(seen, key)
-	}
-	if err := d.validatePodImagePolicy(seen); err != nil {
-		return err
 	}
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
@@ -642,31 +653,6 @@ func portNumber(s string) bool {
 	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
 }
 
-func (d *Document) validatePodImagePolicy(nodeKeys []*ecdsa.PublicKey) error {
-	if d.PodImagePolicy == "" {
-		return nil
-	}
-	if d.Role != Server {
-		return fmt.Errorf("podImagePolicy is server-only")
-	}
-	pins, err := workloadclaims.ParsePodImagePolicy([]byte(d.PodImagePolicy))
-	if err != nil {
-		return fmt.Errorf("podImagePolicy: %w", err)
-	}
-	for _, pin := range pins.Images {
-		key, err := parseLaunchKey(string(pin.Anchor))
-		if err != nil {
-			return fmt.Errorf("podImagePolicy: %w", err)
-		}
-		for _, nodeKey := range nodeKeys {
-			if key.Equal(nodeKey) {
-				return fmt.Errorf("pod launch keys must differ from server and agent launch keys")
-			}
-		}
-	}
-	return nil
-}
-
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 	if d.rules().podKey == required {
 		if !bytes.Equal(pub, []byte(d.PodOperatorPublicKey)) {
@@ -721,7 +707,18 @@ func ValidateIPv4(raw string, routable bool) error {
 	if err != nil || !addr.Is4() {
 		return fmt.Errorf("must be an IPv4 address")
 	}
-	if routable && !addr.IsGlobalUnicast() {
+	if !routable {
+		return nil
+	}
+	return ValidateRoutableIPv4(addr)
+}
+
+// ValidateRoutableIPv4 accepts an IPv4 address a node can publish or dial.
+func ValidateRoutableIPv4(addr netip.Addr) error {
+	if !addr.Is4() {
+		return fmt.Errorf("must be an IPv4 address")
+	}
+	if !addr.IsGlobalUnicast() {
 		return fmt.Errorf("must be a unicast IPv4 address")
 	}
 	return nil
@@ -750,26 +747,40 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// referenceValues pins this document's image under every launch key it names.
 func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
-	platform, ok := d.Image.platform()
+	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
+	if d.PodOperatorPublicKey != "" {
+		keys = append(keys, d.PodOperatorPublicKey)
+	}
+	pins, err := peerPolicy(d.Image, keys)
+	if err == nil && d.PodOperatorPublicKey != "" {
+		pins.Images[len(pins.Images)-1].Name = "pod"
+	}
+	return pins, err
+}
+
+// peerPolicy pins image under every launch key a cluster admits: the server's
+// key first, every later key an agent's.
+func peerPolicy(image Image, launchKeys []string) (refvalues.ReferenceValues, error) {
+	platform, ok := image.platform()
 	if !ok {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	type identity struct{ name, publicKey string }
-	// The first pin is always the CDS server, independently of this boot's key.
-	keys := []identity{{"server", d.Server.OperatorPublicKey}}
-	for i, pub := range d.AgentOperatorPublicKeys {
-		keys = append(keys, identity{fmt.Sprintf("agent-%d", i+1), pub})
-	}
-	if d.PodOperatorPublicKey != "" {
-		keys = append(keys, identity{"pod", d.PodOperatorPublicKey})
-	}
-	for _, key := range keys {
-		entry := remote.ImagePin{Name: key.name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(key.publicKey)}
-		if len(d.Image.RTMRs) > 0 {
-			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
-			for idx, digest := range d.Image.RTMRs {
+	for i, pub := range launchKeys {
+		name := "server"
+		if i > 0 {
+			name = fmt.Sprintf("agent-%d", i)
+		}
+		entry := remote.ImagePin{
+			Name:   name,
+			Digest: mustDecodeHex(image.Measurement),
+			Anchor: []byte(pub),
+		}
+		if len(image.RTMRs) > 0 {
+			entry.Registers = make(map[int][]byte, len(image.RTMRs))
+			for idx, digest := range image.RTMRs {
 				entry.Registers[idx] = mustDecodeHex(digest)
 			}
 		}
@@ -781,25 +792,6 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, err
 	}
 	return refvalues.Parse(data)
-}
-
-// cdsPort is the image's fixed CDS node port.
-const cdsPort = 30808
-
-// CDSURL is derived from the signed server address and the image's fixed port.
-func (d *Document) CDSURL() string {
-	return "https://" + net.JoinHostPort(d.Server.Address, strconv.Itoa(cdsPort))
-}
-
-// CDSAddrPort is that same endpoint as an address and port, which is what a
-// pod ruleset names as a destination. A signed address that is not one fails
-// here rather than in the node's packet rules.
-func (d *Document) CDSAddrPort() (netip.AddrPort, error) {
-	addr, err := netip.ParseAddr(d.Server.Address)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("staged server address %q: %w", d.Server.Address, err)
-	}
-	return netip.AddrPortFrom(addr, cdsPort), nil
 }
 
 // LoadStaged reads a root-owned boot artifact produced by Stage. It is not an

@@ -124,8 +124,9 @@ func podBrokerPlugins(t *testing.T, base string) func() *plugin {
 	openPodCredentialRoot = func(source string) (*os.Root, error) { return openPodCredentialRootBeneath(base, source) }
 	runGuestCredentials = func(ctx context.Context, _ getcert.GuestConfig) error { <-ctx.Done(); return nil }
 	t.Cleanup(func() { openPodCredentialRoot, runGuestCredentials = oldOpen, oldRun })
+	cdsPins := testCDSPinFile(t)
 	return func() *plugin {
-		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
+		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPins}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
 		if err := p.preparePodBroker(t.Context(), &http.Client{}); err != nil {
 			t.Fatal(err)
 		}

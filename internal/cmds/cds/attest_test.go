@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
@@ -43,8 +44,11 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // testLaunchDigest is the launch measurement the stubbed attestation-api
-// reports.
-const testLaunchDigest = "deadbeef"
+// reports; otherLaunchDigest is a second, unrelated node image's.
+var (
+	testLaunchDigest  = strings.Repeat("de", refvalues.DigestSize)
+	otherLaunchDigest = strings.Repeat("ca", refvalues.DigestSize)
+)
 
 func newStubAttestationApi(t *testing.T, launchDigest string) *mockapi.Stub {
 	t.Helper()
@@ -72,13 +76,13 @@ func generateCSRWith(t *testing.T, subject pkix.Name, dnsNames []string, ips []n
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})), key
 }
 
-// newTestAttestHandler builds the /attest handler. A nil measurement set pins
+// newTestAttestHandler builds the /attest handler. A nil image set pins
 // testLaunchDigest, the digest the stubbed attestation-api reports, since
-// /attest admits only a pinned guest.
-func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[string]bool) AttestHandler {
+// /attest admits only a pinned node image.
+func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin) AttestHandler {
 	t.Helper()
-	if allowedMeasurements == nil {
-		allowedMeasurements = map[string]bool{testLaunchDigest: true}
+	if pinned == nil {
+		pinned = []remote.ImagePin{imagePin(t, "node", testLaunchDigest)}
 	}
 	mesh, err := issuer.NewMeshCA("test ca", 2*issuer.MaxLeafTTL)
 	if err != nil {
@@ -90,7 +94,17 @@ func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[
 		AttestationClient: remote.NewClient(stubURL),
 		MeshCA:            mesh,
 		CertTTL:           time.Hour,
-		Measurements:      allowedMeasurements,
+		Images:            pinned,
+	}
+}
+
+// imagePin pins one node image by its launch digest, the whole pin on a
+// platform whose launch measurement covers the guest.
+func imagePin(t *testing.T, name, digest string) remote.ImagePin {
+	t.Helper()
+	return remote.ImagePin{
+		Name:   name,
+		Digest: mustDecode(t, digest),
 	}
 }
 
@@ -213,9 +227,14 @@ func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistAllowed(t *testing.T) {
-	stub := newStubAttestationApi(t, "approved-digest")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"approved-digest": true})
+// A second pinned node image admits its own callers, which is what a
+// node-image rollout runs on.
+func TestAttest_AnyPinnedNodeImageIsAdmitted(t *testing.T) {
+	stub := newStubAttestationApi(t, otherLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), []remote.ImagePin{
+		imagePin(t, "node", testLaunchDigest),
+		imagePin(t, "node-next", otherLaunchDigest),
+	})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -225,32 +244,33 @@ func TestAttest_LaunchDigestAllowlistAllowed(t *testing.T) {
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistCaseInsensitive(t *testing.T) {
-	stub := newStubAttestationApi(t, "DEADBEEF")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testLaunchDigest: true})
+func TestAttest_LaunchDigestCaseInsensitive(t *testing.T) {
+	stub := newStubAttestationApi(t, strings.ToUpper(testLaunchDigest))
+	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
 	w := postAttest(t, h, challenge, csrPEM)
 	if w.Code != http.StatusOK {
-		t.Fatalf("uppercase digest with lowercase allowlist: got %d, want 200; body=%s", w.Code, w.Body.String())
+		t.Fatalf("uppercase digest against a lowercase pin: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistDenied(t *testing.T) {
-	stub := newStubAttestationApi(t, "unknown-digest")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"approved-digest": true})
+func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
+	stub := newStubAttestationApi(t, otherLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 }
 
-// An empty allowlist admits no caller: the flat path denies instead of issuing
+// A configuration pinning no node image admits nobody, rather than issuing
 // against whatever measurement attested.
-func TestAttest_EmptyLaunchDigestAllowlistDenied(t *testing.T) {
+func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{})
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.Images = nil
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -269,7 +289,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 					Platform:        "snp",
 					SignatureValid:  true,
 					ReportDataMatch: &match,
-					Claims:          teetypes.Claims{LaunchDigest: "deadbeef"},
+					Claims:          teetypes.Claims{LaunchDigest: testLaunchDigest},
 				},
 			}
 			var body bytes.Buffer
@@ -320,7 +340,7 @@ func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
 // requester whose evidence was refused cannot retry under the same challenge.
 func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
-	verdict := mockapi.PassingVerdict("deadbeef")
+	verdict := mockapi.PassingVerdict(testLaunchDigest)
 	match := false
 	verdict.ReportDataMatch = &match
 	stub.SetVerdict(verdict)
@@ -330,7 +350,7 @@ func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
 
-	stub.SetVerdict(mockapi.PassingVerdict("deadbeef"))
+	stub.SetVerdict(mockapi.PassingVerdict(testLaunchDigest))
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
@@ -381,7 +401,7 @@ func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
 // with a 422; the 401 pins CDS's own fail-closed gate.
 func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
-	verdict := mockapi.PassingVerdict("deadbeef")
+	verdict := mockapi.PassingVerdict(testLaunchDigest)
 	match := false
 	verdict.ReportDataMatch = &match
 	stub.SetVerdict(verdict)
@@ -887,9 +907,8 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 	if want := fmt.Sprintf("%X", chain[0].SerialNumber); !strings.Contains(logs, want) {
 		t.Errorf("issuance record omits the leaf serial %s: %s", want, logs)
 	}
-	// Names what attested for it. Logged even with pinning off, which is when
-	// it is the only record of what was admitted.
-	if !strings.Contains(logs, "deadbeef") {
+	// Names what attested for it.
+	if !strings.Contains(logs, testLaunchDigest) {
 		t.Errorf("issuance record omits the launch digest: %s", logs)
 	}
 	if !strings.Contains(logs, "launch_digest") || !strings.Contains(logs, "remote_addr") {
@@ -899,9 +918,9 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 
 // A denial and the issuance that follows it have to be correlatable, or a run
 // of probes against CDS cannot be tied to the leaf that eventually succeeded.
-func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
+func TestAttest_NodeImageDenialRecordsPeer(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"cafe": true})
+	h := newTestAttestHandler(t, stub.URL(), []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -912,7 +931,7 @@ func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 	logs := buf.String()
-	if !strings.Contains(logs, "measurement does not match any reference value") {
+	if !strings.Contains(logs, "node identity does not match policy") {
 		t.Fatalf("no denial record: %s", logs)
 	}
 	if !strings.Contains(logs, "remote_addr") {

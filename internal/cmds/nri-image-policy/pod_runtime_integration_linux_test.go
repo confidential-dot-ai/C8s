@@ -27,6 +27,7 @@ import (
 
 	imageverifier "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -380,9 +381,8 @@ func writeRuntimeWrapperPolicy(t *testing.T, fixture runtimeFixture) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Policy.Sandbox = SandboxEnforce
 	cfg.Allowlist.Pull.URL = "https://127.0.0.1:1/allowlist"
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/validation/pins.json"
-	cfg.Allowlist.Pull.CDSMeasurements = nil
-	cfg.Allowlist.Pull.CDSRTMRs = nil
+	// This independent fixture CDS binds its launch file, not a node anchor.
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = testutil.CDSPinFile(t)
 	cfg.Allowlist.Pull.MeasurePolicies = false
 	cfg.Measure.RTMR3 = true
 	cfg.Pod = &podConfig{UID: "signed-runtime-uid", Namespace: "validation", Name: "start-gate", Images: map[string]string{"app": fixture.Pin, workloadclaims.MeshContainerName: meshImageDigest}}
@@ -390,7 +390,6 @@ func writeRuntimeWrapperPolicy(t *testing.T, fixture runtimeFixture) {
 	cfg.Mesh.ExemptNamespaces = nil
 	cfg.Mesh.CredentialAttestationPort = 0
 	cfg.Mesh.Roles = []roleBinding{{Name: meshRole, UID: workloadclaims.MeshUID}}
-	cfg.WorkloadClaims.CDSNodePort = 0
 	cfg.WorkloadClaims.PublishNodeIP = false
 	data, err := yaml.Marshal(cfg)
 	if err != nil {

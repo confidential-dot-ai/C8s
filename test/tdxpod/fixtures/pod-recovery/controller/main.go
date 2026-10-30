@@ -68,9 +68,8 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	doc, err := launchconfig.LoadStaged(launchconfig.DefaultStagedPath)
-	if err != nil || doc.Role != launchconfig.Pod || doc.Pod != nil {
-		return errors.New("generic Pod launch required")
+	if err := requireBaselineLaunch(launchconfig.DefaultStagedPath); err != nil {
+		return err
 	}
 	if _, err := credrelease.LoadMeasuredOperatorKey(ctx, attester, armtls.NodeJournal); err != nil {
 		return err

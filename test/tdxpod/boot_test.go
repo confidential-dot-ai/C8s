@@ -259,3 +259,53 @@ func TestProvisionImportsTheResolvedImage(t *testing.T) {
 		t.Fatalf("ledger: %+v", entries)
 	}
 }
+
+func TestDiagnosticRejectsExternalCDSSourceBeforeRegistryOrResources(t *testing.T) {
+	source := strings.Repeat("a", 40)
+	t.Setenv("POD_DIAGNOSTIC_SOURCE", source)
+	for _, tc := range []struct{ name, version, help, want string }{
+		{"legacy", "vcs.revision=" + source + "\nvcs.modified=false\n", "--server-public-key --pod-manifest", ""},
+		{"v2", "vcs.revision=" + source + "\nvcs.modified=false\n", "--server-public-key --pod-manifest --cds-address --cds-image-policy-file", "launch/v2 is unsupported"},
+		{"dirty", "vcs.revision=" + source + "\nvcs.modified=true\n", "", "clean diagnostic source"},
+		{"different source", "vcs.revision=" + strings.Repeat("b", 40) + "\nvcs.modified=false\n", "", "clean diagnostic source"},
+		{"unknown CLI", "vcs.revision=" + source + "\nvcs.modified=false\n", "unknown", "unsupported diagnostic launch CLI"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newBootTask(t)
+			paths := fakeRegistry(t)
+			calls := 0
+			execute = func(argv, _ []string, _ []byte, _ time.Duration) (processResult, error) {
+				calls++
+				if calls == 1 && len(argv) == 4 && argv[0] == "go" && argv[1] == "version" && argv[2] == "-m" {
+					return processResult{stdout: []byte(tc.version)}, nil
+				}
+				if calls == 2 && strings.Join(argv[1:], " ") == "node launch-config new-pod --help" {
+					return processResult{stdout: []byte(tc.help)}, nil
+				}
+				t.Fatalf("unexpected command before diagnostic compatibility: %v", argv)
+				return processResult{}, nil
+			}
+			t.Cleanup(func() { execute = runProcess })
+			var err error
+			if tc.want == "" {
+				err = requireLegacyDiagnosticCLI(filepath.Join(d.private, "c8s"), source)
+			} else {
+				err = d.prepare()
+			}
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				wantError(t, err, tc.want)
+			}
+			entries, readErr := d.resources()
+			if readErr != nil || len(entries) != 0 || len(*paths) != 0 {
+				t.Fatal("unsupported source touched registry or resources")
+			}
+			if exists(filepath.Join(d.private, "server")) || exists(filepath.Join(d.private, "bundle")) {
+				t.Fatal("unsupported source signed launch data")
+			}
+		})
+	}
+}

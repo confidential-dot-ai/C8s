@@ -41,7 +41,7 @@ func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
 	doc := launchconfig.Document{
 		SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image,
 		Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub},
-		PodOperatorPublicKey: c.pub, Workloads: c.workloads,
+		PodOperatorPublicKey: c.pub, Workloads: c.workloads, CDS: c.cds,
 		Pod: &launchconfig.PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: c.MeshPeers},
 	}
 	data, sig, err := launchconfig.SignDocument(doc, c.key)
@@ -67,7 +67,7 @@ func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
 		Image: c.Image, Size: c.Size, Location: c.Location, Tee: tee, Name: name, Count: 1,
 		Labels:  map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")},
 		Network: networkSpec{PublicIP: c.PublicIP, Ingress: rules}, Readiness: readinessSpec{TCPPorts: []int{}},
-		Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: "c8s-launch/v1", Document: data, Signature: []byte(sig)}},
+		Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: launchconfig.SchemaVersion, Document: data, Signature: []byte(sig)}},
 	}, nil
 }
 

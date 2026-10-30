@@ -1,7 +1,11 @@
 {
   "rke2Version": "v1.36.4+rke2r1",
+  "guestAirgapBundlesAMD64": {
+    "core": "8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86",
+    "cilium": "6c76903f258b12bc0f322bcb029247ee49544b925170d320409401beeecd41bd"
+  },
   "registryIndex": "sha256:411f197f1085472909c6e5f7434b64f1bf78ac3f8b82fac5a4d86d7a0a831cd9",
-  "airgapFloorDigest": "sha256:7956a28b1ebd803f58341ba88fed4c8bc878ec13226c2e55959ba5a88c21341e",
+  "historicalRuntimeAirgapDigest": "sha256:7956a28b1ebd803f58341ba88fed4c8bc878ec13226c2e55959ba5a88c21341e",
   "platforms": {
     "amd64": "sha256:b259e466c7539f3b10209da1725c2176352a5cbb7adec9e3dafd9959585d4940",
     "arm64": "sha256:968092e31c40396932080ba74e9470bd1e6e57fe7e9b3bc94d46f912e466adb1"

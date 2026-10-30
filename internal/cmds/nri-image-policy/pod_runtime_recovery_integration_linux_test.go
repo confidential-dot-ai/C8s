@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -31,10 +30,12 @@ import (
 	cri "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -68,16 +69,7 @@ func TestPodRuntimeRecoveryIntegration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(recoveryRuntimeDir, "register"), seed[:], 0600); err != nil {
 		t.Fatal(err)
 	}
-	served := canonicalBody(t, anyAllowlist(map[string]string{}))
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `W/"1"`)
-		_, _ = w.Write(served)
-	}))
-	defer cds.Close()
-	if err := os.WriteFile(filepath.Join(recoveryRuntimeDir, "fixture-cds-url"), []byte(cds.URL), 0600); err != nil {
-		t.Fatal(err)
-	}
+	configureRecoveryCDS(t, cfg)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +310,26 @@ func recoveryRuntimeConfig(t *testing.T, app, mesh runtimeFixture) *config {
 	return &cfg
 }
 
+// configureRecoveryCDS keeps the allowlist service and attestation verdict
+// under the driver while exercising the production armTLS client in each child.
+// The fixture pin and verdict bind the same independent CDS launch file.
+func configureRecoveryCDS(t *testing.T, cfg *config) {
+	t.Helper()
+	served := canonicalBody(t, anyAllowlist(map[string]string{}))
+	cds := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `W/"1"`)
+		_, _ = w.Write(served)
+	}))
+	verifier := mockapi.New(t)
+	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
+	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	verdict.Claims.InitData = binding[:]
+	verifier.SetVerdict(verdict)
+	cfg.Allowlist.Pull.URL = cds.URL
+	cfg.Allowlist.Pull.AttestationApiURL = verifier.URL()
+}
+
 func recoveryCRIContainer(name, argument string, fixture runtimeFixture, uid int64) *cri.ContainerConfig {
 	return &cri.ContainerConfig{Metadata: &cri.ContainerMetadata{Name: name}, Image: &cri.ImageSpec{Image: fixture.Reference}, Command: []string{"/marker-workload", argument}, Linux: &cri.LinuxContainerConfig{SecurityContext: &cri.LinuxContainerSecurityContext{RunAsUser: &cri.Int64Value{Value: uid}, RunAsGroup: &cri.Int64Value{Value: uid}, NoNewPrivs: true, Capabilities: &cri.Capability{DropCapabilities: []string{"ALL"}}, NamespaceOptions: &cri.NamespaceOption{Pid: cri.NamespaceMode_CONTAINER}, MaskedPaths: []string{"/proc/acpi", "/proc/asound", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats", "/proc/sched_debug", "/sys/firmware"}, ReadonlyPaths: []string{"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}, Seccomp: &cri.SecurityProfile{ProfileType: cri.SecurityProfile_RuntimeDefault}}}}
 }
@@ -506,14 +518,12 @@ func TestPodRuntimeRecoveryPluginProcess(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(recoveryRuntimeDir, "register")); err != nil {
 		t.Fatal("plugin helper may run only inside the recovery driver")
 	}
-	data := readRecoveryFile(t, DefaultConfigPath)
-	var cfg config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Load the same HTTPS configuration as the wrapper, including its CDS
+	// address and launch-bound pin; only the fixture attestation API is local.
+	cfg, err := loadConfig(DefaultConfigPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Only the test transport differs from the validated measured policy.
-	// The production wrapper keeps reading its unchanged HTTPS configuration.
-	cfg.Allowlist.Pull.URL = string(readRecoveryFile(t, filepath.Join(recoveryRuntimeDir, "fixture-cds-url")))
 	readOperatorKey = func() ([]byte, error) { return []byte("runtime recovery launch key fixture"), nil }
 	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) {
 		return &recoveryFileRegister{path: filepath.Join(recoveryRuntimeDir, "register")}, nil
@@ -549,7 +559,7 @@ func TestPodRuntimeRecoveryPluginProcess(t *testing.T) {
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	if err := runConfigured(ctx, &cfg, discardLogger(), healthServerConfig{readTimeout: time.Second, writeTimeout: time.Second}); err != nil {
+	if err := runConfigured(ctx, cfg, discardLogger(), healthServerConfig{readTimeout: time.Second, writeTimeout: time.Second}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -24,6 +24,9 @@ raise SystemExit(result.returncode)
 PY
 }
 
+# Refuse source/pin drift before any Docker calls or owned resources.
+bounded 30 python3 "$SCRIPT_DIR/test_fixtures.py"
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/c8s-pod-runtime.XXXXXXXX")
 stage="$work/stage"
 mkdir -p "$stage/runtime" "$stage/cni" "$stage/artifacts"

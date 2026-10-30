@@ -23,7 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -50,6 +52,8 @@ type Config struct {
 	LaunchKeyFile              string   `json:"launchKeyFile"`
 	ServerAddress              string   `json:"serverAddress"`
 	ServerPublicKeyFile        string   `json:"serverPublicKeyFile"`
+	CDSAddress                 string   `json:"cdsAddress"`
+	CDSImagePolicyFile         string   `json:"cdsImagePolicyFile"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -70,6 +74,7 @@ type Config struct {
 	manifest  []byte
 	workloads string
 	image     launchconfig.Image
+	cds       launchconfig.CDS
 }
 
 // LoadConfig strictly loads trusted configuration and verifies that its launch
@@ -86,9 +91,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	for _, p := range []*string{&cfg.CloudTokenFile, &cfg.ImageManifestFile, &cfg.LaunchKeyFile, &cfg.ServerPublicKeyFile, &cfg.WorkloadsFile} {
+	for _, p := range []*string{&cfg.CloudTokenFile, &cfg.ImageManifestFile, &cfg.LaunchKeyFile, &cfg.ServerPublicKeyFile, &cfg.CDSImagePolicyFile, &cfg.WorkloadsFile} {
 		if *p == "" {
-			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, server public key and workloads files")
+			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, server public key, CDS image policy and workloads files")
 		}
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
@@ -147,7 +152,11 @@ func (c *Config) validate() error {
 	if c.WarmTarget < 0 || c.WarmTarget > c.MaxPods {
 		return errors.New("warmTarget must be between zero and maxPods")
 	}
-	return launchconfig.ValidateIPv4(c.ServerAddress, true)
+	if err := launchconfig.ValidateIPv4(c.ServerAddress, true); err != nil {
+		return err
+	}
+	_, err = (&launchconfig.Document{CDS: launchconfig.CDS{Address: c.CDSAddress}}).CDSPort()
+	return err
 }
 
 func (c *Config) loadTrust() error {
@@ -177,6 +186,18 @@ func (c *Config) loadTrust() error {
 		return err
 	}
 	c.serverPub = string(server)
+	cdsPolicy, err := readFile(c.CDSImagePolicyFile)
+	if err != nil {
+		return err
+	}
+	pins, err := refvalues.Parse(cdsPolicy)
+	if err != nil {
+		return fmt.Errorf("CDS image policy: %w", err)
+	}
+	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
+		return fmt.Errorf("CDS image policy: %w", err)
+	}
+	c.cds = launchconfig.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err

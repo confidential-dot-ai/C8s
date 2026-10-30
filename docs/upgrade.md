@@ -1,12 +1,13 @@
 # Upgrade a cluster
 
-Move a chart-installed C8s cluster to a new release. Every node admits C8s's own
-components by image digest, and a chart-installed CDS — the pod that serves the
-allowlist — reads its CDS seed, the allowlist document it starts from, only at
-start. So the new release's entries reach the nodes only if you publish them
-through the running CDS first, which is why the steps are ordered this way. A
-measured node image's CDS follows a seed file instead
-([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
+Move a chart-installed C8s cluster to a new release.
+
+Every node admits C8s's own components by image digest, and a cluster's CDS —
+the VM outside the cluster that serves the allowlist — reads the workload
+entries its measured configuration carries only at start. So the new release's
+entries reach the nodes only if you publish them through the running CDS first,
+which is why the steps are ordered this way
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
 ## Prerequisites
 
@@ -29,16 +30,14 @@ not the ones its pods need — the same flags and `-f` file, plus the `--distro`
 `c8s install` detects for itself:
 
 ```sh
-CDS=https://<CDS_NODE>:30808    # any node address; CDS is on NodePort 30808
-M=<LAUNCH_MEASUREMENT>          # the digest of what CDS's CVM booted
+CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
 c8s render-values --cvm-mode=<CVM_MODE> --hardware-platform=<HW_PLATFORM> \
-  --distro <DISTRO> --measurements "$M" --operator-keys c8s-operator-pub.pem \
-  > computed.yaml
+  --distro <DISTRO> --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
+  --operator-keys c8s-operator-pub.pem > computed.yaml
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
 helm template c8s ./c8s --namespace c8s-system -f values.yaml -f computed.yaml \
-  --show-only templates/cds.yaml > cds.yaml
-yq '. | select(.metadata.name == "c8s-cds-allowlist-seed") |
-  .data["allowlist-seed.json"]' cds.yaml > seed.json
+  --show-only templates/allowlist-seed.yaml |
+  yq '.data["allowlist-seed.json"]' > seed.json
 c8s allowlist lint seed.json
 ```
 
@@ -65,7 +64,7 @@ node shell, `kubectl -n c8s-system logs -l app=c8s-nri-image-policy -c install
 ## 3. Publish the CDS seed
 
 ```sh
-c8s allowlist apply seed.json --url "$CDS" --measurements "$M" \
+c8s allowlist apply seed.json --url "$CDS" --image-policy-file cds-pin.json \
   --operator-key c8s-operator.key
 ```
 
@@ -77,7 +76,7 @@ written.
 ## 4. Check CDS's version, and raise it if a node is ahead
 
 ```sh
-c8s allowlist list --url "$CDS" --measurements "$M"
+c8s allowlist list --url "$CDS" --image-policy-file cds-pin.json
 ```
 
 ```text
@@ -107,19 +106,3 @@ release is ready; confirm the router namespace too, with
 Install refuses when the resolved policy would deny a platform pod the cluster
 already runs, before touching anything; `--force` overrides. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
-
-## 6. Recover from the CDS shape guard
-
-An upgrade that changes CDS's own image, command line, or mounts fails before it
-touches the cluster:
-
-```text
-this upgrade changes the CDS image, command line or mounts, and the running
-enforcers do not admit the new CDS yet. To proceed, publish entry <ENTRY> ...
-then rerun with --set cds.publishedShape=<SHAPE> ...
-```
-
-CDS is recreated rather than rolled, so the old pod stops before the new one
-starts and cannot publish its own shape. `<ENTRY>` is the seed entry step 3
-published; pass `--set cds.publishedShape=<SHAPE>` to `helm`, or set
-`cds.publishedShape` in a values file for `c8s install -f`.

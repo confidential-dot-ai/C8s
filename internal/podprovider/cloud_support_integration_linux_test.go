@@ -117,6 +117,21 @@ type cloudRun struct {
 var cloudHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var cloudVersion = regexp.MustCompile(`^c8s-pod@[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$`)
 
+// cloudLaunchCompatibility gates only new live runs. The historical ledger
+// and its original runner remain the authority for cleanup after a source upgrade.
+func cloudLaunchCompatibility(mode, schema string) error {
+	if mode == "cleanup" {
+		return nil
+	}
+	if mode != "run" {
+		return errors.New("run|cleanup mode required")
+	}
+	if schema != "c8s-launch/v1" {
+		return errors.New("Cloud acceptance requires c8s-launch/v1; v2 needs Cloud API/operator support and separately admitted Pod/CDS images; retained v1 cleanup remains available")
+	}
+	return nil
+}
+
 func cloudHash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
 func cloudPrivateRead(path string, limit int64) ([]byte, error) {

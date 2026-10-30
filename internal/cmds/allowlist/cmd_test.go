@@ -164,14 +164,14 @@ func TestMissingComponents(t *testing.T) {
 		t.Fatalf("expected no missing components, got %v", got)
 	}
 
-	partial := map[string]string{digA: "registry/c8s/cds@" + digA}
+	partial := map[string]string{digA: "registry/c8s/armtls-mesh@" + digA}
 	got := missingComponents(partial, defaultRequiredComponents)
 	if len(got) != len(defaultRequiredComponents)-1 {
-		t.Fatalf("expected all but cds missing, got %v", got)
+		t.Fatalf("expected all but armtls-mesh missing, got %v", got)
 	}
 	for _, c := range got {
-		if c == "cds" {
-			t.Fatal("cds should not be reported missing")
+		if c == "armtls-mesh" {
+			t.Fatal("armtls-mesh should not be reported missing")
 		}
 	}
 }
@@ -357,9 +357,9 @@ func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("pinned builds", func(t *testing.T) {
+	t.Run("pinned by the CDS document", func(t *testing.T) {
 		o := base
-		o.Measurements = []string{strings.Repeat("ab", 48)}
+		o.MeasurementsConfig = testutil.CDSPinFile(t)
 		if _, err := o.client(context.Background()); err != nil {
 			t.Fatalf("client: %v", err)
 		}
@@ -444,7 +444,7 @@ allowlist").`
 
 	wantFlags := map[string]string{
 		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; an https --url requires a pin",
+		"measurements": "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)

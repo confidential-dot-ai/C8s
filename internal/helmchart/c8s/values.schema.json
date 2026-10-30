@@ -17,140 +17,11 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "allowlistDB": {},
-        "ca": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "certValidity": {},
-            "commonName": {},
-            "minValidity": {}
-          }
-        },
-        "certTTL": {},
-        "challengeTTL": {},
-        "cnPattern": {},
-        "dnsSanPatterns": {},
-        "image": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "digest": {},
-            "pullPolicy": {},
-            "repository": {},
-            "tag": {}
-          }
-        },
-        "jwtClockSkew": {},
-        "logLevel": {},
-        "maxRequestSize": {},
-        "measurements": {},
+        "address": { "type": "string" },
         "measurementsConfig": {
           "type": "string"
         },
-        "podImagePolicy": {
-          "type": "string"
-        },
-        "namedCertTTL": {},
-        "publishedShape": {
-          "type": "string"
-        },
-        "node": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "selector": {},
-            "tolerations": {}
-          }
-        },
-        "operatorKeys": {},
-        "persistence": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {},
-            "memorySizeLimit": {
-              "$comment": "A positive Kubernetes resource quantity: a number with a binary or decimal SI suffix or a decimal exponent, not zero.",
-              "type": [
-                "string",
-                "number"
-              ],
-              "pattern": "^\\+?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$",
-              "not": {
-                "type": "string",
-                "pattern": "^\\+?0*(\\.0*)?([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$"
-              },
-              "exclusiveMinimum": 0
-            },
-            "size": {},
-            "storageClassName": {}
-          }
-        },
-        "podDisruptionBudget": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {},
-            "maxUnavailable": {}
-          }
-        },
-        "port": {},
-        "rateBurst": {},
-        "rateLimit": {},
-        "rateLimiterEvictInterval": {},
-        "rateLimiterIdleTimeout": {},
-        "rateLimiterMaxEntries": {},
-        "armtlsCertTTL": {},
-        "armtlsPlatform": {},
-        "readinessInterval": {},
-        "requestTimeout": {},
-        "resources": {},
-        "sanValidation": {},
-        "rtmrs": {},
-        "sandboxInventoryCIDRs": {},
-        "secretsMaxPaths": {},
-        "secretsMaxPathsPerWorkload": {},
-        "secretsMaxValueBytes": {},
-        "service": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "nodePort": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 30000,
-              "maximum": 32767
-            },
-            "type": {
-              "enum": [
-                "NodePort",
-                "ClusterIP",
-                "LoadBalancer",
-                null
-              ]
-            }
-          }
-        }
+        "operatorKeys": {}
       }
     },
     "nriImagePolicy": {
@@ -161,6 +32,7 @@
       "additionalProperties": false,
       "properties": {
         "baked": {},
+        "platform": {},
         "mesh": {
           "type": "object",
           "additionalProperties": false,
@@ -178,16 +50,6 @@
           "properties": {
             "deriveComponents": {},
             "workloads": {}
-          }
-        },
-        "cds": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "url": {}
           }
         },
         "containerd": {

@@ -34,6 +34,7 @@ func TestWarmCorruptSlotNeverGrantsCloudAuthority(t *testing.T) {
 		{"unclaimed-assignment", func(p *poolRecord, _ *corev1.Secret) { p.Assignment = []byte("unexpected") }},
 		{"incomplete-assignment", func(p *poolRecord, _ *corev1.Secret) { p.Claim = &poolClaim{}; p.ServingKey = []byte("unpaired") }},
 		{"invalid-claim", func(p *poolRecord, _ *corev1.Secret) { p.Claim = &poolClaim{PodUID: "foreign"} }},
+		{"legacy-launch-format", func(p *poolRecord, _ *corev1.Secret) { p.Request.Trust.InitData.Format = "c8s-launch/v1" }},
 		{"tampered-launch-signature", func(p *poolRecord, _ *corev1.Secret) {
 			p.Request.Trust.InitData.Document = append(p.Request.Trust.InitData.Document, ' ')
 		}},

@@ -38,7 +38,7 @@ func signedDocument(trust trustSpec) (*launchconfig.Document, error) {
 }
 
 func (c *Config) genericLaunch(name string) (createRequest, error) {
-	doc := launchconfig.Document{SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image, Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub}, PodOperatorPublicKey: c.pub}
+	doc := launchconfig.Document{SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image, Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub}, PodOperatorPublicKey: c.pub, CDS: c.cds}
 	data, sig, err := launchconfig.SignDocument(doc, c.key)
 	if err != nil {
 		return createRequest{}, err

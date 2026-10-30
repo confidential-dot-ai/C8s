@@ -31,9 +31,9 @@ server_name by router-configmap.yaml. Fails if san is set but not a list.
 {{- end -}}
 
 {{/*
-The single identity baked into the CDS-issued mesh cert (get-cert) and validated
-by cds.dnsSanPatterns: the first entry of router.sanList. Extra san entries
-widen only nginx server_name, not the mesh cert.
+The single identity baked into the CDS-issued mesh cert (get-cert), which the
+CDS's own leaf DNS rules must admit: the first entry of router.sanList. Extra
+san entries widen only nginx server_name, not the mesh cert.
 */}}
 {{- define "router.san" -}}
 {{- first (include "router.sanList" . | fromJsonArray) -}}
@@ -91,7 +91,9 @@ location{{ if .exact }} ={{ end }} {{ .path }} {
     {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
     {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
     {{- end }}
-    keepalive_timeout 0;
+    # Holds no attest-lb binding: the connection stays open only while it is
+    # younger than keepalive_time (see the discovery location).
+    keepalive_time 1m;
     # These run before nginx collapses callers onto the loopback proxy source.
     # Each zone's map key is empty for the methods it does not cover, so
     # mutations count per client and in aggregate, reads per client only.
@@ -541,7 +543,7 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
        manifest). cds-attest prefers the launch configuration whenever it
        finds it. */ -}}
-{{- if $root.Values.node.baked -}}
+{{- if not (include "c8s.cdsFromValues" $root) -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
@@ -771,27 +773,15 @@ refuses one that is not already normalized.
 {{- end -}}
 
 {{/*
-The CDS measurement pins a router sidecar verifies the chart-managed CDS
-against, as a JSON list of container args: the node's signed policy on a baked node, else
-cds.measurementsConfig, else cds.measurements and cds.rtmrs. Shared by
-allowlist-proxy and cds-attest, so the relay and the route manifest poller
-trust the same CDS.
+The pin a router sidecar verifies this cluster's CDS against, as a JSON list of
+container args: the node's signed policy on a baked node, else the mounted
+cds.measurementsConfig. Shared by allowlist-proxy and cds-attest, so the relay
+and the route manifest poller trust the same CDS.
 */}}
 {{- define "router.cdsPinArgs" -}}
-{{- $args := list -}}
-{{- if .Values.node.baked -}}
-{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
-{{- else if .Values.cds.measurementsConfig -}}
-{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- else -}}
-{{- with .Values.cds.measurements -}}
-{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
-{{- end -}}
-{{- with .Values.cds.rtmrs -}}
-{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
-{{- end -}}
-{{- end -}}
-{{- $args | toJson -}}
+{{- $pin := "/run/c8s-node/cds.json" -}}
+{{- if include "c8s.cdsFromValues" . -}}{{- $pin = "/mnt/c8s-data/measurements/cds.json" -}}{{- end -}}
+{{- list (printf "--image-policy-file=%s" $pin) | toJson -}}
 {{- end -}}
 
 {{/*

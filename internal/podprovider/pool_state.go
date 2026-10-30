@@ -293,7 +293,7 @@ func (r *Reconciler) compatiblePool(p *poolRecord) bool {
 	if err != nil {
 		return false
 	}
-	return p.Request.Image == r.cfg.Image && p.Request.Size == r.cfg.Size && p.Request.Location == r.cfg.Location && p.VCPUs == r.cfg.VCPUs && p.MemoryMiB == r.cfg.MemoryMiB && p.Request.Network.PublicIP == r.cfg.PublicIP && p.Request.Trust.LaunchKey == r.cfg.pub && reflect.DeepEqual(p.Manifest, r.cfg.manifest) && doc.ClusterID == r.cfg.ClusterID && doc.Server.Address == r.cfg.ServerAddress && doc.Server.OperatorPublicKey == r.cfg.serverPub
+	return p.Request.Image == r.cfg.Image && p.Request.Size == r.cfg.Size && p.Request.Location == r.cfg.Location && p.VCPUs == r.cfg.VCPUs && p.MemoryMiB == r.cfg.MemoryMiB && p.Request.Network.PublicIP == r.cfg.PublicIP && p.Request.Trust.LaunchKey == r.cfg.pub && reflect.DeepEqual(p.Manifest, r.cfg.manifest) && doc.ClusterID == r.cfg.ClusterID && doc.Server.Address == r.cfg.ServerAddress && doc.Server.OperatorPublicKey == r.cfg.serverPub && doc.CDS == r.cfg.cds
 }
 
 // instanceRecord is a read-only adapter for existing endpoint and Cloud shape
@@ -311,7 +311,7 @@ func (r *Reconciler) checkPoolBinding(rec *record, p *poolRecord) error {
 	if err != nil {
 		return err
 	}
-	if desired.ClusterID != actual.ClusterID || !reflect.DeepEqual(desired.Image, actual.Image) || !reflect.DeepEqual(desired.Server, actual.Server) || desired.PodOperatorPublicKey != actual.PodOperatorPublicKey || rec.Request.Image != p.Request.Image || rec.Request.Size != p.Request.Size || rec.Request.Location != p.Request.Location || rec.Request.Network.PublicIP != p.Request.Network.PublicIP || rec.VCPUs != p.VCPUs || rec.MemoryMiB != p.MemoryMiB || !reflect.DeepEqual(rec.Manifest, p.Manifest) {
+	if desired.ClusterID != actual.ClusterID || !reflect.DeepEqual(desired.Image, actual.Image) || !reflect.DeepEqual(desired.Server, actual.Server) || desired.CDS != actual.CDS || desired.PodOperatorPublicKey != actual.PodOperatorPublicKey || rec.Request.Image != p.Request.Image || rec.Request.Size != p.Request.Size || rec.Request.Location != p.Request.Location || rec.Request.Network.PublicIP != p.Request.Network.PublicIP || rec.VCPUs != p.VCPUs || rec.MemoryMiB != p.MemoryMiB || !reflect.DeepEqual(rec.Manifest, p.Manifest) {
 		return errors.New("allocation trust or capacity differs from the frozen Pod")
 	}
 	if len(rec.Name)+1+len(actual.Node.Name) > 253 {

@@ -76,9 +76,9 @@ at its root:
   `/etc/confai/operator-pubkey`, and binds them into TDX RTMR[3]. An SNP
   launcher must set HOST_DATA to the SHA-256 of
   those same bytes.
-- `launch.yaml`: the strict `c8s-launch/v1` document selecting `server` or
+- `launch.yaml`: the strict `c8s-launch/v2` document selecting `server` or
   `agent`, the image measurements, cluster/node identity, join tokens,
-  trusted role keys and TLS SAN.
+  trusted role keys, TLS SAN and the CDS this cluster's clients trust.
 - `launch.yaml.sig`: the detached signature over those exact bytes.
 
 `c8s node launch-config new` writes all three for a server and its agents,
@@ -142,29 +142,49 @@ application services:
 | NRI image admission | Required containerd plugin | Every node, before pods |
 | RKE2 | systemd service | Authenticated server or agent role |
 | armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
-| CDS | Singleton Deployment | Server |
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
 | Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
 | Attested operator credential release | systemd service | Server |
+| Stale Cilium node address restart (`cilium-node-ip.service`) | systemd service | Every node |
 
 `rke2-role.service` verifies and stages launch settings before either RKE2
 role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 credential clients on server and agent nodes access its Unix socket in the
-admission-inventory directory. The [pod launch role](../docs/operator.md#authenticated-launch-configuration)
+admission-inventory directory. The [Pod launch role](../docs/operator.md#pod-cvm)
 keeps that directory inside the guest and supplies no node credential-client
-mounts or sandbox-token service to pod containers. CDS uses
-its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
+mounts or sandbox-token service to Pod containers. Every CDS client dials the
+address and verifies the CDS policy in its signed launch file; agents join RKE2 at
 `9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
 UDP `8473` between nodes in any firewall or security group.
 
+A node may get a new address on every boot (KubeVirt pod networking, DHCP).
+RKE2 registers the current one (`node-ip` from the launch staging, published
+to `/run/nri-image-policy/node-ip` by `nri-node-ip.service`), but the Node
+object keeps the previous address until the kubelet's first status update.
+Cilium reads its node IP from the Node object once, when the agent starts,
+and announces it to the other nodes as this node's tunnel endpoint. An agent
+that starts first keeps the old address, and the node's pods stay unreachable
+(`listen tcp <old-ip>:4240: bind: cannot assign requested address`).
+`cilium-node-ip.service` (`c8s node-services cilium-node-ip`) polls the
+address the agent announces for this node (its local API,
+`/run/cilium/cilium.sock`). If that address is neither the published node
+address nor assigned to any local interface, it logs both addresses and sends
+SIGTERM to the agent: the `cilium-agent` process in a kubelet pod cgroup that
+holds the API socket. The kubelet restarts the container, and the new agent
+reads the updated Node. Without a published node address it does nothing, and
+it pauses between consecutive restarts of the same agent.
+
 `c8s/mkosi.sync` resolves the c8s binary and core image digests from `C8S_REF`,
 then runs `c8s node-image render` with the checksum-pinned build-time Helm
 binary and baked RKE2 Kubernetes version. The complete chart renders once
 into `/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml`, including
-CDS, router, mesh, operator, CRDs, RBAC, webhook and admission policies.
+router, mesh, operator, CRDs, RBAC, webhook and admission policies. The CDS
+those components trust runs on a confidential VM of its own, which
+`c8s launch-config new` writes the configuration and the pin for, so the image
+neither renders a CDS nor preloads its image.
 Only `rke2-server` applies that directory; including it in the agent image
 is intentional. There is no guest Helm install, chart archive or runtime
 values merge.
@@ -179,23 +199,21 @@ role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
 when every referenced blob is present and matches its digest, and copies the
 image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
-floor, allowing CDS and its clients to start while CDS is unavailable.
-Signed tenant workload entries are added to CDS's served seed without
-replacing measured bootstrap components.
+floor, allowing the components to start while CDS is unavailable.
 
 Boot preparation publishes only public identity inputs under `/run/c8s-node`:
-peer pins, server-only CDS pins, and, on the server, the operator public key,
-merged workload seed and TLS hostname. Core pods mount these root-owned
+peer pins, the CDS pin the launch file carries, and, on the server, the
+operator public key and TLS hostname. Core pods mount these root-owned
 files read-only. They never mount `/run/confos/launch`, which contains join
 credentials. The operator reads the server policy from this mount and passes
-it to workload helpers, which use the in-cluster CDS Service URL. Every CDS
-client requires the server's launch key; peer connections accept the
-configured role keys. The shared image measurement alone does not
-identify the role.
+it to workload helpers. Every CDS client holds the CDS to the launch file's
+pin; peer connections accept the configured role keys. The shared image
+measurement alone does not identify the role.
 
 The router's get-cert helper runs alongside nginx again. It reads the signed
-hostname from `tls-san`, and CDS permits that exact hostname in addition to
-its in-cluster Service DNS pattern. nginx uses one default virtual host;
+hostname from `tls-san`, which `c8s launch-config new` writes into the CDS
+configuration as a leaf DNS name, so CDS permits that exact hostname in
+addition to its in-cluster Service DNS pattern. nginx uses one default virtual host;
 TLS clients validate the signed certificate hostname. Certificate and
 discovery files live in the router Pod's memory-backed volumes. The router
 and attestation helpers share the existing chart implementation. Adding a
@@ -216,9 +234,8 @@ Core version upgrades rebuild the image and relaunch with updated signed
 measurement pins. Restarting a Pod uses the same baked image. The current
 launch schema accepts one image policy and does not support mixed-image
 rolling upgrades. CDS has an ephemeral database and an in-memory CA;
-recreating CDS or rebooting its VM requires certificate re-bootstrap and
-reapplying the initial workload seed. Launch settings do not enable volume
-support, arbitrary service arguments or front-door routes.
+rebooting its VM requires certificate re-bootstrap. Launch settings do not
+enable volume support, arbitrary service arguments or front-door routes.
 
 Published `C8S_REF` images must include the renderer and the SAN-file flags
 used by the manifests. The reproducibility gate builds the host binary and
@@ -235,7 +252,7 @@ sidecar that sets HOST_DATA from the launch public key, and stages the CDI
 disk and the IGVM on the launcher in digest-named claims that later runs of
 the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
 attester requires a new measured image. Automatic TDX acceptance reads the
-image identity and `launch_config_version=c8s-launch/v1` from the publication
+image identity and `launch_config_version=c8s-launch/v2` from the publication
 run's validated evidence.
 
 Before either platform boots, the lane builds the paired CLI and generates
@@ -418,7 +435,7 @@ Automatic main-push publication in `c8s-image-publish.yml` calls the separate
 automatic publisher can call exact-image acceptance; neither workflow has a
 manual-dispatch trigger. It consumes the same run and attempt's
 immutable evidence: the source SHA, CDI and ORAS digests, the published
-manifest, and `launch_config_version=c8s-launch/v1`. Evidence validation
+manifest, and `launch_config_version=c8s-launch/v2`. Evidence validation
 binds these to the publication run and attempt and rejects a missing or
 incompatible launch version. Disk and UKI hashes plus MRTD/RTMR1/RTMR2 must
 match the fresh build; a differing nonmeasured build timestamp is not a
@@ -536,9 +553,11 @@ paths end in that one call, so all of them fail.
 
 The consequences for anything running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
-probes and SIGTERM handling instead. See
+probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
+probes and never reports Ready. See
 [docs/node-exec-mode.md](../docs/node-exec-mode.md) for the wrapper, the build
-gate that proves no handler escapes it, and what to do in a new component.
+gate that proves no handler escapes it, what to do in a new component, and
+what the kube-apiserver's denied probes mean.
 
 ## Refreshing measurements
 

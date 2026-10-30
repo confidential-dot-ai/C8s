@@ -58,7 +58,7 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
   fi
 fi
 
-# The baked NRI template contains only the generated RKE2 system floor.
+# The baked NRI template's only digests are the RKE2 system floor's.
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.
 policy="$ngi/c8s/image-policy.yaml.in"
@@ -471,13 +471,19 @@ grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/syste
 for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST"' \
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \
-             '--cds-image-digest "$CDS_DIGEST"' '--armtls-mesh-image-digest "$MESH_DIGEST"' \
+             '--armtls-mesh-image-digest "$MESH_DIGEST"' \
              'c8s/airgap-images.sh' '"$out/images.txt"' 'if ! "$C8S_TARGET" node-image check-images'; do
   if ! grep -qF -- "$token" "$sync"; then
     echo "::error::$sync must stage the measured node integration (missing: $token)"
     exit 1
   fi
 done
+# The CDS this cluster trusts is a VM of its own, named by the signed launch
+# file: the image neither resolves a CDS container image nor preloads one.
+if grep -qE -- '--cds-image|CDS_REPO|/cds[@:"]' "$sync"; then
+  echo "::error::$sync must not name a CDS container image: the node image runs no CDS"
+  exit 1
+fi
 for stale in "$ngi/c8s/c8s-chart.tdx.yaml.in" "$ngi/c8s/c8s-chart.snp.yaml.in" \
              "$ngi/c8s/mkosi.extra/etc/systemd/system/c8s-chart-values.service" \
              "$ngi/c8s/mkosi.extra/usr/local/bin/c8s-chart-values.sh" \
@@ -564,10 +570,11 @@ if grep -qE 'joindata|defaulting to server|set_legacy_server_role' "$role_sh"; t
   exit 1
 fi
 
-# Only attestation access, node inventory, credential release and volume
-# opening remain host services. Core application lifecycle belongs to the
-# baked Kubernetes chart, which refuses the volumed DaemonSet on a baked node.
-for service in attest-proxy nri-node-ip cred-release volumed; do
+# Only attestation access, node inventory, the stale Cilium node-address
+# restart, credential release and volume opening remain host services. Core
+# application lifecycle belongs to the baked Kubernetes chart, which refuses
+# the volumed DaemonSet on a baked node.
+for service in attest-proxy nri-node-ip cilium-node-ip cred-release volumed; do
   require_launch_dependency "$units/$service.service"
   if ! grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$preset must enable $service.service"
@@ -582,6 +589,10 @@ for service in cds armtls-mesh armtls-mesh-iptables c8s-get-cert cds-attest allo
 done
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/run/nri-image-policy ' "$units/volumed.service"; then
   echo "::error::volumed must serve in the inventory socket directory the NRI plugin mounts into workload sidecars"
+  exit 1
+fi
+if ! grep -qxF 'ExecStart=/usr/local/bin/c8s node-services cilium-node-ip' "$units/cilium-node-ip.service"; then
+  echo "::error::cilium-node-ip must run the stale Cilium node-address restart"
   exit 1
 fi
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s attest-proxy ' "$units/attest-proxy.service"; then

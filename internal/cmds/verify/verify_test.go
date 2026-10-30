@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -191,6 +192,42 @@ func TestBuildPolicy_SandboxIDFlag(t *testing.T) {
 
 	t.Run("sandbox ID with mesh-ca is accepted", func(t *testing.T) {
 		if _, err := buildPolicy(config{sandboxID: "8d9f6c2b1a0e", meshCA: meshCA}); err != nil {
+			t.Fatalf("buildPolicy: %v", err)
+		}
+	})
+}
+
+func TestBuildPolicy_MeshLeafFlagsRefusedWithKindCDS(t *testing.T) {
+	meshCA := writeMeshCAFile(t)
+	allowlist := filepath.Join(t.TempDir(), "allowlist.json")
+	if err := os.WriteFile(allowlist, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	refused := map[string]config{
+		"--mesh-ca":    {kind: "cds", meshCA: meshCA},
+		"--sandbox-id": {kind: "cds", sandboxID: "8d9f6c2b1a0e"},
+		"--workload":   {kind: "cds", workload: "api"},
+		"--allowlist":  {kind: "cds", allowlistFile: allowlist},
+	}
+	for flag, cfg := range refused {
+		t.Run(flag+" is refused with kind cds", func(t *testing.T) {
+			_, err := buildPolicy(cfg)
+			if err == nil || !strings.Contains(err.Error(), "--kind cds") || !strings.Contains(err.Error(), flag) {
+				t.Fatalf("err = %v, want a refusal naming %s and --kind cds", err, flag)
+			}
+		})
+	}
+
+	t.Run("mesh leaf flags are accepted with kind lb", func(t *testing.T) {
+		cfg := config{kind: "lb", meshCA: meshCA, sandboxID: "8d9f6c2b1a0e", workload: "api", allowlistFile: allowlist}
+		if _, err := buildPolicy(cfg); err != nil {
+			t.Fatalf("buildPolicy: %v", err)
+		}
+	})
+
+	t.Run("kind cds without mesh leaf flags is accepted", func(t *testing.T) {
+		if _, err := buildPolicy(config{kind: "cds", measurementsConfig: testutil.CDSPinFile(t)}); err != nil {
 			t.Fatalf("buildPolicy: %v", err)
 		}
 	})
@@ -1705,6 +1742,14 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 		code := run(context.Background(), config{fromFile: filepath.Join(t.TempDir(), "absent")}, &out, &errOut)
 		if code != exitNoEvidence || !strings.Contains(errOut.String(), "could not obtain evidence") {
 			t.Errorf("code = %d, stderr: %s", code, errOut.String())
+		}
+	})
+
+	t.Run("kind cds refuses --mesh-ca as a usage error", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), config{url: "https://127.0.0.1:1", kind: "cds", meshCA: writeMeshCAFile(t)}, &out, &errOut)
+		if code != exitUsage || !strings.Contains(errOut.String(), "--kind cds") || out.Len() != 0 {
+			t.Errorf("code = %d, want %d with a --kind cds refusal and no verdict; stdout: %s stderr: %s", code, exitUsage, out.String(), errOut.String())
 		}
 	})
 

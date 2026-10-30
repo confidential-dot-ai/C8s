@@ -208,6 +208,62 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 	return false
 }
 
+// Mismatch names the policy fields (command, args, mounts, env) that keep the
+// entry closest to admitting r from admitting it. It names fields, never
+// values. With final false it checks command and args alone, as AdmitsProcess
+// does.
+func (i *Index) Mismatch(r RunningContainer, final bool) []string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	var closest []string
+	for n, c := range i.byDigest[d.String()] {
+		if fields := c.mismatch(r, final); n == 0 || closer(fields, closest) {
+			closest = fields
+		}
+	}
+	return closest
+}
+
+// closer orders mismatches by distance: a failed command leaves the args
+// unchecked, so it counts for both. Ties break on the field names, as the
+// entries come out of a map.
+func closer(a, b []string) bool {
+	distance := func(fields []string) int {
+		if slices.Contains(fields, "command") {
+			return len(fields) + 1
+		}
+		return len(fields)
+	}
+	if da, db := distance(a), distance(b); da != db {
+		return da < db
+	}
+	return slices.Compare(a, b) < 0
+}
+
+func (c Container) mismatch(r RunningContainer, final bool) []string {
+	var fields []string
+	if rest, ok := c.Command.matchCommand(r.Argv); !ok {
+		fields = append(fields, "command")
+	} else if !c.Args.matchArgs(rest) {
+		fields = append(fields, "args")
+	}
+	if !final {
+		return fields
+	}
+	if !c.Mounts.admits(r.Mounts) || c.executableShadowed(r) {
+		fields = append(fields, "mounts")
+	}
+	if !newEnvConstraint(&c.Env).admits(r) {
+		fields = append(fields, "env")
+	}
+	return fields
+}
+
 // AdmitsNodeRoot reports whether some entry that admits r does so through an
 // exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
 // node image; mounts admitted under `any` or by a host rule do not.
@@ -248,4 +304,31 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 			return rule.Kind == MountNodeRootFile
 		})
 	})
+}
+
+// LaunchPinned reports whether the container fixes everything the pod could
+// otherwise choose about its launch: command, args and mounts are not any, and
+// the environment is constrained (an absent env policy is any).
+func (c Container) LaunchPinned() bool {
+	return c.Command.Policy != PolicyAny && c.Args.Policy != PolicyAny &&
+		c.Mounts.Policy != PolicyAny && c.Env.Policy != PolicyAny && c.Env.Policy != ""
+}
+
+// AdmitsContainerWhere is AdmitsContainer restricted to the entries keep
+// selects.
+func (i *Index) AdmitsContainerWhere(r RunningContainer, keep func(Container) bool) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if keep(c) && c.admits(r) {
+			return true
+		}
+	}
+	return false
 }

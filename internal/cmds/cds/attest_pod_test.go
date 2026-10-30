@@ -2,17 +2,12 @@ package cds
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -197,27 +192,6 @@ func TestPodAttestRefusesQuoteBindingMismatch(t *testing.T) {
 	}
 }
 
-func TestPodPolicyDisabledFileIsDistinctFromMalformedPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "pods.json")
-	if _, err := loadPodImages(path); err == nil {
-		t.Fatal("missing configured file silently disabled Pod policy")
-	}
-	if err := os.WriteFile(path, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if pins, err := loadPodImages(path); err != nil || len(pins) != 0 {
-		t.Fatalf("zero-byte disabled file: %v", err)
-	}
-	for _, raw := range []string{" ", "null", `{"schema_version":"1","tee":"tdx","measurements":[]}`} {
-		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := loadPodImages(path); err == nil {
-			t.Fatal("malformed policy silently disabled Pod policy")
-		}
-	}
-}
-
 func TestPodMembershipChecksWholeObservationBeforeIssuing(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -262,51 +236,5 @@ func TestPodMembershipChecksWholeObservationBeforeIssuing(t *testing.T) {
 				t.Fatalf("partial workload stamped: %v %v", stamp, err)
 			}
 		})
-	}
-}
-
-func TestPodAuthoritiesRejectSemanticKeyOverlap(t *testing.T) {
-	_, podKey := generateCSR(t)
-	_, otherKey := generateCSR(t)
-	encode := func(key *ecdsa.PublicKey) []byte {
-		der, err := x509.MarshalPKIXPublicKey(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
-	}
-	anchor := encode(&podKey.PublicKey)
-	pods := []remote.ImagePin{{Anchor: anchor}}
-	for _, tc := range []struct {
-		name      string
-		nodes     []remote.ImagePin
-		operators []*ecdsa.PublicKey
-		allowed   bool
-	}{
-		{"no configured authorities", nil, nil, true},
-		{"unanchored development pin", []remote.ImagePin{{Digest: bytes.Repeat([]byte{1}, 48)}}, nil, true},
-		{"different node and operator", []remote.ImagePin{{Anchor: encode(&otherKey.PublicKey)}}, []*ecdsa.PublicKey{&otherKey.PublicKey}, true},
-		{"same node key", []remote.ImagePin{{Anchor: anchor}}, nil, false},
-		{"same node key alternate encoding", []remote.ImagePin{{Anchor: append(append([]byte(" \n"), anchor...), []byte("\n\t")...)}}, nil, false},
-		{"same operator key", nil, []*ecdsa.PublicKey{&podKey.PublicKey}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validatePodAuthorities(pods, tc.nodes, tc.operators)
-			if (err == nil) != tc.allowed {
-				t.Fatalf("allowed=%t error=%v", tc.allowed, err)
-			}
-		})
-	}
-	// Operator bundles are parsed independently of their exact PEM bytes too.
-	operatorPath := filepath.Join(t.TempDir(), "operator.pem")
-	if err := os.WriteFile(operatorPath, append(anchor, '\n'), 0600); err != nil {
-		t.Fatal(err)
-	}
-	keys, _, err := loadOperatorKeys(operatorPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validatePodAuthorities(pods, nil, keys); err == nil {
-		t.Fatal("alternate operator PEM bypassed separation")
 	}
 }

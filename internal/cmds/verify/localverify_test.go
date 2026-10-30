@@ -97,7 +97,6 @@ func TestRun_BareEvidenceTimeoutExitsNoEvidence(t *testing.T) {
 	cancel()
 	cfg := config{
 		fromFile:      path,
-		kind:          "cds",
 		timeout:       50 * time.Millisecond,
 		expectedRDHex: "00", // bare evidence needs an anchor to parse; never reached
 		output:        "text",

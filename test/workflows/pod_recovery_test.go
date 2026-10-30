@@ -76,3 +76,16 @@ func TestRecoveryBuildGuardRejectsProductionAndDebugInputs(t *testing.T) {
 		t.Fatal("owned cleanup is not unconditional")
 	}
 }
+
+func TestRecoveryFixtureCannotEnterCDSImagePublication(t *testing.T) {
+	job := readWorkflow(t, "c8s-image.yml").Jobs["cds-image"]
+	want := `!inputs.pod_recovery_fixture && inputs.gate != true &&
+		(github.event_name == 'workflow_dispatch' ||
+		(github.event.workflow_run.conclusion == 'success' &&
+		github.event.workflow_run.head_repository.full_name == github.repository &&
+		(github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
+		(github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'beta')))`
+	if strings.Join(strings.Fields(job.If), " ") != strings.Join(strings.Fields(want), " ") {
+		t.Fatal("CDS publication escaped the complete fixture exclusion")
+	}
+}

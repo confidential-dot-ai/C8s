@@ -83,7 +83,7 @@ type ExplainHandler struct {
 	Inventory      inventorySource
 	Bindings       bindingSource
 	Policy         policySource
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	// Authorize is operatorauth.Verifier.Authorize. Nil rejects every request.
 	Authorize func(r *http.Request, body []byte) error
@@ -137,7 +137,7 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 		resp.Refusal = "no inventory is bound to this sandbox: it has not attested since CDS started, or a second inventory claimed the ID"
 		return resp
 	}
-	if h.InventoryHosts == nil || !h.InventoryHosts.Contains(host) {
+	if !h.InventoryHosts.Contains(host) {
 		resp.InventoryHost = host
 		resp.Refusal = "the bound inventory is outside the node addresses the callback is bounded to"
 		return resp

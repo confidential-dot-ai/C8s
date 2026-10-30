@@ -17,7 +17,7 @@ import (
 )
 
 func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
-	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document", "verification-timeout", "verification-short-timeout", "verification-long-timeout", "verification-zero-deadline", "verification-missing-policy"} {
+	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document", "legacy-launch-format", "verification-timeout", "verification-short-timeout", "verification-long-timeout", "verification-zero-deadline", "verification-missing-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -44,6 +44,8 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 				rec.Name = "another-name"
 			case "signed-document":
 				rec.Request.Trust.InitData.Document = []byte("not a launch document")
+			case "legacy-launch-format":
+				rec.Request.Trust.InitData.Format = "c8s-launch/v1"
 			case "verification-timeout":
 				rec.VerificationTimeoutSeconds = -1
 			case "verification-short-timeout":

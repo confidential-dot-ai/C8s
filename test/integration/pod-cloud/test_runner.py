@@ -188,6 +188,21 @@ class RunnerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="podcloud-runner-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
+        # Exercise the actual driver against an isolated historical v1 source
+        # fixture. This preserves all existing run/ownership tests after main
+        # adopts v2, without a runtime override of the compatibility guard.
+        self.repo = self.root / "source"
+        for relative in ("test/integration/pod-cloud/run.sh",
+                         "test/integration/pod-cloud/lock.py",
+                         "test/integration/pod-cloud/compatibility.py",
+                         "test/integration/cluster/lib.sh"):
+            destination = self.repo / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(RUNNER.parents[3] / relative, destination)
+        self.runner = self.repo / "test/integration/pod-cloud/run.sh"
+        self.schema = self.repo / "internal/cmds/launchconfig/config.go"
+        self.schema.parent.mkdir(parents=True)
+        self.schema.write_text('package launchconfig\nconst (\nSchemaVersion = "c8s-launch/v1"\n)\n')
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for tool in ("docker", "kind", "go", "git", "timeout"):
@@ -215,7 +230,7 @@ class RunnerTests(unittest.TestCase):
                         PODCLOUD_ASSERTIONS=json.dumps(SCENARIO_ASSERTIONS))
 
     def run_driver(self, mode="run", scenario="pass"):
-        args = ["bash", str(RUNNER), mode]
+        args = ["bash", str(self.runner), mode]
         if mode == "run":
             args.append(str(self.input))
         args.append(str(self.state))
@@ -224,6 +239,34 @@ class RunnerTests(unittest.TestCase):
 
     def calls(self):
         return [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+
+    def test_unsupported_source_stops_before_state_credentials_or_tools(self):
+        for source in ('SchemaVersion = "c8s-launch/v2"\n',
+                       'SchemaVersion = "c8s-launch/v99"\n',
+                       'SchemaVersion = "c8s-launch/v1"\nSchemaVersion = "c8s-launch/v2"\n',
+                       '// SchemaVersion = "c8s-launch/v1"\n', ''):
+            with self.subTest(source=source):
+                self.schema.write_text(source)
+                result = self.run_driver()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("New v2 runs await Cloud API/operator support", result.stderr)
+                self.assertFalse(self.state.exists())
+                self.assertFalse((self.root / "calls.jsonl").exists())
+                self.assertEqual(list(self.root.glob(".podcloud-lock-*")), [])
+                self.assertEqual(self.normal_kubeconfig.read_text(), "user context must stay unchanged")
+
+    def test_v2_source_can_clean_existing_v1_run_with_original_runner(self):
+        result = self.run_driver(scenario="missing")
+        self.assertNotEqual(result.returncode, 0)
+        original = (self.state / "provider.test").read_bytes()
+        before = len(self.calls())
+        self.schema.write_text('SchemaVersion = "c8s-launch/v2"\n')
+        result = self.run_driver("cleanup")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / "provider.test").read_bytes(), original)
+        self.assertFalse((self.root / "node.json").exists())
+        self.assertFalse(any(call[0] == "go" or call[:2] == ["kind", "create"]
+                             for call in self.calls()[before:]))
 
     def test_complete_receipt_and_private_kubeconfig(self):
         result = self.run_driver()
@@ -351,7 +394,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue(path.exists())
 
     def test_cleanup_cannot_race_run_before_ledger(self):
-        args = ["bash", str(RUNNER), "run", str(self.input), str(self.state)]
+        args = ["bash", str(self.runner), "run", str(self.input), str(self.state)]
         proc = subprocess.Popen(args, env=dict(self.env, PODCLOUD_SCENARIO="blocked"),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:

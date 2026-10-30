@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podcvmtest"
 	podfixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-connected"
@@ -75,6 +76,9 @@ func TestPodProviderCloud(t *testing.T) {
 		t.Skip("live Cloud lane requires explicit opt-in")
 	}
 	mode := os.Getenv("C8S_PODCLOUD_MODE")
+	if err := cloudLaunchCompatibility(mode, launchconfig.SchemaVersion); err != nil {
+		t.Fatal(err)
+	}
 	r, err := openCloudRun(os.Getenv("C8S_PODCLOUD_CONFIG"), os.Getenv("C8S_PODCLOUD_STATE"), mode)
 	if err != nil {
 		t.Fatal(err)

@@ -1,9 +1,13 @@
 # Node exec mode
 
 The measured node image starts no new process inside a container that is already
-running, for any principal. There is no debug shell on a confidential node, so a
-tenant's memory and volume plaintext are not reachable that way; the logs stay
-whatever the workload writes.
+running, for any principal.
+
+Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in).
+
+There is no debug shell on a confidential node, so a tenant's memory and volume
+plaintext are not reachable that way; the logs stay whatever the workload
+writes.
 
 ## What is closed, and where
 
@@ -29,12 +33,12 @@ That leaves the paths no API-server policy covers — CRI `ExecSync`, an exec
 probe, a lifecycle exec hook, a direct call to containerd — and they, like the
 proxy paths, end in the same `runc exec`. So the node image puts a measured
 wrapper, `c8s-runc`, in front of runc and points containerd's runc handler at
-it. In a locked build the wrapper denies the `exec` verb outright and never
-reaches the real runtime; every other verb is handed to the real runc unchanged,
-by absolute path, and a `restore` is denied in every build, because what it
-starts lives in a checkpoint no bundle describes. A denial is written to the log
-file runc was told to use, so the pod event names it instead of an empty runtime
-error.
+it. A release node image is built in locked exec mode: the wrapper denies the
+`exec` verb outright and never reaches the real runtime; every other verb is
+handed to the real runc unchanged, by absolute path, and a `restore` is denied
+in every build, because what it starts lives in a checkpoint no bundle
+describes. A denial is written to the log file runc was told to use, so the pod
+event names it instead of an empty runtime error.
 
 Both layers are the measured node image's; the chart installs neither on its
 other lanes, which keep the ordinary exec path. A development image
@@ -64,7 +68,13 @@ container the measured mesh policy covers holds more than the floor:
   neither root nor an id reserved for another role. A pod CVM runs one pod, so
   its floor admits root: the capability bound still holds, and without `SETUID`
   and `SETGID` root cannot take a reserved socket identity. The admission
-  plugin's mesh gate applies the same verdict before a container is created.
+  plugin's mesh gate applies the same verdict before a container is created;
+- a working directory that is not at or below a data or host mount (a
+  ConfigMap, Secret, projected or downward API volume, a PVC or CSI volume, or a
+  host path), resolved through the image's symlinks; an emptyDir, including the
+  pod's shared memory, is allowed, since only the pod's own containers write it.
+  The allowlist pins the command line, and an interpreter looks up its first
+  module in the working directory.
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create. The floor is independent of the exec posture above, and leaves the
@@ -108,6 +118,35 @@ renders none. A component that needs a health signal serves it: an HTTP, TCP or
 gRPC probe against a port it already listens on, or a small in-process endpoint
 when it otherwise listens only on a Unix socket, and it handles SIGTERM instead
 of carrying a `preStop` hook.
+
+## RKE2's kube-apiserver
+
+On the locked image, RKE2's kube-apiserver static pod never reports Ready. The
+RKE2 release `node-guest-image/c8s/mkosi.sync` pins gives that pod exec
+startup, liveness and readiness probes (`kubectl get --raw=/livez` and
+`--raw=/readyz`); etcd, kube-scheduler, kube-controller-manager and kube-proxy
+have HTTP probes and report Ready.
+
+Each startup probe ends in `c8s-runc`'s denial, which reaches the kubelet as a
+runtime error rather than a failed command. The kubelet discards an errored
+probe result instead of counting it as a failure, so:
+
+- the pod shows `0/1 Running` with no restarts, and the API serves: RKE2 and
+  C8s check the API itself, never this pod's readiness;
+- the startup probe errors every five minutes for the node's life
+  (`kube-apiserver-startup-period-seconds=300` in the image's RKE2 config), each
+  time adding an `Unhealthy` warning
+  (`Startup probe errored … c8s-runc: exec is denied on this node`) and a line
+  to the container's runtime log in memory, which grows by about 40 KB a day
+  until the container is removed;
+- the liveness and readiness probes never run, because the startup probe never
+  succeeds. The kubelet still restarts kube-apiserver when its process exits,
+  but nothing restarts one that keeps running and stops answering.
+
+Check the API's health with `kubectl get --raw='/readyz?verbose'`, which any
+released kubeconfig may call, the log-reader one included. A server node whose
+API stops answering has to be rebooted, which starts a new cluster: no RKE2
+state survives a reboot ([operator.md](operator.md#bounded-operator)).
 
 Container creation is not what this closes: whoever can create a pod can put any
 command in its initial process, which the allowlist restricts

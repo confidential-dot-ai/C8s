@@ -3,7 +3,6 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,6 +38,10 @@ type config struct {
 	Mesh    *meshPolicy   `yaml:"mesh"`
 	Measure measureConfig `yaml:"measure"`
 	Pod     *podConfig    `yaml:"pod,omitempty"`
+
+	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
+	// from what names it (cdsaddress.go). "" when nothing does.
+	cdsAddress string
 }
 
 // podConfig is the signed identity the guest preparation stages. Runtime UID
@@ -94,11 +97,6 @@ type workloadClaimsConfig struct {
 	// node's own view (see publishNodeIP). The chart sets it; the node image
 	// leaves it unset because nri-node-ip.service writes the file there.
 	PublishNodeIP bool `yaml:"publish_node_ip"`
-
-	// CDSNodePort is the port an injected credential client reaches CDS on, at
-	// this node's own address. A measured mesh policy binds that endpoint
-	// itself, so only an install sets this (cdsaddress.go).
-	CDSNodePort uint16 `yaml:"cds_node_port"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -125,13 +123,12 @@ type allowlistConfig struct {
 
 // pullConfig configures the CDS polling source.
 type pullConfig struct {
-	URL                   string        `yaml:"url"`                     // empty disables pull
-	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when URL is set
-	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
+	URL                   string        `yaml:"url"`                     // a measured config names the CDS here; excludes cds_address_file
+	CDSAddressFile        string        `yaml:"cds_address_file"`        // the CDS endpoint an install mounts, as host:port
+	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a CDS is named
+	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
-	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>
-	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare
@@ -139,33 +136,50 @@ type pullConfig struct {
 	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
-// checkPolicySources rejects competing CDS identity policy sources, before any
-// I/O: config validation runs where the configured document need not exist yet.
-func (c pullConfig) checkPolicySources() error {
-	if c.CDSMeasurementsConfig != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
-		return fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs")
+// cdsSource is how a config names the CDS this node reaches: a measured boot
+// config carries the URL, an install's carries the file it mounts. Each half
+// has one source, so a node reaches one CDS and holds it to one identity.
+type cdsSource struct {
+	// URL locates the CDS, or AddressFile holds its endpoint.
+	URL         string
+	AddressFile string
+	// PinFile is the document identifying it.
+	PinFile string
+}
+
+func (s cdsSource) located() bool {
+	return s.URL != "" || s.AddressFile != ""
+}
+
+// cdsSource refuses competing sources before any I/O: config validation runs
+// where the configured documents need not exist yet.
+func (c pullConfig) cdsSource() (cdsSource, error) {
+	source := cdsSource{
+		URL:         c.URL,
+		AddressFile: c.CDSAddressFile,
+		PinFile:     c.CDSMeasurementsConfig,
 	}
-	return nil
+	if source.URL != "" && source.AddressFile != "" {
+		return cdsSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one CDS")
+	}
+	return source, nil
 }
 
 // policySet is the CDS identity set this node's own clients and its injected
-// credential clients are held to, whichever form the config names it in.
-func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
-	if err := c.checkPolicySources(); err != nil {
+// credential clients are held to. The document declares the family of the CDS
+// VM, which an operator chooses independently of this node's, and binds every
+// entry to the launch file that CDS runs on.
+func (c pullConfig) policySet() (refvalues.ReferenceValues, error) {
+	source, err := c.cdsSource()
+	if err != nil {
 		return refvalues.ReferenceValues{}, err
 	}
-	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
-		Source: cmdsutil.ImagePolicySource{File: c.CDSMeasurementsConfig},
-		Pins: cmdsutil.MeasurementPins{
-			Measurements: c.CDSMeasurements,
-			Registers:    c.CDSRTMRs,
-			Prefix:       "cds-",
-		},
-		Platform:     platform,
-		PlatformFlag: "platform",
-	})
+	set, err := (cmdsutil.ImagePolicySource{File: source.PinFile}).Values()
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
+	}
+	if _, err := cmdsutil.CDSLaunchFile(set); err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull.cds_measurements_config %w", err)
 	}
 	return set, nil
 }
@@ -257,8 +271,8 @@ const defaultPullTimeout = 30 * time.Second
 const NodeIPFile = "node-ip"
 
 // DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, the file set-cds-pins patches, and the measured
-// policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+// resolves for this plugin, the file set-measure-policies patches, and the
+// measured policy the node's runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -272,6 +286,11 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	if err != nil {
+		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
+	}
+	cfg.cdsAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
 		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
 	}
@@ -281,7 +300,8 @@ func loadConfig(path string) (*config, error) {
 	return cfg, nil
 }
 
-// parseConfig validates static configuration for the plugin and set-cds-pins.
+// parseConfig validates static configuration for the plugin and
+// set-measure-policies.
 // loadConfig completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
@@ -309,12 +329,6 @@ func parseConfig(data []byte) (*config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// The pin parsers take one spelling of a digest, and this file is
-	// hand-editable: fold the case an operator typed rather than refusing a
-	// config the node has been booting with.
-	cfg.Allowlist.Pull.CDSMeasurements = foldHexPins(cfg.Allowlist.Pull.CDSMeasurements)
-	cfg.Allowlist.Pull.CDSRTMRs = foldHexPins(cfg.Allowlist.Pull.CDSRTMRs)
-
 	if cfg.Allowlist.Base != nil {
 		if err := cfg.Allowlist.Base.Normalize(); err != nil {
 			return nil, fmt.Errorf("allowlist.base: %w", err)
@@ -328,20 +342,20 @@ func parseConfig(data []byte) (*config, error) {
 	return cfg, nil
 }
 
-// foldHexPins lowercases each pin, leaving blanks and the "<index>=" prefix of
-// an RTMR pin untouched: both halves are hex or digits, which fold to
-// themselves.
-func foldHexPins(vals []string) []string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = strings.ToLower(v)
+// checkPullURL holds a configured pull URL to the https <host>:<port> this
+// cluster's CDS serves on: CDS serves armTLS only.
+func checkPullURL(raw string) error {
+	if raw == "" {
+		return nil
 	}
-	return out
+	if _, err := cmdsutil.CDSURLAddress(raw); err != nil {
+		return fmt.Errorf("allowlist.pull.url %w", err)
+	}
+	return nil
 }
 
 // NormalizedPlatform folds the az-/gcp- variants onto the two TEE families the
-// armTLS extension records, matching what CDS does with its own
-// --armtls-platform. Defaulting here rather than in loadConfig keeps every
+// armTLS extension records. Defaulting here rather than in loadConfig keeps every
 // construction path on the same value, including callers that build a config
 // literal and validate it directly.
 func (c *config) NormalizedPlatform() string {
@@ -369,8 +383,21 @@ func (c *config) injectsCredentialClients() bool {
 	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
-// PullEnabled reports whether the plugin should poll a remote CDS.
-func (c *config) PullEnabled() bool { return c.Allowlist.Pull.URL != "" }
+// PullEnabled: a config naming two CDS sources never loads (cdsSource), so
+// either half answers.
+func (c *config) PullEnabled() bool {
+	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
+}
+
+// pullURL is the CDS this node pulls its allowlist from: the endpoint
+// whatever named it at load (cdsaddress.go), dialled over armTLS. Empty where
+// the config names no CDS.
+func (c *config) pullURL() string {
+	if c.cdsAddress == "" {
+		return ""
+	}
+	return cmdsutil.CDSURL(c.cdsAddress)
+}
 
 // baseEnabled reports whether the base allowlist carries any workload.
 func (c *config) baseEnabled() bool {
@@ -431,33 +458,22 @@ func (c *config) Validate() error {
 	if c.PullEnabled() && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
-	if c.PullEnabled() {
-		if err := c.Allowlist.Pull.checkPolicySources(); err != nil {
-			return err
-		}
+	source, err := c.Allowlist.Pull.cdsSource()
+	if err != nil {
+		return err
+	}
+	if source.located() {
 		if c.Allowlist.Pull.Timeout <= 0 {
-			return fmt.Errorf("allowlist.pull.timeout must be > 0 when pull.url is set")
+			return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
 		}
 		if c.Allowlist.Pull.Interval <= 0 {
-			return fmt.Errorf("allowlist.pull.interval must be > 0 when pull.url is set")
+			return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
 		}
-		parsed, err := url.Parse(c.Allowlist.Pull.URL)
-		if err != nil {
-			return fmt.Errorf("allowlist.pull.url: %w", err)
-		}
-		// CDS serves armTLS only, so the pull URL must be https — a plaintext
-		// pull would defeat the attestation handshake entirely.
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)
+		if err := checkPullURL(source.URL); err != nil {
+			return err
 		}
 		if c.Allowlist.Pull.AttestationApiURL == "" {
 			return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
-		}
-		if _, err := refvalues.ParseHexMeasurementsList(c.Allowlist.Pull.CDSMeasurements); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_measurements: %w", err)
-		}
-		if _, err := refvalues.ParseRegisterPins(c.Allowlist.Pull.CDSRTMRs); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_rtmrs: %w", err)
 		}
 	}
 	if !c.AllowlistEnabled() && len(c.Policy.LabelRules) == 0 {
@@ -488,7 +504,7 @@ func (c *config) Validate() error {
 	// Certificate producers read the journal only from the default runtime directory.
 	journalDir := filepath.Dir(armtls.NodeJournal)
 	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
-		return fmt.Errorf("allowlist.pull.measure_policies requires allowlist.pull.url: only pulled policies are measured")
+		return fmt.Errorf("allowlist.pull.measure_policies requires a CDS to pull from: only pulled policies are measured")
 	}
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
@@ -528,7 +544,7 @@ func (c *config) validatePod() error {
 	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
 		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
 	}
-	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || len(c.Mesh.Roles[0].Destinations) != 0 || c.Mesh.CredentialAttestationPort != 0 || c.WorkloadClaims.CDSNodePort != 0 {
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
 	if c.Pod.Waiting {
@@ -554,11 +570,12 @@ func (c *config) validateMesh() error {
 	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
 		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
 	}
-	// A namespace the admission carve-out keeps running across an enforcer
-	// restart holds pods the gate refuses for their life, so the mesh exempts it.
+	// A namespace the admission carve-out admits holds the provider's platform
+	// pods, which came up before any enforcer connected and run as no member
+	// pod's container may, so the mesh exempts it rather than refuse them.
 	for _, namespace := range c.Policy.ExemptNamespaces {
 		if !slices.Contains(c.Mesh.ExemptNamespaces, namespace) {
-			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses a pod that was running before this enforcer connected", namespace)
+			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses the platform pods that were running before any enforcer connected", namespace)
 		}
 	}
 	return nil
