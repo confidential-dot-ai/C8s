@@ -37,6 +37,9 @@ const (
 	// opStanding asks a member where it stands in the cluster: seats.go,
 	// handoff.go and stuck.go all judge by the answer.
 	opStanding controlOp = "standing"
+	// opRenounce asks a member to give up a Recover decree for good, which is
+	// what ends a doubt of it (fence.go).
+	opRenounce controlOp = "renounce"
 )
 
 type controlRequest struct {
@@ -50,6 +53,9 @@ type controlRequest struct {
 	// Digests are where the member asking stands; the leader compares them
 	// with its own (opRead).
 	Digests *DigestReport `json:"digests,omitempty"`
+	// Intent is the Recover decree the member asked is to renounce
+	// (opRenounce).
+	Intent string `json:"intent,omitempty"`
 }
 
 // controlAnswer: Member and Joined answer every request; the rest belongs to
@@ -67,6 +73,9 @@ type controlAnswer struct {
 	// Full reports a write the admission cap refused, which the store answers
 	// as full rather than as one to retry.
 	Full bool `json:"full,omitempty"`
+	// Excluded reports a member the cluster answering cut out of itself,
+	// which only a restart of that member's process cures (fence.go).
+	Excluded bool `json:"excluded,omitempty"`
 	// Index is where the leader committed a forwarded write, or the watermark
 	// its barrier confirmed for a read; the replica that asked waits for its
 	// own state machine to reach it.
@@ -81,6 +90,10 @@ type controlAnswer struct {
 	// Diverged is why the member asking holds another state than the
 	// majority of the voters (opRead, divergence.go).
 	Diverged string `json:"diverged,omitempty"`
+	// Renounced reports a member that will never act on the Recover decree
+	// the request named; a member carrying its cluster on under that decree
+	// reports false (opRenounce).
+	Renounced bool `json:"renounced,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Delivered is what the cluster made of a decree another replica took.
@@ -106,6 +119,9 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 		return n.answerRead(from, request, answer)
 	case opStanding:
 		return n.answerStanding(answer)
+	case opRenounce:
+		answer.Renounced = n.renounce(request.Intent)
+		return answer
 	}
 	answer.Err = fmt.Sprintf("unknown control op %q", request.Op)
 	return answer
@@ -113,13 +129,13 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 
 // leading reports this replica as the one that appends to the cluster's log.
 func (n *Node) leading() bool {
-	return n.raft.State() == raft.Leader
+	return n.raft.Load().State() == raft.Leader
 }
 
 // redirectToLeader refuses a request only the cluster's leader answers,
 // naming the member leading so the caller can ask it instead.
 func (n *Node) redirectToLeader(answer controlAnswer) controlAnswer {
-	_, leader := n.raft.LeaderWithID()
+	_, leader := n.raft.Load().LeaderWithID()
 	answer.Leader = string(leader)
 	answer.Err = "this replica does not lead the cluster"
 	return answer

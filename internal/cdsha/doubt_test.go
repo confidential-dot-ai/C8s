@@ -22,6 +22,20 @@ func (r *replica) raiseDoubt(sighted cdsdecree.Signed) DecreeResult {
 	return *res.Decree
 }
 
+// renounce records that the member a doubt names gave the Recover decree up,
+// as a leader that asked it does.
+func (r *replica) renounce(doubt Doubt) DecreeResult {
+	r.t.Helper()
+	res := r.apply(Entry{
+		Kind:     KindRenounce,
+		Renounce: &RenounceEntry{Intent: doubt.Intent, Member: doubt.Member},
+	})
+	if res.Decree == nil {
+		r.t.Fatalf("a renunciation answered no decree result: %+v", res)
+	}
+	return *res.Decree
+}
+
 // A leader that sees a signed Recover naming a member it cannot account for
 // commits the doubt, so it outlives that leader and a host that withholds the
 // decree from the next one.
@@ -122,6 +136,44 @@ func TestApplyingADoubtedRecoverLiftsItsDoubt(t *testing.T) {
 	}
 }
 
+// A recovery ends the doubt of the Recover it applies and no other: a doubt
+// of another member's Recover is the fence that keeps this cluster from
+// serving beside the cluster that member may be carrying, and the operator's
+// DismissRecover is what lifts it.
+func TestARecoveryEndsTheDoubtOfItsOwnRecoverAlone(t *testing.T) {
+	r := newReplica(t)
+	r.genesis()
+	elsewhere := r.decree(cdsdecree.Recover)
+	elsewhere.TargetMember = "another-member-of-another-replica"
+	sighted := r.sign(elsewhere)
+	r.raiseDoubt(sighted)
+	if len(r.ClusterState().Doubts) != 1 {
+		t.Fatal("the sighted Recover raised no doubt")
+	}
+
+	if res := r.applyDecreeEntry(r.entryFor(r.decree(cdsdecree.Recover))); res.Refused != "" {
+		t.Fatal(res.Refused)
+	}
+	doubts := r.ClusterState().Doubts
+	if len(doubts) != 1 || doubts[0].Intent != sighted.Decree.IntentID {
+		t.Fatalf("the recovered cluster holds the doubts %+v, want the one of Recover %s", doubts, sighted.Decree.IntentID)
+	}
+	// The decree record is what a backup seals as this cluster's history, so
+	// a Recover this cluster never applied must not stand in it.
+	if r.ClusterState().accountedFor(sighted.Decree.IntentID) {
+		t.Fatalf("the recovery recorded another member's Recover as applied: %+v", r.ClusterState().AppliedDecrees)
+	}
+
+	dismiss := r.decree(cdsdecree.DismissRecover)
+	dismiss.RecoverIntent = sighted.Decree.IntentID
+	if res := r.applyDecreeEntry(r.entryFor(dismiss)); res.Refused != "" {
+		t.Fatal(res.Refused)
+	}
+	if doubts := r.ClusterState().Doubts; len(doubts) != 0 {
+		t.Fatalf("the doubt survived its DismissRecover: %+v", doubts)
+	}
+}
+
 // A DismissRecover names the doubt it lifts, and the cluster must hold it.
 func TestDismissRecoverNamesADoubtTheClusterHolds(t *testing.T) {
 	r := newReplica(t)
@@ -131,5 +183,54 @@ func TestDismissRecoverNamesADoubtTheClusterHolds(t *testing.T) {
 	res := r.applyDecreeEntry(r.entryFor(dismiss))
 	if !strings.Contains(res.Refused, "no doubt") {
 		t.Fatalf("refusal %q", res.Refused)
+	}
+}
+
+// A renunciation ends the doubt of the Recover decree it names, and accounts
+// for that decree, so the board the host still serves raises it no more.
+func TestARenunciationEndsTheDoubtItNames(t *testing.T) {
+	r := newReplica(t)
+	r.genesis()
+	sighted := r.sign(r.decree(cdsdecree.Recover))
+	r.raiseDoubt(sighted)
+	doubts := r.ClusterState().Doubts
+	if len(doubts) != 1 {
+		t.Fatal("the sighted Recover raised no doubt")
+	}
+
+	if res := r.renounce(doubts[0]); res.Refused != "" {
+		t.Fatal(res.Refused)
+	}
+	if held := r.ClusterState().Doubts; len(held) != 0 {
+		t.Fatalf("the doubt survived its renunciation: %+v", held)
+	}
+	if res := r.raiseDoubt(sighted); res.Refused != "" || len(r.ClusterState().Doubts) != 0 {
+		t.Fatalf("a renounced Recover was doubted again: %+v, %+v", res, r.ClusterState().Doubts)
+	}
+	if r.ClusterState().Version != 1 {
+		t.Fatal("a renunciation counted as an operator command")
+	}
+}
+
+// Only the member a doubt names ends it, and only while the cluster holds
+// that doubt: the entry is the leader's word for what that member answered.
+func TestARenunciationNamesADoubtTheClusterHolds(t *testing.T) {
+	r := newReplica(t)
+	r.genesis()
+	sighted := r.sign(r.decree(cdsdecree.Recover))
+	r.raiseDoubt(sighted)
+	held := r.ClusterState().Doubts[0]
+	for name, renounced := range map[string]Doubt{
+		"another intent": {Intent: cdsdecree.NewIntentID(), Member: held.Member},
+		"another member": {Intent: held.Intent, Member: "another-member"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if res := r.renounce(renounced); !strings.Contains(res.Refused, "no doubt") {
+				t.Fatalf("refusal %q", res.Refused)
+			}
+			if len(r.ClusterState().Doubts) != 1 {
+				t.Fatalf("the doubt ended on %+v", renounced)
+			}
+		})
 	}
 }

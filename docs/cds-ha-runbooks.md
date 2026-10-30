@@ -281,15 +281,21 @@ the recovered one.
    ```
 
    The survivor carries the cluster on alone and then takes the other replicas
-   back as new members.
+   back as new members. A survivor whose state carried the doubt of another
+   Recover comes back fenced: `ha status` names that doubt, and the
+   `dismiss-recover` below lifts it at the version the recovery produced.
 
 4. Follow it with a `rotate-key` decree where a lost replica could come back:
    every leaf must then be issued again, and anything that returns holds a
    retired key.
 
 If the other side of the cluster saw the Recover first, it fences itself and
-reports the decree as its doubt. Once the doubted member has rejoined, or its
-VM is destroyed, lift the doubt:
+reports the decree as its doubt. That side asks the member it doubts to give
+the decree up for good whenever it reaches it, so a member that comes back
+without having recovered ends the doubt by itself and the cluster serves
+again. A member that answers that it carried the cluster on raises an alarm of
+its own, and keeps the doubt: destroy the VMs of the side that did not
+recover. Where the member never answers again, dismiss the decree:
 
 ```sh
 c8s cds ha decree dismiss-recover \

@@ -23,18 +23,23 @@ import (
 const boardCycle = 30 * time.Second
 
 // applyBoardDecrees applies the decrees of the cluster's board, oldest
-// version first, which is the leader's duty alone.
+// version first, which is the leader's duty alone. A cycle that read the
+// board is also what keeps this leader from fencing its cluster (fence.go).
 func (n *Node) applyBoardDecrees(ctx context.Context) {
 	if !n.leading() {
 		return
 	}
-	decrees := n.boardDecrees(ctx)
+	decrees, read := n.boardDecrees(ctx)
+	if !read {
+		return
+	}
+	n.sightedBoard()
 	slices.SortStableFunc(decrees, byTheVersionTheyApplyOn)
 	for _, signed := range decrees {
 		if !n.leading() {
 			return
 		}
-		n.applyFromBoard(signed)
+		n.judgeFromBoard(signed)
 	}
 }
 
@@ -44,12 +49,13 @@ func byTheVersionTheyApplyOn(a, b cdsdecree.Signed) int {
 	return cmp.Compare(a.Decree.BaseVersion, b.Decree.BaseVersion)
 }
 
-// boardDecrees are the signed decrees on the cluster's board, and none where
-// its configuration names no board. A board this replica cannot read says so
-// once, not every tick.
-func (n *Node) boardDecrees(ctx context.Context) []cdsdecree.Signed {
+// boardDecrees are the signed decrees on the cluster's board, and whether
+// this replica read the board at all: a leader that could not read it is
+// blind to the Recover decrees it may carry, and a cluster that names no
+// board is blind to nothing (fence.go).
+func (n *Node) boardDecrees(ctx context.Context) ([]cdsdecree.Signed, bool) {
 	if n.cfg.Board == nil {
-		return nil
+		return nil, true
 	}
 	reading, done := context.WithTimeout(ctx, boardCycle)
 	defer done()
@@ -58,23 +64,33 @@ func (n *Node) boardDecrees(ctx context.Context) []cdsdecree.Signed {
 		if n.boardLog.changed(err.Error()) {
 			slog.Warn("cds-ha: this replica cannot read the board of its cluster", "error", err)
 		}
-		return nil
+		return nil, false
 	}
-	return decrees
+	return decrees, true
 }
 
-// applyFromBoard puts one decree of the board on the log, and passes over
-// the ones this leader does nothing with.
-func (n *Node) applyFromBoard(signed cdsdecree.Signed) {
+// judgeFromBoard is what this leader makes of one object of the board: a
+// decree of its operator, applied where the leader applies it, and doubted
+// where it is a Recover of a member this cluster cannot account for.
+func (n *Node) judgeFromBoard(signed cdsdecree.Signed) {
 	if err := n.operatorSigned(signed); err != nil {
 		if n.objectLog.changed(err.Error()) {
 			slog.Warn("cds-ha: this cluster's board carries an object that is no decree of its operator", "error", err)
 		}
 		return
 	}
+	if signed.Decree.Kind == cdsdecree.Recover {
+		n.judgeRecover(signed)
+		return
+	}
 	if n.leftOnTheBoard(signed.Decree) {
 		return
 	}
+	n.applyFromBoard(signed)
+}
+
+// applyFromBoard puts one decree of the board on the log.
+func (n *Node) applyFromBoard(signed cdsdecree.Signed) {
 	delivered, err := n.applyDecree(signed)
 	switch {
 	case err != nil:

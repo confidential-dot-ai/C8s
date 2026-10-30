@@ -49,7 +49,7 @@ func (n *Node) forward(entry []byte) (Result, error) {
 }
 
 func (n *Node) leaderChannel() (reachedMember, error) {
-	_, leader := n.raft.LeaderWithID()
+	_, leader := n.raft.Load().LeaderWithID()
 	if leader == "" {
 		return reachedMember{}, errors.New("cds-ha: this cluster has no leader (fewer than a majority of its voters answer)")
 	}
@@ -193,7 +193,7 @@ func clientWrite(entry Entry) bool {
 
 // leadersOwn is an entry only the cluster's leader writes.
 func leadersOwn(entry Entry) bool {
-	return entry.Kind == KindCheckpoint || entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil || entry.RenewCA != nil
+	return entry.Kind == KindCheckpoint || entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil || entry.Renounce != nil || entry.RenewCA != nil
 }
 
 // underLeaderClock stamps the entry with the cluster's one clock: a binding's

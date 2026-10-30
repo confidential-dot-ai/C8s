@@ -113,7 +113,7 @@ func (n *Node) bootstrapSolo() error {
 	if n.inConfiguration() {
 		return nil
 	}
-	return n.raft.BootstrapCluster(n.solo()).Error()
+	return n.raft.Load().BootstrapCluster(n.solo()).Error()
 }
 
 // solo is the group a cluster begins as: this replica as its only voter.

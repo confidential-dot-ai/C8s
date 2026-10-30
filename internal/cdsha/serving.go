@@ -33,6 +33,9 @@ func (n *Node) servesReads() (bool, string) {
 	if stuck := n.fsm.Stuck(); stuck != "" {
 		return false, "this replica stopped following the log: " + stuck
 	}
+	if fence := n.Fenced(); fence != nil {
+		return false, fence.Reason
+	}
 	lease := n.lease.Load()
 	if lease == nil || !n.holdsNow(lease) {
 		return false, n.outageReason()

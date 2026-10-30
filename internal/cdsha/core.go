@@ -58,6 +58,13 @@ type Doubt struct {
 	Member string `json:"member"`
 }
 
+// RenounceEntry ends a doubt: the member it names answered over the attested
+// channel that it gives that Recover decree up for good (fence.go).
+type RenounceEntry struct {
+	Intent string `json:"intent"`
+	Member string `json:"member"`
+}
+
 // Launch is what a replica booted with: the cluster it belongs to, the keys
 // whose decrees it obeys, the digest of its own launch file and the voter
 // seats a Genesis starts with. No log entry replaces them.
@@ -104,6 +111,15 @@ func (c ClusterState) dealtWith(intent string) bool {
 
 func (c ClusterState) doubted(intent string) bool {
 	return slices.ContainsFunc(c.Doubts, raisedBy(intent))
+}
+
+// doubtOf is the doubt this cluster holds of a Recover decree.
+func (c ClusterState) doubtOf(intent string) (Doubt, bool) {
+	at := slices.IndexFunc(c.Doubts, raisedBy(intent))
+	if at < 0 {
+		return Doubt{}, false
+	}
+	return c.Doubts[at], true
 }
 
 func raisedBy(intent string) func(Doubt) bool {
@@ -173,6 +189,8 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 		}
 	case cdsdecree.Recover:
 		next.StartedAtMS = startMS(d, de.AtMS)
+		// Every other doubt stands: each is this cluster's fence against the
+		// member it names.
 		next.Doubts = withoutDoubt(next.Doubts, d.IntentID)
 	case cdsdecree.UpdateMeasurements:
 		next.PinsDecree = &de.Decree

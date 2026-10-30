@@ -128,3 +128,16 @@ func (t *termSafeHeartbeats) Close() error {
 	t.stop.Do(func() { close(t.done) })
 	return t.NetworkTransport.Close()
 }
+
+// peerPortOnLoan is the peer transport as one Raft instance holds it. Raft
+// closes the transport it was given when it shuts down, and this process's
+// peer port carries the control channel and whatever Raft it runs next: a
+// replica that carried its cluster on alone runs a second one (recover.go).
+type peerPortOnLoan struct {
+	*termSafeHeartbeats
+}
+
+// Close leaves the port open: the process that lent it closes it (Node.stop).
+func (peerPortOnLoan) Close() error {
+	return nil
+}

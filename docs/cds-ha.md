@@ -251,7 +251,10 @@ A replicated CDS fails closed. Three reasons are worth telling apart, and
   continues on its own.
 - **Fenced.** The cluster holds the doubt of a Recover decree. Fencing is what
   keeps a cut-off replica from being recovered into a second cluster beside
-  this one. Bring the member back, or dismiss the Recover. Runbook 7.
+  this one. The doubt ends on the log: the leader asks the member it names to
+  give the decree up for good and records that renunciation, or the operator
+  dismisses the Recover. Bringing the member back is therefore what ends it;
+  dismiss the decree where that member is gone. Runbook 7.
 - **Halted.** Every replica stopped at the same log entry, because applying it
   failed on all of them, or because the store under them stopped answering.
   The cluster keeps its leader, its membership and its log, and serves

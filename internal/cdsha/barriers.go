@@ -67,7 +67,7 @@ func (n *Node) wedged() error {
 	slog.Error("cds-ha: ALARM: this leader's Raft refuses every barrier of its term although its heartbeats reach a majority; it exits so another replica takes the cluster over",
 		"refused_for", refusedFor.Round(time.Millisecond),
 		"term", led.term,
-		"commit_index", n.raft.CommitIndex(),
+		"commit_index", n.raft.Load().CommitIndex(),
 		"applied_index", n.fsm.AppliedIndex())
 	return fmt.Errorf("%w: its Raft refused every barrier of term %d for %s",
 		ErrLeftItsCluster, led.term, refusedFor.Round(time.Millisecond))
