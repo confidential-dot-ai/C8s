@@ -46,6 +46,11 @@ func (a raftAddr) Network() string { return "tcp" }
 
 func (a raftAddr) String() string { return a.endpoint.String() + "#" + a.member }
 
+// serverAddress is this address as a Raft configuration holds it: every
+// address in one is built here, so the configuration never carries two forms
+// of the same one.
+func (a raftAddr) serverAddress() raft.ServerAddress { return raft.ServerAddress(a.String()) }
+
 // parseRaftAddr reads the address a Raft configuration holds.
 func parseRaftAddr(address raft.ServerAddress) (raftAddr, error) {
 	endpoint, member, named := strings.Cut(string(address), "#")

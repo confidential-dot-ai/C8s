@@ -1,4 +1,5 @@
-// Membership: where the members of this cluster answer.
+// Membership: where the members of this cluster answer, and how a replica
+// gets into its configuration.
 //
 // The host routes every packet and answers every name, so an address is only
 // where to look. What counts is the member that answers there with its
@@ -11,12 +12,16 @@ package cdsha
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/netip"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/raft"
 )
 
 // dialBackoff is how long an address whose dial failed is left alone. A
@@ -96,6 +101,14 @@ type reachedMember struct {
 	member  string
 	address netip.AddrPort
 	control *controlConn
+}
+
+// raftAddress is where Raft reaches this member.
+func (r reachedMember) raftAddress() raft.ServerAddress {
+	return raftAddr{
+		endpoint: r.address,
+		member:   r.member,
+	}.serverAddress()
 }
 
 func newMembers(own string, deadAfter time.Duration) *members {
@@ -277,7 +290,12 @@ func (n *Node) reachMembers(ctx context.Context) {
 	tick := time.NewTicker(n.cfg.Timing.Tick)
 	defer tick.Stop()
 	for {
-		n.reachPeers(ctx)
+		found := n.reachPeers(ctx)
+		if n.settled() {
+			n.followMoves()
+		} else {
+			n.joinOrStart(found)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -287,11 +305,12 @@ func (n *Node) reachMembers(ctx context.Context) {
 }
 
 // reachPeers is one pass of discovery.
-func (n *Node) reachPeers(ctx context.Context) {
+func (n *Node) reachPeers(ctx context.Context) discovered {
 	found := n.discover(ctx)
 	n.forgetUnresolved(found)
 	n.recheckReached()
 	n.dialUnknown(found)
+	return found
 }
 
 func (n *Node) forgetUnresolved(found discovered) {
@@ -344,4 +363,214 @@ func closeAll(connections []*controlConn) {
 	for _, connection := range connections {
 		connection.close()
 	}
+}
+
+// settled reports a replica the cluster's configuration names and that holds
+// the cluster's state. One that is not asks the members it reached to let it
+// in, or starts the cluster the operator decreed it starts.
+func (n *Node) settled() bool {
+	return n.inConfiguration() && n.fsm.ClusterState().Joined()
+}
+
+func (n *Node) inConfiguration() bool {
+	return n.memberOfCluster(string(n.member))
+}
+
+func (n *Node) memberOfCluster(member string) bool {
+	return slices.ContainsFunc(n.configuration(), func(server raft.Server) bool {
+		return server.ID == raft.ServerID(member)
+	})
+}
+
+func (n *Node) configuration() []raft.Server {
+	future := n.raft.GetConfiguration()
+	if err := future.Error(); err != nil {
+		return nil
+	}
+	return future.Configuration().Servers
+}
+
+// followMoves gives Raft the address a member answers at now: the host routes
+// every packet, so the address in the configuration may reach it no longer.
+func (n *Node) followMoves() {
+	if !n.leading() {
+		return
+	}
+	for _, server := range n.configuration() {
+		if moved, elsewhere := n.movedTo(server); elsewhere {
+			n.moveMember(server, moved)
+		}
+	}
+}
+
+// movedTo is where a non-voter of the cluster answers now, when that is not
+// the address the configuration holds. A voter stays where it is: its vote
+// must not leave the configuration to come back, and a voter no one can reach
+// is a dead voter.
+func (n *Node) movedTo(server raft.Server) (reachedMember, bool) {
+	if server.Suffrage == raft.Voter {
+		return reachedMember{}, false
+	}
+	held, reached := n.peers.knownAt(string(server.ID))
+	if !reached || server.Address == held.raftAddress() {
+		return reachedMember{}, false
+	}
+	return held, true
+}
+
+func (n *Node) moveMember(server raft.Server, moved reachedMember) {
+	slog.Info("cds-ha: a member of this cluster answers at another address", "member", server.ID, "was", server.Address, "now", moved.raftAddress())
+	if err := n.raft.RemoveServer(server.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		slog.Warn("cds-ha: this leader could not take out a member that moved", "member", server.ID, "error", err)
+		return
+	}
+	if err := n.addNonVoter(moved); err != nil {
+		slog.Warn("cds-ha: this leader could not take in a member that moved", "member", server.ID, "address", moved.raftAddress(), "error", err)
+	}
+}
+
+// joinOrStart is what a replica outside its cluster does every tick: ask the
+// members it reached to take it in, and, where the operator decreed this
+// process the start of the cluster, start it.
+func (n *Node) joinOrStart(found discovered) {
+	answers := n.askToJoin()
+	if answers.cluster {
+		return
+	}
+	decree, decreed := n.decreedGenesis()
+	if !decreed {
+		return
+	}
+	if err := n.startable(decree.Decree.Alone, found, answers); err != nil {
+		if n.genesisLog.changed(err.Error()) {
+			slog.Warn("cds-ha: this replica is decreed the start of its cluster and starts none", "error", err)
+		}
+		return
+	}
+	n.startCluster(decree)
+}
+
+// peerAnswers is what the members this replica reached said of the cluster.
+type peerAnswers struct {
+	// cluster reports a cluster that exists: this replica is in it, or a
+	// member that holds it answered. Either keeps this replica from starting
+	// one.
+	cluster bool
+	// answered reports a member that answered at all, which is how this
+	// replica knows a cluster would not be a second one.
+	answered bool
+}
+
+// askToJoin asks every member this replica reached to take it in.
+func (n *Node) askToJoin() peerAnswers {
+	var answers peerAnswers
+	for _, held := range n.peers.reached() {
+		answer, joined, err := n.askMember(held)
+		if err != nil {
+			continue
+		}
+		answers.answered = true
+		answers.cluster = answers.cluster || joined
+		if answer.Err == "" {
+			answers.cluster = true
+			n.logInTheCluster(held)
+			return answers
+		}
+		n.logNotTakenIn(held, answer.Err)
+	}
+	return answers
+}
+
+// askMember asks one member to take this replica in, and the leader it names
+// where that member follows one. Either of them holding a cluster keeps this
+// replica from starting another.
+func (n *Node) askMember(held reachedMember) (controlAnswer, bool, error) {
+	request := controlRequest{
+		Op:     opJoin,
+		Policy: n.fsm.LocalPolicy(),
+	}
+	answer, err := held.control.exchange(request, controlTimeout)
+	if err != nil {
+		return answer, false, err
+	}
+	leader, follows := n.leaderBesides(held, answer)
+	if !follows {
+		return answer, answer.Joined, nil
+	}
+	fromLeader, err := leader.control.exchange(request, controlTimeout)
+	if err != nil {
+		return answer, answer.Joined, nil
+	}
+	return fromLeader, answer.Joined || fromLeader.Joined, nil
+}
+
+// leaderBesides is the leader an answer names, where it is another member
+// this replica reached.
+func (n *Node) leaderBesides(held reachedMember, answer controlAnswer) (reachedMember, bool) {
+	if answer.Leader == "" || answer.Leader == held.member {
+		return reachedMember{}, false
+	}
+	return n.peers.knownAt(answer.Leader)
+}
+
+func (n *Node) logInTheCluster(held reachedMember) {
+	if n.joinLog.changed(held.member) {
+		slog.Info("cds-ha: this replica is in its cluster", "via", held.member, "member", n.member)
+	}
+}
+
+func (n *Node) logNotTakenIn(held reachedMember, refused string) {
+	if n.joinLog.changed(held.member + " " + refused) {
+		slog.Info("cds-ha: a member of this cluster did not take this replica in", "member", held.member, "error", refused)
+	}
+}
+
+// answerJoin takes the member asking into the cluster as a non-voter, at the
+// address this leader reached it at: an address only the joiner vouches for
+// is no address of the cluster's.
+func (n *Node) answerJoin(from peer, policy Policy, answer controlAnswer) controlAnswer {
+	if !n.leading() {
+		return n.redirectToLeader(answer)
+	}
+	if err := n.admissible(policy); err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
+	if n.memberOfCluster(from.member) {
+		// The member is in the configuration: its vote and its address are
+		// the cluster's to change, not a joiner's.
+		return answer
+	}
+	held, reached := n.peers.knownAt(from.member)
+	if !reached {
+		answer.Err = "this leader has reached no member " + from.member + " at any address of its cluster"
+		return answer
+	}
+	if err := n.addNonVoter(held); err != nil {
+		answer.Err = err.Error()
+	}
+	return answer
+}
+
+// admissible refuses a replica whose stores hold other limits than the
+// cluster's policy: it could not apply the log it would be sent.
+func (n *Node) admissible(policy Policy) error {
+	core := n.fsm.ClusterState()
+	switch {
+	case !core.Joined():
+		return errors.New("this cluster has not started yet")
+	case policy != core.Policy:
+		return fmt.Errorf("the cluster applies commands under %+v, and the replica asking holds %+v", core.Policy, policy)
+	}
+	return nil
+}
+
+// addNonVoter adds a member that follows the log and serves reads; voter
+// seats are filled from the members that caught up.
+func (n *Node) addNonVoter(held reachedMember) error {
+	if err := n.raft.AddNonvoter(raft.ServerID(held.member), held.raftAddress(), 0, n.cfg.Timing.Apply).Error(); err != nil {
+		return err
+	}
+	slog.Info("cds-ha: a replica joined this cluster as a non-voter", "member", held.member, "address", held.raftAddress())
+	return nil
 }
