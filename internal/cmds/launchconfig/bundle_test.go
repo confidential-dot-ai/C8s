@@ -622,7 +622,9 @@ func TestNewBundleWritesTheCDSReplicaSet(t *testing.T) {
 		"--cds-replica", "cds-1.demo.example",
 		"--cds-replica", "cds-2.demo.example",
 		"--cds-replica", "cds-3.demo.example",
-		"--cds-voters", "3")
+		"--cds-voters", "3",
+		"--cds-board-endpoint", "https://store.demo.example",
+		"--cds-board-bucket", "c8s-boards")
 	if err := runBundleCmd(t, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +632,7 @@ func TestNewBundleWritesTheCDSReplicaSet(t *testing.T) {
 	if cfg.HA == nil {
 		t.Fatal("the bundle's CDS runs as the singleton, want the replica set")
 	}
-	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
+	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 || cfg.HA.Board.Bucket != "c8s-boards" {
 		t.Fatalf("replica set = %+v", cfg.HA)
 	}
 	doc, _ := readBundleDocument(t, dir, serverDir)

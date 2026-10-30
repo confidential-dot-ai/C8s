@@ -218,6 +218,10 @@ func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 		// reaches none of its cluster and joins nothing.
 		"replicas": []string{"127.0.0.9"},
 		"voters":   1,
+		"board": map[string]any{
+			"endpoint": "https://s3.example.org",
+			"bucket":   "c8s-boards",
+		},
 	}
 	data, err := yaml.Marshal(document)
 	if err != nil {

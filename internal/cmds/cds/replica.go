@@ -22,6 +22,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsboard"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -113,6 +116,10 @@ func newMember(cfg config, st stores) (*cdsha.Node, error) {
 		return nil, err
 	}
 	launchFile := sha256.Sum256(cfg.measuredFile)
+	board, err := boardDecrees(ha.Board, cfg.measured.ClusterID)
+	if err != nil {
+		return nil, err
+	}
 	return cdsha.NewNode(cdsha.Config{
 		Launch: cdsha.Launch{
 			ClusterID:    cfg.measured.ClusterID,
@@ -125,6 +132,7 @@ func newMember(cfg config, st stores) (*cdsha.Node, error) {
 		AttestationURL: cfg.attestationApiURL,
 		Timing:         haTimingOverride,
 		Replicas:       ha.Replicas,
+		Board:          board,
 		Allowlist:      st.allowlist,
 		Secrets:        st.secrets,
 		Ledger:         st.bindings,
@@ -373,4 +381,18 @@ func clusterKey(node *cdsha.Node, purpose string) attestation.ClusterKey {
 		}
 		return key
 	}
+}
+
+// boardDecrees reads the operator's signed decrees off the cluster's board,
+// and is none for a cluster whose configuration names no board: those
+// clusters take their decrees over the attested channel alone.
+func boardDecrees(board cdsconfig.Board, clusterID string) (func(context.Context) ([]cdsdecree.Signed, error), error) {
+	if !board.Names() {
+		return nil, nil
+	}
+	client, err := cdsboard.New(board, clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("ha.board: %w", err)
+	}
+	return client.Decrees, nil
 }

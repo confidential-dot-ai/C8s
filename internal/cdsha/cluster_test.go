@@ -110,10 +110,12 @@ func (c *liveCluster) leftWithin(r *liveReplica, within time.Duration) error {
 	return err
 }
 
-// liveCluster is a cluster of such replicas over shared launch values.
+// liveCluster is a cluster of such replicas, over the launch values, operator
+// key and board they share.
 type liveCluster struct {
 	t *testing.T
 	cluster
+	board *testBoard
 	// timing is what the replicas started next run with, and reads the
 	// newest format they read.
 	timing   Timing
@@ -126,6 +128,7 @@ func newLiveCluster(t *testing.T) *liveCluster {
 	return &liveCluster{
 		t:       t,
 		cluster: newCluster(t),
+		board:   &testBoard{},
 		timing:  testTiming,
 		reads:   Format,
 	}
@@ -253,6 +256,27 @@ func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort
 	return slices.Clone(b.addresses), nil
 }
 
+// testBoard is the cluster's board: the decrees an operator left on it, which
+// every replica reads for itself.
+type testBoard struct {
+	mu      sync.Mutex
+	decrees []cdsdecree.Signed
+}
+
+// holds leaves one decree on the board, as an operator with their own
+// credentials for the store does.
+func (b *testBoard) holds(signed cdsdecree.Signed) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.decrees = append(b.decrees, signed)
+}
+
+func (b *testBoard) list(context.Context) ([]cdsdecree.Signed, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.decrees), nil
+}
+
 // posted hands one decree to r, as its operator does.
 func (c *liveCluster) posted(r *liveReplica, signed cdsdecree.Signed) Delivered {
 	c.t.Helper()
@@ -282,6 +306,7 @@ func (c *liveCluster) replicaConfig(stub *mockapi.Stub) Config {
 		AttestationURL: stub.URL(),
 		Timing:         c.timing,
 		Replicas:       []string{testReplicaEntry},
+		Board:          c.board.list,
 		Allowlist:      inMemoryAllowlist(c.t),
 		Secrets:        secrets.NewMemoryStore(maxTestSecretPaths, maxTestPathsPerHolder, maxTestSecretValue),
 		Ledger:         sandboxledger.New(testBindingLife, maxTestSandboxBindings),
