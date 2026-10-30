@@ -1,8 +1,9 @@
-// The duties of the cluster's leader: it applies the operator's decrees, renews
-// the mesh CA certificate under the cluster's key, and bounds the allowlist
-// history. Each of them appends to the log, which only the leader does. Its
-// duties over the voter seats and over handing the cluster over run on loops
-// of their own (seats.go, handoff.go).
+// The duties of the cluster's leader: it applies the operator's decrees,
+// whether they were posted to a replica or left on the cluster's board
+// (board.go), renews the mesh CA certificate under the cluster's key, and
+// bounds the allowlist history. Each of them appends to the log, which only
+// the leader does. Its duties over the voter seats and over handing the
+// cluster over run on loops of their own (seats.go, handoff.go).
 
 package cdsha
 
@@ -36,6 +37,7 @@ func (n *Node) keepCluster(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
+		n.applyBoardDecrees(ctx)
 		n.renewMeshCA()
 		n.pruneHistory()
 	}

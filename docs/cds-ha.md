@@ -44,15 +44,18 @@ cluster; the log rules afterwards.
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
+| `ha.board` | the object store an operator may leave decrees in, beside posting them; optional | fixed for the cluster's life |
 | `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
 
 The CDS images a replica may run are not in the file at all: the Genesis
 decree carries the first set, and a `pins` decree replaces it.
 
 `c8s cds config new --replica ... --voters 3` writes the file, and `c8s node
-launch-config new` writes the same under `--cds-replica` and `--cds-voters`. A
-file with no `--replica` runs one CDS, which is the deployment
-[operator.md](operator.md) describes.
+launch-config new` writes the same under `--cds-replica` and `--cds-voters`.
+`--board-endpoint` and `--board-bucket` (`--cds-board-*`) name the board; a
+file without them runs a cluster that takes its decrees over the attested
+channel alone. A file with no `--replica` runs one CDS, which is the
+deployment [operator.md](operator.md) describes.
 
 ## Addresses
 
@@ -98,6 +101,13 @@ applied is `c8s cds ha decrees`, read over the same channel.
 names, which holds the decree until it acts on it. `--out` writes the signed
 decree to a file as well, which is what `launch-config add-agent
 --pin-decree` reads.
+
+A cluster whose launch file names a board has a second way in: the operator
+uploads the decree to `<prefix>/<cluster-id>/decrees/<intent>.json` with their
+own credentials, and the leader reads it there. It matters when the replica a
+decree is for cannot be reached from where the operator stands, and for a
+Recover a majority must see. A leader reads the first 64 objects of its board
+per turn, so keep `decrees/` short: a bucket lifecycle rule does the pruning.
 
 | Decree | What it does |
 |---|---|

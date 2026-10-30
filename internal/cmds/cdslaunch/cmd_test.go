@@ -188,7 +188,10 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 		"--replica", "cds-1.acme.example",
 		"--replica", "cds-2.acme.example",
 		"--replica", "cds-3.acme.example",
-		"--voters", "3")
+		"--voters", "3",
+		"--board-endpoint", "https://store.acme.example",
+		"--board-bucket", "c8s-boards",
+		"--board-prefix", "acme/prod")
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +201,14 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 	}
 	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
 		t.Fatalf("replica set = %+v", cfg.HA)
+	}
+	want := cdsconfig.Board{
+		Endpoint: "https://store.acme.example",
+		Bucket:   "c8s-boards",
+		Prefix:   "acme/prod",
+	}
+	if cfg.HA.Board != want {
+		t.Fatalf("board = %+v, want %+v", cfg.HA.Board, want)
 	}
 }
 
@@ -222,6 +233,7 @@ func TestNewRefusesAReplicaSetItCannotRun(t *testing.T) {
 		"no replica":          {"--voters", "3"},
 		"a replica twice":     {"--replica", "cds-1.acme.example", "--replica", "cds-1.acme.example", "--voters", "1"},
 		"a replica's port":    {"--replica", "cds-1.acme.example:8443", "--voters", "1"},
+		"a plain HTTP board":  {"--replica", "cds-1.acme.example", "--voters", "1", "--board-endpoint", "http://store.acme.example", "--board-bucket", "c8s-boards"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "cds")

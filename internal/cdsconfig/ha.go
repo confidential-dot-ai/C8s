@@ -26,12 +26,16 @@ type HA struct {
 	Replicas []string
 	// Voters seeds the voter count at Genesis.
 	Voters int
+	// Board is the untrusted object store the operator may leave decrees in
+	// beside posting them; a zero one is a cluster with no board.
+	Board Board
 }
 
 // haWire mirrors the document's ha block.
 type haWire struct {
-	Replicas []string `yaml:"replicas"`
-	Voters   int      `yaml:"voters"`
+	Replicas []string  `yaml:"replicas"`
+	Voters   int       `yaml:"voters"`
+	Board    boardWire `yaml:"board"`
 }
 
 // parse reads the block; a document without one runs the singleton CDS.
@@ -46,9 +50,14 @@ func (w *haWire) parse() (*HA, error) {
 	if err := checkVoters(w.Voters); err != nil {
 		return nil, err
 	}
+	board, err := w.Board.parse()
+	if err != nil {
+		return nil, err
+	}
 	return &HA{
 		Replicas: replicas,
 		Voters:   w.Voters,
+		Board:    board,
 	}, nil
 }
 
@@ -61,6 +70,7 @@ func (h HA) wire() *haWire {
 	return &haWire{
 		Replicas: h.Replicas,
 		Voters:   h.Voters,
+		Board:    h.Board.wire(),
 	}
 }
 

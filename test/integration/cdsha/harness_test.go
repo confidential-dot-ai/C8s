@@ -2,8 +2,8 @@
 
 // Package cdsha_test runs a CDS HA cluster of real processes: three `c8s cds`
 // replicas of one cluster on loopback addresses, each with its own
-// attestation-api, and an operator that posts the decrees they act on to
-// them.
+// attestation-api, and an operator that posts the decrees they act on to them
+// or leaves them on the cluster's fake S3 board.
 //
 // Run it with test/integration/cdsha/run.sh. Linux only: the replicas answer
 // at 127.0.77.0/24.
@@ -15,6 +15,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -41,6 +43,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsboard/boardtest"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
@@ -58,6 +61,8 @@ const (
 	// clientPort and peerPort are fixed in every cluster.
 	clientPort = 8443
 	peerPort   = clientPort + 1
+	// bucket is the board bucket the cluster's decrees may lie in.
+	bucket = "c8s-boards"
 	// clockSkewSeconds is every replica's --jwt-clock-skew, which is also how
 	// long after the cluster starts an operator token stays refused.
 	clockSkewSeconds = 1
@@ -158,12 +163,14 @@ type shape struct {
 }
 
 // cluster is one CDS HA cluster under test: the launch file its replicas
-// boot and the replica processes.
+// boot, the board its operator may decree on, and the replica processes.
 type cluster struct {
 	t          *testing.T
 	dir        string
 	config     []byte
 	configPath string
+	board      *boardtest.Server
+	roots      string
 	operator   *ecdsa.PrivateKey
 	signer     *operatorauth.Signer
 	// client verifies through an attestation-api of its own, so no scenario's
@@ -287,6 +294,9 @@ func newCluster(t *testing.T, size shape) *cluster {
 	t.Helper()
 	c := &cluster{t: t, dir: t.TempDir()}
 	c.requireFreeAddresses(size.replicas)
+	c.board = boardtest.Start(bucket)
+	t.Cleanup(c.board.Close)
+	c.roots = c.boardRoots()
 	c.operator = newKey(t)
 	c.signer = c.operatorSigner()
 	c.configure(size)
@@ -337,6 +347,10 @@ func (c *cluster) configure(size shape) {
 		"ha": map[string]any{
 			"replicas": addresses,
 			"voters":   size.voters,
+			"board": map[string]any{
+				"endpoint": c.board.Endpoint(),
+				"bucket":   bucket,
+			},
 		},
 	})
 	if err != nil {
@@ -398,7 +412,7 @@ func (c *cluster) restart(r *replica) {
 		"--port", strconv.Itoa(clientPort),
 		"--jwt-clock-skew", strconv.Itoa(clockSkewSeconds),
 		"--log-level", "debug",
-	}, nil)
+	}, []string{"SSL_CERT_FILE=" + c.roots})
 }
 
 // kill ends a replica's CDS process, as a lost VM does. The attestation-api
@@ -493,6 +507,42 @@ func (c *cluster) attestedClient(measurement string, alsoAccepted ...string) *ht
 		c.t.Fatal(err)
 	}
 	return client
+}
+
+// boardRoots writes the fake board's certificate where a replica's system
+// roots read it: the board speaks HTTPS, as the cluster's own does, and it is
+// the one endpoint a replica verifies that way.
+func (c *cluster) boardRoots() string {
+	c.t.Helper()
+	endpoint := strings.TrimPrefix(c.board.Endpoint(), "https://")
+	conn, err := tls.Dial("tcp", endpoint, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // the certificate is what this reads
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer conn.Close()
+	served := conn.ConnectionState().PeerCertificates
+	if len(served) != 1 {
+		c.t.Fatalf("the board serves a chain of %d certificates, want its one self-signed leaf", len(served))
+	}
+	roots := filepath.Join(c.dir, "board-roots.pem")
+	write(c.t, roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: served[0].Raw}))
+	return roots
+}
+
+// decreeOnTheBoard leaves one signed decree on the cluster's board, as an
+// operator with their own credentials for the store does.
+func (c *cluster) decreeOnTheBoard(d cdsdecree.Decree) string {
+	c.t.Helper()
+	signed, err := cdsdecree.Sign(d, c.operator)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	object, err := json.Marshal(signed)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	c.board.Put(path.Join(clusterID, "decrees", d.IntentID+".json"), object)
+	return d.IntentID
 }
 
 // genesis decrees the Genesis of r, as an operator who read its member id and
