@@ -82,6 +82,10 @@ type liveReplica struct {
 type liveCluster struct {
 	t *testing.T
 	cluster
+	// timing is what the replicas started next run with, and reads the
+	// newest format they read.
+	timing   Timing
+	reads    uint32
 	replicas []*liveReplica
 }
 
@@ -90,12 +94,14 @@ func newLiveCluster(t *testing.T) *liveCluster {
 	return &liveCluster{
 		t:       t,
 		cluster: newCluster(t),
+		timing:  testTiming,
+		reads:   Format,
 	}
 }
 
-// genesis starts count replicas and starts the cluster on the first of them.
-// They are then made voters, which the cluster does for itself later in this
-// stack.
+// genesis starts count replicas and starts the cluster on the first of them:
+// the operator decrees its Genesis, it starts the one-voter group, the rest
+// join, and the leader seats them until the voter seats are filled.
 func (c *liveCluster) genesis(count int) {
 	c.t.Helper()
 	for range count {
@@ -105,23 +111,31 @@ func (c *liveCluster) genesis(count int) {
 	c.decreeGenesis(first, count == 1)
 	c.started(first)
 	c.joined(len(c.replicas))
-	for _, r := range c.replicas[1:] {
-		c.addVoter(first, r)
-	}
+	c.votersSeated(c.fillableSeats())
 	c.settled(10 * time.Second)
 }
 
-// start is a fresh replica process of the cluster.
+var ownPeerPort = netip.MustParseAddrPort("127.0.0.1:0")
+
+// Every replica's discovery answers with the peer address of every replica started.
 func (c *liveCluster) start() *liveReplica {
+	c.t.Helper()
+	return c.startAt(ownPeerPort)
+}
+
+// At the address a stopped replica answered at, it is the process that replaces it.
+func (c *liveCluster) startAt(peer netip.AddrPort) *liveReplica {
 	c.t.Helper()
 	stub := c.attestationAPI()
 	resolve := &addressBook{}
 	cfg := c.replicaConfig(stub)
+	cfg.Peer = peer
 	cfg.Resolve = resolve.resolve
 	node, err := NewNode(cfg)
 	if err != nil {
 		c.t.Fatalf("new replica: %v", err)
 	}
+	readsUpTo(node, c.reads)
 	if err := node.Start(); err != nil {
 		c.t.Fatalf("start replica: %v", err)
 	}
@@ -231,9 +245,9 @@ func (c *liveCluster) replicaConfig(stub *mockapi.Stub) Config {
 	return Config{
 		Launch:         c.launch,
 		LaunchFile:     testLaunchFile,
-		Peer:           netip.MustParseAddrPort("127.0.0.1:0"),
+		Peer:           ownPeerPort,
 		AttestationURL: stub.URL(),
-		Timing:         testTiming,
+		Timing:         c.timing,
 		Replicas:       []string{testReplicaEntry},
 		Allowlist:      inMemoryAllowlist(c.t),
 		Secrets:        secrets.NewMemoryStore(maxTestSecretPaths, maxTestPathsPerHolder, maxTestSecretValue),
@@ -347,21 +361,35 @@ func raftAddressOf(address netip.AddrPort, r *liveReplica) raft.ServerAddress {
 	}.serverAddress()
 }
 
-// addVoter adds r to the configuration the leader holds.
-func (c *liveCluster) addVoter(leader, r *liveReplica) {
-	c.t.Helper()
-	server := voter(r)
-	if err := leader.node.raft.AddVoter(server.ID, server.Address, 0, 0).Error(); err != nil {
-		c.t.Fatalf("add voter: %v", err)
-	}
+func (c *liveCluster) fillableSeats() int {
+	return min(len(c.replicas), c.launch.Voters)
 }
 
-func voter(r *liveReplica) raft.Server {
-	return raft.Server{
-		Suffrage: raft.Voter,
-		ID:       raft.ServerID(r.node.member),
-		Address:  raft.ServerAddress(r.node.mux.Addr().String()),
+func (c *liveCluster) votersSeated(count int) {
+	c.t.Helper()
+	seated := fmt.Sprintf("%d voters in the cluster", count)
+	eventually(c.t, 30*time.Second, seated, func() bool {
+		leader := c.leader()
+		return leader != nil && len(c.voters(leader)) == count
+	})
+}
+
+func (c *liveCluster) voters(leader *liveReplica) []raft.ServerID {
+	return membersOf(leader, func(server raft.Server) bool { return server.Suffrage == raft.Voter })
+}
+
+func (c *liveCluster) nonVoters(leader *liveReplica) []raft.ServerID {
+	return membersOf(leader, func(server raft.Server) bool { return server.Suffrage != raft.Voter })
+}
+
+func membersOf(leader *liveReplica, holds func(raft.Server) bool) []raft.ServerID {
+	var members []raft.ServerID
+	for _, server := range leader.node.configuration() {
+		if holds(server) {
+			members = append(members, server.ID)
+		}
 	}
+	return members
 }
 
 // decreeEntry is the log entry r logs for one of the operator's decrees.
@@ -554,6 +582,15 @@ func (c *liveCluster) caughtUp(r *liveReplica, leader *liveReplica, within time.
 	eventually(c.t, within, fmt.Sprintf("replica %s applied index %d", r.node.member, applied), func() bool {
 		return r.node.fsm.AppliedIndex() >= applied
 	})
+}
+
+// Written before the replica starts, so before any reader of it exists.
+func readsUpTo(node *Node, format uint32) {
+	node.fsm.readable = format
+}
+
+func serves(n *Node) func() bool {
+	return func() bool { return n.Serving().OK }
 }
 
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {

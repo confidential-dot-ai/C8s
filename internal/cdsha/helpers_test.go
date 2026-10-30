@@ -183,6 +183,9 @@ func (r *replica) decree(kind cdsdecree.Kind) cdsdecree.Decree {
 		d.CDSPins = testPins(r.t, 0x22)
 	case cdsdecree.RotateKey:
 		d.BaseVersion = version
+	case cdsdecree.SetVoters:
+		d.BaseVersion = version
+		d.Voters = 1
 	case cdsdecree.Recover:
 		d.BaseVersion = version
 		d.TargetMember = testMember

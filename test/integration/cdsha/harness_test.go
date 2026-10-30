@@ -465,11 +465,95 @@ func (c *cluster) rollPins() *cdsdecree.PinDocument {
 	return pins
 }
 
+// The member is alive and answers nothing, as under a host that drops its packets.
+func (c *cluster) pause(r *replica) {
+	c.t.Helper()
+	c.signal(r, syscall.SIGSTOP)
+	c.logf("paused the process of replica %d", r.index)
+}
+
+func (c *cluster) resume(r *replica) {
+	c.t.Helper()
+	c.signal(r, syscall.SIGCONT)
+	c.logf("resumed the process of replica %d", r.index)
+}
+
+func (c *cluster) signal(r *replica, sig syscall.Signal) {
+	c.t.Helper()
+	if err := r.cds.cmd.Process.Signal(sig); err != nil {
+		c.t.Fatalf("signal %s to replica %d: %v", sig, r.index, err)
+	}
+}
+
+// Sorted, and empty while the cluster has no leader to report them.
+func (c *cluster) seated() []string {
+	return slices.Sorted(slices.Values(c.leaderReport().Voters))
+}
+
+func (c *cluster) withoutAVote() []string {
+	return slices.Sorted(slices.Values(c.leaderReport().NonVoters))
+}
+
+// An empty report while no replica leads.
+func (c *cluster) leaderReport() cdsha.Status {
+	leading := c.leader()
+	if leading == nil {
+		return cdsha.Status{}
+	}
+	reported, _ := c.status(leading)
+	return reported
+}
+
+func (c *cluster) holdingAVote(besides *replica) *replica {
+	c.t.Helper()
+	voters := c.seated()
+	for _, candidate := range c.others(besides) {
+		if reported, ok := c.status(candidate); ok && slices.Contains(voters, reported.ID) {
+			return candidate
+		}
+	}
+	c.t.Fatalf("no replica besides %d holds a voter seat; the leader holds %v",
+		besides.index, voters)
+	return nil
+}
+
+// The gate between the replicas of a roll.
+func (c *cluster) waitRollSafe(within time.Duration) {
+	c.t.Helper()
+	c.waitFor("the cluster to report one replica of it replaceable", within, func() bool {
+		safe := c.leaderReport().RollSafe
+		return safe != nil && safe.OK
+	})
+}
+
+// The seats a scenario empties are taken by the replicas left over, so a
+// scenario that cuts a voter off waits for every replica to be in first.
+func (c *cluster) waitEveryReplicaJoined(within time.Duration) {
+	c.t.Helper()
+	c.waitFor("every replica to be a member of the cluster", within, func() bool {
+		leading := c.leader()
+		return leading != nil && len(c.members(leading)) == len(c.replicas)
+	})
+}
+
+func (c *cluster) decreeVoters(to *replica, version uint64, seats int) (string, cdsha.Delivered) {
+	c.t.Helper()
+	decree := cdsdecree.Decree{
+		ClusterID:   clusterID,
+		IntentID:    cdsdecree.NewIntentID(),
+		Kind:        cdsdecree.SetVoters,
+		ExpiresAt:   time.Now().Add(time.Hour),
+		BaseVersion: version,
+		Voters:      seats,
+	}
+	return decree.IntentID, c.decree(to, decree)
+}
+
 // allApplied reports every replica holding the decree, at the version it produced.
 func (c *cluster) allApplied(intent string, version uint64) bool {
 	for _, r := range c.replicas {
 		reported, answered := c.status(r)
-		if !answered || !reported.Serving || reported.Version != version {
+		if !answered || !reported.Serving.OK || reported.Version != version {
 			return false
 		}
 		if !c.recorded(r, intent, version) {
@@ -569,7 +653,7 @@ func (c *cluster) serving() []*replica {
 	var answered []*replica
 	for _, r := range c.replicas {
 		reported, ok := c.status(r)
-		if !ok || !reported.Serving {
+		if !ok || !reported.Serving.OK {
 			continue
 		}
 		if code, _ := c.get(r, "/readyz"); code != http.StatusOK {
@@ -583,7 +667,8 @@ func (c *cluster) serving() []*replica {
 // leader is the replica the cluster elected, or nil while it has none.
 func (c *cluster) leader() *replica {
 	for _, r := range c.replicas {
-		if reported, ok := c.status(r); ok && reported.State == raft.Leader.String() && reported.Serving {
+		reported, ok := c.status(r)
+		if ok && reported.State == raft.Leader.String() && reported.Serving.OK {
 			return r
 		}
 	}

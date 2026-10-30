@@ -16,9 +16,11 @@ import (
 
 // The replica the operator's Genesis decree names starts the cluster as its
 // one voter, with the mesh CA the decree names, and the replicas that did not
-// start it join as non-voters.
+// start it join as non-voters. This cluster holds one voter seat, so no free
+// seat takes a joiner's vote from the leader's hands.
 func TestTheDecreedReplicaStartsTheClusterAndTheRestJoin(t *testing.T) {
 	c := newLiveCluster(t)
+	c.launch.Voters = 1
 	first := c.start()
 	second := c.start()
 	third := c.start()

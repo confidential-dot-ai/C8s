@@ -34,6 +34,9 @@ const (
 	// opRead asks the leader to confirm a read: a barrier of its own, and the
 	// watermark its state machine had applied behind it (lease.go).
 	opRead controlOp = "read"
+	// opStanding asks a member where it stands in the cluster, which is how
+	// a leader fills the voter seats (seats.go).
+	opStanding controlOp = "standing"
 )
 
 type controlRequest struct {
@@ -65,6 +68,10 @@ type controlAnswer struct {
 	// its barrier confirmed for a read; the replica that asked waits for its
 	// own state machine to reach it.
 	Index uint64 `json:"index,omitempty"`
+	// Voters, Applied and Reads answer opStanding.
+	Voters  []string `json:"voters,omitempty"`
+	Applied uint64   `json:"applied,omitempty"`
+	Reads   uint32   `json:"reads,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Delivered is what the cluster made of a decree another replica took.
@@ -88,6 +95,8 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 		return n.answerDecree(request.Decree, answer)
 	case opRead:
 		return n.answerRead(answer)
+	case opStanding:
+		return n.answerStanding(answer)
 	}
 	answer.Err = fmt.Sprintf("unknown control op %q", request.Op)
 	return answer

@@ -1,6 +1,7 @@
 // The duties of the cluster's leader: it applies the operator's decrees, renews
 // the mesh CA certificate under the cluster's key, and bounds the allowlist
-// history. Each of them appends to the log, which only the leader does.
+// history. Each of them appends to the log, which only the leader does. Its
+// duty over the voter seats runs on a loop of its own (seats.go).
 
 package cdsha
 

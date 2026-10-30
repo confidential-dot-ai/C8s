@@ -14,11 +14,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
-
-// maxVoters bounds the voter seats one cluster has.
-const maxVoters = 9
 
 // HA is the replica set one cluster's CDS runs as.
 type HA struct {
@@ -95,11 +93,9 @@ func checkReplica(entry string) error {
 	return cmdsutil.ValidateDNSName(entry)
 }
 
-// checkVoters bounds the voter count: an even one tolerates no more loss than
-// the odd count below it.
 func checkVoters(voters int) error {
-	if voters < 1 || voters > maxVoters || voters%2 == 0 {
-		return fmt.Errorf("ha.voters must be odd, between 1 and %d", maxVoters)
+	if err := cdsdecree.CheckVoterSeats(voters); err != nil {
+		return fmt.Errorf("ha.voters: %w", err)
 	}
 	return nil
 }

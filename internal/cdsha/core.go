@@ -173,6 +173,8 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 		next.Doubts = withoutDoubt(next.Doubts, d.IntentID)
 	case cdsdecree.UpdateMeasurements:
 		next.PinsDecree = &de.Decree
+	case cdsdecree.SetVoters:
+		next.Voters = d.Voters
 	case cdsdecree.DismissRecover:
 		next.Doubts = withoutDoubt(next.Doubts, d.RecoverIntent)
 		// The dismissed Recover is accounted for, so the host cannot have it

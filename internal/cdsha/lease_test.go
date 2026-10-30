@@ -16,7 +16,7 @@ func TestEveryReplicaOfTheClusterAnswersReads(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(3)
 	for _, r := range c.replicas {
-		eventually(t, 5*time.Second, "the replica answers reads", r.node.Serving)
+		eventually(t, 5*time.Second, "the replica answers reads", serves(r.node))
 		lease := r.node.lease.Load()
 		if lease == nil || r.node.fsm.AppliedIndex() < lease.index {
 			t.Fatalf("the replica answers reads under %+v, having applied index %d", lease, r.node.fsm.AppliedIndex())
@@ -37,7 +37,7 @@ func TestAReplicaAnswersNoReadBeforeItAppliedTheWatermark(t *testing.T) {
 	ahead := *lease
 	ahead.index = follower.node.fsm.AppliedIndex() + 1
 	follower.node.lease.Store(&ahead)
-	if follower.node.Serving() {
+	if follower.node.Serving().OK {
 		t.Fatal("a replica answered reads under a watermark it had not applied")
 	}
 }
@@ -81,7 +81,7 @@ func TestACutOffReplicaAnswersNoReadAndSaysWhy(t *testing.T) {
 	cut := c.follower()
 	c.partition(cut, true)
 	eventually(t, 5*time.Second, "the cut replica answers no read", func() bool {
-		return !cut.node.Serving()
+		return !cut.node.Serving().OK
 	})
 	eventually(t, 5*time.Second, "the cut replica says why it confirms no read", func() bool {
 		return cut.node.outage.Load() != nil
@@ -94,7 +94,7 @@ func TestACutOffReplicaAnswersNoReadAndSaysWhy(t *testing.T) {
 	}
 	c.partition(cut, false)
 	eventually(t, 15*time.Second, "the replica that returned confirms reads again", func() bool {
-		return cut.node.Serving() && cut.node.outage.Load() == nil
+		return cut.node.Serving().OK && cut.node.outage.Load() == nil
 	})
 }
 
@@ -126,7 +126,7 @@ func TestANewLeaderNeedsANewLease(t *testing.T) {
 	if follower.node.holdsNow(&underTheOldLeader) {
 		t.Fatal("a replica answers reads under the lease of a leader that is gone")
 	}
-	eventually(t, 10*time.Second, "a lease from the new leader", follower.node.Serving)
+	eventually(t, 10*time.Second, "a lease from the new leader", serves(follower.node))
 }
 
 // A leader that lost its quorum confirms no read: a barrier needs one, so a
@@ -144,7 +144,7 @@ func TestALeaderWithoutAQuorumConfirmsNoRead(t *testing.T) {
 		t.Fatal("a leader whose peers are gone confirmed a read")
 	}
 	eventually(t, 5*time.Second, "the leader answers no read", func() bool {
-		return !leader.node.Serving()
+		return !leader.node.Serving().OK
 	})
 }
 
@@ -212,12 +212,12 @@ func TestAClockJumpStopsReadsUntilTheNextLease(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(3)
 	node := c.follower().node
-	eventually(t, 5*time.Second, "the replica answers reads", node.Serving)
+	eventually(t, 5*time.Second, "the replica answers reads", serves(node))
 	node.clockJumps.Add(1)
-	if node.Serving() {
+	if node.Serving().OK {
 		t.Fatal("a replica whose clock jumped answered a read under the lease it held")
 	}
-	eventually(t, 5*time.Second, "a lease under the clock it has now", node.Serving)
+	eventually(t, 5*time.Second, "a lease under the clock it has now", serves(node))
 }
 
 // The wall clock moving apart from the monotonic one is a jump: the host
@@ -255,7 +255,7 @@ func TestAReplicaWithNoClusterAnswersNoRead(t *testing.T) {
 	if reason := r.node.outage.Load().reason; !strings.Contains(reason, "holds no cluster") {
 		t.Fatalf("a replica with no cluster reports %q", reason)
 	}
-	if r.node.Serving() {
+	if r.node.Serving().OK {
 		t.Fatal("a replica with no cluster answered a read")
 	}
 }
@@ -266,7 +266,7 @@ func TestAStoppingReplicaAnswersNoRead(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(3)
 	leaving := c.follower()
-	eventually(t, 5*time.Second, "the replica answers reads", leaving.node.Serving)
+	eventually(t, 5*time.Second, "the replica answers reads", serves(leaving.node))
 	c.stop(leaving)
 	if leaving.node.lease.Load() != nil {
 		t.Fatal("a replica that stopped kept the lease it answered reads under")
@@ -280,13 +280,13 @@ func TestAFailedConfirmationLeavesAStandingLeaseAlone(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(3)
 	follower := c.follower()
-	eventually(t, 5*time.Second, "the replica answers reads", follower.node.Serving)
+	eventually(t, 5*time.Second, "the replica answers reads", serves(follower.node))
 	follower.node.refreshFailed(errors.New("the leader did not answer"))
-	if follower.node.lease.Load() == nil || !follower.node.Serving() {
+	if follower.node.lease.Load() == nil || !follower.node.Serving().OK {
 		t.Fatal("a confirmation that failed ended a lease that still holds")
 	}
 	eventually(t, 5*time.Second, "the replica confirms reads again", func() bool {
-		return follower.node.outage.Load() == nil && follower.node.Serving()
+		return follower.node.outage.Load() == nil && follower.node.Serving().OK
 	})
 }
 
@@ -300,7 +300,7 @@ func TestAReplicaThatIsNotStartedConfirmsNoRead(t *testing.T) {
 	if err := node.ConfirmRead(); err == nil {
 		t.Fatal("a replica that is not started confirmed a read")
 	}
-	if node.Serving() {
+	if node.Serving().OK {
 		t.Fatal("a replica that is not started answered a read")
 	}
 }
