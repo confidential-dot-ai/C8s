@@ -23,12 +23,12 @@ import (
 // to hold against the credential holder, so the role must not reach RBAC,
 // admission, the privileged namespaces, or the kubelet.
 const (
-	nodeImageCredReleaseService = "../../../node-guest-image/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
+	nodeImageCredReleaseService = "../../../images/node-guest/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
 	nodeImageCredReleaseDropIns = nodeImageCredReleaseService + ".d/*.conf"
-	nodeImageCredReleaseRBAC    = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml"
-	nodeImagePSAReadyScript     = "../../../node-guest-image/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
-	nodeImageLogReaderRBAC      = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/log-reader-rbac.yaml"
-	nodeImageSync               = "../../../node-guest-image/c8s/mkosi.sync"
+	nodeImageCredReleaseRBAC    = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml"
+	nodeImagePSAReadyScript     = "../../../images/node-guest/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
+	nodeImageLogReaderRBAC      = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/log-reader-rbac.yaml"
+	nodeImageSync               = "../../../images/node-guest/c8s/mkosi.sync"
 )
 
 func TestNodeImageCredentialReleaseConfiguration(t *testing.T) {
@@ -140,7 +140,7 @@ func TestNodeImageCredentialReleaseConfiguration(t *testing.T) {
 	// The production gate waits for every guard mkosi.sync stages as a
 	// reference copy (GUARDS=), including the two RBAC AddOns, then exercises
 	// the real admission chain: PodSecurity as a non-granter, the operator
-	// scope as the baked --cert-org group. node-guest-image/tests/psa-ready-test.sh
+	// scope as the baked --cert-org group. images/node-guest/tests/psa-ready-test.sh
 	// executes this exact script and proves these are behavior, not inert
 	// strings; the policies' shapes and expressions are tested in
 	// internal/helmchart.

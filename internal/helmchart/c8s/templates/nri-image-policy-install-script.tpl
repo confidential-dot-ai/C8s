@@ -340,7 +340,7 @@ policy:
        TCB against the cluster admin, which needs a measured base allowlist to exempt;
        the base above is rendered from chart values, so the same admin chooses
        it. cvmMode=node runs the node image's baked config instead, where the
-       base is measured — see node-guest-image/c8s/image-policy.yaml.in. */}}
+       base is measured — see images/node-guest/c8s/image-policy.yaml.in. */}}
   sandbox: "off"
 {{- if $root.Values.nriImagePolicy.policy.exemptNamespaces }}
   exempt_namespaces:
@@ -359,7 +359,7 @@ logging:
   level: {{ $root.Values.nriImagePolicy.logLevel | quote }}
 {{- if not $root.Values.node.baked }}
 {{/* The mesh policy of an install: the same shape the node image measures
-     (node-guest-image/c8s/image-policy.yaml.in), rendered from chart values
+     (images/node-guest/c8s/image-policy.yaml.in), rendered from chart values
      because nothing here is measured. The enforcer accepts it only on this
      lane, which is for test clusters (decision 5). */}}
 {{- if not $root.Values.nriImagePolicy.mesh.resolver }}

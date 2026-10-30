@@ -235,7 +235,7 @@ jobs:
         run: |
           chmod 0600 gate-signing/module-signing.key
           install -m 0644 gate-signing/module-signing.crt \
-            c8s/node-guest-image/module-signing.crt
+            c8s/images/node-guest/module-signing.crt
 
       - name: Download gate core images
         if: inputs.gate == true
@@ -386,7 +386,7 @@ jobs:
           path: |
             confidential-os-builder/output/gpu/staged
             confidential-os-builder/output/gpu/stage.stamp
-          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/node-guest-image/kernel/c8s.config','c8s/node-guest-image/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/node-guest-image/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/node-guest-image/build','c8s/node-guest-image/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
+          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
 
       - name: Cache kernel-builder tools tree
         # mkosi.output (image + stamp) is what the kernel short-circuit path
@@ -411,8 +411,8 @@ jobs:
         with:
           path: |
             confidential-os-builder/output/kernel
-            c8s/node-guest-image/kernel/config-x86_64-*.snapshot
-          key: ${{ runner.os }}-kernel-v3-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/node-guest-image/kernel/c8s.config','c8s/node-guest-image/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/node-guest-image/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/node-guest-image/build','c8s/node-guest-image/module-signing.crt') }}
+            c8s/images/node-guest/kernel/config-x86_64-*.snapshot
+          key: ${{ runner.os }}-kernel-v3-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt') }}
 
       - name: Rebuild the kernel when its toolchain is gone
         # confos kernel short-circuits on the manifest before it ensures the
@@ -427,7 +427,7 @@ jobs:
           path: |
             confidential-os-builder/mkosi/base/mkosi.tools
             confidential-os-builder/mkosi/base/mkosi.tools.manifest
-          key: ${{ runner.os }}-c8s-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/node-guest-image/c8s/mkosi.conf') }}
+          key: ${{ runner.os }}-c8s-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/node-guest/c8s/mkosi.conf') }}
 
       - name: Cache apt package cache
         # mkosi's package cache for every subimage (initrd, base, main). Keeps
@@ -441,7 +441,7 @@ jobs:
             !confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
           # conf-only globs: profile mkosi.extra trees carry dangling systemd
           # enablement symlinks, which hashFiles refuses to hash.
-          key: ${{ runner.os }}-pkgcache-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/node-guest-image/c8s/mkosi.conf') }}
+          key: ${{ runner.os }}-pkgcache-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/node-guest/c8s/mkosi.conf') }}
           restore-keys: |
             ${{ runner.os }}-pkgcache-
 
@@ -452,7 +452,7 @@ jobs:
           path: |
             confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
             !confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
-          key: ${{ runner.os }}-c8s-artifacts-${{ hashFiles('c8s/node-guest-image/c8s/mkosi.sync') }}
+          key: ${{ runner.os }}-c8s-artifacts-${{ hashFiles('c8s/images/node-guest/c8s/mkosi.sync') }}
           restore-keys: |
             ${{ runner.os }}-c8s-artifacts-
 
@@ -559,11 +559,11 @@ jobs:
           # hands C8S_REF to mkosi.sync via confos --sync-input (can't cross
           # mkosi's sudo sandbox as an env var). The c8s_ref input overrides
           # it to rebuild a published release. Definition lives in this repo:
-          # the script stages ../c8s/node-guest-image/c8s via --profile-dir.
+          # the script stages ../c8s/images/node-guest/c8s via --profile-dir.
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # The build script requires an explicit platform (no default). The
           # matrix publishes both measured platform variants.
-          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/node-guest-image/build \
+          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/images/node-guest/build \
             ${{ inputs.ssh && '--profile ssh' || '' }}
 
       - name: Make the tools trees cache-safe
@@ -604,7 +604,7 @@ jobs:
           path: |
             confidential-os-builder/output/gpu/staged
             confidential-os-builder/output/gpu/stage.stamp
-          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/node-guest-image/kernel/c8s.config','c8s/node-guest-image/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/node-guest-image/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/node-guest-image/build','c8s/node-guest-image/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
+          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
 
       - name: Upload measurement evidence (gate)
         # Gate mode ends here: evidence out, nothing published.
@@ -628,7 +628,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kernel-snapshot-${{ github.run_id }}
-          path: c8s/node-guest-image/kernel/config-x86_64-${{ inputs.dev && 'c8s-dev' || 'c8s' }}.snapshot
+          path: c8s/images/node-guest/kernel/config-x86_64-${{ inputs.dev && 'c8s-dev' || 'c8s' }}.snapshot
           if-no-files-found: error
           retention-days: 7
 

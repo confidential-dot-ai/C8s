@@ -393,7 +393,7 @@ true
 Where nginx reads nginx.conf, and on a baked node the tls-cds.conf and
 tls-acme.conf snippets the launch file's tls.conf includes: the nginx
 ConfigMap, or on a baked node the image directory mkosi.sync installs them in
-(node-guest-image/c8s/mkosi.sync), mounted read-only from the measured /usr
+(images/node-guest/c8s/mkosi.sync), mounted read-only from the measured /usr
 instead of a ConfigMap the control plane can edit.
 */}}
 {{- define "router.configDir" -}}

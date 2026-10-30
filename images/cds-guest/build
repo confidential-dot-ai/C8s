@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the C8s CDS image from THIS repo's profile, using a
 # confidential-os-builder checkout purely as the builder, as
-# node-guest-image/build does for the node image.
+# images/node-guest/build does for the node image.
 #
 # The CDS VM carries the trust root and nothing else, so the composition is
 # confos's base + attest plus ./cds, which stages the measured c8s binary, the

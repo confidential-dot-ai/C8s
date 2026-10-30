@@ -294,8 +294,7 @@ cmd/               Binaries: c8s, get-cert, armtls-mesh, nri-image-policy
 internal/          Operator, webhook, attestation, mesh CA, secret store,
                    embedded Helm chart
 pkg/               Public Go libraries (see Libraries above)
-node-guest-image/  The node-image definition for node-as-CVM (new home;
-                   phase 0 — nothing consumes it from here yet)
+images/node-guest/ The node-image definition for node-as-CVM
 images/cds-guest/  The CDS-image definition for the CDS as its own CVM
 docs/              Design and operator docs
 samples/           Example manifests

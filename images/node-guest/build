@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Build the C8s node image from THIS repo's profile, using a
+# confidential-os-builder checkout purely as the builder (c8s#264).
+# Drop-in replacement for confos's bin/build-c8s: same env contract and
+# profile stack/order — only the c8s profile content (./c8s, staged via
+# --profile-dir) and the kernel fragments (./kernel) come from here, and
+# C8S_REF / C8S_REGISTRY reach the profile's mkosi.sync via --sync-input
+# (an exported var never reaches the sync: mkosi runs under sudo, which
+# strips the env).
+#
+# The full GPU node image is base + gpu + attest-gpu + C8s. That takes
+# four ordered steps because all host-side staging must precede one
+# `confos build` (the Rust driver wipes mkosi.local on build exit) and the
+# NVIDIA modules must compile against the already-built kernel tree:
+#
+#   1. confos kernel          — build/cache the kernel with kernel/c8s.config
+#   2. bin/confos-fetch-gpu    — build+sign NVIDIA modules, stage userspace
+#   3. bin/confos-fetch-attest-gpu — pre-stage the GPU attestation-api binary
+#      + libnvat into mkosi.local (set ATTEST_GPU_BIN + LIBNVAT; CI builds the
+#      binary with --features nvidia-gpu-attest against a vendored libnvat)
+#   4. confos build           — the c8s profile's own mkosi.sync fetches
+#      rke2 + airgap bundles + nri-image-policy during this step
+#
+# The final build hits the kernel cache (same fragment fingerprint — the
+# fingerprint hashes the fragment's content, wherever it lives) so it does
+# not rebuild and clobber the tree the modules were built against.
+#
+# Knobs:
+#   C8S_PLATFORM=      REQUIRED. tdx or snp — the CVM TEE this image launches
+#                      on. No default anywhere: the profile is platform-
+#                      neutral and mkosi.sync renders every platform-
+#                      dependent bit (cred-release platform, node label,
+#                      NRI floor platform) from this one value; the sync
+#                      refuses to run without it. The guest kernel carries
+#                      both TEEs' symbols via confos kernel/required.config.
+#   C8S_DEV=1          demo/debug build: kernel/c8s-dev.config fragment
+#                      (8250 serial re-enabled) + the dev profile
+#                      (console=ttyS0, passwordless serial autologin) +
+#                      no exec denial (kubectl exec/attach/port-forward
+#                      work). Different measurement, root
+#                      shell on the host-visible serial socket — never ship.
+#                      Default name: c8s-dev.
+#   C8S_NAME=...       output name (default c8s → output/c8s/)
+#   C8S_MEMORY=...     default-memory recorded in the manifest / used by
+#                      `confos run` (default 16G — etcd OOMs at the 4G default)
+#   C8S_REF=...        REQUIRED. Bake the host binary and core container
+#                      images from a specific C8s COMMIT (short SHA) or
+#                      release tag; mkosi.sync resolves nri-image-policy:<ref>,
+#                      c8s-operator:<ref> and armtls-mesh:<ref> to digests and
+#                      has no default. The images must be published first
+#                      (c8s docker.yml on main, or workflow_dispatch for a
+#                      branch). Use a branch SHA to test an unmerged C8s build
+#                      end-to-end.
+#   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
+#                      instead of pulling nri-image-policy:<C8S_REF>. The
+#                      core container images must support its chart's commands.
+#   C8S_IMAGES_DIR=... local OCI layouts for c8s-operator and armtls-mesh,
+#                      tagged with C8S_REF. Requires C8S_BINARY. The repro gate
+#                      shares these container inputs between both builds.
+#   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
+#                      repo's checkout).
+#   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
+#                      private half of images/node-guest/module-signing.crt,
+#                      used to sign the NVIDIA modules. Required for GPU
+#                      builds; CI supplies it from a secret. The public half
+#                      is committed and measured — see MODULE-SIGNING.md.
+#
+# Extra args are passed through to `confos build`, e.g.:
+#   C8S_PLATFORM=tdx images/node-guest/build --profile ssh   # + SSH for bring-up
+#   C8S_PLATFORM=snp images/node-guest/build                  # SEV-SNP node image
+set -euo pipefail
+# Fail before any long step; mkosi.sync re-validates (the load-bearing gate,
+# reachable without this wrapper).
+case "${C8S_PLATFORM:-}" in
+tdx|snp) ;;
+*)  echo "images/node-guest/build: C8S_PLATFORM must be tdx or snp, got '${C8S_PLATFORM:-}'" >&2; exit 1 ;;
+esac
+[ -n "${C8S_REF:-}" ] \
+    || { echo "images/node-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+if [ -n "${C8S_IMAGES_DIR:-}" ]; then
+    [ -f "${C8S_BINARY:-}" ] || { echo "images/node-guest/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
+    C8S_IMAGES_DIR=$(realpath -e -- "$C8S_IMAGES_DIR")
+    for image in c8s-operator armtls-mesh; do
+        [ -f "$C8S_IMAGES_DIR/$image/index.json" ] || {
+            echo "images/node-guest/build: missing local OCI layout for $image" >&2; exit 1;
+        }
+    done
+fi
+IMAGE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CONFOS_DIR=${CONFOS_DIR:-"$IMAGE_DIR/../../../confidential-os-builder"}
+[ -x "$CONFOS_DIR/bin/confos" ] || { echo "images/node-guest/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
+cd "$CONFOS_DIR"
+FRAGMENT="$IMAGE_DIR/kernel/c8s.config"
+DEV_PROFILE=()
+if [ "${C8S_DEV:-0}" = 1 ]; then
+    FRAGMENT="$IMAGE_DIR/kernel/c8s-dev.config"
+    DEV_PROFILE=(--profile dev)
+    : "${C8S_NAME:=c8s-dev}"
+fi
+KB_PKGS=dwarves,python3,pkg-config,zlib1g-dev
+bin/confos kernel \
+    --kernel-config-fragment "$FRAGMENT" \
+    --module-signing-cert "$IMAGE_DIR/module-signing.crt" \
+    --kernel-builder-package "$KB_PKGS"
+# Match confos-fetch-gpu's kernel tree lookup. Validate the actual resolved
+# config even on a cache hit, before staging modules or the image.
+KVER=$(sed -n 's/^LINUX_VERSION=//p' kernel/version)
+[[ -n "$KVER" ]] \
+    || { echo "images/node-guest/build: missing LINUX_VERSION in kernel/version" >&2; exit 1; }
+bash "$IMAGE_DIR/check-apparmor-config.sh" "output/kernel/build/linux-$KVER/.config"
+# gpu-cc-enforce runs only at boot, so no PCI hotplug driver may be built.
+! grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "output/kernel/build/linux-$KVER/.config" \
+    || { echo "images/node-guest/build: resolved kernel enables the PCI hotplug symbols above; gpu-cc-enforce would miss a hot-added GPU" >&2; exit 1; }
+PROFILES=(--profile gpu --profile attest-gpu --profile c8s)
+# Fingerprint-gated: the module build must rerun iff the kernel, the fetch
+# script (NVIDIA pins), or the signing cert changed. The kernel manifest
+# covers the kernel side; signatures are deterministic, so a staged tree
+# with a matching stamp is byte-identical to a fresh one. The tree is
+# mirrored under output/ because confos build wipes mkosi.local on exit.
+GPU_STAMP="output/gpu/stage.stamp"
+GPU_MIRROR="output/gpu/staged"
+GPU_FPR=$(cat output/kernel/manifest.json bin/confos-fetch-gpu "$IMAGE_DIR/module-signing.crt" | sha256sum | cut -d' ' -f1)
+if [ -d "$GPU_MIRROR" ] && [ "$(cat "$GPU_STAMP" 2>/dev/null)" = "$GPU_FPR" ]; then
+    echo "staged GPU tree matches $GPU_FPR — restoring mirror, skipping confos-fetch-gpu"
+    rm -rf mkosi/base/mkosi.local/mkosi.extra
+    mkdir -p mkosi/base/mkosi.local
+    cp -a "$GPU_MIRROR" mkosi/base/mkosi.local/mkosi.extra
+else
+    echo "staged GPU tree unusable (mirror: $([ -d "$GPU_MIRROR" ] && echo present || echo missing);" \
+         "stamp: $(cat "$GPU_STAMP" 2>/dev/null || echo none); want: $GPU_FPR) — running confos-fetch-gpu"
+    MODULE_SIG_CERT="$IMAGE_DIR/module-signing.crt" bin/confos-fetch-gpu
+    rm -rf "$GPU_MIRROR"
+    mkdir -p "$(dirname "$GPU_MIRROR")"
+    cp -a mkosi/base/mkosi.local/mkosi.extra "$GPU_MIRROR"
+    echo "$GPU_FPR" > "$GPU_STAMP"
+fi
+bin/confos-fetch-attest-gpu
+if [ -n "${C8S_BINARY:-}" ]; then
+    [ -f "$C8S_BINARY" ] || { echo "images/node-guest/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
+    install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
+fi
+if [ -n "${C8S_IMAGES_DIR:-}" ]; then
+    rm -rf mkosi/base/mkosi.local/core-images
+    mkdir -p mkosi/base/mkosi.local/core-images
+    cp -a "$C8S_IMAGES_DIR/." mkosi/base/mkosi.local/core-images/
+fi
+exec bin/confos build "${C8S_NAME:-c8s}" \
+    "${PROFILES[@]}" \
+    ${DEV_PROFILE[@]+"${DEV_PROFILE[@]}"} \
+    --profile-dir "$IMAGE_DIR/c8s" \
+    --module-signing-cert "$IMAGE_DIR/module-signing.crt" \
+    --sync-input "platform=${C8S_PLATFORM}" \
+    --sync-input "c8s-ref=${C8S_REF}" \
+    --sync-input "c8s-registry=${C8S_REGISTRY:-}" \
+    --sync-input "c8s-binary=${C8S_BINARY:+1}" \
+    --sync-input "c8s-images=${C8S_IMAGES_DIR:+1}" \
+    --sync-input "dev=${C8S_DEV:-0}" \
+    --kernel-config-fragment "$FRAGMENT" \
+    --kernel-builder-package "$KB_PKGS" \
+    --platform "$C8S_PLATFORM" \
+    --memory "${C8S_MEMORY:-16G}" \
+    "$@"

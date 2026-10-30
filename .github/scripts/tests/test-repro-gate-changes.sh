@@ -48,7 +48,7 @@ set_paths docs/development.md
 expect_result false
 
 reset_case
-set_paths node-guest-image/mkosi.conf
+set_paths images/node-guest/c8s/mkosi.conf
 expect_result true
 
 reset_case

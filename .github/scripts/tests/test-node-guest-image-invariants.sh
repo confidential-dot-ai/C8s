@@ -8,7 +8,9 @@ repo_dir=$(cd "$test_dir/../../.." && pwd)
 confos_dir=$(cd "$repo_dir/confos" && pwd -P)
 fixture_dir=$(mktemp -d)
 trap 'rm -rf -- "$fixture_dir"' EXIT
-cp -a "$repo_dir/node-guest-image" "$repo_dir/.github" "$fixture_dir/"
+mkdir -p "$fixture_dir/images"
+cp -a "$repo_dir/images/node-guest" "$fixture_dir/images/"
+cp -a "$repo_dir/.github" "$fixture_dir/"
 # The gate also pins the runtime wrapper's compiled real-runc path against
 # mkosi.sync, so the fixture needs that package at its repo-relative path.
 mkdir -p "$fixture_dir/internal/cmds"
@@ -17,7 +19,7 @@ mkdir -p "$fixture_dir/confos/mkosi/initrd/mkosi.extra"
 ln -s "$confos_dir/kernel" "$fixture_dir/confos/kernel"
 fixture_init="$fixture_dir/confos/mkosi/initrd/mkosi.extra/init"
 cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
-probe="$fixture_dir/node-guest-image/c8s/mkosi.extra/usr/local/bin/invariant-write-test.sh"
+probe="$fixture_dir/images/node-guest/c8s/mkosi.extra/usr/local/bin/invariant-write-test.sh"
 tests=0
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -95,7 +97,7 @@ tests=$((tests + 1))
 # hotplug (#669). Fragment edits go to both fragments so the c8s-dev
 # superset check still passes and the hotplug check is what fails.
 cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
-kernel_dir="$fixture_dir/node-guest-image/kernel"
+kernel_dir="$fixture_dir/images/node-guest/kernel"
 cp -a "$kernel_dir" "$fixture_dir/kernel.orig"
 rejects_hotplug() {
   local name=$1 expected=$2 edit=$3 config

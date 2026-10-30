@@ -163,7 +163,7 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 
 // The measured floor writes a static-pod flag whose value RKE2 takes from
 // this node's launch document as "<flag>=<placeholder>"
-// (node-guest-image/c8s/image-policy.yaml.in).
+// (images/node-guest/c8s/image-policy.yaml.in).
 const (
 	nodeNamePlaceholder             = "${NODE_NAME}"
 	nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"

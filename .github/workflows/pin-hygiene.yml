@@ -8,7 +8,7 @@ on:
       - ".github/actions/**"
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
-      - "node-guest-image/c8s/mkosi.sync"
+      - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
   workflow_dispatch:
 
@@ -26,8 +26,8 @@ jobs:
           bash .github/scripts/pin-manifest.sh validate \
             --manifest .github/build-pins.json
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
-          if grep -nE '^C8S_REF="\$\{C8S_REF:-' node-guest-image/c8s/mkosi.sync; then
-            echo "::error file=node-guest-image/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
+          if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
+            echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
           fi
           # Every third-party action is a 40-hex commit. A tag or branch is
           # whatever its owner repoints it at, on a runner holding GHCR push

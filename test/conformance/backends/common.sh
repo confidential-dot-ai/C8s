@@ -241,7 +241,7 @@ image_ref() {
 }
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
-# which the node image bakes as the equal value (node-guest-image/c8s/
+# which the node image bakes as the equal value (images/node-guest/c8s/
 # image-policy.yaml.in, allowlist.pull.interval). The steps poll
 # applied_version for the served version, with a deadline in these; where the
 # backend cannot reach the plugin they wait this out instead.

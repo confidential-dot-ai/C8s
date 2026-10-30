@@ -11,7 +11,7 @@ import (
 // handlers (exec, attach, port-forward) and ephemeral containers stay closed
 // at the apiserver for every principal. Applied by RKE2, not the chart, so it
 // is read from the image tree here like psa-level-policy.
-const podExecPolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/pod-exec-policy.yaml"
+const podExecPolicyPath = "../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/pod-exec-policy.yaml"
 
 func TestPodExecPolicyShape(t *testing.T) {
 	t.Parallel()

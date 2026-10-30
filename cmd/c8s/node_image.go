@@ -660,7 +660,7 @@ func namespacedNodeImageKind(kind string) bool {
 }
 
 // routerWorkloadKey is the workload whose front-door container the measured
-// base pins (node-guest-image/c8s/image-policy.yaml.in).
+// base pins (images/node-guest/c8s/image-policy.yaml.in).
 const routerWorkloadKey = "Deployment/c8s-router"
 
 // frontDoorImage is the image the router's nginx container runs. The node

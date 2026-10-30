@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# node-guest-image invariants gate, run by the node-guest-image-lint workflow.
+# images/node-guest invariants gate, run by the node-guest-image-lint workflow.
 # Runs from the repo root against the pinned confos checkout at ./confos.
 #
 # Inputs (env):
@@ -10,16 +10,16 @@
 set -euo pipefail
 
 : "${CONFOS_REF:?CONFOS_REF must be set}"
-ngi=node-guest-image
+image=images/node-guest
 
 # kernel/c8s.config must be a superset of confos kernel/gpu.config:
 # only one --kernel-config-fragment is accepted per build, so the
 # C8s fragment duplicates the gpu lines verbatim. Catch drift when
 # gpu.config changes under the pinned CONFOS_REF.
 missing=$(grep -E '^CONFIG_|^# CONFIG_.* is not set$' confos/kernel/gpu.config \
-          | grep -vFxf "$ngi/kernel/c8s.config" || true)
+          | grep -vFxf "$image/kernel/c8s.config" || true)
 if [ -n "$missing" ]; then
-  echo "::error::$ngi/kernel/c8s.config must contain every effective line of confos kernel/gpu.config; missing:"
+  echo "::error::$image/kernel/c8s.config must contain every effective line of confos kernel/gpu.config; missing:"
   echo "$missing"
   exit 1
 fi
@@ -27,11 +27,11 @@ fi
 # c8s-dev.config (C8S_DEV=1 demo builds) is the union of c8s.config
 # and confos dev.config, committed verbatim for the same one-fragment
 # reason.
-for src in "$ngi/kernel/c8s.config" confos/kernel/dev.config; do
+for src in "$image/kernel/c8s.config" confos/kernel/dev.config; do
   missing=$(grep -E '^CONFIG_|^# CONFIG_.* is not set$' "$src" \
-            | grep -vFxf "$ngi/kernel/c8s-dev.config" || true)
+            | grep -vFxf "$image/kernel/c8s-dev.config" || true)
   if [ -n "$missing" ]; then
-    echo "::error::$ngi/kernel/c8s-dev.config must contain every effective line of $src; missing:"
+    echo "::error::$image/kernel/c8s-dev.config must contain every effective line of $src; missing:"
     echo "$missing"
     exit 1
   fi
@@ -41,11 +41,11 @@ done
 # out, which is why confos's 99-kspp-hardening.conf omits the key). The
 # profile must therefore latch kernel.modules_disabled itself: the gpu
 # profile's latch is absent from the GPU-less composition.
-latch="$ngi/c8s/mkosi.extra/etc/systemd/system/c8s-modules-latch.service"
-preset="$ngi/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset"
-if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
+latch="$image/c8s/mkosi.extra/etc/systemd/system/c8s-modules-latch.service"
+preset="$image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset"
+if grep -qx 'CONFIG_MODULES=y' "$image/kernel/c8s.config"; then
   if ! grep -qF 'kernel.modules_disabled=1' "$latch"; then
-    echo "::error::$ngi/kernel/c8s.config sets CONFIG_MODULES=y, so $latch must set kernel.modules_disabled=1"
+    echo "::error::$image/kernel/c8s.config sets CONFIG_MODULES=y, so $latch must set kernel.modules_disabled=1"
     exit 1
   fi
   if ! grep -qx 'enable c8s-modules-latch.service' "$preset"; then
@@ -61,7 +61,7 @@ fi
 # The baked NRI template's only digests are the RKE2 system floor's.
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.
-policy="$ngi/c8s/image-policy.yaml.in"
+policy="$image/c8s/image-policy.yaml.in"
 [ -f "$policy" ] || { echo "::error::NRI base template $policy not found"; exit 1; }
 if sed '/# BEGIN rke2 system images/,/# END rke2 system images/d' "$policy"               | grep -qE 'sha256:[a-f0-9]{64}'; then
   echo "::error::$policy has a hardcoded base digest outside the generated system base; derive core component pins from the build-time chart seed"
@@ -71,7 +71,7 @@ fi
 # The C8s node is normally nested in an outer RKE2 cluster: its pod
 # CIDR must not fall back to the outer cluster's default. Cilium takes its
 # pool from this setting.
-rke2_config="$ngi/c8s/mkosi.extra/etc/rancher/rke2/config.yaml"
+rke2_config="$image/c8s/mkosi.extra/etc/rancher/rke2/config.yaml"
 rke2_pod_cidr=$(sed -n 's/^cluster-cidr:[[:space:]]*//p' "$rke2_config")
 if [ -z "$rke2_pod_cidr" ] || [ "$rke2_pod_cidr" = "10.42.0.0/16" ]; then
   echo "::error::c8s RKE2 cluster-cidr must be explicit and must not overlap the outer RKE2 default"
@@ -102,7 +102,7 @@ fi
 # the datapath stays on veth pairs (the mesh gate reads a pod's hooks from
 # inside its namespace), and no exec postStart may render (the sealed image
 # denies every runc exec).
-cilium_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml"
+cilium_config="$image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml"
 if ! grep -qx 'kind: HelmChartConfig' "$cilium_config" \
    || ! grep -qx '  name: rke2-cilium' "$cilium_config"; then
   echo "::error::$cilium_config must be the rke2-cilium HelmChartConfig"
@@ -129,23 +129,23 @@ if grep -q postStart "$cilium_config"; then
   echo "::error::$cilium_config must not render an exec postStart; the sealed image denies every runc exec"
   exit 1
 fi
-if ! grep -q 'rke2-images-cilium\.linux-amd64\.tar\.zst' "$ngi/c8s/mkosi.sync" \
-   || ! grep -q '^RKE2_IMAGES_CILIUM_SHA256=' "$ngi/c8s/mkosi.sync" \
-   || grep -q 'rke2-images-canal' "$ngi/c8s/mkosi.sync"; then
-  echo "::error::$ngi/c8s/mkosi.sync must bake the cilium airgap bundle, not canal's"
+if ! grep -q 'rke2-images-cilium\.linux-amd64\.tar\.zst' "$image/c8s/mkosi.sync" \
+   || ! grep -q '^RKE2_IMAGES_CILIUM_SHA256=' "$image/c8s/mkosi.sync" \
+   || grep -q 'rke2-images-canal' "$image/c8s/mkosi.sync"; then
+  echo "::error::$image/c8s/mkosi.sync must bake the cilium airgap bundle, not canal's"
   exit 1
 fi
 
 # No Canal artifact survives the switch: not its manifests, and not a
 # mention anywhere in the baked tree.
 for stale in rke2-canal-config.yaml canal-felix-config.yaml; do
-  if [ -e "$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/$stale" ]; then
+  if [ -e "$image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/$stale" ]; then
     echo "::error::$stale is still baked; the CNI is cilium"
     exit 1
   fi
 done
-if grep -rniE 'canal|calico|flannel|felix' "$ngi/c8s/mkosi.extra"; then
-  echo "::error::a Canal mention survives under $ngi/c8s/mkosi.extra (above)"
+if grep -rniE 'canal|calico|flannel|felix' "$image/c8s/mkosi.extra"; then
+  echo "::error::a Canal mention survives under $image/c8s/mkosi.extra (above)"
   exit 1
 fi
 
@@ -155,8 +155,8 @@ fi
 # (its shape and expression are tested in internal/helmchart). Only the
 # C8S_DEV=1 build may skip that AddOn, and only through the sync-rendered
 # .skip marker.
-manifests="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
-sync="$ngi/c8s/mkosi.sync"
+manifests="$image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
+sync="$image/c8s/mkosi.sync"
 if ! grep -qxF '  - enable-debugging-handlers=true' "$rke2_config"; then
   echo "::error::$rke2_config must pin kubelet-arg enable-debugging-handlers=true (kubectl logs)"
   exit 1
@@ -193,13 +193,13 @@ for file in $(grep -lE 'kind: ValidatingAdmissionPolicy$|name: c8s:' "$manifests
       ;;
   esac
 done
-if find "$ngi/c8s/mkosi.extra" -name '*.skip' | grep -q .; then
+if find "$image/c8s/mkosi.extra" -name '*.skip' | grep -q .; then
   echo "::error::a baked .skip marker disables an RKE2 AddOn; only mkosi.sync may render one, for dev=1"
   exit 1
 fi
-if ! grep -q -- '--sync-input "dev=\${C8S_DEV:-0}"' "$ngi/build" \
-   || ! grep -q 'SYNC_INPUTS/dev' "$ngi/c8s/mkosi.sync"; then
-  echo "::error::the dev sync-input must flow from $ngi/build (C8S_DEV) into mkosi.sync"
+if ! grep -q -- '--sync-input "dev=\${C8S_DEV:-0}"' "$image/build" \
+   || ! grep -q 'SYNC_INPUTS/dev' "$image/c8s/mkosi.sync"; then
+  echo "::error::the dev sync-input must flow from $image/build (C8S_DEV) into mkosi.sync"
   exit 1
 fi
 
@@ -210,19 +210,19 @@ fi
 # checks cover what a rendered config cannot show — that the wrapper the
 # config names is the binary the build installs, and that RKE2's runtime
 # auto-detection finds nothing else to add a handler for.
-wrapper_dropin="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/10-c8s-runc.toml"
+wrapper_dropin="$image/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/10-c8s-runc.toml"
 wrapper_path=$(sed -n 's/^[[:space:]]*BinaryName[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$wrapper_dropin" | head -n1)
 if [ "$wrapper_path" != "/usr/local/bin/c8s-runc" ]; then
   echo "::error::$wrapper_dropin must set the runc handler's BinaryName to /usr/local/bin/c8s-runc (got '${wrapper_path:-none}')"
   exit 1
 fi
-if ! grep -q "RUNC_WRAPPER_TARGET=\"\$STAGE_DIR${wrapper_path}\"" "$ngi/c8s/mkosi.sync"; then
+if ! grep -q "RUNC_WRAPPER_TARGET=\"\$STAGE_DIR${wrapper_path}\"" "$image/c8s/mkosi.sync"; then
   echo "::error::mkosi.sync must install the runtime wrapper at $wrapper_path, the path $wrapper_dropin names"
   exit 1
 fi
 # The wrapper execs the real runtime by absolute path; it is rke2's own runc,
 # extracted at first start under the bin symlink. Both sides pin it.
-real_runc=$(sed -n 's/^REAL_RUNC="\(.*\)"$/\1/p' "$ngi/c8s/mkosi.sync")
+real_runc=$(sed -n 's/^REAL_RUNC="\(.*\)"$/\1/p' "$image/c8s/mkosi.sync")
 if ! grep -qE "^[[:space:]]*realRunc[[:space:]]*= \"$real_runc\"$" internal/cmds/c8srunc/c8srunc.go; then
   echo "::error::the wrapper's compiled real-runtime path and mkosi.sync's REAL_RUNC ($real_runc) have drifted"
   exit 1
@@ -233,16 +233,16 @@ for rt in crun nvidia-container-runtime nvidia-container-runtime-experimental \
           nvidia-container-runtime.cdi containerd-shim-lunatic-v1 \
           containerd-shim-slight-v1 containerd-shim-spin-v2 containerd-shim-wws-v1 \
           containerd-shim-wasmedge-v1 containerd-shim-wasmer-v1 containerd-shim-wasmtime-v1; do
-  if find "$ngi/c8s/mkosi.extra" -name "$rt" -print -quit | grep -q .; then
-    echo "::error::$ngi/c8s/mkosi.extra bakes '$rt'; RKE2 auto-detects it and adds an UNWRAPPED runtime handler"
+  if find "$image/c8s/mkosi.extra" -name "$rt" -print -quit | grep -q .; then
+    echo "::error::$image/c8s/mkosi.extra bakes '$rt'; RKE2 auto-detects it and adds an UNWRAPPED runtime handler"
     exit 1
   fi
 done
 # The gate renders RKE2's base template from a vendored copy; an RKE2 bump
 # that changes it must re-vendor, or the gate checks a config the node never
 # has.
-base_tmpl="$ngi/c8s/containerdcheck/rke2-base-v3.toml.tmpl"
-rke2_version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$ngi/c8s/mkosi.sync")
+base_tmpl="$image/c8s/containerdcheck/rke2-base-v3.toml.tmpl"
+rke2_version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$image/c8s/mkosi.sync")
 if ! grep -qF "# RKE2_VERSION: $rke2_version" "$base_tmpl"; then
   echo "::error::$base_tmpl is vendored from another RKE2 than $rke2_version; re-vendor ContainerdConfigTemplateV3 from the k3s revision that RKE2 builds against and update its header"
   exit 1
@@ -251,15 +251,15 @@ fi
 # The rke2-role drop-ins only bind if mkosi.sync keeps staging the
 # rke2 tarball's units under /usr/local (systemd's search path);
 # the systemd harness installs its fakes at the same prefix.
-if ! grep -q 'tar -xzf .* -C "\$STAGE_DIR/usr/local"' "$ngi/c8s/mkosi.sync"; then
+if ! grep -q 'tar -xzf .* -C "\$STAGE_DIR/usr/local"' "$image/c8s/mkosi.sync"; then
   echo "::error::mkosi.sync no longer stages rke2 under /usr/local; rke2-role drop-ins and the systemd harness depend on that unit dir"
   exit 1
 fi
 
 # The node image disables cloud-init, so the build bakes no seed.
 # tests/cloud-init-disabled.sh owns the marker invariant itself.
-if grep -q -- '--cloud-init' "$ngi/build"; then
-  echo "::error::$ngi/build bakes a cloud-init seed; the node image disables cloud-init instead"
+if grep -q -- '--cloud-init' "$image/build"; then
+  echo "::error::$image/build bakes a cloud-init seed; the node image disables cloud-init instead"
   exit 1
 fi
 # The shared TDX lifecycle originated in confidential-ci, with c8s-local
@@ -270,7 +270,7 @@ fi
 tdx_runtime=.github/actions/tdx-metal-e2e/action.yml
 for marker in 'hostname: cidata-bait' 'assert the host cidata disk is inert' 'serial: confai-scratch' \
               'launch.yaml' 'C8S_NODE_IMAGE=1' 'C8S_MEASUREMENTS_CONFIG=/tmp/launch-data/server.json' \
-              'bash node-guest-image/tests/apparmor-runtime-test.sh' \
+              "bash $image/tests/apparmor-runtime-test.sh" \
               'import the exact published image into a private root PVC' \
               'bash .github/scripts/tdx-image-acceptance.sh pvc'; do
   if ! grep -qF "$marker" "$tdx_runtime"; then
@@ -299,17 +299,17 @@ fi
 # leading slash tolerated). Each must exist in the built image or the
 # initrd refuses to boot: accepted if baked under mkosi.extra or created
 # under mkosi.sync's stage tree.
-state_confs=$(ls "$ngi"/c8s/mkosi.extra/usr/lib/confai/state.d/*.conf 2>/dev/null || true)
+state_confs=$(ls "$image"/c8s/mkosi.extra/usr/lib/confai/state.d/*.conf 2>/dev/null || true)
 if [ -z "$state_confs" ]; then
-  echo "::error::no state.d/*.conf under $ngi/c8s/mkosi.extra/usr/lib/confai — the immutable root needs the profile's writable dirs declared"
+  echo "::error::no state.d/*.conf under $image/c8s/mkosi.extra/usr/lib/confai — the immutable root needs the profile's writable dirs declared"
   exit 1
 fi
 state_dirs=""
 while read -r d || [ -n "$d" ]; do
   d="${d%$'\r'}"; d="${d#/}"
   case "$d" in "" | \#*) continue ;; esac
-  if [ ! -d "$ngi/c8s/mkosi.extra/$d" ] && ! grep -qE "\"\\\$STAGE_DIR/$d(/|\")" "$ngi/c8s/mkosi.sync"; then
-    echo "::error::state.d declares '$d', which is neither baked under $ngi/c8s/mkosi.extra nor created under mkosi.sync's \$STAGE_DIR; the confos initrd refuses to boot an image whose state.d names a missing dir"
+  if [ ! -d "$image/c8s/mkosi.extra/$d" ] && ! grep -qE "\"\\\$STAGE_DIR/$d(/|\")" "$image/c8s/mkosi.sync"; then
+    echo "::error::state.d declares '$d', which is neither baked under $image/c8s/mkosi.extra nor created under mkosi.sync's \$STAGE_DIR; the confos initrd refuses to boot an image whose state.d names a missing dir"
     exit 1
   fi
   state_dirs="$state_dirs $d"
@@ -331,13 +331,13 @@ writes=$( {
   # Numeric descriptor duplication does not write a filesystem path. Remove
   # only that token; keep other redirects and write verbs on the same line.
   sed -E 's/[0-9]*[<>]&[0-9]+([[:space:];|&()]|$)/\1/g' \
-      "$ngi"/c8s/mkosi.extra/usr/local/bin/*.sh "$ngi"/tests/lib.sh \
+      "$image"/c8s/mkosi.extra/usr/local/bin/*.sh "$image"/tests/lib.sh \
     | grep -E '(>|tee |mkdir |install |cp |mv |touch |rm |^FRAG[A-Z]*=)' \
     | grep -vE '^[[:space:]]*#' | grep -oE '/(etc|opt|usr|srv|boot)/[A-Za-z0-9_./-]+' || true
-  grep -hE '^[dDfFwLpc]\+? ' "$ngi"/c8s/mkosi.extra/etc/tmpfiles.d/*.conf \
+  grep -hE '^[dDfFwLpc]\+? ' "$image"/c8s/mkosi.extra/etc/tmpfiles.d/*.conf \
     | awk '{print $2}' | grep -E '^/(etc|opt|usr|srv|boot)/' || true
   grep -hoE '(path: *|"paths":\[")/(etc|opt|usr|srv|boot)/[A-Za-z0-9_./-]+' \
-       "$ngi"/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/*.yaml \
+       "$image"/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/*.yaml \
     | grep -oE '/(etc|opt|usr|srv|boot)/.*' || true
 } | sort -u )
 for w in $writes; do
@@ -376,8 +376,8 @@ fi
 
 # The scratch base is prose in the README and a sector count in the gate;
 # a bump must touch both.
-if ! grep -qF 'MIN_SECTORS=125000000' "$ngi/c8s/mkosi.extra/usr/local/bin/scratch-enforce.sh" \
-   || ! grep -qF 'at least 64G' "$ngi/README.md"; then
+if ! grep -qF 'MIN_SECTORS=125000000' "$image/c8s/mkosi.extra/usr/local/bin/scratch-enforce.sh" \
+   || ! grep -qF 'at least 64G' "$image/README.md"; then
   echo "::error::scratch base drifted: scratch-enforce.sh MIN_SECTORS (64G = 125000000 sectors) and the README's 'at least 64G' must move together"
   exit 1
 fi
@@ -385,10 +385,10 @@ fi
 # psa-config.yaml exempts only the platform namespaces that need privileged
 # pods, and the baked policy that stops tenants relabelling their namespaces
 # keeps naming `restricted`, denying, and failing closed.
-psa="$ngi/c8s/mkosi.extra/etc/rancher/rke2/psa-config.yaml"
+psa="$image/c8s/mkosi.extra/etc/rancher/rke2/psa-config.yaml"
 vap="$manifests/psa-level-policy.yaml"
-psa_gate="$ngi/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
-cred_release="$ngi/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
+psa_gate="$image/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
+cred_release="$image/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
 exempt=$(sed -n '/^[[:space:]]*namespaces:/,/^[[:space:]]*[^[:space:]-]/s/^[[:space:]]*-[[:space:]]*//p' "$psa")
 if [ "$exempt" != "kube-system" ]; then
   echo "::error::$psa must exempt exactly kube-system from restricted PodSecurity; got: $(echo "$exempt" | tr '\n' ' ')"
@@ -442,28 +442,28 @@ done
 # The build uses the same checker on its .config; apparmor-enforce.service
 # separately gates RKE2 on the booted LSM/parser.
 for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
-  bash "$ngi/check-apparmor-config.sh" "$ngi/kernel/$config"
+  bash "$image/check-apparmor-config.sh" "$image/kernel/$config"
 done
 # gpu-cc-enforce attests GPUs once per boot, which covers every GPU only
 # while the host cannot hot-add PCI devices (#669). The fragment line is
 # the load-bearing control: confos fails the build when the resolved
-# .config contradicts it, and node-guest-image/build checks that .config.
+# .config contradicts it, and images/node-guest/build checks that .config.
 # The snapshot leg is a second check only: confos rewrites the snapshot on
 # every build and does not fail when it is stale.
 for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
-  if ! grep -qFx '# CONFIG_HOTPLUG_PCI is not set' "$ngi/kernel/$config"; then
-    echo "::error::$ngi/kernel/$config must keep '# CONFIG_HOTPLUG_PCI is not set': gpu-cc-enforce runs only at boot"
+  if ! grep -qFx '# CONFIG_HOTPLUG_PCI is not set' "$image/kernel/$config"; then
+    echo "::error::$image/kernel/$config must keep '# CONFIG_HOTPLUG_PCI is not set': gpu-cc-enforce runs only at boot"
     exit 1
   fi
   # Without -q, grep prints the offending lines above the error.
-  if grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "$ngi/kernel/$config"; then
-    echo "::error::$ngi/kernel/$config enables the PCI hotplug symbols printed above; gpu-cc-enforce runs only at boot and would miss a hot-added GPU"
+  if grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "$image/kernel/$config"; then
+    echo "::error::$image/kernel/$config enables the PCI hotplug symbols printed above; gpu-cc-enforce runs only at boot and would miss a hot-added GPU"
     exit 1
   fi
 done
-grep -qE '^\s*apparmor\s*$' "$ngi/c8s/mkosi.conf" \
-  || { echo "::error::$ngi/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
-grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \
+grep -qE '^\s*apparmor\s*$' "$image/c8s/mkosi.conf" \
+  || { echo "::error::$image/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
+grep -qFx 'disable apparmor.service' "$image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \
   || { echo "::error::50-rke2.preset must disable apparmor.service (only the parser is wanted)"; exit 1; }
 
 # The image renders Kubernetes integration from its staged binary at BUILD
@@ -484,10 +484,10 @@ if grep -qE -- '--cds-image|CDS_REPO|/cds[@:"]' "$sync"; then
   echo "::error::$sync must not name a CDS container image: the node image runs no CDS"
   exit 1
 fi
-for stale in "$ngi/c8s/c8s-chart.tdx.yaml.in" "$ngi/c8s/c8s-chart.snp.yaml.in" \
-             "$ngi/c8s/mkosi.extra/etc/systemd/system/c8s-chart-values.service" \
-             "$ngi/c8s/mkosi.extra/usr/local/bin/c8s-chart-values.sh" \
-             "$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/c8s-chart.yaml"; do
+for stale in "$image/c8s/c8s-chart.tdx.yaml.in" "$image/c8s/c8s-chart.snp.yaml.in" \
+             "$image/c8s/mkosi.extra/etc/systemd/system/c8s-chart-values.service" \
+             "$image/c8s/mkosi.extra/usr/local/bin/c8s-chart-values.sh" \
+             "$image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/c8s-chart.yaml"; do
   if [ -e "$stale" ]; then
     echo "::error::obsolete c8s Helm bootstrap artifact remains: $stale"
     exit 1
@@ -501,9 +501,9 @@ fi
 # A verified role is required for both RKE2 roles and every core service.
 # Conditions alone merely skip units; Requires= plus After= propagate a
 # verifier/preparation failure before evaluating the role condition.
-units="$ngi/c8s/mkosi.extra/etc/systemd/system"
+units="$image/c8s/mkosi.extra/etc/systemd/system"
 role="$units/rke2-role.service"
-role_sh="$ngi/c8s/mkosi.extra/usr/local/bin/rke2-role.sh"
+role_sh="$image/c8s/mkosi.extra/usr/local/bin/rke2-role.sh"
 require_launch_dependency() {
   local unit=$1
   if ! grep -qE '^Requires=.*rke2-role[.]service' "$unit" \
@@ -573,7 +573,7 @@ fi
 # A host-accessible arbitrary REPORTDATA API would let a host borrow a real
 # node's attestation for its own keys. The finalize hook preserves the selected
 # confos attester configuration and verifies that its bind is now loopback.
-finalize="$ngi/c8s/mkosi.finalize"
+finalize="$image/c8s/mkosi.finalize"
 if [ ! -x "$finalize" ] \
    || ! grep -qF 'bind = "127.0.0.1:8400"' "$finalize" \
    || ! grep -qF '"$BUILDROOT/etc/attestation-api/config.toml"' "$finalize"; then
@@ -581,4 +581,4 @@ if [ ! -x "$finalize" ] \
   exit 1
 fi
 
-echo "all node-guest-image invariants hold at CONFOS_REF $CONFOS_REF"
+echo "all images/node-guest invariants hold at CONFOS_REF $CONFOS_REF"

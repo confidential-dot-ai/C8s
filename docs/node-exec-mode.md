@@ -95,7 +95,7 @@ of carrying a `preStop` hook.
 ## RKE2's kube-apiserver
 
 On the locked image, RKE2's kube-apiserver static pod never reports Ready. The
-RKE2 release `node-guest-image/c8s/mkosi.sync` pins gives that pod exec
+RKE2 release `images/node-guest/c8s/mkosi.sync` pins gives that pod exec
 startup, liveness and readiness probes (`kubectl get --raw=/livez` and
 `--raw=/readyz`); etcd, kube-scheduler, kube-controller-manager and kube-proxy
 have HTTP probes and report Ready.

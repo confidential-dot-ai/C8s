@@ -22,7 +22,7 @@ import (
 // kube-system -o json | jq -f capture.jq`). An RKE2 pin bump changes the
 // digests, so this fails until the capture is redone.
 const (
-	nodeImagePolicyTemplate = "../../../node-guest-image/c8s/image-policy.yaml.in"
+	nodeImagePolicyTemplate = "../../../images/node-guest/c8s/image-policy.yaml.in"
 	capturedPodsDir         = "testdata/rke2-system-pods"
 )
 

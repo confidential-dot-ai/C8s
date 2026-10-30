@@ -11,7 +11,7 @@ import (
 // which it must know without a cluster: the node image's RKE2 configuration
 // fixes them, so the two copies are checked against each other here.
 func TestClusterRangesMatchTheNodeImage(t *testing.T) {
-	data, err := os.ReadFile("../../../node-guest-image/c8s/mkosi.extra/etc/rancher/rke2/config.yaml")
+	data, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/etc/rancher/rke2/config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
