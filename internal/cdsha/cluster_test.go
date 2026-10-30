@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -77,14 +78,17 @@ func newLiveCluster(t *testing.T) *liveCluster {
 }
 
 // genesis starts count replicas and starts the cluster on the first of them.
+// They are then made voters, which the cluster does for itself later in this
+// stack.
 func (c *liveCluster) genesis(count int) {
 	c.t.Helper()
 	for range count {
 		c.start()
 	}
 	first := c.replicas[0]
-	c.bootstrap(first)
-	c.applyGenesis(first)
+	c.decreeGenesis(first, count == 1)
+	c.started(first)
+	c.joined(len(c.replicas))
 	for _, r := range c.replicas[1:] {
 		c.addVoter(first, r)
 	}
@@ -155,13 +159,23 @@ func (c *liveCluster) peerAddresses() []netip.AddrPort {
 type addressBook struct {
 	mu        sync.Mutex
 	addresses []netip.AddrPort
+	failing   bool
 }
 
-// holds makes the cluster's entry answer with these addresses.
+// holds makes the cluster's entry answer with these addresses, and answer at
+// all.
 func (b *addressBook) holds(addresses ...netip.AddrPort) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.addresses = addresses
+	b.failing = false
+}
+
+// fails makes the entry resolve to nothing, as a host's resolver may answer.
+func (b *addressBook) fails() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failing = true
 }
 
 func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort, error) {
@@ -170,7 +184,20 @@ func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.failing {
+		return nil, errors.New("the resolver answered SERVFAIL")
+	}
 	return slices.Clone(b.addresses), nil
+}
+
+// posted hands one decree to r, as its operator does.
+func (c *liveCluster) posted(r *liveReplica, signed cdsdecree.Signed) Delivered {
+	c.t.Helper()
+	delivered, err := r.node.TakeDecree(signed)
+	if err != nil {
+		c.t.Fatalf("replica %s would not take a decree of its operator: %v", r.node.member, err)
+	}
+	return delivered
 }
 
 // attestationAPI reports the CDS image of the test cluster.
@@ -205,18 +232,103 @@ func (c *liveCluster) stop(r *liveReplica) {
 	c.replicas = slices.DeleteFunc(c.replicas, func(held *liveReplica) bool { return held == r })
 }
 
-// bootstrap makes r the one voter of a cluster with no log.
-func (c *liveCluster) bootstrap(r *liveReplica) {
+// decreeGenesis posts the Genesis decree for r to r. alone is for the
+// cluster whose replica set holds no other replica to answer.
+func (c *liveCluster) decreeGenesis(r *liveReplica, alone bool) {
 	c.t.Helper()
-	configuration := raft.Configuration{
-		Servers: []raft.Server{voter(r)},
+	c.posted(r, c.signDecree(c.genesisFor(r, alone)))
+}
+
+// genesisFor is the Genesis decree the operator signs for r.
+func (c *liveCluster) genesisFor(r *liveReplica, alone bool) cdsdecree.Decree {
+	c.t.Helper()
+	decree := c.fixture(r).decree(cdsdecree.Genesis)
+	decree.TargetMember = string(r.node.member)
+	decree.GenesisCA = c.genesisCAOf(r)
+	decree.Alone = alone
+	return decree
+}
+
+// genesisCAOf is the mesh CA r installs if a Genesis decree names it.
+func (c *liveCluster) genesisCAOf(r *liveReplica) string {
+	c.t.Helper()
+	fingerprint, err := r.node.GenesisCA()
+	if err != nil {
+		c.t.Fatalf("the mesh CA of replica %s: %v", r.node.member, err)
 	}
-	if err := r.node.raft.BootstrapCluster(configuration).Error(); err != nil {
-		c.t.Fatalf("bootstrap: %v", err)
+	return fingerprint
+}
+
+// signDecree signs a decree with the cluster's operator key.
+func (c *liveCluster) signDecree(d cdsdecree.Decree) cdsdecree.Signed {
+	c.t.Helper()
+	signed, err := cdsdecree.Sign(d, c.operator)
+	if err != nil {
+		c.t.Fatal(err)
 	}
-	eventually(c.t, 5*time.Second, "the first replica leads", func() bool {
-		return r.node.raft.State() == raft.Leader
+	return signed
+}
+
+// started waits until r holds the cluster the operator decreed it starts.
+func (c *liveCluster) started(r *liveReplica) {
+	c.t.Helper()
+	eventually(c.t, 10*time.Second, "the decreed replica started the cluster", func() bool {
+		return r.node.fsm.ClusterState().Joined() && r.node.raft.State() == raft.Leader
 	})
+}
+
+// joined waits until the cluster's configuration names count members.
+func (c *liveCluster) joined(count int) {
+	c.t.Helper()
+	eventually(c.t, 10*time.Second, fmt.Sprintf("%d members in the cluster", count), func() bool {
+		leader := c.leader()
+		return leader != nil && len(c.members(leader)) == count
+	})
+}
+
+// noClusterStarts asserts no cluster after ticks enough for every replica to
+// have tried.
+func (c *liveCluster) noClusterStarts() {
+	c.t.Helper()
+	time.Sleep(20 * testTiming.Tick)
+	for _, r := range c.replicas {
+		if r.node.fsm.ClusterState().Joined() {
+			c.t.Fatalf("replica %s started a cluster", r.node.member)
+		}
+	}
+}
+
+// serverFor is the member's place in the cluster's configuration, where it
+// has one: a member that moves leaves the configuration and comes back.
+func (c *liveCluster) serverFor(leader *liveReplica, member string) (raft.Server, bool) {
+	future := leader.node.raft.GetConfiguration()
+	if err := future.Error(); err != nil {
+		return raft.Server{}, false
+	}
+	for _, server := range future.Configuration().Servers {
+		if server.ID == raft.ServerID(member) {
+			return server, true
+		}
+	}
+	return raft.Server{}, false
+}
+
+// reaches waits until the cluster's configuration reaches r at address, as
+// the member r is.
+func (c *liveCluster) reaches(leader, r *liveReplica, address netip.AddrPort) {
+	c.t.Helper()
+	eventually(c.t, 15*time.Second, fmt.Sprintf("the cluster reaching member %s at %s", r.node.member, address), func() bool {
+		server, named := c.serverFor(leader, string(r.node.member))
+		return named && server.Address == raftAddressOf(address, r)
+	})
+}
+
+// raftAddressOf is the Raft address of a member answering at an address.
+func raftAddressOf(address netip.AddrPort, r *liveReplica) raft.ServerAddress {
+	return raftAddr{
+		endpoint: address,
+		member:   string(r.node.member),
+	}.serverAddress()
 }
 
 // addVoter adds r to the configuration the leader holds.
@@ -236,35 +348,25 @@ func voter(r *liveReplica) raft.Server {
 	}
 }
 
-// applyGenesis commits this cluster's Genesis decree through r, which must lead.
-func (c *liveCluster) applyGenesis(r *liveReplica) {
-	c.t.Helper()
-	res, err := r.node.propose(Entry{
-		Kind:   KindDecree,
-		Decree: c.decreeEntry(r, cdsdecree.Genesis),
-	})
-	if err != nil {
-		c.t.Fatalf("genesis: %v", err)
-	}
-	if res.Decree == nil || res.Decree.Refused != "" {
-		c.t.Fatalf("genesis refused: %+v", res.Decree)
-	}
-}
-
 // decreeEntry is the log entry r logs for one of the operator's decrees.
 func (c *liveCluster) decreeEntry(r *liveReplica, kind cdsdecree.Kind) *DecreeEntry {
 	c.t.Helper()
-	fixture := replica{
-		FSM:     r.node.fsm,
-		cluster: c.cluster,
-		t:       c.t,
-	}
+	fixture := c.fixture(r)
 	decree := fixture.decree(kind)
 	if targeted(kind) {
 		decree.TargetMember = string(r.node.member)
 	}
 	entry := fixture.entryFor(decree)
 	return &entry
+}
+
+// fixture is the state machine of r as the decree fixtures hold it.
+func (c *liveCluster) fixture(r *liveReplica) *replica {
+	return &replica{
+		FSM:     r.node.fsm,
+		cluster: c.cluster,
+		t:       c.t,
+	}
 }
 
 // targeted names the decree kinds that name the replica they are for.

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
@@ -140,8 +142,16 @@ type Node struct {
 	admitting uint64
 	// peers is where this replica reached the members of its cluster.
 	peers *members
-	// discoveryLog keeps a discovery that stays broken to one log line.
+	// genesisCA is the mesh CA this process installs if a Genesis decree
+	// names it, minted once.
+	genesisCA func() (*issuer.CA, error)
+	// posted are the decrees the operator posted to this replica and it has
+	// yet to act on.
+	posted postedDecrees
+	// These keep a condition that holds tick after tick to one log line.
 	discoveryLog changedReason
+	genesisLog   changedReason
+	joinLog      changedReason
 
 	allowlist *allowlist.Handle
 	secrets   *secrets.Handle
@@ -174,12 +184,13 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n := &Node{
-		cfg:      cfg,
-		member:   newMemberID(),
-		attestor: attestor,
-		fsm:      NewFSM(cfg.Launch, cfg.Allowlist, cfg.Secrets, cfg.Ledger),
-		logs:     newMemLog(),
-		snaps:    &snapStore{},
+		cfg:       cfg,
+		member:    newMemberID(),
+		attestor:  attestor,
+		fsm:       NewFSM(cfg.Launch, cfg.Allowlist, cfg.Secrets, cfg.Ledger),
+		logs:      newMemLog(),
+		snaps:     &snapStore{},
+		genesisCA: sync.OnceValues(mintMeshCA),
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -427,7 +438,8 @@ func (n *Node) stop() {
 }
 
 // propose commits one entry and answers what the state machine made of it.
-// This replica must be the cluster's leader, which is what appends to the log.
+// Only the leader appends to the log, so a client write taken anywhere else
+// is handed to it, and an entry that is the leader's own is refused here.
 func (n *Node) propose(e Entry) (Result, error) {
 	entry, err := json.Marshal(e)
 	if err != nil {
@@ -436,19 +448,32 @@ func (n *Node) propose(e Entry) (Result, error) {
 	if err := n.proposable(e, entry); err != nil {
 		return Result{}, err
 	}
+	if n.leading() {
+		res, _, err := n.commit(entry)
+		return res, err
+	}
+	if leadersOwn(e) {
+		return Result{}, errors.New("cds-ha: this replica does not lead the cluster")
+	}
+	return n.forward(entry)
+}
+
+// commit appends an entry to the log of the cluster this replica leads, and
+// answers the index it applied at.
+func (n *Node) commit(entry []byte) (Result, uint64, error) {
 	committed := n.raft.Apply(entry, n.cfg.Timing.Apply)
 	if err := committed.Error(); err != nil {
-		return Result{}, err
+		return Result{}, 0, err
 	}
 	res, applied := committed.Response().(Result)
 	if !applied {
-		return Result{}, fmt.Errorf("cds-ha: the state machine answered a %T", committed.Response())
+		return Result{}, 0, fmt.Errorf("cds-ha: the state machine answered a %T", committed.Response())
 	}
 	// A stop leaves the store command's result incomplete.
 	if res.Stop != nil {
-		return Result{}, res.Stop
+		return Result{}, 0, res.Stop
 	}
-	return res, nil
+	return res, committed.Index(), nil
 }
 
 // proposable refuses an entry this replica must not put on the log.
@@ -469,8 +494,17 @@ const appliedPoll = 2 * time.Millisecond
 // last.
 func (n *Node) appliedKnownCommitted(within time.Duration) bool {
 	committed := n.raft.CommitIndex()
+	return n.awaitApplied(committed, within)
+}
+
+func (n *Node) awaitApplied(index uint64, within time.Duration) bool {
+	return await(within, func() bool { return n.fsm.AppliedIndex() >= index })
+}
+
+// await waits for cond, asking again until within has passed.
+func await(within time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(within)
-	for n.fsm.AppliedIndex() < committed {
+	for !cond() {
 		if time.Now().After(deadline) {
 			return false
 		}

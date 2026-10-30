@@ -14,7 +14,6 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -73,16 +72,18 @@ func TestALookupCatchesUpWithTheLog(t *testing.T) {
 	}
 }
 
-// Only the leader puts a write on the log; a follower's store reports the
+// A replica that has reached no leader takes no write: its store reports the
 // cluster unavailable, which its handlers answer as retryable.
-func TestOnlyTheLeaderTakesAWrite(t *testing.T) {
+func TestAReplicaThatReachedNoLeaderTakesNoWrite(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(3)
-	follower := c.follower()
-	_, _, err := follower.node.Allowlist().SeedWorkloads(map[string]pkgallowlist.Workload{"web": testWorkload(t, 2)})
-	if !errors.Is(err, allowlist.ErrUnavailable) || !errors.Is(err, raft.ErrNotLeader) {
-		t.Fatalf("a follower's write answered %v", err)
-	}
+	cut := c.follower()
+	c.partition(cut, true)
+
+	eventually(t, 10*time.Second, "the cut replica reaching no leader", func() bool {
+		_, err := cut.node.Secrets().Put(t.Context(), "/during", []byte("v"))
+		return errors.Is(err, secrets.ErrUnavailable)
+	})
 }
 
 // A replica that holds no cluster takes no store write: applying one would
@@ -288,8 +289,8 @@ func TestAReplicaAdmitsItsOwnImageUntilTheClusterNamesThem(t *testing.T) {
 	if len(own) != 1 || hex.EncodeToString(own[0].Digest) != testCDSImage {
 		t.Fatalf("a replica holding no cluster admits %+v", own)
 	}
-	c.bootstrap(r)
-	c.applyGenesis(r)
+	c.decreeGenesis(r, true)
+	c.started(r)
 	pinned := r.node.admits()
 	if len(pinned) != 1 || hex.EncodeToString(pinned[0].Digest) != testCDSImage {
 		t.Fatalf("a replica of the cluster admits %+v", pinned)
