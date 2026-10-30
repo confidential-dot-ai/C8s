@@ -26,9 +26,14 @@ WARM_ASSERTIONS = [
     "conflictingAssignmentRejected", "exactDigests", "genericIdle", "normalScheduler",
     "poolDrain", "providerDeletion", "restartRecovery", "uidFencedClaim",
 ]
+CDS_ASSERTIONS = [
+    "attestedReadiness", "authenticatedPolicyUpdate", "cdsIngressRestored",
+    "certificateIdentity", "cleanup", "exactDigests", "guestObservedOutage",
+    "normalScheduler", "providerDeletion", "revocationEnforced", "servedPolicyRetained",
+]
 SCENARIO_ASSERTIONS = {
     "connected": ASSERTIONS, "verification-timeout": TIMEOUT_ASSERTIONS,
-    "warm-assignment": WARM_ASSERTIONS,
+    "warm-assignment": WARM_ASSERTIONS, "cds-outage": CDS_ASSERTIONS,
 }
 PROVIDER_SOURCE = "1" * 40
 DOUBLE = r'''#!/usr/bin/env python3
@@ -259,7 +264,7 @@ class RunnerTests(unittest.TestCase):
                 self.input.write_text(json.dumps(self.config))
                 result = self.run_driver()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("scenario must be connected, verification-timeout or warm-assignment", result.stderr)
+                self.assertIn("scenario must be connected, verification-timeout, warm-assignment or cds-outage", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
                 self.assertFalse((self.state / "execution-started").exists())
 

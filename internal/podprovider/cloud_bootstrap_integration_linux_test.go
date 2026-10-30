@@ -51,6 +51,9 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 			return nil, nil, errors.New("standalone scenario requires one A workload")
 		}
 		program, names = cloudVerificationScript, []string{"app"}
+		if r.cfg.scenario() == "cds-outage" {
+			program = cloudCDSScript
+		}
 	}
 	var packed bytes.Buffer
 	w := zlib.NewWriter(&packed)
@@ -93,10 +96,18 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 			c["readinessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/ready", "port": 8080}, "periodSeconds": 5, "timeoutSeconds": 2, "failureThreshold": 1}
 			c["livenessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/live", "port": 8080}, "periodSeconds": 10, "timeoutSeconds": 2, "failureThreshold": 6}
 		}
+		if r.cfg.scenario() == "cds-outage" {
+			c["volumeMounts"] = []any{map[string]any{"name": "restart", "mountPath": "/restart"}}
+		}
 		containers = append(containers, c)
 		rules = append(rules, map[string]any{"digest": strings.Split(podfixture.PythonImage, "@")[1], "image": podfixture.PythonImage, "command": map[string]any{"policy": "exact", "argv": command}, "args": map[string]any{"policy": "exact", "argv": args}, "mounts": map[string]any{"policy": "any"}})
 	}
 	wire := map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": "cloud-" + side, "namespace": "tenant", "annotations": map[string]string{Annotation: "true"}}, "spec": map[string]any{"automountServiceAccountToken": false, "restartPolicy": "Never", "containers": containers, "schedulingGates": []any{map[string]any{"name": "acceptance.confidential.ai/durable-intent"}}}}
+	if r.cfg.scenario() == "cds-outage" {
+		spec := wire["spec"].(map[string]any)
+		spec["restartPolicy"] = "Always"
+		spec["volumes"] = []any{map[string]any{"name": "restart", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": "1Mi"}}}
+	}
 	raw, err := json.Marshal(wire)
 	if err != nil {
 		return nil, nil, err
@@ -145,6 +156,9 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	mesh := map[string]any{"containers": []any{map[string]any{"digest": strings.Split(r.cfg.MeshImage, "@")[1], "image": r.cfg.MeshImage, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--cert-path=/etc/c8s/certs/tls.crt", "--key-path=/etc/c8s/certs/tls.key", "--ca-path=/etc/c8s/certs/ca.crt"}}, "mounts": map[string]any{"policy": "any"}}}}
+	if r.cfg.scenario() == "cds-outage" {
+		delete(workloads["workloads"].(map[string]any), "cloud-a")
+	}
 	workloads["workloads"].(map[string]any)["pod-mesh-membership"] = mesh
 	workloadPath := filepath.Join(r.dir, "workloads.json")
 	if err = cloudWrite(workloadPath, workloads); err != nil {
@@ -234,6 +248,16 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	cfg, err = LoadConfig(filepath.Join(r.dir, "provider.json"))
+	if err == nil && r.cfg.scenario() == "cds-outage" {
+		var appPolicy map[string]any
+		a, appPolicy, err = r.cdsWorkload(cds)
+		if err == nil {
+			err = cloudWrite(filepath.Join(r.dir, "cds-app-policy.json"), appPolicy)
+		}
+		if err == nil {
+			err = r.cdsPolicyUpdate(ctx, cfg, cds, true)
+		}
+	}
 	return cfg, a, cds, err
 }
 

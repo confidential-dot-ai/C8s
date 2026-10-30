@@ -262,14 +262,14 @@ func (c cloudRunConfig) scenario() string {
 }
 
 func (c cloudRunConfig) instanceCount() int64 {
-	if c.scenario() == "verification-timeout" {
+	if c.scenario() == "verification-timeout" || c.scenario() == "cds-outage" {
 		return 2 // CDS and one Pod guest.
 	}
 	return 3
 }
 
 func (c cloudRunConfig) validate(artifacts bool) error {
-	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" {
+	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" && c.scenario() != "cds-outage" {
 		return errors.New("unknown live Cloud acceptance scenario")
 	}
 	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-pod-cds@", 1) {

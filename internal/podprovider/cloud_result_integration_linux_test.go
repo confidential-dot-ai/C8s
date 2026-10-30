@@ -38,6 +38,13 @@ func (r *cloudRun) writeResult(h *providerControlPlane) error {
 		assertions = map[string]bool{"assignmentBeforePOST": true, "attestedReadiness": true, "certificateIdentity": true, "cleanup": true, "conflictingAssignmentRejected": true, "exactDigests": true, "genericIdle": true, "normalScheduler": true, "poolDrain": true, "providerDeletion": true, "restartRecovery": true, "uidFencedClaim": true}
 		scope = "real Kubernetes scheduling and production provider components with durable observation wrappers; real Cloud TDX generic boot, authenticated one-time assignment, provider restart, refill and drain"
 	}
+	if r.cfg.scenario() == "cds-outage" {
+		if !r.cdsProofComplete() {
+			return errors.New("complete CDS outage proof required before acceptance receipt")
+		}
+		assertions = map[string]bool{"attestedReadiness": true, "authenticatedPolicyUpdate": true, "cdsIngressRestored": true, "certificateIdentity": true, "cleanup": true, "exactDigests": true, "guestObservedOutage": true, "normalScheduler": true, "providerDeletion": true, "revocationEnforced": true, "servedPolicyRetained": true}
+		scope = "real Cloud TDX and normal Kubernetes scheduling; authenticated served-only application admission, owned CDS network outage observed from guest and runner, retained admission across one app restart, restored same-CA CDS and enforced signed revocation"
+	}
 	return cloudWrite(filepath.Join(r.dir, "result.json"), map[string]any{
 		"passed": true, "run": r.ledger.Run, "scenario": r.cfg.scenario(),
 		"source": r.cfg.Source, "sourceProvenance": "caller-supplied guest/CLI release provenance; local artifact hashes and remote measured image are enforced",
