@@ -183,10 +183,11 @@ webhook:
 ## The mesh CA key is generated inside the cds process and stays in memory
 ## only — it is never rendered into a Kubernetes Secret or volume.
 cds:
-  ## Its endpoint, as <ip>:<port>. Required unless node.baked, whose nodes take
-  ## the endpoint and the pin from their measured launch file. An injected
-  ## credential client's packet rules admit this one endpoint, so it is an
-  ## address, never a name.
+  ## Its endpoint, as <host>:<port>, the host a DNS name or an IPv4 address.
+  ## Required unless node.baked, whose nodes take the endpoint and the pin
+  ## from their measured launch file. An injected credential client's packet
+  ## rules admit that port outside this cluster, and its clients resolve the
+  ## host themselves.
   address: ""
   ## The CDS pin: the refvalues document naming the launch file and image the
   ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin

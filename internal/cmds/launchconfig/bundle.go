@@ -10,7 +10,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -103,8 +103,8 @@ func NewBundle(opts BundleOptions) (err error) {
 		len(opts.CDS.NodeCIDRs) == 0 {
 		return errors.New("--cds-image-manifest, --cds-platform, --cds-allowlist-seed and --cds-node-cidr are required: every node document names and pins this cluster's CDS VM")
 	}
-	if _, err := netip.ParseAddrPort(opts.CDS.Address); err != nil {
-		return fmt.Errorf("--cds-address must be the <IPv4>:<port> this cluster's CDS serves on: %w", err)
+	if _, _, err := cmdsutil.SplitCDSAddress(opts.CDS.Address); err != nil {
+		return fmt.Errorf("--cds-address %w", err)
 	}
 	if opts.ServerName == "" {
 		opts.ServerName = opts.ClusterID + "-server"

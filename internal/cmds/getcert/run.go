@@ -246,12 +246,12 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(endpoint)
+		cfg.CDSURL = cmdsutil.CDSURL(address)
 	}
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")

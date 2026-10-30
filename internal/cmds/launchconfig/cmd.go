@@ -77,7 +77,7 @@ that file. See docs/operator.md, "Authenticated launch configuration".`,
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate, which CDS signs onto a leaf (default c8s.local)")
-	f.StringVar(&opts.CDS.Address, "cds-address", "", "<IPv4>:<port> the cluster's CDS VM serves on, the one destination a credential client may dial")
+	f.StringVar(&opts.CDS.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address; its port is the only one a credential client may dial outside the cluster")
 	f.StringVar(&opts.CDS.ManifestPath, "cds-image-manifest", "", "manifest.json published with the CDS guest image that VM boots")
 	f.StringVar(&opts.CDS.Platform, "cds-platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx, which need not be the nodes'")
 	f.IntSliceVar(&opts.CDS.VCPUs, "cds-vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")

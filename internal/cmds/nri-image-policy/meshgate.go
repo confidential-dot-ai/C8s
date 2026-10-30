@@ -461,10 +461,11 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 	return nil
 }
 
-// requireOffLimits refuses an exit into this cluster or onto this node: a
-// connection to a member leaves the pod through the mesh or not at all, and
-// the node's own services, its CDS and every service a platform role is bound
-// to are reached under their own rules or not at all, on any port.
+// requireOffLimits refuses an exit into this cluster, onto this node or onto
+// a port a platform role dials: a connection to a member leaves the pod
+// through the mesh or not at all, and the node's own services and this
+// cluster's CDS are reached under their own rules, by the identity those
+// rules name, or not at all.
 func (g *meshGate) requireOffLimits(exits []exit) error {
 	if err := g.policy.requireOutsideCluster(exits); err != nil {
 		return err
@@ -474,15 +475,15 @@ func (g *meshGate) requireOffLimits(exits []exit) error {
 		return fmt.Errorf("no exit can be shown to stay off this node: %w", err)
 	}
 	offLimits := []netip.Addr{node, g.policy.Resolver}
-	for _, role := range g.policy.Roles {
-		for _, dst := range role.Destinations {
-			offLimits = append(offLimits, dst.Addr())
-		}
-	}
 	for _, e := range exits {
 		for _, addr := range offLimits {
 			if addr.IsValid() && e.Range.Contains(addr) {
 				return fmt.Errorf("exit %s port %d reaches %s, an address of this node or of a service a platform role is bound to", e.Range, e.Port, addr)
+			}
+		}
+		for _, role := range g.policy.Roles {
+			if role.Port != 0 && role.Port == e.Port {
+				return fmt.Errorf("exit %s port %d is the port the %s role dials outside this cluster, which its own identity reaches under its own rule", e.Range, e.Port, role.Name)
 			}
 		}
 	}

@@ -210,9 +210,9 @@ func verifierGate() *meshGate {
 	policy := meshRoles()
 	policy.CredentialAttestationPort = 8400
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name:         CredentialRole,
-		UID:          workloadclaims.CredentialsUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort("10.9.9.9:8443")},
+		Name: CredentialRole,
+		UID:  workloadclaims.CredentialsUID,
+		Port: 8443,
 	})
 	gate := newMeshGate(*policy, discardLogger())
 	gate.nodeAddress = func() (netip.Addr, error) { return netip.MustParseAddr("192.0.2.10"), nil }

@@ -12,13 +12,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	cliroutes "github.com/confidential-dot-ai/c8s/internal/cmds/routes"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
@@ -115,18 +115,19 @@ func (u upstreamRoutes) apply(m *pkgroutes.Manifest, now time.Time) ([]byte, err
 	return manifest, nil
 }
 
-// installCDSURL is the CDS this release names, as its clients dial it: one
-// address outside the cluster, which the install reaches directly.
+// installCDSURL is the CDS this release names, as its clients dial it: the
+// <host>:<port> it serves on outside the cluster, which the install reaches
+// directly.
 func installCDSURL(values map[string]any) (string, error) {
 	raw, _ := valueAtPath(values, "cds.address")
 	address, ok := raw.(string)
 	if !ok || address == "" {
 		return "", fmt.Errorf("cds.address names no CDS, so the route manifest has nowhere to go")
 	}
-	if _, err := netip.ParseAddrPort(address); err != nil {
-		return "", fmt.Errorf("cds.address %q: %w", address, err)
+	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
+		return "", fmt.Errorf("cds.address %w", err)
 	}
-	return "https://" + address, nil
+	return cmdsutil.CDSURL(address), nil
 }
 
 // installOperatorKeyPath is --operator-key, else the environment variable

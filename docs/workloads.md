@@ -30,7 +30,7 @@ PIN="--url $CDS --image-policy-file cds-pin.json"
 KEY="--operator-key c8s-operator.key"
 ```
 
-`<CDS_ADDRESS>` is the `<ip>:<port>` the install named with `--cds-address`,
+`<CDS_ADDRESS>` is the `<host>:<port>` the install named with `--cds-address`,
 and `cds-pin.json` the document it named with `--cds-pin`: it binds the exact
 configuration that VM runs on, so it names this cluster's CDS rather than any
 VM of the same image. Every later step uses `$PIN` and `$KEY`, so run this

@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 	"testing"
 
@@ -156,9 +155,9 @@ func TestMeshConfigRejectsInvalidRulesetInputs(t *testing.T) {
 			},
 		},
 		{
-			name: "destination port zero",
+			name: "credential port zero",
 			change: func(p *meshPolicy) {
-				p.Roles[1].Destinations = append(p.Roles[1].Destinations, netip.MustParseAddrPort("10.43.0.6:0"))
+				p.Roles[1].Port = 0
 			},
 		},
 	} {
