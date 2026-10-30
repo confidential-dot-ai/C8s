@@ -82,12 +82,17 @@ func (s *Store) Restore(image []byte) error {
 	if err := readImage(ctx, conn, image); err != nil {
 		return err
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	acc, err := scanDigest(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("restore allowlist: content digest: %w", err)
+	}
 	if err := copyDatabase(conn, s.uri); err != nil {
 		return fmt.Errorf("restore allowlist: %w", err)
 	}
+	// The backup API copies pages, so no row hook reports the content.
+	s.dig.startsFrom(acc)
 	s.gen++
 	return nil
 }

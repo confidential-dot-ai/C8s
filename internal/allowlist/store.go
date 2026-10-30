@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,8 @@ type Store struct {
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
+	// Kept current by every write (digest.go).
+	dig *contentDigest
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -83,7 +86,8 @@ func OpenInMemory() (*Store, error) {
 
 // open opens the database uri names and creates the tables it lacks.
 func open(uri string) (*Store, error) {
-	db, err := sql.Open("sqlite", uri)
+	dig := &contentDigest{}
+	db, err := dig.openDB(uri)
 	if err != nil {
 		return nil, fmt.Errorf("open allowlist db: %w", err)
 	}
@@ -95,9 +99,16 @@ func open(uri string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init allowlist schema: %w", err)
 	}
+	acc, err := scanDigest(context.Background(), db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("allowlist content digest: %w", err)
+	}
+	dig.startsFrom(acc)
 	return &Store{
 		db:  db,
 		uri: uri,
+		dig: dig,
 	}, nil
 }
 

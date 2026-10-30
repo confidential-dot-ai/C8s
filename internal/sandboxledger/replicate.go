@@ -1,9 +1,11 @@
 package sandboxledger
 
 import (
+	"encoding/binary"
 	"log/slog"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 	"github.com/confidential-dot-ai/c8s/internal/replicate"
 )
 
@@ -92,12 +94,44 @@ func (l *Ledger) Restore(bindings []Binding) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.bindings = make(map[string]binding, len(bindings))
+	l.digest = lthash.Hash{}
 	for _, b := range bindings {
-		l.bindings[b.SandboxID] = binding{
-			host:    b.Host,
-			expires: time.UnixMilli(b.ExpiresMS),
-		}
+		l.setLocked(
+			b.SandboxID,
+			binding{
+				host:    b.Host,
+				expires: time.UnixMilli(b.ExpiresMS),
+			},
+		)
 	}
+}
+
+// Ledgers that hold the same bindings have the same digest, whatever order
+// they took them in.
+func (l *Ledger) Digest() [32]byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.digest.Sum()
+}
+
+// The digest a ledger restored from bindings holds.
+func DigestOf(bindings []Binding) [32]byte {
+	var digest lthash.Hash
+	for _, b := range bindings {
+		digest.Add(bindingDigest(
+			b.SandboxID,
+			binding{
+				host:    b.Host,
+				expires: time.UnixMilli(b.ExpiresMS),
+			},
+		))
+	}
+	return digest.Sum()
+}
+
+func bindingDigest(sandboxID string, b binding) [32]byte {
+	expires := binary.BigEndian.AppendUint64(nil, uint64(b.expires.UnixMilli()))
+	return lthash.Element([]byte(sandboxID), []byte(b.host), expires)
 }
 
 // Apply records a binding at the command's time, so every replica judges its
