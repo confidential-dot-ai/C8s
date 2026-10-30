@@ -3,6 +3,7 @@ package podstatus
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -142,6 +143,20 @@ func TestPodRouteServesOnlyTheStatusProjection(t *testing.T) {
 	sort.Strings(extra)
 	if len(extra) != 0 {
 		t.Fatalf("response carries keys outside the projection: %v", extra)
+	}
+
+	// Providers require this exact projection schema on the attested route.
+	var projection PodProjection
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&projection); err != nil {
+		t.Fatalf("strict status projection: %v", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		t.Fatalf("projection carries trailing JSON: %v", err)
+	}
+	if projection.Metadata != (PodMetadata{UID: "u1", Namespace: "tenant", Name: "app"}) {
+		t.Fatalf("projection identity = %+v", projection.Metadata)
 	}
 
 	// The projection keeps v1 Pod names and types, so a client decodes it as one.
