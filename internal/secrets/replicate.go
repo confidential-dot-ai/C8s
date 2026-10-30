@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 	"github.com/confidential-dot-ai/c8s/internal/replicate"
 )
 
@@ -119,6 +120,7 @@ func (s *MemoryStore) Restore(entries []SnapshotEntry) {
 	defer s.mu.Unlock()
 	s.values = make(map[string]entry, len(entries))
 	s.holders = make(map[Holder]int)
+	s.digest = lthash.Hash{}
 	for _, e := range entries {
 		s.storeLocked(
 			e.Path,
@@ -126,6 +128,34 @@ func (s *MemoryStore) Restore(entries []SnapshotEntry) {
 			Holder{origin: e.Origin, name: e.Name},
 		)
 	}
+}
+
+// Stores that hold the same entries have the same digest, whatever order
+// their writes came in.
+func (s *MemoryStore) Digest() [32]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.digest.Sum()
+}
+
+// The digest a store restored from entries holds.
+func DigestOf(entries []SnapshotEntry) [32]byte {
+	var digest lthash.Hash
+	for _, e := range entries {
+		digest.Add(entryDigest(
+			e.Path,
+			e.Value,
+			Holder{
+				origin: e.Origin,
+				name:   e.Name,
+			},
+		))
+	}
+	return digest.Sum()
+}
+
+func entryDigest(path string, value []byte, by Holder) [32]byte {
+	return lthash.Element([]byte(path), value, []byte(by.origin), []byte(by.name))
 }
 
 // Apply runs one command against the entries this process holds. Replicas

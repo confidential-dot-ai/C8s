@@ -18,6 +18,8 @@ package sandboxledger
 import (
 	"sync"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // binding is what the ledger holds for one sandbox: the node address whose
@@ -40,6 +42,7 @@ type Ledger struct {
 	ttl      time.Duration
 	max      int
 	now      func() time.Time
+	digest   lthash.Hash
 }
 
 // New builds a ledger. ttl should be the maximum leaf lifetime: a binding is
@@ -80,21 +83,36 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) Held {
 	case ok && held.host == inventoryHost:
 		// A binding's expiry never moves back, so a command stamped by a clock
 		// behind the one that made it keeps the binding.
-		l.bindings[sandboxID] = binding{
-			host:    inventoryHost,
-			expires: later(now.Add(l.ttl), held.expires),
-		}
+		l.setLocked(
+			sandboxID,
+			binding{
+				host:    inventoryHost,
+				expires: later(now.Add(l.ttl), held.expires),
+			},
+		)
 		return true
 	case ok && now.Before(held.expires):
 		return false
 	case !ok && !l.makeRoomLocked(now):
 		return false
 	}
-	l.bindings[sandboxID] = binding{
-		host:    inventoryHost,
-		expires: now.Add(l.ttl),
-	}
+	l.setLocked(
+		sandboxID,
+		binding{
+			host:    inventoryHost,
+			expires: now.Add(l.ttl),
+		},
+	)
 	return true
+}
+
+// l.mu held.
+func (l *Ledger) setLocked(sandboxID string, b binding) {
+	if prior, ok := l.bindings[sandboxID]; ok {
+		l.digest.Remove(bindingDigest(sandboxID, prior))
+	}
+	l.bindings[sandboxID] = b
+	l.digest.Add(bindingDigest(sandboxID, b))
 }
 
 // makeRoomLocked reports room for a binding the ledger does not hold yet; at
@@ -148,6 +166,7 @@ func (l *Ledger) dropExpiredLocked(now time.Time) {
 	for id, b := range l.bindings {
 		if !now.Before(b.expires) {
 			delete(l.bindings, id)
+			l.digest.Remove(bindingDigest(id, b))
 		}
 	}
 }
