@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -75,6 +76,42 @@ func TestCloudAcceptanceCDSServedOnlyWorkload(t *testing.T) {
 	}
 	if _, _, err = r.cdsWorkload(endpoint{Name: "cds", Host: "127.0.0.1", Port: 30808}); err == nil {
 		t.Fatal("guest probe accepted a non-owned local target")
+	}
+}
+
+func TestCloudAcceptanceCDSImmutablePolicyDefaults(t *testing.T) {
+	r, _, _ := cloudOwnershipFixture(t)
+	mesh := `{"containers":[{"digest":"sha256:` + strings.Repeat("b", 64) + `","image":"mesh","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"deny"}}]}`
+	signed := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"pod-mesh-membership":` + mesh + `}}`)
+	policy, err := pkgallowlist.ParseJSON(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := policy.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawSigned, rawExpected any
+	if json.Unmarshal(signed, &rawSigned) != nil || json.Unmarshal(expected, &rawExpected) != nil || reflect.DeepEqual(rawSigned, rawExpected) {
+		t.Fatal("regression does not reproduce the old raw-default mismatch")
+	}
+	if err = r.cdsImmutablePolicy(expected, signed); err != nil {
+		t.Fatalf("omitted env/initContainers defaults changed policy meaning: %v", err)
+	}
+	for name, actual := range map[string][]byte{
+		"changed-rule":  bytes.Replace(signed, []byte(`"policy":"any"`), []byte(`"policy":"deny"`), 1),
+		"added-app":     []byte(`{"schema":"c8s.allowlist/v1","workloads":{"pod-mesh-membership":` + mesh + `,"cloud-a":` + mesh + `}}`),
+		"unknown-field": bytes.Replace(signed, []byte(`"image":"mesh"`), []byte(`"image":"mesh","unknownAdmission":true`), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := r.cdsImmutablePolicy(expected, actual); err == nil {
+				t.Fatal("changed or invalid immutable policy accepted")
+			}
+			receipt, err := os.ReadFile(filepath.Join(r.dir, "cds-policy-immutable-base-mismatch.json"))
+			if err != nil || !bytes.Contains(receipt, []byte(`"sha256"`)) || bytes.Contains(receipt, []byte(`"containers"`)) {
+				t.Fatal("immutable policy refusal lost its bounded hash/key diagnostic")
+			}
+		})
 	}
 }
 

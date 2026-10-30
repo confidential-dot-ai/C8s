@@ -17,6 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podcvmtest"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 const cloudCDSRetention = 70 * time.Second
@@ -87,6 +88,24 @@ func (r *cloudRun) cdsObserve(ctx context.Context, h *providerControlPlane, cfg 
 	return out, err
 }
 
+// Compare the complete immutable policy after strict normalization: omitted
+// defaults do not add admission, but unknown fields and changed rules fail.
+func (r *cloudRun) cdsImmutablePolicy(expected, actual []byte) error {
+	canonical := make([][]byte, 0, 2)
+	for _, raw := range [][]byte{expected, actual} {
+		policy, err := pkgallowlist.ParseJSON(raw)
+		if err != nil {
+			return r.cdsPolicyMismatch("immutable-base", expected, actual, errors.New("immutable policy failed strict validation"))
+		}
+		normalized, err := policy.Canonical()
+		if err != nil {
+			return err
+		}
+		canonical = append(canonical, normalized)
+	}
+	return r.cdsPolicyRequire("immutable-base", canonical[0], canonical[1])
+}
+
 func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *Config, guest *cloudGuest, cds endpoint) (result error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
@@ -98,12 +117,8 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 	if err != nil {
 		return err
 	}
-	if !json.Valid([]byte(doc.Workloads)) {
-		return errors.New("Pod has no valid immutable base")
-	}
-	var actualBase, expectedBase any
-	if json.Unmarshal([]byte(doc.Workloads), &actualBase) != nil || json.Unmarshal(base, &expectedBase) != nil || !reflect.DeepEqual(actualBase, expectedBase) {
-		return errors.New("signed Pod launch includes an application admission source")
+	if err = r.cdsImmutablePolicy(base, []byte(doc.Workloads)); err != nil {
+		return err
 	}
 	baseline, err := cloudPrivateRead(filepath.Join(r.dir, "cds-policy-baseline.json"), 2<<20)
 	if err != nil {
