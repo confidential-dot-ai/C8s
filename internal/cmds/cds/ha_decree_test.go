@@ -361,6 +361,59 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	}
 }
 
+func TestNodeImagesDecreeCarriesTheWholeSet(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	upgrading := filepath.Join(t.TempDir(), "nodes.json")
+	writeTestFile(t, upgrading, []byte(upgradingNodesDocument))
+	serving := c.replicaServing(t, nil)
+
+	if err := signing(t, func(cmd *cobra.Command) error {
+		return nodeImagesOptions{
+			decreeOptions: o,
+			nodes:         upgrading,
+			to:            serving,
+		}.run(cmd)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	decree := c.signed(t, o.out).Decree
+	if decree.Kind != cdsdecree.SetNodeImages || decree.BaseVersion != o.baseVersion {
+		t.Fatalf("decree = %+v", decree)
+	}
+	if decree.CDSPins != nil {
+		t.Fatal("a node-image decree carries the images a CDS of the cluster may run")
+	}
+	certified, err := decree.NodePins.Images()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if certified.Family != teetypes.FamilyTDX || len(certified.Images) != 2 {
+		t.Fatalf("the decree certifies %+v, want the image being replaced and the one replacing it", certified)
+	}
+}
+
+func TestNodeImagesDecreeRefusesAFileThatPinsNothing(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	empty := filepath.Join(t.TempDir(), "nodes.json")
+	writeTestFile(t, empty, []byte(`{"schema_version":"1","tee":"tdx","measurements":[]}`))
+
+	err := signing(t, func(cmd *cobra.Command) error {
+		return nodeImagesOptions{
+			decreeOptions: o,
+			nodes:         empty,
+		}.run(cmd)
+	})
+	if err == nil {
+		t.Fatal("a decree certifying no node image was signed")
+	}
+	if _, statErr := os.Stat(o.out); statErr == nil {
+		t.Fatal("the refused decree was written anyway")
+	}
+}
+
 // A Genesis starts a cluster that was never started, and a Recover carries on
 // a voter's state, so each refuses a target in the other's state.
 func TestOneShotDecreesRefuseTheWrongTarget(t *testing.T) {

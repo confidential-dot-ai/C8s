@@ -370,6 +370,64 @@ func TestAPinDecreeOfTheOperatorAppliesAtEveryReplica(t *testing.T) {
 	}
 }
 
+func TestNodeImagesAreUpgradedByCommand(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	upgrade, _ := c.decreeNodeImages(leading, started.Version, upgradingNodeImages)
+
+	c.waitFor("every replica to certify the old node image and the new one", time.Minute, func() bool {
+		return c.allApplied(upgrade, started.Version+1) &&
+			c.allAtNodeImagesVersion(started.Version+1) &&
+			c.allPublish(seededNodeImage, nextNodeImage)
+	})
+
+	retire, _ := c.decreeNodeImages(c.waitLeader(30*time.Second), started.Version+1, nextNodeImages)
+
+	c.waitFor("every replica to certify the new node image alone", time.Minute, func() bool {
+		return c.allApplied(retire, started.Version+2) &&
+			c.allAtNodeImagesVersion(started.Version+2) &&
+			c.allPublish(nextNodeImage)
+	})
+	if !strings.Contains(string(c.config), seededNodeImage.mrtd) {
+		t.Error("the launch file no longer names the retired node image, so the scenario proves nothing")
+	}
+	for _, r := range c.replicas {
+		if !c.running(r) {
+			t.Errorf("replica %d was replaced during a node-image upgrade", r.index)
+		}
+	}
+}
+
+func TestAReGenesisDoesNotBringBackARetiredNodeImage(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	retire, _ := c.decreeNodeImages(leading, started.Version, nextNodeImages)
+	c.waitFor("every replica to certify the new node image alone", time.Minute, func() bool {
+		return c.allApplied(retire, started.Version+1)
+	})
+	reached := started.Version + 1
+
+	// The cluster is lost: its log lives in the replicas' memory alone.
+	for _, r := range c.replicas {
+		c.waitVoter(r, 30*time.Second)
+		c.kill(r)
+	}
+	for _, r := range c.replicas {
+		c.restart(r)
+	}
+	c.genesisCertifying(c.replicas[0], nextNodeImages, reached)
+
+	c.waitServing(2 * time.Minute)
+	c.waitFor("the started cluster to certify the node image the operator named", time.Minute, func() bool {
+		return c.allAtNodeImagesVersion(reached+1) && c.allPublish(nextNodeImage)
+	})
+}
+
 // A RotateKey decree forks the cluster's mesh: its leader mints a mesh CA
 // through the log, and every replica serves and issues under the certificate
 // the log carries.

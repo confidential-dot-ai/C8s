@@ -173,7 +173,7 @@ func (r *replica) decree(kind cdsdecree.Kind) cdsdecree.Decree {
 	switch kind {
 	case cdsdecree.Genesis:
 		d.CDSPins = testPins(r.t, 0x11)
-		d.NodePins = testNodeImages(r.t)
+		d.NodePins = testNodeImages(r.t, 0x33)
 		d.TargetMember = testMember
 		d.TargetAddress = "10.0.0.5:8444"
 		d.IssuedAtMS = time.Now().UnixMilli()
@@ -181,6 +181,9 @@ func (r *replica) decree(kind cdsdecree.Kind) cdsdecree.Decree {
 	case cdsdecree.UpdateMeasurements:
 		d.BaseVersion = version
 		d.CDSPins = testPins(r.t, 0x22)
+	case cdsdecree.SetNodeImages:
+		d.BaseVersion = version
+		d.NodePins = testNodeImages(r.t, 0x44)
 	case cdsdecree.RotateKey:
 		d.BaseVersion = version
 	case cdsdecree.SetVoters:
@@ -264,24 +267,28 @@ func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
 	return pins
 }
 
-// testNodeImages pins one node image, which binds no launch file of its own.
-func testNodeImages(t *testing.T) *cdsdecree.NodeImages {
+// The node images bind no launch file of their own.
+func testNodeImages(t *testing.T, digests ...byte) *cdsdecree.NodeImages {
 	t.Helper()
+	images := make([]remote.ImagePin, 0, len(digests))
+	for _, digest := range digests {
+		images = append(images, remote.ImagePin{
+			Name:   fmt.Sprintf("node-%02x", digest),
+			Digest: bytes.Repeat([]byte{digest}, refvalues.DigestSize),
+		})
+	}
 	document, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilyTDX,
-		Images: []remote.ImagePin{{
-			Name:   "node",
-			Digest: bytes.Repeat([]byte{0x33}, refvalues.DigestSize),
-		}},
+		Images: images,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	images, err := cdsdecree.NewNodeImages(document)
+	nodes, err := cdsdecree.NewNodeImages(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return images
+	return nodes
 }
 
 // The peer fixtures: this cluster's image and launch file, and another of each.

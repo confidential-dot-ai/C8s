@@ -19,6 +19,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
@@ -243,6 +244,11 @@ func (r *clusterCDS) MeshCA() meshCA {
 	return clusterCA{node: r.node}
 }
 
+// As this replica's cluster's log carries them.
+func (r *clusterCDS) NodeImages() armtls.PinSource {
+	return clusterNodeImages{node: r.node}
+}
+
 // TokenFloor is when this replica's cluster last started: a cluster that
 // started again holds no record of the tokens its last life spent. A replica
 // holding no cluster has no record at all, so it accepts no token's age.
@@ -314,6 +320,38 @@ func (c clusterCA) Current() (issuer.CurrentCA, bool) {
 		CA:      ca,
 		CertPEM: certutil.EncodeCertPEM(ca.Cert.Raw),
 	}, true
+}
+
+// INVARIANT: haGate answers nothing from this replica while it may not serve
+// its cluster, so a set read here is one the cluster has not moved past.
+type clusterNodeImages struct {
+	node *cdsha.Node
+}
+
+// None while this replica holds no cluster; a set naming no image certifies
+// no node.
+func (c clusterNodeImages) Current() refvalues.ReferenceValues {
+	document := c.node.ClusterState().NodeImages
+	if document == nil {
+		return refvalues.ReferenceValues{}
+	}
+	images, err := document.Images()
+	if err != nil {
+		slog.Error("cds-ha: the node image set this cluster carries does not parse, so this replica certifies no node", "error", err)
+		return refvalues.ReferenceValues{}
+	}
+	return images
+}
+
+// The version of the decree that last replaced the set.
+func (c clusterNodeImages) Generation() uint64 {
+	return c.node.ClusterState().NodeImagesVersion
+}
+
+// Confirms a read with the cluster's leader, so a set replaced a moment ago
+// is the one the next check is made against.
+func (c clusterNodeImages) Refresh() error {
+	return c.node.ConfirmRead()
 }
 
 // clusterKey derives one pool's challenge key from the cluster's mesh CA

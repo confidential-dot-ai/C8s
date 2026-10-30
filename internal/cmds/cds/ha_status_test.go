@@ -55,16 +55,17 @@ func (c operatorCluster) unreachable() replica {
 
 func (c operatorCluster) serving(member string, version uint64) cdsha.Status {
 	return cdsha.Status{
-		ClusterID:     c.clusterID,
-		ID:            member,
-		Joined:        true,
-		Serving:       cdsha.Serving{OK: true},
-		Version:       version,
-		State:         "Follower",
-		Term:          4,
-		AppliedIndex:  12,
-		Voters:        []string{"first", "second", "third"},
-		CAFingerprint: "ca12",
+		ClusterID:         c.clusterID,
+		ID:                member,
+		Joined:            true,
+		Serving:           cdsha.Serving{OK: true},
+		Version:           version,
+		NodeImagesVersion: version - 1,
+		State:             "Follower",
+		Term:              4,
+		AppliedIndex:      12,
+		Voters:            []string{"first", "second", "third"},
+		CAFingerprint:     "ca12",
 	}
 }
 
@@ -108,7 +109,7 @@ func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("status printed %d lines, want one per replica and one per alarm:\n%s", len(lines), printed)
 	}
-	if !strings.Contains(lines[0], `member="first" state="Follower" joined=true serving=true version=7`) {
+	if !strings.Contains(lines[0], `member="first" state="Follower" joined=true serving=true version=7 node_images_version=6`) {
 		t.Errorf("the serving replica's line is %q", lines[0])
 	}
 	if !strings.Contains(printed, "ALARM: this replica stopped following the log: its allowlist database failed") {

@@ -103,9 +103,9 @@ func printReport(w io.Writer, report replicaReport) {
 		return
 	}
 	reported := *report.Status
-	fmt.Fprintf(w, "%s cluster=%q member=%q state=%q joined=%t serving=%t version=%d ca=%q voters=%s non_voters=%s applied=%d term=%d leader=%q roll_safe=%s checkpoint=%s\n",
+	fmt.Fprintf(w, "%s cluster=%q member=%q state=%q joined=%t serving=%t version=%d node_images_version=%d ca=%q voters=%s non_voters=%s applied=%d term=%d leader=%q roll_safe=%s checkpoint=%s\n",
 		report.Address, reported.ClusterID, reported.ID, reported.State,
-		reported.Joined, reported.Serving.OK, reported.Version, reported.CAFingerprint,
+		reported.Joined, reported.Serving.OK, reported.Version, reported.NodeImagesVersion, reported.CAFingerprint,
 		reportedCount(reported.Voters), reportedCount(reported.NonVoters),
 		reported.AppliedIndex, reported.Term, reported.Leader, reportedRollSafe(reported.RollSafe),
 		reportedCheckpoint(reported.Checkpoint))

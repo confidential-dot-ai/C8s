@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -40,6 +41,54 @@ func TestGenesisStartsTheCluster(t *testing.T) {
 	case core.Format != baseFormat:
 		t.Fatalf("a new cluster starts at format %d, want the base %d", core.Format, baseFormat)
 	}
+}
+
+func TestSetNodeImagesReplacesTheWholeSet(t *testing.T) {
+	r := newReplica(t)
+	r.genesis()
+	started := r.ClusterState()
+	if started.NodeImagesVersion != started.Version {
+		t.Fatalf("the started cluster certifies the node images of version %d at version %d", started.NodeImagesVersion, started.Version)
+	}
+
+	upgrade := r.decree(cdsdecree.SetNodeImages)
+	upgrade.NodePins = testNodeImages(t, 0x33, 0x44)
+	upgraded := r.applyDecreeEntry(r.entryFor(upgrade))
+	if upgraded.Refused != "" {
+		t.Fatal(upgraded.Refused)
+	}
+	core := r.ClusterState()
+	switch {
+	case len(certifiedImages(t, core).Images) != 2:
+		t.Fatalf("the cluster certifies %+v, want the image being replaced and the one replacing it", certifiedImages(t, core).Images)
+	case core.NodeImagesVersion != upgraded.Version:
+		t.Fatalf("the node image set is named by version %d, want the %d the decree reached", core.NodeImagesVersion, upgraded.Version)
+	case core.PinsDecree.Decree.Kind != cdsdecree.Genesis:
+		t.Fatal("a node image command changed the images a CDS of the cluster may run")
+	}
+
+	// The nodes are relaunched, and the next command retires the old image.
+	retire := r.decree(cdsdecree.SetNodeImages)
+	retire.NodePins = testNodeImages(t, 0x44)
+	if res := r.applyDecreeEntry(r.entryFor(retire)); res.Refused != "" {
+		t.Fatal(res.Refused)
+	}
+	certified := certifiedImages(t, r.ClusterState())
+	if len(certified.Images) != 1 || certified.Images[0].Name != "node-44" {
+		t.Fatalf("the cluster certifies %+v, want the new node image alone", certified.Images)
+	}
+}
+
+func certifiedImages(t *testing.T, core ClusterState) refvalues.ReferenceValues {
+	t.Helper()
+	if core.NodeImages == nil {
+		t.Fatal("the cluster certifies no node images")
+	}
+	images, err := core.NodeImages.Images()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return images
 }
 
 // A decree acts once, on the state its operator signed it for, under their

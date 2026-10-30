@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -89,7 +88,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	h.SandboxBindings = binder
 	// Pin a node image the stub does not report, so the request fails after
 	// the sandbox token has been verified.
-	h.Images = []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)}
+	h.NodeImages = certifying(imagePin(t, "node-next", otherLaunchDigest))
 	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
