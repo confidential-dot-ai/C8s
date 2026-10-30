@@ -54,6 +54,13 @@ func New(ttl time.Duration, max int) *Ledger {
 	}
 }
 
+// Policy is a binding's lifetime and the ledger's capacity. A CDS HA cluster
+// fixes them at its Genesis, and a replica built with others cannot apply its
+// log.
+func (l *Ledger) Policy() (ttl time.Duration, max int) {
+	return l.ttl, l.max
+}
+
 // recordAt binds sandboxID to inventoryHost as of now, reporting whether the
 // binding holds. It is first-write-wins: false means a different, unexpired
 // host already owns the sandbox, or the ledger is at its cap with nothing to
