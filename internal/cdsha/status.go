@@ -34,8 +34,10 @@ type Status struct {
 	CAFingerprint     string   `json:"ca_fingerprint,omitempty"`
 	// GenesisCA is the mesh CA a Genesis decree for this replica carries.
 	GenesisCA string `json:"genesis_ca,omitempty"`
-	// Stuck is why this replica stopped applying the log.
-	Stuck string `json:"stuck,omitempty"`
+	// Stuck is why this replica stopped applying the log, and Fenced why it
+	// serves nothing while it follows the log (fence.go).
+	Stuck  string `json:"stuck,omitempty"`
+	Fenced *Fence `json:"fenced,omitempty"`
 	// Checkpoint is the newest state digest this replica recorded, and
 	// Divergence what this leader made of its members' reports
 	// (divergence.go).
@@ -63,7 +65,7 @@ func (n *Node) Status() Status {
 		slog.Error("cds-ha: this replica could not mint the mesh CA a Genesis decree would name", "error", err)
 	}
 	status.GenesisCA = genesisCA
-	if n.raft == nil {
+	if n.raft.Load() == nil {
 		return status
 	}
 	return n.inRaft(status)
@@ -71,6 +73,7 @@ func (n *Node) Status() Status {
 
 func (n *Node) inRaft(status Status) Status {
 	status.Serving = n.Serving()
+	status.Fenced = n.Fenced()
 	if safe, leading := n.RollSafe(); leading {
 		status.RollSafe = &safe
 	}
@@ -78,7 +81,7 @@ func (n *Node) inRaft(status Status) Status {
 	if n.leading() {
 		status.Divergence = n.div.status()
 	}
-	status.State = n.raft.State().String()
+	status.State = n.raft.Load().State().String()
 	followed := n.following()
 	status.Term = followed.term
 	status.Leader = string(followed.member)

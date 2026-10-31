@@ -62,28 +62,37 @@ func (f *heartbeatFailures) failingFor(term uint64, member raft.ServerID, now ti
 	return now.Sub(since)
 }
 
-const observations = 64
+// observations is how many of Raft's observations wait for this replica, and
+// dropWhenFull leaves Raft dropping what overflows rather than holding the
+// goroutine that reports it. everyKind is the filter that takes them all.
+const (
+	observations = 64
+	dropWhenFull = false
+)
 
+var everyKind raft.FilterFn
+
+// watchHeartbeats keeps this replica's record of the members its Raft
+// replicates to, until ctx ends. Every Raft this process runs reports into
+// one channel, and a Raft that stopped reports nothing more.
 func (n *Node) watchHeartbeats(ctx context.Context) {
-	// Raft drops an observation this replica has no room for instead of
-	// holding the goroutine that reports it.
-	const dropWhenFull = false
-	var everyKind raft.FilterFn
-	seen := make(chan raft.Observation, observations)
-	observer := raft.NewObserver(seen, dropWhenFull, everyKind)
-	n.raft.RegisterObserver(observer)
-	defer n.raft.DeregisterObserver(observer)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case observation := <-seen:
+		case observation := <-n.observed:
 			n.note(observation)
 		}
 	}
 }
 
+// note takes what Raft reports about the members it replicates to. A report
+// of a Raft this replica has replaced is not this one's: a replica that
+// carried its cluster on alone runs a second Raft (recover.go).
 func (n *Node) note(observation raft.Observation) {
+	if observation.Raft != n.raft.Load() {
+		return
+	}
 	switch reported := observation.Data.(type) {
 	case raft.FailedHeartbeatObservation:
 		n.noteFailure(reported.PeerID, reported.LastContact, time.Now())
@@ -96,13 +105,13 @@ func (n *Node) note(observation raft.Observation) {
 // starts where the member went silent.
 func (n *Node) noteFailure(member raft.ServerID, lastContact, now time.Time) {
 	if lastContact.IsZero() {
-		n.failures.failing(n.raft.CurrentTerm(), member, now)
+		n.failures.failing(n.raft.Load().CurrentTerm(), member, now)
 		return
 	}
 	if n.fromAnEndedMembership(member, lastContact) {
 		return
 	}
-	n.failures.failing(n.raft.CurrentTerm(), member, lastContact)
+	n.failures.failing(n.raft.Load().CurrentTerm(), member, lastContact)
 }
 
 // A stream that outlived a re-add: its last contact with the member is from

@@ -77,6 +77,7 @@ type liveReplica struct {
 	stub    *mockapi.Stub
 	node    *Node
 	resolve *addressBook
+	board   *boardView
 	cancel  context.CancelFunc
 	done    chan struct{}
 	// leaves reports a replica a test expects to end its own loop, and err is
@@ -163,9 +164,11 @@ func (c *liveCluster) startAt(peer netip.AddrPort) *liveReplica {
 	c.t.Helper()
 	stub := c.attestationAPI()
 	resolve := &addressBook{}
+	view := c.board.view()
 	cfg := c.replicaConfig(stub)
 	cfg.Peer = peer
 	cfg.Resolve = resolve.resolve
+	cfg.Board = view.list
 	node, err := NewNode(cfg)
 	if err != nil {
 		c.t.Fatalf("new replica: %v", err)
@@ -179,6 +182,7 @@ func (c *liveCluster) startAt(peer netip.AddrPort) *liveReplica {
 		stub:    stub,
 		node:    node,
 		resolve: resolve,
+		board:   view,
 		cancel:  cancel,
 		done:    make(chan struct{}),
 	}
@@ -257,10 +261,11 @@ func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort
 }
 
 // testBoard is the cluster's board: the decrees an operator left on it, which
-// every replica reads for itself.
+// every replica reads for itself, and how many times they have read it.
 type testBoard struct {
 	mu      sync.Mutex
 	decrees []cdsdecree.Signed
+	reads   int
 }
 
 // holds leaves one decree on the board, as an operator with their own
@@ -274,7 +279,51 @@ func (b *testBoard) holds(signed cdsdecree.Signed) {
 func (b *testBoard) list(context.Context) ([]cdsdecree.Signed, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.reads++
 	return slices.Clone(b.decrees), nil
+}
+
+// timesRead is how many cycles the cluster's replicas have made over the
+// board.
+func (b *testBoard) timesRead() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reads
+}
+
+// afterBoardCycles waits until the cluster's replicas have read the board
+// count more times, which is how a test waits for cycles of the duties loop
+// rather than for a span of time.
+func (c *liveCluster) afterBoardCycles(count int) {
+	c.t.Helper()
+	read := c.board.timesRead() + count
+	eventually(c.t, 10*time.Second, fmt.Sprintf("%d more cycles over the board", count), func() bool {
+		return c.board.timesRead() >= read
+	})
+}
+
+// boardView is the board as one replica reads it. The host serves every
+// replica a view of its own, so it can withhold every object from some of
+// them while the others read the board.
+type boardView struct {
+	board    *testBoard
+	withheld atomic.Bool
+}
+
+func (b *testBoard) view() *boardView {
+	return &boardView{board: b}
+}
+
+// withholds makes the board answer this replica with nothing at all.
+func (v *boardView) withholds(withheld bool) {
+	v.withheld.Store(withheld)
+}
+
+func (v *boardView) list(ctx context.Context) ([]cdsdecree.Signed, error) {
+	if v.withheld.Load() {
+		return nil, errors.New("the board answered 503 Service Unavailable")
+	}
+	return v.board.list(ctx)
 }
 
 // posted hands one decree to r, as its operator does.
@@ -306,7 +355,6 @@ func (c *liveCluster) replicaConfig(stub *mockapi.Stub) Config {
 		AttestationURL: stub.URL(),
 		Timing:         c.timing,
 		Replicas:       []string{testReplicaEntry},
-		Board:          c.board.list,
 		Allowlist:      inMemoryAllowlist(c.t),
 		Secrets:        secrets.NewMemoryStore(maxTestSecretPaths, maxTestPathsPerHolder, maxTestSecretValue),
 		Ledger:         sandboxledger.New(testBindingLife, maxTestSandboxBindings),
@@ -361,7 +409,7 @@ func (c *liveCluster) signDecree(d cdsdecree.Decree) cdsdecree.Signed {
 func (c *liveCluster) started(r *liveReplica) {
 	c.t.Helper()
 	eventually(c.t, 10*time.Second, "the decreed replica started the cluster", func() bool {
-		return r.node.fsm.ClusterState().Joined() && r.node.raft.State() == raft.Leader
+		return r.node.fsm.ClusterState().Joined() && r.node.raft.Load().State() == raft.Leader
 	})
 }
 
@@ -389,7 +437,7 @@ func (c *liveCluster) noClusterStarts() {
 // serverFor is the member's place in the cluster's configuration, where it
 // has one: a member that moves leaves the configuration and comes back.
 func (c *liveCluster) serverFor(leader *liveReplica, member string) (raft.Server, bool) {
-	future := leader.node.raft.GetConfiguration()
+	future := leader.node.raft.Load().GetConfiguration()
 	if err := future.Error(); err != nil {
 		return raft.Server{}, false
 	}
@@ -450,6 +498,17 @@ func membersOf(leader *liveReplica, holds func(raft.Server) bool) []raft.ServerI
 	return members
 }
 
+// decreeFor is the decree of a kind the operator signs for replica r, with
+// the member id r minted at its start where the kind names one.
+func (c *liveCluster) decreeFor(r *liveReplica, kind cdsdecree.Kind) cdsdecree.Decree {
+	c.t.Helper()
+	decree := c.fixture(r).decree(kind)
+	if targeted(kind) {
+		decree.TargetMember = string(r.node.member)
+	}
+	return decree
+}
+
 // decreeEntry is the log entry r logs for one of the operator's decrees.
 func (c *liveCluster) decreeEntry(r *liveReplica, kind cdsdecree.Kind) *DecreeEntry {
 	c.t.Helper()
@@ -485,7 +544,7 @@ func targeted(kind cdsdecree.Kind) bool {
 // commitRaw bypasses the checks a replica makes before it proposes an entry.
 func (c *liveCluster) commitRaw(leader *liveReplica, entry []byte) {
 	c.t.Helper()
-	if err := leader.node.raft.Apply(entry, testTiming.Apply).Error(); err != nil {
+	if err := leader.node.raft.Load().Apply(entry, testTiming.Apply).Error(); err != nil {
 		c.t.Fatalf("commit %s: %v", entry, err)
 	}
 }
@@ -507,19 +566,30 @@ func (c *liveCluster) settled(within time.Duration) {
 // leader is the replica the cluster elected, or nil while it has none.
 func (c *liveCluster) leader() *liveReplica {
 	for _, r := range c.replicas {
-		if r.node.raft.State() == raft.Leader {
+		if r.node.raft.Load().State() == raft.Leader {
 			return r
 		}
 	}
 	return nil
 }
 
+// replicaNamed is the replica of the cluster the member id names.
+func (c *liveCluster) replicaNamed(member string) *liveReplica {
+	c.t.Helper()
+	named := slices.IndexFunc(c.replicas, func(r *liveReplica) bool { return string(r.node.member) == member })
+	if named < 0 {
+		c.t.Fatalf("the cluster holds no replica %s", member)
+	}
+	return c.replicas[named]
+}
+
+// newLeaderBesides waits until a replica other than deposed is elected.
 func newLeaderBesides(t *testing.T, c *liveCluster, deposed *liveReplica) *liveReplica {
 	t.Helper()
 	var elected *liveReplica
 	eventually(t, 15*time.Second, "another replica elected", func() bool {
 		for _, r := range c.replicas {
-			if r != deposed && r.node.raft.State() == raft.Leader {
+			if r != deposed && r.node.raft.Load().State() == raft.Leader {
 				elected = r
 				return true
 			}
@@ -542,7 +612,7 @@ func (c *liveCluster) others(besides *liveReplica) []*liveReplica {
 // follower is any replica the cluster did not elect.
 func (c *liveCluster) follower() *liveReplica {
 	for _, r := range c.replicas {
-		if r.node.raft.State() != raft.Leader {
+		if r.node.raft.Load().State() != raft.Leader {
 			return r
 		}
 	}
@@ -551,7 +621,7 @@ func (c *liveCluster) follower() *liveReplica {
 
 // members are the member ids the leader's configuration names.
 func (c *liveCluster) members(leader *liveReplica) []raft.ServerID {
-	future := leader.node.raft.GetConfiguration()
+	future := leader.node.raft.Load().GetConfiguration()
 	if err := future.Error(); err != nil {
 		return nil
 	}

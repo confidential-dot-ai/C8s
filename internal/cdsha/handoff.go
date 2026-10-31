@@ -60,7 +60,7 @@ func (n *Node) transferCooldown() time.Duration {
 
 func (n *Node) handOverTo(target raft.Server) error {
 	n.transfers.send(target.ID, time.Now())
-	err := n.raft.LeadershipTransferToServer(target.ID, target.Address).Error()
+	err := n.raft.Load().LeadershipTransferToServer(target.ID, target.Address).Error()
 	if queuedNothing(err) {
 		n.transfers.forget(target.ID)
 	}
@@ -130,7 +130,7 @@ func (n *Node) handOverWhenSlow(watch *slowLeader, now time.Time) {
 	}
 	watch.tried(now)
 	slog.Warn("cds-ha: this leader's own state machine keeps every replica from answering a read; it hands the cluster over",
-		"member", target.ID, "applied_index", n.fsm.AppliedIndex(), "commit_index", n.raft.CommitIndex())
+		"member", target.ID, "applied_index", n.fsm.AppliedIndex(), "commit_index", n.raft.Load().CommitIndex())
 	if err := n.handOverTo(target); err != nil {
 		slog.Warn("cds-ha: this leader could not hand the cluster over",
 			"member", target.ID,

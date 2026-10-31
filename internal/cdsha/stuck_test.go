@@ -60,7 +60,7 @@ func TestAFaultOnEveryReplicaKeepsTheLogAndTheCluster(t *testing.T) {
 	c := newLiveCluster(t)
 	c.timing.DeadAfter = shortlyDead
 	c.genesis(3)
-	held := c.leader().node.raft.LastIndex()
+	held := c.leader().node.raft.Load().LastIndex()
 
 	for _, r := range c.replicas {
 		r.node.fsm.stopLocal(errStoreFault)
@@ -73,7 +73,7 @@ func TestAFaultOnEveryReplicaKeepsTheLogAndTheCluster(t *testing.T) {
 				r.node.member, left)
 			continue
 		}
-		if holds := r.node.raft.LastIndex(); holds < held {
+		if holds := r.node.raft.Load().LastIndex(); holds < held {
 			t.Errorf("replica %s holds the log up to index %d, want the %d it held",
 				r.node.member, holds, held)
 		}
