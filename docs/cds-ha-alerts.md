@@ -48,7 +48,7 @@ the divergence as `-`: only the leader knows them.
 | `a Recover decree names a member this cluster cannot account for` | an operator handed the cluster to a member that does not answer here | runbook 7: bring it back or dismiss the Recover |
 | `a member of this cluster may be carrying a recovered cluster of its own` | that member is out of the cluster and rejoins only as a new member | destroy its VM, or let it rejoin |
 | `the replicas of this cluster hold different state: ...` | the leader compared the checkpoints | runbook 9 |
-| `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait; do not replace a VM |
+| `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait before a planned removal; replace an already removed VM while a serving majority survives: runbook 2 |
 | `the replicas of this cluster take turns answering at one address` | a replica entry resolves to a load-balanced address, or two VMs share one | give every replica its own address: runbook 3 |
 | `this leader's Raft refuses every barrier of its term` | the leader cannot confirm reads | it exits, and another replica takes the cluster over; alert if it repeats |
 | `this replica admits no peer: the cluster's CDS images are none of this launch file's` | this VM runs an image the cluster does not accept | the roll skipped it, or its Admit expired: runbook 6 |

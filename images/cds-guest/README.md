@@ -46,18 +46,18 @@ initrd stages those exact bytes read-only at `/run/confai/operator-pubkey`
 and binds them to the VM's identity — on TDX by extending their SHA-384 into
 RTMR[3], on SNP by requiring HOST_DATA to equal their SHA-256 and halting
 when it does not. `cds.service` runs
-`c8s cds --config=/run/confai/operator-pubkey`: CDS parses the file, takes a
+`c8s cds --host=auto --config=/run/confai/operator-pubkey`: CDS parses the file, takes a
 fresh self-report from the attester on loopback, and exits unless that report
 binds exactly the bytes it parsed. The same report names the TEE family it
-attests on, so the image carries no platform setting.
+attests on, so the image carries no platform setting. The service selects the
+guest's primary IPv4 address for its client and replica peer listeners.
 
 No scratch disk is needed. The config is read-only, the allowlist store lives
 in the unit's runtime directory, and the mesh CA stays in memory: a restart
 re-bootstraps the trust root and a reboot leaves nothing behind.
 
-A CDS VM that never answers on 8443 has one of three causes: no launch file
-(the unit is skipped), a binding the initrd refused (the VM halts), or no
-route to AMD's or Intel's certificate service. systemd restarts the service
-every 5s for as long as the VM runs.
+If a CDS VM never answers on 8443, check launch-file staging and binding,
+primary IPv4 assignment, and the route to AMD's or Intel's certificate
+service. systemd restarts the service every 5s for as long as the VM runs.
 
 [confos]: https://github.com/confidential-dot-ai/confidential-os-builder

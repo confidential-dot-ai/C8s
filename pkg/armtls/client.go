@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// DialTimeout bounds one connect of an armTLS client, name resolution included.
+const DialTimeout = 5 * time.Second
+
 // NewVerifyingHTTPClient returns an http.Client whose TLS handshake
 // verifies the peer's armTLS attestation extension against the supplied
 // pins (launch-measurement reference values plus any TDX RTMR pins), which
@@ -40,7 +43,7 @@ func HTTPClient(tlsCfg *tls.Config) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			DialContext:           (&net.Dialer{Timeout: DialTimeout}).DialContext,
 			ResponseHeaderTimeout: 10 * time.Second,
 			IdleConnTimeout:       30 * time.Second,
 			MaxIdleConns:          5,

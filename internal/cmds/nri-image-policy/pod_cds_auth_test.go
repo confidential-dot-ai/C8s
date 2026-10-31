@@ -129,7 +129,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client, err := allowlistPullHTTPClient(pull, source)
+			client, err := allowlistPullHTTPClient(pull, source, testClusterDNS)
 			if err != nil {
 				t.Fatal(err)
 			}

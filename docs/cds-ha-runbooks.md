@@ -79,22 +79,43 @@ booted, because a host that hides the others would get a cluster beside them.
 A VM is gone, or is to be replaced for any reason other than a new CDS image
 (runbook 6).
 
-1. Wait until the cluster says one replica may be replaced:
+If the cluster lost its majority, follow runbook 7 before replacing VMs.
 
-   ```sh
-   c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json | grep roll_safe=true
-   ```
+1. Choose the matching case:
 
-   The one line that can say it is the leader's; every other replica reports
-   `roll_safe=-`, because only the leader knows the seats.
+   - **Planned removal:** wait until the cluster says one replica may be
+     replaced:
 
-2. Destroy the old VM and boot its replacement with the same launch file, at
-   an address the launch file's replica entries resolve to.
+     ```sh
+     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json | grep roll_safe=true
+     ```
+
+     The one line that can say it is the leader's; every other replica reports
+     `roll_safe=-`, because only the leader knows the seats. Destroy the old
+     VM, then continue to step 2.
+
+   - **VM already removed:** read the surviving leader, replacing
+     `cds-2.example.org` with its address:
+
+     ```sh
+     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json --url cds-2.example.org
+     ```
+
+     Require a successful exit and its line to read
+     `state="Leader" joined=true serving=true`, then continue to step 2
+     without waiting for `roll_safe=true`. Do not remove another VM.
+
+   Failure to answer alone does not authorize removing a VM or invoking
+   Recover.
+
+2. Boot its replacement with the same launch file, at an address the launch
+   file's replica entries resolve to. The address must reach the replacement,
+   rather than alternate between the old and new processes.
 
 3. The new VM is a new member. It joins, catches up, and takes the seat of the
    member it replaced once that one has counted as dead. Wait for
-   `joined=true serving=true` on its line and `roll_safe=true` again before
-   replacing another.
+   `joined=true serving=true` on its line and `roll_safe=true` on the leader's
+   before removing any other VM.
 
 A process that only restarts needs none of this: its unit restarts it, and it
 rejoins the same way.

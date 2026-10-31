@@ -84,13 +84,7 @@ func NewRefreshingHTTPClient(src PinSource, attestationApiURL string) (*http.Cli
 		return nil, fmt.Errorf("armtls client config: attestation-api URL is required")
 	}
 	transport, err := NewRefreshingTransport(src, func(pins Pins) (*http.Transport, error) {
-		tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
-			Policy: pins.VerifyPolicy(attestationApiURL),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("armtls client config: %w", err)
-		}
-		return standardTransport(tlsCfg)
+		return ClientTransport(pins, attestationApiURL)
 	})
 	if err != nil {
 		return nil, err
@@ -113,6 +107,17 @@ func NewRefreshingTransport(src PinSource, build func(Pins) (*http.Transport, er
 		return nil, err
 	}
 	return t, nil
+}
+
+// ClientTransport is [HTTPClient]'s transport holding its peer to pins.
+func ClientTransport(pins Pins, attestationApiURL string) (*http.Transport, error) {
+	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
+		Policy: pins.VerifyPolicy(attestationApiURL),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("armtls client config: %w", err)
+	}
+	return standardTransport(tlsCfg)
 }
 
 // standardTransport is [HTTPClient]'s transport over tlsCfg.

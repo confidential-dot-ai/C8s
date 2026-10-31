@@ -501,7 +501,7 @@ func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set))
+	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set), testClusterDNS)
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -541,6 +541,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 
 	start := time.Now()
 	_, err := pullInitial(context.Background(), pullArgs{
+		pull:        quietPull(),
 		client:      client,
 		store:       store,
 		timeout:     time.Second,
