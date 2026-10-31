@@ -118,6 +118,7 @@ type liveCluster struct {
 	// newest format they read.
 	timing   Timing
 	reads    uint32
+	clockNow func() time.Time
 	replicas []*liveReplica
 }
 
@@ -168,6 +169,9 @@ func (c *liveCluster) startAt(peer netip.AddrPort) *liveReplica {
 		c.t.Fatalf("new replica: %v", err)
 	}
 	readsUpTo(node, c.reads)
+	if c.clockNow != nil {
+		node.clockNow = c.clockNow
+	}
 	if err := node.Start(); err != nil {
 		c.t.Fatalf("start replica: %v", err)
 	}

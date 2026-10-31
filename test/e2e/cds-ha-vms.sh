@@ -67,6 +67,7 @@ metadata:
   name: $name
   namespace: $NS
 spec:
+  publishNotReadyAddresses: true
   selector: {kubevirt.io/domain: $name}
   ports:
     - {name: client, port: $port, targetPort: $port}
@@ -80,6 +81,7 @@ metadata:
   name: $cluster
   namespace: $NS
 spec:
+  publishNotReadyAddresses: false
   selector: {ci.confidential.ai/cds-cluster: $cluster}
   ports: [{port: $port, targetPort: $port}]
 EOF
@@ -133,13 +135,15 @@ done
 creating=()
 host_data=$(openssl dgst -sha256 -binary launch/cds-config.yaml | base64 -w0)
 for name in "${names[@]}"; do
-  kubectl -n "$NS" get vm "$CDS_VM" -o json | jq --arg name "$name" --arg cluster "$cluster" --arg host_data "$host_data" '
+  kubectl -n "$NS" get vm "$CDS_VM" -o json | jq --arg name "$name" --arg cluster "$cluster" --arg host_data "$host_data" --argjson port "$port" '
     {apiVersion, kind,
      metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels, annotations: .metadata.annotations},
      spec: (.spec
        | .template.metadata.annotations["snp.confidential.ai/host-data"] = $host_data
        | .template.metadata.labels["kubevirt.io/domain"] = $name
        | .template.metadata.labels["ci.confidential.ai/cds-cluster"] = $cluster
+       | .template.spec.readinessProbe = {httpGet: {path: "/readyz", port: $port, scheme: "HTTPS"},
+           initialDelaySeconds: 0, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 1, successThreshold: 1}
        | .template.spec.volumes |= map(
            if .name == "opkey" then .secret.secretName = "\($name)-opkey" else . end))}' > "vm-$name.json"
   creating+=(-f "vm-$name.json")
@@ -161,6 +165,25 @@ echo "every replica answers, and none of them holds a cluster"
 
 ha() { c8s cds ha "$@" --config launch/cds-config.yaml --cds-pin launch/cds-pin.json; }
 
+routing_ready() {
+  kubectl -n "$NS" get endpointslices.discovery.k8s.io -l "kubernetes.io/service-name=$cluster" -o json > endpoints.json || return
+  kubectl -n "$NS" get pods -l "ci.confidential.ai/cds-cluster=$cluster" -o json > launchers.json || return
+  jq -e --argjson count "$1" --slurpfile slices endpoints.json '
+    [.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort as $ready |
+    length == $count and ($slices[0] | [.items[].endpoints[]? | select(.conditions.ready == true) | .targetRef.name] | unique | sort) == $ready
+  ' launchers.json >/dev/null || return
+  [ "$(jq '.items | length' launchers.json)" = 3 ] || return
+  local i code pod_ready
+  for i in "${!names[@]}"; do
+    code=$(curl -sk --connect-timeout 2 --max-time 4 -o "ready-${names[$i]}.txt" -w '%{http_code}' "https://${addresses[$i]}:$port/readyz") || return
+    pod_ready=$(jq -r --arg name "${names[$i]}" '[.items[] | select(.metadata.labels["kubevirt.io/domain"] == $name) | any(.status.conditions[]?; .type == "Ready" and .status == "True")] | if length == 1 then .[0] else null end' launchers.json)
+    case "$code:$pod_ready" in 200:true|503:false) ;; *) return 1 ;; esac
+  done
+}
+waiting "unjoined guests entered client endpoints" routing_ready 0
+ha status --json > unjoined.json 2> status-error.txt || :
+jq -e 'length == 3 and all(.[]; .status != null and .status.joined == false)' unjoined.json >/dev/null || fail "unjoined control addresses are unreachable"
+
 # The Genesis decree names one replica's member id and the mesh CA that
 # process would install, both read over the attested channel, and is posted
 # back to that replica on the same channel.
@@ -178,6 +201,8 @@ serves_as_one() { ha status > status.txt 2>&1; }
 waiting "the cluster never served from every replica" serves_as_one
 [ "$(grep -c 'state="Leader"' status.txt)" = 1 ] || { cat status.txt; fail "not exactly one leader"; }
 cat status.txt
+waiting "three ready guests never entered client endpoints" routing_ready 3
+ha status --json > original.json
 ha decrees | grep -q "$intent" || fail "the record of applied decrees does not name the Genesis"
 
 # What a client holds: the mesh CA served behind the one address it dials.
@@ -214,3 +239,77 @@ cat survivors.txt
 after=$(mesh_ca mesh-ca-after.pem)
 [ "$after" = "$before" ] || fail "the cluster serves mesh CA $after behind $served:$port, and served $before before its leader was lost"
 echo "PASS: three CDS VMs, one cluster: the leader's VM is gone, the mesh CA and the address its clients dial are not"
+
+# Restore the baseline's lost process before accumulating clock quarantines.
+kubectl -n "$NS" wait --for=delete "vmi/$lost" --timeout=180s
+kubectl -n "$NS" create -f "vm-$lost.json"
+restored() {
+  ha status --json > restored.json 2> status-error.txt || return
+  jq -e --slurpfile original original.json --arg lost "$leader" '
+    . as $now | [.[].status.id] | sort as $ids |
+    length == 3 and all($now[]; (.status.voters | sort) == $ids) and
+    any($now[]; .status.state == "Leader" and .status.roll_safe.ok == true) and
+    all($original[0][]; . as $old | any($now[];
+      .address == $old.address and .status.ca_fingerprint == $old.status.ca_fingerprint and
+      (if .address == $lost then .status.id != $old.status.id else .status.id == $old.status.id end)))
+  ' restored.json >/dev/null
+}
+waiting "the restored VM never regained three healthy voter seats" restored
+waiting "restored guests never regained three ready endpoints" routing_ready 3
+[ "$(mesh_ca mesh-ca-restored.pem)" = "$before" ] || fail "restoration changed the mesh CA"
+cat restored.json
+
+# Pause can induce an ordinary election; the resumed cluster must have an eligible leader.
+printf '{}\n' > pause.json
+resumed_targets=()
+clock_lag_verified() {
+  ha status --json > clock.json 2> status-error.txt || :
+  jq -e --slurpfile baseline restored.json --argjson count "${#resumed_targets[@]}" '
+    . as $now | [$baseline[0][].status.id] | sort as $ids |
+    ($now | length) == 3 and all($now[]; . as $current | .status != null and
+      (.status.voters | sort) == $ids and (.status.stuck // "") == "" and
+      any($baseline[0][]; .address == $current.address and .status.id == $current.status.id and
+        .status.ca_fingerprint == $current.status.ca_fingerprint and
+        .status.applied_index <= $current.status.applied_index)) and
+    ([$now[] | select(.status.serving.reason // "" | contains("clock lags member "))] | length) == $count and
+    ([$now[] | select(.status.serving.ok)] | length) == (3 - $count) and
+    any($now[]; .status.state == "Leader" and .status.serving.ok and .status.roll_safe.ok == false)
+  ' clock.json >/dev/null || return
+  local address
+  for address in "${resumed_targets[@]}"; do
+    jq -e --arg address "$address" 'any(.[]; .address == $address and (.status.serving.reason // "" | contains("clock lags member ")))' clock.json >/dev/null || return
+  done
+}
+for round in 1 2; do
+  if [ "$round" = 1 ]; then
+    target=$(jq -er '[.[] | select(.status.state != "Leader")][0].address' restored.json)
+  else
+    target=$(jq -er '.[] | select(.status.state == "Leader" and .status.serving.ok) | .address' clock.json)
+  fi
+  name=""
+  for i in "${!names[@]}"; do
+    [ "$target" != "${addresses[$i]}:$port" ] || name=${names[$i]}
+  done
+  [ -n "$name" ] || fail "no VM for $target"
+  kubectl replace --raw "/apis/subresources.kubevirt.io/v1/namespaces/$NS/virtualmachineinstances/$name/pause" -f pause.json || fail "UNVALIDATED: KubeVirt pause unavailable"
+  sleep 45
+  kubectl replace --raw "/apis/subresources.kubevirt.io/v1/namespaces/$NS/virtualmachineinstances/$name/unpause" -f pause.json || fail "UNVALIDATED: KubeVirt unpause unavailable"
+  resumed_targets+=("$target")
+  waiting "UNVALIDATED: no retained clock-lag observation and eligible leadership after resuming $name" clock_lag_verified
+  cat clock.json
+  waiting "guest readiness did not propagate after resuming $name" routing_ready "$((3-round))"
+done
+jq '{launchers: [.items[] | {name: .metadata.name, conditions: .status.conditions}]}' launchers.json
+cat endpoints.json
+for name in "${names[@]}"; do printf '%s readiness: ' "$name"; cat "ready-$name.txt"; done
+printf 'clock-routing-regression\n' > clock-value
+for i in $(seq 1 98); do
+  c8s secrets put "/clock-$i" --url "https://$served:$port" --image-policy-file launch/cds-pin.json \
+    --mesh-ca mesh-ca.pem --operator-key operator.key --from-file clock-value || fail "aggregate write $i failed"
+done
+clock_lag_verified || fail "clock state changed during fresh writes"
+watermark=$(jq -er '.[] | select(.status.state == "Leader") | .status.applied_index' clock.json)
+applied_writes() { clock_lag_verified && jq -e --argjson watermark "$watermark" 'all(.[]; .status.applied_index >= $watermark)' clock.json >/dev/null; }
+waiting "quarantined voters stopped applying fresh writes" applied_writes
+[ "$(mesh_ca mesh-ca-clock.pem)" = "$before" ] || fail "clock quarantine changed the mesh CA"
+echo "PASS: two clock-quarantined voters retained state; one ready guest accepted 98 fresh signed aggregate writes"

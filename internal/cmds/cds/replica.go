@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/netip"
 	"os"
@@ -107,6 +108,9 @@ func newReplica(ctx context.Context, cfg config, st stores) (backend, error) {
 }
 
 func newMember(cfg config, st stores) (*cdsha.Node, error) {
+	if cfg.jwtClockSkew < 0 || cfg.jwtClockSkew > math.MaxInt64/int64(time.Second) {
+		return nil, fmt.Errorf("--jwt-clock-skew must be between 0 and %d seconds", math.MaxInt64/int64(time.Second))
+	}
 	ha := cfg.measured.HA
 	peer, err := peerAddress(cfg)
 	if err != nil {
@@ -120,14 +124,15 @@ func newMember(cfg config, st stores) (*cdsha.Node, error) {
 			ConfigSHA256: hex.EncodeToString(launchFile[:]),
 			Voters:       ha.Voters,
 		},
-		LaunchFile:     cfg.measuredFile,
-		Peer:           peer,
-		AttestationURL: cfg.attestationApiURL,
-		Timing:         haTimingOverride,
-		Replicas:       ha.Replicas,
-		Allowlist:      st.allowlist,
-		Secrets:        st.secrets,
-		Ledger:         st.bindings,
+		LaunchFile:        cfg.measuredFile,
+		Peer:              peer,
+		AttestationURL:    cfg.attestationApiURL,
+		Timing:            haTimingOverride,
+		OperatorClockSkew: time.Duration(cfg.jwtClockSkew) * time.Second,
+		Replicas:          ha.Replicas,
+		Allowlist:         st.allowlist,
+		Secrets:           st.secrets,
+		Ledger:            st.bindings,
 	})
 }
 
@@ -270,7 +275,7 @@ func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
 }
 
 func (r *clusterCDS) Gate(next http.Handler) http.Handler {
-	return haGate(r.Ready, next)
+	return haGate(r.node.Serving, r.node.ClockError, next)
 }
 
 // KeepMeshCA publishes the mesh CA the cluster's log carries whenever it

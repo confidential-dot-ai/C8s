@@ -38,6 +38,9 @@ type Delivered struct {
 
 // TakeDecree takes one decree the operator posted to this replica.
 func (n *Node) TakeDecree(signed cdsdecree.Signed) (Delivered, error) {
+	if err := n.ClockError(); err != nil {
+		return Delivered{}, err
+	}
 	if err := n.operatorSigned(signed); err != nil {
 		return Delivered{}, err
 	}
@@ -70,6 +73,11 @@ func actedOnByItsTarget(kind cdsdecree.Kind) bool {
 func (n *Node) holdDecree(signed cdsdecree.Signed) (Delivered, error) {
 	if signed.Decree.TargetMember != string(n.member) {
 		return Delivered{}, fmt.Errorf("cds-ha: the decree names member %q, and this replica is member %q", signed.Decree.TargetMember, n.member)
+	}
+	n.clockMu.Lock()
+	defer n.clockMu.Unlock()
+	if n.clockFault != nil {
+		return Delivered{}, n.clockFault
 	}
 	n.posted.hold(signed)
 	return Delivered{
@@ -107,7 +115,13 @@ func (p *postedDecrees) all() []cdsdecree.Signed {
 // admitAsDecreed sets the images this replica admits beside its own to the ones
 // an Admit decree posted to it names, and none while it holds no such decree.
 func (n *Node) admitAsDecreed() {
-	n.decreedImages.Store(n.anyAdmitForThisProcess())
+	images := n.anyAdmitForThisProcess()
+	n.clockMu.Lock()
+	defer n.clockMu.Unlock()
+	if n.clockFault != nil {
+		return
+	}
+	n.decreedImages.Store(images)
 }
 
 // anyAdmitForThisProcess is the images of an Admit decree this replica holds.

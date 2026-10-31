@@ -84,7 +84,8 @@ type controlAnswer struct {
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Delivered is what the cluster made of a decree another replica took.
-	Delivered *Delivered `json:"delivered,omitempty"`
+	Delivered *Delivered   `json:"delivered,omitempty"`
+	Clock     *clockReport `json:"clock,omitempty"`
 }
 
 // answerControl answers one control request from an admitted peer.
@@ -92,6 +93,9 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 	answer := controlAnswer{
 		Member: string(n.member),
 		Joined: n.fsm.ClusterState().Joined(),
+	}
+	if request.Op == opMember || request.Op == opStanding {
+		answer.Clock = &clockReport{AtMS: n.clockNow().UnixMilli(), Quarantined: n.ClockError() != nil}
 	}
 	switch request.Op {
 	case opMember:
