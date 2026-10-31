@@ -37,7 +37,7 @@ main() {
         .github/workflows/image-repro-gate.yml)
         image=true
         ;;
-      node-guest-image/* | \
+      images/node-guest/* | \
         .github/workflows/c8s-image.yml | \
         .github/workflows/c8s-image-publish.yml)
         image=true

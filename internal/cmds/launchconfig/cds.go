@@ -77,7 +77,7 @@ func (d *Document) validateCDS() error {
 // a node subnet may not reach into.
 //
 // INVARIANT: equal to cluster-cidr and service-cidr in
-// node-guest-image/c8s/mkosi.extra/etc/rancher/rke2/config.yaml, which
+// images/node-guest/c8s/mkosi.extra/etc/rancher/rke2/config.yaml, which
 // TestClusterRangesMatchTheNodeImage checks.
 var clusterRanges = []string{"10.52.0.0/16", "10.53.0.0/16"}
 

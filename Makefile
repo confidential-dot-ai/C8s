@@ -109,53 +109,53 @@ test-integration-cdsha:
 # The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
 test-node-guest-image-role:
-	./node-guest-image/tests/rke2-role-test.sh
+	./images/node-guest/tests/rke2-role-test.sh
 
 # GPU-node label logic (root-free unit test; fakes the PCI tree).
 test-node-guest-image-gpu-label:
-	./node-guest-image/tests/gpu-node-label-test.sh
+	./images/node-guest/tests/gpu-node-label-test.sh
 
 test-node-guest-image-gpu-cc:
-	./node-guest-image/tests/gpu-cc-enforce-test.sh
+	./images/node-guest/tests/gpu-cc-enforce-test.sh
 
 test-node-guest-image-scratch:
-	./node-guest-image/tests/scratch-enforce-test.sh
+	./images/node-guest/tests/scratch-enforce-test.sh
 
 # AppArmor configuration and byte-exact boot-gate regression tests.
 # Needs Docker and CONFOS_RELEASE from the pinned confos base configuration.
 .PHONY: test-node-guest-image-apparmor test-node-guest-image-apparmor-runtime
 test-node-guest-image-apparmor:
 	bash test/e2e/lib-test.sh
-	bash node-guest-image/tests/apparmor-config-test.sh
-	bash node-guest-image/tests/apparmor-enforce-test.sh
+	bash images/node-guest/tests/apparmor-config-test.sh
+	bash images/node-guest/tests/apparmor-enforce-test.sh
 
 # Disposable single-node C8s image and its operator kubeconfig.
 test-node-guest-image-apparmor-runtime:
-	bash node-guest-image/tests/apparmor-runtime-test.sh
+	bash images/node-guest/tests/apparmor-runtime-test.sh
 
 test-node-guest-image-psa-ready:
-	./node-guest-image/tests/psa-ready-test.sh
+	./images/node-guest/tests/psa-ready-test.sh
 
 # Role-gated unit wiring under real systemd in a privileged container.
 # Needs only docker.
 test-node-guest-image-role-systemd:
-	./node-guest-image/tests/rke2-role-systemd-test.sh
+	./images/node-guest/tests/rke2-role-systemd-test.sh
 
 # Verify measured OCI archives offline with a real ORAS multi-platform copy.
 # Needs ORAS, jq, Python 3 and GNU tar.
 .PHONY: test-node-guest-image-airgap
 test-node-guest-image-airgap:
-	bash node-guest-image/tests/airgap-images-test.sh
+	bash images/node-guest/tests/airgap-images-test.sh
 
 # Needs root (private mount namespace) and a ./confos checkout.
 test-node-guest-image-cloud-init:
-	./node-guest-image/tests/cloud-init-disabled.sh
+	./images/node-guest/tests/cloud-init-disabled.sh
 
 # Needs root on disposable Linux and a ./confos checkout (or CONFOS_DIR).
 # Executes the pinned initrd with real overlays; stops before systemd/TEE boot.
 .PHONY: test-node-guest-image-immutable-root
 test-node-guest-image-immutable-root:
-	bash node-guest-image/tests/immutable-root-test.sh
+	bash images/node-guest/tests/immutable-root-test.sh
 
 # Advisory mutation testing of code changed vs BASE (default origin/main).
 mutation-check:

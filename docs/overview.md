@@ -147,7 +147,7 @@ the launch measurement alone covers the firmware; pinning the guest needs the
 image manifest published with the node image — [verify.md](verify.md),
 [measurements.md](measurements.md).
 
-How the node image is built is `../node-guest-image/README.md`.
+How the node image is built is `../images/node-guest/README.md`.
 
 ## The life of a confidential pod
 

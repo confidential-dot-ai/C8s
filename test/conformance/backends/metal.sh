@@ -396,11 +396,11 @@ allowlist_request() { router_request "$@"; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
-# node-guest-image/c8s/image-policy.yaml.in. c8s's own component entries,
+# images/node-guest/c8s/image-policy.yaml.in. c8s's own component entries,
 # which boot staging merges in, pin each image to its component's entrypoint,
 # so they declare no image for a container of the scenario's.
 base_declares() {
-    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
+    if grep -qF "$2" "$C8S_ROOT/images/node-guest/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
 }
 
 # The lane's components-ready assert gates the suite; here only the node's

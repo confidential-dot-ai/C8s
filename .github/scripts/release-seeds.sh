@@ -7,7 +7,7 @@
 #
 #   render <c8s> <out-dir> <operator-digest> <mesh-digest> <platform>...
 #       Write allowlist-seed-<platform>.json (tdx or snp) as
-#       node-guest-image/c8s/mkosi.sync renders the seed it bakes.
+#       images/node-guest/c8s/mkosi.sync renders the seed it bakes.
 #   baked <disk.raw> <out-file>
 #       Copy the seed a built image bakes. Needs root.
 #   check <release-dir> <platform> <baked-seed>
@@ -26,7 +26,7 @@ render() {
             || fail "render takes <c8s> <out-dir> <operator-digest> <mesh-digest> <platform>..., got $digest where a digest belongs"
     done
     kube=$(sed -n 's/^RKE2_VERSION="\(v[^+"]*\)+[^"]*"$/\1/p' \
-        "$(dirname "${BASH_SOURCE[0]}")/../../node-guest-image/c8s/mkosi.sync")
+        "$(dirname "${BASH_SOURCE[0]}")/../../images/node-guest/c8s/mkosi.sync")
     [ -n "$kube" ] || fail "no RKE2_VERSION in mkosi.sync"
     tmp=$(mktemp -d)
     mkdir -p "$out"

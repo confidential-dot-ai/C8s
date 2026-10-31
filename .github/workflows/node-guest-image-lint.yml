@@ -1,17 +1,17 @@
-# PERMANENT lint for node-guest-image/ and images/cds-guest/ — the invariants
+# PERMANENT lint for images/node-guest/ and images/cds-guest/ — the invariants
 # that moved here with the c8s profile from confos bin/lint (c8s#264), plus
 # the cloud-init disable gate. These jobs lint content this repo owns. The fragment superset
 # checks compare against confos's gpu/dev fragments at the pinned
 # CONFOS_REF — the exact tree the image builds with.
 #
 # The rke2-role jobs run the role-dispatch tests (script and systemd level)
-# from node-guest-image/tests/.
+# from images/node-guest/tests/.
 name: node-guest-image lint
 
 on:
   pull_request:
     paths:
-      - "node-guest-image/**"
+      - "images/node-guest/**"
       - "images/cds-guest/**"
       - "internal/cmds/launchconfig/**"
       - "internal/cmds/nodeservices/**"
@@ -24,7 +24,7 @@ on:
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
       # The rke2-role job runs via make; a broken/renamed target must fail
-      # here, not on the next node-guest-image change.
+      # here, not on the next images/node-guest change.
       - "Makefile"
       # The lint guards this vendored file's c8s-local bait/tripwire markers;
       # a re-vendor PR touches nothing else and must fail here.
@@ -66,7 +66,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
-        run: bash node-guest-image/tests/containerd-test.sh
+        run: bash images/node-guest/tests/containerd-test.sh
 
   lint:
     name: node-guest-image invariants
@@ -100,7 +100,7 @@ jobs:
           bash .github/scripts/tests/test-node-guest-image-invariants.sh
 
       - name: Preserve the selected attester configuration with a loopback bind
-        run: ./node-guest-image/tests/attester-finalize-test.sh
+        run: ./images/node-guest/tests/attester-finalize-test.sh
 
       - name: Resolve the confos base release
         id: release
@@ -184,7 +184,7 @@ jobs:
         run: sudo make test-node-guest-image-immutable-root
 
       - name: Check the immutable-root harness
-        run: shellcheck node-guest-image/tests/immutable-root-test.sh
+        run: shellcheck images/node-guest/tests/immutable-root-test.sh
 
   cloud-init-disabled:
     name: cloud-init cannot run in the node image
@@ -215,7 +215,7 @@ jobs:
         id: pins
         run: |
           set -euo pipefail
-          sync=node-guest-image/c8s/mkosi.sync
+          sync=images/node-guest/c8s/mkosi.sync
           version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$sync")
           core=$(sed -n 's/^RKE2_IMAGES_CORE_SHA256="\(.*\)"$/\1/p' "$sync")
           cilium=$(sed -n 's/^RKE2_IMAGES_CILIUM_SHA256="\(.*\)"$/\1/p' "$sync")
@@ -248,12 +248,12 @@ jobs:
         # pin bump without updating the floor cannot merge and wedge node boot.
         run: |
           set -euo pipefail
-          manifests=node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
-          go run ./node-guest-image/c8s/systemfloor \
+          manifests=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
+          go run ./images/node-guest/c8s/systemfloor \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
-            node-guest-image/c8s/image-policy.yaml.in
+            images/node-guest/c8s/image-policy.yaml.in
 
   containerd-runtime-handlers:
     name: every pod runtime reaches the measured wrapper
@@ -270,11 +270,11 @@ jobs:
         # image where `kubectl exec` works.
         run: |
           set -euo pipefail
-          dir=node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
-          go run ./node-guest-image/c8s/containerdcheck -config-dir "$dir"
+          dir=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
+          go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir"
           # The same check must fail when RKE2's runtime auto-detection finds
           # another runtime on the node's PATH.
-          if go run ./node-guest-image/c8s/containerdcheck -config-dir "$dir" \
+          if go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir" \
                -extra-runtime crun=/usr/bin/crun 2>/dev/null; then
             echo "::error::containerdcheck accepted an unwrapped auto-detected runtime"
             exit 1
@@ -330,9 +330,9 @@ jobs:
 
       - name: Shellcheck the AppArmor, acceptance and staging scripts
         run: |
-          shellcheck -x -P SCRIPTDIR node-guest-image/check-apparmor-config.sh \
-            node-guest-image/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh \
-            node-guest-image/tests/apparmor-{config,enforce,kernel,runtime}-test.sh \
+          shellcheck -x -P SCRIPTDIR images/node-guest/check-apparmor-config.sh \
+            images/node-guest/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh \
+            images/node-guest/tests/apparmor-{config,enforce,kernel,runtime}-test.sh \
             .github/scripts/tdx-image-acceptance.sh \
             .github/scripts/tests/test-tdx-image-acceptance.sh \
             .github/scripts/snp-node-image.sh \
@@ -344,7 +344,7 @@ jobs:
       - name: Exercise the real AppArmor kernel and parser
         env:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
-        run: bash node-guest-image/tests/apparmor-kernel-test.sh
+        run: bash images/node-guest/tests/apparmor-kernel-test.sh
 
   psa-ready:
     name: PodSecurity credential-release gate
@@ -391,10 +391,10 @@ jobs:
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Check the image archiver and offline fixture
-        run: shellcheck node-guest-image/c8s/{image-source,airgap-images,check-seed-images}.sh node-guest-image/tests/{airgap-images,check-seed-images}-test.sh
+        run: shellcheck images/node-guest/c8s/{image-source,airgap-images,check-seed-images}.sh images/node-guest/tests/{airgap-images,check-seed-images}-test.sh
 
       - name: Validate complete workloads and preserved image pins
         run: |
           go test -count=1 ./cmd/c8s -run TestNodeImage
           make test-node-guest-image-airgap
-          bash node-guest-image/tests/check-seed-images-test.sh
+          bash images/node-guest/tests/check-seed-images-test.sh

@@ -31,10 +31,10 @@ cds_port=8443
 work=$(mktemp -d)
 cd "$work"
 
-# The seed rendered the way node-guest-image/c8s/mkosi.sync renders the one
+# The seed rendered the way images/node-guest/c8s/mkosi.sync renders the one
 # it bakes, from this commit's core images and the Helm version it pins.
 crane auth login ghcr.io -u "${GITHUB_ACTOR:-c8s-e2e}" --password-stdin <<<"$GH_TOKEN"
-sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+sync="$C8S_SOURCE_DIR/images/node-guest/c8s/mkosi.sync"
 helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
 helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
 rke2_version=$(sed -n 's/^RKE2_VERSION="\([^+]*\)+.*"$/\1/p' "$sync")

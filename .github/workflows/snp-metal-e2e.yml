@@ -441,7 +441,7 @@ jobs:
         run: |
           set -euo pipefail
           . "$GITHUB_WORKSPACE/bin/retry.sh"
-          sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+          sync="$C8S_SOURCE_DIR/images/node-guest/c8s/mkosi.sync"
           helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
           helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
           retry curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"

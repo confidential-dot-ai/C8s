@@ -6003,7 +6003,7 @@ func TestChartRouterPodStartsTheMeshEndpointFirst(t *testing.T) {
 // mkosi.sync substitutes at build time.
 func measuredBaseAllowlist(t *testing.T, digests map[string]string) *pkgallowlist.Allowlist {
 	t.Helper()
-	body, err := os.ReadFile("../../node-guest-image/c8s/image-policy.yaml.in")
+	body, err := os.ReadFile("../../images/node-guest/c8s/image-policy.yaml.in")
 	if err != nil {
 		t.Fatalf("read the measured base: %v", err)
 	}
@@ -6038,7 +6038,7 @@ func digestOf(image string) string {
 // drift surfaces only as a policy change that bites later than the chart says.
 func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 	t.Parallel()
-	const bakedPath = "../../node-guest-image/c8s/image-policy.yaml.in"
+	const bakedPath = "../../images/node-guest/c8s/image-policy.yaml.in"
 	baked, err := os.ReadFile(bakedPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", bakedPath, err)
