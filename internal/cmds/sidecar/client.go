@@ -47,23 +47,31 @@ func LoadLeaf(certPath, keyPath string) (tls.Certificate, crypto.PublicKey, erro
 }
 
 // NewClient builds the mTLS client to CDS and returns the leaf's public key,
-// which the sandbox token is bound to.
-func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
+// which the sandbox token is bound to. The client follows pins: where the
+// node's enforcer moves them to a new CDS image, this sidecar's next request
+// is made against that image.
+func NewClient(cfg Config, pins armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
 	_, pub, err := LoadLeaf(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
-		CertProvider: provider,
+	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
+		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
+			Policy:       set.VerifyPolicy(cfg.AttestationApiURL),
+			CertProvider: provider,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build CDS client: %w", err)
+		}
+		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("build CDS client: %w", err)
+		return nil, nil, err
 	}
 	return &http.Client{
 		Timeout:   cfg.RequestTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: transport,
 	}, pub, nil
 }
 

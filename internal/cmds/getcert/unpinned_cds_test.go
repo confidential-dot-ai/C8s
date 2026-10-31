@@ -19,7 +19,7 @@ func TestUnpinnedCDSRefused(t *testing.T) {
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
-	if _, err := cdsHTTPClient(cfg); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+	if _, err := cdsHTTPClient(t.Context(), cfg); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestPinnedCDSAccepted(t *testing.T) {
 		SAN:                    "host.example.com",
 		MeasurementsConfigJSON: testCDSPin,
 	}
-	if _, err := cdsHTTPClient(cfg); err != nil {
+	if _, err := cdsHTTPClient(t.Context(), cfg); err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)
 	}
 }

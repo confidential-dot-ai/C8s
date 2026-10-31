@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -99,8 +101,15 @@ func measuredConfig(t *testing.T, c cluster) *cdsconfig.Config {
 // rather than one an argument claimed.
 func TestMeasuredConfigDecidesEverySetting(t *testing.T) {
 	operatorPEM := operatorKeysPEM(t)
-	measured := measuredConfig(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}})
-	cfg := withMeasuredConfig(config{}, measured, teetypes.FamilySNP)
+	launched := cluster{
+		operatorPEM: operatorPEM,
+		workloads:   map[string]string{"attestation-api": digestA},
+	}
+	cfg, err := withMeasuredConfig(config{}, measuredDocument(t, launched), teetypes.FamilySNP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured := cfg.measured
 
 	if cfg.armtlsPlatform != teetypes.FamilySNP {
 		t.Errorf("armTLS platform = %q, want %q", cfg.armtlsPlatform, teetypes.FamilySNP)
@@ -148,6 +157,31 @@ func TestRunMeasuredConfigRefusesADocumentTheLaunchDidNotBind(t *testing.T) {
 	}
 }
 
+func TestRunMeasuredConfigRequiresAutoHostAddress(t *testing.T) {
+	path := writeMeasuredDocument(t)
+	document, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformSNP)
+	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+	bound := runtimemeasure.HostData(document)
+	verdict.Claims.InitData = bound[:]
+	stub.SetVerdict(verdict)
+
+	noRoute := errors.New("no default route")
+	previous := chooseHostInterface
+	t.Cleanup(func() { chooseHostInterface = previous })
+	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
+	err = runMeasuredConfig(t.Context(), config{
+		configPath: path, attestationApiURL: stub.URL(), host: "auto",
+	})
+	if !errors.Is(err, noRoute) {
+		t.Fatalf("startup error = %v, want the host-address selection failure", err)
+	}
+}
+
 // The self-report admitting the configuration comes from the attester inside
 // this VM; one fetched over the network is another guest's, and one this
 // process cannot parse reaches no attester at all.
@@ -167,6 +201,31 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 	}
 }
 
+// replicatedDocument is the measured document of a cluster whose CDS runs as
+// a replica set, with the operator keys a test signs decrees with.
+func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
+	t.Helper()
+	var document map[string]any
+	measured := measuredDocument(t, cluster{
+		operatorPEM: operatorPEM,
+		workloads:   map[string]string{"attestation-api": digestA},
+	})
+	if err := yaml.Unmarshal(measured, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["ha"] = map[string]any{
+		// A loopback address no replica answers at: the replica under test
+		// reaches none of its cluster and joins nothing.
+		"replicas": []string{"127.0.0.9"},
+		"voters":   1,
+	}
+	data, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 // writeMeasuredDocument stages the document where a launched VM reads it.
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()
@@ -183,7 +242,14 @@ func writeMeasuredDocument(t *testing.T) string {
 func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
-	cfg = withMeasuredConfig(cfg, measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}}), teetypes.FamilySNP)
+	launched := cluster{
+		operatorPEM: operatorKeysPEM(t),
+		workloads:   map[string]string{"attestation-api": digestA},
+	}
+	cfg, err := withMeasuredConfig(cfg, measuredDocument(t, launched), teetypes.FamilySNP)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)

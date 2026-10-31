@@ -87,6 +87,9 @@ type CDSOptions struct {
 	NodeCIDRs           []string
 	AllowlistSeedPath   string
 	TenantWorkloadsPath string
+	// ReplicaSet is the replica set that CDS runs as, empty for a cluster
+	// whose CDS is a singleton.
+	ReplicaSet cdsconfig.HA
 }
 
 // NewBundle generates the cluster's launch keys (or takes the server key from
@@ -213,7 +216,11 @@ func NewBundle(opts BundleOptions) (err error) {
 		}
 	}
 	for _, name := range opts.Agents {
-		if err := AddAgent(opts.Dir, name, opts.ServerAddress); err != nil {
+		if err := AddAgent(AgentOptions{
+			Dir:           opts.Dir,
+			Name:          name,
+			ServerAddress: opts.ServerAddress,
+		}); err != nil {
 			return err
 		}
 	}
@@ -235,20 +242,29 @@ func serverPinPolicy(pins refvalues.ReferenceValues, serverPub string) ([]byte, 
 	})
 }
 
+type AgentOptions struct {
+	Dir           string
+	Name          string
+	ServerAddress string
+	// The pin decree a highly available CDS applied, as `c8s cds ha
+	// pin-policy --decree-out` wrote it; the agent pins the images it names.
+	PinDecreePath string
+}
+
 // AddAgent derives an agent document from the bundle's server document
 // (same cluster, image, agent token, keys and SAN; never the server token or
 // the server-only router block),
 // signs it with the bundle's agent key and writes <dir>/<name>. It works
 // on a bundle created earlier, so a cluster can grow without regenerating or
 // re-signing anything the server already booted with.
-func AddAgent(dir, name, serverAddress string) (err error) {
-	if !dnsLabel(name) {
-		return fmt.Errorf("agent name %q must be an RFC1123 label", name)
+func AddAgent(o AgentOptions) (err error) {
+	if !dnsLabel(o.Name) {
+		return fmt.Errorf("agent name %q must be an RFC1123 label", o.Name)
 	}
-	if name == serverDir {
-		return fmt.Errorf("agent name %q is reserved for the server", name)
+	if o.Name == serverDir {
+		return fmt.Errorf("agent name %q is reserved for the server", o.Name)
 	}
-	serverData, err := readBounded(filepath.Join(dir, serverDir, documentFile), MaxDocumentSize)
+	serverData, err := readBounded(filepath.Join(o.Dir, serverDir, documentFile), MaxDocumentSize)
 	if err != nil {
 		return fmt.Errorf("bundle has no server document: %w", err)
 	}
@@ -259,10 +275,10 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	if server.Role != Server {
 		return errors.New("bundle server document does not carry the server role")
 	}
-	if name == server.Node.Name {
-		return fmt.Errorf("agent name %q is the server's node name", name)
+	if o.Name == server.Node.Name {
+		return fmt.Errorf("agent name %q is the server's node name", o.Name)
 	}
-	key, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, agentKeyFile))
+	key, err := certutil.LoadECPrivateKeyFile(filepath.Join(o.Dir, agentKeyFile))
 	if err != nil {
 		return fmt.Errorf("bundle agent key: %w", err)
 	}
@@ -270,15 +286,13 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	if err != nil {
 		return err
 	}
-	if serverAddress == "" {
-		if server.Server.Address == "" {
-			return errors.New("--server-address is required: the server document leaves its address to autodetection, and an agent must be told where its server is")
-		}
-		serverAddress = server.Server.Address
+	serverAddress, err := agentServerAddress(o.ServerAddress, server)
+	if err != nil {
+		return err
 	}
 	agent := *server
 	agent.Role = Agent
-	agent.Node = Node{Name: name}
+	agent.Node = Node{Name: o.Name}
 	password, err := newToken()
 	if err != nil {
 		return err
@@ -286,7 +300,30 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = serverAddress
 	agent.Router = nil
-	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
+	agent.CDS, err = agentCDS(o.Dir, o.PinDecreePath, server.CDS)
+	if err != nil {
+		return err
+	}
+	return writeSignedDocument(filepath.Join(o.Dir, o.Name), agent, key, pub)
+}
+
+// The CDS the server document names, held to the pin decree's images where
+// the operator named one.
+func agentCDS(dir, decreePath string, served CDS) (CDS, error) {
+	if decreePath == "" {
+		return served, nil
+	}
+	return decreedCDS(dir, decreePath, served.Address)
+}
+
+func agentServerAddress(named string, server *Document) (string, error) {
+	if named != "" {
+		return named, nil
+	}
+	if server.Server.Address == "" {
+		return "", errors.New("--server-address is required: the server document leaves its address to autodetection, and an agent must be told where its server is")
+	}
+	return server.Server.Address, nil
 }
 
 // imageFromManifest turns the build's provenanced manifest into the launch

@@ -243,7 +243,7 @@ responder chose).`,
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as `c8s routes show` prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
-	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own — for a cluster launched from a c8s launch-config bundle this is peers.json. It asks for the served-set equality check; --image-policy-file pins the target's own identity")
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own — for a cluster launched from a c8s launch-config bundle this is peers.json. It asks for the served-set equality check; --image-policy-file pins the target's own identity. A replicated CDS takes node identities by signed command: take this file from the decree in force (docs/cds-ha.md)")
 	const refusedWithKindCDS = ". Refused with --kind cds: CDS's serving certificate is self-signed"
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
@@ -321,7 +321,18 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		}
 		overrideERD = erd
 	}
-	ev, err := gatherEvidence(ctx, cfg, plan, overrideERD)
+	var ev *evidence
+	fetch := attestedFetcher(fetchAttested)
+	if cfg.fromFile == "" && cfg.kind == "cds" && resolveMode(cfg) == "armtls-cert" {
+		var attempt *cdsAttempt
+		attempt, err = openCDSAttempt(ctx, cfg, leafTrust{meshCA: plan.meshCA})
+		if err == nil {
+			defer attempt.close()
+			ev, fetch = attempt.evidence, attempt.fetch
+		}
+	} else {
+		ev, err = gatherEvidence(ctx, cfg, plan, overrideERD)
+	}
 	if err != nil {
 		// A securityError means the target was reachable and its response
 		// well-formed, but a check on it failed (a nonce that does not echo,
@@ -345,7 +356,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: could not obtain evidence: %v\n", err)
 		return exitNoEvidence
 	}
-	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, plan, ev), out, errOut)
+	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev, fetch), gatherMeasurements(ctx, cfg, plan, ev, fetch), out, errOut)
 }
 
 // targetDescription names the evidence source for a verdict produced before
@@ -376,7 +387,7 @@ type operatorKeysReport struct {
 // --operator-keys asked for a check: an endpoint erroring on /operator-keys
 // must not dodge it. The attested modes skip it silently: there
 // --operator-keys checks the published route manifest.
-func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorKeysReport {
+func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence, fetch attestedFetcher) operatorKeysReport {
 	if attestedMode(cfg) {
 		return operatorKeysReport{}
 	}
@@ -393,7 +404,7 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorK
 	if err != nil {
 		return operatorKeysReport{note: "not fetched: " + err.Error()}
 	}
-	fps, digest, note, err := fetchOperatorKeyFingerprints(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout)
+	fps, digest, note, err := fetchOperatorKeyFingerprints(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout, fetch)
 	if err != nil {
 		return operatorKeysReport{note: "not fetched: " + err.Error(), fetchErr: err}
 	}

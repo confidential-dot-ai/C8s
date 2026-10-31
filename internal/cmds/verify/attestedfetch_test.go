@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -29,11 +30,11 @@ func TestAttestedFetchRejectsPlaintextAndRedirects(t *testing.T) {
 		get  func(string) error
 	}{
 		{"keys", func(url string) error {
-			_, _, _, err := fetchOperatorKeyFingerprints(context.Background(), url, "", pin, time.Second)
+			_, _, _, err := fetchOperatorKeyFingerprints(context.Background(), url, "", pin, time.Second, fetchAttested)
 			return err
 		}},
 		{"measurements", func(url string) error {
-			_, err := fetchServedMeasurements(context.Background(), url, "", pin, time.Second)
+			_, err := fetchServedMeasurements(context.Background(), url, "", pin, time.Second, fetchAttested)
 			return err
 		}},
 	} {
@@ -121,5 +122,22 @@ func TestAttestedFetchBoundsBodyRead(t *testing.T) {
 func TestAttestedFetchRejectsMalformedURL(t *testing.T) {
 	if _, err := fetchAttested(context.Background(), "://", "", strings.Repeat("ab", 32), time.Second); err == nil {
 		t.Fatal("accepted malformed URL")
+	}
+}
+
+func TestAttestedFetchRejectsDifferentDERForSameKey(t *testing.T) {
+	_, first := selfSignedServerCert(t)
+	second := remintServerCert(t, first)
+	var hits atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{second}}
+	srv.StartTLS()
+	defer srv.Close()
+	pin := sha256.Sum256(first.Certificate[0])
+	if _, err := fetchAttested(context.Background(), srv.URL, "", hex.EncodeToString(pin[:]), time.Second); err == nil {
+		t.Fatal("accepted another certificate with the same key")
+	}
+	if hits.Load() != 0 {
+		t.Fatal("sent a request under a substituted certificate")
 	}
 }

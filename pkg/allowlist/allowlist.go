@@ -293,9 +293,9 @@ func (a *Allowlist) Normalize() error {
 	return a.normalize(true)
 }
 
-// ParseWorkloadJSON decodes and validates a single workload entry — the body of
-// a PUT /allowlist/workloads/{name} — applying the same normalization as
-// ParseJSON so a stored entry is canonical.
+// ParseWorkloadJSON decodes and validates a single workload entry — one entry
+// of a document, as `c8s allowlist apply` and `edit` read it — applying the
+// same normalization as ParseJSON so a written entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := strictjson.Validate(data); err != nil {
 		return nil, err

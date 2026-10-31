@@ -88,14 +88,23 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 	if err != nil {
 		t.Fatalf("new mesh ca: %v", err)
 	}
-	store := attestation.NewChallengeStore(30 * time.Second)
+	store := attestation.NewLocalChallenges(30 * time.Second)
 	return AttestHandler{
-		Challenges:        &store,
+		Challenges:        store,
 		AttestationClient: remote.NewClient(stubURL),
-		MeshCA:            mesh,
+		MeshCA:            ownCA{mesh},
 		CertTTL:           time.Hour,
-		Images:            pinned,
+		NodeImages:        certifying(pinned...),
 	}
+}
+
+// The set a CDS whose configuration names it certifies, which no command
+// replaces.
+func certifying(images ...remote.ImagePin) armtls.PinSource {
+	return armtls.FixedPins(refvalues.ReferenceValues{
+		Family: teetypes.FamilySNP,
+		Images: images,
+	})
 }
 
 // imagePin pins one node image by its launch digest, the whole pin on a
@@ -110,7 +119,10 @@ func imagePin(t *testing.T, name, digest string) remote.ImagePin {
 
 func issueChallenge(t *testing.T, h AttestHandler) string {
 	t.Helper()
-	c := h.Challenges.Create()
+	c, err := h.Challenges.Create()
+	if err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
 	return base64.StdEncoding.EncodeToString(c[:])
 }
 
@@ -183,7 +195,8 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	if !bytes.Equal(ca.Raw, h.MeshCA.Current().CA.Cert.Raw) {
+	signing, _ := h.MeshCA.Current()
+	if !bytes.Equal(ca.Raw, signing.CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {
@@ -270,7 +283,7 @@ func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
 func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = nil
+	h.NodeImages = certifying()
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 

@@ -113,10 +113,13 @@ or namespaces, a pinned-mount annotation
 ([secrets.md](secrets.md#fixed-sidecar-mounts)) — and the validator rejects a
 final shape that is not the injected one.
 
-## CDS is a singleton
+## CDS runs as one VM
 
 CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
-configuration and the pin for. Its state is in that VM: the mesh CA key is
+configuration and the pin for. A cluster may also run its CDS as several VMs
+that share one mesh CA and one store, where a replica that restarts takes the
+cluster's state back from the others ([cds-ha.md](cds-ha.md)). Everything
+below is the one-VM deployment. Its state is in that VM: the mesh CA key is
 generated inside the process and written nowhere, released secrets live in
 process memory, and the allowlist and route manifest live in a store on a
 tmpfs. Any restart is a re-bootstrap:
@@ -182,7 +185,8 @@ optional [Pod CVM provider](pod-cvm-provider.md): it signs the
 scheduler-assigned Pod, launches its Cloud VM, projects attested status and owns
 cleanup. The provider requires explicit `cdsAddress` and `cdsImagePolicyFile`
 configuration, plus a guest image and Cloud launch contract accepting
-`c8s-launch/v2`. Follow its [configuration and upgrade requirements](pod-cvm-provider.md#platform-configuration),
+`c8s-launch/v2`. After an HA CDS image roll, optional `cdsPinDecreeFile` binds new
+launches to the applied image set and its version floor. Follow its [configuration and upgrade requirements](pod-cvm-provider.md#platform-configuration),
 including draining v1 resources with the original provider before upgrading.
 The manual commands below use the same guest contract.
 
@@ -368,9 +372,11 @@ or `impersonate`, no cluster-scoped RBAC, admission or webhook writes, no
 `*/proxy`, and no PersistentVolume, StorageClass, CRD or Node writes. A baked
 admission policy re-checks the same exclusions for every principal in a `c8s:`
 group, whatever RBAC says, and refuses any write in the privileged namespaces
-(`kube-system`, `c8s-system`, and `c8s-router`), where a pod or an edited
-DaemonSet is root on the node. It also refuses a Service that would take over a
-platform address a member pod's packet filter passes by IP: `spec.externalIPs`,
+(`kube-system`, `c8s-system`, and `c8s-router`), except core Pod deletion
+without a subresource in `c8s-router` by `c8s:node-operators`. The fixed
+Deployment recreates a deleted router Pod with a fresh credential volume. It
+also refuses a Service that would take over a platform address a member pod's
+packet filter passes by IP: `spec.externalIPs`,
 and a ClusterIP in `10.53.0.0/24`, where the platform pins the resolver and the
 baked cluster-metrics exit
 ([armtls.md](armtls.md#cluster-metrics)). The credential-release service keeps
@@ -378,6 +384,21 @@ its listener closed until those guards are live, match their copies on the
 read-only root, and pass server-side dry-runs of the deny paths; exec, attach,
 port-forward and ephemeral containers are denied for every credential
 ([node-exec-mode.md](node-exec-mode.md)).
+
+After total CDS CA-key loss, fence lost CDS VMs, recover the CDS, and restore
+its authorized allowlist, routes and secrets. Recreate router Pods one at a time:
+
+```sh
+kubectl --kubeconfig operator.kubeconfig -n c8s-router get pods
+kubectl --kubeconfig operator.kubeconfig -n c8s-router delete pod POD_NAME
+```
+
+Wait for each replacement to become Ready and obtain a leaf from the recovered
+CA. Recreate old-CA tenant backends as needed and verify a routed request over a
+fresh attested connection. A running Pod retains its issuer-key binding across
+sidecar restarts; same-key CA renewal needs no recreation. Credential release
+remains available independently of the CDS. This admission permission requires
+a node image containing this policy to be built and launched.
 
 Revocation is a launch-time decision: deleting a binding cuts access until the
 next boot only, because the manifests sit on the read-only root and RKE2's state

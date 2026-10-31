@@ -73,7 +73,7 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pins, err := cfg.ParsePins()
+	pins, err := cfg.ParsePins(ctx)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func run(cfg config) error {
 // fetchAll gets every secret in one pass. All-or-nothing: a partial set is not
 // written, so a consumer never sees some of its secrets and waits forever for
 // the rest.
-func fetchAll(ctx context.Context, cfg config, pins armtls.Pins) (map[string][]byte, error) {
+func fetchAll(ctx context.Context, cfg config, pins armtls.PinSource) (map[string][]byte, error) {
 	client, pub, err := sidecar.NewClient(cfg.Config, pins)
 	if err != nil {
 		return nil, err

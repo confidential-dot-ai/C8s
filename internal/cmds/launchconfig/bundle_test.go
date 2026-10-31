@@ -613,3 +613,40 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 		})
 	}
 }
+
+// The bundle's launch file carries the replica set, and its node documents
+// name the one address clients dial, which resolves to every replica.
+func TestNewBundleWritesTheCDSReplicaSet(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	args := append(bundleArgs(t, dir, "tdx"),
+		"--cds-replica", "cds-1.demo.example",
+		"--cds-replica", "cds-2.demo.example",
+		"--cds-replica", "cds-3.demo.example",
+		"--cds-voters", "3")
+	if err := runBundleCmd(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readBundleCDSConfig(t, dir)
+	if cfg.HA == nil {
+		t.Fatal("the bundle's CDS runs as the singleton, want the replica set")
+	}
+	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
+		t.Fatalf("replica set = %+v", cfg.HA)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	if doc.CDS.Address != "192.0.2.50:8443" {
+		t.Fatalf("cds address = %q, want the address the cluster's clients dial", doc.CDS.Address)
+	}
+}
+
+// A bundle named with no replica runs one CDS: its launch file carries no
+// replica set, so nothing holds an election.
+func TestNewBundleWritesNoCDSReplicaSetByDefault(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, bundleArgs(t, dir, "tdx")...); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := readBundleCDSConfig(t, dir); cfg.HA != nil {
+		t.Fatalf("replica set = %+v, want the singleton CDS", cfg.HA)
+	}
+}

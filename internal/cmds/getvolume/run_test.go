@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -146,7 +147,7 @@ func TestOpenAllWithoutLeaf(t *testing.T) {
 	cfg := validConfig()
 	cfg.CertPath = filepath.Join(t.TempDir(), "absent.crt")
 	cfg.KeyPath = filepath.Join(t.TempDir(), "absent.key")
-	if err := openAll(context.Background(), cfg, armtls.Pins{}); err == nil {
+	if err := openAll(context.Background(), cfg, armtls.FixedPins(refvalues.ReferenceValues{})); err == nil {
 		t.Fatal("a missing leaf was accepted")
 	}
 }

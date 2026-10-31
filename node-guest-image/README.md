@@ -335,7 +335,8 @@ no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
 policy (`operator-scope-policy.yaml`) denies them in admission for every
 `c8s:` group regardless of RBAC, together with every write in the
 privileged namespaces (`kube-system`, the baked
-operator's `c8s-system` and the router role's `c8s-router`) and the
+operator's `c8s-system` and the router role's `c8s-router`), except core Pod
+deletion without a subresource in `c8s-router` by `c8s:node-operators`, and the
 kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
 

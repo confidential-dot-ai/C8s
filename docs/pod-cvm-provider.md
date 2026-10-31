@@ -71,6 +71,20 @@ server identity; they do not select or authenticate CDS. Static and generic
 launches carry the same explicit CDS trust. Changing that trust drains idle
 allocations while existing Pod and allocation records retain their signed bytes.
 
+After an HA CDS image roll, set optional `cdsPinDecreeFile` to the applied decree
+saved by `c8s cds ha pin-policy --decree-out`. For example, add
+`"cdsPinDecreeFile": "cds-pin-decree.json"` to the configuration and mount that file
+in the same Secret. Its relative path resolves beside `config.json`. The provider
+verifies the signature, cluster and launch-file binding using the configuration
+already bound by `cdsImagePolicyFile`, then signs the decree's complete CDS image
+set and version floor into both static and generic launches. It reads the file
+once at startup; deploy the updated configuration to use a later applied decree.
+A higher floor drains idle older-floor allocations even when the images are
+unchanged. Existing frozen Pod, allocation and assignment records keep their
+original trust. Without this optional file, bootstrap behavior is unchanged.
+The operator must supply the actually applied decree: offline verification does
+not prove that replicas applied it or that no newer decree exists.
+
 `vCPUs` and `memoryMiB` describe one VM of the selected size. Each workload must
 fit that VM after the memory reserve. The virtual node advertises the aggregate
 capacity for `maxPods`; this is a placement limit, not a reservation of Cloud

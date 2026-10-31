@@ -4,7 +4,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"slices"
 	"testing"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
 // Both evidence paths require an attestation-api: there is no in-process verifier,
@@ -45,4 +48,18 @@ func certWithSandboxID(t *testing.T, id string) (*x509.Certificate, error) {
 		return nil, err
 	}
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}, nil
+}
+
+// A guest image is its launch digest plus the registers its platform measures
+// into, which is one table every pin path reads.
+func TestImageRegistersIdentifyAGuestImage(t *testing.T) {
+	if registers, identified := ImageRegisters(teetypes.FamilyTDX); !identified || !slices.Equal(registers, []int{1, 2}) {
+		t.Fatalf("TDX registers = %v (identified %v), want RTMR[1] and RTMR[2]", registers, identified)
+	}
+	if registers, identified := ImageRegisters(teetypes.FamilySNP); !identified || len(registers) != 0 {
+		t.Fatalf("SEV-SNP registers = %v (identified %v), want none", registers, identified)
+	}
+	if _, identified := ImageRegisters(teetypes.FamilyUnknown); identified {
+		t.Fatal("a family with no verification rules identifies a guest image")
+	}
 }

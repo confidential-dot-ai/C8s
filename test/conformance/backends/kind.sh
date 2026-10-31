@@ -200,22 +200,6 @@ image_env() {
     node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | (.Env // [])[]"' _ "$1"
 }
 
-# Signed with the harness's operator key, as its own allowlist checks are.
-allowlist_put() {
-    local code
-    code="$(cds_write PUT "/allowlist/workloads/$1" "$2")"
-    [ "$code" = 204 ] || { echo "backend: PUT /allowlist/workloads/$1: HTTP $code" >&2; return 1; }
-}
-
-allowlist_delete() {
-    local code
-    code="$(cds_write DELETE "/allowlist/workloads/$1" /dev/null)"
-    case "$code" in
-        204|404) ;;
-        *) echo "backend: DELETE /allowlist/workloads/$1: HTTP $code" >&2; return 1 ;;
-    esac
-}
-
 # The installer renders the base allowlist into the plugin's config directory
 # on the node; a digest is a string that appears nowhere else in it.
 base_declares() {

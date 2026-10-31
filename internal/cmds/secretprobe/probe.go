@@ -38,13 +38,13 @@ var nodePinsPath = workloadclaims.CDSPinsPath
 
 // clientFunc builds the mTLS client to CDS and returns the leaf's key;
 // sidecar.NewClient in the command, a client trusting a test server in tests.
-type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
+type clientFunc func(sidecar.Config, armtls.PinSource) (*http.Client, crypto.PublicKey, error)
 
 // newProbe verifies CDS as the pod's sidecars do, through armTLS against the
 // node's CDS pins where the enforcer mounts them, otherwise the policy given.
 // The pins are resolved without the sidecars' log line: the steps read the
 // probe's stdout and stderr as one stream.
-func newProbe(o options) (*probe, error) {
+func newProbe(ctx context.Context, o options) (*probe, error) {
 	cfg := sidecar.Config{
 		CDSURL:                 o.cdsURL,
 		AttestationApiURL:      o.attestationURL,
@@ -54,12 +54,12 @@ func newProbe(o options) (*probe, error) {
 		KeyPath:                o.keyPath,
 		RequestTimeout:         o.timeout,
 	}
-	policy, _, err := cmdsutil.ResolveCDSPins(nodePinsPath,
+	pins, _, err := cmdsutil.ResolveCDSPins(ctx, nodePinsPath,
 		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 	if err != nil {
 		return nil, err
 	}
-	client, pub, err := o.newClient(cfg, armtls.Pins(policy))
+	client, pub, err := o.newClient(cfg, pins)
 	if err != nil {
 		return nil, err
 	}

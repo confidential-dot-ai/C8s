@@ -112,3 +112,21 @@ func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 	}
 	return pins
 }
+
+// The floor travels in the signed document: a node launched after an image
+// roll refuses a pin decree the operator signed before the set it carries.
+func TestStageCarriesTheCDSPinFloor(t *testing.T) {
+	doc, key, pub := testDocument(t, "tdx", Server)
+	testLoader(t, doc, pub)
+	cfg := testConfig(t, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := LoadStaged(cfg.path(DefaultStagedPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.CDS.PinFloor != doc.CDS.PinFloor {
+		t.Fatalf("staged pin floor = %d, want the signed document's %d", staged.CDS.PinFloor, doc.CDS.PinFloor)
+	}
+}

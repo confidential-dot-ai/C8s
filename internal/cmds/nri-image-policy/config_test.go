@@ -612,12 +612,12 @@ func writeAndLoad(t *testing.T, body string) *config {
 	return cfg
 }
 
-// An unreadable pin document fails the pull-client build rather than silently
-// unpinning CDS.
-func TestAllowlistPullHTTPClientRejectsAnUnreadablePin(t *testing.T) {
+// An unreadable pin document fails the node's pin source rather than
+// silently unpinning CDS.
+func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
-	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull); err == nil {
+	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
 		t.Fatal("an unreadable CDS pin was accepted")
 	}
 }

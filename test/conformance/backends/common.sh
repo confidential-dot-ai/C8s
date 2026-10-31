@@ -20,8 +20,11 @@
 #   image_digest <ref>               the digest the plugin compares for ref
 #   image_alias <ref> <name>         make the node resolve name to ref's bytes
 #   served_allowlist                 the allowlist document CDS serves, as JSON
-#   allowlist_put <name> <file>      write the entry in file under name, signed
-#   allowlist_delete <name>          delete the entry; absent is not an error
+#   allowlist_request                a write request through the path this
+#                                    backend writes over, taking cds_request's
+#                                    arguments (default: cds_request). The
+#                                    signed writes allowlist_put and
+#                                    allowlist_delete go through it.
 #   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
 #   pull_interval                    how often the plugin pulls, as a Go duration
 #   plugin_ready <node>              wait until the node's admission plugin is registered and ready
@@ -345,6 +348,8 @@ injected_image() { operator_arg get-cert-image; }
 # The signed path (allowlist_put, allowlist_delete) is the harness's way of
 # writing; these send what a scenario says, authorization included or not,
 # with curl against the CDS. A backend provides what differs:
+#   allowlist_request              the request function a signed write goes
+#                                  through, taking cds_request's arguments
 #   cds_url        the base URL of the CDS, reachable from here
 #   operator_key   the operator's private key, PEM
 #   optoken_bin    the token minter built from test/integration/cluster/optoken
@@ -413,6 +418,35 @@ secrets_explain() {
 # Raw reads, so the steps see the document the CDS serves, as served.
 served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
 served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
+
+# --- The harness's signed writes ---
+# A write replaces the whole document, so a write of one entry reads the
+# document, changes that entry, and writes it back conditional on the version
+# it read (If-Match).
+allowlist_request() { cds_request "$@"; }
+
+allowlist_put() { allowlist_replace "$1" "$2"; }
+allowlist_delete() { allowlist_replace "$1" ""; }
+
+# allowlist_replace <name> [<entry-file>]: write the served document with the
+# entry in the file put under name, or with name removed when no file is given.
+# The harness is the only writer, so a 412 is a harness fault, not a race.
+allowlist_replace() {
+    local name="$1" entry="${2:-}" served version body token answer code
+    body="$(scratch)/allowlist-write.json" || return
+    served="$(allowlist_get "")" || return
+    version="$(awk 'NR == 1 {print $2}' <<<"$served")"
+    if [ -n "$entry" ]; then
+        printf '%s' "${served#*$'\n'}" |
+            jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' > "$body" || return
+    else
+        printf '%s' "${served#*$'\n'}" | jq -c --arg n "$name" 'del(.workloads[$n])' > "$body" || return
+    fi
+    token="$(write_token operator PUT /allowlist "$body")" || return
+    answer="$(allowlist_request PUT /allowlist "$body" "$token" "" "" "If-Match: \"$version\"")" || return
+    code="${answer%%$'\n'*}"
+    [ "$code" = 204 ] || { echo "backend: PUT /allowlist ($name): HTTP $code" >&2; return 1; }
+}
 
 allowlist_get() {
     local url headers body status

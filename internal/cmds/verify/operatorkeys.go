@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -20,12 +22,17 @@ import (
 //
 // A 404 sets note and returns the empty-set digest: the endpoint reports
 // allowlist writes disabled, which --operator-keys can still be checked against.
-func fetchOperatorKeyFingerprints(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration) (fingerprints []string, digest []byte, note string, err error) {
-	resp, err := fetchAttested(ctx, base+operatorauth.PublishedKeysPath, serverName, wantCertSHA256, timeout)
+func fetchOperatorKeyFingerprints(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration, fetch attestedFetcher) (fingerprints []string, digest []byte, note string, err error) {
+	resp, err := fetch(ctx, base+operatorauth.PublishedKeysPath, serverName, wantCertSHA256, timeout)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("fetch %s: %w", operatorauth.PublishedKeysPath, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		if _, err := readutil.ReadAll(resp.Body, operatorauth.MaxPublishedKeysBytes); err != nil {
+			return nil, nil, "", fmt.Errorf("read %s: %w", operatorauth.PublishedKeysPath, err)
+		}
+	}
 
 	keys, err := operatorauth.ReadPublishedKeys(resp)
 	if errors.Is(err, operatorauth.ErrNoPublishedKeys) {

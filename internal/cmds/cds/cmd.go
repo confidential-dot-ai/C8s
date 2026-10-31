@@ -38,7 +38,7 @@ func NewCmd() *cobra.Command {
 	flags := cmd.Flags()
 
 	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). CDS serves the cluster it describes only if a verified self-report binds the file byte for byte")
-	flags.StringVar(&cfg.host, "host", "0.0.0.0", "")
+	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
@@ -103,6 +103,7 @@ func NewCmd() *cobra.Command {
 
 	cmd.AddCommand(cdsca.NewCmd())
 	cmd.AddCommand(cdslaunch.NewCmd())
+	cmd.AddCommand(newHACmd())
 
 	return cmd
 }
@@ -146,7 +147,8 @@ type config struct {
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
 
-	// measured is the configuration document this VM was launched with: every
-	// per-cluster setting CDS serves.
-	measured *cdsconfig.Config
+	// measured is the configuration document this VM was launched with, and
+	// measuredFile the bytes its launch bound and a cluster's decrees pin.
+	measured     *cdsconfig.Config
+	measuredFile []byte
 }

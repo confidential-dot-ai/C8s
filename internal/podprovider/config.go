@@ -54,6 +54,7 @@ type Config struct {
 	ServerPublicKeyFile        string   `json:"serverPublicKeyFile"`
 	CDSAddress                 string   `json:"cdsAddress"`
 	CDSImagePolicyFile         string   `json:"cdsImagePolicyFile"`
+	CDSPinDecreeFile           string   `json:"cdsPinDecreeFile,omitempty"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -98,6 +99,9 @@ func LoadConfig(path string) (*Config, error) {
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
 		}
+	}
+	if cfg.CDSPinDecreeFile != "" && !filepath.IsAbs(cfg.CDSPinDecreeFile) {
+		cfg.CDSPinDecreeFile = filepath.Join(filepath.Dir(path), cfg.CDSPinDecreeFile)
 	}
 	if err := cfg.loadTrust(); err != nil {
 		return nil, err
@@ -194,10 +198,17 @@ func (c *Config) loadTrust() error {
 	if err != nil {
 		return fmt.Errorf("CDS image policy: %w", err)
 	}
-	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
+	launchFile, err := cmdsutil.CDSLaunchFile(pins)
+	if err != nil {
 		return fmt.Errorf("CDS image policy: %w", err)
 	}
 	c.cds = launchconfig.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
+	if c.CDSPinDecreeFile != "" {
+		c.cds, err = launchconfig.CDSFromPinDecree(launchFile, c.CDSPinDecreeFile, c.CDSAddress)
+		if err != nil {
+			return fmt.Errorf("CDS pin decree: %w", err)
+		}
+	}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err
