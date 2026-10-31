@@ -9,6 +9,7 @@ require (
 	github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261030152238-ab5b8da922c5 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/go-sev-guest v0.15.0 // indirect
 	github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0 // indirect
 	github.com/google/logger v1.1.2 // indirect
