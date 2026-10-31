@@ -82,11 +82,13 @@ node is out of scope.
 
 ## CDS issuance
 
-CDS is the only component that signs leaves. Its mesh CA is a P-384 key
-generated in process memory at startup, CN `c8s Mesh CA`, valid for a year and
-renewed past half of that under the same key. The key is never a Kubernetes
-Secret and never on disk, so a CDS restart mints a fresh CA and every workload
-re-bootstraps ([operator.md](operator.md)).
+CDS is the only component that signs leaves. For a singleton CDS, its mesh CA
+is a P-384 key generated in process memory at startup, CN `c8s Mesh CA`, valid
+for a year and renewed past half of that under the same key. The key is never
+a Kubernetes Secret and never on disk, so a CDS restart mints a fresh CA and
+every workload
+re-bootstraps ([operator.md](operator.md)). Replicated CDS uses its cluster’s
+shared CA state ([cds-ha.md](cds-ha.md)).
 
 Issuance is challenge, attest, certify. The requester asks CDS for a challenge
 (32 bytes, single-use, TTL-bound), generates a key and a CSR, asks its
@@ -208,6 +210,12 @@ a named leaf needs one unique whole-workload match of the complete non-platform
 history. Neither a status quote nor a node inventory token substitutes for this
 profile.
 
+Measured Pod launch keys remain separate from node and operator authority. In
+an HA cluster, that boundary also applies to signed node-image replacements.
+A replacement sharing a Pod launch key makes the entire node set untrusted
+until a disjoint replacement arrives; it is never filtered or combined with
+earlier pins. Pod issuance continues to use its separate measured policy.
+
 The guest publishes complete credential generations to a verified RAM-backed
 volume only the endpoint mounts, read-only. Publication rechecks the retained
 revision, sandbox and packet protection. The revision moves when the history
@@ -274,6 +282,10 @@ configuration's `nodeCIDRs`; an empty bound refuses every token). CDS then
 verifies the token and asks `/digests/{id}`, where every image reported must be
 in the allowlist — the operator policy of workload
 entries CDS serves and every node enforces — and an empty answer is refused.
+
+The inventory client retires its idle connection pool when the node-pin
+generation changes. New callbacks use the current pins without resetting the
+client’s own certificate or renewal state.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),

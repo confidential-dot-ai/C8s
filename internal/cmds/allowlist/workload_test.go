@@ -59,6 +59,13 @@ func ctrJSON(digest, argv string) string {
 	return `{"digest":"` + digest + `","command":{"policy":"exact","argv":["` + argv + `"]},"args":{"policy":"deny"}}`
 }
 
+// oneContainerEntry is an entry admitting digest under one exact command.
+func oneContainerEntry(t *testing.T, digest string) pkgallowlist.Workload {
+	t.Helper()
+	doc := `{"schema":"c8s.allowlist/v1","workloads":{"e":{"containers":[` + ctrJSON(digest, "/app") + `]}}}`
+	return mustParseAllowlist(t, doc).Workloads["e"]
+}
+
 // mustParseAllowlist parses a JSON allowlist document or fails the test.
 func mustParseAllowlist(t *testing.T, doc string) *pkgallowlist.Allowlist {
 	t.Helper()
@@ -363,29 +370,42 @@ func savedEditPath(t *testing.T, stderr string) string {
 
 // --- workload delete ---
 
+// Every named entry goes in one write, and an entry the command does not name
+// stays.
 func TestWorkloadDelete(t *testing.T) {
-	url, methods := servingCDS(t, nil)
-	keyPath := writeOperatorKey(t, t.TempDir())
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	for _, name := range []string{"web", "old", "keep"} {
+		cds.seedWorkload(name, oneContainerEntry(t, digA))
+	}
 
-	_, _, err := runCmd("delete", "web", "old", "--url", url, "--insecure", "--operator-key", keyPath)
-	if err != nil {
+	if _, _, err := runCmd("delete", "web", "old", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("workload delete: %v", err)
 	}
-	if !contains(*methods, http.MethodDelete) {
-		t.Fatalf("expected a DELETE, saw %v", *methods)
+	for _, name := range []string{"web", "old"} {
+		if _, ok := cds.workload(name); ok {
+			t.Fatalf("entry %q survived the delete", name)
+		}
+	}
+	if _, ok := cds.workload("keep"); !ok {
+		t.Fatal("an entry the delete did not name was lost")
 	}
 }
 
+// A name the allowlist does not hold stops the whole delete before it writes.
 func TestWorkloadDeleteNotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "no such workload", http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-	keyPath := writeOperatorKey(t, t.TempDir())
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	cds.seedWorkload("web", oneContainerEntry(t, digA))
 
-	_, _, err := runCmd("delete", "ghost", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
+	_, _, err := runCmd("delete", "web", "ghost", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), `no workload entry named "ghost"`) {
-		t.Fatalf("expected a mapped 404 error, got %v", err)
+		t.Fatalf("expected the absent name to be refused, got %v", err)
+	}
+	if _, ok := cds.workload("web"); !ok {
+		t.Fatal("the refused delete removed an entry")
 	}
 }
 

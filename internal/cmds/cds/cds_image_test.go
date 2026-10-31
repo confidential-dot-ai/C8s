@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,13 @@ const (
 )
 
 func TestCDSImageServiceArguments(t *testing.T) {
+	previous := chooseHostInterface
+	t.Cleanup(func() { chooseHostInterface = previous })
+	selections := 0
+	chooseHostInterface = func() (net.IP, error) {
+		selections++
+		return net.ParseIP("10.42.0.9"), nil
+	}
 	args := readCDSImageExecStart(t)
 
 	command := NewCmd()
@@ -29,6 +37,20 @@ func TestCDSImageServiceArguments(t *testing.T) {
 	api, _ := command.Flags().GetString("attestation-api-url")
 	if err := requireLoopbackAttestationAPI(api); err != nil {
 		t.Errorf("baked attestation API: %v", err)
+	}
+	host, _ := command.Flags().GetString("host")
+	host, err := resolveListenHost(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := command.Flags().GetInt("port")
+	cfg := config{host: host, port: port}
+	peer, err := peerAddress(cfg)
+	if err != nil {
+		t.Errorf("baked service cannot start a replica: %v", err)
+	}
+	if clientAddress(cfg) != "10.42.0.9:8443" || peer.String() != "10.42.0.9:8444" || selections != 1 {
+		t.Errorf("client address = %q, peer = %v, address selections = %d", clientAddress(cfg), peer, selections)
 	}
 }
 

@@ -186,7 +186,7 @@ func TestFetchServedMeasurementsBindsToTheAttestedCert(t *testing.T) {
 	sum := sha256.Sum256(leaf)
 	attested := hex.EncodeToString(sum[:])
 
-	got, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", attested, 10*time.Second)
+	got, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", attested, 10*time.Second, fetchAttested)
 	if err != nil {
 		t.Fatalf("fetch over the attested cert failed: %v", err)
 	}
@@ -195,12 +195,12 @@ func TestFetchServedMeasurementsBindsToTheAttestedCert(t *testing.T) {
 	}
 
 	// A different attested fingerprint must abort the handshake.
-	if _, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", strings.Repeat("00", 32), 10*time.Second); err == nil {
+	if _, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", strings.Repeat("00", 32), 10*time.Second, fetchAttested); err == nil {
 		t.Error("fetch accepted a server that is not the attested target")
 	}
 
 	// No attested cert at all is refused rather than fetched unbound.
-	if _, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", "", 10*time.Second); err == nil {
+	if _, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", "", 10*time.Second, fetchAttested); err == nil {
 		t.Error("fetch proceeded with nothing to bind to")
 	}
 }
@@ -212,7 +212,7 @@ func TestFetchServedMeasurementsReportsAMissingEndpoint(t *testing.T) {
 	defer srv.Close()
 	sum := sha256.Sum256(srv.Certificate().Raw)
 
-	_, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", hex.EncodeToString(sum[:]), 10*time.Second)
+	_, err := fetchServedMeasurements(context.Background(), srv.URL, "example.com", hex.EncodeToString(sum[:]), 10*time.Second, fetchAttested)
 	if err == nil {
 		t.Fatal("a 404 was not reported")
 	}
@@ -274,11 +274,11 @@ func TestCheckServedPolicyNamesTheFlagOnAnUncheckedTarget(t *testing.T) {
 // gatherMeasurements must run when --served-policy-file alone asked for the
 // check; a silent skip would let a substituted CDS policy pass.
 func TestGatherMeasurementsRunsForServedPolicyFileAlone(t *testing.T) {
-	report := gatherMeasurements(context.Background(), config{kind: "lb"}, &verifyPlan{served: &refvalues.ReferenceValues{}}, &evidence{})
+	report := gatherMeasurements(context.Background(), config{kind: "lb"}, &verifyPlan{served: &refvalues.ReferenceValues{}}, &evidence{}, fetchAttested)
 	if report.note == "" {
 		t.Fatal("a non-cds target must record why the check could not run")
 	}
-	if got := gatherMeasurements(context.Background(), config{kind: "cds"}, &verifyPlan{}, &evidence{}); got.fetched || got.note != "" || got.fetchErr != nil {
+	if got := gatherMeasurements(context.Background(), config{kind: "cds"}, &verifyPlan{}, &evidence{}, fetchAttested); got.fetched || got.note != "" || got.fetchErr != nil {
 		t.Fatalf("no policy flag means no fetch: %+v", got)
 	}
 }

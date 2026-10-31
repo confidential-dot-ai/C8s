@@ -126,6 +126,7 @@ func bindCDSPull(a map[string]any, d *launchconfig.Document) (map[string]any, er
 	}
 	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
+	pull["cds_pin_floor"] = d.CDS.PinFloor
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
 	return pull, nil

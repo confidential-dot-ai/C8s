@@ -87,6 +87,15 @@ empty. A generic launch omits both blocks and stages no workload authority;
 one authenticated assignment supplies the Pod later. The CDS endpoint and
 launch-file pin are fixed by the signed boot document in both cases.
 
+After an HA CDS image roll, pass the applied decree written by
+`c8s cds ha pin-policy --decree-out` to
+`c8s launch-config new-pod --cds-pin-decree <file>`. The generator verifies its
+signature, cluster and launch-file digest against the exact CDS configuration
+bound by `--cds-image-policy-file`. The signed Pod document then carries the
+complete decreed image set and its minimum version (`cds.pinFloor`), so an older
+signed decree cannot restore a retired image. Static and generic Pods use the
+same check; a later assignment retains the generic boot's CDS trust and floor.
+
 Pod documents carry no RKE2 credentials, agent keys or router block. Staging
 writes private Pod runtime inputs and the role marker instead of RKE2
 configuration. Node documents cannot carry Pod fields or a base `workloads`

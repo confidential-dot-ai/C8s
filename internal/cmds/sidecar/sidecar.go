@@ -111,17 +111,17 @@ func (c *Config) Validate() error {
 
 // ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
 // where the enforcer mounts it, otherwise --image-policy-file.
-func (c *Config) ParsePins() (armtls.Pins, error) {
-	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
+	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,
 		})
 	if err != nil {
-		return armtls.Pins{}, err
+		return nil, err
 	}
 	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return armtls.Pins(policy), nil
+	return pins, nil
 }
 
 // Terminal marks a non-nil error no later attempt can clear, so Retry stops on

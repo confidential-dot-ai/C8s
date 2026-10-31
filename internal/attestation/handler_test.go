@@ -21,9 +21,9 @@ import (
 
 // testApp mounts the challenge endpoint used by certificate issuance.
 func testApp() http.Handler {
-	challengeStore := attestation.NewChallengeStore(60 * time.Second)
+	challengeStore := attestation.NewLocalChallenges(60 * time.Second)
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /authenticate", attestation.HandleAuthenticate(&challengeStore))
+	mux.HandleFunc("POST /authenticate", attestation.HandleAuthenticate(challengeStore))
 	return mux
 }
 
@@ -193,6 +193,26 @@ func TestECDSAPublicKeyFromCSRNonECDSA(t *testing.T) {
 	}
 	if _, err := attestation.ECDSAPublicKeyFromCSR(csr); err == nil {
 		t.Fatal("expected error for non-ECDSA CSR public key")
+	}
+}
+
+// A replica that holds no cluster key answers /authenticate with a retryable
+// 503 rather than a nonce nothing will redeem.
+func TestAuthenticateUnavailableWithoutAChallengeKey(t *testing.T) {
+	h := attestation.HandleAuthenticate(attestation.NewSharedChallenges(
+		"issuance",
+		time.Minute,
+		func() []byte { return nil },
+	))
+	rec := httptest.NewRecorder()
+
+	h(rec, httptest.NewRequest(http.MethodPost, "/authenticate", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if retry := rec.Header().Get("Retry-After"); retry == "" {
+		t.Fatal("503 carries no Retry-After, so a client has nothing to wait for")
 	}
 }
 

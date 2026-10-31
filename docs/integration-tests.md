@@ -1,30 +1,37 @@
 # Run the integration tests
 
 Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
-here proves a confidential property. Two harnesses:
+here proves a confidential property. Four harnesses:
 
 - **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
   TLS whose certificates carry TEE evidence.
 - **kind**: a whole cluster.
+- **CDS HA**: three `c8s cds` replicas of one cluster as real processes on
+  loopback addresses, each with its own attestation-api
+  (`make test-integration-cdsha`, Linux only).
 
-CI runs both as the Integration and Integration (cluster) jobs; terms are
-defined in [glossary.md](glossary.md).
+CI runs them as the Integration, Integration (cluster) and CDS HA jobs; terms
+are defined in [glossary.md](glossary.md).
 
 Prerequisites:
 
-- Both harnesses: docker with Compose v2 (`docker compose`), make, OpenSSL
-  (macOS LibreSSL lacks `x509 -ext`), and curl.
-- The kind harness also: kind, kubectl, helm, go, and python3 with PyYAML.
+- Every harness: make, go, OpenSSL (macOS LibreSSL lacks `x509 -ext`) and
+  curl.
+- The docker-compose harness also: docker, with Compose v2
+  (`docker compose`). The CDS HA harness needs none: its replicas are
+  processes on this host.
+- The kind harness also: docker, kind, kubectl, helm and python3 with PyYAML.
   Podman works as kind's provider with `KIND_EXPERIMENTAL_PROVIDER=podman`, but
   `docker` must stay on PATH: the harness builds images and reaches into the
   node with it. CI pins helm and kind in
   `.github/actions/setup-kind-harness`.
 
-Run both from the repository root:
+Run them from the repository root:
 
 ```sh
 make test-integration
 make test-integration-cluster
+make test-integration-cdsha
 ```
 
 The first starts a mock CDS — the service that verifies evidence and signs
@@ -33,12 +40,17 @@ produces hardware evidence for CDS and every other component. It runs get-cert,
 the sidecar that obtains a pod's certificate, through the real armTLS flow, and
 checks that nginx serves HTTPS with the issued certificate. The second boots a
 kind cluster, builds the component images, and runs
-`c8s install --cvm-mode=bare-metal`. Each ends with its check count:
+`c8s install --cvm-mode=bare-metal`. The first two end with their check count:
 
 ```text
 === All <N> integration checks passed ===
 === All <N> cluster integration checks passed ===
 ```
+
+The CDS HA harness runs a cluster of three `c8s cds` processes behind one
+attestation-api each, and an operator that signs the decrees they act on and
+posts them to the replicas over the attested channel. `run.sh -short` is the
+subset a pull request runs.
 
 ## What the kind harness substitutes
 

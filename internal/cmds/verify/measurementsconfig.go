@@ -26,8 +26,8 @@ type measurementsReport struct {
 }
 
 // fetchServedMeasurements parses /measurements from the attested endpoint.
-func fetchServedMeasurements(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration) (refvalues.ReferenceValues, error) {
-	resp, err := fetchAttested(ctx, base+"/measurements", serverName, wantCertSHA256, timeout)
+func fetchServedMeasurements(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration, fetch attestedFetcher) (refvalues.ReferenceValues, error) {
+	resp, err := fetch(ctx, base+"/measurements", serverName, wantCertSHA256, timeout)
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("fetch /measurements: %w", err)
 	}
@@ -85,7 +85,7 @@ func checkServedMeasurements(want refvalues.ReferenceValues, report measurements
 // operator-key fetch it never fails the run here; a fetch error is recorded so
 // checkServedPolicy can fail the verdict when a policy flag asked for
 // the check, rather than letting an erroring endpoint dodge it.
-func gatherMeasurements(ctx context.Context, cfg config, plan *verifyPlan, ev *evidence) measurementsReport {
+func gatherMeasurements(ctx context.Context, cfg config, plan *verifyPlan, ev *evidence, fetch attestedFetcher) measurementsReport {
 	if plan.served == nil {
 		return measurementsReport{}
 	}
@@ -102,7 +102,7 @@ func gatherMeasurements(ctx context.Context, cfg config, plan *verifyPlan, ev *e
 	if err != nil {
 		return measurementsReport{note: "not fetched: " + err.Error()}
 	}
-	served, err := fetchServedMeasurements(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout)
+	served, err := fetchServedMeasurements(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout, fetch)
 	if err != nil {
 		return measurementsReport{note: "not fetched: " + err.Error(), fetchErr: err}
 	}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // testCDSPinFile stages the pin document a node's config names, at the launch
@@ -41,7 +42,7 @@ func TestPullAndInventoryUseTheCDSPinDocument(t *testing.T) {
 	if len(set.Images) != 1 || len(set.Images[0].LaunchFile) == 0 {
 		t.Fatalf("CDS policy = %+v, want the launch-bound image", set.Images)
 	}
-	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull); err != nil {
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, armtls.FixedPins(set), testClusterDNS); err != nil {
 		t.Fatal(err)
 	}
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
