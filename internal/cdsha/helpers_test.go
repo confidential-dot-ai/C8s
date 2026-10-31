@@ -415,8 +415,12 @@ func newPeerReplica(
 }
 
 // serve starts the replica's peer port on the loopback.
-func (r *testReplica) serve(t *testing.T) {
+func (r *testReplica) serve(t *testing.T, handlers ...controlHandler) {
 	t.Helper()
+	answer := r.answer
+	if len(handlers) > 0 {
+		answer = handlers[0]
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -430,7 +434,7 @@ func (r *testReplica) serve(t *testing.T) {
 		raftAddr{endpoint: endpoint, member: r.member},
 		r.certificate,
 		r.verifier(),
-		r.answer,
+		answer,
 	)
 	r.mux.serving()
 	t.Cleanup(func() { r.mux.Close() })

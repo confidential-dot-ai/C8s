@@ -168,12 +168,37 @@ is what a client pins and what `--cds-pin` takes during an image roll.
 `/readyz` answers for one replica: it serves when it holds the cluster,
 follows the log, and holds a read lease its leader confirmed. A replica that
 cannot reach a leader stops serving rather than answering from the state it
-still holds.
+still holds. KubeVirt guests use an HTTPS `/readyz` probe on port 8443.
+The aggregate client Service publishes ready guests on 8443; per-replica
+Services publish unready addresses on 8443 and 8444 for bootstrap, diagnostics
+and peer traffic.
+
+A replica that observes its clock lagging an authenticated current member
+beyond the configured JWT allowance refuses client requests, CA acquisition
+and new local mutations. Its readiness reason describes the observed lag;
+voting, log application and in-memory state continue. This refusal lasts for
+the process lifetime, even if later clocks agree. Before an observation, a
+request can still fail JWT validation with HTTP 401. Restarting a process
+does not establish that the VM clock is repaired.
 
 **roll_safe** is the other gate, and the leader alone answers it: the seats
 are filled by voters that answer, none of them is retiring, and every staying
 voter holds the newest seat change. It is the gate to wait for between the
-replicas of a roll, and `ha status` prints it as `roll_safe=true`.
+replicas of a roll, and `ha status` prints it as `roll_safe=true`. A current
+voter known to be clock-quarantined keeps this gate false. A quarantined
+leader hands authority to a caught-up, clock-eligible voter while retaining
+its vote and replicated state.
+
+Controlled clock repair requires a serving leader and a working voting
+majority. Keep the serving leader and a majority of current voters available
+throughout repair.
+Repair or recreate one affected VM using the same launch file and address and a
+currently admitted image. Before repairing another, verify its replacement
+has joined, serves, has applied the leader's recorded watermark, and occupies
+a voter seat with the old member ID retired. The ordinary rolling gate stays
+false while a current voter is known quarantined. If no eligible voter can lead,
+preserve the running replicas and their state and escalate for recovery;
+a retained quorum alone does not restore authority.
 
 ## The CDS images a replica may run
 

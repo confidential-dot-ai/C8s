@@ -34,8 +34,9 @@ type members struct {
 	own       string
 	deadAfter time.Duration
 
-	mu        sync.Mutex
-	addresses map[netip.AddrPort]*answeringAddress
+	mu          sync.Mutex
+	addresses   map[netip.AddrPort]*answeringAddress
+	quarantined map[string]bool
 }
 
 // turnsShared is how many handovers make an address its replicas take turns
@@ -116,9 +117,10 @@ func (r reachedMember) raftAddress() raft.ServerAddress {
 
 func newMembers(own string, deadAfter time.Duration) *members {
 	return &members{
-		own:       own,
-		deadAfter: deadAfter,
-		addresses: map[netip.AddrPort]*answeringAddress{},
+		own:         own,
+		deadAfter:   deadAfter,
+		addresses:   map[netip.AddrPort]*answeringAddress{},
+		quarantined: map[string]bool{},
 	}
 }
 
@@ -359,12 +361,32 @@ func atOnce[T any](items []T, work func(T)) {
 }
 
 func (n *Node) recheck(held reachedMember) {
-	if _, err := held.control.exchange(controlRequest{Op: opMember}, controlTimeout); err != nil {
+	core := n.fsm.ClusterState()
+	member := n.memberOfCluster(held.member)
+	answer, err := held.control.exchange(controlRequest{Op: opMember}, controlTimeout)
+	received := n.clockNow()
+	if err != nil {
 		slog.Info("cds-ha: a member of this cluster stopped answering where this replica reached it", "member", held.member, "address", held.address, "error", err)
 		n.peers.lost(held)
 		return
 	}
 	n.peers.stillThere(held, time.Now())
+	if core.Joined() && member {
+		n.observeMemberClock(held, answer, received, core.Version)
+	}
+}
+
+func (m *members) recordClock(member string, quarantined bool, current []raft.Server) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for known := range m.quarantined {
+		if !slices.ContainsFunc(current, func(s raft.Server) bool { return string(s.ID) == known }) {
+			delete(m.quarantined, known)
+		}
+	}
+	if quarantined {
+		m.quarantined[member] = true
+	}
 }
 
 // reach holds the connection to whichever member answers at an address.
@@ -411,7 +433,7 @@ func (n *Node) configuration() []raft.Server {
 // followMoves gives Raft the address a member answers at now: the host routes
 // every packet, so the address in the configuration may reach it no longer.
 func (n *Node) followMoves() {
-	if !n.leading() {
+	if !n.leading() || n.ClockError() != nil {
 		return
 	}
 	for _, server := range n.configuration() {
@@ -438,7 +460,7 @@ func (n *Node) movedTo(server raft.Server) (reachedMember, bool) {
 
 func (n *Node) moveMember(server raft.Server, moved reachedMember) {
 	slog.Info("cds-ha: a member of this cluster answers at another address", "member", server.ID, "was", server.Address, "now", moved.raftAddress())
-	if err := n.raft.RemoveServer(server.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.enqueueMutation(func() raft.Future { return n.raft.RemoveServer(server.ID, 0, n.cfg.Timing.Apply) }); err != nil {
 		slog.Warn("cds-ha: this leader could not take out a member that moved", "member", server.ID, "error", err)
 		return
 	}
@@ -552,6 +574,10 @@ func (n *Node) answerJoin(from peer, policy Policy, answer controlAnswer) contro
 	if !n.leading() {
 		return n.redirectToLeader(answer)
 	}
+	if err := n.ClockError(); err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
 	if err := n.admissible(policy); err != nil {
 		answer.Err = err.Error()
 		return answer
@@ -593,9 +619,17 @@ func (n *Node) admissible(policy Policy) error {
 // addNonVoter adds a member that follows the log and serves reads; voter
 // seats are filled from the members that caught up.
 func (n *Node) addNonVoter(held reachedMember) error {
-	if err := n.raft.AddNonvoter(raft.ServerID(held.member), held.raftAddress(), 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.enqueueMutation(func() raft.Future {
+		return n.raft.AddNonvoter(raft.ServerID(held.member), held.raftAddress(), 0, n.cfg.Timing.Apply)
+	}); err != nil {
 		return err
 	}
 	slog.Info("cds-ha: a replica joined this cluster as a non-voter", "member", held.member, "address", held.raftAddress())
 	return nil
+}
+
+func (m *members) clockQuarantined(member string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.quarantined[member]
 }

@@ -142,7 +142,7 @@ func (n *Node) keepSeating(ctx context.Context) {
 
 // One change a pass, in the order that keeps a majority carrying the log.
 func (n *Node) keepSeats() {
-	if !n.leading() {
+	if !n.leading() || n.ClockError() != nil {
 		return
 	}
 	seen, held := n.seatingNow()
@@ -234,7 +234,7 @@ func (n *Node) fillFreeSeat(seen seating) bool {
 	}
 	// INVARIANT: the seat is taken at the configuration's own address; a
 	// member that answers elsewhere moves as a non-voter (members.go).
-	if err := n.raft.AddVoter(candidate.ID, candidate.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.enqueueMutation(func() raft.Future { return n.raft.AddVoter(candidate.ID, candidate.Address, 0, n.cfg.Timing.Apply) }); err != nil {
 		slog.Warn("cds-ha: this leader could not seat a voter of its cluster",
 			"member", candidate.ID,
 			"error", err)
@@ -343,7 +343,7 @@ func (n *Node) demoteSurplusVoter(seen seating) bool {
 	if !found {
 		return false
 	}
-	if err := n.raft.DemoteVoter(surplus.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.enqueueMutation(func() raft.Future { return n.raft.DemoteVoter(surplus.ID, 0, n.cfg.Timing.Apply) }); err != nil {
 		slog.Warn("cds-ha: this leader could not take the vote of a surplus voter",
 			"member", surplus.ID,
 			"error", err)
@@ -374,7 +374,7 @@ func (n *Node) quietestVoter(seen seating) (raft.Server, bool) {
 }
 
 func (n *Node) takeOut(member raft.ServerID) bool {
-	if err := n.raft.RemoveServer(member, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.enqueueMutation(func() raft.Future { return n.raft.RemoveServer(member, 0, n.cfg.Timing.Apply) }); err != nil {
 		slog.Warn("cds-ha: this leader could not take a member out of its cluster",
 			"member", member,
 			"error", err)

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -59,6 +60,16 @@ func (n *Node) transferCooldown() time.Duration {
 }
 
 func (n *Node) handOverTo(target raft.Server) error {
+	if n.peers.clockQuarantined(string(target.ID)) {
+		return errors.New("cds-ha: the handover target is clock-quarantined")
+	}
+	if n.ClockError() != nil {
+		answer, eligible := n.transferStanding(target)
+		if !eligible || answer.Stuck != "" || answer.Applied < n.fsm.AppliedIndex() {
+			return errors.New("cds-ha: no current clock-eligible handover target")
+		}
+	}
+
 	n.transfers.send(target.ID, time.Now())
 	err := n.raft.LeadershipTransferToServer(target.ID, target.Address).Error()
 	if queuedNothing(err) {
@@ -84,6 +95,10 @@ func (n *Node) watchHandover(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+		}
+		if n.ClockError() != nil {
+			n.handOverWhenClockQuarantined()
+			continue
 		}
 		n.handOverWhenStuck()
 		n.handOverWhenSlow(&watch, time.Now())
@@ -146,8 +161,8 @@ func (n *Node) aVoterThatApplied(applied uint64) (raft.Server, bool) {
 	var most uint64
 	found := false
 	for _, candidate := range n.handoverCandidates() {
-		answer, err := n.askStanding(candidate.ID)
-		if err != nil || answer.Stuck != "" || answer.Applied < applied {
+		answer, eligible := n.transferStanding(candidate)
+		if !eligible || answer.Stuck != "" || answer.Applied < applied {
 			continue
 		}
 		if !found || answer.Applied > most {
@@ -178,6 +193,8 @@ func (n *Node) couldTakeTheCluster(server raft.Server, term uint64, now time.Tim
 	case string(server.ID) == string(n.member):
 		return false
 	case n.failures.failingFor(term, server.ID, now) > 0:
+		return false
+	case n.peers.clockQuarantined(string(server.ID)):
 		return false
 	case n.transfers.holding(server.ID, now, n.transferCooldown()):
 		return false
@@ -232,4 +249,49 @@ func (n *Node) certifiedARead(led leadership) time.Time {
 		return time.Time{}
 	}
 	return lease.taken
+}
+
+func (n *Node) handOverWhenClockQuarantined() {
+	reason := n.ClockError()
+	if !n.leading() || reason == nil {
+		return
+	}
+	target, found := n.aVoterThatApplied(n.fsm.AppliedIndex())
+	if !found {
+		if n.stuckLog.changed(reason.Error()) {
+			slog.Warn("cds-ha: clock-quarantined leader has no eligible voter to take over", "reason", reason)
+		}
+		return
+	}
+	if err := n.handOverTo(target); err != nil {
+		slog.Warn("cds-ha: clock-quarantined leader could not hand the cluster over", "member", target.ID, "error", err)
+	}
+}
+
+func (n *Node) transferStanding(candidate raft.Server) (controlAnswer, bool) {
+	core := n.fsm.ClusterState()
+	held, reached := n.peers.knownAt(string(candidate.ID))
+	if !core.Joined() || !reached || candidate.Suffrage != raft.Voter {
+		return controlAnswer{}, false
+	}
+	answer, err := held.control.exchange(controlRequest{Op: opStanding}, controlTimeout)
+	if err != nil || answer.Err != "" || !answer.Joined || (n.ClockError() != nil && answer.Clock == nil) || !slices.Contains(answer.Voters, string(candidate.ID)) {
+		return controlAnswer{}, false
+	}
+	if err := held.control.attested().admittedBy(n.admits()); err != nil {
+		return controlAnswer{}, false
+	}
+	n.fsm.mu.RLock()
+	defer n.fsm.mu.RUnlock()
+	if !n.fsm.core.Joined() || n.fsm.core.Version != core.Version {
+		return controlAnswer{}, false
+	}
+	current := n.configuration()
+	if !slices.Contains(current, candidate) {
+		return controlAnswer{}, false
+	}
+	if answer.Clock != nil {
+		n.peers.recordClock(held.member, answer.Clock.Quarantined, current)
+	}
+	return answer, !n.peers.clockQuarantined(held.member)
 }
