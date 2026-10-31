@@ -321,7 +321,18 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		}
 		overrideERD = erd
 	}
-	ev, err := gatherEvidence(ctx, cfg, plan, overrideERD)
+	var ev *evidence
+	fetch := attestedFetcher(fetchAttested)
+	if cfg.fromFile == "" && cfg.kind == "cds" && resolveMode(cfg) == "armtls-cert" {
+		var attempt *cdsAttempt
+		attempt, err = openCDSAttempt(ctx, cfg, leafTrust{meshCA: plan.meshCA})
+		if err == nil {
+			defer attempt.close()
+			ev, fetch = attempt.evidence, attempt.fetch
+		}
+	} else {
+		ev, err = gatherEvidence(ctx, cfg, plan, overrideERD)
+	}
 	if err != nil {
 		// A securityError means the target was reachable and its response
 		// well-formed, but a check on it failed (a nonce that does not echo,
@@ -345,7 +356,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: could not obtain evidence: %v\n", err)
 		return exitNoEvidence
 	}
-	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, plan, ev), out, errOut)
+	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev, fetch), gatherMeasurements(ctx, cfg, plan, ev, fetch), out, errOut)
 }
 
 // targetDescription names the evidence source for a verdict produced before
@@ -376,7 +387,7 @@ type operatorKeysReport struct {
 // --operator-keys asked for a check: an endpoint erroring on /operator-keys
 // must not dodge it. The attested modes skip it silently: there
 // --operator-keys checks the published route manifest.
-func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorKeysReport {
+func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence, fetch attestedFetcher) operatorKeysReport {
 	if attestedMode(cfg) {
 		return operatorKeysReport{}
 	}
@@ -393,7 +404,7 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorK
 	if err != nil {
 		return operatorKeysReport{note: "not fetched: " + err.Error()}
 	}
-	fps, digest, note, err := fetchOperatorKeyFingerprints(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout)
+	fps, digest, note, err := fetchOperatorKeyFingerprints(ctx, baseURL, cfg.server, ev.certSHA256, cfg.timeout, fetch)
 	if err != nil {
 		return operatorKeysReport{note: "not fetched: " + err.Error(), fetchErr: err}
 	}

@@ -55,7 +55,7 @@ func TestFetchOperatorKeyFingerprints(t *testing.T) {
 		w.Write(pubPEM)
 	})
 
-	fps, digest, note, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second)
+	fps, digest, note, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second, fetchAttested)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestFetchOperatorKeysRejectsCertMismatch(t *testing.T) {
 	})
 
 	wrong := strings.Repeat("ab", 32) // a sha256 that is not the serving cert's
-	_, _, _, err := fetchOperatorKeyFingerprints(context.Background(), base, "", wrong, 5*time.Second)
+	_, _, _, err := fetchOperatorKeyFingerprints(context.Background(), base, "", wrong, 5*time.Second, fetchAttested)
 	if err == nil {
 		t.Fatal("expected a cert mismatch to fail the fetch")
 	}
@@ -105,7 +105,7 @@ func TestFetchOperatorKeysExactCapAccepted(t *testing.T) {
 		w.Write(body)
 	})
 
-	fps, _, _, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second)
+	fps, _, _, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second, fetchAttested)
 	if err != nil {
 		t.Fatalf("an exactly-cap-sized response must be accepted: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestFetchOperatorKeys404MeansDisabled(t *testing.T) {
 		http.Error(w, "no operator keys configured", http.StatusNotFound)
 	})
 
-	fps, digest, note, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second)
+	fps, digest, note, err := fetchOperatorKeyFingerprints(context.Background(), base, "", certSHA, 5*time.Second, fetchAttested)
 	if err != nil {
 		t.Fatalf("404 should not be an error, got %v", err)
 	}
@@ -136,11 +136,11 @@ func TestGatherOperatorKeys(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("skipped for non-cds kinds and file targets", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "lb", url: "x"}, &evidence{})
+		got := gatherOperatorKeys(ctx, config{kind: "lb", url: "x"}, &evidence{}, fetchAttested)
 		if !strings.Contains(got.note, "skipped") || got.fingerprints != nil || got.fetchErr != nil {
 			t.Errorf("non-cds kind must skip the cross-check without fetching, got %+v", got)
 		}
-		if got := gatherOperatorKeys(ctx, config{kind: "cds"}, &evidence{}); got.note != "" {
+		if got := gatherOperatorKeys(ctx, config{kind: "cds"}, &evidence{}, fetchAttested); got.note != "" {
 			t.Errorf("no url should be a no-op, got %+v", got)
 		}
 	})
@@ -149,7 +149,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 		// --operator-keys there checks the route manifest; a "use --kind cds"
 		// note would point at a combination parseRouteCheck refuses.
 		for _, mode := range []string{"attest-pq", "attest-lb"} {
-			got := gatherOperatorKeys(ctx, config{mode: mode, url: "x", operatorKeys: "operator.pub"}, &evidence{})
+			got := gatherOperatorKeys(ctx, config{mode: mode, url: "x", operatorKeys: "operator.pub"}, &evidence{}, fetchAttested)
 			if got.note != "" || got.fingerprints != nil || got.fetchErr != nil {
 				t.Errorf("gatherOperatorKeys(--mode %s) = %+v, want an empty report", mode, got)
 			}
@@ -157,14 +157,14 @@ func TestGatherOperatorKeys(t *testing.T) {
 	})
 
 	t.Run("no serving cert to bind to", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "cds.example.com"}, &evidence{})
+		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "cds.example.com"}, &evidence{}, fetchAttested)
 		if got.note == "" || got.fingerprints != nil {
 			t.Errorf("no attested cert must skip the fetch with a note, got %+v", got)
 		}
 	})
 
 	t.Run("bad target", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "https://\x7f"}, &evidence{certSHA256: "aa"})
+		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "https://\x7f"}, &evidence{certSHA256: "aa"}, fetchAttested)
 		if !strings.HasPrefix(got.note, "not fetched:") || got.fetchErr != nil {
 			t.Errorf("unparseable target should degrade to a note, got %+v", got)
 		}
@@ -179,7 +179,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 			}
 			w.Write(pubPEM)
 		})
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: certSHA})
+		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: certSHA}, fetchAttested)
 		if got.fetchErr != nil || got.note != "" {
 			t.Fatalf("fetch failed: %+v", got)
 		}
@@ -192,7 +192,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 		base, _ := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		})
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: strings.Repeat("ab", 32)})
+		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: strings.Repeat("ab", 32)}, fetchAttested)
 		if got.fetchErr == nil || !strings.HasPrefix(got.note, "not fetched:") {
 			t.Errorf("expected a recorded fetch error, got %+v", got)
 		}
@@ -203,7 +203,7 @@ func TestFetchOperatorKeyFingerprints_Errors(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no attested cert pin", func(t *testing.T) {
-		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, "https://x", "", "", time.Second); err == nil {
+		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, "https://x", "", "", time.Second, fetchAttested); err == nil {
 			t.Error("empty wantCertSHA256 must be rejected")
 		}
 	})
@@ -212,17 +212,20 @@ func TestFetchOperatorKeyFingerprints_Errors(t *testing.T) {
 		base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		})
-		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second); err == nil || !strings.Contains(err.Error(), "500") {
+		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second, fetchAttested); err == nil || !strings.Contains(err.Error(), "500") {
 			t.Errorf("expected a 500 error, got %v", err)
 		}
 	})
 
 	t.Run("oversized response", func(t *testing.T) {
-		base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
-			w.Write(bytes.Repeat([]byte("A"), operatorauth.MaxPublishedKeysBytes+2))
-		})
-		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exceeds") {
-			t.Errorf("expected an oversize rejection, got %v", err)
+		for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusInternalServerError} {
+			base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				w.Write(bytes.Repeat([]byte("A"), operatorauth.MaxPublishedKeysBytes+2))
+			})
+			if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second, fetchAttested); err == nil || !strings.Contains(err.Error(), "exceeds") {
+				t.Errorf("expected an oversize rejection, got %v", err)
+			}
 		}
 	})
 
@@ -230,7 +233,7 @@ func TestFetchOperatorKeyFingerprints_Errors(t *testing.T) {
 		base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("not pem at all"))
 		})
-		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second); err == nil || !strings.Contains(err.Error(), "parse /operator-keys") {
+		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second, fetchAttested); err == nil || !strings.Contains(err.Error(), "parse /operator-keys") {
 			t.Errorf("expected a parse error, got %v", err)
 		}
 	})
