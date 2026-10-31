@@ -1,5 +1,5 @@
 # Bump: crane digest gcr.io/distroless/static:nonroot
-FROM gcr.io/distroless/static:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
+FROM gcr.io/distroless/static:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 
 # The `/c8s` binary path is hardcoded in the c8s-cert-wait gate command
 # (internal/helmchart/c8s/templates/_helpers.tpl "c8s.getCertContainers" and
