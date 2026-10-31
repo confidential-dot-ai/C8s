@@ -74,6 +74,7 @@ for i in 1 2 3; do
   name=cds-ha-$i
   expected=$(openssl dgst -sha256 -binary "$fixture/$name-opkey.pubkey" | base64 -w0)
   jq -e --arg name "$name" --arg expected "$expected" '
+    .spec.template.spec.readinessProbe == {httpGet: {path: "/readyz", port: 8443, scheme: "HTTPS"}, initialDelaySeconds: 0, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 1, successThreshold: 1} and
     .spec.template.metadata.annotations["snp.confidential.ai/host-data"] == $expected and
     .spec.template.metadata.annotations["igvm.confidential.ai/file"] == "guest-smp4.igvm" and
     .spec.template.metadata.labels["kubevirt.io/domain"] == $name and
@@ -82,7 +83,13 @@ for i in 1 2 3; do
     any(.spec.template.spec.volumes[]; .name == "rootdisk" and .persistentVolumeClaim.claimName == "cds-root")
   ' "$fixture/vm-$name.json" >/dev/null || fail "$name does not bind its own launch configuration"
   service=$(grep -l "^  name: $name$" "$fixture"/service.*)
+  grep -q 'publishNotReadyAddresses: true' "$service" || fail "$name hides control/bootstrap while unready"
+  grep -Fq "selector: {kubevirt.io/domain: $name}" "$service" || fail "$name selects another replica"
   grep -q 'name: peer, port: 8444, targetPort: 8444' "$service" || fail "$name cannot accept peer discovery"
   grep -q 'name: client, port: 8443, targetPort: 8443' "$service" || fail "$name cannot accept client requests"
 done
+service=$(grep -l '^  name: cds-ha$' "$fixture"/service.*)
+grep -q 'publishNotReadyAddresses: false' "$service" || fail 'aggregate publishes unready guests'
+grep -q 'selector: {ci.confidential.ai/cds-cluster: cds-ha}' "$service" || fail 'aggregate selects another cluster'
+grep -q 'ports: \[{port: 8443, targetPort: 8443}\]' "$service" || fail 'aggregate exposes ports besides client HTTPS'
 echo 'PASS: three replica VMs bind their launch configuration and expose client and peer ports'

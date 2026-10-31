@@ -87,6 +87,10 @@ func (n *Node) forwardDecree(signed cdsdecree.Signed) (Delivered, error) {
 // answerDecree applies a decree another replica was posted under this leader's
 // own judgement: it checks the operator's signature, as that replica did.
 func (n *Node) answerDecree(posted json.RawMessage, answer controlAnswer) controlAnswer {
+	if err := n.ClockError(); err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
 	if !n.leading() {
 		return n.redirectToLeader(answer)
 	}
@@ -120,6 +124,10 @@ func refusedByLeader(answer controlAnswer) error {
 // answerWrite commits a write another replica took, under this leader's own
 // judgement and clock. Every admitted peer may forward one.
 func (n *Node) answerWrite(forwarded json.RawMessage, answer controlAnswer) controlAnswer {
+	if err := n.ClockError(); err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
 	if !n.leading() {
 		return n.redirectToLeader(answer)
 	}

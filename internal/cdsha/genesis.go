@@ -81,6 +81,9 @@ func (n *Node) startable(alone bool, found discovered, answers peerAnswers) erro
 // commits the Genesis decree on it. A decree that did not commit is committed
 // by the next tick, on the group this replica already started.
 func (n *Node) startCluster(signed cdsdecree.Signed) {
+	if n.ClockError() != nil {
+		return
+	}
 	entry, err := n.genesisEntry(signed)
 	if err != nil {
 		slog.Error("cds-ha: this replica could not write the entry that starts its cluster", "error", err)
@@ -113,7 +116,7 @@ func (n *Node) bootstrapSolo() error {
 	if n.inConfiguration() {
 		return nil
 	}
-	return n.raft.BootstrapCluster(n.solo()).Error()
+	return n.enqueueMutation(func() raft.Future { return n.raft.BootstrapCluster(n.solo()) })
 }
 
 // solo is the group a cluster begins as: this replica as its only voter.
