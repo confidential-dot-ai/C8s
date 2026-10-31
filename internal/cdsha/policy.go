@@ -45,9 +45,9 @@ func (f *FSM) checkPolicy(p Policy) error {
 }
 
 // checkEstablishedPolicy refuses an entry a replica would apply under limits
-// its stores do not hold. The Genesis that fixes them validates its own
-// (applyDecree), and a replica holding no cluster has nothing else to apply
-// an entry against.
+// its stores do not hold. The entries that bring a policy with them validate
+// their own (applyDecree, applyRestore), and a replica holding no cluster has
+// nothing else to apply an entry against.
 func (f *FSM) checkEstablishedPolicy(e Entry) error {
 	f.mu.RLock()
 	core := f.core
@@ -61,6 +61,12 @@ func (f *FSM) checkEstablishedPolicy(e Entry) error {
 	return f.checkPolicy(core.Policy)
 }
 
+// fixesPolicy reports the entries that bring a cluster's policy with them:
+// the Genesis that fixes it, and the Restore that brings back the policy of
+// the cluster whose state it restores.
 func fixesPolicy(e Entry) bool {
+	if e.Kind == KindRestore {
+		return e.Restore != nil
+	}
 	return e.Kind == KindDecree && e.Decree != nil && e.Decree.kind() == cdsdecree.Genesis
 }

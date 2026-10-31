@@ -48,6 +48,12 @@ cluster; the log rules afterwards.
 | `ha.recoveryKey` | the key the leader seals the cluster's backups to; optional, and needs a board | fixed for the cluster's life |
 | `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
 
+A field fixed for the cluster's life changes only by writing the file again
+under the same `clusterID` and restoring the cluster from a backup, which
+keeps its mesh CA, allowlist and secrets
+([cds-ha-backups.md](cds-ha-backups.md)). `clusterID` itself never changes: it
+is the cluster.
+
 The CDS images a replica may run are not in the file at all: the Genesis
 decree carries the first set, and a `pins` decree replaces it.
 
@@ -284,4 +290,7 @@ snapshot whose content does not match them is refused.
 Nothing survives the process. The log, the snapshots and the mesh CA key live
 in memory, and the allowlist database lives on a tmpfs the unit owns. A
 restarted replica is a new member that takes the cluster's state from the
-leader, which is also why losing a majority at once loses the cluster.
+leader, which is also why losing a majority at once loses the cluster. The one
+copy outside the replicas is the sealed backup the leader appends to the
+board, which a Restore starts the cluster again from
+([cds-ha-backups.md](cds-ha-backups.md)).

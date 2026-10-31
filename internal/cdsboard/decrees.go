@@ -11,9 +11,10 @@ import (
 // posting them to a replica, and the cluster's leader reads them from there.
 const (
 	decreesDir = "decrees"
-	// maxDecreeBytes bounds one decree object, the largest of which is a pin
-	// decree naming every image of an image roll.
-	maxDecreeBytes = 1 << 20
+	// MaxDecreeBytes bounds one signed decree, wherever it travels: an object
+	// of the board, or the first line of a restore request. The largest is a
+	// pin decree naming every image of an image roll.
+	MaxDecreeBytes = 1 << 20
 	// maxObjectsPerCycle is how many objects one cycle reads. Whoever can
 	// write to the store can leave objects under decrees/, and a cycle is
 	// what the leader spends on the board per turn of its loop.
@@ -57,10 +58,10 @@ func objectsOfOneCycle(objects []Object) []Object {
 // larger than a decree, is gone since the listing, or holds anything but a
 // signed decree. An error is a store this client could not read.
 func (c *Client) decree(ctx context.Context, object Object) (*cdsdecree.Signed, error) {
-	if object.Size > maxDecreeBytes {
+	if object.Size > MaxDecreeBytes {
 		return nil, nil
 	}
-	body, err := c.Get(ctx, object.Key, maxDecreeBytes)
+	body, err := c.Get(ctx, object.Key, MaxDecreeBytes)
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}

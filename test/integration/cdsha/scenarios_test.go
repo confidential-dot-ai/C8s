@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -922,4 +924,139 @@ func TestALeaderThatCannotReadItsBoardWithACutOffVoterServesNothing(t *testing.T
 	})
 	c.replaceAllowlist(leading, "written-once-the-board-answered")
 	c.resume(cut)
+}
+
+// A cluster that lost every replica is started again from a sealed backup:
+// the operator opens one with the recovery key they keep offline, signs a
+// Restore decree naming that state, and hands both to one fresh replica over
+// the attested channel. The cluster comes back with the mesh CA it issued
+// under and the allowlist it served, and the replicas that replace the lost
+// ones join it.
+func TestALostClusterIsRestoredFromASealedBackup(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	const workload = "written-before-every-replica-was-lost"
+	c.replaceAllowlist(leading, workload)
+	c.waitFor("every replica to serve the written allowlist", 30*time.Second, c.allServeWritten(workload))
+	served := c.awaitStatus(leading)
+	backup, state := c.openBackup(served.Version, served.AppliedIndex)
+	if err := cdsha.VerifyBackupSource(backup, served.CAFingerprint); err != nil {
+		t.Fatalf("the backup is not of the mesh CA the cluster served under: %v", err)
+	}
+
+	for _, r := range c.replicas {
+		c.waitVoter(r, 30*time.Second)
+		c.kill(r)
+	}
+	for _, r := range c.replicas {
+		c.restart(r)
+	}
+	target := c.replicas[0]
+	c.waitFor("a fresh replica to report that its cluster may be lost", time.Minute, func() bool {
+		reported, answered := c.status(target)
+		return answered && !reported.Joined && reported.AwaitingRestore != ""
+	})
+
+	// A request the replica cannot read at all is the operator's to post
+	// again, and costs the replica no state.
+	if code, answer := c.post(target, "/ha/restore", state); code != http.StatusBadRequest {
+		t.Errorf("a request carrying no decree line answered %d %s", code, bytes.TrimSpace(answer))
+	}
+
+	intent, code, answer := c.restore(target, served.Version, state)
+	if code != http.StatusOK {
+		t.Fatalf("POST /ha/restore = %d %s", code, bytes.TrimSpace(answer))
+	}
+	c.waitFor("every replica to serve the restored allowlist", 2*time.Minute, c.allServeWritten(workload))
+
+	restored := c.awaitStatus(c.waitLeader(time.Minute))
+	switch {
+	case restored.Version != served.Version+1:
+		t.Errorf("the restored cluster is at version %d, and it resumes above %d", restored.Version, served.Version)
+	case restored.CAFingerprint != served.CAFingerprint:
+		t.Errorf("the restored cluster issues under mesh CA %s, and the lost one under %s", restored.CAFingerprint, served.CAFingerprint)
+	case restored.AwaitingRestore != "":
+		t.Errorf("a replica holding the restored cluster says %q about its cluster being lost", restored.AwaitingRestore)
+	}
+	if !c.recorded(target, intent, restored.Version) {
+		t.Errorf("the restored cluster records no Restore decree %s at version %d", intent, restored.Version)
+	}
+	// A replica serving its cluster answers no restore at all: the route
+	// belongs to the server it answers on while it holds none.
+	if _, code, answer := c.restore(target, restored.Version, state); code != http.StatusNotFound {
+		t.Errorf("a replica holding a cluster answered a second restore %d %s", code, bytes.TrimSpace(answer))
+	}
+	const after = "written-after-the-restore"
+	c.replaceAllowlist(c.waitLeader(time.Minute), after)
+	c.waitFor("every replica to serve the write the restored cluster took", time.Minute, c.allServeWritten(after))
+}
+
+// openBackup waits for a sealed backup of the cluster's state at or above the
+// version and log index it has reached, and opens it with the recovery key
+// the operator keeps. The index is what an allowlist write moves; the version
+// counts the operator's commands.
+func (c *cluster) openBackup(version, index uint64) (cdsha.Backup, []byte) {
+	c.t.Helper()
+	var held cdsha.Backup
+	c.waitFor(fmt.Sprintf("a sealed backup of the cluster at version %d, log index %d", version, index), time.Minute, func() bool {
+		for _, key := range c.board.Keys() {
+			if !strings.HasPrefix(key, path.Join(clusterID, "backups")+"/") {
+				continue
+			}
+			object, stored := c.board.Object(key)
+			if !stored {
+				continue
+			}
+			backup, err := cdsha.ParseBackup(object)
+			if err != nil || backup.Meta.Version < version || backup.Meta.Index < index {
+				continue
+			}
+			held = backup
+			return true
+		}
+		return false
+	})
+	state, err := cdsha.OpenBackup(c.recovery, held)
+	if err != nil {
+		c.t.Fatalf("the backup does not open with the cluster's recovery key: %v", err)
+	}
+	if err := cdsha.ValidateRecoverySnapshot(state, held, version, index); err != nil {
+		c.t.Fatalf("the state the backup holds: %v", err)
+	}
+	return held, state
+}
+
+// restore hands one replica a Restore decree and the state it names, as
+// `c8s cds ha recover` does: the decree on the first line of the request, and
+// the state behind it.
+func (c *cluster) restore(r *replica, resume uint64, state []byte) (intent string, code int, answer []byte) {
+	c.t.Helper()
+	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	nodes, err := cdsdecree.NewNodeImages([]byte(nodeImagesDocument))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	signed := c.sign(cdsdecree.Decree{
+		ClusterID:     clusterID,
+		IntentID:      cdsdecree.NewIntentID(),
+		Kind:          cdsdecree.Restore,
+		ExpiresAt:     time.Now().Add(time.Hour),
+		CDSPins:       pins,
+		NodePins:      nodes,
+		TargetMember:  c.awaitStatus(r).ID,
+		TargetAddress: fmt.Sprintf("%s:%d", r.host, clientPort),
+		IssuedAtMS:    time.Now().UnixMilli(),
+		ResumeVersion: resume,
+		StateSHA256:   cdsha.StateSHA256(state),
+	})
+	line, err := json.Marshal(signed)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	code, answer = c.post(r, "/ha/restore", append(append(line, '\n'), state...))
+	return signed.Decree.IntentID, code, answer
 }

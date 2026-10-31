@@ -38,6 +38,9 @@ type Status struct {
 	// serves nothing while it follows the log (fence.go).
 	Stuck  string `json:"stuck,omitempty"`
 	Fenced *Fence `json:"fenced,omitempty"`
+	// AwaitingRestore is why this replica says its cluster may be lost, and
+	// is empty for a replica that says nothing of the kind (restore.go).
+	AwaitingRestore string `json:"awaiting_restore,omitempty"`
 	// Checkpoint is the newest state digest this replica recorded, and
 	// Divergence what this leader made of its members' reports
 	// (divergence.go).
@@ -62,6 +65,7 @@ func (n *Node) Status() Status {
 		NodeImagesVersion: core.NodeImagesVersion,
 		AppliedIndex:      n.fsm.AppliedIndex(),
 		Stuck:             n.fsm.Stuck(),
+		AwaitingRestore:   n.awaitingRestore(core),
 	}
 	if core.Joined() {
 		status.CAFingerprint = certutil.CertFingerprint(core.MeshCACert)

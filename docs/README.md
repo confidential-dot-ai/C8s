@@ -53,6 +53,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [launch-configuration.md](launch-configuration.md) | reference | The signed launch document a measured node boots with |
 | [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |
 | [cds-ha-runbooks.md](cds-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated CDS |
+| [cds-ha-backups.md](cds-ha-backups.md) | how-to | Watching a CDS cluster's backups, and restoring one that lost every replica |
 | [cds-ha-alerts.md](cds-ha-alerts.md) | reference | What to watch on a replicated CDS |
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |

@@ -22,6 +22,7 @@ import (
 	"crypto/hpke"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -228,6 +229,13 @@ func ParseBackup(object []byte) (Backup, error) {
 // replica reads, and what HPKE adds to it.
 func maxSealedBytes() int64 {
 	return stateBounds().stream + encapsulatedKeyBytes + aeadTagBytes
+}
+
+// MaxBackupObjectBytes bounds the board object a sealed backup lies in: the
+// sealed state as the base64 of JSON carries it, and the metadata and
+// signature around it, which the decree record's share of the state bounds.
+func MaxBackupObjectBytes() int64 {
+	return int64(base64.StdEncoding.EncodedLen(int(maxSealedBytes()))) + headerShare
 }
 
 // VerifyBackupSource authenticates a backup against the fingerprint of a mesh

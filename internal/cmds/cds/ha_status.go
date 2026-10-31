@@ -121,6 +121,9 @@ func printAlarm(w io.Writer, address, alarm string) {
 // In the words the replica reports them.
 func alarms(reported cdsha.Status) []string {
 	var raised []string
+	if reported.AwaitingRestore != "" {
+		raised = append(raised, reported.AwaitingRestore)
+	}
 	if !reported.Serving.OK {
 		raised = append(raised, "this replica does not serve its cluster: "+reported.Serving.Reason)
 	}
