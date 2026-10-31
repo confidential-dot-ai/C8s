@@ -13,7 +13,10 @@ Every runbook assumes:
 
 Every decree is posted to a replica over the attested channel: `--to` names
 any replica of the cluster, and `--target` the one replica a `genesis`,
-`recover` or `admit` is for. The answer says what the cluster made of it.
+`recover` or `admit` is for. The answer says what the cluster made of it. A
+cluster whose launch file names a board takes a decree uploaded to
+`<prefix>/<cluster-id>/decrees/<intent>.json` as well, which is what
+`--out` writes the file for.
 
 Read the cluster before and after every step:
 

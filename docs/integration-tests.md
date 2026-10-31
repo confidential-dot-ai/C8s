@@ -9,17 +9,20 @@ here proves a confidential property. Four harnesses:
 - **CDS HA**: three `c8s cds` replicas of one cluster as real processes on
   loopback addresses, each with its own attestation-api
   (`make test-integration-cdsha`, Linux only).
+- **The decree board**: the client a leader reads decrees with, against an
+  S3-compatible store in a container (`make test-integration-cdsboard`).
+  [cds-ha.md](cds-ha.md) explains what a board is.
 
-CI runs them as the Integration, Integration (cluster) and CDS HA jobs; terms
-are defined in [glossary.md](glossary.md).
+CI runs them as the Integration, Integration (cluster), CDS HA and CDS board
+jobs; terms are defined in [glossary.md](glossary.md).
 
 Prerequisites:
 
 - Every harness: make, go, OpenSSL (macOS LibreSSL lacks `x509 -ext`) and
   curl.
-- The docker-compose harness also: docker, with Compose v2
-  (`docker compose`). The CDS HA harness needs none: its replicas are
-  processes on this host.
+- The docker-compose and board harnesses also: docker, with Compose v2
+  (`docker compose`) for the first. The CDS HA harness needs none: its
+  replicas are processes on this host.
 - The kind harness also: docker, kind, kubectl, helm and python3 with PyYAML.
   Podman works as kind's provider with `KIND_EXPERIMENTAL_PROVIDER=podman`, but
   `docker` must stay on PATH: the harness builds images and reaches into the
@@ -32,6 +35,7 @@ Run them from the repository root:
 make test-integration
 make test-integration-cluster
 make test-integration-cdsha
+make test-integration-cdsboard
 ```
 
 The first starts a mock CDS — the service that verifies evidence and signs
@@ -49,8 +53,11 @@ kind cluster, builds the component images, and runs
 
 The CDS HA harness runs a cluster of three `c8s cds` processes behind one
 attestation-api each, and an operator that signs the decrees they act on and
-posts them to the replicas over the attested channel. `run.sh -short` is the
-subset a pull request runs.
+posts them to the replicas over the attested channel or leaves them on a fake
+object store. `run.sh -short` is the subset a pull request runs. The board
+lane starts an S3-compatible store in a container, puts an HTTPS front door in
+front of it, and runs the board client against it: that client speaks S3 REST
+itself, so the lane is what holds it to what a store answers.
 
 ## What the kind harness substitutes
 

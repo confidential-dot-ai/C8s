@@ -794,3 +794,29 @@ func servedCAFingerprint(client *http.Client, url string) string {
 	}
 	return certutil.CertFingerprint(block.Bytes)
 }
+
+// An operator may leave a decree on the cluster's board instead of posting it
+// to a replica: the leader reads the board for itself, applies what it finds
+// there through the log, and every replica then holds it. The board is the
+// host's to serve, so the decree's signature is what the cluster goes by.
+func TestADecreeLeftOnTheBoardApplies(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	intent := c.decreeOnTheBoard(cdsdecree.Decree{
+		ClusterID:   clusterID,
+		IntentID:    cdsdecree.NewIntentID(),
+		Kind:        cdsdecree.UpdateMeasurements,
+		ExpiresAt:   time.Now().Add(time.Hour),
+		BaseVersion: started.Version,
+		CDSPins:     c.pinDocument(testutil.TestMeasurement, nextCDSImage),
+	})
+
+	c.waitFor("every replica to hold the decree the board carried", 2*time.Minute, func() bool {
+		return c.allApplied(intent, started.Version+1)
+	})
+	for _, r := range c.replicas {
+		c.requirePinDecree(r, cdsdecree.UpdateMeasurements, intent)
+	}
+}

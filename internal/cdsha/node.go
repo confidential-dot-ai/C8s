@@ -20,6 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -105,6 +106,10 @@ type Config struct {
 	// Resolve answers every address one replica entry names; the system
 	// resolver answers where the caller gives none.
 	Resolve resolveEntry
+	// Board are the signed decrees the cluster's board holds, for a cluster
+	// whose configuration names one; none for a cluster that takes its
+	// decrees over the attested channel alone.
+	Board func(ctx context.Context) ([]cdsdecree.Signed, error)
 
 	Allowlist *allowlist.Store
 	Secrets   *secrets.MemoryStore
@@ -168,6 +173,8 @@ type Node struct {
 	genesisLog   changedReason
 	joinLog      changedReason
 	admitLog     changedReason
+	boardLog     changedReason
+	objectLog    changedReason
 	formatLog    changedReason
 	stuckLog     changedReason
 
