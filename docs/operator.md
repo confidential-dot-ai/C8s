@@ -209,9 +209,11 @@ or `impersonate`, no cluster-scoped RBAC, admission or webhook writes, no
 `*/proxy`, and no PersistentVolume, StorageClass, CRD or Node writes. A baked
 admission policy re-checks the same exclusions for every principal in a `c8s:`
 group, whatever RBAC says, and refuses any write in the privileged namespaces
-(`kube-system`, `c8s-system`, and `c8s-router`), where a pod or an edited
-DaemonSet is root on the node. It also refuses a Service that would take over a
-platform address a member pod's packet filter passes by IP: `spec.externalIPs`,
+(`kube-system`, `c8s-system`, and `c8s-router`), except core Pod deletion
+without a subresource in `c8s-router` by `c8s:node-operators`. The fixed
+Deployment recreates a deleted router Pod with a fresh credential volume. It
+also refuses a Service that would take over a platform address a member pod's
+packet filter passes by IP: `spec.externalIPs`,
 and a ClusterIP in `10.53.0.0/24`, where the platform pins the resolver and the
 baked cluster-metrics exit
 ([armtls.md](armtls.md#cluster-metrics)). The credential-release service keeps
@@ -219,6 +221,21 @@ its listener closed until those guards are live, match their copies on the
 read-only root, and pass server-side dry-runs of the deny paths; exec, attach,
 port-forward and ephemeral containers are denied for every credential
 ([node-exec-mode.md](node-exec-mode.md)).
+
+After total CDS CA-key loss, fence lost CDS VMs, recover the CDS, and restore
+its authorized allowlist, routes and secrets. Recreate router Pods one at a time:
+
+```sh
+kubectl --kubeconfig operator.kubeconfig -n c8s-router get pods
+kubectl --kubeconfig operator.kubeconfig -n c8s-router delete pod POD_NAME
+```
+
+Wait for each replacement to become Ready and obtain a leaf from the recovered
+CA. Recreate old-CA tenant backends as needed and verify a routed request over a
+fresh attested connection. A running Pod retains its issuer-key binding across
+sidecar restarts; same-key CA renewal needs no recreation. Credential release
+remains available independently of the CDS. This admission permission requires
+a node image containing this policy to be built and launched.
 
 Revocation is a launch-time decision: deleting a binding cuts access until the
 next boot only, because the manifests sit on the read-only root and RKE2's state

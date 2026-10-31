@@ -20,8 +20,7 @@ metadata:
   name: c8s-node-operator
 rules:
   # Tenant workloads and their plumbing, cluster-wide; confos-operator-scope
-  # denies every write in the privileged namespaces (kube-system,
-  # c8s-system, c8s-router).
+  # denies platform writes except operator deletion of core router Pods.
   - apiGroups: [""]
     resources:
       - pods
