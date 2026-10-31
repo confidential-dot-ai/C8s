@@ -27,7 +27,12 @@ const tenantWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"tenant-app":
 
 func publicKeyPEM(t *testing.T) string {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return publicKeyPEMOf(t, elliptic.P256())
+}
+
+func publicKeyPEMOf(t *testing.T, curve elliptic.Curve) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +196,8 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 		"--voters", "3",
 		"--board-endpoint", "https://store.acme.example",
 		"--board-bucket", "c8s-boards",
-		"--board-prefix", "acme/prod")
+		"--board-prefix", "acme/prod",
+		"--recovery-key", writeInput(t, "recovery-pub.pem", publicKeyPEM(t)))
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +205,7 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 	if cfg.HA == nil {
 		t.Fatal("the configuration runs the singleton CDS, want the replica set")
 	}
-	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
+	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 || cfg.HA.RecoveryKey == nil {
 		t.Fatalf("replica set = %+v", cfg.HA)
 	}
 	want := cdsconfig.Board{
@@ -224,16 +230,22 @@ func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 	}
 }
 
-// The voter seats are the cluster's, so an input no replica set can run on is
-// refused before anything is written.
+// The voter seats, the board and the key its backups seal to are the
+// cluster's, so an input no replica set can run on is refused before anything
+// is written.
 func TestNewRefusesAReplicaSetItCannotRun(t *testing.T) {
+	key := writeInput(t, "recovery-pub.pem", publicKeyPEM(t))
+	onAnotherCurve := writeInput(t, "p384-pub.pem", publicKeyPEMOf(t, elliptic.P384()))
 	for name, flags := range map[string][]string{
-		"an even voter count": {"--replica", "cds-1.acme.example", "--voters", "2"},
-		"no voter seat":       {"--replica", "cds-1.acme.example"},
-		"no replica":          {"--voters", "3"},
-		"a replica twice":     {"--replica", "cds-1.acme.example", "--replica", "cds-1.acme.example", "--voters", "1"},
-		"a replica's port":    {"--replica", "cds-1.acme.example:8443", "--voters", "1"},
-		"a plain HTTP board":  {"--replica", "cds-1.acme.example", "--voters", "1", "--board-endpoint", "http://store.acme.example", "--board-bucket", "c8s-boards"},
+		"an even voter count":         {"--replica", "cds-1.acme.example", "--voters", "2"},
+		"no voter seat":               {"--replica", "cds-1.acme.example"},
+		"no replica":                  {"--voters", "3"},
+		"a replica twice":             {"--replica", "cds-1.acme.example", "--replica", "cds-1.acme.example", "--voters", "1"},
+		"a replica's port":            {"--replica", "cds-1.acme.example:8443", "--voters", "1"},
+		"a plain HTTP board":          {"--replica", "cds-1.acme.example", "--voters", "1", "--board-endpoint", "http://store.acme.example", "--board-bucket", "c8s-boards"},
+		"a recovery key and no board": {"--replica", "cds-1.acme.example", "--voters", "1", "--recovery-key", key},
+		"a recovery key of another curve": {"--replica", "cds-1.acme.example", "--voters", "1", "--board-endpoint", "https://store.acme.example", "--board-bucket", "c8s-boards",
+			"--recovery-key", onAnotherCurve},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "cds")

@@ -43,6 +43,12 @@ type Status struct {
 	// (divergence.go).
 	Checkpoint Point  `json:"checkpoint,omitzero"`
 	Divergence string `json:"divergence,omitempty"`
+	// LastBackup is the backup the cluster's leader appended to its board,
+	// and BackupError why its backups are failing. The leader backs the
+	// cluster up, and no other replica answers for the backups
+	// (backupduty.go).
+	LastBackup  *StoredBackup `json:"last_backup,omitempty"`
+	BackupError string        `json:"backup_error,omitempty"`
 }
 
 // Status reports this replica, with no place in Raft until it starts.
@@ -80,6 +86,7 @@ func (n *Node) inRaft(status Status) Status {
 	status.Checkpoint = n.fsm.dig.lastCheckpoint()
 	if n.leading() {
 		status.Divergence = n.div.status()
+		status.LastBackup, status.BackupError = n.backups.reported()
 	}
 	status.State = n.raft.Load().State().String()
 	followed := n.following()

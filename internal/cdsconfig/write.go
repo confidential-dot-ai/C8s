@@ -62,6 +62,10 @@ func (d Document) wire() (wire, error) {
 	if err != nil {
 		return wire{}, fmt.Errorf("workloads: %w", err)
 	}
+	ha, err := d.HA.wire()
+	if err != nil {
+		return wire{}, err
+	}
 	return wire{
 		SchemaVersion:      SchemaVersion,
 		ClusterID:          d.ClusterID,
@@ -71,7 +75,7 @@ func (d Document) wire() (wire, error) {
 		NodeCIDRs:          d.NodeCIDRs,
 		LeafDNSNames:       d.LeafDNSNames,
 		LeafDNSPatterns:    d.LeafDNSPatterns,
-		HA:                 d.HA.wire(),
+		HA:                 ha,
 	}, nil
 }
 

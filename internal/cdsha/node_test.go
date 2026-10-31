@@ -252,10 +252,12 @@ func TestNewNodeRefusesAConfigurationItCannotServe(t *testing.T) {
 				Election:  time.Millisecond,
 			}
 		},
-		"no allowlist store":        func(cfg *Config) { cfg.Allowlist = nil },
-		"no secret store":           func(cfg *Config) { cfg.Secrets = nil },
-		"no ledger":                 func(cfg *Config) { cfg.Ledger = nil },
-		"an attestation-api abroad": func(cfg *Config) { cfg.AttestationURL = "https://attestation.example.org" },
+		"a recovery key and no board to back up to": func(cfg *Config) { cfg.AppendBackup = nil },
+		"a board to back up to and no recovery key": func(cfg *Config) { cfg.RecoveryKey = nil },
+		"no allowlist store":                        func(cfg *Config) { cfg.Allowlist = nil },
+		"no secret store":                           func(cfg *Config) { cfg.Secrets = nil },
+		"no ledger":                                 func(cfg *Config) { cfg.Ledger = nil },
+		"an attestation-api abroad":                 func(cfg *Config) { cfg.AttestationURL = "https://attestation.example.org" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := c.replicaConfig(c.attestationAPI())

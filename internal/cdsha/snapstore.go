@@ -40,6 +40,19 @@ func (s *snapStore) latest() (index uint64, size, atMS int64) {
 	return s.newest.meta.Index, int64(len(s.newest.body)), s.newest.at.UnixMilli()
 }
 
+// heldState is a reader of the snapshot the store holds, the log index its
+// state is at, and whether it holds one at all: the state a backup seals
+// (backupduty.go).
+func (s *snapStore) heldState() (io.Reader, uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.newest == nil {
+		return nil, 0, false
+	}
+	// A snapshot the store holds is never written again.
+	return bytes.NewReader(s.newest.body), s.newest.meta.Index, true
+}
+
 func (s *snapStore) Create(version raft.SnapshotVersion, index, term uint64, configuration raft.Configuration,
 	configurationIndex uint64, _ raft.Transport) (raft.SnapshotSink, error) {
 	if version < raft.SnapshotVersionMin || version > raft.SnapshotVersionMax {

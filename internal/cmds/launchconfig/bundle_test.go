@@ -618,13 +618,15 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 // name the one address clients dial, which resolves to every replica.
 func TestNewBundleWritesTheCDSReplicaSet(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
+	_, recoveryPub := writeOperatorKey(t)
 	args := append(bundleArgs(t, dir, "tdx"),
 		"--cds-replica", "cds-1.demo.example",
 		"--cds-replica", "cds-2.demo.example",
 		"--cds-replica", "cds-3.demo.example",
 		"--cds-voters", "3",
 		"--cds-board-endpoint", "https://store.demo.example",
-		"--cds-board-bucket", "c8s-boards")
+		"--cds-board-bucket", "c8s-boards",
+		"--cds-recovery-key", recoveryPub)
 	if err := runBundleCmd(t, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +634,7 @@ func TestNewBundleWritesTheCDSReplicaSet(t *testing.T) {
 	if cfg.HA == nil {
 		t.Fatal("the bundle's CDS runs as the singleton, want the replica set")
 	}
-	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 || cfg.HA.Board.Bucket != "c8s-boards" {
+	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 || cfg.HA.Board.Bucket != "c8s-boards" || cfg.HA.RecoveryKey == nil {
 		t.Fatalf("replica set = %+v", cfg.HA)
 	}
 	doc, _ := readBundleDocument(t, dir, serverDir)

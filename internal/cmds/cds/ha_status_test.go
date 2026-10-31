@@ -300,3 +300,36 @@ func TestTheReachRefusesASingletonConfigurationWithoutAURL(t *testing.T) {
 		t.Fatalf("the reach of %v = %+v, %v", reach.urls, replicas, err)
 	}
 }
+
+// Only the leader backs its cluster up, so its line carries the backup it
+// appended and an alarm for the backups that fail, and a replica that does
+// not lead carries neither.
+func TestStatusPrintsTheBackupTheLeaderAppended(t *testing.T) {
+	c := newReplicatedCluster(t)
+	leading := c.serving("first", 7)
+	leading.State = "Leader"
+	leading.LastBackup = &cdsha.StoredBackup{Version: 7, Index: 94, SealedAtMS: 1761800000000}
+	leading.BackupError = "failing since 2026-10-30T09:00:00Z (3 attempts): append the sealed state to the board: 503"
+	replicas := c.replicasServing(t,
+		map[string]any{statusPath: leading},
+		map[string]any{statusPath: c.serving("second", 7)},
+	)
+
+	printed, err := c.reportStatus(t, statusOptions{}, replicas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(printed), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("status printed %d lines, want one per replica and the leader's alarm:\n%s", len(lines), printed)
+	}
+	if !strings.Contains(lines[0], `last_backup="7:94"`) {
+		t.Errorf("the leader's line is %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "ALARM: this cluster's board holds no backup of the state it has now: failing since") {
+		t.Errorf("no alarm names the failing backups: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "last_backup=-") {
+		t.Errorf("a replica that does not lead answers for the backups: %q", lines[2])
+	}
+}
