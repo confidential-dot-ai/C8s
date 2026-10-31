@@ -260,7 +260,7 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 // no node does, --cds-url is the only remaining source, and its absence is a
 // refusal.
 func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
-	_, err := newHandler(config{
+	_, err := newHandler(t.Context(), config{
 		attestationAPIURL:  "http://attestation-api:8400",
 		measurementsConfig: testutil.CDSPinFile(t),
 		requestTimeout:     time.Second,
@@ -282,7 +282,7 @@ func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
 		requestTimeout:    time.Second,
 	}
 	mountedByTheNode(t, address, pins, verifier)
-	if _, err := newHandler(node, slog.Default()); err != nil {
+	if _, err := newHandler(t.Context(), node, slog.Default()); err != nil {
 		t.Fatalf("the node's own endpoint and pins were refused: %v", err)
 	}
 
@@ -327,7 +327,7 @@ func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			mountedByTheNode(t, tc.address, tc.pins, verifier)
-			_, err := newHandler(tc.cfg, slog.Default())
+			_, err := newHandler(t.Context(), tc.cfg, slog.Default())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %v, want one saying %q", err, tc.want)
 			}
@@ -348,13 +348,13 @@ func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
 		attestationAPIURL: "unix://" + verifier,
 		requestTimeout:    time.Second,
 	}
-	if _, err := newHandler(node, slog.Default()); err != nil {
+	if _, err := newHandler(t.Context(), node, slog.Default()); err != nil {
 		t.Fatalf("the node's own attestation-api was refused: %v", err)
 	}
 
 	named := node
 	named.attestationAPIURL = "http://10.53.0.10:53"
-	_, err := newHandler(named, slog.Default())
+	_, err := newHandler(t.Context(), named, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "unix://"+verifier) {
 		t.Fatalf("error = %v, want one naming the node's verifier", err)
 	}
@@ -368,7 +368,7 @@ func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	if err := os.WriteFile(path, []byte(unbound), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newHandler(config{
+	_, err := newHandler(t.Context(), config{
 		cdsURL:             "https://c8s-cds:8443",
 		measurementsConfig: path,
 		attestationAPIURL:  "http://attestation-api:8400",
@@ -381,7 +381,7 @@ func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 
 func TestNewHandlerServesHealthWithoutDialingCDS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler, err := newHandler(config{
+	handler, err := newHandler(t.Context(), config{
 		cdsURL:             "https://c8s-cds.c8s-system.svc:8443",
 		measurementsConfig: testutil.CDSPinFile(t),
 		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
@@ -480,7 +480,7 @@ func TestRunContextReportsListenFailure(t *testing.T) {
 }
 
 func TestNewHandlerRejectsNonPositiveRequestTimeout(t *testing.T) {
-	_, err := newHandler(config{}, nil)
+	_, err := newHandler(t.Context(), config{}, nil)
 	want := "--request-timeout must be positive"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)

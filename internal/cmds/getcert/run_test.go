@@ -43,14 +43,18 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --cds-url must be refused, not quietly served over a client
 	// that skips armTLS attestation of CDS.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
-		if _, err := cdsHTTPClient(config{CDSURL: scheme, AttestationApiURL: "http://attestation-api:8400"}); err == nil {
+		cfg := config{
+			CDSURL:            scheme,
+			AttestationApiURL: "http://attestation-api:8400",
+		}
+		if _, err := cdsHTTPClient(t.Context(), cfg); err == nil {
 			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
 		}
 	}
 }
 
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
-	client, err := cdsHTTPClient(config{
+	client, err := cdsHTTPClient(t.Context(), config{
 		CDSURL:                 "https://cds:8443",
 		MeasurementsConfigJSON: testCDSPin,
 		AttestationApiURL:      "http://attestation-api:8400",
@@ -61,15 +65,13 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	if client == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	// The client is the shared armTLS shape over a transport it rebuilds as
+	// the node's pins move; a plain one would verify CDS by the system roots.
+	if _, plain := client.Transport.(*http.Transport); plain {
+		t.Fatalf("transport = %T, want the armTLS pin-following round-tripper", client.Transport)
 	}
-	if transport.TLSClientConfig == nil {
-		t.Fatal("TLSClientConfig is nil")
-	}
-	if !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want armTLS verification path")
+	if armTLSClient := armtls.HTTPClient(nil); client.Timeout != armTLSClient.Timeout {
+		t.Fatalf("client timeout = %v, want the armTLS client shape's %v", client.Timeout, armTLSClient.Timeout)
 	}
 }
 
@@ -743,7 +745,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 }
 
 func TestNewCDSClientInvalidURL(t *testing.T) {
-	if _, _, err := newCDSClient(config{CDSURL: "://bad"}); err == nil {
+	if _, _, err := newCDSClient(t.Context(), config{CDSURL: "://bad"}); err == nil {
 		t.Fatal("newCDSClient succeeded, want error for invalid URL")
 	}
 }

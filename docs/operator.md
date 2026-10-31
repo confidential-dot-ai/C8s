@@ -113,10 +113,13 @@ or namespaces, a pinned-mount annotation
 ([secrets.md](secrets.md#fixed-sidecar-mounts)) — and the validator rejects a
 final shape that is not the injected one.
 
-## CDS is a singleton
+## CDS runs as one VM
 
 CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
-configuration and the pin for. Its state is in that VM: the mesh CA key is
+configuration and the pin for. A cluster may also run its CDS as several VMs
+that share one mesh CA and one store, where a replica that restarts takes the
+cluster's state back from the others ([cds-ha.md](cds-ha.md)). Everything
+below is the one-VM deployment. Its state is in that VM: the mesh CA key is
 generated inside the process and written nowhere, released secrets live in
 process memory, and the allowlist and route manifest live in a store on a
 tmpfs. Any restart is a re-bootstrap:

@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
 
@@ -12,11 +13,20 @@ import (
 // bytes: whitespace changes the launch binding without changing who can sign.
 // An unanchored development policy supplies no additional authority here.
 func (c *Config) ValidatePodAuthorities() error {
-	pods, nodes, operators := c.PodImages, c.Nodes.Images, c.OperatorKeys.Keys()
+	if err := ValidatePodNodeAuthorities(c.PodImages, c.Nodes.Images); err != nil {
+		return err
+	}
+	return distinctPodAuthorities(c.PodImages, c.OperatorKeys.Keys())
+}
+
+// ValidatePodNodeAuthorities applies the measured Pod authority boundary to a
+// current node set, including replacements accepted by an HA decree. Reject
+// the whole set on an overlap; never merge it with the bootstrap identities.
+func ValidatePodNodeAuthorities(pods, nodes []remote.ImagePin) error {
 	if len(pods) == 0 {
 		return nil
 	}
-	authorities := append([]*ecdsa.PublicKey(nil), operators...)
+	var authorities []*ecdsa.PublicKey
 	for _, node := range nodes {
 		if len(node.Anchor) == 0 {
 			continue
@@ -27,6 +37,10 @@ func (c *Config) ValidatePodAuthorities() error {
 		}
 		authorities = append(authorities, key)
 	}
+	return distinctPodAuthorities(pods, authorities)
+}
+
+func distinctPodAuthorities(pods []remote.ImagePin, authorities []*ecdsa.PublicKey) error {
 	for _, pod := range pods {
 		key, err := runtimemeasure.ParsePublicKeyPEM(pod.Anchor)
 		if err != nil {

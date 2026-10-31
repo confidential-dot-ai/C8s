@@ -432,33 +432,34 @@ pass "CRD, both webhooks, and the host-namespace policy installed"
 
 log "Allowlist API"
 # Unsigned and wrongly-signed writes are refused; a write signed by the
-# pinned operator key lands, is served, and deletes cleanly. Exercised on a
-# throwaway digest so no assertion can pass on the seeded entries.
+# pinned operator key lands, is served, and removes the entry cleanly.
+# Exercised on a throwaway digest so no assertion can pass on the seeded
+# entries. Every write carries the whole document.
 THROWAWAY_DIGEST="sha256:$(printf 'ab%.0s' {1..32})"
 any_workload "$THROWAWAY_DIGEST" "example.com/harness/throwaway:1" > "$WORKDIR/add.json"
+allowlist_document throwaway "$WORKDIR/add.json" > "$WORKDIR/put.json"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "$(cds_url)/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/put.json" "$(cds_url)/allowlist" || true)"
 [ "$code" = "401" ] || fail "unsigned allowlist write: want HTTP 401, got $code"
 pass "unsigned allowlist write rejected (401)"
 
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/rogue.key" 2>/dev/null
-rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
+rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /allowlist "$WORKDIR/put.json")"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "$(cds_url)/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/put.json" "$(cds_url)/allowlist" || true)"
 [ "$code" = "401" ] || fail "wrong-key allowlist write: want HTTP 401, got $code"
 pass "allowlist write signed by an unpinned key rejected (401)"
 
-code="$(cds_write PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
+code="$(allowlist_set throwaway "$WORKDIR/add.json")"
 [ "$code" = "204" ] || fail "signed allowlist write: want HTTP 204, got $code"
 curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST" \
     || fail "added digest not served from /allowlist"
-: > "$WORKDIR/del.json"
-code="$(cds_write DELETE /allowlist/workloads/throwaway "$WORKDIR/del.json")"
-[ "$code" = "204" ] || fail "signed allowlist delete: want HTTP 204, got $code"
+code="$(allowlist_set throwaway)"
+[ "$code" = "204" ] || fail "signed allowlist removal: want HTTP 204, got $code"
 if curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST"; then
-    fail "deleted digest still served from /allowlist"
+    fail "removed digest still served from /allowlist"
 fi
-pass "signed allowlist write + delete round-trip through CDS"
+pass "signed allowlist write + removal round-trip through CDS"
 
 log "Route API"
 # Until CDS stores a manifest the router routes nothing, and says so. Dialed at
@@ -639,7 +640,7 @@ pass "non-allowlisted image denied at container creation (fail-closed)"
 
 # Allow, and the same pod proceeds.
 any_workload "$CURL_DIGEST" "docker.io/$CURL_IMAGE" > "$WORKDIR/add-curl.json"
-code="$(cds_write PUT /allowlist/workloads/curl "$WORKDIR/add-curl.json")"
+code="$(allowlist_set curl "$WORKDIR/add-curl.json")"
 [ "$code" = "204" ] || fail "signed allowlist re-add: want HTTP 204, got $code"
 # kubelet's CreateContainerError backoff stretches into the minutes, so this
 # wait must comfortably outlive it.
@@ -647,14 +648,14 @@ kubectl -n demo wait --for=condition=Ready pod/denied --timeout=360s \
     || fail "pod still blocked after its image was allowlisted"
 pass "signed allowlist write flips a denied pod to Running (plugin pulled the update)"
 
-code="$(cds_write DELETE /allowlist/workloads/curl "$WORKDIR/del.json")"
-[ "$code" = "204" ] || fail "signed allowlist delete of curl: want HTTP 204, got $code"
+code="$(allowlist_set curl)"
+[ "$code" = "204" ] || fail "signed allowlist removal of curl: want HTTP 204, got $code"
 kubectl -n demo wait --for=condition=Ready=false pod/denied --timeout=60s \
     || fail "pod still Ready after its image left the allowlist"
-pass "signed allowlist delete kills the running container (plugin rechecked on apply)"
+pass "signed allowlist removal kills the running container (plugin rechecked on apply)"
 # Later steps run the curl image again.
 kubectl -n demo delete pod denied --wait=false >/dev/null
-code="$(cds_write PUT /allowlist/workloads/curl "$WORKDIR/add-curl.json")"
+code="$(allowlist_set curl "$WORKDIR/add-curl.json")"
 [ "$code" = "204" ] || fail "signed allowlist re-add of curl: want HTTP 204, got $code"
 
 log "Mesh"

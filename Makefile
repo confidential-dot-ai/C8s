@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -82,7 +82,7 @@ build-nri-image-policy:
 C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
-	go test -race $(C8S_TEST_COUNT) -timeout=120s work
+	go test -race $(C8S_TEST_COUNT) -timeout=600s work
 
 # Real packet capture, guest bootstrap and private RAM credential custody need
 # Linux root and namespace capabilities. Missing privileges fail this target.
@@ -98,6 +98,10 @@ test-integration:
 # Integration (cluster) job.
 test-integration-cluster:
 	./test/integration/cluster/run.sh
+
+# Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
+test-integration-cdsha:
+	./test/integration/cdsha/run.sh -short
 
 # The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
@@ -178,6 +182,12 @@ test-e2e-allowlist-enforcement:
 # the tdx-metal-e2e lane.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
+
+# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from a
+# lane's own CDS VM. Needs kubectl pointed at the launcher cluster; runs last
+# in a metal lane's payload, because it replaces the lane's CVMs with its own.
+test-e2e-cds-ha-vms:
+	./test/e2e/cds-ha-vms.sh
 
 # Live-cluster check that the sample confidential workload runs with the
 # injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s

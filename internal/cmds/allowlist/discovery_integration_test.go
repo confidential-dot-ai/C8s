@@ -14,12 +14,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -87,11 +89,37 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 		w.Write(doc)
 	})
 	mux.HandleFunc("GET /allowlist", seededAllowlistHandler(t))
-	// The operator signature is CDS's to check; the front door only relays.
-	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, r *http.Request) {
+	// A whole-document write, conditional on the served version, writes the
+	// entries it adds, changes or drops relative to the served document. The
+	// operator signature is CDS's to check; the front door only relays.
+	seeded := seededAllowlist(t)
+	mux.HandleFunc("PUT /allowlist", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-Match") != `"1"` {
+			http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		doc, err := pkgallowlist.ParseJSON(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 		written.mu.Lock()
-		written.names[r.PathValue("name")] = true
-		written.mu.Unlock()
+		defer written.mu.Unlock()
+		for name, entry := range doc.Workloads {
+			if old, ok := seeded.Workloads[name]; !ok || !reflect.DeepEqual(old, entry) {
+				written.names[name] = true
+			}
+		}
+		for name := range seeded.Workloads {
+			if _, ok := doc.Workloads[name]; !ok {
+				written.names[name] = true
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -102,14 +130,30 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 	return srv, written
 }
 
-// seededAllowlistHandler serves a canonical allowlist (one entry admitting
-// digA) as CDS's read endpoint would.
-func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
+// seededAllowlist is the document seededAllowlistHandler serves, parsed as a
+// write path parses it.
+func seededAllowlist(t *testing.T) *pkgallowlist.Allowlist {
 	t.Helper()
 	al := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
 		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/cds@" + digA}),
 	}
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	parsed, err := pkgallowlist.ParseJSON(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return parsed
+}
+
+// seededAllowlistHandler serves a canonical allowlist (one entry admitting
+// digA) as CDS's read endpoint would.
+func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	al := seededAllowlist(t)
 	body, err := al.Canonical()
 	if err != nil {
 		t.Fatalf("canonical: %v", err)

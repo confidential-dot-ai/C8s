@@ -31,7 +31,8 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.StartJournal(); err != nil {
+	allowlistWrites := store.Local()
+	if err := allowlistWrites.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -54,11 +55,20 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 	srv := httptest.NewServer(newRouter(dependencies{
 		AttestHandler: AttestHandler{CertTTL: time.Hour},
 		AllowlistHandler: allowlist.Handler{
-			Store:           &store,
-			WriteAuthorizer: singleUse(operatorauth.Verifier{Keys: keys, ClockSkew: time.Second}.AuthorizeIssuedAt, &store, time.Time{}, 0),
+			Allowlist: allowlistWrites,
+			WriteAuthorizer: singleUse(
+				operatorauth.Verifier{
+					Keys:      keys,
+					ClockSkew: time.Second,
+				}.AuthorizeIssuedAt,
+				allowlistWrites,
+				floorAt(time.Time{}),
+				0,
+			),
 		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,

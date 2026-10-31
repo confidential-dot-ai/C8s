@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -122,7 +123,7 @@ func (h *harness) run(t *testing.T, args ...string) (int, string, string) {
 // trusting builds the probe's client as the command does, presenting the
 // leaf, but verifies CDS against roots instead of through armTLS.
 func trusting(roots *x509.CertPool) clientFunc {
-	return func(cfg sidecar.Config, _ armtls.Pins) (*http.Client, crypto.PublicKey, error) {
+	return func(cfg sidecar.Config, _ armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 		leaf, pub, err := sidecar.LoadLeaf(cfg.CertPath, cfg.KeyPath)
 		if err != nil {
 			return nil, nil, err
@@ -541,16 +542,16 @@ func TestProbeFollowsTheNodePins(t *testing.T) {
 	path := writeNodePins(t)
 	cds := newFakeCDS(http.StatusOK, "secret")
 	h := newHarness(t, cds)
-	var got armtls.Pins
-	capture := func(cfg sidecar.Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
-		got = pins
+	var got refvalues.ReferenceValues
+	capture := func(cfg sidecar.Config, pins armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
+		got = pins.Current()
 		return trusting(h.roots)(cfg, pins)
 	}
 	code, out, errOut := executeWith(t, capture, append(append([]string{}, h.common...), "challenge")...)
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
-	if len(got.Measurements)+len(got.Images) == 0 {
+	if len(got.Images) == 0 {
 		t.Fatalf("the probe handed its client no pins while the node mounts %s", path)
 	}
 }

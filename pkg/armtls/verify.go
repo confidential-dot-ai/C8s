@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,10 @@ type VerifyPolicy struct {
 	// a pre-shared nonce for additional freshness guarantees. If nil, no nonce
 	// check is performed (TLS 1.3 already provides replay protection).
 	Nonce []byte
+
+	// ExtensionOID is the OID the evidence extension is carried under; unset
+	// means [OIDARMTLSAttestation].
+	ExtensionOID asn1.ObjectIdentifier
 
 	// AttestationApiURL is the attestation-api whose /verify endpoint performs
 	// all evidence verification: hardware signature chain, REPORTDATA key
@@ -64,6 +69,10 @@ type VerifyResult struct {
 	// PlatformInfo contains platform-specific metadata from the
 	// attestation-api response. Only set on the SNP path.
 	PlatformInfo []byte
+	// Verified is the attestation-api's response, which carries the platform
+	// it verified and the claims it read. A caller holding it can enforce a
+	// later policy against the same verdict without a second round-trip.
+	Verified remote.VerifyResponse
 }
 
 // VerifyAttestation verifies a raw attestation report against a public key by
@@ -129,7 +138,7 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		return nil, fmt.Errorf("armtls: peer certificate body: %w", err)
 	}
 
-	att, err := ExtractAttestation(cert)
+	att, err := agarmtls.ExtractAttestation(cert, policy.extensionOID())
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +165,13 @@ func requireSelfIssued(cert *x509.Certificate, now time.Time) error {
 		return fmt.Errorf("not self-issued: its body is %s", body)
 	}
 	return nil
+}
+
+func (p *VerifyPolicy) extensionOID() asn1.ObjectIdentifier {
+	if len(p.ExtensionOID) == 0 {
+		return OIDARMTLSAttestation
+	}
+	return p.ExtensionOID
 }
 
 // requireAttestationApi enforces the attestation-api URL every evidence path
@@ -222,7 +238,11 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 		return nil, mapVerifyError(att.Family, err)
 	}
 
-	result := &VerifyResult{TEEType: att.Family, ReportData: expectedReportData}
+	result := &VerifyResult{
+		TEEType:    att.Family,
+		ReportData: expectedReportData,
+		Verified:   resp,
+	}
 	if att.Family == TEETypeSEVSNP && len(resp.Result.Claims.PlatformData) > 0 {
 		// The claims map came out of json.Unmarshal, so re-marshaling it
 		// cannot fail.

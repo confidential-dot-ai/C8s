@@ -19,21 +19,29 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-func openJournaled(t *testing.T) *Store {
+// openJournaledStore is an in-memory allowlist with its history started.
+func openJournaledStore(t *testing.T) (*Store, *Handle) {
 	t.Helper()
 	store, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	if err := store.StartJournal(); err != nil {
+	allowlist := store.Local()
+	if err := allowlist.StartJournal(); err != nil {
 		t.Fatalf("StartJournal: %v", err)
 	}
-	return &store
+	return store, allowlist
+}
+
+func openJournaled(t *testing.T) *Handle {
+	t.Helper()
+	_, allowlist := openJournaledStore(t)
+	return allowlist
 }
 
 // servedDigest is the digest of the bytes GET /allowlist serves now.
-func servedDigest(t *testing.T, store *Store) (string, string) {
+func servedDigest(t *testing.T, store *Handle) (string, string) {
 	t.Helper()
 	doc, version, err := store.LoadAll()
 	if err != nil {
@@ -69,20 +77,22 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 	a := map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))}
 	empty := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{}}
 
+	replace := func(workloads map[string]pkgallowlist.Workload) func() error {
+		return func() error {
+			al, err := pkgallowlist.ParseJSON(canonicalDoc(t, workloads))
+			if err != nil {
+				return err
+			}
+			return store.ReplaceAll(al, OperatorWrite{})
+		}
+	}
 	steps := []struct {
 		name   string
 		mutate func() error
 		grows  bool
 	}{
-		{"put", func() error { return store.PutWorkload("a", a["a"]) }, true},
-		{"identical put", func() error { return store.PutWorkload("a", a["a"]) }, false},
-		{"identical replace", func() error {
-			al, err := pkgallowlist.ParseJSON(canonicalDoc(t, a))
-			if err != nil {
-				return err
-			}
-			return store.ReplaceAll(al)
-		}, false},
+		{"replace with one entry", replace(a), true},
+		{"identical replace", replace(a), false},
 		{"seed", func() error {
 			_, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))})
 			return err
@@ -91,9 +101,10 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 			_, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestC))})
 			return err
 		}, false},
-		{"delete", func() error { _, err := store.DeleteWorkload("a"); return err }, true},
-		{"delete of an absent entry", func() error { _, err := store.DeleteWorkload("a"); return err }, false},
-		{"revert to the first document", func() error { return store.ReplaceAll(empty) }, true},
+		{"replace with the seeded entry alone", replace(map[string]pkgallowlist.Workload{
+			"b": oneContainerWorkload(mustParseDigest(t, digestB)),
+		}), true},
+		{"revert to the first document", func() error { return store.ReplaceAll(empty, OperatorWrite{}) }, true},
 	}
 
 	want, err := store.History()
@@ -144,13 +155,16 @@ func TestStartJournalAfterSeedAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))}); err != nil {
+	allowlist := store.Local()
+	if _, _, err := allowlist.SeedWorkloads(
+		map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))},
+	); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartJournal(); err != nil {
+	if err := allowlist.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
-	seeded, _ := servedDigest(t, &store)
+	seeded, _ := servedDigest(t, allowlist)
 	store.Close()
 
 	store, err = OpenStore(path)
@@ -158,10 +172,11 @@ func TestStartJournalAfterSeedAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.StartJournal(); err != nil {
+	allowlist = store.Local()
+	if err := allowlist.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.History()
+	got, err := allowlist.History()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +194,12 @@ func TestStartJournalRefusesCorruptHistory(t *testing.T) {
 		{"missing object", "DELETE FROM journal_object"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := openJournaled(t)
-			if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
-				t.Fatal(err)
-			}
+			store, allowlist := openJournaledStore(t)
+			putEntry(t, allowlist, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 			if _, err := store.db.Exec(tc.mutate); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.StartJournal(); err == nil {
+			if err := allowlist.StartJournal(); err == nil {
 				t.Fatal("StartJournal over a corrupt history succeeded, want an error")
 			}
 		})
@@ -195,29 +208,30 @@ func TestStartJournalRefusesCorruptHistory(t *testing.T) {
 
 // Object serves only history entries whose bytes still hash to their digest.
 func TestObjectRefusesUnservedOrTampered(t *testing.T) {
-	store := openJournaled(t)
-	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
-		t.Fatal(err)
-	}
-	head := mustHistory(t, store)[1].Digest
+	store, allowlist := openJournaledStore(t)
+	putEntry(t, allowlist, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
+	head := mustHistory(t, allowlist)[1].Digest
 	stray := objectDigest([]byte("{}"))
 	if _, err := store.db.Exec("INSERT INTO journal_object (digest, body) VALUES (?, ?)", stray, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
-	if body, ok, err := store.Object(stray); ok || err != nil {
+	if body, ok, err := allowlist.Object(stray); ok || err != nil {
 		t.Errorf("Object(never served) = %q, %v, %v; want not found", body, ok, err)
 	}
 	if _, err := store.db.Exec("UPDATE journal_object SET body = CAST('{}' AS BLOB) WHERE digest = ?", head); err != nil {
 		t.Fatal(err)
 	}
-	if body, ok, err := store.Object(head); ok || err == nil {
+	if body, ok, err := allowlist.Object(head); ok || err == nil {
 		t.Errorf("Object(tampered) = %q, %v, %v; want an error", body, ok, err)
 	}
 }
 
-func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
+func TestSignatureStoredOnlyForTheCanonicalDocument(t *testing.T) {
 	store := openJournaled(t)
-	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
+	h := Handler{
+		Allowlist:       store,
+		WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+	}
 	put := func(body, token string) {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(body))
@@ -239,14 +253,7 @@ func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 	if token, ok, err := store.Signature(digest); err != nil || !ok || token != "signed" {
 		t.Fatalf("Signature(%s) = %q, %v, %v; want the write token", digest, token, ok, err)
 	}
-	if err := store.SignPolicy([]byte(`{"schema":"other"}`), "stray"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := store.Signature(objectDigest([]byte(`{"schema":"other"}`))); ok {
-		t.Fatal("SignPolicy stored a signature for a document never served")
-	}
-
-	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.History()
@@ -258,15 +265,18 @@ func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 		signed = append(signed, e.Signed)
 	}
 	if want := []bool{false, true, false}; !slices.Equal(signed, want) {
-		t.Fatalf("signed = %v, want %v (empty, PUT /allowlist, per-workload put)", signed, want)
+		t.Fatalf("signed = %v, want %v (empty, the operator's write, the seed)", signed, want)
 	}
 }
 
-// A write whose signature cannot be stored reports failure, and re-uploading
-// the same document signs it.
-func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
-	store := openJournaled(t)
-	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
+// The document and its signature land in one write: a signature that cannot
+// be stored leaves the allowlist as it was, and re-uploading it signs it.
+func TestReplaceAllKeepsDocumentAndSignatureTogether(t *testing.T) {
+	store, allowlist := openJournaledStore(t)
+	h := Handler{
+		Allowlist:       allowlist,
+		WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+	}
 	canonical := canonicalDoc(t, map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))})
 	put := func(token string) int {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", bytes.NewReader(canonical))
@@ -282,36 +292,41 @@ func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
 	if code := put("first"); code != http.StatusInternalServerError {
 		t.Fatalf("PUT /allowlist with the signature unstored = %d, want 500", code)
 	}
+	if doc, _, err := allowlist.LoadAll(); err != nil || len(doc.Workloads) != 0 {
+		t.Fatalf("the refused write left %d entr(ies) (%v); want the allowlist unchanged", len(doc.Workloads), err)
+	}
 	if _, err := store.db.Exec("ALTER TABLE broken RENAME TO journal_signature"); err != nil {
 		t.Fatal(err)
 	}
 	if code := put("second"); code != http.StatusNoContent {
 		t.Fatalf("re-upload = %d, want 204", code)
 	}
-	if token, ok, err := store.Signature(objectDigest(canonical)); err != nil || !ok || token != "second" {
+	if token, ok, err := allowlist.Signature(objectDigest(canonical)); err != nil || !ok || token != "second" {
 		t.Fatalf("Signature = %q, %v, %v; want the re-upload's token", token, ok, err)
 	}
 }
 
 func TestConsumeToken(t *testing.T) {
 	store := openJournaled(t)
-	for _, first := range []string{"t1", "h.p1.s1"} {
-		if err := store.ConsumeToken(first); err != nil {
-			t.Fatalf("ConsumeToken(%q) first use = %v", first, err)
-		}
+	first := tokenAt(t0, "first")
+	if err := store.ConsumeToken(first); err != nil {
+		t.Fatalf("first use = %v", err)
 	}
-	for _, reuse := range []string{"t1", "h.p1.s1", "h.p1.s2"} {
+	for _, reuse := range []string{first, signedPart(first) + ".another-encoding"} {
 		if err := store.ConsumeToken(reuse); !errors.Is(err, operatorauth.ErrTokenReused) {
-			t.Fatalf("ConsumeToken(%q) = %v, want operatorauth.ErrTokenReused", reuse, err)
+			t.Fatalf("reuse = %v, want operatorauth.ErrTokenReused", err)
 		}
 	}
-	if err := store.ConsumeToken("h.p2.s1"); err != nil {
-		t.Fatalf("ConsumeToken(other payload) = %v, want accepted", err)
+	if err := store.ConsumeToken(tokenAt(t0, "second")); err != nil {
+		t.Fatalf("another token = %v, want accepted", err)
 	}
 }
 
 func TestReusedTokenIsConflict(t *testing.T) {
-	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error { return operatorauth.ErrTokenReused }}
+	h := Handler{
+		Allowlist:       openJournaled(t),
+		WriteAuthorizer: func(*http.Request, []byte) error { return operatorauth.ErrTokenReused },
+	}
 	w := httptest.NewRecorder()
 	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
 	if w.Code != http.StatusConflict {
@@ -320,9 +335,12 @@ func TestReusedTokenIsConflict(t *testing.T) {
 }
 
 func TestTokenBeforeStartIsExplained(t *testing.T) {
-	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error {
-		return fmt.Errorf("%w: detail", operatorauth.ErrTokenBeforeStart)
-	}}
+	h := Handler{
+		Allowlist: openJournaled(t),
+		WriteAuthorizer: func(*http.Request, []byte) error {
+			return fmt.Errorf("%w: detail", operatorauth.ErrTokenBeforeStart)
+		},
+	}
 	w := httptest.NewRecorder()
 	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), operatorauth.ErrTokenBeforeStart.Error()) {
@@ -337,16 +355,13 @@ func TestHistoryRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceAll(al); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SignPolicy(canonical, "tok"); err != nil {
+	if err := store.ReplaceAll(al, OperatorWrite{Signature: "tok"}); err != nil {
 		t.Fatal(err)
 	}
 	empty, _, _ := store.Object(mustHistory(t, store)[0].Digest)
 	hexOf := func(b []byte) string { return strings.TrimPrefix(objectDigest(b), "sha256:") }
 
-	h := Handler{Store: store}
+	h := Handler{Allowlist: store}
 	r := chi.NewRouter()
 	r.Get("/allowlist/history", h.HandleHistory)
 	r.Get("/allowlist/objects/sha256/{hex}", h.HandleObject)
@@ -400,7 +415,7 @@ func TestHistoryRoutes(t *testing.T) {
 	}
 }
 
-func mustHistory(t *testing.T, store *Store) []HistoryEntry {
+func mustHistory(t *testing.T, store *Handle) []HistoryEntry {
 	t.Helper()
 	got, err := store.History()
 	if err != nil {

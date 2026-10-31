@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -21,7 +22,7 @@ const DefaultMaxWriteBodyBytes int64 = 64 * 1024
 
 // Handler holds the dependencies for allowlist HTTP handlers.
 type Handler struct {
-	Store           *Store
+	Allowlist       *Handle
 	WriteAuthorizer WriteAuthorizer
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
@@ -41,16 +42,16 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	// almost every time, so settle the 304 on the single-row version read
 	// rather than loading every entry under the writers' lock.
 	if match := r.Header.Get("If-None-Match"); match != "" {
-		if version, err := h.Store.Version(); err == nil && match == `W/"`+version+`"` {
+		if version, err := h.Allowlist.Version(); err == nil && match == `W/"`+version+`"` {
 			w.Header().Set("ETag", match)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
 
-	doc, version, err := h.Store.LoadAll()
+	doc, version, err := h.Allowlist.LoadAll()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 
@@ -67,7 +68,20 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
 // it in atomically. CDS assigns the new version.
+//
+// If-Match makes the swap conditional on the version: the strong tag "N"
+// matches version N, the N of the ETag W/"N" that GET serves. A refused
+// precondition is 412 and changes nothing. No If-Match, or "*", swaps
+// unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
+	// Before the token is spent: a precondition no version can satisfy is
+	// the operator's mistake, not a write.
+	version, matchable := requiredVersion(r.Header.Get("If-Match"))
+	if !matchable {
+		http.Error(w, `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`, http.StatusPreconditionFailed)
+		return
+	}
+
 	body, ok := h.authorize(w, r)
 	if !ok {
 		return
@@ -79,73 +93,59 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+	write := OperatorWrite{Version: version, Signature: operatorSignature(r, al, body)}
+	if write.Signature == "" {
+		slog.Warn("allowlist write stores no operator signature: its body is not the document's canonical bytes",
+			"remote", r.RemoteAddr)
 	}
-	// The token that wrote a canonical whole document is the operator's
-	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
-	// same document with a fresh token is a no-op write that stores it.
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		if err := h.Store.SignPolicy(body, token); err != nil {
-			slog.Error("store the operator signature of the allowlist", "error", err)
-			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
+	if err := h.Allowlist.ReplaceAll(al, write); err != nil {
+		if errors.Is(err, ErrVersionMismatch) {
+			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
 			return
 		}
+		WriteFailed(w, err)
+		return
 	}
 
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandlePutWorkload handles PUT /allowlist/workloads/{name}: validate the entry
-// body and upsert it under the path name. An out-of-spec name or body is 422.
-func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
-	body, ok := h.authorize(w, r)
+// requiredVersion is the allowlist version an If-Match header requires, empty
+// when there is no header: that write is unconditional. Only the strong tag
+// "N" of a version can match, since If-Match compares strongly (RFC 9110
+// 13.1.1), so a weak tag or any other form is not matchable.
+func requiredVersion(ifMatch string) (version string, matchable bool) {
+	if ifMatch == "" {
+		return "", true
+	}
+	version, ok := strings.CutPrefix(ifMatch, `"`)
 	if !ok {
-		return
+		return "", false
 	}
-
-	entry, err := pkgallowlist.ParseWorkloadJSON(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+	version, ok = strings.CutSuffix(version, `"`)
+	if !ok || version == "" {
+		return "", false
 	}
-
-	name := chi.URLParam(r, "name")
-	if err := h.Store.PutWorkload(name, *entry); err != nil {
-		if errors.Is(err, ErrInvalidWorkload) {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("allowlist workload put", "name", name)
-	w.WriteHeader(http.StatusNoContent)
+	return version, true
 }
 
-// HandleDeleteWorkload handles DELETE /allowlist/workloads/{name}: remove the
-// named entry, 404 if absent.
-func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authorize(w, r); !ok {
-		return
+// operatorSignature is the write token of a body that is the document's
+// canonical bytes: the operator's signature over what verifiers fetch
+// (docs/allowlist-and-capabilities.md). Any other body signs nothing.
+func operatorSignature(r *http.Request, al *pkgallowlist.Allowlist, body []byte) string {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || !isCanonicalDocument(al, body) {
+		return ""
 	}
+	return token
+}
 
-	name := chi.URLParam(r, "name")
-	found, err := h.Store.DeleteWorkload(name)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	slog.Info("allowlist workload deleted", "name", name)
-	w.WriteHeader(http.StatusNoContent)
+// isCanonicalDocument reports whether body is exactly al's canonical bytes,
+// the bytes GET /allowlist serves and a verifier fetches.
+func isCanonicalDocument(al *pkgallowlist.Allowlist, body []byte) bool {
+	canonical, err := al.Canonical()
+	return err == nil && bytes.Equal(canonical, body)
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.
@@ -172,18 +172,57 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
+		if refusedByTheStore(err) {
+			WriteFailed(w, err)
+			return nil, false
+		}
 		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true
 }
 
+// WriteFailed answers a write the allowlist store refused or could not take,
+// the route manifest's included. The 503 is retryable at another replica; the
+// 507s clear when the state shrinks.
+func WriteFailed(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		slog.Warn("allowlist write not taken", "err", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
+	case errors.Is(err, ErrCapacity):
+		slog.Warn("allowlist write refused: the replicated state is at its snapshot capacity", "err", err)
+		http.Error(w, ErrCapacity.Error(), http.StatusInsufficientStorage)
+	case errors.Is(err, ErrStoreFull):
+		slog.Error("allowlist write refused: the store has no room left", "err", err)
+		http.Error(w, ErrStoreFull.Error(), http.StatusInsufficientStorage)
+	default:
+		slog.Error("allowlist write failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+// refusedByTheStore reports an error of the store rather than of the token.
+func refusedByTheStore(err error) bool {
+	return errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCapacity) || errors.Is(err, ErrStoreFull)
+}
+
+func readFailed(w http.ResponseWriter, err error) {
+	if IsLocalStoreFault(err) {
+		slog.Warn("allowlist read failed on the local store", "err", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
+		return
+	}
+	slog.Error("allowlist read failed", "err", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
 // HandleHistory handles GET /allowlist/history: every document CDS served,
 // oldest first.
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
-	entries, err := h.Store.History()
+	entries, err := h.Allowlist.History()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -198,7 +237,7 @@ var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // of a document in the history.
 func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
-		return h.Store.Object(digest)
+		return h.Allowlist.Object(digest)
 	})
 }
 
@@ -206,7 +245,7 @@ func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 // operator write token that signed that document.
 func (h Handler) HandleSignature(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "text/plain", func(digest string) ([]byte, bool, error) {
-		token, ok, err := h.Store.Signature(digest)
+		token, ok, err := h.Allowlist.Signature(digest)
 		return []byte(token), ok, err
 	})
 }
@@ -219,7 +258,7 @@ func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentTy
 	}
 	body, ok, err := lookup("sha256:" + hex)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	if !ok {

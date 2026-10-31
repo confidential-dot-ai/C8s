@@ -128,7 +128,10 @@ func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 		change func(*AttestHandler, *types.AttestRequestBody)
 	}{
 		{"no Pod policy", func(h *AttestHandler, r *types.AttestRequestBody) { h.PodImages = nil }},
-		{"node pins are not Pod pins", func(h *AttestHandler, r *types.AttestRequestBody) { h.Images = h.PodImages; h.PodImages = nil }},
+		{"node pins are not Pod pins", func(h *AttestHandler, r *types.AttestRequestBody) {
+			h.NodeImages = certifying(h.PodImages...)
+			h.PodImages = nil
+		}},
 		{"mixed token", func(h *AttestHandler, r *types.AttestRequestBody) { r.SandboxToken = json.RawMessage(`{}`) }},
 		{"mixed runtime log", func(h *AttestHandler, r *types.AttestRequestBody) { r.RuntimeExtensions = []string{wlDigestA} }},
 		{"null claims", func(h *AttestHandler, r *types.AttestRequestBody) { r.PodClaims = json.RawMessage(`null`) }},

@@ -321,11 +321,15 @@ func (w *world) writeEntryWithGrant(name string, g *secretsGrant) error {
 	}
 	copy := *e
 	copy.Secrets = g
-	body, err := json.Marshal(&copy)
+	raw, err := json.Marshal(&copy)
 	if err != nil {
 		return err
 	}
-	return w.operatorWrite(write{method: http.MethodPut, path: w.workloadPath(name), body: body})
+	wr, err := w.documentWrite(w.writtenName(name), raw)
+	if err != nil {
+		return err
+	}
+	return w.operatorWrite(wr)
 }
 
 func operatorWritesDenyingGrant(ctx context.Context, name, p string) error {
