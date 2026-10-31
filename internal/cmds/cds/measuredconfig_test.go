@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -152,6 +154,31 @@ func TestRunMeasuredConfigRefusesADocumentTheLaunchDidNotBind(t *testing.T) {
 	err := runMeasuredConfig(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "launched with") {
 		t.Fatalf("runMeasuredConfig = %v, want a launch-binding refusal", err)
+	}
+}
+
+func TestRunMeasuredConfigRequiresAutoHostAddress(t *testing.T) {
+	path := writeMeasuredDocument(t)
+	document, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformSNP)
+	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+	bound := runtimemeasure.HostData(document)
+	verdict.Claims.InitData = bound[:]
+	stub.SetVerdict(verdict)
+
+	noRoute := errors.New("no default route")
+	previous := chooseHostInterface
+	t.Cleanup(func() { chooseHostInterface = previous })
+	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
+	err = runMeasuredConfig(t.Context(), config{
+		configPath: path, attestationApiURL: stub.URL(), host: "auto",
+	})
+	if !errors.Is(err, noRoute) {
+		t.Fatalf("startup error = %v, want the host-address selection failure", err)
 	}
 }
 

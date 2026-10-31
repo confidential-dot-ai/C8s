@@ -34,6 +34,10 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("--config %s: %w", cfg.configPath, err)
 	}
+	served.host, err = resolveListenHost(served.host)
+	if err != nil {
+		return err
+	}
 	slog.Info("serving a measured CDS configuration", "cluster_id", served.measured.ClusterID, "platform", platform)
 	return run(served)
 }

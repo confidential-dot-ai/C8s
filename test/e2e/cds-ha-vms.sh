@@ -68,7 +68,9 @@ metadata:
   namespace: $NS
 spec:
   selector: {kubevirt.io/domain: $name}
-  ports: [{port: $port, targetPort: $port}]
+  ports:
+    - {name: client, port: $port, targetPort: $port}
+    - {name: peer, port: 8444, targetPort: 8444}
 EOF
 done
 kubectl apply -f - <<EOF
@@ -129,11 +131,13 @@ done
 # Every replica is the lane's CDS VM with its own opkeydata secret and the
 # label both Services select it by.
 creating=()
+host_data=$(openssl dgst -sha256 -binary launch/cds-config.yaml | base64 -w0)
 for name in "${names[@]}"; do
-  kubectl -n "$NS" get vm "$CDS_VM" -o json | jq --arg name "$name" --arg cluster "$cluster" '
+  kubectl -n "$NS" get vm "$CDS_VM" -o json | jq --arg name "$name" --arg cluster "$cluster" --arg host_data "$host_data" '
     {apiVersion, kind,
      metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels, annotations: .metadata.annotations},
      spec: (.spec
+       | .template.metadata.annotations["snp.confidential.ai/host-data"] = $host_data
        | .template.metadata.labels["kubevirt.io/domain"] = $name
        | .template.metadata.labels["ci.confidential.ai/cds-cluster"] = $cluster
        | .template.spec.volumes |= map(

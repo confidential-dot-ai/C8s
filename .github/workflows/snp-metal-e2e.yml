@@ -794,12 +794,11 @@ jobs:
       # Last in the payload: it replaces the lane's CVMs with three CDS VMs of
       # its own, so nothing after it has a cluster to talk to.
       - name: Three CDS VMs serving one cluster
-        if: hashFiles('test/e2e/cds-ha-vms.sh') != ''
         env:
           CDS_IMAGE_MANIFEST: /tmp/cds-manifest.json
           CDS_ALLOWLIST_SEED: /tmp/seed/allowlist-seed-snp.json
           CDS_NODE_PINS: /tmp/launch-data/peers.json
-        run: make test-e2e-cds-ha-vms
+        run: bash "$C8S_SOURCE_DIR/test/e2e/cds-ha-vms.sh"
 
       - name: diagnostics (on failure)
         if: failure() || cancelled()

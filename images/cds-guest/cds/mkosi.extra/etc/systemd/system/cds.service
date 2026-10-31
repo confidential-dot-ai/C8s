@@ -18,6 +18,7 @@ Type=simple
 # the chart renders today. The store is the runtime directory: an in-memory
 # trust root re-bootstraps its mesh CA on every start anyway.
 ExecStart=/usr/local/bin/c8s cds \
+    --host=auto \
     --config=/run/confai/operator-pubkey \
     --attestation-api-url=http://127.0.0.1:8400 \
     --allowlist-db=/run/cds/allowlist.db \
