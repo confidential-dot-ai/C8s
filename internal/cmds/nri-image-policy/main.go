@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -131,13 +132,17 @@ func Run(args []string) error {
 		return err
 	}
 
-	var wlClient allowlistclient.Client
+	var (
+		wlClient allowlistclient.Client
+		pull     *allowlistPull
+	)
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cdsPins)
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
+		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
 	}
 
@@ -187,6 +192,7 @@ func Run(args []string) error {
 	if err := startHealthServer(ctx, healthServerConfig{
 		logger:       logger,
 		plugin:       plugin,
+		pull:         pull,
 		addr:         addr,
 		readTimeout:  *readTimeout,
 		writeTimeout: *writeTimeout,
@@ -219,6 +225,7 @@ func Run(args []string) error {
 			client:      wlClient,
 			store:       store,
 			measure:     measure,
+			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
 			logger:      logger,
@@ -256,6 +263,7 @@ func Run(args []string) error {
 			client:   wlClient,
 			store:    store,
 			measure:  measure,
+			pull:     pull,
 			interval: cfg.Allowlist.Pull.Interval,
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
@@ -336,19 +344,30 @@ func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slo
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource) (*http.Client, error) {
-	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
+func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
+	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
+	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
+		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
+		if err != nil {
+			return nil, err
+		}
+		built.DialContext = dial
+		return built, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
-	client.Timeout = cfg.Timeout
-	return client, nil
+	return &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: transport,
+	}, nil
 }
 
 type pullArgs struct {
 	client      allowlistclient.Client
 	store       *policyStore
 	measure     func(digest string) error // nil measures nothing
+	pull        *allowlistPull
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -385,6 +404,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(etag)
 				args.store.apply(wl, version)
+				args.pull.reached()
 				args.logger.Info("initial allowlist pulled from CDS",
 					"workloads", len(wl.Workloads),
 					"version", version,
@@ -395,6 +415,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 			}
 		}
 
+		args.pull.failed(err)
 		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
 		if errors.Is(err, errPolicyRefused) {
 			return "", err // retrying cannot succeed
@@ -417,6 +438,7 @@ type pullLoopArgs struct {
 	client   allowlistclient.Client
 	store    *policyStore
 	measure  func(digest string) error // nil measures nothing
+	pull     *allowlistPull
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
@@ -451,10 +473,12 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		wl, newETag := served.Allowlist, served.ETag
 		cancel()
 		if err != nil {
+			args.pull.failed(err)
 			args.logger.Warn("pull loop fetch failed", "error", err)
 			continue
 		}
 		if notModified {
+			args.pull.reached()
 			args.logger.Debug("pull loop: not modified", "etag", etag)
 			continue
 		}
@@ -477,6 +501,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 					level = slog.LevelDebug
 				}
 				failing = served.Digest
+				args.pull.failed(err)
 				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
 					"digest", served.Digest, "error", err)
 				continue
@@ -485,6 +510,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			// instead of downloading it again.
 			etag = newETag
 			failing = "" // a later failure is news again
+			args.pull.failed(err)
 			if served.Digest != refused {
 				refused = served.Digest
 				args.logger.Error("pull loop: allowlist refused; keeping current policy",
@@ -493,6 +519,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		args.store.apply(wl, version)
+		args.pull.reached()
 		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
@@ -518,9 +545,17 @@ func parseVersion(etag string) uint64 {
 type healthServerConfig struct {
 	logger       *slog.Logger
 	plugin       *plugin
+	pull         *allowlistPull
 	addr         string
 	readTimeout  time.Duration
 	writeTimeout time.Duration
+}
+
+func (cfg healthServerConfig) allowlistStall() string {
+	if cfg.pull == nil {
+		return ""
+	}
+	return cfg.pull.stall()
 }
 
 // healthResponse is the body of GET /healthz. Probes and the installer read
@@ -529,6 +564,7 @@ type healthServerConfig struct {
 type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+	AllowlistStall   string `json:"allowlist_stall,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -537,7 +573,11 @@ type healthResponse struct {
 func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		body := healthResponse{
+			Status:           "ok",
+			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
+			AllowlistStall:   cfg.allowlistStall(),
+		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
 			body.Status = "not ready"
