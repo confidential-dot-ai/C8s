@@ -145,6 +145,7 @@ func compareObservedMounts(a, b allowlist.ObservedMount) int {
 		cmp.Compare(a.Destination, b.Destination),
 		cmp.Compare(a.Class, b.Class),
 		cmp.Compare(a.Storage, b.Storage),
+		cmp.Compare(a.Volume, b.Volume),
 		cmp.Compare(a.HostSourceDigest, b.HostSourceDigest),
 		cmp.Compare(a.Provenance, b.Provenance),
 	)

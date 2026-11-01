@@ -252,14 +252,7 @@ func (c Client) AuthenticateContext(ctx context.Context) (types.ChallengeRespons
 	return result, nil
 }
 
-type attestRequest struct {
-	Challenge    string                       `json:"challenge"`
-	Evidence     teetypes.AttestationEvidence `json:"evidence"`
-	CSR          string                       `json:"csr"`
-	SandboxToken json.RawMessage              `json:"sandbox_token,omitempty"`
-
-	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
-}
+type attestRequest = types.AttestRequestBody
 
 // Attest submits attestation evidence and receives a signed certificate chain
 // PEM.

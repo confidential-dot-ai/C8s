@@ -1,0 +1,21 @@
+# Pod role only: the attested status endpoint, in place of cred-release.
+[Unit]
+Description=Pod-role attested pod status on :8443
+ConditionPathExists=/run/confos/role-pod
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service attest-proxy.service podcvm-kubelet.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# ${CRED_PLATFORM} comes from the sync hook's platform drop-in; empty fails.
+ExecStart=/usr/local/bin/c8s pod-status serve --listen :8443 --platform=${CRED_PLATFORM}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/confai /run/confos/launch
+
+[Install]
+WantedBy=multi-user.target

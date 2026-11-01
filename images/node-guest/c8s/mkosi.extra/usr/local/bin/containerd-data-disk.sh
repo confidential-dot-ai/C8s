@@ -64,7 +64,10 @@ fi
 #      per boot. `blkid -p` probes the device directly (not the stale udev
 #      cache); the serial comes from sysfs.
 DEV=""
-for _ in $(seq 1 20); do
+# Disks attached at launch are enumerated by udev coldplug: wait for udev to
+# settle, then scan briefly. An absent disk costs ~1 s, not the old 10 s poll.
+udevadm settle --timeout=10 || true
+for _ in $(seq 1 3); do
     # by-id first: virtio-scsi (KubeVirt Bus: scsi) surfaces the serial ONLY in
     # /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<serial>, NOT in
     # /sys/block/<dev>/serial (empty on SCSI). This is the confai path

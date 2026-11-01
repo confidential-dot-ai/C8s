@@ -22,7 +22,7 @@ ConditionPathExists=/proc/sys/kernel/modules_disabled
 After=nvidia-modules-latch.service nvidia-cc-ready.service systemd-modules-load.service
 # rke2's ExecStartPre modprobes are already overridden to a no-op
 # (rke2-server.service.d/no-modprobe.conf), which assumes this latch has run.
-Before=rke2-server.service rke2-agent.service
+Before=rke2-server.service rke2-agent.service podcvm-containerd.service
 
 [Service]
 Type=oneshot
@@ -38,4 +38,4 @@ WantedBy=multi-user.target
 # Preset creates the .requires links, so rke2 cannot start while the latch is
 # failing. A skipped condition is not a failure, so a modules-less kernel
 # still boots.
-RequiredBy=rke2-server.service rke2-agent.service
+RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service

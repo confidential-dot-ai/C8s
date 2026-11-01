@@ -22,6 +22,8 @@ type PolicySnapshot struct {
 	// members indexes every admitted digest — each workload's init and main
 	// containers — for the membership gate.
 	members map[string]struct{}
+	// admissions checks whole observations from the quote-bound Pod profile.
+	admissions *pkgallowlist.Index
 }
 
 // policyStore is the persistent allowlist as the snapshot loader needs it,
@@ -55,11 +57,12 @@ func NewPolicySnapshot(al *pkgallowlist.Allowlist, version string) (*PolicySnaps
 		}
 	}
 	return &PolicySnapshot{
-		Allowlist: al,
-		Version:   version,
-		Canonical: canonical,
-		Digest:    digest,
-		members:   members,
+		Allowlist:  al,
+		Version:    version,
+		Canonical:  canonical,
+		Digest:     digest,
+		members:    members,
+		admissions: al.BuildIndex(),
 	}, nil
 }
 

@@ -50,6 +50,27 @@ func TestMountObserverClassifiesOnlyCurrentPodEmptyDir(t *testing.T) {
 	}
 }
 
+func TestMountObserverRetainsEmptyDirReadOnlyEvidence(t *testing.T) {
+	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
+	for _, tc := range []struct {
+		name     string
+		options  []string
+		readOnly bool
+	}{
+		{"read-only", []string{"rbind", "ro"}, true},
+		{"last read-only", []string{"rbind", "rw", "ro"}, true},
+		{"last writable", []string{"rbind", "ro", "rw"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctr := &api.Container{Mounts: []*api.Mount{{Type: "bind", Source: kubeletRoot + "/pods/pod-a/volumes/" + emptyDirPlugin + "/c8s-certs", Destination: workloadclaims.MemberCertDir, Options: tc.options}}}
+			got := newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{}).Observe(pod, ctr)
+			if len(got) != 1 || got[0].ReadOnly != tc.readOnly {
+				t.Fatalf("read-only mount evidence = %+v, want %v", got, tc.readOnly)
+			}
+		})
+	}
+}
+
 // An exact rule binds a mount to the volume the node names, so that name is
 // the volume the kubelet staged it from and not the last segment of the
 // source: a mount of a directory inside another volume names that other
