@@ -5,7 +5,8 @@ set -euo pipefail
 
 runner="env C8S_REQUIRE_NFT=1 C8S_REQUIRE_ASSIGNMENT_ROOT=1"
 [ "$(id -u)" = 0 ] || runner="sudo -n $runner"
-go test -count=1 -exec "$runner" \
+# Real BPF link creation in one package must not race another's global scan.
+go test -p 1 -count=1 -exec "$runner" \
   -run 'InTheNamespace|^TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy$|^TestPodCredentialRoot|^TestPodBroker|^TestPodRecovery|^TestGuest|^TestAssignmentStoreRequiresProtectedRAMAndSurvivesReopen$' \
   "$@" ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy \
   ./internal/cmds/armtlsmesh ./internal/cmds/getcert ./internal/cmds/podstatus
