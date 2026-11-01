@@ -1,0 +1,80 @@
+{
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "podinfo",
+      "namespace": "tenant",
+      "uid": "2f1c6d3e-7a4b-4e8f-9c21-5d6e7f8a9b01"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "podinfo",
+          "image": "ghcr.io/stefanprodan/podinfo@sha256:72611294759dc6b304d1f3efa2d4b1de212ce422866244f31bc29f731e3b2079",
+          "ports": [
+            {
+              "containerPort": 9898
+            }
+          ],
+          "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": 65532,
+            "allowPrivilegeEscalation": false,
+            "capabilities": {
+              "drop": [
+                "ALL"
+              ]
+            }
+          },
+          "volumeMounts": [
+            {
+              "name": "data",
+              "mountPath": "/data"
+            }
+          ]
+        }
+      ],
+      "volumes": [
+        {
+          "name": "data",
+          "emptyDir": {
+            "medium": "Memory",
+            "sizeLimit": "64Mi"
+          }
+        }
+      ]
+    }
+  },
+  "workloads": {
+    "schema": "c8s.allowlist/v1",
+    "workloads": {
+      "podinfo": {
+        "containers": [
+          {
+            "digest": "sha256:72611294759dc6b304d1f3efa2d4b1de212ce422866244f31bc29f731e3b2079",
+            "image": "ghcr.io/stefanprodan/podinfo",
+            "command": {
+              "policy": "any"
+            },
+            "args": {
+              "policy": "any"
+            },
+            "env": {
+              "policy": "any"
+            },
+            "mounts": {
+              "policy": "exact",
+              "rules": [
+                {
+                  "destination": "/data",
+                  "kind": "emptyDir"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -6,7 +6,8 @@
 #   scripts/shipped-deps-guard.sh check     the ./cmd/... builds and the c8s_node build of ./cmd/c8s
 #   scripts/shipped-deps-guard.sh selftest  the rules themselves, over fixed import graphs
 #
-# internal/testutil is linked by nothing shipped. `testing` is linked only by
+# internal/testutil and internal/podcvmtest are linked by nothing shipped.
+# `testing` is linked only by
 # github.com/hashicorp/raft, whose testing.go sits in its non-test package;
 # linking it registers no test flag unless testing.Init runs. A node runs no
 # CDS replica, so the node build links no raft.
@@ -14,13 +15,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 testutil=github.com/confidential-dot-ai/c8s/internal/testutil
+podcvmtest=github.com/confidential-dot-ai/c8s/internal/podcvmtest
 raft=github.com/hashicorp/raft
 
 # Each rule reads "<package> <imports...>" lines and prints one line per
 # violation.
 test_code() {
-  awk -v testutil="$testutil" -v raft="$raft" '
-    $1 == testutil { print "links " $1 }
+  awk -v testutil="$testutil" -v podcvmtest="$podcvmtest" -v raft="$raft" '
+    $1 == testutil || $1 == podcvmtest { print "links " $1 }
     $1 != raft { for (i = 2; i <= NF; i++) if ($i == "testing") print $1 " imports testing" }
   '
 }
@@ -69,11 +71,17 @@ $raft fmt testing"
 example.com/helper testing"
   links_testutil="example.com/app $testutil
 $testutil fmt"
+  links_podcvmtest="example.com/app $podcvmtest
+$podcvmtest fmt"
+  similarly_named="example.com/app $podcvmtest-production
+$podcvmtest-production fmt"
   plain="example.com/app fmt"
 
   accepts test_code "testing imported by raft" "$via_raft"
   refuses test_code "a helper importing testing" "$via_helper"
   refuses test_code "a binary linking testutil" "$links_testutil"
+  refuses test_code "a binary linking podcvmtest without testing" "$links_podcvmtest"
+  accepts test_code "a differently named production package" "$similarly_named"
   refuses replication "a node build linking raft" "$via_raft"
   accepts replication "a node build without raft" "$plain"
   ;;

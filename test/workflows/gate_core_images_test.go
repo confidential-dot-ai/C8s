@@ -104,7 +104,7 @@ func TestGateCoreImagesSharedWithoutPublication(t *testing.T) {
 	for _, step := range readWorkflow(t, "c8s-image.yml").Jobs["build-and-push"].Steps {
 		steps[step.Name] = step
 	}
-	if steps["Checkout c8s"].With["ref"] != "${{ github.event.workflow_run.head_sha || github.sha }}" {
+	if steps["Checkout c8s"].With["ref"] != "${{ inputs.pod_recovery_fixture && '05211a8b106415a0aefd5f47bc40b266b0c1dacd' || github.event.workflow_run.head_sha || github.sha }}" {
 		t.Error("gate node image and core-image producer must check out the same PR revision")
 	}
 	guard := steps["Require local core images exactly for gate builds"]

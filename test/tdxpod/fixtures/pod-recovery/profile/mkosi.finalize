@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+mkdir -p "$BUILDROOT/etc/systemd/system/multi-user.target.wants"
+link="$BUILDROOT/etc/systemd/system/multi-user.target.wants/pod-recovery-fixture.service"
+if [[ -L "$link" ]]; then
+    # systemd preset may already have enabled the unit with an absolute target.
+    case "$(readlink "$link")" in
+        ../pod-recovery-fixture.service|/etc/systemd/system/pod-recovery-fixture.service) ;;
+        *) echo 'unexpected recovery fixture enablement' >&2; exit 1 ;;
+    esac
+else
+    test ! -e "$link"
+    ln -s ../pod-recovery-fixture.service "$link"
+fi
