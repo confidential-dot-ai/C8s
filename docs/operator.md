@@ -194,7 +194,7 @@ The manual commands below use the same guest contract.
 c8s node launch-config new-pod --out pod1 --cluster-id demo \
   --image-manifest manifest.json \
   --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
-  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json \
+  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json \
   --mesh-peer 10.0.0.20:8080 \
   --pod-manifest pod.json --workloads workloads.json
 ```
@@ -225,7 +225,7 @@ and `--mesh-peer`:
 c8s node launch-config new-pod --generic --name warm-1 \
   --out warm1 --cluster-id demo --image-manifest manifest.json \
   --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
-  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json
+  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
 ```
 
 The guest starts its runtime and attested
@@ -251,9 +251,10 @@ recovery never replaces a published manifest or restarts a runtime that already
 ran it. Assignment state lasts for this boot; a reboot needs a new VM allocation.
 
 Within that boot, restarting kubelet, containerd or the admission plugin retains
-the original sandbox, assignment, complete admission history and credential
-identity. The guest stores this state in protected RAM before authorizing a
-start. Recovery verifies the live tasks, image bindings, packet protection and
+the original sandbox, assignment, complete admission history, workload identity
+and issuing CA. Leaf certificates and keys may rotate. The guest stores recovery
+state in protected RAM before authorizing a start. Recovery verifies the live
+tasks, image bindings, packet protection and
 credential volume, then obtains fresh credentials under the retained issuer
 binding. It also retains the last authenticated CDS policy during an outage and
 refuses older policy versions. Start permissions from the old process are never

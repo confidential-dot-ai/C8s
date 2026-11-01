@@ -20,10 +20,12 @@ on:
       - "test/**"
       - "scripts/coverage-gate.sh"
       - "scripts/test-podmesh.sh"
+      - "scripts/test-podprovider.sh"
       - "scripts/shipped-deps-guard.sh"
       - "scripts/mutation-check.sh"
       - ".gremlins.yaml"
       - ".github/workflows/ci.yml"
+      - ".github/actions/setup-kind-harness/action.yml"
   pull_request:
     branches: [main, beta, "feat/**"]
     paths: *go-paths
@@ -59,6 +61,7 @@ jobs:
           # A full major.minor.patch is resolved in-process; anything less is
           # looked up over the network before the linter runs.
           version: v2.14.0
+          args: --build-tags=podprovider_integration,podprovider_cloud,pod_runtime_integration
 
   test:
     name: Build & Test
@@ -190,6 +193,51 @@ jobs:
 
       - name: Run the cluster integration harness
         run: make test-integration-cluster
+
+  integration-pod-provider:
+    name: Integration (Pod scheduler)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go-c8s
+      - uses: ./.github/actions/setup-kind-harness
+      - name: Test live runner recovery offline
+        run: python3 -m unittest discover -s test/integration/pod-cloud
+      - name: Test live Cloud ownership and recovery offline
+        run: go test -race -count=1 -tags podprovider_integration,podprovider_cloud -run '^TestCloudAcceptance' ./internal/podprovider
+      - name: Run the Pod provider scheduler integration
+        env:
+          C8S_PODPROVIDER_ARTIFACTS: ${{ runner.temp }}/podprovider-artifacts
+        run: make test-podprovider-integration
+      - name: Retain scheduler integration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: podprovider-integration
+          path: ${{ runner.temp }}/podprovider-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+
+  integration-pod-runtime:
+    name: Integration (Pod runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go-c8s
+      - name: Run the Pod runtime admission integration
+        env:
+          C8S_POD_RUNTIME_ARTIFACTS: ${{ runner.temp }}/pod-runtime-artifacts
+        run: make test-integration-pod-runtime
+      - name: Retain runtime integration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-runtime-integration
+          path: ${{ runner.temp }}/pod-runtime-artifacts
+          if-no-files-found: warn
+          retention-days: 7
 
   coverage:
     name: Coverage gate

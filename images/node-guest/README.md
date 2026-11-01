@@ -492,13 +492,55 @@ current attempt has no artifact; there is no fallback to older evidence.
 For manual image builds, dispatch `c8s-image-manual.yml` (Actions name:
 `c8s-image manual`), with the existing `dev`, `c8s_ref`, `confos_ref` and
 `gate` inputs. It builds through the same reusable builder but cannot call
-exact acceptance or promote stable aliases. To build the images of one
-commit without pairing it with another commit's profile or components, run
+exact acceptance or promote stable aliases. The workflow's selected branch
+or tag supplies the image profile, kernel fragments and build pins. For a
+feature build, select that source with `--ref` and supply its matching
+published component SHA as a nonempty `c8s_ref`; this keeps publication on
+commit-scoped tags. Published manual builds reject a `c8s_ref` that is not a
+7–40-character lowercase hexadecimal prefix of the selected source commit.
+An empty `c8s_ref` uses that commit's seven-character SHA and retains the
+existing floating-tag publication behavior. `confos_ref` can still override
+the builder pin for an A/B build. The summary records both the full image
+profile SHA and the component ref.
+
+To build the images of one commit without pairing it with another commit's
+profile or components, run
 `.github/scripts/publish-ref-images.sh --sha <full-sha> [--dev] [--confos-ref <sha>]`:
 it points a build branch at the commit, publishes the component tags through
 `docker.yml` if `:<short-sha>` is missing, then dispatches this workflow with
-the matching `c8s_ref`, and prints the resulting tags. `tdx-metal-e2e.yml` remains
+the matching `c8s_ref`, and prints the resulting tags.
+
+`tdx-metal-e2e.yml` remains
 manually dispatchable for published-image regression and `keep_cvm` debugging.
+
+### Measured Pod recovery fixture
+
+The manual `pod_recovery_fixture=true` switch builds an isolated TDX image for
+fixed guest-service restart testing. Leave all other manual inputs at their
+empty/false defaults, including `c8s_ref`, `confos_ref`, `dev`, `ssh` and `gate`.
+The selected workflow commit supplies only the test overlay; a separate clean
+checkout supplies production source `05211a8b106415a0aefd5f47bc40b266b0c1dacd`.
+
+```sh
+gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s \
+  --ref '<branch-or-tag-containing-the-fixture>' -f pod_recovery_fixture=true
+```
+
+The builder verifies component pins in
+[`baseline.json`](../../test/tdxpod/fixtures/pod-recovery/baseline.json) and compares
+the built runtime binaries, libraries, units and configuration against the
+captured production disk before publishing. The added controller is measured;
+there is no development profile, SSH or runtime-wrapper bypass. Publication
+uses a separate `rke2-tdx-recovery-<overlay-sha12>` variant with `05211a8` component
+tags. It cannot publish production aliases, update the Cloud catalog or invoke
+automatic exact-image acceptance.
+
+The successful build's `pod-recovery-fixture-<run>` artifact contains `image.json`,
+`runtime-components.json`, controller build provenance and the measured manifest.
+Use those actual immutable pins and the same overlay commit for the
+[receipt-pinned recovery dispatch](../../docs/integration-tests.md#pod-guest-service-recovery-on-tdx).
+The fixture has its own disk digest and TDX measurements; a build or overlay
+acceptance result does not establish recovery on the exact production image.
 
 ### Post-start exec
 

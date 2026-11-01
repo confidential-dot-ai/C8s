@@ -406,7 +406,9 @@ func startPodNRIRuntime(t *testing.T, dir string, registered chan<- struct{}, in
 
 func startPodNRIRuntimeObserved(t *testing.T, dir string, registered chan<- struct{}, onSync func(error), inventory ...func() ([]*api.PodSandbox, []*api.Container)) *adaptation.Adaptation {
 	t.Helper()
+	synchronized := make(chan struct{}, 1)
 	var once sync.Once
+	initialSync := true
 	nri, err := adaptation.New("pod-bootstrap-test", "1", func(ctx context.Context, cb adaptation.SyncCB) error {
 		var pods []*api.PodSandbox
 		var containers []*api.Container
@@ -414,11 +416,16 @@ func startPodNRIRuntimeObserved(t *testing.T, dir string, registered chan<- stru
 			pods, containers = inventory[0]()
 		}
 		_, err := cb(ctx, pods, containers)
+		// Start synchronizes an empty preinstalled set before accepting our plugin.
+		if initialSync {
+			initialSync = false
+			return err
+		}
 		if onSync != nil {
 			onSync(err)
 		}
 		if err == nil {
-			once.Do(func() { close(registered) })
+			once.Do(func() { synchronized <- struct{}{} })
 		}
 		return err
 	}, func(context.Context, []*api.ContainerUpdate) ([]*api.ContainerUpdate, error) {
@@ -431,6 +438,22 @@ func startPodNRIRuntimeObserved(t *testing.T, dir string, registered chan<- stru
 		t.Fatal(err)
 	}
 	t.Cleanup(nri.Stop)
+	if len(synchronized) != 0 {
+		t.Fatal("empty runtime sync reported external plugin registration")
+	}
+	observed := make(chan struct{})
+	go func() {
+		defer close(observed)
+		select {
+		case <-synchronized:
+			// The callback returns before adaptation installs the plugin in its list.
+			barrier := nri.BlockPluginSync()
+			barrier.Unblock()
+			close(registered)
+		case <-t.Context().Done():
+		}
+	}()
+	t.Cleanup(func() { <-observed })
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: filepath.Join(dir, "nri.sock"), Net: "unix"})
 	if err != nil {
 		t.Fatal(err)

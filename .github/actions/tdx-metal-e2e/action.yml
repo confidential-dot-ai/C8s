@@ -477,7 +477,20 @@ runs:
     run: |
       set -euo pipefail
       . "$GITHUB_WORKSPACE/bin/retry.sh"
-      sync="$C8S_SOURCE_DIR/images/node-guest/c8s/mkosi.sync"
+      # Explicit refs may predate the profile move. Use exactly one complete
+      # layout from the paired source, never the workflow checkout's profile.
+      sync=
+      for profile in images/node-guest node-guest-image; do
+        candidate="$C8S_SOURCE_DIR/$profile"
+        if [[ -e "$candidate" || -L "$candidate" ]]; then
+          if [[ -n "$sync" || ! -d "$candidate" || -L "$candidate" || ! -f "$candidate/c8s/mkosi.sync" ]]; then
+            echo "::error::expected exactly one complete node image profile in the selected c8s source" >&2
+            exit 1
+          fi
+          sync="$candidate/c8s/mkosi.sync"
+        fi
+      done
+      [ -n "$sync" ] || { echo "::error::no node image profile in the selected c8s source" >&2; exit 1; }
       helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
       helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
       retry curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"
