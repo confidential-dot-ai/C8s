@@ -51,6 +51,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [QUICKSTART.md](QUICKSTART.md) | tutorial | Install C8s on a cluster and confirm it works |
 | [operator.md](operator.md) | explanation | Running a cluster: install, the Certificate Distribution Service, the router, credentials |
 | [launch-configuration.md](launch-configuration.md) | reference | The signed launch document a measured node boots with |
+| [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
 | [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |
 | [cds-ha-runbooks.md](cds-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated CDS |
 | [cds-ha-alerts.md](cds-ha-alerts.md) | reference | What to watch on a replicated CDS |

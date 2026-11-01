@@ -39,6 +39,7 @@ configurations' own.`,
 			CertFSGroup:             certFSGroup,
 			CertRenewInterval:       certRenewInterval,
 			WorkloadClaimsHostDir:   workloadClaimsHostDir,
+			PodCVMProviderConfig:    podCVMProviderConfig,
 		})
 	},
 }
@@ -60,6 +61,7 @@ var (
 	certRenewInterval       time.Duration
 
 	workloadClaimsHostDir string
+	podCVMProviderConfig  string
 )
 
 func init() {
@@ -78,5 +80,6 @@ func init() {
 	operatorCmd.Flags().Int64Var(&certFSGroup, "cert-fs-group", 65532, "fsGroup applied to injected pods when unset (-1 disables mutation)")
 	operatorCmd.Flags().DurationVar(&certRenewInterval, "get-cert-renew-interval", 2*time.Hour, "renewal interval for injected workload certificates")
 	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM), required for injected c8s-cert; NRI mounts it so get-cert redeems a sandbox token there (docs/armtls.md)")
+	operatorCmd.Flags().StringVar(&podCVMProviderConfig, "pod-cvm-provider-config", "", "trusted JSON configuration for the Pod CVM virtual-node provider (empty = disabled)")
 	rootCmd.AddCommand(operatorCmd)
 }
