@@ -83,8 +83,11 @@ func newGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get",
 		Short: "Verify a pod CVM (image + pod launch key) and print its pod status JSON",
-		Long: `Attest the pod CVM as pod-attest does, then print the v1 Pod JSON
-from GET /v1/pod. Fails non-zero if verification fails.`,
+		Long: `Attest the pod CVM as pod-attest does, then print GET /v1/pod: the
+pod's uid, namespace and name and the kubelet's phase, conditions and
+container states, in v1 Pod field names. The service serves no spec, no
+labels or annotations, no addresses and no reason or message text. Fails
+non-zero if verification fails.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

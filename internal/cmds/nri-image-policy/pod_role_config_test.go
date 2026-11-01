@@ -1,6 +1,7 @@
 package nriimagepolicy_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,6 +92,13 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 	write(launchconfig.Dir+"/peers.json", policy)
 	// The independent CDS VM uses SNP even when the Pod uses TDX.
 	cdsPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	containers := []string{}
+	for _, name := range []string{"app", "unknown"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, podImageDigest))
+	}
+	for _, name := range []string{"served", "cached"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, nriimagepolicy.PodBootstrapServedDigest))
+	}
 	doc := &launchconfig.Document{
 		Role:                 launchconfig.Pod,
 		CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
@@ -100,7 +108,7 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		Node:                 launchconfig.Node{Name: "p-pod"},
 		Workloads:            `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
+			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
 	}
 	return root, doc
 }
@@ -129,6 +137,13 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	}
 	if cfg.Mesh.Roles[0].Name != workloadclaims.MeshRole || cfg.Mesh.Roles[0].UID != workloadclaims.MeshUID {
 		t.Fatalf("mesh role = %+v", cfg.Mesh.Roles)
+	}
+	floor, err := nriimagepolicy.LoadMeshFloor(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatalf("pod-role floor does not load: %v", err)
+	}
+	if !floor.PodRole {
+		t.Fatal("the runtime wrapper would read the pod-role policy as a node's and refuse root")
 	}
 	base := cfg.Allowlist.Base.Workloads
 	endpoint := base["c8s-mesh-endpoint"].Containers

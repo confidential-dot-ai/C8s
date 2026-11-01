@@ -17,16 +17,24 @@ import (
 // StartContainer notification, a failed/disconnected validator rejects creation.
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
-func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
+func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) (result error) {
 	defer p.lockPodAdmission()()
+	if err := p.beginPodTransition(); err != nil {
+		return err
+	}
+	defer p.finishPodTransition(&result)
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
+	imageRef, err := p.containerImage(req.GetPod(), ctr)
+	if err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
-	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
+	if err := p.gateMesh(ctx, req, ctr, imageRef, env, mounts); err != nil {
 		// A pre-existing pod recovery has not yet reached is off the gate's
 		// record: refuse the create, but transiently, so the retry after
 		// recovery is not met by a denial recorded for the pod's life. A
@@ -37,7 +45,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		}
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, imageRef, launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
@@ -49,12 +57,12 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 // gateMesh applies the mesh startup gate at the one hook whose error always
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
-func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
 	pod := req.GetPod()
 	if !p.mesh.hosts(pod) {
 		return nil
 	}
-	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
+	launch := p.observedLaunch(ctx, ctr, imageRef, env, mounts)
 	adjusted := req.GetAdjust().GetLinux()
 	// The role, and the mount set a declaration pins, are read from the mounts
 	// the pod itself asks for: a credential client of any pod also carries the
@@ -62,7 +70,7 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	declared := launch
 	declared.Mounts = p.observedMounts(pod, req.GetContainer())
 	role := p.roleOf(declared)
-	if p.cfg.Pod != nil {
+	if p.cfg.podRole() {
 		// The Pod endpoint receives no node mounts. Its final adjusted mounts
 		// must retain the exact private RAM volume, even under an any policy.
 		role = p.roleOf(launch)

@@ -35,6 +35,7 @@ func TestPrivilegedCoverageUsesHeadSelectorAndPreservesFailures(t *testing.T) {
 				"internal/cmds/nri-image-policy": "TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy",
 				"internal/cmds/armtlsmesh":       "TestTransportInTheNamespace",
 				"internal/cmds/getcert":          "TestGuestRootPublication",
+				"internal/cmds/podstatus":        "TestAssignmentStoreRequiresProtectedRAMAndSurvivesReopen",
 			}
 			for pkg, name := range selected {
 				files["base/"+pkg+"/value.go"] = "package fixture\nfunc Value() int { return 1 }\n"
@@ -89,9 +90,9 @@ func TestUnrelated(t *testing.T) { t.Fatal("selected an unrelated test") }
 			cmd = exec.CommandContext(t.Context(), "bash", gate, "total", "coverage.out")
 			cmd.Dir = filepath.Join(fixture, "base")
 			total, err := cmd.CombinedOutput()
-			// Four executed production statements plus the covered ordinary block;
+			// Five executed production statements plus the covered ordinary block;
 			// the untested ordinary block must remain in the denominator.
-			if err != nil || strings.TrimSpace(string(total)) != "83.33" {
+			if err != nil || strings.TrimSpace(string(total)) != "85.71" {
 				t.Fatalf("wrong profile union: %q %v", total, err)
 			}
 		})
