@@ -105,13 +105,44 @@ type roleBinding struct {
 	Port uint16 `yaml:"port"`
 }
 
-// MeshFloor is the measured mesh policy as the node's runtime wrapper reads
-// it: the namespaces that host no member pods, and what the role behind each
-// reserved id may hold. Trusted policy reserves that number as both a UID and
-// a GID (internal/cmds/c8srunc).
+// MeshFloor is the measured mesh policy as the mesh gate and the node's
+// runtime wrapper read it: the namespaces that host no member pods, what the
+// role behind each reserved id may hold, and whether the policy is a pod
+// CVM's. Trusted policy reserves that number as both a UID and a GID
+// (internal/cmds/c8srunc).
 type MeshFloor struct {
 	ExemptNamespaces []string
 	ReservedIDs      map[uint32]RoleFloor
+	// PodRole marks the policy of a pod CVM, which runs one pod: its floor
+	// admits a root user outside every role, since no other tenant shares
+	// the kernel, and every workload start requires a live admission permission.
+	// validatePod ties mesh.pod to the pod role's other markers.
+	PodRole bool
+	// PodWaiting denies even pause processes until assignment is committed.
+	PodWaiting bool
+}
+
+// RequireUnreservedIdentity is the one identity verdict the mesh gate and the
+// runtime wrapper apply: no container claims an id reserved for another role,
+// as user, group or supplementary group, because the pod ruleset grants a
+// role's traffic permissions by socket UID; and on a node a container outside
+// every role runs as a non-root user. A pod CVM admits root there: what root
+// can do is bounded by the runtime wrapper's capability, no_new_privs and
+// namespace rules, which keep SETUID and SETGID out, so it cannot take a
+// reserved socket identity.
+func (f MeshFloor) RequireUnreservedIdentity(uid, gid uint32, supplementary []uint32, role string) error {
+	if role == "" && uid == 0 && !f.PodRole {
+		return errors.New("a container outside every platform role runs as root")
+	}
+	if owner, reserved := f.ReservedIDs[uid]; reserved && owner.Name != role {
+		return fmt.Errorf("uid %d is reserved for the %s role", uid, owner.Name)
+	}
+	for _, id := range append([]uint32{gid}, supplementary...) {
+		if owner, reserved := f.ReservedIDs[id]; reserved && owner.Name != role {
+			return fmt.Errorf("gid %d is reserved for the %s role", id, owner.Name)
+		}
+	}
+	return nil
 }
 
 // RoleFloor is one platform role as the floor reads it.
@@ -126,17 +157,22 @@ func LoadMeshFloor(configPath string) (MeshFloor, error) {
 	if err != nil {
 		return MeshFloor{}, err
 	}
-	floor := MeshFloor{
-		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
-		ReservedIDs:      map[uint32]RoleFloor{},
-	}
-	for _, role := range cfg.Mesh.Roles {
-		floor.ReservedIDs[role.UID] = RoleFloor{Name: role.Name}
-	}
-	floor.ReservedIDs[workloadclaims.RouterUID] = RoleFloor{Name: routerRole}
-	floor.ReservedIDs[workloadclaims.AcmeUID] = RoleFloor{Name: acmeRole}
-	floor.ReservedIDs[workloadclaims.UpstreamUID] = RoleFloor{Name: upstreamRole}
+	floor := cfg.Mesh.floor()
+	floor.PodWaiting = cfg.podWaiting()
 	return floor, nil
+}
+
+// floor is the policy as its identity floor.
+func (p meshPolicy) floor() MeshFloor {
+	floor := MeshFloor{
+		ExemptNamespaces: p.ExemptNamespaces,
+		ReservedIDs:      map[uint32]RoleFloor{},
+		PodRole:          p.Pod != nil,
+	}
+	for role, reserved := range p.reservedIdentities() {
+		floor.ReservedIDs[reserved] = RoleFloor{Name: role}
+	}
+	return floor
 }
 
 // validate requires a policy the pod ruleset can be built from, at config
@@ -229,16 +265,6 @@ func (p meshPolicy) reservedIdentities() map[string]uint32 {
 	return ids
 }
 
-// roleHolding is the role a reserved identity belongs to, where one does.
-func (p meshPolicy) roleHolding(id uint32) (string, bool) {
-	for role, reserved := range p.reservedIdentities() {
-		if reserved == id {
-			return role, true
-		}
-	}
-	return "", false
-}
-
 func (p meshPolicy) role(name string) (roleBinding, bool) {
 	i := slices.IndexFunc(p.Roles, func(r roleBinding) bool {
 		return r.Name == name
@@ -265,18 +291,9 @@ func (p meshPolicy) requireRoleIdentity(ctr *api.Container, role string) error {
 	return p.requireUnreservedIdentity(ctr, role)
 }
 
-// requireUnreservedIdentity refuses a reserved identity outside the role a
-// container holds — user, group or supplementary group — because the pod
-// ruleset grants a role's traffic permissions by socket UID.
+// requireUnreservedIdentity applies the floor's identity verdict
+// (MeshFloor.RequireUnreservedIdentity) to a container the gate admits.
 func (p meshPolicy) requireUnreservedIdentity(ctr *api.Container, role string) error {
 	user := ctr.GetUser()
-	if user.GetUid() == 0 {
-		return errors.New("a gated pod container requires a nonzero uid")
-	}
-	for _, id := range append([]uint32{user.GetUid(), user.GetGid()}, user.GetAdditionalGids()...) {
-		if owner, reserved := p.roleHolding(id); reserved && owner != role {
-			return fmt.Errorf("uid or gid %d is reserved for the %s role", id, owner)
-		}
-	}
-	return nil
+	return p.floor().RequireUnreservedIdentity(user.GetUid(), user.GetGid(), user.GetAdditionalGids(), role)
 }

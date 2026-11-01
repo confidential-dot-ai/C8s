@@ -16,6 +16,9 @@ NoNewPrivileges=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadOnlyPaths=/etc/confai /run/confos/launch
+# Assignment state and manifests survive this service's restart in guest RAM.
+# The generated NRI policy is installed before restarting the empty runtime.
+ReadWritePaths=/run/c8s-pod /etc/nri/conf.d
 
 [Install]
 WantedBy=multi-user.target

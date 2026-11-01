@@ -15,9 +15,11 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-// workloadMeasurer is the subset of the RTMR[3] journal the plugin uses.
+// workloadMeasurer is the subset of the RTMR[3] journal the plugin uses: the
+// measure, and the measured list a pod CVM's credential claims carry.
 type workloadMeasurer interface {
 	MeasureOnce(ref string) (bool, error)
+	Digests() []string
 }
 
 // openRegister is a package var so tests can inject a fake register.
