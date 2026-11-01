@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -21,6 +23,7 @@ const (
 
 // PodBundleOptions describes one pod CVM's signed launch document.
 type PodBundleOptions struct {
+	Generic             bool
 	Dir                 string
 	ClusterID           string
 	ManifestPath        string
@@ -31,6 +34,7 @@ type PodBundleOptions struct {
 	ServerPublicKeyPath string
 	CDSAddress          string
 	CDSImagePolicyPath  string
+	CDSPinDecreePath    string
 	PodManifest         string
 	WorkloadsPath       string
 	MeshPeers           []string
@@ -40,8 +44,18 @@ type PodBundleOptions struct {
 // and name come from the manifest's metadata. Dir must not exist; a failed
 // run removes it.
 func NewPodBundle(opts PodBundleOptions) (err error) {
-	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.PodManifest == "" || opts.WorkloadsPath == "" || opts.ServerAddress == "" || opts.ServerPublicKeyPath == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
-		return errors.New("--out, --cluster-id, --image-manifest, --pod-manifest, --workloads, --server-address, --server-public-key, --cds-address and --cds-image-policy-file are required")
+	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.ServerAddress == "" || opts.ServerPublicKeyPath == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
+		return errors.New("--out, --cluster-id, --image-manifest, --server-address, --server-public-key, --cds-address and --cds-image-policy-file are required")
+	}
+	if opts.Generic {
+		if opts.PodManifest != "" || opts.WorkloadsPath != "" || len(opts.MeshPeers) != 0 {
+			return errors.New("--generic must not carry --pod-manifest, --workloads or --mesh-peer")
+		}
+		if opts.NodeName == "" {
+			return errors.New("--generic requires --name")
+		}
+	} else if opts.PodManifest == "" {
+		return errors.New("--pod-manifest is required unless --generic is set")
 	}
 	if err := ValidateIPv4(opts.ServerAddress, true); err != nil {
 		return fmt.Errorf("--server-address: %w", err)
@@ -61,24 +75,45 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if err := (&Document{CDS: cds}).validateCDS(); err != nil {
 		return err
 	}
+	if opts.CDSPinDecreePath != "" {
+		pins, err := refvalues.Parse(cdsPolicy)
+		if err != nil {
+			return err
+		}
+		launchFile, err := cmdsutil.CDSLaunchFile(pins)
+		if err != nil {
+			return err
+		}
+		cds, err = CDSFromPinDecree(launchFile, opts.CDSPinDecreePath, opts.CDSAddress)
+		if err != nil {
+			return fmt.Errorf("--cds-pin-decree: %w", err)
+		}
+	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {
 		return err
 	}
-	manifest, err := readBounded(opts.PodManifest, MaxDocumentSize)
-	if err != nil {
-		return err
-	}
-	pod, err := ParsePodManifest(manifest)
-	if err != nil {
-		return err
-	}
-	workloads, err := readBounded(opts.WorkloadsPath, MaxDocumentSize)
-	if err != nil {
-		return err
-	}
-	if opts.NodeName == "" {
-		opts.NodeName = "p-" + string(pod.UID)
+	var podSpec *PodSpec
+	var workloads []byte
+	if !opts.Generic {
+		manifest, err := readBounded(opts.PodManifest, MaxDocumentSize)
+		if err != nil {
+			return err
+		}
+		pod, err := ParsePodManifest(manifest)
+		if err != nil {
+			return err
+		}
+		podSpec = &PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: opts.MeshPeers}
+		if opts.WorkloadsPath != "" {
+			workloads, err = readBounded(opts.WorkloadsPath, MaxDocumentSize)
+			if err != nil {
+				return err
+			}
+		}
+		if opts.NodeName == "" {
+			opts.NodeName = "p-" + string(pod.UID)
+		}
 	}
 	if err := os.Mkdir(opts.Dir, 0o700); err != nil {
 		return fmt.Errorf("create bundle directory: %w", err)
@@ -102,7 +137,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 		PodOperatorPublicKey: pub,
 		CDS:                  cds,
 		Workloads:            string(workloads),
-		Pod:                  &PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: opts.MeshPeers},
+		Pod:                  podSpec,
 	}
 	return writeSignedDocument(filepath.Join(opts.Dir, podDir), doc, key, pub)
 }

@@ -1,4 +1,4 @@
-// A node document's CDS pin after a CDS image roll: the images of the pin
+// A launch document's CDS pin after a CDS image roll: the images of the pin
 // decree the cluster's replicas applied. The decree carries the operator's
 // signature over the image set and the digest of the launch file those images
 // boot, so this check stands on its own against the bundle's CDS
@@ -25,9 +25,17 @@ func decreedCDS(dir, decreePath, address string) (CDS, error) {
 	if err != nil {
 		return CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
 	}
+	return CDSFromPinDecree(launchFile, decreePath, address)
+}
+
+// CDSFromPinDecree returns the complete CDS pin set and minimum version from
+// a signed decree. launchFile must be the exact CDS configuration already bound
+// by the caller's validated bootstrap trust, never a file supplied by the decree.
+// The caller must validate address before using the returned CDS configuration.
+func CDSFromPinDecree(launchFile []byte, decreePath, address string) (CDS, error) {
 	cluster, err := cdsconfig.Parse(launchFile)
 	if err != nil {
-		return CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
+		return CDS{}, fmt.Errorf("CDS configuration: %w", err)
 	}
 	object, err := readBounded(decreePath, MaxDocumentSize)
 	if err != nil {

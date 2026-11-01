@@ -64,6 +64,12 @@ pull lands only the base allowlist admits — the entries the plugin carries in
 its own boot config ([Bootstrap](#bootstrap)); `nriImagePolicy.policy.mode:
 audit` admits anyway and logs denials.
 
+In a pod CVM the plugin also verifies the selected image against containerd's
+content and unpacked rootfs before measuring it ([Pod image
+binding](#pod-image-binding)), and the runtime wrapper starts the created
+process only with a one-use permission from the live plugin
+([node-exec-mode.md](node-exec-mode.md#pod-admission-before-start)).
+
 CDS — the Certificate Distribution Service, the VM outside the cluster that
 serves this policy and signs each pod's certificate — checks again when it
 issues a pod's certificate: it asks that pod's own admission inventory which
@@ -320,3 +326,16 @@ journal, whose directory is never mounted into Pod containers.
 certificate. `c8s pod-attest` accepts the certificate's binding as the seed
 followed by a prefix, then requires the list read on both sides of a fresh
 quote to replay in full.
+
+## Pod image binding
+
+Guest preparation stages each init and application container's pinned digest
+from the signed Pod, with the injected endpoint's measured pin, keyed by
+container name, so Pod admission never resolves a mutable image name. On every
+NRI start callback, before measurement or an admission record, the plugin reads
+the pinned manifest or index by digest and checks containerd's saved CRI
+configuration digest and the active snapshot's parent layer chain against it,
+binding the selected configuration and filesystem to the staged pin. The check
+has a five-second deadline and bounded metadata and content reads; missing,
+malformed, mismatched or over-limit evidence is an admission error, with no
+measurement and no new history entry.

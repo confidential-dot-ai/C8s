@@ -35,6 +35,7 @@ type podCredentialBroker struct {
 	bootID   string
 	pod      *api.PodSandbox
 	root     *os.Root
+	source   string
 	changes  chan struct{}
 	terminal error
 	wg       sync.WaitGroup
@@ -43,7 +44,7 @@ type podCredentialBroker struct {
 var runGuestCredentials = getcert.RunGuest
 
 func (p *plugin) lockPodAdmission() func() {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return func() {}
 	}
 	p.podMu.Lock()
@@ -51,7 +52,7 @@ func (p *plugin) lockPodAdmission() func() {
 }
 
 func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if source != "" {
@@ -70,7 +71,7 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 }
 
 func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() || p.cfg.podWaiting() {
 		return nil
 	}
 	if client == nil {
@@ -96,8 +97,12 @@ func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) erro
 		runtime.Close()
 		return err
 	}
+	bootID := hex.EncodeToString(id[:])
+	if p.recovery != nil && p.recovery.state != nil {
+		bootID = p.recovery.state.BootID
+	}
 	ctx, cancel := context.WithCancel(ctx)
-	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, client: client, runtime: runtime, bootID: hex.EncodeToString(id[:]), changes: make(chan struct{}, 1)}
+	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, client: client, runtime: runtime, bootID: bootID, changes: make(chan struct{}, 1)}
 	return nil
 }
 
@@ -127,11 +132,29 @@ func (p *plugin) podChanged() {
 }
 
 func (p *plugin) endPodIdentity(reason error) {
+	// Most callers already own a callback transaction. Worker/snapshot failures
+	// must establish the same durable refusal before ending their authority.
+	ownFence := false
+	if s := p.recovery; s != nil && s.state != nil && !s.active {
+		if err := s.begin(); err == nil {
+			ownFence = true
+		} else {
+			if _, fenceErr := s.root.Lstat(podRecoveryPendingFile); fenceErr != nil {
+				if renameErr := s.root.Rename(podRecoveryStateFile, podRecoveryPendingFile); renameErr != nil {
+					p.boot.fatal("cannot durably end Pod identity after losing recovery storage")
+				}
+			}
+		}
+	}
+	clear(p.podStarts)
 	if b := p.podBroker; b != nil {
 		if b.terminal == nil {
 			b.terminal = reason
 		}
 		b.cancel()
+	}
+	if ownFence {
+		p.finishPodTransition(&reason)
 	}
 }
 
@@ -152,7 +175,7 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 		}
 		return samePodCredentialRoot(b.root, source)
 	}
-	if p.bootRestart.Load() {
+	if p.bootRestart.Load() && !p.podRecovered {
 		return errors.New("pod credentials cannot use reconstructed admission history; a new guest boot is required")
 	}
 	root, err := openPodCredentialRoot(source)
@@ -170,14 +193,21 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 		return fmt.Errorf("record Pod boot identity: %w", err)
 	}
 	b.root = root
+	b.source = source
 	b.pod = proto.Clone(pod).(*api.PodSandbox)
-	identity := workloadclaims.PodClaims{BootID: b.bootID, RuntimePodUID: pod.GetUid(), SandboxID: pod.GetId()}.InstanceID()
+	p.runPodCredentialWorker()
+	return nil
+}
+
+func (p *plugin) runPodCredentialWorker() {
+	b := p.podBroker
+	identity := workloadclaims.PodClaims{BootID: b.bootID, RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId()}.InstanceID()
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
 		err := runGuestCredentials(b.ctx, getcert.GuestConfig{
 			CDSURL: p.cfg.pullURL(), AttestationAPIURL: p.cfg.Allowlist.Pull.AttestationApiURL,
-			HTTPClient: b.client, VolumeRoot: root, InstanceID: identity,
+			HTTPClient: b.client, VolumeRoot: b.root, InstanceID: identity,
 			Snapshot: p.podSnapshot, Commit: p.commitPodCredentials, Changes: b.changes,
 		})
 		if err != nil && b.ctx.Err() == nil {
@@ -187,15 +217,18 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 			p.podMu.Unlock()
 		}
 	}()
-	return nil
 }
 
-func (p *plugin) podSnapshot(ctx context.Context) (workloadclaims.PodClaims, error) {
+func (p *plugin) podSnapshot(ctx context.Context) (claims workloadclaims.PodClaims, result error) {
 	p.podMu.Lock()
 	defer p.podMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
+	if err := p.beginPodTransition(); err != nil {
+		return workloadclaims.PodClaims{}, err
+	}
+	defer p.finishPodTransition(&result)
 	return p.podSnapshotLocked()
 }
 
@@ -213,6 +246,11 @@ func (p *plugin) podSnapshotLocked() (workloadclaims.PodClaims, error) {
 	if err := p.inventory.denial(b.pod.GetId()); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
+	if b.root != nil {
+		if err := samePodCredentialRoot(b.root, b.source); err != nil {
+			return p.podSnapshotLost(err)
+		}
+	}
 	if err := p.mesh.verifyMember(b.pod.GetId()); err != nil {
 		return p.podSnapshotLost(err)
 	}
@@ -220,13 +258,12 @@ func (p *plugin) podSnapshotLocked() (workloadclaims.PodClaims, error) {
 	if err != nil {
 		return p.podSnapshotLost(err)
 	}
-	journal, ok := p.measurer.(interface{ Digests() []string })
-	if !ok {
+	if p.measurer == nil {
 		return p.podSnapshotLost(errors.New("pod broker has no runtime journal"))
 	}
 	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID,
 		RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId(), Revision: revision,
-		RuntimeExtensions: journal.Digests(), Containers: containers}
+		RuntimeExtensions: p.measurer.Digests(), Containers: containers}
 	if _, err := claims.Canonical(); err != nil {
 		return p.podSnapshotLost(err)
 	}
@@ -241,9 +278,13 @@ func (p *plugin) podSnapshotLost(err error) (workloadclaims.PodClaims, error) {
 // commitPodCredentials serializes the final local publication with admission.
 // No network call runs under this lock; a response to an old snapshot cannot
 // replace the generation after another container has been admitted.
-func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish func() error) error {
+func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish func() error) (result error) {
 	p.podMu.Lock()
 	defer p.podMu.Unlock()
+	if err := p.beginPodTransition(); err != nil {
+		return err
+	}
+	defer p.finishPodTransition(&result)
 	current, err := p.podSnapshotLocked()
 	if err != nil {
 		return err
@@ -257,7 +298,7 @@ func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish f
 // podCredentialSource checks the final mount table independently of a tenant's
 // allowlist. A broad mounts policy must never hand it the platform's key.
 func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, role string, mounts []allowlist.ObservedMount) (string, error) {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return "", nil
 	}
 	if pod.GetNamespace() != p.cfg.Pod.Namespace || pod.GetName() != p.cfg.Pod.Name || pod.GetUid() == "" || pod.GetId() == "" {
@@ -285,26 +326,21 @@ func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, ro
 		}
 		source = base
 	}
+	verified := false
 	for _, mount := range mounts {
-		if mount.Volume == podmesh.CertVolumeName {
-			if role != meshRole || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
-				return "", errors.New("the mesh credential mount must be a read-only memory emptyDir")
-			}
+		if mount.Volume != podmesh.CertVolumeName {
+			continue
 		}
+		if role != meshRole || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
+			return "", errors.New("the mesh credential mount must be a read-only memory emptyDir")
+		}
+		verified = true
 	}
 	if role == meshRole && source == "" {
 		return "", errors.New("the measured mesh endpoint has no private credential volume")
 	}
-	if source != "" {
-		verified := false
-		for _, mount := range mounts {
-			if mount.Volume == podmesh.CertVolumeName && mount.Destination == podmesh.CertDir && mount.Class == allowlist.MountEmptyDir && mount.Storage == allowlist.MountMemory && mount.ReadOnly {
-				verified = true
-			}
-		}
-		if !verified {
-			return "", errors.New("the credential volume has no verified memory-backed mount evidence")
-		}
+	if source != "" && !verified {
+		return "", errors.New("the credential volume has no verified memory-backed mount evidence")
 	}
 	return source, nil
 }
