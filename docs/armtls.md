@@ -48,10 +48,14 @@ the handshake and the certificate's validity window are the freshness bound
 there. A challenge binds only the evidence an issuance request carries, which no
 certificate embeds, so a leaf proves measurement at issuance. On TDX the
 evidence also carries the allowlist policy digests the node extended into
-RTMR[3], for a verifier to replay
+RTMR[3] — on a Pod CVM, the image digests it admitted — for a verifier to replay
 ([measurements.md](measurements.md#policy-history)); weighing those policies is
 an external verifier's job
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
+
+CDS-issued leaves can carry a sandbox identity from either a node inventory
+token or the [Pod CVM issuance profile](#pod-cvm-issuance). A Pod identity
+does not grant node-inventory or secret-release authority.
 
 ## The handshake and pin checks
 
@@ -78,11 +82,13 @@ node is out of scope.
 
 ## CDS issuance
 
-CDS is the only component that signs leaves. Its mesh CA is a P-384 key
-generated in process memory at startup, CN `c8s Mesh CA`, valid for a year and
-renewed past half of that under the same key. The key is never a Kubernetes
-Secret and never on disk, so a CDS restart mints a fresh CA and every workload
-re-bootstraps ([operator.md](operator.md)).
+CDS is the only component that signs leaves. For a singleton CDS, its mesh CA
+is a P-384 key generated in process memory at startup, CN `c8s Mesh CA`, valid
+for a year and renewed past half of that under the same key. The key is never
+a Kubernetes Secret and never on disk, so a CDS restart mints a fresh CA and
+every workload
+re-bootstraps ([operator.md](operator.md)). Replicated CDS uses its cluster’s
+shared CA state ([cds-ha.md](cds-ha.md)).
 
 Issuance is challenge, attest, certify. The requester asks CDS for a challenge
 (32 bytes, single-use, TTL-bound), generates a key and a CSR, asks its
@@ -179,6 +185,61 @@ Every armTLS configuration disables session tickets and sets no client session
 cache: a resumed handshake would skip the callback where armTLS checks chain and
 evidence.
 
+### Pod CVM issuance
+
+A `role: pod` guest runs the same mesh endpoint, with credentials supplied by
+its measured admission plugin instead of a container credential client and node
+inventory callback. The guest authenticates CDS against the signed launch
+document's independent server pins, then sends an empty-subject CSR, a fresh
+challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
+bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
+revision, the complete ordered image measurement list and every retained
+admission observation (image, arguments, environment commitments and mounts,
+completed containers included); `pkg/workloadclaims` owns their encoding. The
+report data is:
+
+```text
+SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
+```
+
+CDS verifies that binding and replays the whole measurement list against its
+separate Pod image policy. Every measured digest must be in the current workload
+policy and every non-platform observation must pass its admission checks. A
+snapshot holding only the measured endpoint can get an unnamed membership leaf;
+a named leaf needs one unique whole-workload match of the complete non-platform
+history. Neither a status quote nor a node inventory token substitutes for this
+profile.
+
+Measured Pod launch keys remain separate from node and operator authority. In
+an HA cluster, that boundary also applies to signed node-image replacements.
+A replacement sharing a Pod launch key makes the entire node set untrusted
+until a disjoint replacement arrives; it is never filtered or combined with
+earlier pins. Pod issuance continues to use its separate measured policy.
+
+The guest publishes complete credential generations to a verified RAM-backed
+volume only the endpoint mounts, read-only. Publication rechecks the retained
+revision, sandbox and packet protection. The revision moves when the history
+gains an observation or the sandbox's identity ends — not when a container stops
+or is removed, so neither restarts issuance. Renewal uses fresh evidence and the
+current policy. Losing the retained history or protection ends issuance and
+removes the published credentials; a plugin restart cannot rebuild history from
+the processes left. A copied leaf stays usable until expiry, and an abrupt
+process failure cannot guarantee immediate local removal.
+
+These are ordinary mesh leaves: a relying party sees neither the claims nor the
+profile, and a named leaf records authorization at issuance, not current
+liveness or exclusive assignment. The profile creates no node inventory binding
+and does not enable secret release. Setup is in
+[operator.md](operator.md#pod-cvm).
+
+A standalone pod CVM captures only its signed IPv4 TCP peer tuples, and a peer
+authentication failure never turns a tuple into ordinary egress. Other IPv4
+TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves with the
+CVM's source address. Pod and guest rules exclude IPv4 link-local and block
+container-initiated access to guest-local services, the endpoint's included. An
+entry's declared exits and the node's platform exits (`mesh.exits`) grant
+nothing in a pod CVM, whose egress needs none.
+
 ## Sandbox identity
 
 Hardware attestation binds a key to a guest, and the guest here is the whole
@@ -212,6 +273,10 @@ configuration's `nodeCIDRs`; an empty bound refuses every token). CDS then
 verifies the token and asks `/digests/{id}`, where every image reported must be
 in the allowlist — the operator policy of workload
 entries CDS serves and every node enforces — and an empty answer is refused.
+
+The inventory client retires its idle connection pool when the node-pin
+generation changes. New callbacks use the current pins without resetting the
+client’s own certificate or renewal state.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),

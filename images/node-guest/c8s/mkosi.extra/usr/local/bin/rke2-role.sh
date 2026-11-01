@@ -1,5 +1,5 @@
 #!/bin/bash
-# The image is identical for both roles. Only a launch document signed by
+# The image is identical for every role. Only a launch document signed by
 # this boot's measured operator key may select services and join credentials.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ mounted=0
 complete=0
 cleanup() {
     if [ "$complete" != 1 ]; then
-        rm -f /run/confos/role-server /run/confos/role-agent
+        rm -f /run/confos/role-server /run/confos/role-agent /run/confos/role-pod
     fi
     if [ "$mounted" = 1 ]; then umount "$mount_dir"; fi
     rmdir "$mount_dir"

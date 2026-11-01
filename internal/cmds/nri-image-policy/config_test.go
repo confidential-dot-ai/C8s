@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -617,5 +618,40 @@ func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
 	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
 		t.Fatal("an unreadable CDS pin was accepted")
+	}
+}
+
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+	cfg := validConfig()
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	err := cfg.Validate()
+	if !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	for _, key := range []string{"measure.rtmr3", "allowlist.pull.measure_policies"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Fatalf("error %q does not name %s", err, key)
+		}
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app"}
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one writer: %v", err)
+	}
+	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
+		t.Fatalf("journal elsewhere than its readers look: %v", err)
 	}
 }

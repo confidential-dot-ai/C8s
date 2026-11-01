@@ -4,6 +4,12 @@ A CLI tool for obtaining TLS certificates through the CDS (Certificate Distribut
 
 Designed to run as a native sidecar alongside the credential consumers that read that volume.
 
+A Pod CVM instead uses `internal/cmds/getcert.RunGuest` from its measured guest
+broker. It reuses generation validation and renewal with fresh Pod claims;
+there is no get-cert container or node-service socket in that Pod. See
+[Pod CVM issuance](../../docs/armtls.md#pod-cvm-issuance) and
+[operator setup](../../docs/operator.md).
+
 ## Usage
 
 These pod examples use the node attestation socket mounted at

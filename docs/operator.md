@@ -145,11 +145,11 @@ volume opens once its consumer's entry and its key are both back
 
 ## Authenticated launch configuration
 
-A measured node runs one image for both roles and takes its configuration from a
-signed `c8s-launch/v2` document on the disk it boots with: the document fixes
-the role (`server` or `agent`), the node's identity in the cluster, the RKE2
-join tokens, the CDS its clients trust, and the image measurements the boot
-must report, and staging authenticates its bytes before parsing them. Nothing
+A measured guest takes its role and configuration from a signed
+`c8s-launch/v2` document on the disk it boots with: the document fixes
+the role (`server`, `agent` or `pod`), the guest's identity in the cluster,
+role-specific RKE2 join tokens, the CDS its clients trust, and the image
+measurements the boot must report, and staging authenticates its bytes before parsing them. Nothing
 an unmeasured host says at boot decides any of it. Every field, the signature,
 and the boot-time check order are
 [launch-configuration.md](launch-configuration.md).
@@ -174,6 +174,106 @@ mode at boot, while the chart value `router.publicTLS.mode` stays `cds`. The
 join tokens are RKE2 enrollment credentials, not C8s identity: the mesh wraps
 neither port `9345` nor `6443`, so a token holder with network access can enroll
 with no C8s evidence.
+
+### Pod CVM
+
+A pod CVM boots the same image as one pod, with no RKE2. It is TDX only: the pod
+role measures each container image it starts into RTMR[3], and SNP has no
+register a guest can extend after launch, so an SNP image manifest is refused at
+signing and in the guest.
+
+```sh
+c8s node launch-config new-pod --out pod1 --cluster-id demo \
+  --image-manifest manifest.json \
+  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json \
+  --mesh-peer 10.0.0.20:8080 \
+  --pod-manifest pod.json --workloads workloads.json
+```
+
+This writes a `role: pod` document signed by a separate pod launch key
+(`pod1/pod.key`, or an existing key passed with `--launch-key`), recorded in
+`podOperatorPublicKey`; the initrd binds its exact bytes, and workload
+measurements extend that key's seed. `--server-public-key` is the server's
+public PEM, recorded in `server.operatorPublicKey`; the two launch keys must
+differ. `--server-address` is the server's reachable IPv4 address. These fields
+identify the cluster/server; CDS uses the separate `--cds-address` endpoint
+and the exact image/launch-file policy in `--cds-image-policy-file`.
+The signed document carries both CDS values, no RKE2 join credentials, agent
+keys or `router` block. Re-signing it after an edit requires the Pod launch key.
+
+`workloads.json` must hold a `c8s.allowlist/v1` document with at least one
+workload. It is the base allowlist, in force before CDS responds; the plugin
+also admits entries fetched from the authenticated CDS. A failed initial pull
+leaves the base in force while polling continues, and a failed refresh keeps the
+last applied CDS policy. Neither source gets a node-TCB exemption. The pod role
+measures started images only and refuses a baked configuration that also sets
+`allowlist.pull.measure_policies`.
+
+The pod manifest requires `metadata.uid` and a canonical SHA-256 digest on every
+init and application image. Volumes
+must be `emptyDir` with `medium: Memory`, so pod state stays in VM memory
+whether or not a scratch disk is attached. Host namespaces, `hostPort`,
+`hostIP` and privileged containers are refused. The image runs
+containerd and a standalone kubelet (`podcvm-containerd`, `podcvm-kubelet`)
+instead of RKE2 and does not require the scratch disk. The kubelet listens on
+loopback only, and sets `makeIPTablesUtilChains: false`: the admission plugin
+owns the guest's packet rules, and a kubelet utility chain would make it refuse
+the pod. `c8s pod-status` serves guest status over armTLS on `:8443`. The
+measurement journal stays inside the guest: pod containers get no node
+credential-client mounts or sandbox-token service.
+
+Every pod gets the image's measured mesh endpoint as its first native init
+sidecar; do not supply a platform sidecar in the manifest. The guest keeps the
+baked mesh policy with the endpoint role alone and no exempt namespace, so the
+privilege floor covers every container, and admission requires that policy and
+verified packet capture. A guest-owned broker obtains the endpoint's TLS
+credentials from CDS with fresh evidence over the complete admission history;
+only the endpoint mounts the broker's credential volume, read-only, and
+applications get neither those keys nor the guest's evidence services. The
+endpoint becomes ready only once it holds valid credentials, so base-policy
+applications can start while CDS is down but cannot open mesh connections.
+
+CDS must explicitly authorize the Pod image and launch key. Pass
+`--pod-image-policy-file pods.json` to `c8s cds config new`; the file names
+TDX MRTD, RTMR1, RTMR2 and the exact Pod public-key PEM bytes. Its contents
+become the optional `podImagePolicy` in the measured CDS configuration.
+Changing that policy requires generating a new CDS launch file and pin, then
+relaunching CDS and updating clients' trusted pin. Node launch documents and
+Helm values cannot grant Pod issuance authority. Omitting `podImagePolicy`
+disables Pod issuance; an explicitly supplied policy file must be nonempty
+and valid. Pod keys must differ from node and operator authorities.
+The CDS workload policy must also list every measured digest, including the
+mesh endpoint. A mesh-only bootstrap snapshot can get an unnamed membership
+certificate; a workload name requires a unique match of the complete retained
+history, including exited init containers. This profile does not authorize
+secret release ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
+
+Repeat `--mesh-peer` for each known destination's exact IPv4 address and TCP
+port; an empty list permits no outbound peer. A signed peer tuple always
+requires mesh authentication and never falls back to plaintext; a different
+port on the same IP is an ordinary destination. To expose an application,
+declare its TCP `containerPort` in the signed manifest and map the provider's
+external endpoint to that guest port; traffic is mesh-authenticated before it
+reaches the application. Do not map to the internal capture listener or add a
+`hostPort`. Dynamic endpoint discovery is not provided. Other IPv4 TCP/UDP
+traffic leaves with the CVM's source address; guest-local services and IPv4
+link-local addresses stay blocked for applications and the endpoint alike.
+
+The standalone kubelet uses `/run/systemd/resolve/resolv.conf`, the guest's
+upstream resolvers, not the guest-local stub or a cluster DNS address; pod
+preparation sets `dnsPolicy: Default` and drops `dnsConfig` overrides. Before
+containerd starts, preparation stages the baked CNI template under
+`/run/c8s-pod/cni` with bridge and veth MTU set to the smallest of 1500, the
+default-route interface MTU and any explicit default-route MTU cap. The route
+must be one live IPv4 main-table unicast default, or preparation stops. This is
+a startup snapshot, not path-MTU discovery: smaller bottlenecks beyond the guest
+still need working PMTUD.
+
+Use HTTP probes of the application's own path and port; the guest rewrites them
+through the endpoint's health listener. TCP and gRPC probes, HTTP probes with a
+custom host or headers, HTTPS probes and HTTP lifecycle hooks are refused, and a
+locked image refuses exec probes in the runtime wrapper.
 
 ## Operator credentials
 

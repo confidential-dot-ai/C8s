@@ -37,6 +37,39 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 }
 
+func TestCredentialMountRefusalBlocksIdentityUntilSameNameAdmission(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ready=%v", ready), func(t *testing.T) {
+			base := anyAllowlist(map[string]string{pushDigestA: "app"})
+			p, _ := newCachedPlugin(&config{Allowlist: allowlistConfig{Base: base}, Policy: policyConfig{Mode: ModeFailClosed}}, base)
+			p.inventory = newAdmissionInventory(t.TempDir())
+			if ready {
+				p.SetReady()
+			}
+			pod := makePod("default", "pod")
+			ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestA)
+			ctr.User = &api.User{Uid: workloadclaims.CredentialsUID}
+			_, _, err := p.CreateContainer(t.Context(), pod, ctr)
+			if err == nil || !strings.Contains(err.Error(), "would reach CDS unpinned") {
+				t.Fatalf("expected credential-mount refusal: %v", err)
+			}
+			if refusal := p.inventory.denial(pod.Id); refusal == nil {
+				t.Fatal("credential-mount failure left sandbox identity available")
+			}
+			ctr.User.Uid = testWorkloadUID
+			if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
+				t.Fatal(err)
+			}
+			if refusal := p.inventory.denial(pod.Id); refusal != nil {
+				t.Fatalf("same-name safe retry did not clear credential-mount refusal: %v", refusal)
+			}
+		})
+	}
+}
+
 // fakeContainerd is the containerdOps a test drives. An unset hook panics, so a
 // test that reaches containerd without arranging for it names the call it made.
 type fakeContainerd struct {

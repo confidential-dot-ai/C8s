@@ -101,6 +101,13 @@ func clusterCDS(opts BundleOptions, operatorPub string, peerPolicy []byte) (conf
 			return nil, nil, fmt.Errorf("--tenant-workloads: %w", err)
 		}
 	}
+	var podPolicy []byte
+	if opts.PodImagePolicyPath != "" {
+		podPolicy, err = readBounded(opts.PodImagePolicyPath, MaxDocumentSize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--pod-image-policy-file: %w", err)
+		}
+	}
 	operatorKeys, err := operatorauth.ParseKeyBundle([]byte(operatorPub))
 	if err != nil {
 		return nil, nil, fmt.Errorf("the bundle's operator public key: %w", err)
@@ -111,6 +118,7 @@ func clusterCDS(opts BundleOptions, operatorPub string, peerPolicy []byte) (conf
 		ComponentSeed:   components,
 		TenantWorkloads: tenant,
 		Nodes:           peerPolicy,
+		PodImagePolicy:  podPolicy,
 		NodeCIDRs:       opts.CDS.NodeCIDRs,
 		ClusterCIDRs:    clusterRanges,
 		LeafDNSNames:    []string{opts.TLSSAN},
