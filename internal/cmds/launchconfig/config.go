@@ -86,7 +86,7 @@ type roleRules struct {
 	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
 	agentKeys    presence // agentOperatorPublicKeys
 	podKey       presence // podOperatorPublicKey
-	pod          presence // the pod section, which then requires workloads
+	pod          presence // whether a static Pod may be supplied at launch
 	// measuresWorkloads requires a platform with a runtime register: the
 	// role measures what it runs after launch, and without the register no
 	// evidence could carry those measurements.
@@ -132,7 +132,7 @@ var roles = map[Role]roleRules{
 		serverToken:       forbidden,
 		agentKeys:         forbidden,
 		podKey:            required,
-		pod:               required,
+		pod:               optional,
 		measuresWorkloads: true,
 		namesServer:       true,
 		stagedAddress:     true,
@@ -178,7 +178,7 @@ type Document struct {
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 
-	// Pod is the one static pod a pod-role boot runs; forbidden otherwise.
+	// Pod is optional for generic Pod boots awaiting assignment; forbidden for other roles.
 	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
 
 	serverTokenPresent bool
@@ -603,14 +603,12 @@ func (d *Document) validate() error {
 		}
 	}
 	switch rules.pod {
-	case required:
+	case optional:
 		if d.Pod == nil {
-			return fmt.Errorf("%s requires a pod section", d.Role)
-		}
-		if d.Workloads == "" {
-			return fmt.Errorf("%s requires workloads as its base allowlist", d.Role)
-		}
-		if err := d.Pod.validate(); err != nil {
+			if d.Workloads != "" {
+				return fmt.Errorf("generic pod boot must not carry workloads")
+			}
+		} else if err := d.Pod.validate(); err != nil {
 			return err
 		}
 	case forbidden:
@@ -622,12 +620,9 @@ func (d *Document) validate() error {
 		if !json.Valid([]byte(d.Workloads)) {
 			return fmt.Errorf("workloads must contain one valid JSON document")
 		}
-		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
+		_, err := allowlist.ParseJSON([]byte(d.Workloads))
 		if err != nil {
 			return fmt.Errorf("workloads: %w", err)
-		}
-		if rules.pod == required && len(workloads.Workloads) == 0 {
-			return fmt.Errorf("%s requires workloads with at least one workload as its cold-boot base", d.Role)
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
