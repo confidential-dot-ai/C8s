@@ -291,8 +291,17 @@ func holdsLeaf(ctx context.Context, name string) error {
 	}
 	found, err := poll(observe, func() (bool, error) {
 		l, err := w.podLeaf(p)
-		if err != nil || l == nil {
+		if err != nil {
 			return false, err
+		}
+		if l == nil {
+			// Conformance pods sleep, so a terminated one here is not a finished
+			// workload but a killed one — its image de-listed by the node's
+			// recheck, say — and no leaf will appear. Fail with the cause.
+			if reason := w.terminated(p); reason != "" {
+				return false, fmt.Errorf("%q holds no leaf: %s; the node's recheck may have denied it: %s", name, reason, tail(w.certLog(p), 5))
+			}
+			return false, nil
 		}
 		p.leaf = l
 		return true, nil
@@ -367,6 +376,13 @@ func renewsLeaf(ctx context.Context, name string) error {
 		if rs := refusals(w.certLog(p), failedRenewal); len(rs) > refusedBefore {
 			p.refusal = rs[len(rs)-1]
 			return true, nil
+		}
+		// A renewal runs in the sidecar, which stops with the pod. If the pod
+		// has been terminated — its image de-listed and killed by the node's
+		// recheck, say — nothing will renew, so fail now with the cause rather
+		// than wait out the window on a dead requester.
+		if reason := w.terminated(p); reason != "" {
+			return false, fmt.Errorf("%q cannot renew: %s; the node's recheck may have denied it (its image left the applied allowlist): %s", name, reason, tail(w.certLog(p), 5))
 		}
 		return false, nil
 	})

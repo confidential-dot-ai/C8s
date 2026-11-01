@@ -360,6 +360,30 @@ func (w *world) statuses(p *pod) []containerStatus {
 	return st
 }
 
+// terminated reports that the pod is no longer running. The admission
+// enforcement recheck kills a running container whose image has left the
+// applied allowlist, after which a restartPolicy:Never pod ends and its native
+// sidecars (get-cert included) stop. It returns the reason when so, empty while
+// the pod is still Pending/Running, and empty when the phase cannot be read (a
+// transient get is not a termination). A poll waiting on the sidecar uses it to
+// fail with the cause rather than time out on a dead pod.
+func (w *world) terminated(p *pod) string {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.phase}")
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") {
+			return "the pod is gone"
+		}
+		return ""
+	}
+	switch strings.TrimSpace(out) {
+	case "Failed":
+		return "the pod reached phase Failed"
+	case "Succeeded":
+		return "the pod reached phase Succeeded"
+	}
+	return ""
+}
+
 // created is the id of a created container, or empty.
 func created(st []containerStatus) string {
 	for _, s := range st {
