@@ -40,7 +40,7 @@ func TestStaticAndGenericLaunchKeepIndependentCDSTrust(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.CDS != cfg.cds || doc.CDS.Address != "cds.example.test:8443" {
+		if doc.CDS != cfg.cds || doc.CDS.Address != "cds.example.test:8443" || doc.CDS.PinFloor != 0 {
 			t.Fatal("signed launch lost explicit DNS-addressed CDS trust")
 		}
 		pins, err := refvalues.Parse([]byte(doc.CDS.Measurements))
@@ -54,11 +54,20 @@ func TestStaticAndGenericLaunchKeepIndependentCDSTrust(t *testing.T) {
 }
 
 func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {
-	for _, kind := range []string{"address", "policy"} {
+	for _, kind := range []string{"address", "policy", "floor"} {
 		t.Run(kind, func(t *testing.T) {
 			r, cloud, _, pod := poolFixture(t)
 			r.cfg.MaxPods = 1
 			cloud.holdDeletion = true
+			var nextDecree string
+			if kind == "floor" {
+				key, _, policy := providerCDSDecreeFixture(t, r.cfg)
+				r.cfg.CDSPinDecreeFile, _ = writeProviderPinDecree(t, key, r.cfg.ClusterID, policy, 7)
+				nextDecree, _ = writeProviderPinDecree(t, key, r.cfg.ClusterID, policy, 8)
+				if err := r.cfg.loadTrust(); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := r.maintainPools(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -74,11 +83,16 @@ func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {
 			next := *r.cfg
 			if kind == "address" {
 				next.CDSAddress = "replacement-cds.example.test:9443"
+			} else if kind == "floor" {
+				next.CDSPinDecreeFile = nextDecree
 			} else if err := os.WriteFile(next.CDSImagePolicyFile, providerCDSPolicy(t, []byte("schemaVersion: c8s-cds/v1\nclusterID: replacement\n")), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := next.loadTrust(); err != nil {
 				t.Fatal(err)
+			}
+			if kind == "floor" && (next.cds.Measurements != r.cfg.cds.Measurements || next.cds.PinFloor != r.cfg.cds.PinFloor+1) {
+				t.Fatal("floor-only rotation changed the pin set or lost the signed version")
 			}
 			r.cfg = &next
 			if r.compatiblePool(before.record) {

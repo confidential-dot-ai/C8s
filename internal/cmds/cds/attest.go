@@ -36,21 +36,21 @@ import (
 //
 // THREAT MODEL: the node image check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. An empty Images set admits nobody.
+// they choose. A set that names no node image admits nobody.
 type AttestHandler struct {
-	Challenges        *attestation.ChallengeStore
+	Challenges        attestation.Challenges
 	AttestationClient remote.Client
-	MeshCA            *issuer.MeshCA
+	MeshCA            meshCA
 	CertTTL           time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Images are the node images permitted to obtain a signed leaf, each
+	// NodeImages are the node images permitted to obtain a signed leaf, each
 	// matched as one entry: its launch digest with the registers measured from
-	// the same build. Empty admits nobody.
-	Images []remote.ImagePin
+	// the same build. Read per request, so the set in force decides.
+	NodeImages armtls.PinSource
 
 	// PodImages grants only quote-bound Pod mesh issuance. It is never used
 	// for node callbacks, operator authorization, or node credential release.
@@ -306,7 +306,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
-	signing := h.MeshCA.Current()
+	signing, issuing := h.MeshCA.Current()
+	if !issuing {
+		// A replica that stopped serving between the gate and the signature.
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		return
+	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
@@ -362,13 +367,14 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }
 
-// matchPinnedNodeImage holds the verified evidence to one pinned node image.
-// The platform and extension list the caller claims are judged against it.
+// matchPinnedNodeImage holds the verified evidence to one node image this CDS
+// certifies, judging the platform and extensions the caller claims.
 func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
-	if len(h.Images) == 0 {
-		return errors.New("the configuration pins no node image")
+	images := h.NodeImages.Current().Images
+	if len(images) == 0 {
+		return errors.New("this CDS certifies no node image")
 	}
-	return armtls.EnforceImages(verified, h.Images, claimedPlatform, claimedExtensions)
+	return armtls.EnforceImages(verified, images, claimedPlatform, claimedExtensions)
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,

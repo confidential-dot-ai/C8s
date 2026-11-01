@@ -85,7 +85,7 @@ func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 
 func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.T) {
 	root := preparePodRoot(t)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    measure_policies: false", 1)))
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
 	// A server boot earlier must not leave its inputs to the pod.
 	writeInput(t, root, PublicDir+"/allowlist-seed.json", []byte(seed))
 	doc := podDocument(t)
@@ -112,6 +112,9 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 	pull, ok := a["pull"].(map[string]any)
 	if !ok || pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
 		t.Fatalf("pod CDS pull = %v", pull)
+	}
+	if floor := publishedPinFloor(t, pull); floor != doc.CDS.PinFloor {
+		t.Fatalf("pod CDS pin floor = %d, want signed floor %d", floor, doc.CDS.PinFloor)
 	}
 	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
 		if _, exists := pull[legacy]; exists {

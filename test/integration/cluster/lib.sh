@@ -174,10 +174,30 @@ cds_stop() {
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest
-# under any command line and mounts, the body of PUT /allowlist/workloads/<name>.
+# under any command line and mounts, one entry of the allowlist document.
 any_workload() {
     printf '{"label":"%s","initContainers":[],"containers":[{"digest":"%s","image":"%s","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}' \
         "$2" "$1" "$2"
+}
+
+# allowlist_document <name> [<entry-file>]: print the served allowlist with the
+# entry in the file put under name, or with name removed when no file is given.
+# A write replaces the whole document, so every write starts here.
+allowlist_document() {
+    local name="$1" entry="${2:-}"
+    cds_get /allowlist "$WORKDIR/allowlist-live.json" >/dev/null
+    if [ -n "$entry" ]; then
+        jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' "$WORKDIR/allowlist-live.json"
+    else
+        jq -c --arg n "$name" 'del(.workloads[$n])' "$WORKDIR/allowlist-live.json"
+    fi
+}
+
+# allowlist_set <name> [<entry-file>] -> http code: write the document
+# allowlist_document prints, signed with the operator key.
+allowlist_set() {
+    allowlist_document "$@" > "$WORKDIR/allowlist-write.json"
+    cds_write PUT /allowlist "$WORKDIR/allowlist-write.json"
 }
 
 # cds_write <method> <path> <body-file> -> http code; signed with the operator key.

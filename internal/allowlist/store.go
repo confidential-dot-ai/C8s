@@ -2,13 +2,16 @@ package allowlist
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -27,10 +30,14 @@ import (
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
+	// uri names the database for Restore, which opens its own connection.
+	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
+	// Kept current by every write (digest.go).
+	dig *contentDigest
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -38,10 +45,6 @@ const (
 	roleInit = "init"
 	roleMain = "main"
 )
-
-// ErrInvalidWorkload marks a workload rejected by allowlist validation (a
-// malformed name or container), so the handler answers 422 rather than 500.
-var ErrInvalidWorkload = errors.New("invalid workload entry")
 
 const initSQL = `
 CREATE TABLE IF NOT EXISTS allowlist_version (
@@ -69,38 +72,59 @@ CREATE TABLE IF NOT EXISTS route_manifest (
 `
 
 // OpenStore opens (or creates) a SQLite-backed allowlist store at the given path.
-func OpenStore(path string) (Store, error) {
-	_, err := os.Stat(path)
-	isNew := os.IsNotExist(err)
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return Store{}, fmt.Errorf("open allowlist db: %w", err)
-	}
-
-	if isNew {
+func OpenStore(path string) (*Store, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
-
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
-	}
-
-	return Store{db: db}, nil
+	return open(path)
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
-func OpenInMemory() (Store, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+func OpenInMemory() (*Store, error) {
+	return open(memdbURI("store"))
+}
+
+// open opens the database uri names and creates the tables it lacks.
+func open(uri string) (*Store, error) {
+	dig := &contentDigest{}
+	db, err := dig.openDB(uri)
 	if err != nil {
-		return Store{}, err
+		return nil, fmt.Errorf("open allowlist db: %w", err)
+	}
+	if err := requireSpentTokenWindow(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open allowlist db: %w", err)
 	}
 	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
-		return Store{}, err
+		return nil, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	return Store{db: db}, nil
+	acc, err := scanDigest(context.Background(), db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("allowlist content digest: %w", err)
+	}
+	dig.startsFrom(acc)
+	return &Store{
+		db:  db,
+		uri: uri,
+		dig: dig,
+	}, nil
+}
+
+// requireSpentTokenWindow refuses a database whose used_token table predates
+// the validity window every spent token records.
+func requireSpentTokenWindow(db *sql.DB) error {
+	var columns, window int
+	if err := db.QueryRow(`
+		SELECT COUNT(*), COUNT(CASE WHEN name IN ('exp_unix', 'iat_unix') THEN 1 END)
+		FROM pragma_table_info('used_token')`).Scan(&columns, &window); err != nil {
+		return err
+	}
+	if columns > 0 && window != 2 {
+		return errors.New("spent operator tokens have no validity window: delete the store and apply the allowlist again")
+	}
+	return nil
 }
 
 // Close closes the underlying database connection.
@@ -198,12 +222,17 @@ func (s *Store) Version() (string, error) {
 	return version, nil
 }
 
-// commitTx journals the document tx leaves (see publishTx), commits, and
+// commitTx journals the document tx leaves at the command's time (see
+// publishTx), stores sig as that document's operator signature, commits, and
 // records the mutation for snapshot-cache invalidation. Every write path goes
 // through it. Callers must hold s.mu.
-func (s *Store) commitTx(tx *sql.Tx) error {
-	if err := publishTx(tx); err != nil {
+func (s *Store) commitTx(tx *sql.Tx, sig documentSignature, at time.Time) error {
+	journaled, err := publishTx(tx, at)
+	if err != nil {
 		return fmt.Errorf("journal allowlist: %w", err)
+	}
+	if err := sig.storeTx(tx, journaled); err != nil {
+		return fmt.Errorf("sign allowlist: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -230,17 +259,44 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present
+// RaiseVersion sets the version to the larger of the next version and floor,
+// and returns it: a cluster passing its start time in Unix ms stays above
+// every version an earlier life of it served. Nothing is journaled.
+func (s *Store) RaiseVersion(floor int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var served int64
+	if err := tx.QueryRow("SELECT CAST(version AS INTEGER) FROM allowlist_version").Scan(&served); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	raised := strconv.FormatInt(max(served+1, floor), 10)
+	if _, err := tx.Exec("UPDATE allowlist_version SET version = ?", raised); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.gen++
+	return raised, nil
+}
+
+// seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
 // everything else and idempotent: an existing entry is left untouched and the
 // version is bumped at most once, only when the set changed, so a re-seed that
 // changes nothing does not force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
+func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at time.Time) (added, retired int, err error) {
 	if len(workloads) == 0 {
 		return 0, 0, nil
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -261,7 +317,7 @@ func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added
 			return 0, 0, err
 		}
 	}
-	return added, retired, s.commitTx(tx)
+	return added, retired, s.commitTx(tx, documentSignature{}, at)
 }
 
 // retireReplacedTx deletes every stored entry seed replaces and returns how
@@ -346,71 +402,34 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 	return added, nil
 }
 
-// PutWorkload upserts one named workload entry and rebuilds its digest index in
-// a single transaction, then bumps the version. The name and containers are
-// validated against the frozen allowlist rules; a rejection wraps
-// ErrInvalidWorkload.
-func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	norm, err := normalizeEntry(name, w)
-	if err != nil {
-		return err
-	}
+// ErrVersionMismatch refuses a conditional whole-document write: the
+// allowlist is no longer at the version the write names.
+var ErrVersionMismatch = errors.New("the allowlist changed since it was read (If-Match names an older version)")
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if err := putWorkloadTx(tx, name, norm); err != nil {
-		return err
-	}
-	if err := bumpVersionTx(tx); err != nil {
-		return err
-	}
-	return s.commitTx(tx)
+// OperatorWrite is what an operator's whole-document write carries beside the
+// document itself.
+type OperatorWrite struct {
+	// Version, when set, is the write's precondition: the document is
+	// replaced only while the store is at that version.
+	Version string `json:"version,omitempty"`
+	// Signature, when set, is the write token whose body hash binds the
+	// document's canonical bytes, stored as that document's signature.
+	Signature string `json:"signature,omitempty"`
 }
 
-// DeleteWorkload removes one named entry and its index rows, bumping the version
-// only when the entry existed. Returns false if absent.
-func (s *Store) DeleteWorkload(name string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
-	res, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if n == 0 {
-		return false, nil
-	}
-	if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
-		return false, err
-	}
-	if err := bumpVersionTx(tx); err != nil {
-		return false, err
-	}
-	return true, s.commitTx(tx)
-}
-
-// ReplaceAll atomically swaps the entire allowlist for the given document and
-// bumps the version. An empty document clears everything.
-func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
+// replaceAll atomically swaps the entire allowlist for the given document and
+// bumps the version. An empty document clears everything. A write whose
+// Version the store is no longer at returns ErrVersionMismatch and changes
+// nothing; a write with a Signature stores it with the document, so a signed
+// write never serves its document unsigned.
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist, write OperatorWrite, at time.Time) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}
+	signed, err := al.Canonical()
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -421,13 +440,40 @@ func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
 	}
 	defer tx.Rollback()
 
+	if err := requireVersionTx(tx, write.Version); err != nil {
+		return err
+	}
 	if err := replaceContentsTx(tx, al); err != nil {
 		return err
 	}
 	if err := bumpVersionTx(tx); err != nil {
 		return err
 	}
-	return s.commitTx(tx)
+	return s.commitTx(
+		tx,
+		documentSignature{
+			token:    write.Signature,
+			document: signed,
+		},
+		at,
+	)
+}
+
+// requireVersionTx returns ErrVersionMismatch unless the store is at version,
+// read in the transaction that writes; an empty version writes
+// unconditionally.
+func requireVersionTx(tx *sql.Tx, version string) error {
+	if version == "" {
+		return nil
+	}
+	var stored string
+	if err := tx.QueryRow("SELECT version FROM allowlist_version LIMIT 1").Scan(&stored); err != nil {
+		return fmt.Errorf("read allowlist version: %w", err)
+	}
+	if stored != version {
+		return ErrVersionMismatch
+	}
+	return nil
 }
 
 // replaceContentsTx clears every entry and reloads them from al, without
@@ -456,21 +502,6 @@ func replaceContentsTx(tx *sql.Tx, al *pkgallowlist.Allowlist) error {
 	return nil
 }
 
-// putWorkloadTx upserts one entry's canonical JSON and rebuilds its index rows.
-func putWorkloadTx(tx *sql.Tx, name string, w pkgallowlist.Workload) error {
-	entryJSON, err := json.Marshal(w)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec("INSERT OR REPLACE INTO workload_entry (name, entry_json) VALUES (?, ?)", name, string(entryJSON)); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
-		return err
-	}
-	return indexWorkloadTx(tx, name, w)
-}
-
 // indexWorkloadTx writes one (digest, name, role) index row per container. A
 // digest repeated within a role (same image, different argv) collapses to one
 // row via the primary key.
@@ -489,22 +520,4 @@ func indexWorkloadTx(tx *sql.Tx, name string, w pkgallowlist.Workload) error {
 		}
 	}
 	return nil
-}
-
-// normalizeEntry validates name and w through the allowlist validator and
-// returns the canonical entry to store. A rejection wraps ErrInvalidWorkload.
-func normalizeEntry(name string, w pkgallowlist.Workload) (pkgallowlist.Workload, error) {
-	probe := &pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: map[string]pkgallowlist.Workload{name: w},
-	}
-	canon, err := probe.Canonical()
-	if err != nil {
-		return pkgallowlist.Workload{}, fmt.Errorf("%w: %v", ErrInvalidWorkload, err)
-	}
-	parsed, err := pkgallowlist.ParseJSON(canon)
-	if err != nil {
-		return pkgallowlist.Workload{}, fmt.Errorf("%w: %v", ErrInvalidWorkload, err)
-	}
-	return parsed.Workloads[name], nil
 }

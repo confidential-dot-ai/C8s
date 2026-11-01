@@ -148,7 +148,8 @@ func TestCloudAcceptanceCDSSeededBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, _, err = store.SeedWorkloads(seed.Workloads); err != nil {
+	writes := store.Local()
+	if _, _, err = writes.SeedWorkloads(seed.Workloads); err != nil {
 		t.Fatal(err)
 	}
 	export := func() []byte {
@@ -173,14 +174,29 @@ func TestCloudAcceptanceCDSSeededBaseline(t *testing.T) {
 		t.Fatalf("measured component baseline was not preserved: %v", err)
 	}
 	added, _ := pkgallowlist.ParseJSON(application)
-	if err = store.PutWorkload("cloud-a", added.Workloads["cloud-a"]); err != nil {
+	// The store commits whole documents; mutate its actual current policy so
+	// the comparison below still detects loss or drift of a seeded entry.
+	current, version, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Workloads["cloud-a"] = added.Workloads["cloud-a"]
+	if err = writes.ReplaceAll(current, storeallowlist.OperatorWrite{Version: version}); err != nil {
 		t.Fatal(err)
 	}
 	if err = r.cdsPolicyRequire("add-after", after, export()); err != nil {
 		t.Fatal(err)
 	}
-	if deleted, deleteErr := store.DeleteWorkload("cloud-a"); deleteErr != nil || !deleted {
-		t.Fatalf("delete: %v", deleteErr)
+	current, version, err = store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := current.Workloads["cloud-a"]; !exists {
+		t.Fatal("application entry disappeared before deletion")
+	}
+	delete(current.Workloads, "cloud-a")
+	if err = writes.ReplaceAll(current, storeallowlist.OperatorWrite{Version: version}); err != nil {
+		t.Fatalf("delete: %v", err)
 	}
 	if err = r.cdsPolicyRequire("delete-after", before, export()); err != nil {
 		t.Fatal(err)

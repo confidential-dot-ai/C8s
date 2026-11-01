@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -32,6 +34,7 @@ type PodBundleOptions struct {
 	ServerPublicKeyPath string
 	CDSAddress          string
 	CDSImagePolicyPath  string
+	CDSPinDecreePath    string
 	PodManifest         string
 	WorkloadsPath       string
 	MeshPeers           []string
@@ -71,6 +74,20 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	cds := CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy)}
 	if err := (&Document{CDS: cds}).validateCDS(); err != nil {
 		return err
+	}
+	if opts.CDSPinDecreePath != "" {
+		pins, err := refvalues.Parse(cdsPolicy)
+		if err != nil {
+			return err
+		}
+		launchFile, err := cmdsutil.CDSLaunchFile(pins)
+		if err != nil {
+			return err
+		}
+		cds, err = CDSFromPinDecree(launchFile, opts.CDSPinDecreePath, opts.CDSAddress)
+		if err != nil {
+			return fmt.Errorf("--cds-pin-decree: %w", err)
+		}
 	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {

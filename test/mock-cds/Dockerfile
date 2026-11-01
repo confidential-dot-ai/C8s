@@ -6,6 +6,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY pkg/ ./pkg/
 COPY internal/attestation/ ./internal/attestation/
+COPY internal/httputil/ ./internal/httputil/
+COPY internal/readutil/ ./internal/readutil/
 COPY internal/strictjson/ ./internal/strictjson/
 COPY test/mock-cds/ ./test/mock-cds/
 RUN CGO_ENABLED=0 go build -C test/mock-cds -ldflags="-s -w" -o /mock-cds .

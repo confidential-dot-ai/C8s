@@ -25,8 +25,8 @@ import (
 )
 
 // SNP report layout (AMD SEV-SNP ABI): the fields the synthetic report
-// carries. The measurement is all zero — the mock's launch identity, which
-// the lane's CDS pin names.
+// carries. MEASUREMENT names the launch identity it reports, and a lane's
+// CDS or node pin names the same value.
 const (
 	snpReportSize     = 1184
 	reportDataOffset  = 0x50
@@ -51,9 +51,14 @@ func main() {
 		slog.Error("invalid HOST_DATA", "error", err)
 		os.Exit(1)
 	}
+	measurement, err := parseMeasurement(os.Getenv("MEASUREMENT"))
+	if err != nil {
+		slog.Error("invalid MEASUREMENT", "error", err)
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /attest", attestHandler(hostData))
+	mux.HandleFunc("POST /attest", attestHandler(measurement, hostData))
 	mux.HandleFunc("POST /verify", handleVerify)
 	mux.HandleFunc("GET /health", handleHealth)
 
@@ -64,9 +69,10 @@ func main() {
 	}
 }
 
-// attestHandler answers synthetic reports binding the requested REPORTDATA and
-// hostData, the launch binding a launcher commits.
-func attestHandler(hostData []byte) http.HandlerFunc {
+// attestHandler answers synthetic reports carrying the guest image's launch
+// measurement and the launch file its launcher committed, and binding the
+// requested REPORTDATA.
+func attestHandler(measurement, hostData []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req remote.AttestRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -84,6 +90,7 @@ func attestHandler(hostData []byte) http.HandlerFunc {
 		report[0] = 0x02    // report version 2
 		report[0x0A] = 0x03 // SMT-allowed policy
 		copy(report[reportDataOffset:reportDataOffset+reportDataSize], req.ReportData)
+		copy(report[measurementOffset:measurementOffset+measurementSize], measurement)
 		copy(report[hostDataOffset:hostDataOffset+hostDataSize], hostData)
 
 		evidence, _ := json.Marshal(map[string]string{
@@ -161,6 +168,23 @@ func parseHostData(value string) ([]byte, error) {
 	}
 	if len(raw) != hostDataSize {
 		return nil, fmt.Errorf("%q is %d bytes, want %d", value, len(raw), hostDataSize)
+	}
+	return raw, nil
+}
+
+// parseMeasurement decodes the hex launch measurement the environment names;
+// an empty value is the all-zero measurement. A value of the wrong width is
+// refused rather than padded: a pin naming it would name no guest.
+func parseMeasurement(value string) ([]byte, error) {
+	if value == "" {
+		return make([]byte, measurementSize), nil
+	}
+	raw, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not hex: %s", value, err)
+	}
+	if len(raw) != measurementSize {
+		return nil, fmt.Errorf("%q is %d bytes, want %d", value, len(raw), measurementSize)
 	}
 	return raw, nil
 }

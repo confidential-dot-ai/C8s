@@ -34,6 +34,9 @@ const (
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
 	ErrorCodeSecretStoreFull = "secret_store_full"
+	// ErrorCodeStateCapacity: the replicated state is near what a snapshot can
+	// hold, so writes that grow it are refused until it shrinks.
+	ErrorCodeStateCapacity = "state_capacity"
 	// ErrorCodeRoutesUnavailable: no route manifest is applied yet, so the
 	// automated ingress service refuses attested sessions (route policy A2).
 	// A retry succeeds after the operator writes a manifest and the router

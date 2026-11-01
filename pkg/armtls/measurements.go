@@ -29,6 +29,20 @@ func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 	}
 }
 
+var imageRegisters = map[teetypes.Family][]int{
+	teetypes.FamilySNP: {},
+	teetypes.FamilyTDX: {1, 2},
+}
+
+// ImageRegisters are the registers that identify a guest image beyond its
+// launch digest, and whether family measures a guest image at all. An SEV-SNP
+// launch digest covers the guest image itself; a TDX MRTD covers the firmware
+// and the guest measures into RTMR[1] and RTMR[2].
+func ImageRegisters(family teetypes.Family) ([]int, bool) {
+	registers, identified := imageRegisters[family]
+	return registers, identified
+}
+
 // EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every anchored
 // pin accepting any runtime extension that replays. It does not judge which
 // digests the peer measured: that is an external verifier's job (c8s verify

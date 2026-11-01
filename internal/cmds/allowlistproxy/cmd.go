@@ -21,7 +21,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -53,7 +52,7 @@ var (
 // cds is the CDS this proxy dials and the pins it holds it to.
 type cds struct {
 	url  string
-	pins remote.Policy
+	pins armtls.PinSource
 }
 
 // NewCmd returns the internal allowlist-proxy subcommand used by the router
@@ -102,7 +101,7 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 	if cfg.readHeaderTimeout <= 0 {
 		return fmt.Errorf("--read-header-timeout must be positive")
 	}
-	handler, err := newHandler(cfg, slog.Default())
+	handler, err := newHandler(ctx, cfg, slog.Default())
 	if err != nil {
 		return err
 	}
@@ -137,14 +136,14 @@ func listenAddress(host string, port int) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
-func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
+func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if cfg.requestTimeout <= 0 {
 		return nil, fmt.Errorf("--request-timeout must be positive")
 	}
-	resolved, err := cfg.resolveCDS()
+	resolved, err := cfg.resolveCDS(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +151,7 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
+	httpClient, err := armtls.NewRefreshingHTTPClient(resolved.pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
@@ -167,7 +166,7 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 // credentials-role container, they are the only source and a flag naming
 // another is refused (cmdsutil.ResolveCDSAddress, cmdsutil.ResolveCDSPins,
 // cmdsutil.RequireNodeVerifier).
-func (cfg config) resolveCDS() (cds, error) {
+func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
 	address, endpointFromNode, err := cmdsutil.ResolveCDSAddress(nodeAddressPath, cfg.cdsURL)
 	if err != nil {
 		return cds{}, err
@@ -188,7 +187,7 @@ func (cfg config) resolveCDS() (cds, error) {
 	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, nodeVerifier, cfg.attestationAPIURL); err != nil {
 		return cds{}, err
 	}
-	pins, _, err := cmdsutil.ResolveCDSPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
+	pins, _, err := cmdsutil.ResolveCDSPins(ctx, nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
 	if err != nil {
 		return cds{}, err
 	}

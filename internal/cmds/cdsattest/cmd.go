@@ -154,7 +154,7 @@ func run(ctx context.Context, cfg config) error {
 	defer stop()
 
 	bindings := NewBindings()
-	engine, err := newRoutingEngine(cfg, bindings, logger)
+	engine, err := newRoutingEngine(ctx, cfg, bindings, logger)
 	if err != nil {
 		return err
 	}

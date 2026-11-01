@@ -396,18 +396,21 @@ func TestAddRefusesShadowingLiveEntry(t *testing.T) {
 
 // --- upload ---
 
-func TestUploadProceedsWhenListFailsForDiff(t *testing.T) {
+// The upload is conditional on the version it read, so without that read it
+// does not write: an unconditional replace could overwrite a write it never
+// saw.
+func TestUploadRefusesWhenListFails(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
 	file := writeAllowlistFile(t, dir, coreImages())
 	url, methods := listFailingCDS(t)
 
 	_, _, err := runCmd("upload", file, "--url", url, "--insecure", "--operator-key", keyPath)
-	if err != nil {
-		t.Fatalf("upload: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "read the allowlist the upload replaces") {
+		t.Fatalf("upload without the live version: err = %v, want a refusal", err)
 	}
-	if !contains(*methods, http.MethodPut) {
-		t.Fatalf("expected a PUT despite the failing diff pre-fetch, saw %v", *methods)
+	if contains(*methods, http.MethodPut) {
+		t.Fatalf("wrote without the live version: %v", *methods)
 	}
 }
 

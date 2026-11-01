@@ -53,7 +53,7 @@ func TestNewSecretsStoreCarriesEachBound(t *testing.T) {
 		secretsMaxPaths:            3,
 		secretsMaxPathsPerWorkload: 2,
 		secretsMaxValueBytes:       8,
-	})
+	}).Local()
 	api, web := secrets.WorkloadHolder("api"), secrets.WorkloadHolder("web")
 
 	if _, _, err := s.PutIfAbsent(ctx, "/api/big", make([]byte, 9), api); err == nil {

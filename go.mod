@@ -19,6 +19,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-sev-guest v0.15.0
 	github.com/google/nftables v0.3.0
+	github.com/hashicorp/go-hclog v1.6.3
+	github.com/hashicorp/raft v1.8.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mdlayher/netlink v1.11.2
 	github.com/opencontainers/image-spec v1.1.1
@@ -99,6 +101,10 @@ require (
 	github.com/google/logger v1.1.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b // indirect
+	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
+	github.com/hashicorp/go-metrics v0.7.0 // indirect
+	github.com/hashicorp/go-msgpack/v2 v2.1.5 // indirect
+	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/knqyf263/go-plugin v0.9.0 // indirect

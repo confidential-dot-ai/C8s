@@ -36,7 +36,8 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
+	allowlistWrites := store.Local()
+	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	operatorDigest := componentTestDigests["image"]
@@ -59,7 +60,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 			}
 		}
 	}
-	if _, _, err := store.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
+	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	live, _, err := store.LoadAll()
@@ -181,10 +182,11 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, _, err := store.SeedWorkloads(old); err != nil {
+	allowlistWrites := store.Local()
+	if _, _, err := allowlistWrites.SeedWorkloads(old); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.SeedWorkloads(seed); err != nil {
+	if _, _, err := allowlistWrites.SeedWorkloads(seed); err != nil {
 		t.Fatal(err)
 	}
 	live, _, err := store.LoadAll()

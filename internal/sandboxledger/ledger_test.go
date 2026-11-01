@@ -5,16 +5,17 @@ import (
 	"time"
 )
 
-func testLedger(t *testing.T, ttl time.Duration, max int) (*Ledger, *time.Time) {
+// testLedger is a handle, the ledger it writes to, and a clock the test moves.
+func testLedger(t *testing.T, ttl time.Duration, max int) (*Handle, *Ledger, *time.Time) {
 	t.Helper()
 	clock := time.Unix(1_700_000_000, 0)
 	l := New(ttl, max)
 	l.now = func() time.Time { return clock }
-	return l, &clock
+	return l.Local(), l, &clock
 }
 
 func TestRecordFirstWriteWins(t *testing.T) {
-	l, _ := testLedger(t, time.Hour, 10)
+	l, _, _ := testLedger(t, time.Hour, 10)
 
 	if !l.Record("sandbox-1", "10.0.0.1") {
 		t.Fatal("first binding refused")
@@ -31,7 +32,7 @@ func TestRecordFirstWriteWins(t *testing.T) {
 // A workload renews on an interval and re-presents the same pair, so the same
 // host re-recording must refresh rather than conflict.
 func TestRecordSameHostRefreshes(t *testing.T) {
-	l, clock := testLedger(t, time.Hour, 10)
+	l, _, clock := testLedger(t, time.Hour, 10)
 	l.Record("sandbox-1", "10.0.0.1")
 
 	*clock = clock.Add(50 * time.Minute)
@@ -47,7 +48,7 @@ func TestRecordSameHostRefreshes(t *testing.T) {
 }
 
 func TestExpiredBindingIsReclaimable(t *testing.T) {
-	l, clock := testLedger(t, time.Hour, 10)
+	l, _, clock := testLedger(t, time.Hour, 10)
 	l.Record("sandbox-1", "10.0.0.1")
 
 	*clock = clock.Add(time.Hour + time.Second)
@@ -60,14 +61,14 @@ func TestExpiredBindingIsReclaimable(t *testing.T) {
 }
 
 func TestLookupUnknown(t *testing.T) {
-	l, _ := testLedger(t, time.Hour, 10)
+	l, _, _ := testLedger(t, time.Hour, 10)
 	if _, ok := l.Lookup("nope"); ok {
 		t.Fatal("unknown sandbox resolved")
 	}
 }
 
 func TestRecordRejectsEmpty(t *testing.T) {
-	l, _ := testLedger(t, time.Hour, 10)
+	l, _, _ := testLedger(t, time.Hour, 10)
 	if l.Record("", "10.0.0.1") || l.Record("sandbox-1", "") {
 		t.Fatal("an empty sandbox or host was bound")
 	}
@@ -76,7 +77,7 @@ func TestRecordRejectsEmpty(t *testing.T) {
 // The cap bounds a rogue inventory minting tokens for fabricated sandbox IDs.
 // Expired entries are reclaimed first, so ordinary churn does not hit it.
 func TestCapBoundsGrowth(t *testing.T) {
-	l, clock := testLedger(t, time.Hour, 2)
+	l, _, clock := testLedger(t, time.Hour, 2)
 	if !l.Record("a", "10.0.0.1") || !l.Record("b", "10.0.0.1") {
 		t.Fatal("bindings within the cap were refused")
 	}
@@ -94,29 +95,15 @@ func TestCapBoundsGrowth(t *testing.T) {
 	}
 }
 
-func TestLenEvictsExpired(t *testing.T) {
-	l, clock := testLedger(t, time.Hour, 10)
-	l.Record("a", "10.0.0.1")
-	l.Record("b", "10.0.0.1")
+func TestLenCountsLiveBindings(t *testing.T) {
+	h, l, clock := testLedger(t, time.Hour, 10)
+	h.Record("a", "10.0.0.1")
+	h.Record("b", "10.0.0.1")
 	if got := l.Len(); got != 2 {
 		t.Fatalf("Len = %d, want 2", got)
 	}
 	*clock = clock.Add(time.Hour + time.Second)
 	if got := l.Len(); got != 0 {
 		t.Fatalf("Len after expiry = %d, want 0", got)
-	}
-}
-
-func TestEvictionLoopStops(t *testing.T) {
-	l := New(time.Millisecond, 10)
-	l.Record("a", "10.0.0.1")
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() { l.EvictionLoop(done, time.Millisecond); close(stopped) }()
-	close(done)
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("EvictionLoop did not return when done closed")
 	}
 }

@@ -18,17 +18,19 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-func testMeshCA(t *testing.T) *issuer.MeshCA {
+// testMeshCA is the mesh CA a singleton holds.
+func testMeshCA(t *testing.T) ownCA {
 	t.Helper()
 	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatalf("mesh ca: %v", err)
 	}
-	return mesh
+	return ownCA{mesh}
 }
 
 func newStubRouter(t *testing.T) http.Handler {
@@ -42,16 +44,20 @@ func newStubRouter(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("ca: %v", err)
 	}
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
-		Routes:           routeHandler{Store: &store, MeshCA: mesh.Current().CA.Cert},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
+		Routes:           routeHandler{Allowlist: store.Local()},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -63,7 +69,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	// Burst of 1, so the second request from the same source IP is rejected.
 	rl, err := issuer.NewIPRateLimiter(rate.Limit(1), 1, 100)
 	if err != nil {
@@ -71,12 +77,16 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 	}
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -110,9 +120,13 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 		t.Fatalf("rate limiter: %v", err)
 	}
 	deps := dependencies{
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -142,7 +156,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	// Burst of 1 with a refill too slow to reach, so the assertion is on the
 	// budget rather than on how fast the test runs. The challenge route has a
 	// limiter of its own, as it does in the shipped wiring.
@@ -158,12 +172,16 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 	}
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: challengeRL,
 		MaxRequestSize:   65536,
@@ -268,15 +286,19 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   16,
@@ -468,26 +490,34 @@ func TestCAValidityHolds(t *testing.T) {
 	}
 }
 
+// notServing is a replica out of contact with its cluster.
+type notServing struct {
+	*singleton
+}
+
+func (notServing) Ready() bool {
+	return false
+}
+
 func TestReadinessFn(t *testing.T) {
 	mesh, err := issuer.NewMeshCA("test ca", 48*time.Hour)
 	if err != nil {
 		t.Fatalf("mesh ca: %v", err)
 	}
+	current := &singleton{mesh: mesh}
 
 	for _, tc := range []struct {
 		name string
 		svc  func() bool
+		back backend
 		want bool
 	}{
-		{"attestation-api healthy and CA current", func() bool {
-			return true
-		}, true},
-		{"attestation-api down", func() bool {
-			return false
-		}, false},
+		{"attestation-api healthy and CA current", func() bool { return true }, current, true},
+		{"attestation-api down", func() bool { return false }, current, false},
+		{"the state this CDS serves answers nothing", func() bool { return true }, notServing{current}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readinessFn(tc.svc, mesh, time.Hour)(); got != tc.want {
+			if got := readinessFn(tc.svc, tc.back, time.Hour)(); got != tc.want {
 				t.Errorf("readinessFn() = %v, want %v", got, tc.want)
 			}
 		})
@@ -495,11 +525,9 @@ func TestReadinessFn(t *testing.T) {
 
 	expiring, err := issuer.NewMeshCA("test ca", time.Minute)
 	if err != nil {
-		t.Fatalf("mesh ca: %v", err)
+		t.Fatalf("expiring mesh ca: %v", err)
 	}
-	if readinessFn(func() bool {
-		return true
-	}, expiring, time.Hour)() {
+	if readinessFn(func() bool { return true }, &singleton{mesh: expiring}, time.Hour)() {
 		t.Error("readiness held with a CA certificate inside the renewal window")
 	}
 }
@@ -569,13 +597,9 @@ func TestHandleMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := refvalues.Render(set)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	w := httptest.NewRecorder()
-	handleMeasurements(doc)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
+	handleMeasurements(armtls.FixedPins(set))(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
@@ -587,11 +611,8 @@ func TestHandleMeasurements(t *testing.T) {
 		t.Errorf("served set = %+v, want the one pinned image", served)
 	}
 
-	empty, err := refvalues.Render(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
-	if err != nil {
-		t.Fatal(err)
-	}
 	w = httptest.NewRecorder()
+	empty := armtls.FixedPins(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
 	handleMeasurements(empty)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("empty set status = %d, want 200 (not a 404)", w.Code)
