@@ -38,20 +38,7 @@ spec:
         - operator: "Exists"
           effect: "NoSchedule"
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/os
-                    operator: In
-                    values:
-                      - linux
-                  {{- range .Values.nriImagePolicy.nodeAffinity.excludeLabels }}
-                  - key: {{ .key }}
-                    operator: NotIn
-                    values:
-                      {{- toYaml .values | nindent 22 }}
-                  {{- end }}
+        {{- include "c8s.nriHostDaemonAffinity" . | nindent 8 }}
       initContainers:
         - name: uninstall
           image: {{ include "nri-image-policy.image" . }}

@@ -6,7 +6,7 @@ Each file links to its reference below, and each reference links back to the fil
 
 | Reference | Template file | Responsibility |
 | --- | --- | --- |
-| [Common](common/README.md) | [_helpers.tpl](../templates/_helpers.tpl) | Resource names, labels, integers, webhook namespace scope |
+| [Common](common/README.md) | [_helpers.tpl](../templates/_helpers.tpl) | Resource names, labels, integers, host-daemon placement, webhook namespace scope |
 | [Images](images/README.md) | [_images.tpl](../templates/_images.tpl) | Image references and pull secrets |
 | [Services](services/README.md) | [_services.tpl](../templates/_services.tpl) | Attestation and CDS endpoints, socket access, node launch files |
 | [Certificates](certificates/README.md) | [_certificates.tpl](../templates/_certificates.tpl) | Certificate sidecars, security context, DNS SAN pattern |

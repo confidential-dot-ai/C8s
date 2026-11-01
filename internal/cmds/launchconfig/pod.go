@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
@@ -44,11 +45,21 @@ func (p *PodSpec) validate() error {
 	if string(pod.UID) != p.UID || pod.Namespace != p.Namespace || pod.Name != p.Name {
 		return fmt.Errorf("pod.manifest metadata must match pod.uid, pod.namespace and pod.name")
 	}
+	if err := ValidatePodSpec(pod); err != nil {
+		return err
+	}
+	_, err = p.PeerAddresses()
+	return err
+}
+
+// ValidatePodSpec checks the shared guest/provider workload shape. Identity is
+// checked separately because Kubernetes assigns a UID after CREATE admission.
+func ValidatePodSpec(pod *corev1.Pod) error {
+	if pod == nil || len(pod.Spec.Containers) == 0 {
+		return errors.New("pod.manifest must have containers")
+	}
 	if err := podmesh.ValidateWorkloadPod(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
-	}
-	if _, err := p.PeerAddresses(); err != nil {
-		return err
 	}
 	if _, err := podmesh.IngressPorts(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
@@ -82,6 +93,44 @@ func (p *PodSpec) validate() error {
 		}
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
 			return fmt.Errorf("pod.manifest container %q must not be privileged", c.Name)
+		}
+	}
+	return nil
+}
+
+// ValidateProviderPod also refuses dependencies on the external cluster that
+// a standalone kubelet cannot resolve. It never supplies workload authority.
+func ValidateProviderPod(pod *corev1.Pod) error {
+	if err := ValidatePodSpec(pod); err != nil {
+		return err
+	}
+	s := pod.Spec
+	if s.AutomountServiceAccountToken == nil || *s.AutomountServiceAccountToken {
+		return errors.New("pod CVM requires automountServiceAccountToken: false")
+	}
+	if s.ServiceAccountName != "" && s.ServiceAccountName != "default" {
+		return errors.New("pod CVM does not use a cluster service account")
+	}
+	if len(s.ImagePullSecrets) != 0 || len(s.ResourceClaims) != 0 || s.RuntimeClassName != nil || len(s.ReadinessGates) != 0 {
+		return errors.New("pod CVM does not support imagePullSecrets, resourceClaims, runtimeClassName or readinessGates")
+	}
+	if s.Resources != nil {
+		return errors.New("pod CVM resources must be specified per container")
+	}
+	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
+		if len(c.EnvFrom) != 0 || len(c.Resources.Claims) != 0 {
+			return fmt.Errorf("container %q: pod CVM does not resolve envFrom or resource claims", c.Name)
+		}
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && (e.ValueFrom.SecretKeyRef != nil || e.ValueFrom.ConfigMapKeyRef != nil) {
+				return fmt.Errorf("container %q: pod CVM does not resolve Secret or ConfigMap environment references", c.Name)
+			}
+			if e.ValueFrom != nil && e.ValueFrom.FieldRef != nil {
+				field := e.ValueFrom.FieldRef.FieldPath
+				if field == "metadata.annotations" || strings.Contains(field, "confidential.ai/pod-cvm") || strings.Contains(field, "kubernetes.io/config.") {
+					return fmt.Errorf("container %q: pod CVM does not expose provider or kubelet annotations through FieldRef", c.Name)
+				}
+			}
 		}
 	}
 	return nil

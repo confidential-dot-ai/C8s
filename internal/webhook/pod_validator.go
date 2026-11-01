@@ -36,6 +36,9 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	if err := v.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, false); handled {
+		return response
+	}
 
 	// An ephemeral container changes no injected container, so the only
 	// decision is whether it may reach what they hold.
