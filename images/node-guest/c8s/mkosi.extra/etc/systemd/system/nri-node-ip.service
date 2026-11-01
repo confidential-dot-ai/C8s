@@ -2,8 +2,8 @@
 Description=Publish the authenticated node address for admission inventory
 Requires=rke2-role.service
 After=rke2-role.service
-Before=rke2-server.service rke2-agent.service
-# rke2 requires this unit (RequiredBy below): a failure powers the node off.
+Before=rke2-server.service rke2-agent.service podcvm-containerd.service
+# Required node and Pod services stop the guest if this identity gate fails.
 FailureAction=poweroff-force
 
 [Service]
@@ -14,4 +14,4 @@ TimeoutStartSec=30
 
 [Install]
 WantedBy=multi-user.target
-RequiredBy=rke2-server.service rke2-agent.service
+RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service

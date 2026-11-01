@@ -4,66 +4,108 @@ package nriimagepolicy
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 )
 
-// --- F4: a mesh endpoint that STARTS in the deferral window is recovered as
-// not-started, refusing the pod for its life ---------------------------------
-//
-// A pre-existing mesh pod's endpoint is CREATED at the registration-time
-// Synchronize snapshot and STARTED during the deferral window. StartContainer's
-// not-ready path calls noteMeshStarted -> g.update, a silent no-op while the
-// pod is off the gate's record, so meshStarted is never set. Recovery reads the
-// container's liveness; before the fix it trusted the stale snapshot
-// (CONTAINER_CREATED) and left meshStarted=false, so verifyMember refused the
-// pod ("runs no verified mesh endpoint") for its life although its endpoint is
-// alive. The fix reads liveness from the running set, which the window's
-// StartContainer populated.
-//
-// Linux-only: recovery proves the pod's network namespace and reads its live
-// ruleset (installPodRuleset/nft, CAP_NET_ADMIN). Runs under the nftables suite
-// in CI; skipped where that is unavailable.
+// Recovery must read liveness from the running set when a measured mesh
+// endpoint starts after the registration snapshot. The reserved UID alone
+// grants no role, and an endpoint that remains CREATED opens no member gate.
+// Linux-only: recovery reads the live ruleset in the sandbox's own namespace.
 func TestMeshEndpointStartedInTheDeferralWindowRecoversAsAMember(t *testing.T) {
 	requireNetNS(t)
+	for _, tc := range []struct {
+		name      string
+		image     string
+		argv      []string
+		started   bool
+		refused   string
+		wantStops int
+	}{
+		{
+			name:    "measured endpoint started during deferral",
+			image:   "registry/c8s@" + pushDigestB,
+			argv:    []string{"/app/c8s", "armtls-mesh"},
+			started: true,
+		},
+		{
+			name:    "measured endpoint never started",
+			image:   "registry/c8s@" + pushDigestB,
+			argv:    []string{"/app/c8s", "armtls-mesh"},
+			refused: "runs no verified mesh endpoint",
+		},
+		{
+			name:    "reserved UID alone",
+			started: true,
+			refused: "reserved for the mesh role",
+		},
+		{
+			name:      "measured image with a different command",
+			wantStops: 1,
+			image:     "registry/c8s@" + pushDigestB,
+			argv:      []string{"/app/c8s", "get-cert"},
+			started:   true,
+			refused:   "reserved for the mesh role",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The pre-restart enforcer's ruleset survives in the pod's namespace.
+			pod := sandboxPod(t, "default", "pod")
+			before := newMeshGate(*meshRoles(), discardLogger())
+			if err := before.protect(pod); err != nil {
+				t.Fatalf("protect: %v", err)
+			}
 
-	// The pre-restart enforcer protected the pod, installing its ruleset in the
-	// sandbox's own namespace. That ruleset survives the restart.
-	pod := sandboxPod(t, "default", "pod")
-	before := newMeshGate(*meshRoles(), discardLogger())
-	if err := before.protect(pod); err != nil {
-		t.Fatalf("protect: %v", err)
-	}
+			cfg := &config{
+				Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: true},
+				Mesh:   meshRoles(),
+				Allowlist: allowlistConfig{
+					Base: roleBase(t, pushDigestB, meshRole, []string{"/app/c8s", "armtls-mesh"}),
+				},
+			}
+			p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))
+			p.inventory = newAdmissionInventory(t.TempDir())
+			stops := 0
+			p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+				if id != "c8s-mesh-id" {
+					t.Fatalf("stopped unexpected container %q", id)
+				}
+				stops++
+				return nil
+			}}
 
-	// The restarted plugin shares the mesh policy. Its gate has an empty record.
-	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: true}, Mesh: meshRoles()}
-	p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))
-	p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
-	p.inventory = newAdmissionInventory(t.TempDir())
+			// Only the measured base's digest and command establish the role.
+			mesh := gateCtr("c8s-mesh", testMeshUID)
+			mesh.Id = "c8s-mesh-id"
+			mesh.PodSandboxId = pod.GetId()
+			mesh.State = api.ContainerState_CONTAINER_CREATED
+			mesh.Annotations = map[string]string{annotationImageName: tc.image}
+			mesh.Args = tc.argv
+			if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, []*api.Container{mesh}); err != nil {
+				t.Fatalf("Synchronize: %v", err)
+			}
 
-	// The mesh endpoint: UID marks its role so roleOf returns meshRole. It is
-	// CONTAINER_CREATED in the registration snapshot.
-	mesh := gateCtr("c8s-mesh", testMeshUID)
-	mesh.Id = "c8s-mesh-id"
-	mesh.PodSandboxId = pod.GetId()
-	mesh.State = api.ContainerState_CONTAINER_CREATED
+			// StartContainer records liveness while the gate has no record yet.
+			// Leave the registration snapshot CREATED to exercise that window.
+			if tc.started {
+				p.running.add(pod, mesh)
+			}
+			p.SetReady()
+			p.RunDeferredCheck(context.Background())
+			if stops != tc.wantStops {
+				t.Fatalf("stopped %d containers, want %d", stops, tc.wantStops)
+			}
 
-	// Not ready: Synchronize defers the batch, carrying the mesh ctr as CREATED.
-	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, []*api.Container{mesh}); err != nil {
-		t.Fatalf("Synchronize: %v", err)
-	}
-
-	// The endpoint starts inside the window. noteMeshStarted is dropped (the pod
-	// is off the gate's record), but StartContainer records it on the running
-	// set, which is the liveness recovery reads.
-	p.running.add(pod, mesh)
-
-	// Recovery runs from the deferred batch.
-	p.SetReady()
-	p.RunDeferredCheck(context.Background())
-
-	if err := p.mesh.verifyMember(pod.GetId()); err != nil {
-		t.Fatalf("a recovered pod whose endpoint started in the deferral window was refused: %v", err)
+			err := p.mesh.verifyMember(pod.GetId())
+			if tc.refused != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.refused) {
+					t.Fatalf("verifyMember = %v, want refusal containing %q", err, tc.refused)
+				}
+			} else if err != nil {
+				t.Fatalf("a recovered pod whose measured endpoint started in the deferral window was refused: %v", err)
+			}
+		})
 	}
 }

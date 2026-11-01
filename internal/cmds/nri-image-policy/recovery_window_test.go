@@ -15,8 +15,8 @@ import (
 // yet on the gate's record. A ValidateContainerAdjustment for one of its
 // containers hits gateMesh -> admit -> state() "installed no packet protection",
 // which ValidateContainerAdjustment turns into denyContainer -> recordDenial: a
-// LIFETIME denial (liftOnAdmit == ""). Recovery later protects the pod but never
-// lifts that denial, and only a creation denial (a named liftOnAdmit) can be
+// LIFETIME denial (permanent != nil). Recovery later protects the pod but never
+// lifts that denial, and only a creation denial indexed by container name can be
 // lifted. So the pod asserts no identity for its life even though it is
 // recovered -- the PR body claims this window is transient.
 //
@@ -48,8 +48,8 @@ func TestDeferredWindowCreateDoesNotRefuseAPodForLife(t *testing.T) {
 	if err == nil {
 		t.Fatal("a container of an unverified pod was admitted in the deferral window")
 	}
-	if d := p.inventory.denied[pod.GetId()]; d.reason != nil && d.liftOnAdmit == "" {
-		t.Fatalf("a create in the deferral window recorded a LIFETIME denial (%v); recovery cannot lift it", d.reason)
+	if d := p.inventory.denied[pod.GetId()]; d.permanent != nil {
+		t.Fatalf("a create in the deferral window recorded a LIFETIME denial (%v); recovery cannot lift it", d.permanent)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestOffRecordCreateAfterRecoveryIsRefusedForLife(t *testing.T) {
 	}); err == nil {
 		t.Fatal("a container of an unknown pod was admitted after recovery")
 	}
-	if d := p.inventory.denied[pod.GetId()]; d.reason == nil {
+	if d := p.inventory.denied[pod.GetId()]; d.permanent == nil {
 		t.Fatal("an unknown pod after recovery recorded no denial; it must be refused for its life")
 	}
 }

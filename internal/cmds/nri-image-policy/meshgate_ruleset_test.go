@@ -199,3 +199,22 @@ func TestRulesetPolicyNamesThisNodesVerifier(t *testing.T) {
 		t.Fatalf("ruleset node address = %v, want none", got)
 	}
 }
+
+// Standalone Pod capture stays distinct from the member policy's CDS port
+// exceptions when both are rendered through podRuleset.
+func TestStandalonePodRulesetKeepsSignedPeersWithoutCredentialBypass(t *testing.T) {
+	policy := meshRoles()
+	policy.Roles = policy.Roles[:1]
+	policy.ClusterRanges = nil
+	policy.Exits = nil
+	peer := netip.MustParseAddrPort("203.0.113.7:8443")
+	policy.Pod = &podMeshPolicy{Peers: []netip.AddrPort{peer}}
+	got := policy.podRuleset("tenant", nil)
+	want := []ruleset.Destination{{Addr: peer.Addr(), Port: peer.Port()}}
+	if got.Pod == nil || !slices.Equal(got.Pod.Peers, want) {
+		t.Fatalf("standalone capture = %+v, want signed peer %v", got.Pod, want)
+	}
+	if len(got.Roles) != 0 || len(got.Exits) != 0 || got.Server.OutsidePort != 0 {
+		t.Fatalf("standalone Pod gained platform exceptions: %+v", got)
+	}
+}

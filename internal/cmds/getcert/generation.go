@@ -68,6 +68,7 @@ type generation struct {
 // credentialVolume is the private volume a pod publishes on, named by the file
 // names its readers use.
 type credentialVolume struct {
+	root     *os.Root
 	dir      string
 	leafName string
 	keyName  string
@@ -127,6 +128,15 @@ func (v credentialVolume) pointerPath() string {
 
 func (v credentialVolume) issuerPath() string {
 	return filepath.Join(v.dir, issuerRecordName)
+}
+
+// readPublished reads one file at the volume's top level: under the guest's
+// opened root where there is one, by path on a node.
+func (v credentialVolume) readPublished(name string) ([]byte, error) {
+	if v.root != nil {
+		return v.root.ReadFile(name)
+	}
+	return os.ReadFile(filepath.Join(v.dir, name))
 }
 
 func (v credentialVolume) generationsPath() string {
@@ -357,6 +367,9 @@ func chainIssuer(g *generation, now time.Time) error {
 // publishGeneration writes one generation and atomically replaces current.
 // Readers resolve current once before opening files in that directory.
 func publishGeneration(v credentialVolume, g *generation) error {
+	if v.root != nil {
+		return publishRootGeneration(v, g)
+	}
 	previous, err := v.publishedName()
 	if err != nil {
 		return err
@@ -412,6 +425,9 @@ func publishGeneration(v credentialVolume, g *generation) error {
 // withdrawGeneration removes the pointer and the reader paths, so no consumer
 // can read the withdrawn set.
 func withdrawGeneration(v credentialVolume) error {
+	if v.root != nil {
+		return withdrawRootGeneration(v)
+	}
 	paths := []string{v.pointerPath()}
 	for _, name := range v.names() {
 		paths = append(paths, filepath.Join(v.dir, name))
@@ -486,7 +502,7 @@ func linkTempPath(path string) (string, error) {
 // loadIssuerRecord reads the CA key the pod is bound to. The record outlives
 // withdrawal, so errNoIssuerRecord means no generation was ever published here.
 func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
-	data, err := os.ReadFile(v.issuerPath())
+	data, err := v.readPublished(issuerRecordName)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errNoIssuerRecord
 	}
@@ -501,6 +517,9 @@ func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
 }
 
 func writeIssuerRecord(v credentialVolume, id issuerKeyID) error {
+	if v.root != nil {
+		return fileutil.WriteAtomicRoot(v.root, issuerRecordName, []byte(string(id)+"\n"), 0o644)
+	}
 	if err := fileutil.WriteAtomic(v.issuerPath(), []byte(string(id)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write issuer record: %w", err)
 	}

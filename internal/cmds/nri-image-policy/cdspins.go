@@ -41,8 +41,7 @@ func renderNodeDocument(name string, document []byte) (string, error) {
 // of in every pod.
 func (p *plugin) prepareCDSPins(cdsPins armtls.PinSource) error {
 	if !p.cfg.injectsCredentialClients() {
-		// No inventory directory, so no pod of this node is injected and
-		// nothing would read a policy.
+		// This boot supplies no node credential clients.
 		return nil
 	}
 	document, err := refvalues.Format(cdsPins.Current())

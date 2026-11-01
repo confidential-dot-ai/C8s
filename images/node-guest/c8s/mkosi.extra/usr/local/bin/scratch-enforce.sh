@@ -12,6 +12,7 @@ set -eu
 SYS_BLOCK_ROOT=${SYS_BLOCK_ROOT:-/sys/block}
 PROVENANCE_FILE=${PROVENANCE_FILE:-/run/c8s/scratch-provenance.json}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+POD_MARKER=${POD_MARKER:-/run/confos/role-pod}
 
 fail() {
     echo "scratch-enforce: $1 — refusing to start the node. Attach a virtio-blk disk with serial=confai-scratch, >=64G." >&2
@@ -20,6 +21,13 @@ fail() {
 
 # 64G in 512-byte sectors — decimal, so a 64GB or 64GiB disk both pass.
 MIN_SECTORS=125000000
+# A pod-role boot runs one pod, so memory-backed state is acceptable and an
+# attached scratch disk has no size floor; it must still be the crypt mapping.
+pod_role=false
+if [ -e "$POD_MARKER" ]; then
+    pod_role=true
+    MIN_SECTORS=0
+fi
 
 for d in "$SYS_BLOCK_ROOT"/dm-*; do
     [ -e "$d/dm/name" ] || continue
@@ -57,4 +65,8 @@ for d in "$SYS_BLOCK_ROOT"/dm-*; do
     echo "scratch-enforce: writable state is on the encrypted scratch disk"
     exit 0
 done
+if [ "$pod_role" = true ]; then
+    echo "scratch-enforce: pod role, writable state is memory-backed"
+    exit 0
+fi
 fail "initrd fell back to the tmpfs overlay (no dm device named scratch)"

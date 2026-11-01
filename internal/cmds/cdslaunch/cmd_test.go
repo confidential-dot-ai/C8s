@@ -180,6 +180,72 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 	}
 }
 
+func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
+	podKey := publicKeyPEM(t)
+	policy, err := refvalues.Format(refvalues.ReferenceValues{
+		Family: teetypes.FamilyTDX,
+		Images: []remote.ImagePin{{Name: "pod", Digest: bytes.Repeat([]byte{0x21}, refvalues.DigestSize),
+			Registers: map[int][]byte{1: bytes.Repeat([]byte{0x22}, refvalues.DigestSize), 2: bytes.Repeat([]byte{0x23}, refvalues.DigestSize)}, Anchor: []byte(podKey)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, policy string
+		allowed      bool
+		ha           bool
+	}{
+		{"valid", string(policy), true, false}, {"with HA", string(policy), true, true},
+		{"empty", "", false, false}, {"malformed", "null", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "cds")
+			args := append(inputs(t, out), "--pod-image-policy-file", writeInput(t, "pods.json", tc.policy))
+			if tc.ha {
+				args = append(args, "--replica", "cds-1.acme.example", "--voters", "1")
+			}
+			err := run(t, args...)
+			if !tc.allowed {
+				if err == nil {
+					t.Fatal("invalid explicit Pod policy accepted")
+				}
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatal("refused policy wrote output")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			configuration, err := os.ReadFile(filepath.Join(out, cdsconfig.ConfigFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cdsconfig.Parse(configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.PodImages) != 1 || !bytes.Equal(cfg.PodImages[0].Anchor, []byte(podKey)) {
+				t.Fatal("measured Pod policy lost")
+			}
+			if tc.ha && (cfg.HA == nil || cfg.HA.Voters != 1 || len(cfg.HA.Replicas) != 1) {
+				t.Fatal("Pod policy displaced the measured HA configuration")
+			}
+			pinBytes, err := os.ReadFile(filepath.Join(out, cdsconfig.PinFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin, err := refvalues.Parse(pinBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pin.Images) != 1 || !bytes.Equal(pin.Images[0].LaunchFile, configuration) {
+				t.Fatal("CDS pin does not bind Pod policy")
+			}
+		})
+	}
+}
+
 // Every replica of a cluster boots one configuration, so the generator takes
 // the replica set and writes no replica's own name into the document.
 func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
