@@ -431,21 +431,35 @@ allowlist_delete() { allowlist_replace "$1" ""; }
 # allowlist_replace <name> [<entry-file>]: write the served document with the
 # entry in the file put under name, or with name removed when no file is given.
 # The harness is the only writer, so a 412 is a harness fault, not a race.
+#
+# A CDS without persistence refuses operator tokens minted before it started
+# for jwtClockSkew after each start (internal/cmds/cds/backend.go TokenFloor,
+# #1206), so a write right after a CDS restart gets a 401. Retry that one case,
+# re-reading the served version each time since the restart drops it; the
+# integration harness retries it the same way (test/integration/cluster/lib.sh
+# cds_write). Any other non-204, and a 401 that is not the floor, fail at once.
 allowlist_replace() {
-    local name="$1" entry="${2:-}" served version body token answer code
+    local name="$1" entry="${2:-}" served version body token answer code reply
     body="$(scratch)/allowlist-write.json" || return
-    served="$(allowlist_get "")" || return
-    version="$(awk 'NR == 1 {print $2}' <<<"$served")"
-    if [ -n "$entry" ]; then
-        printf '%s' "${served#*$'\n'}" |
-            jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' > "$body" || return
-    else
-        printf '%s' "${served#*$'\n'}" | jq -c --arg n "$name" 'del(.workloads[$n])' > "$body" || return
-    fi
-    token="$(write_token operator PUT /allowlist "$body")" || return
-    answer="$(allowlist_request PUT /allowlist "$body" "$token" "" "" "If-Match: \"$version\"")" || return
-    code="${answer%%$'\n'*}"
-    [ "$code" = 204 ] || { echo "backend: PUT /allowlist ($name): HTTP $code" >&2; return 1; }
+    for _ in $(seq 1 30); do
+        served="$(allowlist_get "")" || return
+        version="$(awk 'NR == 1 {print $2}' <<<"$served")"
+        if [ -n "$entry" ]; then
+            printf '%s' "${served#*$'\n'}" |
+                jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' > "$body" || return
+        else
+            printf '%s' "${served#*$'\n'}" | jq -c --arg n "$name" 'del(.workloads[$n])' > "$body" || return
+        fi
+        token="$(write_token operator PUT /allowlist "$body")" || return
+        answer="$(allowlist_request PUT /allowlist "$body" "$token" "" "" "If-Match: \"$version\"")" || return
+        code="${answer%%$'\n'*}"
+        reply="${answer#*$'\n'}"
+        if [ "$code" != 401 ] || ! grep -q 'issued too early' <<<"$reply"; then
+            break
+        fi
+        sleep 2
+    done
+    [ "$code" = 204 ] || { echo "backend: PUT /allowlist ($name): HTTP $code: $reply" >&2; return 1; }
 }
 
 allowlist_get() {
