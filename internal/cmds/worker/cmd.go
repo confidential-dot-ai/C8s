@@ -1,0 +1,114 @@
+package worker
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+)
+
+// NewCmd returns the worker command group.
+func NewCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "worker",
+		Short: "Worker documents: the launch files of nodes whose Kubernetes control plane runs outside every TEE",
+	}
+	cmd.AddCommand(newNewCmd())
+	return cmd
+}
+
+// draft is a worker document as `worker new` takes it: the blocks from flags,
+// and the CDS pin and the API server's CA from the files they name.
+type draft struct {
+	out               string
+	cds               launchconfig.CDS
+	cdsPinPath        string
+	router            launchconfig.Router
+	kubernetes        Kubernetes
+	caCertificatePath string
+}
+
+func newNewCmd() *cobra.Command {
+	var d draft
+	cmd := &cobra.Command{
+		Use:   "new",
+		Short: "Write a worker document",
+		Long: `Write a worker document: the CDS a worker pins, the router's settings, and the
+API server, CA, pod and Service ranges and cluster DNS address it joins its
+Kubernetes cluster with. The document is checked under the rules a worker
+parses it with, then written to --out, or to stdout without one.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			data, err := d.render()
+			if err != nil {
+				return err
+			}
+			if d.out == "" {
+				_, err := cmd.OutOrStdout().Write(data)
+				return err
+			}
+			if err := os.WriteFile(d.out, data, 0o644); err != nil {
+				return fmt.Errorf("--out: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote worker document %s\n", d.out)
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&d.out, "out", "", "file to write the document to (default stdout)")
+	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
+	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
+	f.Uint64Var(&d.cds.PinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	launchconfig.BindRouterFlags(f, &d.router)
+	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
+	f.StringVar(&d.caCertificatePath, "ca-certificate", "", "PEM file holding the one CA certificate the API server's serving certificate chains to")
+	f.StringVar(&d.kubernetes.PodCIDR, "pod-cidr", "", "the cluster's pod range, an IPv4 CIDR")
+	f.StringVar(&d.kubernetes.ServiceCIDR, "service-cidr", "", "the cluster's Service range, an IPv4 CIDR")
+	f.StringVar(&d.kubernetes.ClusterDNS, "cluster-dns", "", "the cluster DNS Service's IPv4 address, inside --service-cidr")
+	for _, name := range []string{
+		"cds-address",
+		"cds-pin",
+		"api-server",
+		"ca-certificate",
+		"pod-cidr",
+		"service-cidr",
+		"cluster-dns",
+	} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	return cmd
+}
+
+// render returns the document's YAML, which Parse accepts.
+func (d draft) render() ([]byte, error) {
+	pin, err := os.ReadFile(d.cdsPinPath)
+	if err != nil {
+		return nil, fmt.Errorf("--cds-pin: %w", err)
+	}
+	ca, err := os.ReadFile(d.caCertificatePath)
+	if err != nil {
+		return nil, fmt.Errorf("--ca-certificate: %w", err)
+	}
+	doc := Document{
+		SchemaVersion: SchemaVersion,
+		CDS:           d.cds,
+		Kubernetes:    d.kubernetes,
+	}
+	doc.CDS.Measurements = string(pin)
+	if !d.router.Empty() {
+		doc.Router = &d.router
+	}
+	doc.Kubernetes.CACertificate = string(ca)
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("render worker document: %w", err)
+	}
+	if _, err := Parse(data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}

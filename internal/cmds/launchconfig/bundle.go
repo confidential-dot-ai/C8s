@@ -193,7 +193,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		CDS:                     CDS{Address: opts.CDS.Address, Measurements: string(pin)},
 		RegistryMirrors:         opts.RegistryMirrors,
 	}
-	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
+	if !opts.Router.Empty() {
 		router := opts.Router
 		server.Router = &router
 	}
