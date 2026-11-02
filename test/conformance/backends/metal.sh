@@ -156,6 +156,11 @@ attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
+# No namespace the mesh exempts (exempt_namespace), so a requester is always a
+# mesh member whose CDS requests leave from the backend, not its own pod — the
+# CDS never sees the requester's own address as the source. (The IP-SAN
+# scenarios already skip earlier here anyway, on cds_arg.)
+requester_source_is_own_address() { return "$UNSUPPORTED"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
