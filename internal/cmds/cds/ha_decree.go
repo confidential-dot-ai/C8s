@@ -17,6 +17,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -356,10 +358,41 @@ func readNodeImages(path string) (*cdsdecree.NodeImages, error) {
 	return images, nil
 }
 
+// admitWorker is nodes with the worker image bound to --worker-document added,
+// once the operator confirms the cluster facts the document carries.
+func (o nodeImagesOptions) admitWorker(cmd *cobra.Command, nodes []byte) ([]byte, error) {
+	document, err := os.Open(o.workerDocument)
+	if err != nil {
+		return nil, fmt.Errorf("--worker-document: %w", err)
+	}
+	defer document.Close()
+	cdsPin, err := os.ReadFile(o.to.cdsPin)
+	if err != nil {
+		return nil, fmt.Errorf("--cds-pin: %w", err)
+	}
+	workerImage, err := os.ReadFile(o.workerImage)
+	if err != nil {
+		return nil, fmt.Errorf("--worker-image: %w", err)
+	}
+	a, err := worker.Admit(document, worker.AdmitInputs{CDSPin: cdsPin, WorkerImage: workerImage, Nodes: nodes})
+	if err != nil {
+		return nil, err
+	}
+	if err := a.Report(cmd.ErrOrStderr()); err != nil {
+		return nil, err
+	}
+	if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
+		return nil, errors.New("not signed: the worker document's facts were not confirmed")
+	}
+	return a.Nodes, nil
+}
+
 type nodeImagesOptions struct {
 	decreeOptions
-	nodes string
-	to    replica
+	nodes          string
+	workerDocument string
+	workerImage    string
+	to             replica
 }
 
 func newNodeImagesCmd() *cobra.Command {
@@ -367,23 +400,46 @@ func newNodeImagesCmd() *cobra.Command {
 	cmd := decreeCmd("node-images", "Sign the decree that replaces the node images the cluster certifies",
 		"The cluster issues a leaf to a node of one of these images and to no other. The decree carries\n"+
 			"the whole set: an upgrade signs the image being replaced and the one replacing it together,\n"+
-			"and a second decree then names the new image alone.",
-		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
+			"and a second decree then names the new image alone.\n\n"+
+			"With --worker-document, the decree also certifies the worker image launched with that exact\n"+
+			"document. The document must pin the CDS --cds-pin pins. The cluster facts it carries are\n"+
+			"printed, and the decree is signed only once you confirm them.",
+		&o.decreeOptions, func(cmd *cobra.Command) error {
+			return o.run(cmd)
+		})
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindDeliveryFlags(cmd, &o.to)
-	cmd.Flags().StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies (REQUIRED)")
+	f := cmd.Flags()
+	f.StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies, or with --worker-document the set in force it extends (REQUIRED)")
+	f.StringVar(&o.workerDocument, "worker-document", "", "worker document, as 'c8s worker new' writes it, whose workers the decree also certifies")
+	f.StringVar(&o.workerImage, "worker-image", "", "measurements document pinning the worker image, as 'c8s measurements derive' writes it")
 	requireFlags(cmd, "nodes")
 	return cmd
 }
 
 func (o nodeImagesOptions) run(cmd *cobra.Command) error {
+	if (o.workerDocument == "") != (o.workerImage == "") {
+		return errors.New("--worker-document and --worker-image go together")
+	}
 	c, err := readDecreeConfig(o.config)
 	if err != nil {
 		return err
 	}
-	nodePins, err := readNodeImages(o.nodes)
+	measurements, err := os.ReadFile(o.nodes)
 	if err != nil {
-		return err
+		return fmt.Errorf("--nodes: %w", err)
+	}
+	if o.workerDocument != "" {
+		if measurements, err = o.admitWorker(cmd, measurements); err != nil {
+			return err
+		}
+	}
+	nodePins, err := cdsdecree.NewNodeImages(measurements)
+	if err != nil {
+		return fmt.Errorf("--nodes: %w", err)
+	}
+	if err := nodePins.RequireLaunchBindings(); err != nil {
+		return fmt.Errorf("--nodes: %w", err)
 	}
 	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
 		Kind:        cdsdecree.SetNodeImages,
