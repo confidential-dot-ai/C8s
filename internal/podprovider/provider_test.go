@@ -534,3 +534,38 @@ func TestDirectBindingWithoutOptInFailsWithoutCloudEffects(t *testing.T) {
 		t.Fatal("refusal status looped or launched a Cloud instance")
 	}
 }
+
+// A pod whose opt-in was removed past admission still owns an instance.
+// Deletion must destroy it and release the finalizer rather than leave the
+// pod failed, held and its instance running.
+func TestDeletionOfALaunchedPodWithoutOptInDestroysItsInstance(t *testing.T) {
+	pod := fixturePod()
+	r, cloud := fixtureReconciler(t, pod)
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.createCalls != 1 {
+		t.Fatal("pod was not launched")
+	}
+	launched := getPod(t, r, pod)
+	delete(launched.Annotations, Annotation)
+	if err := r.client.Update(context.Background(), launched); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.deleteCalls != 1 {
+		t.Fatal("deletion of a launched pod without the opt-in left its instance")
+	}
+	cloud.in.Status = "terminated"
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Pod finalizer not released: %v", err)
+	}
+}

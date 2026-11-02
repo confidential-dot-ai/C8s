@@ -45,6 +45,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if pod.Spec.NodeName != r.cfg.NodeName {
 		return ctrl.Result{}, nil
 	}
+	// Deletion comes first: a pod whose opt-in was removed past admission
+	// still owns an instance, and only deletePod destroys it and releases
+	// the finalizer.
+	if !pod.DeletionTimestamp.IsZero() {
+		return r.deletePod(ctx, pod)
+	}
 	if pod.Annotations[Annotation] != "true" {
 		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "PodCVMOptInRequired" {
 			return ctrl.Result{}, nil
@@ -52,9 +58,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		status := failedStatus(pod, "PodCVMOptInRequired", r.now())
 		status.Message = "Pods bound to this node must opt into Pod CVM execution"
 		return ctrl.Result{}, r.publishStatus(ctx, pod, status)
-	}
-	if !pod.DeletionTimestamp.IsZero() {
-		return r.deletePod(ctx, pod)
 	}
 	if pod.UID == "" {
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
