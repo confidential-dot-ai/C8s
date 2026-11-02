@@ -581,7 +581,9 @@ names it (`vMAJOR.MINOR.PATCH`). The SHA stays the build input because a tag
 can be repointed; the pin-hygiene workflow resolves each tag in its source
 repository (`.github/scripts/release-pin.sh`) and fails when it no longer
 names the pinned SHA. Pin-watch follows each repository's latest release, not
-its `main`, so an unreleased commit never enters a measured build. An
+its `main`, so an unreleased commit never enters a measured build, and it
+only moves a pin forward: a latest release older than the pinned one is kept
+out. An
 attestation-rs release that changes the attestation-api config or `/verify`
 contract still needs the c8s and confos ports in the same PR as its bump.
 

@@ -56,8 +56,17 @@ jobs:
           DOMAIN: node-image
         run: |
           set -euo pipefail
-          read -r confos_tag confos < <(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder)
-          read -r attest_tag attest < <(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs)
+          node=$(jq -c --arg d "$DOMAIN" '.builds[$d]' .github/build-pins.json)
+          # Only a release newer than the pinned one moves a pin; the latest
+          # release being an older line, or the pinned one, keeps it.
+          confos_tag=$(jq -er .confos_tag <<<"$node")
+          confos=$(jq -er .confos_ref <<<"$node")
+          newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder --floor "$confos_tag")
+          [ -z "$newer" ] || read -r confos_tag confos <<<"$newer"
+          attest_tag=$(jq -er .attestation_rs_tag <<<"$node")
+          attest=$(jq -er .attestation_rs_ref <<<"$node")
+          newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs --floor "$attest_tag")
+          [ -z "$newer" ] || read -r attest_tag attest <<<"$newer"
           mapfile -t mkosi_lines < <(
             curl -fsSL --retry 3 \
               "https://raw.githubusercontent.com/confidential-dot-ai/confidential-os-builder/${confos}/.github/workflows/base.yml" |
