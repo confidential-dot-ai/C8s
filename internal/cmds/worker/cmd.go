@@ -13,12 +13,10 @@ import (
 
 // NewCmd returns the worker command group.
 func NewCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "worker",
 		Short: "Worker documents: the launch files of nodes whose Kubernetes control plane runs outside every TEE",
 	}
-	cmd.AddCommand(newNewCmd())
-	return cmd
 }
 
 // draft is a worker document as `worker new` takes it: the blocks from flags,
@@ -32,7 +30,8 @@ type draft struct {
 	caCertificatePath string
 }
 
-func newNewCmd() *cobra.Command {
+// NewNewCmd returns `worker new`, run by whoever drafts a worker document.
+func NewNewCmd() *cobra.Command {
 	var d draft
 	cmd := &cobra.Command{
 		Use:   "new",

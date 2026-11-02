@@ -830,7 +830,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				TLSSAN:        "c8s.local",
 				CDS:           launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)},
 			}
-			if err := nodeservices.Prepare(root, doc); err != nil {
+			if err := nodeservices.PrepareNode(root, doc); err != nil {
 				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
 			}
 			prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
