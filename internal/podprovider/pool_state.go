@@ -293,7 +293,7 @@ func (r *Reconciler) compatiblePool(p *poolRecord) bool {
 	if err != nil {
 		return false
 	}
-	return p.Request.Image == r.cfg.Image && p.Request.Size == r.cfg.Size && p.Request.Location == r.cfg.Location && p.VCPUs == r.cfg.VCPUs && p.MemoryMiB == r.cfg.MemoryMiB && p.Request.Network.PublicIP == r.cfg.PublicIP && p.Request.Trust.LaunchKey == r.cfg.pub && reflect.DeepEqual(p.Manifest, r.cfg.manifest) && doc.ClusterID == r.cfg.ClusterID && doc.Server.Address == r.cfg.ServerAddress && doc.Server.OperatorPublicKey == r.cfg.serverPub && doc.CDS == r.cfg.cds
+	return p.Request.Image == r.cfg.Image && p.Request.Size == r.cfg.Size && p.Request.Location == r.cfg.Location && p.Request.Tee == r.cfg.tee() && p.VCPUs == r.cfg.VCPUs && p.MemoryMiB == r.cfg.MemoryMiB && p.Request.Network.PublicIP == r.cfg.PublicIP && p.Request.Trust.LaunchKey == r.cfg.pub && reflect.DeepEqual(p.Manifest, r.cfg.manifest) && doc.ClusterID == r.cfg.ClusterID && doc.Server.Address == r.cfg.ServerAddress && doc.Server.OperatorPublicKey == r.cfg.serverPub && doc.CDS == r.cfg.cds
 }
 
 // instanceRecord is a read-only adapter for existing endpoint and Cloud shape

@@ -46,5 +46,5 @@ func (c *Config) genericLaunch(name string) (createRequest, error) {
 	if len(data) > 64<<10 {
 		return createRequest{}, errors.New("generic launch exceeds the Cloud 64 KiB limit")
 	}
-	return createRequest{Image: c.Image, Size: c.Size, Location: c.Location, Tee: "tdx", Name: name, Count: 1, Labels: map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")}, Network: networkSpec{PublicIP: c.PublicIP, Ingress: []ingress{{Name: "pod-status", Port: 8443}}}, Readiness: readinessSpec{TCPPorts: []int{}}, Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: launchconfig.SchemaVersion, Document: data, Signature: []byte(sig)}}}, nil
+	return createRequest{Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1, Labels: map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")}, Network: networkSpec{PublicIP: c.PublicIP, Ingress: []ingress{{Name: "pod-status", Port: 8443}}}, Readiness: readinessSpec{TCPPorts: []int{}}, Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: launchconfig.SchemaVersion, Document: data, Signature: []byte(sig)}}}, nil
 }

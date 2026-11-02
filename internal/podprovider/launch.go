@@ -59,12 +59,8 @@ func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
 	for _, p := range ports {
 		rules = append(rules, ingress{Name: fmt.Sprintf("app-%d", p), Port: int(p)})
 	}
-	tee := "tdx"
-	if c.image.Platform == "snp" {
-		tee = "sev-snp"
-	}
 	return createRequest{
-		Image: c.Image, Size: c.Size, Location: c.Location, Tee: tee, Name: name, Count: 1,
+		Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1,
 		Labels:  map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")},
 		Network: networkSpec{PublicIP: c.PublicIP, Ingress: rules}, Readiness: readinessSpec{TCPPorts: []int{}},
 		Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: launchconfig.SchemaVersion, Document: data, Signature: []byte(sig)}},
@@ -161,4 +157,14 @@ func (c *Config) fits(pod *corev1.Pod) error {
 		}
 	}
 	return nil
+}
+
+// tee names the Cloud TEE for the configured image. Every launch of this
+// provider, per-pod or generic, asks for the same one, so a pooled guest and
+// the pod that claims it never differ in platform.
+func (c *Config) tee() string {
+	if c.image.Platform == "snp" {
+		return "sev-snp"
+	}
+	return "tdx"
 }
