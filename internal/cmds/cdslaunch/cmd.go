@@ -20,6 +20,7 @@ type options struct {
 	allowlistSeed   string
 	workloads       string
 	nodePins        string
+	podImagePolicy  string
 	nodeCIDRs       []string
 	podCIDRs        []string
 	serviceCIDRs    []string
@@ -80,6 +81,7 @@ fix the cluster for its life.`,
 	f.StringVar(&opts.allowlistSeed, "allowlist-seed", "", "JSON allowlist holding this cluster's component entries")
 	f.StringVar(&opts.workloads, "workloads", "", "JSON allowlist of tenant workloads added to the seed; an entry may not take a component entry's name")
 	f.StringVar(&opts.nodePins, "node-pins", "", "measurements config pinning the node launch identities CDS admits and serves")
+	f.StringVar(&opts.podImagePolicy, "pod-image-policy-file", "", "optional complete TDX Pod image and launch-key policy embedded in the measured CDS configuration; grants no node authority")
 	f.StringArrayVar(&opts.nodeCIDRs, "node-cidr", nil, "subnet holding the node addresses CDS may dial for a sandbox's admission inventory; repeatable")
 	f.StringArrayVar(&opts.podCIDRs, "pod-cidr", nil, "the cluster's pod range; a node subnet reaching into it is refused; repeatable")
 	f.StringArrayVar(&opts.serviceCIDRs, "service-cidr", nil, "the cluster's service range; a node subnet reaching into it is refused; repeatable")
