@@ -95,6 +95,10 @@ type issuanceState struct {
 	relying relyingParty
 	// read is the leaf "is read" named, for the sentences that follow it.
 	read *leaf
+	// sanBinding records that a scenario turned IP SAN binding on, so a CSR
+	// carrying the requester's own address needs the CDS to observe that
+	// address as the request source (requester_source_is_own_address).
+	sanBinding bool
 }
 
 // leafOf is the leaf name holds, which a sentence must have established.
@@ -908,6 +912,7 @@ func cdsEmptyPins(ctx context.Context) error {
 // only when the installed value differs.
 func ipSANBinding(ctx context.Context, state string) error {
 	w := getWorld(ctx)
+	w.issuance.sanBinding = state == "on"
 	want := strconv.FormatBool(state == "on")
 	current, err := w.be.call("cds_arg", "san-validation")
 	if err != nil {

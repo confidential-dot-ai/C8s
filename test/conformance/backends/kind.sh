@@ -79,6 +79,12 @@ cds_pins() { echo "$MOCK_MEASUREMENT"; }
 # Every client of this cluster dials the one CDS, pods included.
 cds_pod_url() { cds_url; }
 
+# Whether the CDS observes a requester pod's own address as the request
+# source. Unsupported here: the CDS runs outside the cluster (lib.sh,
+# cds_serve), and the node masquerades a pod's egress to it behind the node
+# address, so a CSR carrying the pod's own IP SAN cannot match the source.
+requester_source_is_own_address() { return "$UNSUPPORTED"; }
+
 # The flags the harness runs the CDS with (lib.sh, cds_serve); empty for one it
 # leaves at the CDS's own default.
 cds_arg() {
