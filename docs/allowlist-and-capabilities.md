@@ -187,6 +187,15 @@ it; a static pod is the node's own and is never a member, on any node. The
 router workload takes only host, node-root file and emptyDir mounts and no
 Service links: its settings come from the worker's measured document.
 
+NRI shows a plugin no port mappings, so a worker reads each sandbox's port
+mappings and network from the record containerd's CRI plugin keeps of it,
+checked against the pod's name, namespace and UID. A record it cannot read,
+or one that disagrees with NRI on whether the pod is on the node's network,
+refuses the pod. A sandbox on its own network that maps a host port is
+refused, and containerd tears its mappings down, unless it is an API pod in
+`c8s-router` mapping some of the ports `worker.router_host_ports` lists, on
+every node address. Only the router's pinned launch runs in such a pod.
+
 An open entry admits its image, and the pod is sandboxed like any other, the
 host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
 operator run with the host network, so their entries pin every launch the

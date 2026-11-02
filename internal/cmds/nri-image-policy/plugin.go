@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -169,6 +170,7 @@ func (s *policyStore) rolledBack(version uint64) bool {
 type containerdOps interface {
 	Resolve(ctx context.Context, imageRef string) (string, error)
 	StopContainer(ctx context.Context, containerID string) error
+	SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
 }
 
 // plugin implements the NRI plugin interface for image policy enforcement.
@@ -380,6 +382,19 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // is created. A failed install refuses the sandbox, so the gate is what
 // refuses its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	if p.cfg.Worker != nil {
+		if err := p.admitSandboxHostPorts(ctx, p.cfg, pod); err != nil {
+			p.logger.Warn("refusing a pod sandbox's host ports",
+				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "error", err)
+			p.audit.Log(audit.Event{
+				Action:    "deny",
+				Reason:    "host_port",
+				Namespace: pod.GetNamespace(),
+				Pod:       pod.GetName(),
+			})
+			return err
+		}
+	}
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
 	}
@@ -763,7 +778,68 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); v == verdictDeny {
 		return v, r
 	}
+	if cfg.Worker != nil {
+		if err := p.admitHostPortLaunch(ctx, cfg, pod, ctr, imageRef, mounts); err != nil {
+			p.logger.Warn("refusing a container of a pod that maps host ports",
+				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
+			p.audit.Log(audit.Event{
+				Action:    "deny",
+				Reason:    "host_port",
+				Namespace: pod.GetNamespace(),
+				Pod:       pod.GetName(),
+				Container: ctr.GetName(),
+				Image:     imageRef,
+			})
+			return verdictDeny, err.Error()
+		}
+	}
 	return verdict, reason
+}
+
+// sandboxHostPorts is the host ports containerd recorded for pod's sandbox,
+// none for one on the node's network. A record whose network NRI does not
+// show is an error.
+func (p *plugin) sandboxHostPorts(ctx context.Context, pod *api.PodSandbox) ([]ctrdresolver.HostPort, error) {
+	network, err := p.containerd.SandboxNetwork(ctx, pod.GetId(), ctrdresolver.SandboxPod{
+		Name: pod.GetName(), Namespace: pod.GetNamespace(), UID: pod.GetUid(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if network.HostNetwork != (podNetworkNamespace(pod) == "") {
+		return nil, fmt.Errorf("containerd records the sandbox on the node's network: %v, NRI shows %v", network.HostNetwork, !network.HostNetwork)
+	}
+	return network.HostPorts, nil
+}
+
+// admitSandboxHostPorts admits, on a worker, a sandbox that maps host ports
+// only as the router's pod (workerConfig.admitHostPorts).
+func (p *plugin) admitSandboxHostPorts(ctx context.Context, cfg *config, pod *api.PodSandbox) error {
+	ports, err := p.sandboxHostPorts(ctx, pod)
+	if err != nil {
+		return fmt.Errorf("cannot read the sandbox's host ports: %w", err)
+	}
+	return cfg.Worker.admitHostPorts(pod, ports)
+}
+
+// admitHostPortLaunch admits, on a worker, a container of a sandbox that maps
+// host ports only as the router's pinned launch in the router's pod.
+func (p *plugin) admitHostPortLaunch(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, mounts []allowlist.ObservedMount) error {
+	ports, err := p.sandboxHostPorts(ctx, pod)
+	if err != nil {
+		return fmt.Errorf("cannot read the sandbox's host ports: %w", err)
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	if err := cfg.Worker.admitHostPorts(pod, ports); err != nil {
+		return err
+	}
+	rc := allowlist.RunningContainer{Digest: p.resolveDigest(ctx, imageRef), Argv: ctr.GetArgs(), Env: containerEnv(ctr), Mounts: mounts}
+	if !routerLaunch(cfg, pod, rc) {
+		return errors.New("this pod maps host ports, so only the router's launch runs in it")
+	}
+	return nil
 }
 
 func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
@@ -957,12 +1033,23 @@ func (p *plugin) nodeTCBExempt(cfg *config, pod *api.PodSandbox, rc allowlist.Ru
 	case staticPod(pod):
 		return p.policy.baseAdmits(rc, launchFinal)
 	case cfg.Worker != nil:
-		return pod.GetNamespace() == routerNamespace &&
-			len(obs.beyondHostBinds()) == 0 &&
-			cfg.Worker.routerIndex(cfg.Allowlist.Base).AdmitsContainerWhere(rc, allowlist.Container.LaunchPinned)
+		return len(obs.beyondHostBinds()) == 0 && routerLaunch(cfg, pod, rc)
 	default:
 		return p.policy.baseAdmitsPinned(rc)
 	}
+}
+
+// routerPod reports, on a worker, a pod the router may run in: an API pod in
+// the router's namespace.
+func routerPod(pod *api.PodSandbox) bool {
+	return !staticPod(pod) && pod.GetNamespace() == routerNamespace
+}
+
+// routerLaunch reports, on a worker, a router pod's container whose launch
+// the router workload pins.
+func routerLaunch(cfg *config, pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
+	return routerPod(pod) &&
+		cfg.Worker.routerIndex(cfg.Allowlist.Base).AdmitsContainerWhere(rc, allowlist.Container.LaunchPinned)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,

@@ -15,6 +15,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -42,6 +43,14 @@ func newTestPlugin(cfg *config) *plugin {
 type fakeContainerd struct {
 	resolve func(ctx context.Context, imageRef string) (string, error)
 	stop    func(ctx context.Context, containerID string) error
+	network func(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
+}
+
+func (f *fakeContainerd) SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+	if f.network == nil {
+		panic("unexpected sandbox network lookup")
+	}
+	return f.network(ctx, sandboxID, pod)
 }
 
 func (f *fakeContainerd) Resolve(ctx context.Context, imageRef string) (string, error) {

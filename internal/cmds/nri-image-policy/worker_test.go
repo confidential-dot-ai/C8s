@@ -89,6 +89,24 @@ func TestWorkerConfigValidation(t *testing.T) {
 			r.Mounts.Rules = append(r.Mounts.Rules, allowlist.MountRule{Destination: allowlist.DataMountPrefix + "keys", Kind: allowlist.MountData})
 		}, "mounts other than"},
 		{"router Service links", func(c *config) { routerContainer(c).Env.ServiceLinks = true }, "Service links"},
+		{"a router host port without a protocol", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{ContainerPort: 8443, HostPort: 443}}
+		}, "protocol"},
+		{"a router host port of zero", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{Protocol: "TCP", ContainerPort: 8443}}
+		}, "non-zero"},
+		{"a router container port of zero", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{Protocol: "TCP", HostPort: 443}}
+		}, "non-zero"},
+		{"a lowercase protocol", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{Protocol: "tcp", ContainerPort: 8443, HostPort: 443}}
+		}, "protocol"},
+		{"one host port on two protocols", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{Protocol: "TCP", ContainerPort: 8443, HostPort: 443}, {Protocol: "UDP", ContainerPort: 8443, HostPort: 443}}
+		}, ""},
+		{"a router host port mapped twice", func(c *config) {
+			c.Worker.RouterHostPorts = []routerHostPort{{Protocol: "TCP", ContainerPort: 8443, HostPort: 443}, {Protocol: "TCP", ContainerPort: 9443, HostPort: 443}}
+		}, "twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := parseConfig([]byte(workerDocument))

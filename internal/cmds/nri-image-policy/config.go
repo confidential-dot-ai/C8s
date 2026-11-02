@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/nri/pkg/api"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -16,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -102,6 +104,61 @@ type workerConfig struct {
 	// RouterWorkload names the base workload the router runs as: the one
 	// launch an API pod may hold host privilege for.
 	RouterWorkload string `yaml:"router_workload"`
+	// RouterHostPorts are the host ports the router's pod may map, on every
+	// node address; no other pod maps any.
+	RouterHostPorts []routerHostPort `yaml:"router_host_ports"`
+}
+
+// routerHostPort is one host port the router's template maps.
+type routerHostPort struct {
+	Protocol      string `yaml:"protocol"`
+	ContainerPort uint16 `yaml:"container_port"`
+	HostPort      uint16 `yaml:"host_port"`
+}
+
+// admitHostPorts admits a sandbox's host ports: none, or some of the router's
+// on an API pod in the router's namespace.
+func (w *workerConfig) admitHostPorts(pod *api.PodSandbox, ports []ctrdresolver.HostPort) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	if !routerPod(pod) {
+		return errors.New("only the router's pod maps host ports on a worker")
+	}
+	for _, port := range ports {
+		mapped := routerHostPort{Protocol: port.Protocol, ContainerPort: port.ContainerPort, HostPort: port.HostPort}
+		if port.HostIP != "" {
+			return fmt.Errorf("host port %s %d is mapped on %s alone, not on every node address", port.Protocol, port.HostPort, port.HostIP)
+		}
+		if !slices.Contains(w.RouterHostPorts, mapped) {
+			return fmt.Errorf("host port %s %d to container port %d is not one of the router's", port.Protocol, port.HostPort, port.ContainerPort)
+		}
+	}
+	return nil
+}
+
+// valid reports whether port names a CRI protocol and non-zero ports.
+func (port routerHostPort) valid() bool {
+	return slices.Contains(ctrdresolver.CRIProtocols, port.Protocol) &&
+		port.ContainerPort != 0 &&
+		port.HostPort != 0
+}
+
+// validateRouterHostPorts requires CRI protocols, non-zero ports, and each
+// host port mapped once.
+func validateRouterHostPorts(ports []routerHostPort) error {
+	seen := map[routerHostPort]bool{}
+	for _, port := range ports {
+		if !port.valid() {
+			return fmt.Errorf("worker.router_host_ports entry %+v needs protocol TCP, UDP or SCTP and non-zero ports", port)
+		}
+		key := routerHostPort{Protocol: port.Protocol, HostPort: port.HostPort}
+		if seen[key] {
+			return fmt.Errorf("worker.router_host_ports maps %s host port %d twice", port.Protocol, port.HostPort)
+		}
+		seen[key] = true
+	}
+	return nil
 }
 
 // routerMountKinds are the mounts a worker's router may take: none filled from
@@ -523,6 +580,9 @@ func (c *config) validateWorker() error {
 	}
 	if len(c.Mesh.ExemptNamespaces) > 0 {
 		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	if err := validateRouterHostPorts(c.Worker.RouterHostPorts); err != nil {
+		return err
 	}
 	name := c.Worker.RouterWorkload
 	router, ok := c.Allowlist.Base.Workloads[name]
