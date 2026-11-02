@@ -211,14 +211,33 @@ above. On TDX, RTMR[3] must hold the document's SHA-384 extended into the
 zeroed register, followed by a prefix of the policies in the node's
 measured-policy journal (`/run/nri-image-policy/measured-policies`), so a
 rerun after the NRI plugin measured a policy still passes. On SEV-SNP,
-`HOST_DATA` must be the document's SHA-256. It writes:
+`HOST_DATA` must be the document's SHA-256.
+
+It then reads the Kubernetes bootstrap token from `--bootstrap-token-file`:
+a regular file holding `<6 lowercase letters or digits>.<16 lowercase
+letters or digits>` and at most one newline. The launch disk carries it
+beside the document, outside the measurement. The node name is `n-` and 16
+hex digits derived from the kernel's boot ID, so every boot registers a new
+node.
+
+Every template under `/usr/lib/c8s/worker/static-pods` is rendered with this
+worker's `${NODE_NAME}` and `${POD_CIDR}`. Each may appear only as a whole
+`<flag>=<placeholder>` element of a container's command or args, the rule
+that fills the NRI floor's pins; a template naming either anywhere else is
+refused. It writes:
 
 | Output | Holds |
 |---|---|
 | `/run/c8s-node/cds.json` | The `cds.measurements` pin. |
 | `/run/c8s-node/router/*` | The router settings `router.*` gives, as on a server. |
-| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the CDS port, and `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges. |
+| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the CDS port, `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges, and its static-pod pins filled with this worker's values. |
+| `/etc/kubernetes/bootstrap-kubelet.conf` | Mode 0600: `https://` and `kubernetes.apiServer`, verified against `kubernetes.caCertificate` alone, with the bootstrap token. |
+| `/etc/kubernetes/kubelet-config.yaml` | The kubelet's configuration: `kubernetes.clusterDNS` for the cluster domain `cluster.local`, the static pods' directory, no anonymous access or read-only port, and debugging, log, profiling and debug-flag handlers off, so the kubelet serves no exec, attach, port-forward, logs or checkpoint. What it still serves (`/pods`, `/stats`, `/metrics`) takes bearer tokens the API server reviews and authorizes. |
+| `/etc/kubernetes/manifests/*` | The rendered static pods. |
+| `/etc/kubernetes/kubelet.env` | `NODE_NAME`. |
 
 Every output is removed first, and again if a step fails, so a document the
-launch did not bind, or one that breaks the rules, leaves none. A rerun with
-the same document writes the same bytes.
+launch did not bind, one that breaks the rules, or a bad token leaves none.
+`/etc/kubernetes` is removed whole. A rerun in the same boot with the same
+document and token writes the same bytes; under a running kubelet it
+restarts the static pods.
