@@ -72,6 +72,11 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		t.Fatal(err)
 	}
 	write("usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist", cni)
+	resolved, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/etc/systemd/resolved.conf.d/10-upstream.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("etc/systemd/resolved.conf.d/10-upstream.conf", resolved)
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)

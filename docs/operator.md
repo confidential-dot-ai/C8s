@@ -260,9 +260,13 @@ reaches the application. Do not map to the internal capture listener or add a
 traffic leaves with the CVM's source address; guest-local services and IPv4
 link-local addresses stay blocked for applications and the endpoint alike.
 
-The standalone kubelet uses `/run/systemd/resolve/resolv.conf`, the guest's
-upstream resolvers, not the guest-local stub or a cluster DNS address; pod
-preparation sets `dnsPolicy: Default` and drops `dnsConfig` overrides. Before
+The standalone kubelet uses `/run/c8s-pod/resolv.conf`, which pod preparation
+renders from the upstream resolvers the measured image names under
+`/etc/systemd/resolved.conf.d`; neither the guest-local stub, a cluster DNS
+address nor a resolver the host's DHCP supplied reaches the pod, and
+preparation refuses to stage a pod when the image names no remote IPv4
+resolver. Pod preparation sets `dnsPolicy: Default` and drops `dnsConfig`
+overrides. Before
 containerd starts, preparation stages the baked CNI template under
 `/run/c8s-pod/cni` with bridge and veth MTU set to the smallest of 1500, the
 default-route interface MTU and any explicit default-route MTU cap. The route

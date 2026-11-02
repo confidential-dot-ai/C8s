@@ -129,6 +129,10 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err != nil {
 		return err
 	}
+	resolv, err := podResolvConf(rootDir)
+	if err != nil {
+		return err
+	}
 
 	if err := publishPublic(path(PublicDir), outputs, true); err != nil {
 		return err
@@ -143,6 +147,7 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 		{podKubeletEnvPath, []byte("KUBELET_HOSTNAME=" + d.Node.Name + "\n"), 0644},
 		{podUnmanagedLinks, []byte(podUnmanagedConfig), 0644},
 		{podCNIPath, cni, 0644},
+		{podResolvConfPath, resolv, 0644},
 	}
 	for _, f := range files {
 		if err := writeFile(path(f.path), f.data, f.mode); err != nil {

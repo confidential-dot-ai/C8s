@@ -50,6 +50,11 @@ func preparePodRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	writeInput(t, root, bakedPodCNIPath, data)
+	resolved, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra" + bakedResolvedConfDir + "/10-upstream.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInput(t, root, bakedResolvedConfDir+"/10-upstream.conf", resolved)
 	return root
 }
 
