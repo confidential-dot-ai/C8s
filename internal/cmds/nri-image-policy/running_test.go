@@ -3,17 +3,12 @@ package nriimagepolicy
 import (
 	"context"
 	"slices"
-	"sync/atomic"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
-
-type storageFunc func(string) allowlist.MountStorage
-
-func (f storageFunc) Inspect(source string) allowlist.MountStorage { return f(source) }
 
 // revocationPlugin enforces on running containers, with pushDigestA in a
 // served allowlist and pushDigestC in the base. Its containerd records kills.
@@ -115,22 +110,18 @@ func TestStartAdmittedJustBeforeARevocationIsKilled(t *testing.T) {
 	pod.Uid = "uid"
 	ctr := makeCtrWithImageArgs(pod.Id, "app", "registry/repo@"+pushDigestA, []string{"/app"})
 	ctr.Mounts = []*api.Mount{{Destination: "/scratch", Source: kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/scratch", Type: "bind"}}
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	// Measurement follows admission and precedes the start return, so it is
+	// the deterministic pause point even when digest resolution is cached.
 	admitted, release := make(chan struct{}), make(chan struct{})
-	var inspects atomic.Int32
-	p.mountStorage = storageFunc(func(string) allowlist.MountStorage {
-		if inspects.Add(1) == 2 { // the inventory record of the admitted start
-			close(admitted)
-			<-release
-		}
-		return allowlist.MountMemory
-	})
+	p.measurer = pausingMeasurer{admitted: admitted, release: release}
 	started := make(chan error)
 	go func() { started <- p.StartContainer(context.Background(), pod, ctr) }()
 
 	select {
 	case <-admitted:
 	case err := <-started:
-		t.Fatalf("start returned before recording: %v (inspects %d)", err, inspects.Load())
+		t.Fatalf("start returned before recording: %v", err)
 	}
 	store.apply(anyAllowlist(map[string]string{pushDigestB: "image-b"}), 2)
 	p.KillRevoked(context.Background())
@@ -194,3 +185,14 @@ func TestStopAndRemoveUntrackOnlyAStartedContainer(t *testing.T) {
 		})
 	}
 }
+
+// pausingMeasurer holds a start between its admission verdict and its return.
+type pausingMeasurer struct{ admitted, release chan struct{} }
+
+func (m pausingMeasurer) MeasureOnce(string) (bool, error) {
+	close(m.admitted)
+	<-m.release
+	return true, nil
+}
+
+func (pausingMeasurer) Digests() []string { return nil }
