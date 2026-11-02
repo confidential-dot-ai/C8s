@@ -160,6 +160,12 @@ func (o sandboxObservation) violations() []string {
 	return out
 }
 
+// beyondHostBinds is every violation but a host bind.
+func (o sandboxObservation) beyondHostBinds() []string {
+	o.HostBinds = nil
+	return o.violations()
+}
+
 // logAttrs renders the observation as slog key/value pairs.
 func (o sandboxObservation) logAttrs() []any {
 	return []any{

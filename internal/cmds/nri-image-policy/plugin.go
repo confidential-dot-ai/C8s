@@ -582,6 +582,16 @@ const (
 	launchFinal
 )
 
+// keepsTag reports whether a container may run an image by tag: the base's,
+// as the node's manifests name carried images by tag, or a mesh-exempt
+// namespace's, whose pods get no workload traffic. A worker keeps none.
+func (p *plugin) keepsTag(cfg *config, baseAdmitted bool, namespace string) bool {
+	if cfg.Worker != nil {
+		return false
+	}
+	return baseAdmitted || slices.Contains(p.mesh.policy.ExemptNamespaces, namespace)
+}
+
 // checkImagePhase checks the image and observed launch specification against
 // the base and served allowlists for the requested admission phase.
 func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
@@ -659,10 +669,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// A tag is resolved here, at hook time, while the runtime builds the
 	// rootfs from the image kubelet resolved earlier; a tag moved in between
 	// would let this check judge one image and the container run another.
-	// Only the base keeps tags: the node's own manifests name its carried
-	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
-	// are not mesh members, so they never receive workload traffic.
-	if !pinned && !baseAdmitted && !slices.Contains(p.mesh.policy.ExemptNamespaces, check.Namespace) {
+	if !pinned && !p.keepsTag(cfg, baseAdmitted, check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
@@ -874,7 +881,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.nodeTCBExempt(pod, rc) {
+		if p.nodeTCBExempt(cfg, pod, rc, obs) {
 			return verdictAllow, ""
 		}
 	}
@@ -923,21 +930,39 @@ const (
 	staticPodSource        = "file"
 )
 
-// nodeTCBExempt reports whether the measured base excuses a launch holding
-// host privilege:
+// staticPod reports a pod the kubelet read from its manifest directory.
+func staticPod(pod *api.PodSandbox) bool {
+	return pod.GetAnnotations()[configSourceAnnotation] == staticPodSource
+}
+
+// nodeTCBExempt reports whether the measured base excuses obs, a launch
+// holding host privilege:
 //   - a kubelet static pod whose launch the base admits: its manifest is
-//     written only by RKE2 on the node, from the measured config and the signed
-//     launch document;
-//   - any other pod only for a launch a base entry pins
+//     written only on the node, from the measured image and launch document.
+//     On a worker the entry must also pin the launch;
+//   - on a worker, an API pod in the router's namespace whose launch the
+//     router workload pins, for that launch's host binds and nothing else.
+//     With its own network namespace and no exempt namespace, it is a mesh
+//     member, so the gate holds every container of its pod to a role launch
+//     in a PID namespace of its own (requireContainerAlone);
+//   - elsewhere, an API pod for a launch a base entry pins
 //     (allowlist.Container.LaunchPinned).
 //
 // An open entry (command, args or mounts any) therefore admits its image but
-// never hands it host privilege, the host network included.
-func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
-	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource {
+// never hands an API pod host privilege, the host network included.
+func (p *plugin) nodeTCBExempt(cfg *config, pod *api.PodSandbox, rc allowlist.RunningContainer, obs sandboxObservation) bool {
+	switch {
+	case staticPod(pod) && cfg.Worker != nil:
+		return p.policy.baseAdmitsPinned(rc)
+	case staticPod(pod):
 		return p.policy.baseAdmits(rc, launchFinal)
+	case cfg.Worker != nil:
+		return pod.GetNamespace() == routerNamespace &&
+			len(obs.beyondHostBinds()) == 0 &&
+			cfg.Worker.routerIndex(cfg.Allowlist.Base).AdmitsContainerWhere(rc, allowlist.Container.LaunchPinned)
+	default:
+		return p.policy.baseAdmitsPinned(rc)
 	}
-	return p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,

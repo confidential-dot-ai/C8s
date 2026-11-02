@@ -35,6 +35,9 @@ type config struct {
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
+	// Worker marks a worker, whose Kubernetes control plane runs outside
+	// its TEE; only the worker image's measured config sets it.
+	Worker *workerConfig `yaml:"worker"`
 
 	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
 	// from what names it (cdsaddress.go). "" when nothing does.
@@ -92,6 +95,24 @@ type allowlistConfig struct {
 	// an allowlist field: a CDS-served document has no way to express it.
 	NodeTCB bool       `yaml:"node_tcb"`
 	Pull    pullConfig `yaml:"pull"`
+}
+
+// workerConfig is what a worker trusts beyond its static pods.
+type workerConfig struct {
+	// RouterWorkload names the base workload the router runs as: the one
+	// launch an API pod may hold host privilege for.
+	RouterWorkload string `yaml:"router_workload"`
+}
+
+// routerMountKinds are the mounts a worker's router may take: none filled from
+// objects the control plane writes. Its emptyDirs are shared only with the
+// role containers its namespace admits.
+var routerMountKinds = []allowlist.MountClass{allowlist.MountHost, allowlist.MountNodeRootFile, allowlist.MountEmptyDir}
+
+// routerIndex indexes base's router workload alone.
+func (w *workerConfig) routerIndex(base *allowlist.Allowlist) *allowlist.Index {
+	router := map[string]allowlist.Workload{w.RouterWorkload: base.Workloads[w.RouterWorkload]}
+	return (&allowlist.Allowlist{Workloads: router}).BuildIndex()
 }
 
 // pullConfig configures the CDS polling source.
@@ -485,7 +506,60 @@ func (c *config) Validate() error {
 	if err := c.validateMesh(); err != nil {
 		return err
 	}
+	if err := c.validateWorker(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+// validateWorker requires a worker to trust its static pods and the router's
+// pinned launch, and no namespace by itself.
+func (c *config) validateWorker() error {
+	if c.Worker == nil {
+		return nil
+	}
+	if !c.enforcesWorkerPolicy() {
+		return fmt.Errorf("worker requires allowlist.node_tcb, allowlist.base, policy.mode %q, policy.sandbox %q and policy.deny_missing_annotation", ModeFailClosed, SandboxEnforce)
+	}
+	if len(c.Mesh.ExemptNamespaces) > 0 {
+		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	name := c.Worker.RouterWorkload
+	router, ok := c.Allowlist.Base.Workloads[name]
+	if name == "" || !ok {
+		return fmt.Errorf("worker.router_workload %q is not an allowlist.base workload", name)
+	}
+	for _, container := range append(slices.Clone(router.InitContainers), router.Containers...) {
+		if !container.LaunchPinned() {
+			return fmt.Errorf("worker.router_workload %s container %s does not pin its launch: command, args, mounts and env must not be any", name, container.Digest)
+		}
+		if takesUnmeasuredInputs(container) {
+			return fmt.Errorf("worker.router_workload %s container %s takes Service links or mounts other than %v", name, container.Digest, routerMountKinds)
+		}
+	}
+	return nil
+}
+
+// enforcesWorkerPolicy reports whether c's base allowlist is the node's TCB
+// and its policy fails closed, enforces sandbox checks and denies containers
+// without an image annotation.
+func (c *config) enforcesWorkerPolicy() bool {
+	return c.Allowlist.NodeTCB &&
+		c.Allowlist.Base != nil &&
+		c.Policy.Mode == ModeFailClosed &&
+		c.Policy.Sandbox == SandboxEnforce &&
+		c.Policy.DenyMissingAnnotation
+}
+
+// takesUnmeasuredInputs reports whether container takes Service links or a
+// mount kind outside routerMountKinds, which the control plane fills.
+func takesUnmeasuredInputs(container allowlist.Container) bool {
+	if container.Env.ServiceLinks {
+		return true
+	}
+	return slices.ContainsFunc(container.Mounts.Rules, func(r allowlist.MountRule) bool {
+		return !slices.Contains(routerMountKinds, r.Kind)
+	})
 }
 
 // validateMesh requires a mesh policy this node can enforce.

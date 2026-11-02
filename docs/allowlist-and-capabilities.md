@@ -23,7 +23,8 @@ A pod admitted by the served allowlist must name its image by digest
 image the runtime starts, so a tag reference is refused with `image must be
 referenced by digest`. Only the base allowlist keeps tags, for the images the
 node image carries, and so do pods in mesh-exempt platform namespaces, which
-never receive workload traffic.
+never receive workload traffic. A worker keeps no tags: its registry is its
+control plane's.
 
 ## The model
 
@@ -168,6 +169,23 @@ cases, and nothing more:
   signed launch document;
 - any other pod only under an entry that pins the launch: command, args and
   mounts not `any`, and the environment constrained.
+
+A worker ([launch-configuration.md](launch-configuration.md#worker-documents))
+answers to a control plane outside its TEE. That control plane writes every
+API pod's spec and can read the values in the static pods' launches, so a
+worker's measured config (`worker.router_workload`) narrows both cases:
+
+- a static pod is exempt only under an entry that pins its launch;
+- any other pod is exempt only as the router: in the `c8s-router` namespace,
+  under the named router workload's pinned launch, and only for the host binds
+  that launch declares. The host network, a privileged container, devices,
+  hooks and sysctls stay violations.
+
+A worker's config also names no mesh-exempt namespace, so the mesh protects
+every API pod with its own network namespace wherever the control plane puts
+it; a static pod is the node's own and is never a member, on any node. The
+router workload takes only host, node-root file and emptyDir mounts and no
+Service links: its settings come from the worker's measured document.
 
 An open entry admits its image, and the pod is sandboxed like any other, the
 host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
