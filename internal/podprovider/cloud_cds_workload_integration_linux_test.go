@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,8 @@ import (
 
 // The first process must observe its owned CDS reachable, then continuously
 // unreachable for two minutes before its one successful exit. Only the RAM
-// marker survives that restart; no control endpoint or guest privilege exists.
+// marker survives that restart. Renewal mode instead withdraws readiness after
+// 65 minutes without restarting. Neither mode adds control or guest privilege.
 const cloudCDSScript = `import errno
 import os
 import socket
@@ -44,12 +46,17 @@ except OSError:
     sys.exit(42)
 
 seen = threading.Event()
+renewal = len(sys.argv) == 3
+hold = int(sys.argv[2]) if renewal else 120
+if renewal and hold != 3900:
+    sys.exit(47)
 
 def observe_cds():
-    deadline = time.monotonic() + 600
+    deadline = time.monotonic() + (hold + 900 if renewal else 600)
     reachable_deadline = time.monotonic() + 60
     reachable = False
     failed_since = None
+    completed = False
     while time.monotonic() < deadline:
         try:
             with socket.create_connection((sys.argv[1], 8443), timeout=2):
@@ -60,7 +67,12 @@ def observe_cds():
             if reachable:
                 if failed_since is None:
                     failed_since = time.monotonic()
-                if time.monotonic() - failed_since >= 120:
+                if time.monotonic() - failed_since >= hold:
+                    if renewal:
+                        completed = True
+                        seen.clear()
+                        time.sleep(1)
+                        continue
                     try:
                         fd = os.open("/restart/once", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                         os.close(fd)
@@ -72,6 +84,8 @@ def observe_cds():
         else:
             reachable = True
             seen.set()
+            if renewal and completed:
+                return
             failed_since = None
         time.sleep(1)
     os._exit(46)
@@ -104,6 +118,9 @@ func (r *cloudRun) cdsWorkload(cds endpoint) (*corev1.Pod, map[string]any, error
 	}
 	app := &pod.Spec.Containers[0]
 	app.Args = append(app.Args, cds.Host)
+	if r.cfg.scenario() == "cds-renewal-outage" {
+		app.Args = append(app.Args, strconv.Itoa(int(cloudCDSRenewalHold.Seconds())))
+	}
 	rules := policy["workloads"].(map[string]any)["cloud-a"].(map[string]any)["containers"].([]any)
 	rules[0].(map[string]any)["args"].(map[string]any)["argv"] = app.Args
 	return pod, policy, nil
@@ -365,11 +382,11 @@ func cloudCDSRestart(before, current cloudCDSState, held bool) (bool, error) {
 }
 
 func cloudCDSRevoked(before, current cloudCDSState) (bool, error) {
-	if !current.MeshStart.Equal(before.MeshStart) || current.Restarts < 1 || current.Restarts > 2 {
+	if !current.MeshStart.Equal(before.MeshStart) || current.Restarts < before.Restarts || current.Restarts > before.Restarts+1 {
 		return false, errors.New("CDS revocation changed mesh identity or admitted additional restarts")
 	}
 	if current.Running {
-		if current.Restarts != 1 || !current.AppStart.Equal(before.AppStart) {
+		if current.Restarts != before.Restarts || !current.AppStart.Equal(before.AppStart) {
 			return false, errors.New("revoked application started again")
 		}
 		return false, nil

@@ -113,8 +113,8 @@ fi
 
 if [[ "$mode" == run ]]; then
     scenario="$(jq -er 'if .scenario == null or .scenario == "" then "connected" else .scenario end |
-        select(. == "connected" or . == "verification-timeout" or . == "warm-assignment" or . == "cds-outage")' "$input")" || {
-        echo 'scenario must be connected, verification-timeout, warm-assignment or cds-outage' >&2; exit 1;
+        select(. == "connected" or . == "verification-timeout" or . == "warm-assignment" or . == "cds-outage" or . == "cds-renewal-outage" or . == "cds-decree")' "$input")" || {
+        echo 'scenario must be connected, verification-timeout, warm-assignment, cds-outage, cds-renewal-outage or cds-decree' >&2; exit 1;
     }
     command -v go >/dev/null || { echo 'go is required to build the live harness' >&2; exit 1; }
     for entry in tokenFile manifestFile cdsManifestFile cliFile probeFile; do
@@ -295,6 +295,10 @@ PY
         ["attestedReadiness","cdsAccessControl","cleanup","exactDigests","lateVerifiedResultRejected","normalScheduler","persistedVerificationDeadline","providerDeletion","readinessWithdrawn","restartRecovery","timeoutTermination"]
       elif $scenario == "cds-outage" then
         ["attestedReadiness","authenticatedPolicyUpdate","cdsAccessControl","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","normalScheduler","providerDeletion","revocationEnforced","servedPolicyRetained"]
+      elif $scenario == "cds-renewal-outage" then
+        ["attestedReadiness","authenticatedPolicyUpdate","cdsAccessControl","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","normalScheduler","providerDeletion","renewalAfterOutage","revocationEnforced","servedPolicyRetained","taskContinuity"]
+      elif $scenario == "cds-decree" then
+        ["attestedReadiness","cdsAccessControl","certificateIdentity","cleanup","exactDigests","genesisApplied","localGenericTrustPreserved","normalScheduler","pinDecreeApplied","policyRefusals","providerDeletion","staticPinFloor","taskContinuity","unjoinedRefusal"]
       elif $scenario == "warm-assignment" then
         ["assignmentBeforePOST","attestedReadiness","cdsAccessControl","certificateIdentity","cleanup","conflictingAssignmentRejected","exactDigests","genericIdle","normalScheduler","poolDrain","providerDeletion","restartRecovery","uidFencedClaim"]
       else

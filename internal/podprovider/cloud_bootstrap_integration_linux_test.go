@@ -50,7 +50,7 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 			return nil, nil, errors.New("standalone scenario requires one A workload")
 		}
 		program, names = cloudVerificationScript, []string{"app"}
-		if r.cfg.scenario() == "cds-outage" {
+		if r.cfg.cdsOutageScenario() {
 			program = cloudCDSScript
 		}
 	}
@@ -95,14 +95,14 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 			c["readinessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/ready", "port": 8080}, "periodSeconds": 5, "timeoutSeconds": 2, "failureThreshold": 1}
 			c["livenessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/live", "port": 8080}, "periodSeconds": 10, "timeoutSeconds": 2, "failureThreshold": 6}
 		}
-		if r.cfg.scenario() == "cds-outage" {
+		if r.cfg.cdsOutageScenario() {
 			c["volumeMounts"] = []any{map[string]any{"name": "restart", "mountPath": "/restart"}}
 		}
 		containers = append(containers, c)
 		rules = append(rules, map[string]any{"digest": strings.Split(podfixture.PythonImage, "@")[1], "image": podfixture.PythonImage, "command": map[string]any{"policy": "exact", "argv": command}, "args": map[string]any{"policy": "exact", "argv": args}, "mounts": map[string]any{"policy": "any"}})
 	}
 	wire := map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": "cloud-" + side, "namespace": "tenant", "annotations": map[string]string{Annotation: "true"}}, "spec": map[string]any{"automountServiceAccountToken": false, "restartPolicy": "Never", "containers": containers, "schedulingGates": []any{map[string]any{"name": "acceptance.confidential.ai/durable-intent"}}}}
-	if r.cfg.scenario() == "cds-outage" {
+	if r.cfg.cdsOutageScenario() {
 		spec := wire["spec"].(map[string]any)
 		spec["restartPolicy"] = "Always"
 		spec["volumes"] = []any{map[string]any{"name": "restart", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": "1Mi"}}}
@@ -130,7 +130,7 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	mesh := map[string]any{"containers": []any{map[string]any{"digest": strings.Split(r.cfg.MeshImage, "@")[1], "image": r.cfg.MeshImage, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--cert-path=/etc/c8s/certs/tls.crt", "--key-path=/etc/c8s/certs/tls.key", "--ca-path=/etc/c8s/certs/ca.crt"}}, "mounts": map[string]any{"policy": "any"}}}}
-	if r.cfg.scenario() == "cds-outage" {
+	if r.cfg.cdsOutageScenario() {
 		delete(workloads["workloads"].(map[string]any), "cloud-a")
 	}
 	workloads["workloads"].(map[string]any)["pod-mesh-membership"] = mesh
@@ -169,6 +169,7 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 	}
 	until, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
+	haStarted := false
 	for {
 		in, readErr := r.getOwned(until, "cds")
 		if readErr != nil {
@@ -177,6 +178,12 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		if in != nil {
 			cds, err = cloudEndpoint(in, "cds")
 			if err == nil && cds.Port == 8443 {
+				if r.cfg.scenario() == "cds-decree" && !haStarted {
+					if err = r.haBootstrap(until, cds); err != nil {
+						return nil, nil, cds, err
+					}
+					haStarted = true
+				}
 				_, err = r.ca(until, cds)
 				if err == nil {
 					break
@@ -195,6 +202,9 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	cfg := &Config{ProviderID: r.ledger.Run, NodeName: r.ledger.Run, Namespace: "podcloud-system", CloudURL: r.cfg.CloudURL, CloudTokenFile: r.cfg.TokenFile, Image: r.cfg.Image, ImageManifestFile: r.cfg.ManifestFile, LaunchKeyFile: providerKey, ServerAddress: cds.Host, ServerPublicKeyFile: filepath.Join(r.dir, "server.pub"), CDSAddress: net.JoinHostPort(cds.Host, strconv.Itoa(cds.Port)), CDSImagePolicyFile: filepath.Join(r.dir, "cds/cds-pin.json"), WorkloadsFile: workloadPath, ClusterID: r.ledger.Run, Size: r.cfg.Size, Location: r.cfg.Location, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, ReservedMemoryMiB: 1024, MaxPods: 2, PublicIP: "shared"}
+	if r.cfg.scenario() == "cds-decree" {
+		cfg.CDSPinDecreeFile = filepath.Join(r.dir, "ha-applied-decree.json")
+	}
 	if r.cfg.scenario() == "warm-assignment" {
 		cfg.WarmTarget = 1
 	}
@@ -202,7 +212,7 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	cfg, err = LoadConfig(filepath.Join(r.dir, "provider.json"))
-	if err == nil && r.cfg.scenario() == "cds-outage" {
+	if err == nil && r.cfg.cdsOutageScenario() {
 		var appPolicy map[string]any
 		a, appPolicy, err = r.cdsWorkload(cds)
 		if err == nil {

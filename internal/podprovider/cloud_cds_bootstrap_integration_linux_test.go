@@ -106,7 +106,11 @@ func (r *cloudRun) cdsBundle(ctx context.Context, workloadsPath, podPublicPath s
 	}
 	// The current schema requires a node authority. This separate server key
 	// is never launched; it grants no Pod assignment or policy-write authority.
-	expected, pin, err := cdsconfig.Build(cdsconfig.Inputs{ClusterID: r.ledger.Run, OperatorKeys: operators, ComponentSeed: workloads, Nodes: nodes, PodImagePolicy: pods, NodeCIDRs: []string{"10.0.0.0/24"}, ClusterCIDRs: []string{"10.52.0.0/16", "10.53.0.0/16"}, LeafDNSPatterns: []string{cmdsutil.ServiceDNSSANPattern}, ManifestPath: r.cfg.CDSManifestFile, Family: teetypes.FamilyTDX})
+	inputs := cdsconfig.Inputs{ClusterID: r.ledger.Run, OperatorKeys: operators, ComponentSeed: workloads, Nodes: nodes, PodImagePolicy: pods, NodeCIDRs: []string{"10.0.0.0/24"}, ClusterCIDRs: []string{"10.52.0.0/16", "10.53.0.0/16"}, LeafDNSPatterns: []string{cmdsutil.ServiceDNSSANPattern}, ManifestPath: r.cfg.CDSManifestFile, Family: teetypes.FamilyTDX}
+	if r.cfg.scenario() == "cds-decree" {
+		inputs.HA = cdsconfig.HA{Replicas: []string{"10.0.2.2"}, Voters: 1}
+	}
+	expected, pin, err := cdsconfig.Build(inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -114,11 +118,15 @@ func (r *cloudRun) cdsBundle(ctx context.Context, workloadsPath, podPublicPath s
 		return nil, errors.New("measured CDS configuration exceeds Cloud document bound")
 	}
 	bundle := filepath.Join(r.dir, "cds")
-	if _, err = r.cli(ctx, "cds", "config", "new", "--out", bundle, "--cluster-id", r.ledger.Run,
+	args := []string{"cds", "config", "new", "--out", bundle, "--cluster-id", r.ledger.Run,
 		"--operator-keys", filepath.Join(r.dir, "cds-operator.pub"), "--allowlist-seed", workloadsPath,
 		"--node-pins", filepath.Join(r.dir, "node-policy.json"), "--pod-image-policy-file", filepath.Join(r.dir, "pod-policy.json"),
 		"--node-cidr", "10.0.0.0/24", "--pod-cidr", "10.52.0.0/16", "--service-cidr", "10.53.0.0/16",
-		"--image-manifest", r.cfg.CDSManifestFile, "--platform", "tdx"); err != nil {
+		"--image-manifest", r.cfg.CDSManifestFile, "--platform", "tdx"}
+	if r.cfg.scenario() == "cds-decree" {
+		args = append(args, "--replica", "10.0.2.2", "--voters", "1")
+	}
+	if _, err = r.cli(ctx, args...); err != nil {
 		return nil, err
 	}
 	for _, file := range []struct {

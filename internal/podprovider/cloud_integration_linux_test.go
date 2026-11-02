@@ -160,8 +160,24 @@ func TestPodProviderCloud(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("normal scheduler bound PodA; real guest status and exact measured digests verified")
-	if r.cfg.scenario() == "cds-outage" {
-		if err = r.cdsOutage(ctx, h, cfg, a, cds); err != nil {
+	if r.cfg.scenario() == "cds-decree" {
+		if err = r.cdsDecree(ctx, h, cfg, a, cds); err != nil {
+			t.Fatal(err)
+		}
+		h.assertKindInfrastructure(t)
+		if err = r.deleteThroughProvider(ctx, h, cfg); err != nil {
+			t.Fatal(err)
+		}
+		accepted = true
+		return
+	}
+	if r.cfg.cdsOutageScenario() {
+		if r.cfg.scenario() == "cds-renewal-outage" {
+			err = r.cdsRenewalOutage(ctx, h, cfg, a, cds)
+		} else {
+			err = r.cdsOutage(ctx, h, cfg, a, cds)
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		h.assertKindInfrastructure(t)

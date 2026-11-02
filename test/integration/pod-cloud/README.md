@@ -2,7 +2,8 @@
 
 This lane tests signed `c8s-launch/v2` Pod guests against a separately measured
 CDS VM. See [inputs and scenarios](../../../docs/integration-tests.md#pod-cloud-acceptance)
-for running `connected`, `warm-assignment`, `verification-timeout` and `cds-outage`.
+for running `connected`, `warm-assignment`, `verification-timeout`, `cds-outage`,
+`cds-renewal-outage` and `cds-decree`.
 
 New runs require deployed Cloud API/operator support and independently admitted
 `c8s-pod@<version>` and `c8s-cds@<same-version>` artifacts from the recorded source.
@@ -21,6 +22,20 @@ schema requires node pins and a node subnet: the harness supplies a separate
 run-local server authority and `10.0.0.0/24`, but never launches a node under that
 key. It remains cluster identity context, with no Pod assignment or CDS write
 authority; production validators are unchanged.
+
+The renewal-outage scenario keeps CDS unreachable for at least 65 minutes,
+covering the production guest's one-hour renewal ceiling. The unprivileged app
+signals its own continuous outage through readiness without restarting. The
+runner requires unchanged tasks and the same valid leaf throughout, then the
+same CDS CA and a new certificate after restoration, signed revocation and cleanup.
+This is not certificate-expiry or CDS-process-restart acceptance.
+
+The decree scenario uses one HA CDS replica and one static Pod. It observes
+attested prejoin refusals, applies real CLI Genesis and a same-image pin decree,
+and cold-boots the Pod with the exported decree's floor. Five authenticated
+negative decrees must preserve policy, CA, CDS member identity, VM boot and Pod
+tasks. Generic signing/assignment trust preservation is checked locally. This is
+not failover, an image roll, actual old-image refusal or process restart.
 
 Every scenario authenticates the initial policy and proves unsigned, Pod-key and
 server-key writes are refused without changing it. Transport failures cannot
