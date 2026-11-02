@@ -232,7 +232,7 @@ func TestAssignmentStorageFailureCanRetryButRestartForgetsNonce(t *testing.T) {
 	}
 }
 
-func TestAssignmentNonceCapacityNeverEvictsAnIssuedNonce(t *testing.T) {
+func TestAssignmentNonceBoundDiscardsTheOldestUnusedNonce(t *testing.T) {
 	s, key, peer, _ := assignmentFixture(t)
 	first := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
 	for range maxAssignmentNonces - 1 {
@@ -240,11 +240,25 @@ func TestAssignmentNonceCapacityNeverEvictsAnIssuedNonce(t *testing.T) {
 			t.Fatal(rec.Code)
 		}
 	}
-	if rec := serve(Handler{assignment: s}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusServiceUnavailable {
-		t.Fatal("unbounded issuance")
-	}
 	if rec := postAssignment(s, peer, first); rec.Code != http.StatusOK {
-		t.Fatal("old issued nonce was evicted")
+		t.Fatal("a nonce within the bound was discarded")
+	}
+
+	s, key, peer, _ = assignmentFixture(t)
+	first = encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
+	for range maxAssignmentNonces {
+		if rec := serve(Handler{assignment: s}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK {
+			t.Fatal("issuance refused at the bound")
+		}
+	}
+	if len(s.nonces) != maxAssignmentNonces || len(s.issued) != maxAssignmentNonces {
+		t.Fatal("bound not held")
+	}
+	if rec := postAssignment(s, peer, first); rec.Code != http.StatusBadRequest || s.assignedUID() != "" {
+		t.Fatal("the discarded nonce was accepted")
+	}
+	if rec := postAssignment(s, peer, encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))); rec.Code != http.StatusOK {
+		t.Fatal("a fresh nonce after the discard was refused")
 	}
 }
 

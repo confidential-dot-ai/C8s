@@ -256,9 +256,10 @@ replaced sandbox prevents recovery for that boot. Allocate a new Pod CVM in
 those cases; deleting the retained state does not authorize another assignment.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
-The service retains at most 256 outstanding nonces without evicting any; further
-issuance returns 503. The provider must retire an unavailable target within its
-verification budget. Warm capacity is opt-in; generic boot itself has no wait
+The service keeps at most 256 unused nonces, oldest first; issuing one more
+discards the oldest, and an assignment under a discarded nonce is refused as
+not issued. A provider that loses its nonce this way obtains a fresh one. The
+provider must retire an unavailable target within its verification budget. Warm capacity is opt-in; generic boot itself has no wait
 deadline.
 
 The pod manifest requires `metadata.uid` and a canonical SHA-256 digest on every

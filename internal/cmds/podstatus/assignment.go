@@ -26,7 +26,10 @@ import (
 const (
 	AssignNoncePath = "/v1/assign/nonce"
 	AssignPath      = "/v1/assign"
-	// Issued nonces never expire or get evicted. Exhaustion refuses new issuance.
+	// Unused nonces are kept in issue order. The nonce route is public, so a
+	// client that keeps asking must not lock the provider out for the boot:
+	// at the bound the oldest unused nonce is discarded, and an assignment
+	// under it is refused like one never issued.
 	maxAssignmentNonces = 256
 )
 
@@ -49,6 +52,7 @@ type assignmentService struct {
 	doc       *launchconfig.Document
 	store     assignmentStore
 	nonces    map[[podassign.NonceSize]byte]struct{}
+	issued    [][podassign.NonceSize]byte // the unused nonces, oldest first
 	uid       string
 	runtime   *nodeservices.PodRuntime
 	boundKey  func(context.Context) (*ecdsa.PublicKey, error)
@@ -107,9 +111,9 @@ func (s *assignmentService) assignedUID() string { s.mu.Lock(); defer s.mu.Unloc
 func (s *assignmentService) serveNonce(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.nonces) >= maxAssignmentNonces {
-		http.Error(w, "assignment nonce capacity unavailable", http.StatusServiceUnavailable)
-		return
+	if len(s.issued) >= maxAssignmentNonces {
+		delete(s.nonces, s.issued[0])
+		s.issued = s.issued[1:]
 	}
 	var nonce [podassign.NonceSize]byte
 	for {
@@ -122,6 +126,7 @@ func (s *assignmentService) serveNonce(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.nonces[nonce] = struct{}{}
+	s.issued = append(s.issued, nonce)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, struct {
 		Nonce []byte `json:"nonce"`
@@ -191,6 +196,7 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 	s.uid = assigned.Pod.UID
 	s.runtime = &runtime
 	clear(s.nonces)
+	s.issued = nil
 	select {
 	case s.wake <- struct{}{}:
 	default:
