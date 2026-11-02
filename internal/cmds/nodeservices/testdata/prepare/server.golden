@@ -1,0 +1,121 @@
+== etc/nri/conf.d/image-policy.yaml -rw------- ==
+allowlist:
+    base:
+        schema: c8s.allowlist/v1
+        workloads:
+            kube-apiserver:
+                containers:
+                    - digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                      command:
+                        policy: any
+                      args:
+                        policy: exact
+                        argv:
+                            - --advertise-address=192.0.2.21
+                            - --node-name=n1
+                            - --secure-port=6443
+                      mounts:
+                        policy: deny
+                      env:
+                        policy: any
+            operator:
+                containers:
+                    - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                      command:
+                        policy: any
+                      args:
+                        policy: any
+                      mounts:
+                        policy: deny
+                      env:
+                        policy: any
+    pull:
+        cds_measurements_config: /run/c8s-node/cds.json
+        cds_pin_floor: 9
+        timeout: 30s
+        url: https://cds.example.org:8443
+mesh:
+    capture:
+        health: 15021
+        inbound: 15006
+        outbound: 15001
+    cluster_ranges:
+        - 10.52.0.0/16
+        - 10.53.0.0/16
+    exempt_namespaces:
+        - kube-system
+    resolver: 10.53.0.10
+    roles:
+        - name: mesh
+          uid: 1337
+        - name: credentials
+          port: 8443
+          uid: 1338
+platform: tdx
+policy:
+    enforce_existing: true
+    mode: fail-closed
+== run/c8s-node/cds.json -rw-r--r-- ==
+{
+  "schema_version": "2",
+  "tee": "sev-snp",
+  "measurements": [
+    {
+      "name": "cds-smp4",
+      "measurement": "505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050",
+      "launch_file": "schemaVersion: c8s-cds/v1\n"
+    },
+    {
+      "name": "cds-smp8",
+      "measurement": "515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151",
+      "launch_file": "schemaVersion: c8s-cds/v1\n"
+    }
+  ]
+}
+== run/c8s-node/operator-pubkey -rw-r--r-- ==
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaaBz1ISIaMWDuPRjgg152EBIYRab
+ILbNz0VOO47mubLnNsK8igqlET/44vuAzyC+Zw4aha2ag3HgzfBWZxbuog==
+-----END PUBLIC KEY-----
+== run/c8s-node/peers.json -rw-r--r-- ==
+{
+  "schema_version": "1",
+  "tee": "tdx",
+  "measurements": [
+    {
+      "name": "server",
+      "mrtd": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "rtmr": [
+        null,
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        null
+      ],
+      "approver_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaaBz1ISIaMWDuPRjgg152EBIYRab\nILbNz0VOO47mubLnNsK8igqlET/44vuAzyC+Zw4aha2ag3HgzfBWZxbuog==\n-----END PUBLIC KEY-----\n"
+    },
+    {
+      "name": "agent",
+      "mrtd": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "rtmr": [
+        null,
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        null
+      ],
+      "approver_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOWcPXzuSJWO5Fb3pKOHgc9/ANsox\nOeK9DUpT3CYKRiq5HrQaPtiZjmdjSNWQaO93cabjUT73qxx3Q+qmi2jqag==\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}
+== run/c8s-node/router/acme-directory-url -rw-r--r-- ==
+== run/c8s-node/router/acme-email -rw-r--r-- ==
+ops@example.org
+== run/c8s-node/router/front-door-mode -rw-r--r-- ==
+acme
+== run/c8s-node/router/hostnames -rw-r--r-- ==
+api.example.org
+== run/c8s-node/router/request-body.conf -rw-r--r-- ==
+client_max_body_size 1048576;
+== run/c8s-node/router/tls.conf -rw-r--r-- ==
+include /usr/lib/c8s/router-nginx/tls-acme.conf;
+== run/c8s-node/tls-san -rw-r--r-- ==
+c8s.local
