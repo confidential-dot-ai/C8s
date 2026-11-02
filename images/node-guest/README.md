@@ -573,7 +573,9 @@ reviewed commit.
 `.github/build-pins.json` is the canonical source for the measured workflows'
 confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
-therefore change the manifest rather than workflow files.
+therefore change the manifest rather than workflow files. Pin-watch follows
+confos `main` only: the attestation-rs pin moves by hand, in the same PR that
+ports c8s and the confos attest config to that attestation-api.
 
 Published builds resolve C8s container digests from the registry tag
 `C8S_REF` at build time. The rendered manifests, component seed and measured OCI
