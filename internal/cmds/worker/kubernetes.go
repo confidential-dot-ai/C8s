@@ -25,7 +25,7 @@ func (k Kubernetes) validate(nodeSubnets []netip.Prefix) error {
 	if err := checkAPIServer(k.APIServer); err != nil {
 		return fmt.Errorf("kubernetes.apiServer %w", err)
 	}
-	if err := checkCACertificate(k.CACertificate); err != nil {
+	if _, err := caCertificate(k.CACertificate); err != nil {
 		return fmt.Errorf("kubernetes.caCertificate %w", err)
 	}
 	pods, err := clusterRange(k.PodCIDR)
@@ -88,30 +88,30 @@ func isCanonicalPort(text string) bool {
 	return err == nil && port >= 1 && !strings.HasPrefix(text, "0")
 }
 
-// checkCACertificate accepts one PEM CERTIFICATE block holding a CA
-// certificate, with nothing but whitespace before or after it.
-func checkCACertificate(text string) error {
+// caCertificate accepts one PEM CERTIFICATE block holding a CA certificate,
+// with nothing but whitespace before or after it.
+func caCertificate(text string) (*x509.Certificate, error) {
 	block, rest := pem.Decode([]byte(text))
 	switch {
 	case block == nil:
-		return errors.New("must hold a PEM block")
+		return nil, errors.New("must hold a PEM block")
 	case !opensWithPEMBlock(text):
-		return errors.New("must hold exactly one PEM block and nothing before it")
+		return nil, errors.New("must hold exactly one PEM block and nothing before it")
 	case block.Type != "CERTIFICATE":
-		return fmt.Errorf("must be a PEM CERTIFICATE block, not %s", block.Type)
+		return nil, fmt.Errorf("must be a PEM CERTIFICATE block, not %s", block.Type)
 	case len(block.Headers) != 0:
-		return errors.New("must carry no PEM headers")
+		return nil, errors.New("must carry no PEM headers")
 	case strings.TrimSpace(string(rest)) != "":
-		return errors.New("must hold exactly one PEM block and nothing after it")
+		return nil, errors.New("must hold exactly one PEM block and nothing after it")
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("must hold an X.509 certificate: %w", err)
+		return nil, fmt.Errorf("must hold an X.509 certificate: %w", err)
 	}
 	if !cert.IsCA {
-		return errors.New("must be a CA certificate")
+		return nil, errors.New("must be a CA certificate")
 	}
-	return nil
+	return cert, nil
 }
 
 // opensWithPEMBlock reports whether text, past leading whitespace, starts
