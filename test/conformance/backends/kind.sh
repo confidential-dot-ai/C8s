@@ -143,8 +143,12 @@ attestation_service_start() {
 private_keys() {
     kubectl get secrets,configmaps -A -o json |
         jq -r '.items[] | (.data // {})[] as $v | if .kind == "Secret" then ($v | @base64d) else $v end'
+    # Read each match on its own so a file that vanished since grep listed it
+    # (container rootfs under /run churns) is skipped, not fatal — xargs -r cat
+    # would exit 123 on the first such file and fail the search.
     # shellcheck disable=SC2016  # expands on the node
-    node_exec sh -c 'grep -rla -e "PRIVATE KEY-----" "$@" 2>/dev/null | xargs -r cat' _ \
+    node_exec sh -c 'grep -rla -e "PRIVATE KEY-----" "$@" 2>/dev/null |
+        while IFS= read -r f; do cat "$f" 2>/dev/null || true; done' _ \
         /etc /run /root /opt /tmp /var/lib/kubelet
 }
 
