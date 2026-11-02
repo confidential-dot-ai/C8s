@@ -46,10 +46,10 @@ func (c CDS) Port() (uint16, error) {
 	return port, nil
 }
 
-// CDSPolicy is the measurements document a node's clients verify this
+// Policy is the measurements document a node's clients verify this
 // cluster's CDS with.
-func (d *Document) CDSPolicy() ([]byte, error) {
-	pins, err := refvalues.Parse([]byte(d.CDS.Measurements))
+func (c CDS) Policy() ([]byte, error) {
+	pins, err := refvalues.Parse([]byte(c.Measurements))
 	if err != nil {
 		return nil, err
 	}
