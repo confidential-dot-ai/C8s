@@ -12,7 +12,8 @@ import (
 
 // NewCmd builds the `get-kubeconfig` subcommand: the operator-side client that
 // obtains an admin kubeconfig from a measured TDX or SNP CVM by attesting the
-// node, confirming it was launched to trust the operator's key (RTMR[3]), and
+// node, confirming it was launched to trust the operator's key (TDX
+// MRCONFIGID, SNP HOSTDATA), and
 // exchanging a CSR for a signed client cert over the cred-release endpoint.
 func NewCmd() *cobra.Command {
 	var (
@@ -25,9 +26,9 @@ func NewCmd() *cobra.Command {
 		Short: "Attest a c8s CVM and obtain an operator or log-reader kubeconfig via the measured image + operator-key gate",
 		Long: "get-kubeconfig attests a measured c8s CVM and enforces its full\n" +
 			"measured identity. The build-artifact manifest selects the platform:\n" +
-			"on TDX the image tuple (MRTD, RTMR[1], RTMR[2]) plus the RTMR[3] chain\n" +
-			"seeded by the operator's key and extended by the expected workload\n" +
-			"images, then by a prefix of the allowlist policies the node lists\n" +
+			"on TDX the image tuple (MRTD, RTMR[1], RTMR[2]), the operator-key\n" +
+			"MRCONFIGID binding, and RTMR[3] extended from zero by the expected\n" +
+			"workload images, then by a prefix of the allowlist policies the node lists\n" +
 			"(accepted as far as they replay; with --attest-url the list comes from\n" +
 			"cred-release's certificate and may lag a new policy until it is\n" +
 			"reissued); on SEV-SNP the pinned per-SMP launch digest plus the\n" +
@@ -78,7 +79,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.AttestURL, "attest-url", "", "optional legacy attestation-api /attest URL; default: operator-authenticated attestation over --release-url")
 	f.StringVar(&cfg.ReleaseBaseURL, "release-url", "", "cred-release HTTPS base URL (overrides --node)")
 	f.StringVar(&cfg.APIServerURL, "apiserver-url", "", "apiserver URL for the kubeconfig (overrides --node)")
-	f.StringVar(&cfg.OperatorKeyPath, "operator-key", "", "operator ECDSA private key PEM (its public half is bound into RTMR[3]) (required)")
+	f.StringVar(&cfg.OperatorKeyPath, "operator-key", "", "operator ECDSA private key PEM (its public half is bound into TDX MRCONFIGID or SNP HOSTDATA) (required)")
 	f.StringVar(&cfg.ImageManifestPath, "image-manifest", "", "an explicitly selected, provenanced build-artifact manifest carrying the expected guest image's measured identity — TDX: mrtd/rtmr1/rtmr2; SNP: snp_variants. Its shape selects the platform, and the gate pins every value (required)")
 	f.StringArrayVar(&cfg.WorkloadImages, "workload-image", nil, "digest-pinned image ref (\"sha256:<hex>\" or \"name@sha256:<hex>\"; tags rejected) the node's measurer is expected to have extended into RTMR[3]; repeatable, in first-extend order. Omit if the node runs no measured workloads. TDX only — SNP has no runtime-extend register")
 	f.StringVar(&cfg.Role, "role", credrelease.RoleOperator, "identity the released cert carries: operator (tenant workloads cluster-wide, bounded so it cannot reach the node's guards) or log-reader (pods and their logs only; hand the file on to someone who should not hold the operator role)")

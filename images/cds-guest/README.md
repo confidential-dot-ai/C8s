@@ -43,9 +43,9 @@ cluster arrives in the launch file below.
 Every CDS VM needs a disk labelled `opkeydata` (an ISO, or a KubeVirt volume
 with that label) whose only file is `pubkey`: the CDS config. The confos
 initrd stages those exact bytes read-only at `/run/confai/operator-pubkey`
-and binds them to the VM's identity — on TDX by extending their SHA-384 into
-RTMR[3], on SNP by requiring HOST_DATA to equal their SHA-256 and halting
-when it does not. `cds.service` runs
+and binds them to the VM's identity by requiring MRCONFIGID to equal their
+SHA-384 on TDX, or HOST_DATA their SHA-256 on SNP, and halting when it does
+not. `cds.service` runs
 `c8s cds --host=auto --config=/run/confai/operator-pubkey`: CDS parses the file, takes a
 fresh self-report from the attester on loopback, and exits unless that report
 binds exactly the bytes it parsed. The same report names the TEE family it

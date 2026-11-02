@@ -151,7 +151,7 @@ func TestDefaultBootstrapRejectsFreshEvidence(t *testing.T) {
 				if platform == teetypes.PlatformSNP {
 					r.Claims.InitData = teetypes.HexBytes(make([]byte, 32))
 				} else {
-					r.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
+					r.Claims.InitData = teetypes.HexBytes(make([]byte, 48))
 				}
 			},
 		}

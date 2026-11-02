@@ -182,9 +182,10 @@ with no C8s evidence.
 `c8s get-kubeconfig` obtains a kubeconfig from a measured node and enforces the
 node's full measured identity before any credential moves. The
 `--image-manifest` shape selects the platform and pins the whole guest image.
-The operator-key binding is pinned with it: on TDX as the RTMR[3] chain, which
-`--workload-image` pins in first-extend order, and on SEV-SNP as `HOST_DATA`
-equal to `SHA-256(operator pubkey)`. What each register and field holds is
+The operator-key binding is pinned with it: on TDX as `MRCONFIGID` equal to
+`SHA-384(operator pubkey)`, beside an RTMR[3] that `--workload-image` pins from
+zero in first-extend order, and on SEV-SNP as `HOST_DATA` equal to
+`SHA-256(operator pubkey)`. What each register and field holds is
 [measurements.md](measurements.md). A fresh nonce-bound report comes from the
 credential-release service on port `8443`, which authenticates the operator
 token first. The gate proves that a genuine guest of that platform booted the

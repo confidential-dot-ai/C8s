@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -35,38 +36,47 @@ var (
 	testPolicyR = "sha256:" + strings.Repeat("3", 64)
 )
 
-// historyPlan is a plan pinning the test image and the operator-key seed.
-func historyPlan(t *testing.T, cfg config) (*verifyPlan, [runtimemeasure.Size]byte) {
+// historyPlan is a plan pinning the test image and an operator key, which it
+// returns.
+func historyPlan(t *testing.T, cfg config) (*verifyPlan, []byte) {
 	t.Helper()
 	pubPath, _, pubPEM := operatorKeypair(t)
 	cfg.imageManifest = writeTestManifest(t)
 	cfg.operatorPubkey = pubPath
-	return mustPlan(t, cfg), runtimemeasure.Seed(pubPEM)
+	return mustPlan(t, cfg), pubPEM
 }
 
 func rtmr3Claims(reg [runtimemeasure.Size]byte) map[string]any {
 	return map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2, "rtmr_3": hex.EncodeToString(reg[:])}
 }
 
+// boundResult is the test image's result for a guest launched for pubPEM that
+// extended RTMR[3] with extended.
+func boundResult(pubPEM []byte, extended ...string) *teetypes.VerificationResult {
+	r := tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigests(extended)))
+	r.Claims.InitData = testutil.TDXLaunchBinding(pubPEM)
+	return r
+}
+
 func TestReplayMeasuredPolicies(t *testing.T) {
-	plan, seed := historyPlan(t, config{})
+	plan, pubPEM := historyPlan(t, config{})
 	measured := []string{testPolicyP, testPolicyQ, testPolicyR}
 	for _, tc := range []struct {
 		name     string
 		measured []string
-		rtmr3    [runtimemeasure.Size]byte
+		extended []string
 		want     []string
 		ok       bool
 	}{
-		{"bare seed", measured, seed, nil, true},
-		{"whole list", measured, runtimemeasure.FromDigestsSeeded(seed, measured), measured, true},
-		{"prefix read after the quote", measured, runtimemeasure.FromDigestsSeeded(seed, measured[:2]), measured[:2], true},
-		{"extend outside the list", measured, runtimemeasure.FromDigestsSeeded(seed, []string{testPolicyQ}), nil, false},
-		{"no list", nil, runtimemeasure.FromDigestsSeeded(seed, measured[:1]), nil, false},
+		{"zero register", measured, nil, nil, true},
+		{"whole list", measured, measured, measured, true},
+		{"prefix read after the quote", measured, measured[:2], measured[:2], true},
+		{"extend outside the list", measured, []string{testPolicyQ}, nil, false},
+		{"no list", nil, measured[:1], nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: tc.measured}
-			oc := newOutcome(config{}, ev, tdxResult(testMRTD, rtmr3Claims(tc.rtmr3)), nil, plan)
+			oc := newOutcome(config{}, ev, boundResult(pubPEM, tc.extended...), nil, plan)
 			if oc.Verified != tc.ok {
 				t.Fatalf("newOutcome verified = %v (%s), want %v", oc.Verified, oc.Error, tc.ok)
 			}
@@ -226,12 +236,12 @@ func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{pinPolicies: tc.pins}
-			plan, seed := historyPlan(t, cfg)
+			plan, pubPEM := historyPlan(t, cfg)
 			ev := &evidence{platform: "tdx", measured: measured, leafChainDerived: true}
 			if tc.unstampedLeaf {
 				ev.leaf = &x509.Certificate{}
 			}
-			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, measured))), nil, plan)
+			oc := newOutcome(cfg, ev, boundResult(pubPEM, measured...), nil, plan)
 			applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			checkPolicyHistory(context.Background(), &oc, cfg, ev, plan.trustKeys)
 			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
@@ -573,21 +583,20 @@ func TestImagePolicyFileReplaysHistory(t *testing.T) {
 	})
 	cfg := config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}}
 	plan := mustPlan(t, cfg)
-	seed := runtimemeasure.Seed(pubPEM)
 	measured := []string{testPolicyP, testPolicyQ}
 	for _, tc := range []struct {
-		name  string
-		rtmr3 [runtimemeasure.Size]byte
-		want  []string
-		ok    bool
+		name     string
+		extended []string
+		want     []string
+		ok       bool
 	}{
-		{"bare seed", seed, nil, true},
-		{"prefix", runtimemeasure.FromDigestsSeeded(seed, measured[:1]), measured[:1], true},
-		{"extend outside the list", runtimemeasure.FromDigestsSeeded(seed, []string{testPolicyR}), nil, false},
+		{"zero register", nil, nil, true},
+		{"prefix", measured[:1], measured[:1], true},
+		{"extend outside the list", []string{testPolicyR}, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: measured}
-			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(tc.rtmr3)), nil, plan)
+			oc := newOutcome(cfg, ev, boundResult(pubPEM, tc.extended...), nil, plan)
 			if oc.Verified != tc.ok {
 				t.Fatalf("newOutcome verified = %v (%s), want %v", oc.Verified, oc.Error, tc.ok)
 			}
@@ -616,13 +625,13 @@ func TestUncheckedHistoryIsPartial(t *testing.T) {
 		{"pinned history", config{pinPolicies: measured}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plan, seed := historyPlan(t, tc.cfg)
-			reg := seed
+			plan, pubPEM := historyPlan(t, tc.cfg)
+			var extended []string
 			if tc.history {
-				reg = runtimemeasure.FromDigestsSeeded(seed, measured)
+				extended = measured
 			}
 			ev := &evidence{platform: "tdx", measured: measured, fresh: true}
-			oc := newOutcome(tc.cfg, ev, tdxResult(testMRTD, rtmr3Claims(reg)), nil, plan)
+			oc := newOutcome(tc.cfg, ev, boundResult(pubPEM, extended...), nil, plan)
 			applyVerdictPolicies(&oc, tc.cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			if oc.Partial != tc.wantPartial || oc.Verified == tc.wantPartial || oc.Error != "" {
 				t.Fatalf("verdict = verified %v, partial %v, error %q; want partial %v", oc.Verified, oc.Partial, oc.Error, tc.wantPartial)
@@ -672,12 +681,12 @@ func TestStaleHistoryIsPartial(t *testing.T) {
 // The --operator-pkey replay bounds the list as --image-policy-file does, and
 // a register failure keeps its own cause.
 func TestOperatorPkeyReplayErrors(t *testing.T) {
-	plan, seed := historyPlan(t, config{})
+	plan, pubPEM := historyPlan(t, config{})
 	over := make([]string, armtls.MaxRuntimeExtensions+1)
 	for i := range over {
 		over[i] = testPolicyP
 	}
-	claims := rtmr3Claims(seed)
+	claims := rtmr3Claims(runtimemeasure.Zero)
 	noRTMR3 := map[string]any{"rtmr_1": claims["rtmr_1"], "rtmr_2": claims["rtmr_2"]}
 	for _, tc := range []struct {
 		name     string
@@ -687,11 +696,13 @@ func TestOperatorPkeyReplayErrors(t *testing.T) {
 	}{
 		{"over cap", over, claims, fmt.Sprintf("lists %d measured policies, at most %d", len(over), armtls.MaxRuntimeExtensions)},
 		{"non-canonical entry", []string{testPolicyP, "sha256:ABC"}, claims, `measured policy 1 ("sha256:ABC") is not a canonical sha256 digest`},
-		{"absent register", []string{testPolicyP}, noRTMR3, "register claim absent or malformed"},
+		{"absent register", []string{testPolicyP}, noRTMR3, "claims carry no rtmr_3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: tc.measured}
-			oc := newOutcome(config{}, ev, tdxResult(testMRTD, tc.claims), nil, plan)
+			result := tdxResult(testMRTD, tc.claims)
+			result.Claims.InitData = testutil.TDXLaunchBinding(pubPEM)
+			oc := newOutcome(config{}, ev, result, nil, plan)
 			if oc.Verified || !strings.Contains(oc.Error, tc.want) || strings.Contains(oc.Error, "no prefix of the") {
 				t.Errorf("newOutcome = verified %v, error %q; want a failure containing %q only", oc.Verified, oc.Error, tc.want)
 			}
@@ -740,8 +751,7 @@ func TestHistoryReplayBoundToMatchedImage(t *testing.T) {
 	plan := mustPlan(t, cfg)
 	measured := []string{testPolicyP}
 	ev := &evidence{platform: "tdx", measured: measured, fresh: true}
-	forged := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pubPEM), measured)
-	oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(forged)), nil, plan)
+	oc := newOutcome(cfg, ev, boundResult(pubPEM, measured...), nil, plan)
 	if len(oc.MeasuredPolicies) != 0 {
 		t.Errorf("MeasuredPolicies = %v, want none", oc.MeasuredPolicies)
 	}
@@ -756,7 +766,7 @@ func TestHistoryReplayBoundToMatchedImage(t *testing.T) {
 
 // leaf_stamped is false for a stamp leafPolicy cannot read.
 func TestLeafStampedMalformed(t *testing.T) {
-	plan, seed := historyPlan(t, config{})
+	plan, pubPEM := historyPlan(t, config{})
 	for _, tc := range []struct {
 		name   string
 		digest []byte
@@ -766,7 +776,7 @@ func TestLeafStampedMalformed(t *testing.T) {
 		{"malformed", []byte{1, 2, 3}, false},
 	} {
 		ev := &evidence{platform: "tdx", leaf: &x509.Certificate{}, workload: &armtls.MatchedWorkload{AllowlistDigest: tc.digest}}
-		oc := newOutcome(config{}, ev, tdxResult(testMRTD, rtmr3Claims(seed)), nil, plan)
+		oc := newOutcome(config{}, ev, boundResult(pubPEM), nil, plan)
 		if oc.LeafStamped == nil || *oc.LeafStamped != tc.want {
 			t.Errorf("%s: LeafStamped = %v (nil %v), want %v", tc.name, oc.LeafStamped != nil && *oc.LeafStamped, oc.LeafStamped == nil, tc.want)
 		}

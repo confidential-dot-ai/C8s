@@ -100,17 +100,18 @@ func TestImagePinVerifierRejectsMixedEntries(t *testing.T) {
 		{"unclaimed policy history", 0, 0, 0, []string{policy}, false, remote.ErrAnchorNotAllowed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seed := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.Images[tc.anchor].Anchor), tc.policies)
+			reg := runtimemeasure.FromDigests(tc.policies)
 			var params localverify.Params
 			if tc.claimed {
 				params.RuntimeExtensions = tc.policies
 			}
 			report := &teetypes.VerificationResult{Platform: teetypes.PlatformTDX, SignatureValid: true}
 			report.Claims.LaunchDigest = hex.EncodeToString(pins.Images[tc.digest].Digest)
+			report.Claims.InitData = testutil.TDXLaunchBinding(pins.Images[tc.anchor].Anchor)
 			report.Claims.PlatformData = map[string]any{
 				"rtmr_1": hex.EncodeToString(pins.Images[tc.registers].Registers[1]),
 				"rtmr_2": hex.EncodeToString(pins.Images[tc.registers].Registers[2]),
-				"rtmr_3": hex.EncodeToString(seed[:]),
+				"rtmr_3": hex.EncodeToString(reg[:]),
 			}
 			o := Options{MeasurementsConfig: nodePolicyPath, Verifier: testutil.VerifierStub(func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 				return report, nil

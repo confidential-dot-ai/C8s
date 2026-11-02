@@ -29,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -313,14 +314,15 @@ func snpVerdict(digest string, file []byte) mockapi.Verdict {
 	return verdict
 }
 
-// tdxVerdict is snpVerdict for TDX: the MRTD, RTMR[1], RTMR[2], and RTMR[3] bound to file.
+// tdxVerdict is snpVerdict for TDX: the MRTD, RTMR[1], RTMR[2], MRCONFIGID
+// bound to file, and a zero RTMR[3].
 func tdxVerdict(mrtd, rtmr1, rtmr2 string, file []byte) mockapi.Verdict {
 	verdict := mockapi.PassingVerdict(mrtd)
-	bound := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(file), nil)
+	verdict.Claims.InitData = testutil.TDXLaunchBinding(file)
 	verdict.Claims.PlatformData = map[string]any{
 		"rtmr_1": rtmr1,
 		"rtmr_2": rtmr2,
-		"rtmr_3": hex.EncodeToString(bound[:]),
+		"rtmr_3": hex.EncodeToString(runtimemeasure.Zero[:]),
 	}
 	return verdict
 }

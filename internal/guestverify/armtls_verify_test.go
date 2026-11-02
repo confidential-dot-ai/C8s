@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -173,6 +174,7 @@ func verifiedResultFor(exp Policy) *teetypes.VerificationResult {
 		ReportDataMatch: new(true),
 		Claims: teetypes.Claims{
 			LaunchDigest: hex.EncodeToString(mrtd[:]),
+			InitData:     teetypes.HexBytes(expectedMRConfigID(exp)),
 			PlatformData: map[string]any{
 				"rtmr_1": hex.EncodeToString(rtmr1[:]),
 				"rtmr_2": hex.EncodeToString(rtmr2[:]),
@@ -248,9 +250,12 @@ func TestVerifyServerCertRejectsEachMismatchedRegister(t *testing.T) {
 		{"wrong rtmr2", func(r *teetypes.VerificationResult) {
 			r.Claims.PlatformData["rtmr_2"] = strings.Repeat("00", 48)
 		}, "RTMR[2] does not match"},
+		{"wrong MRCONFIGID", func(r *teetypes.VerificationResult) {
+			r.Claims.InitData = teetypes.HexBytes(bytes.Repeat([]byte{0x11}, 48))
+		}, "expected launch binding"},
 		{"wrong rtmr3", func(r *teetypes.VerificationResult) {
-			r.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
-		}, "not bound to the expected anchor"},
+			r.Claims.PlatformData["rtmr_3"] = strings.Repeat("11", 48)
+		}, "runtime log differs"},
 		{"absent MRTD", func(r *teetypes.VerificationResult) {
 			r.Claims.LaunchDigest = ""
 		}, "no launch digest"},
@@ -703,12 +708,17 @@ func TestAttestGateSNPFailsClosed(t *testing.T) {
 	}
 }
 
-// expectedRTMR3 is the register a node satisfying exp must report: the
-// operator-key seed extended by exp's workload chain. VerifyBinding derives
-// the same value inside the gate; here it builds the claims to feed it.
+// expectedRTMR3 is the register a node satisfying exp must report: zero
+// extended by exp's workload chain. VerifyBinding derives the same value
+// inside the gate; here it builds the claims to feed it.
 func expectedRTMR3(exp Policy) []byte {
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)
+	reg := runtimemeasure.FromDigests(exp.workloadDigests)
 	return reg[:]
+}
+
+// expectedMRConfigID is the MRCONFIGID a TDX node satisfying exp must report.
+func expectedMRConfigID(exp Policy) []byte {
+	return testutil.TDXLaunchBinding(exp.operatorPubPEM)
 }
 
 // expectedHostData is the HOSTDATA a node satisfying exp must report.

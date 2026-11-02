@@ -228,7 +228,7 @@ func (r *Router) validate() error {
 // Image pins this boot's complete software identity. Platform names which
 // imagePlatform owns the rest: Measurement is the launch digest every platform
 // has, and RTMRs is the register map only some of them populate. RTMR[0] varies
-// by VM shape and RTMR[3] binds the launch key, so neither belongs in the pins.
+// by VM shape and RTMR[3] is the runtime log, so neither belongs in the pins.
 type Image struct {
 	Platform    string         `yaml:"platform" json:"platform"`
 	Measurement string         `yaml:"measurement" json:"measurement"`

@@ -62,13 +62,13 @@ func TestOperatorCLIVerifierRejectsAgentAndCrossedTuple(t *testing.T) {
 		{"server wrong image registers", server.Anchor, server.Registers[2], false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			seed := runtimemeasure.Seed(test.key)
 			report = &teetypes.VerificationResult{Platform: teetypes.PlatformTDX, SignatureValid: true}
 			report.Claims.LaunchDigest = hex.EncodeToString(server.Digest)
+			report.Claims.InitData = testutil.TDXLaunchBinding(test.key)
 			report.Claims.PlatformData = map[string]any{
 				"rtmr_1": hex.EncodeToString(test.register),
 				"rtmr_2": hex.EncodeToString(server.Registers[2]),
-				"rtmr_3": hex.EncodeToString(seed[:]),
+				"rtmr_3": hex.EncodeToString(runtimemeasure.Zero[:]),
 			}
 			_, err := verify.Verify(context.Background(), "tdx", nil, localverify.Params{})
 			if (err == nil) != test.accept {

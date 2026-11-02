@@ -96,7 +96,7 @@ func newVerdict(response remote.VerifyResponse) (verdict, error) {
 	return verdict{response: response, verifiedPlatform: response.Result.Platform}, nil
 }
 
-// noRuntimeExtensions: a CDS guest extends RTMR[3] with its launch file alone.
+// noRuntimeExtensions: a CDS guest measures nothing into RTMR[3].
 var noRuntimeExtensions []string
 
 // admittedBy judges the verdict against the images a replica admits, of which

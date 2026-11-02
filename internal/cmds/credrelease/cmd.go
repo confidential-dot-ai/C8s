@@ -22,7 +22,7 @@ const (
 
 // NewCmd builds the `cred-release` subcommand: the in-guest service that
 // issues an operator a short-lived kube client cert, gated on possession of
-// the operator key bound into the launch identity (TDX RTMR[3] / SNP
+// the operator key bound into the launch identity (TDX MRCONFIGID / SNP
 // HOSTDATA). Baked as a systemd unit in the C8s node image; not run by hand
 // in normal operation.
 func NewCmd() *cobra.Command {
@@ -33,7 +33,7 @@ func NewCmd() *cobra.Command {
 		Long: "cred-release serves an armTLS endpoint that issues a short-lived\n" +
 			"kube client certificate to a caller who proves possession of the\n" +
 			"operator key whose public half was bound into the launch identity\n" +
-			"(TDX: RTMR[3]; SNP: HOSTDATA) at launch.\n" +
+			"(TDX: MRCONFIGID; SNP: HOSTDATA) at launch.\n" +
 			"It gives an external operator console-free, non-TOFU, RBAC-backed\n" +
 			"operator access with no pre-shared secret and no trust in the\n" +
 			"host. The same key may instead request a log-reader cert (role\n" +
@@ -53,7 +53,7 @@ func NewCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&cfg.ListenAddr, "listen", ":8443", "HTTPS (armTLS) bind address")
-	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", "http://127.0.0.1:8400", "local attestation-api base URL (armTLS serving quote; on SNP also the HOSTDATA self-verify)")
+	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", "http://127.0.0.1:8400", "local attestation-api base URL (armTLS serving quote and the launch-binding self-verify)")
 	f.StringVar(&cfg.Platform, "platform", "", "TEE platform: tdx or snp (required)")
 	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it and attestations list it. Empty lists none")
 	f.StringVar(&cfg.ClientCACert, "client-ca-cert", defaultClientCACert, "cluster client-CA cert that signs kube client certs (kubeadm: /etc/kubernetes/pki/ca.crt)")

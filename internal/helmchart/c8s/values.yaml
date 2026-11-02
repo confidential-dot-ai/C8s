@@ -478,10 +478,8 @@ nriImagePolicy:
 
   # Extend TDX RTMR[3] with each pulled allowlist's digest before applying it,
   # so the register records every policy the node enforced since boot
-  # (docs/allowlist-and-capabilities.md, "Measured policy history"). External
-  # armTLS verifiers on attestation-go predating runtime extensions, flat
-  # RTMR[3] pins and c8s verify --image-policy-file with an approver_key
-  # still require the bare operator-key seed. Needs the default
+  # (docs/allowlist-and-capabilities.md, "Measured policy history"). RTMR[3]
+  # holds runtime measurements from zero. Needs the default
   # hostPaths.runtimeDir and attestationApi.enabled, so certificate producers
   # mount the journal; node.baked is refused, since its image owns the plugin
   # config. With nriImagePolicy.baked the policy-measurement installer patches it into the

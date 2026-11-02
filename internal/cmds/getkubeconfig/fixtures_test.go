@@ -5,7 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // The fixed guest-image tuple the test manifests pin.
@@ -56,7 +56,7 @@ func snpManifest() string {
 }
 
 // testPolicy builds the full measured policy for the test tuple + operator
-// key, with no workload images (bare-seed RTMR[3]).
+// key, with no workload images (zero RTMR[3]).
 func testPolicy(t *testing.T, operatorPubPEM []byte) guestverify.Policy {
 	t.Helper()
 	exp, err := guestverify.PolicyFor(writeTestManifest(t, tdxManifest()), operatorPubPEM, nil)
@@ -135,17 +135,17 @@ func stubVerify(t *testing.T, res *teetypes.VerificationResult, err error) *veri
 // satisfy testPolicy(operatorPubPEM) exactly. Tests break individual claims
 // from here.
 func verifiedResultFor(operatorPubPEM []byte) *teetypes.VerificationResult {
-	rtmr3 := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPubPEM), nil)
 	return &teetypes.VerificationResult{
 		SignatureValid:  true,
 		Platform:        teetypes.PlatformTDX,
 		ReportDataMatch: new(true),
 		Claims: teetypes.Claims{
 			LaunchDigest: testMRTDHex,
+			InitData:     teetypes.HexBytes(testutil.TDXLaunchBinding(operatorPubPEM)),
 			PlatformData: map[string]any{
 				"rtmr_1": testRTMR1Hex,
 				"rtmr_2": testRTMR2Hex,
-				"rtmr_3": hex.EncodeToString(rtmr3[:]),
+				"rtmr_3": strings.Repeat("00", 48),
 			},
 		},
 	}

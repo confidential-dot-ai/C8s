@@ -1051,11 +1051,18 @@ func measureWith(measure func(string) error, digest string) error {
 	return measure(digest)
 }
 
-// readOperatorKey reads the launch operator key that seeded RTMR[3], and
-// openPolicyJournal opens the journal over the hardware register. Vars so tests
-// can supply a key and a register.
+// launchKeyStaged reports whether the initrd staged a launch key, without
+// which no verifier binds the measured history; an unreadable key is an error,
+// not an absent one. openPolicyJournal opens the journal over the hardware
+// register. Vars so tests can stage a key and supply a register.
 var (
-	readOperatorKey   = credrelease.ReadOperatorPubkey
+	launchKeyStaged = func() (bool, error) {
+		_, err := credrelease.ReadOperatorPubkey()
+		if errors.Is(err, credrelease.ErrNoOperatorKey) {
+			return false, nil
+		}
+		return err == nil, err
+	}
 	openPolicyJournal = openJournal
 )
 
@@ -1079,12 +1086,16 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 	path := filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
 	var journal *runtimemeasure.Journal
 	open := func() error {
-		anchor, err := readOperatorKey()
-		if err == nil {
-			journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
+		staged, err := launchKeyStaged()
+		if err != nil {
+			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
 		}
+		if !staged {
+			return fmt.Errorf("allowlist policy measurement unavailable: %w: %w", errPolicyRefused, credrelease.ErrNoOperatorKey)
+		}
+		journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform)
 		if journal == nil {
-			if errors.Is(err, credrelease.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
+			if errors.Is(err, runtimemeasure.ErrNoRegister) {
 				err = fmt.Errorf("%w: %w", errPolicyRefused, err)
 			}
 			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
@@ -1161,11 +1172,12 @@ func createReadable(path string) error {
 }
 
 // openJournal opens the measured-policy journal in dir over this node's
-// RTMR[3], whose launch seeded it from anchor.
-func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+// RTMR[3], which is zero at launch. A register holding anything else diverges
+// and refuses every extend.
+func openJournal(dir string, platform teetypes.PlatformType) (*runtimemeasure.Journal, error) {
 	reg, err := runtimemeasure.Open(platform)
 	if err != nil {
 		return nil, err
 	}
-	return runtimemeasure.OpenJournalSeeded(filepath.Join(dir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	return runtimemeasure.OpenJournal(filepath.Join(dir, armtls.MeasuredPoliciesJournal), reg)
 }

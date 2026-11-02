@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -70,9 +71,8 @@ func TestCheckMeasuredIdentityNoRTMR3Claim(t *testing.T) {
 	}
 }
 
-// --workload-image extends the expected RTMR[3] from the operator-key seed in
-// the given (first-extend) order; tags never pass, and order changes the
-// register.
+// --workload-image extends the expected RTMR[3] from zero in the given
+// (first-extend) order; tags never pass, and order changes the register.
 func TestPolicyForWorkloadImages(t *testing.T) {
 	pub := operatorPub(t)
 	manifest := writeTestManifest(t, tdxManifest())
@@ -84,7 +84,7 @@ func TestPolicyForWorkloadImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := bare.workloadDigests; len(got) != 0 {
-		t.Errorf("workloadDigests = %v, want none so the expected register is the bare operator-key seed", got)
+		t.Errorf("workloadDigests = %v, want none so the expected register is zero", got)
 	}
 
 	chained, err := PolicyFor(manifest, pub, []string{digA, digB})
@@ -186,7 +186,7 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 			if !tc.noWorkloads {
 				extended = append(slices.Clone(exp.workloadDigests), tc.measured...)
 			}
-			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), extended)
+			reg := runtimemeasure.FromDigests(extended)
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			e := exp
 			e.policies = tc.policies
@@ -202,22 +202,21 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 	}
 }
 
-// TestPolicyForSeedMatchesGuestConvention checks the gate accepts the same
-// bare-seed value the guest measures at launch:
-// RTMR[3] = SHA384(0x00*48 || SHA384(pubkey)), derived here by hand rather
-// than through the library the gate itself uses.
-func TestPolicyForSeedMatchesGuestConvention(t *testing.T) {
+// TestPolicyForBindingMatchesLauncherConvention checks the gate accepts the
+// MRCONFIGID a launcher sets, SHA384(pubkey), beside a zero RTMR[3], both
+// derived here by hand rather than through the library the gate itself uses.
+func TestPolicyForBindingMatchesLauncherConvention(t *testing.T) {
 	pub := []byte("-----BEGIN PUBLIC KEY-----\nMFk...\n-----END PUBLIC KEY-----\n")
 	exp, err := PolicyFor(writeTestManifest(t, tdxManifest()), pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	keyDigest := sha512.Sum384(pub)
-	want := sha512.Sum384(append(make([]byte, 48), keyDigest[:]...))
+	want := sha512.Sum384(pub)
 	res := verifiedResultFor(exp)
-	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(want[:])
+	res.Claims.InitData = teetypes.HexBytes(want[:])
+	res.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
 	if err := exp.checkIdentity(res); err != nil {
-		t.Errorf("a node reporting the hand-derived seed RTMR[3] %x was refused: %v", want, err)
+		t.Errorf("a node reporting the hand-derived MRCONFIGID %x was refused: %v", want, err)
 	}
 }

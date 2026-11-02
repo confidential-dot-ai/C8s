@@ -102,7 +102,7 @@ func TestPinRefusesWhatItCannotBind(t *testing.T) {
 	}
 }
 
-// RTMR[3] carries the launch-file binding and comes from no manifest, so a TDX
+// RTMR[3] is the runtime log and comes from no manifest, so a TDX
 // entry pins the build's RTMR[1] and RTMR[2] only.
 func TestPinOnTDXPinsTheBuildRegistersOnly(t *testing.T) {
 	config := []byte("schemaVersion: c8s-cds/v1\n")

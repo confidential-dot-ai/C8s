@@ -404,7 +404,7 @@ func newLaunchKey() (*ecdsa.PrivateKey, error) {
 // operatorKey returns the server launch key: a fresh one, or the key at
 // keyPath. With pubPath it must also equal that public key byte for byte, the
 // form the bundle writes as the server's pubkey, so a key pinned elsewhere
-// (SNP HOST_DATA hashes the pubkey file) is the one the bundle binds.
+// (HOST_DATA or MRCONFIGID hashes the pubkey file) is the one the bundle binds.
 func operatorKey(keyPath, pubPath string) (*ecdsa.PrivateKey, error) {
 	if keyPath == "" {
 		return newLaunchKey()

@@ -82,19 +82,20 @@ key that node's launch bound.
 
 ## How it binds into evidence
 
-The launch key is committed to the hardware report at launch, and the document
-is then checked against that report. `‖` below is byte concatenation:
+The launcher commits the launch key to the hardware report at launch, and the
+document is then checked against that report:
 
 | | TDX | SEV-SNP |
 |---|---|---|
-| Who commits the key | The measured initrd, before `switch_root` | The launcher, at launch |
-| Where it lands | The RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(launch key))` | `HOST_DATA`, `SHA-256(launch key)` |
+| Where the key lands | `MRCONFIGID`, `SHA-384(launch key)` | `HOST_DATA`, `SHA-256(launch key)` |
 
-On SEV-SNP the host sets that field, so a verifier has to pin a launch digest
-of an image known to read it and to refuse a key that does not match. On a
-managed-cloud CVM — the `az-` and `gcp-` platforms — the cloud stack owns the
-field instead, which is why this flow is for a measured node image on
-`bare-metal` ([measurements.md](measurements.md#where-the-evidence-comes-from)).
+The host sets that field, so a verifier has to pin a launch digest of an image
+known to check it and to refuse a key that does not match. On an `az-`
+platform Azure's paravisor owns the field, so every verifier refuses an `az-`
+launch binding. A `gcp-` platform carries the bare-metal report and binds as
+on bare metal; where its launcher cannot set the field, a keyed launch fails
+closed at the initrd
+([measurements.md](measurements.md#where-the-evidence-comes-from)).
 
 `c8s launch-config stage` runs at boot, in this order:
 

@@ -67,7 +67,7 @@ func (cfg Config) roles() Roles {
 //
 // Startup order matters for the trust story:
 //  1. LoadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
-//     matches the launch binding (TDX RTMR[3] / SNP HOSTDATA). Fails closed
+//     matches the launch binding (TDX MRCONFIGID / SNP HOSTDATA). Fails closed
 //     if the key was substituted after boot.
 //  2. loadClusterCA — the cluster client-CA that signs the operator's cert.
 //  3. serve over an armTLS config so the caller can attest this is the real

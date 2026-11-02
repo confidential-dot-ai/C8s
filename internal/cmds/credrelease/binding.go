@@ -8,6 +8,7 @@
 package credrelease
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha512"
@@ -26,10 +27,10 @@ import (
 )
 
 // operatorPubkeyPath is where the measured initrd stages the operator public
-// key it read off the opkeydata disk (and hashed into the launch binding). The
-// service reads this file rather than mounting the ISO itself — mounting fails
-// under the unit's systemd hardening, and the initrd is the single, measured
-// reader of the disk anyway.
+// key it read off the opkeydata disk (and checked against the launch
+// binding). The service reads this file rather than mounting the ISO itself —
+// mounting fails under the unit's systemd hardening, and the initrd is the
+// single, measured reader of the disk anyway.
 // Var (not const) so tests can point it at a temp file.
 var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 
@@ -40,10 +41,15 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 // boot.
 var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 
+// ErrNoLaunchBinding is returned (wrapped) as a MeasuredIdentity's
+// OperatorKeyErr when no key is staged and the verified platform carries no
+// launch binding: Azure's paravisor owns HOSTDATA and MRCONFIGID on az-*.
+var ErrNoLaunchBinding = errors.New("the platform carries no launch binding")
+
 // ReadOperatorPubkey reads the operator public key the initrd staged off the
-// opkeydata disk. The bytes are exactly what the initrd hashed into the launch
-// binding, so runtimemeasure can re-derive the same digest. Absence is
-// reported as ErrNoOperatorKey; every other read failure is a hard error.
+// opkeydata disk. The bytes are exactly what the launch binding commits, so
+// runtimemeasure can re-derive the same digest. Absence is reported as
+// ErrNoOperatorKey; every other read failure is a hard error.
 func ReadOperatorPubkey() ([]byte, error) {
 	pub, err := os.ReadFile(operatorPubkeyPath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -120,13 +126,13 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 // This is the load-bearing anchor check: the pubkey file is NOT itself
 // measured, only its digest, so before trusting the on-disk key the service
 // confirms it is the key the launch bound. A host that swapped the file
-// post-boot produces a mismatch — it can forge neither the register the
-// measured initrd extended nor the field the launcher committed at launch.
+// post-boot produces a mismatch — it cannot forge the field the launcher
+// committed at launch.
 //
 // Which field carries the binding, and how wide it is, is runtimemeasure's
 // problem: this reads the verified report and asks whether it names this key.
-// The node image runs no workload measurer, so the binding must equal the seed
-// followed by a prefix of the allowlist policies in this node's own journal; an
+// The node image runs no workload measurer, so RTMR[3] must be zero extended
+// with a prefix of the allowlist policies in this node's own journal; an
 // extension the journal does not list fails closed. Remote verifiers cannot
 // read the journal and accept whatever list the node sends (docs/armtls.md).
 //
@@ -156,8 +162,8 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal str
 // produces a mismatch.
 //
 // A guest whose launch file is its whole configuration runs no workload
-// measurer, so the binding must equal the bare anchor: an extension beyond it
-// means an unexpected measurer ran.
+// measurer, so on TDX RTMR[3] must be zero: an extension means an unexpected
+// measurer ran.
 func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, launchFile []byte) (teetypes.Family, error) {
 	var noWorkloadDigests []string
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
@@ -177,9 +183,10 @@ func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, lau
 // MeasuredIdentity separates the verified guest image from the operator-key
 // binding result. Non-operator boots still need Image to pin peer nodes, so
 // a missing key must not discard a verified image. OperatorKeyErr distinguishes
-// that absence (ErrNoOperatorKey) from a read or binding failure; callers must
-// reject other key errors. OperatorKey is authorized only when OperatorKeyErr
-// is nil.
+// that absence (ErrNoOperatorKey, only for a launch whose binding is all zero)
+// from a platform with no launch binding (ErrNoLaunchBinding) and from a read
+// or binding failure; callers must reject other key errors.
+// OperatorKey is authorized only when OperatorKeyErr is nil.
 type MeasuredIdentity struct {
 	OperatorKey    []byte
 	OperatorKeyErr error
@@ -196,8 +203,13 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, jour
 	if err != nil {
 		return MeasuredIdentity{}, err
 	}
-	if pubErr == nil {
+	switch {
+	case pubErr == nil:
 		pubErr = verifyNodeBinding(report, pub, journal)
+	case errors.Is(pubErr, ErrNoOperatorKey):
+		if err := requireUnbound(report); err != nil {
+			pubErr = err
+		}
 	}
 	if pubErr != nil {
 		pub = nil
@@ -212,11 +224,30 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, jour
 	return MeasuredIdentity{OperatorKey: pub, OperatorKeyErr: pubErr, Image: identity}, nil
 }
 
-// verifyNodeBinding checks that report binds anchor followed by a prefix of
-// the allowlist policies in the measured-policy journal; an empty journal path
-// lists none. The journal is read after the report, so it may hold extends
-// the report does not. A journal over armtls.MaxRuntimeExtensions fails, as it
-// does at every verifier.
+// requireUnbound returns nil only for a launch that bound no file: a present,
+// all-zero MRCONFIGID or HOSTDATA.
+func requireUnbound(report *teetypes.VerificationResult) error {
+	binding, err := runtimemeasure.Binding(report)
+	if errors.Is(err, runtimemeasure.ErrNoRegister) {
+		return fmt.Errorf("%w: %w", ErrNoLaunchBinding, err)
+	}
+	if err != nil {
+		return fmt.Errorf("no operator pubkey is staged and the launch binding is unreadable: %w", err)
+	}
+	if len(binding) == 0 {
+		return errors.New("no operator pubkey is staged and the launch binding is empty")
+	}
+	if !bytes.Equal(binding, make([]byte, len(binding))) {
+		return fmt.Errorf("no operator pubkey is staged, but the launch bound %x", binding)
+	}
+	return nil
+}
+
+// verifyNodeBinding checks that report binds anchor and that RTMR[3] replays a
+// prefix of the allowlist policies in the measured-policy journal; an empty
+// journal path lists none. The journal is read after the report, so it may
+// hold extends the report does not. A journal over armtls.MaxRuntimeExtensions
+// fails, as it does at every verifier.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
 	var policies []string
 	if journal != "" {

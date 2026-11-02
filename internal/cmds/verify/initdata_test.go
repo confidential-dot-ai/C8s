@@ -30,13 +30,19 @@ func finalOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult,
 	return oc
 }
 
-// --init-data parses into the plan exactly once, as 32 bytes; anything else
-// is a usage error naming the flag.
+// --init-data parses into the plan exactly once, as 32 or 48 bytes; anything
+// else is a usage error naming the flag.
 func TestBuildPolicy_InitDataFlag(t *testing.T) {
 	t.Run("valid digest", func(t *testing.T) {
 		plan := mustPlan(t, config{initDataHex: genoaInitDataPin})
 		if len(plan.initDataHash) != 32 {
 			t.Fatalf("initDataHash = %d bytes, want 32", len(plan.initDataHash))
+		}
+	})
+	t.Run("TDX width", func(t *testing.T) {
+		plan := mustPlan(t, config{initDataHex: strings.Repeat("ab", 48)})
+		if len(plan.initDataHash) != 48 {
+			t.Fatalf("initDataHash = %d bytes, want 48", len(plan.initDataHash))
 		}
 	})
 	t.Run("unset means unpinned", func(t *testing.T) {
@@ -335,10 +341,9 @@ func TestApplyInitDataNote(t *testing.T) {
 	}
 }
 
-// A CDS pin binds HOST_DATA to the launch file the VM boots on, which is the
-// field this note reports: a launch-bound policy must not read as compared
-// against nothing. On TDX that field is MR_CONFIG_ID, which no launch-file pin
-// touches, so the note stays unpinned there.
+// A CDS pin binds the launch file the VM boots on into the field this note
+// reports, HOST_DATA on SNP and MR_CONFIG_ID on TDX: a launch-bound policy
+// must not read as compared against nothing.
 func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
 	cfg := config{measurementsConfig: testutil.CDSPinFile(t)}
 	plan := mustPlan(t, cfg)
@@ -356,7 +361,7 @@ func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
 	if !strings.Contains(oc.InitDataNote, "launch file") {
 		t.Errorf("init-data note = %q, want the enforced launch-file binding", oc.InitDataNote)
 	}
-	if launchBindingPinned(string(teetypes.PlatformTDX), plan.refValues.Images) {
-		t.Error("a launch-file pin binds RTMR[3] on TDX, not the reported MR_CONFIG_ID")
+	if !launchBindingPinned(plan.refValues.Images) {
+		t.Error("a launch-file pin binds the reported MR_CONFIG_ID on TDX too")
 	}
 }

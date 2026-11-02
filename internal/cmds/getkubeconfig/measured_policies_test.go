@@ -45,7 +45,7 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
 			quote := func(measured []string) *teetypes.VerificationResult {
 				res := verifiedResultFor(env.operatorPubPEM)
-				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.operatorPubPEM), measured)
+				reg := runtimemeasure.FromDigests(measured)
 				res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 				return res
 			}
@@ -100,7 +100,7 @@ func TestAttestResponseListSupersedesLeaf(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newTestEnv(t, "", http.StatusOK, goodRelease)
 			res := verifiedResultFor(env.operatorPubPEM)
-			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.operatorPubPEM), []string{p, q})
+			reg := runtimemeasure.FromDigests([]string{p, q})
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			stubVerify(t, res, nil)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -131,7 +131,7 @@ func TestDialReleaseRetriesRefusal(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	env := newTestEnv(t, "", http.StatusOK, goodRelease)
 	res := verifiedResultFor(env.operatorPubPEM)
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.operatorPubPEM), []string{p})
+	reg := runtimemeasure.FromDigests([]string{p})
 	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 	stubVerify(t, res, nil)
 

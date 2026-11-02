@@ -22,7 +22,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -751,9 +751,9 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 // register; when it is on but cannot work, every measure fails so nothing
 // unmeasured is applied.
 func TestPolicyMeasurer(t *testing.T) {
-	orig := readOperatorKey
-	t.Cleanup(func() { readOperatorKey = orig })
-	readOperatorKey = func() ([]byte, error) { return nil, fmt.Errorf("%w: test", credrelease.ErrNoOperatorKey) }
+	orig := launchKeyStaged
+	t.Cleanup(func() { launchKeyStaged = orig })
+	launchKeyStaged = func() (bool, error) { return false, nil }
 
 	for _, tc := range []struct {
 		name     string
@@ -788,7 +788,23 @@ func TestPolicyMeasurer(t *testing.T) {
 	}
 }
 
-// memRegister is an in-memory RTMR[3] seeded by the launch anchor.
+func TestPolicyMeasurerRetriesAnUnreadableLaunchKey(t *testing.T) {
+	orig := launchKeyStaged
+	t.Cleanup(func() { launchKeyStaged = orig })
+	launchKeyStaged = func() (bool, error) { return false, os.ErrPermission }
+
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	err := policyMeasurer(cfg, discardLogger())("sha256:" + strings.Repeat("1", 64))
+	if err == nil || errors.Is(err, errPolicyRefused) {
+		t.Fatalf("hook = %v, want a retryable error that is not errPolicyRefused", err)
+	}
+}
+
+// memRegister is an in-memory RTMR[3], zero at launch unless val is set.
 type memRegister struct {
 	val     [runtimemeasure.Size]byte
 	extends int
@@ -809,10 +825,9 @@ func (r *memRegister) Extension() ([]byte, error) { return slices.Clone(r.val[:]
 // The hook extends each digest once and leaves the journal readable by the
 // router's non-root cds-attest, also after a failed extend rewrote it 0600.
 func TestPolicyMeasurerMeasures(t *testing.T) {
-	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
-	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
-	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	origKey, origOpen := launchKeyStaged, openPolicyJournal
+	t.Cleanup(func() { launchKeyStaged, openPolicyJournal = origKey, origOpen })
+	launchKeyStaged = func() (bool, error) { return true, nil }
 
 	digest := "sha256:" + strings.Repeat("1", 64)
 	for _, tc := range []struct {
@@ -827,9 +842,9 @@ func TestPolicyMeasurerMeasures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			reg := &memRegister{val: runtimemeasure.Seed(anchor), fail: tc.fail}
-			openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-				return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+			reg := &memRegister{fail: tc.fail}
+			openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType) (*runtimemeasure.Journal, error) {
+				return runtimemeasure.OpenJournal(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg)
 			}
 			cfg := &config{
 				Platform:       "tdx",
@@ -864,13 +879,12 @@ func TestPolicyMeasurerMeasures(t *testing.T) {
 // extending, so the node keeps a certificate-sized history, and still accepts
 // one it already measured.
 func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
-	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
-	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
-	readOperatorKey = func() ([]byte, error) { return anchor, nil }
-	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
-	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	origKey, origOpen := launchKeyStaged, openPolicyJournal
+	t.Cleanup(func() { launchKeyStaged, openPolicyJournal = origKey, origOpen })
+	launchKeyStaged = func() (bool, error) { return true, nil }
+	reg := &memRegister{}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournal(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg)
 	}
 	cfg := &config{
 		Platform:       "tdx",
@@ -1002,17 +1016,16 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 // A transient open failure is not a refusal: the next call opens the
 // journal again and measures.
 func TestPolicyMeasurerRetriesOpen(t *testing.T) {
-	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
-	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
-	readOperatorKey = func() ([]byte, error) { return anchor, nil }
-	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
+	origKey, origOpen := launchKeyStaged, openPolicyJournal
+	t.Cleanup(func() { launchKeyStaged, openPolicyJournal = origKey, origOpen })
+	launchKeyStaged = func() (bool, error) { return true, nil }
+	reg := &memRegister{}
 	opens := 0
-	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType) (*runtimemeasure.Journal, error) {
 		if opens++; opens <= 2 {
 			return nil, errors.New("register not ready")
 		}
-		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+		return runtimemeasure.OpenJournal(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg)
 	}
 	cfg := &config{
 		Platform:       "tdx",
@@ -1034,11 +1047,11 @@ func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 
 // A platform without a runtime register is a refusal that names the cause.
 func TestPolicyMeasurerNoRegister(t *testing.T) {
-	origKey, origOpen := readOperatorKey, openPolicyJournal
-	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
-	readOperatorKey = func() ([]byte, error) { return []byte("operator key"), nil }
-	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-		return openJournal(runtimeDir, teetypes.PlatformType("snp"), anchor)
+	origKey, origOpen := launchKeyStaged, openPolicyJournal
+	t.Cleanup(func() { launchKeyStaged, openPolicyJournal = origKey, origOpen })
+	launchKeyStaged = func() (bool, error) { return true, nil }
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType) (*runtimemeasure.Journal, error) {
+		return openJournal(runtimeDir, teetypes.PlatformType("snp"))
 	}
 	cfg := &config{
 		Platform:       "tdx",
@@ -1086,15 +1099,15 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 	}
 }
 
-// A register that diverged from the journal refuses every policy for good.
+// A register that diverged from the journal refuses every policy for good,
+// including one holding a file digest: RTMR[3] starts at zero.
 func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
-	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
-	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
-	readOperatorKey = func() ([]byte, error) { return anchor, nil }
-	reg := &memRegister{val: runtimemeasure.Seed([]byte("another key"))}
-	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	origKey, origOpen := launchKeyStaged, openPolicyJournal
+	t.Cleanup(func() { launchKeyStaged, openPolicyJournal = origKey, origOpen })
+	launchKeyStaged = func() (bool, error) { return true, nil }
+	reg := &memRegister{val: [runtimemeasure.Size]byte(testutil.RTMR3ExtendedWithFileDigest([]byte("operator key")))}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournal(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg)
 	}
 	cfg := &config{
 		Platform:       "tdx",

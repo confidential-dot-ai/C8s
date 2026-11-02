@@ -48,7 +48,7 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 		return nil, nil
 	}
 	if cfg.operatorPubkey == "" && !slices.ContainsFunc(images, anchored) {
-		return nil, fmt.Errorf("%s requires --operator-pkey or an --image-policy-file image pinning an approver_key: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
+		return nil, fmt.Errorf("%s requires --operator-pkey or an --image-policy-file image pinning an approver_key: the node's policy history counts only as far as RTMR[3] replays it beside an operator-key launch binding", flag)
 	}
 	if !cfg.trustOperator {
 		return nil, nil

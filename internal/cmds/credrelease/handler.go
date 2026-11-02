@@ -155,7 +155,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// AUTHORIZE: the caller must hold the operator private key whose public
-	// half is bound into TDX RTMR[3] or SNP HOSTDATA. operatorauth verifies the Bearer JWT
+	// half is bound into TDX MRCONFIGID or SNP HOSTDATA. operatorauth verifies the Bearer JWT
 	// (ES256/384/512) under the pinned key, enforces <=5min validity, and
 	// binds the token to this method/path/body (pbh) — so a captured token
 	// can't be replayed against a different CSR or nonce.

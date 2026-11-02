@@ -297,14 +297,12 @@ On a TDX node the plugin can extend RTMR[3] — a runtime measurement register
 the node reports in its evidence — with each allowlist it pulls, before applying
 it, so a verifier can replay what the node enforced since boot: proof of what it
 enforced, not that it was acceptable. A document the node fails to measure is
-not applied. How the register is seeded, journalled, and replayed is
+not applied. How the register is journalled and replayed is
 [measurements.md](measurements.md#policy-history). Set
 `nriImagePolicy.measurePolicies: true` to turn measuring on.
 
-It is off by default because checks that expect the bare seed reject a node
-that measures: armTLS verifiers built before runtime extensions, a pin on one
-fixed RTMR[3] value, and `c8s verify --image-policy-file` with an approver key.
-It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
+It is off by default. RTMR[3] holds runtime measurements from zero, so a node
+that measures nothing reports it zero. It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
 measure keeps enforcing the policy it holds — at startup, the base allowlist
 alone — and once it reaches the register's per-boot extend cap it takes no
 further policy until it reboots.

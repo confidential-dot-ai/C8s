@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -54,14 +55,15 @@ func stageOperatorPubkey(t *testing.T, pub []byte) {
 }
 
 // selfReport is what a stub attestation-api's verified self-report carries:
-// the operator-key binding in whichever claim the platform uses (RTMR[3] on
-// TDX, HOSTDATA on SEV-SNP), the launch digest, and on TDX the RTMR[1]/[2]
-// pins. Zero-valued fields are left off the claims.
+// the launch binding (MRCONFIGID on TDX, HOSTDATA on SEV-SNP), the launch
+// digest, and on TDX RTMR[3] (zero unless set) and the RTMR[1]/[2] pins.
+// Other zero-valued fields are left off the claims.
 type selfReport struct {
 	platform     teetypes.PlatformType
 	binding      []byte
 	launchDigest []byte
 	rtmr1, rtmr2 []byte
+	rtmr3        []byte
 }
 
 // stubAttester serves a fake attestation-api answering r as this guest's
@@ -71,16 +73,19 @@ func stubAttester(t *testing.T, r selfReport) *mockapi.Stub {
 	stub := mockapi.New(t)
 	stub.SetPlatform(r.platform)
 	v := mockapi.PassingVerdict(hex.EncodeToString(r.launchDigest))
+	v.Claims.InitData = r.binding
 	if r.platform.IsTDX() {
-		pd := map[string]any{}
-		for k, b := range map[string][]byte{"rtmr_1": r.rtmr1, "rtmr_2": r.rtmr2, "rtmr_3": r.binding} {
+		rtmr3 := r.rtmr3
+		if rtmr3 == nil {
+			rtmr3 = make([]byte, runtimemeasure.Size)
+		}
+		pd := map[string]any{"rtmr_3": hex.EncodeToString(rtmr3)}
+		for k, b := range map[string][]byte{"rtmr_1": r.rtmr1, "rtmr_2": r.rtmr2} {
 			if b != nil {
 				pd[k] = hex.EncodeToString(b)
 			}
 		}
 		v.Claims.PlatformData = pd
-	} else {
-		v.Claims.InitData = r.binding
 	}
 	stub.SetVerdict(v)
 	return stub
@@ -94,7 +99,7 @@ func attester(t *testing.T, platform teetypes.PlatformType, binding []byte) stri
 	return stubAttester(t, selfReport{platform: platform, binding: binding}).URL()
 }
 
-func tdxBinding(pub []byte) []byte { v := runtimemeasure.Seed(pub); return v[:] }
+func tdxBinding(pub []byte) []byte { return testutil.TDXLaunchBinding(pub) }
 func snpBinding(pub []byte) []byte { v := runtimemeasure.HostData(pub); return v[:] }
 
 // fill returns a 48-byte register value, every byte equal to b.
@@ -109,7 +114,7 @@ func TestLoadMeasuredOperatorKey(t *testing.T) {
 		binding  []byte
 	}{
 		{teetypes.PlatformTDX, tdxBinding(operatorPub)},
-		{teetypes.PlatformAzTDX, tdxBinding(operatorPub)},
+		{teetypes.PlatformGcpTDX, tdxBinding(operatorPub)},
 		{teetypes.PlatformSNP, snpBinding(operatorPub)},
 		{teetypes.PlatformGcpSNP, snpBinding(operatorPub)},
 	} {
@@ -143,8 +148,9 @@ func TestLoadMeasuredOperatorKeyFailsClosed(t *testing.T) {
 	}{
 		{"no staged pubkey", nil, teetypes.PlatformTDX, tdxBinding(operatorPub)},
 		{"empty staged pubkey", []byte{}, teetypes.PlatformTDX, tdxBinding(operatorPub)},
-		{"tdx: register holds another key's seed", operatorPub, teetypes.PlatformTDX, tdxBinding(otherKey)},
-		{"tdx: keyless launch leaves the register zero", operatorPub, teetypes.PlatformTDX, zeroTDX},
+		{"tdx: MRCONFIGID binds another key", operatorPub, teetypes.PlatformTDX, tdxBinding(otherKey)},
+		{"tdx: keyless launch leaves MRCONFIGID zero", operatorPub, teetypes.PlatformTDX, zeroTDX},
+		{"az-tdx: MRCONFIGID is Azure's, not the launcher's", operatorPub, teetypes.PlatformAzTDX, tdxBinding(operatorPub)},
 		{"snp: HOSTDATA holds another key", operatorPub, teetypes.PlatformSNP, snpBinding(otherKey)},
 		{"snp: keyless launch leaves HOSTDATA zero", operatorPub, teetypes.PlatformSNP, zeroSNP},
 		// A TDX-width value in the SNP claim is MRCONFIGID, not HOSTDATA. It
@@ -304,23 +310,25 @@ func TestVerifyMeasuredLaunchFile(t *testing.T) {
 
 // Serving a configuration the launch did not bind serves whatever the host
 // wrote, so every binding other than the launch file's own fails closed —
-// including a register extended past the seed, which no such VM does.
+// including an RTMR[3] extended at runtime, which no such VM does.
 func TestVerifyMeasuredLaunchFileFailsClosed(t *testing.T) {
-	extended := runtimemeasure.Extend(runtimemeasure.Seed(launchFile), runtimemeasure.Event("sha256:"+strings.Repeat("1", 64)))
+	extended := runtimemeasure.Extend(runtimemeasure.Zero, runtimemeasure.Event("sha256:"+strings.Repeat("1", 64)))
 
 	for _, tc := range []struct {
 		name     string
 		platform teetypes.PlatformType
 		binding  []byte
+		rtmr3    []byte
 	}{
-		{"tdx: another document", teetypes.PlatformTDX, tdxBinding([]byte("another document"))},
-		{"tdx: the seed extended at runtime", teetypes.PlatformTDX, extended[:]},
-		{"tdx: fileless launch leaves the register zero", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size)},
-		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document"))},
-		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile)},
+		{"tdx: another document", teetypes.PlatformTDX, tdxBinding([]byte("another document")), nil},
+		{"tdx: RTMR[3] extended at runtime", teetypes.PlatformTDX, tdxBinding(launchFile), extended[:]},
+		{"tdx: fileless launch leaves MRCONFIGID zero", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size), nil},
+		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document")), nil},
+		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, tc.platform, tc.binding), launchFile); err == nil {
+			url := stubAttester(t, selfReport{platform: tc.platform, binding: tc.binding, rtmr3: tc.rtmr3}).URL()
+			if _, err := VerifyMeasuredLaunchFile(context.Background(), url, launchFile); err == nil {
 				t.Fatal("VerifyMeasuredLaunchFile = nil error, want a refusal")
 			}
 		})
@@ -414,6 +422,39 @@ func TestLoadMeasuredIdentityNonOperatorBoot(t *testing.T) {
 	}
 }
 
+// Only a present, all-zero binding is a keyless boot: a launch that bound a
+// key the guest does not hold, or whose binding is empty, is a binding
+// failure, and a platform with no launch binding is ErrNoLaunchBinding.
+func TestLoadMeasuredIdentityMissingKey(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		platform  teetypes.PlatformType
+		binding   []byte
+		noBinding bool
+	}{
+		{"tdx: bound launch", teetypes.PlatformTDX, tdxBinding(operatorPub), false},
+		{"sev-snp: bound launch", teetypes.PlatformSNP, snpBinding(operatorPub), false},
+		{"tdx: empty binding", teetypes.PlatformTDX, []byte{}, false},
+		{"az-tdx: no launch binding", teetypes.PlatformAzTDX, make([]byte, runtimemeasure.Size), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stageOperatorPubkey(t, nil)
+			r := operatorReport(tc.platform, fill(0xcd))
+			r.binding = tc.binding
+			got, err := LoadMeasuredIdentity(context.Background(), tc.platform.Family().String(), stubAttester(t, r).URL(), "")
+			if err != nil {
+				t.Fatalf("unexpected hard error: %v", err)
+			}
+			if got.OperatorKeyErr == nil || errors.Is(got.OperatorKeyErr, ErrNoOperatorKey) {
+				t.Fatalf("got.OperatorKeyErr = %v, want a failure that is not ErrNoOperatorKey", got.OperatorKeyErr)
+			}
+			if errors.Is(got.OperatorKeyErr, ErrNoLaunchBinding) != tc.noBinding {
+				t.Errorf("got.OperatorKeyErr = %v, want ErrNoLaunchBinding: %v", got.OperatorKeyErr, tc.noBinding)
+			}
+		})
+	}
+}
+
 // A staged pubkey the launch did not bind: OperatorKeyErr carries the mismatch
 // (not ErrNoOperatorKey), while the own measurement still resolves from the
 // one self-report already made.
@@ -476,13 +517,14 @@ func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) 
 }
 
 // The binding check replays the measured-policy journal, which may run ahead
-// of the report, and still accepts the bare seed.
+// of the report, and still accepts a zero RTMR[3].
 func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
 	report := func(digests ...string) *teetypes.VerificationResult {
-		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), digests)
+		reg := runtimemeasure.FromDigests(digests)
 		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: teetypes.Claims{
+			InitData:     tdxBinding(operatorPub),
 			PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
 		}}
 	}
@@ -492,8 +534,8 @@ func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
 		report  *teetypes.VerificationResult
 		wantErr bool
 	}{
-		{name: "bare seed, no journal", report: report()},
-		{name: "bare seed, journal ahead", journal: p + "\n", report: report()},
+		{name: "zero register, no journal", report: report()},
+		{name: "zero register, journal ahead", journal: p + "\n", report: report()},
 		{name: "full journal", journal: p + "\n" + q + "\n", report: report(p, q)},
 		{name: "journal ahead of the report", journal: p + "\n" + q + "\n", report: report(p)},
 		{name: "extend the journal does not hold", journal: p + "\n", report: report(q), wantErr: true},

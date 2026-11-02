@@ -14,6 +14,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -90,14 +91,15 @@ func TestAttestReplaysRuntimeExtensions(t *testing.T) {
 		claimed  []string
 		status   int
 	}{
-		{"bare seed, no list", nil, nil, http.StatusOK},
+		{"zero register, no list", nil, nil, http.StatusOK},
 		{"replaying list", []string{p}, []string{p, q}, http.StatusOK},
 		{"extended, no list", []string{p}, nil, http.StatusForbidden},
 		{"list does not replay", []string{q}, []string{p}, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			verdict := tdxVerdict(t, testMRTD, testRTMR1, testRTMR2)
-			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(anchor), tc.extended)
+			reg := runtimemeasure.FromDigests(tc.extended)
+			verdict.Claims.InitData = testutil.TDXLaunchBinding(anchor)
 			verdict.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			stub.SetVerdict(verdict)
 			body, err := json.Marshal(types.AttestRequestBody{

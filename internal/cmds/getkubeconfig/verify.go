@@ -1,8 +1,8 @@
 // Package getkubeconfig implements the operator-side client (B4 client) that
 // obtains a kube credential from a measured CVM: it attests the node,
 // confirms the full measured identity — on TDX the image tuple (MRTD,
-// RTMR[1], RTMR[2]) plus the RTMR[3] chain seeded by the operator's key and
-// extended by the expected workload images, then the node's measured
+// RTMR[1], RTMR[2]), the operator-key MRCONFIGID binding, and RTMR[3] extended
+// from zero by the expected workload images, then the node's measured
 // allowlist policies; on SEV-SNP the pinned per-SMP
 // launch digest plus the operator-key HOSTDATA binding — then exchanges a CSR
 // for a short-lived kube client cert over the cred-release endpoint and

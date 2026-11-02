@@ -11,6 +11,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -31,8 +32,8 @@ func TestNodePolicyPinsActualEvidence(t *testing.T) {
 		for idx, pin := range entry.Registers {
 			r.Claims.PlatformData["rtmr_"+string(rune('0'+idx))] = hex.EncodeToString(pin)
 		}
-		seed := runtimemeasure.Seed(key)
-		r.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(seed[:])
+		r.Claims.InitData = testutil.TDXLaunchBinding(key)
+		r.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(runtimemeasure.Zero[:])
 		return r
 	}
 	agent := bound(serverAndAgents.Images[1].Anchor)

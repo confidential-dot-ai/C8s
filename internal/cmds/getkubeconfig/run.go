@@ -32,16 +32,17 @@ type Config struct {
 	// (e.g. https://<node>:6443).
 	APIServerURL string
 	// OperatorKeyPath is the operator ECDSA PRIVATE key (PEM). Its public half
-	// was bound into the node's RTMR[3] at launch.
+	// was bound into the node's MRCONFIGID (TDX) or HOSTDATA (SNP) at launch.
 	OperatorKeyPath string
 	// ImageManifestPath is the build-artifact manifest carrying the expected
 	// guest image's full TDX tuple (mrtd, rtmr1, rtmr2). Required: without it
-	// the gate would rest on RTMR[3] alone, which the untrusted host can
-	// reproduce under any image it likes by staging the same operator key.
+	// the gate would rest on the launch binding alone, which the untrusted
+	// host can reproduce under any image it likes by staging the same
+	// operator key.
 	ImageManifestPath string
 	// WorkloadImages are the digest-pinned image refs the node's measurer is
 	// expected to have extended into RTMR[3], in first-extend order. Empty
-	// means the register must equal the bare operator-key seed.
+	// means the register must be zero.
 	WorkloadImages []string
 	// Role selects the identity cred-release stamps on the cert:
 	// credrelease.RoleOperator (the bounded operator role; "" means the same) or
@@ -63,7 +64,7 @@ type Config struct {
 	ReleaseWait time.Duration
 }
 
-// Run executes the client flow: attest + RTMR[3] gate, then CSR -> cred-release
+// Run executes the client flow: attest + launch-binding gate, then CSR -> cred-release
 // -> kubeconfig.
 func Run(ctx context.Context, cfg Config) error {
 	// Signed requests must always pass through the armTLS verifier. An HTTP
@@ -163,14 +164,14 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := os.WriteFile(cfg.OutPath, kc, 0o600); err != nil {
 		return fmt.Errorf("write kubeconfig: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "wrote %s (context %q, role %s) — attested: image tuple + operator-key chain verified\n", cfg.OutPath, cfg.ContextName, role)
+	fmt.Fprintf(os.Stderr, "wrote %s (context %q, role %s) — attested: image tuple + operator-key binding verified\n", cfg.OutPath, cfg.ContextName, role)
 	return nil
 }
 
 // publicKeyPEMFromPrivate derives the PKIX PEM public key from an ECDSA
 // private key PEM. This MUST byte-match the pubkey the launcher put on the
 // opkeydata disk (confai wrote `openssl ec -pubout`, which is PKIX PEM), or
-// the RTMR[3] expected value won't match. Both use x509.MarshalPKIXPublicKey.
+// the expected launch binding won't match. Both use x509.MarshalPKIXPublicKey.
 func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {

@@ -12,17 +12,20 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
 
 // operatorKeypair writes an ECDSA operator keypair to disk and returns the
 // public-key path, the private-key paths (SEC1 and PKCS#8), and the exact
-// public-key file bytes. Exact matters: the initrd hashes the pubkey file
+// public-key file bytes. Exact matters: the launcher hashes the pubkey file
 // verbatim, so those bytes — not a re-encoding of the key they carry — are the
-// input to the seed.
+// input to the launch binding.
 func operatorKeypair(t *testing.T) (pubPath string, keyPaths []string, pubPEM []byte) {
 	t.Helper()
 	dir := t.TempDir()
@@ -61,76 +64,97 @@ func operatorKeypair(t *testing.T) (pubPath string, keyPaths []string, pubPEM []
 	return pubPath, keyPaths, pubPEM
 }
 
-// operatorSeed recomputes the register an initrd leaves behind —
-// SHA-384(0x00*48 ‖ SHA-384(pubkey)) — straight from the convention documented
-// in the runtimemeasure package, deliberately WITHOUT calling the helper the code under
-// test calls. Comparing that helper against itself would pin nothing; this is
-// the arithmetic an operator would otherwise have to do by hand, which is the
-// chore --operator-pkey exists to remove.
-func operatorSeed(pubPEM []byte) []byte {
-	inner := sha512.Sum384(pubPEM)
-	h := sha512.New384()
-	h.Write(make([]byte, 48))
-	h.Write(inner[:])
-	return h.Sum(nil)
+// operatorBinding recomputes the MRCONFIGID a launcher sets, SHA-384(pubkey),
+// deliberately WITHOUT calling the helper the code under test calls: comparing
+// that helper against itself would pin nothing.
+func operatorBinding(pubPEM []byte) []byte {
+	d := sha512.Sum384(pubPEM)
+	return d[:]
 }
 
-// --operator-pkey derives the RTMR[3] pin the operator would otherwise compute
-// by hand, and lands it in the same slot --expected-rtmr3 fills, so the whole
-// enforcement path downstream is unchanged.
-func TestOperatorPkeyDerivesTheRTMR3Pin(t *testing.T) {
-	pubPath, _, pubPEM := operatorKeypair(t)
-	want := operatorSeed(pubPEM)
+// operatorResult is the test image's result for a guest launched with binding
+// in MRCONFIGID and rtmr3 in RTMR[3].
+func operatorResult(binding []byte, rtmr3 string) *teetypes.VerificationResult {
+	r := tdxResult(testMRTD, map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2, "rtmr_3": rtmr3})
+	r.Claims.InitData = binding
+	return r
+}
 
+var zeroRTMR = strings.Repeat("00", 48)
+
+// --operator-pkey pins the launch binding: MRCONFIGID must commit the key file
+// and RTMR[3], the runtime log, must be zero.
+func TestOperatorPkeyPinsTheLaunchBinding(t *testing.T) {
+	pubPath, _, pubPEM := operatorKeypair(t)
 	cfg := config{imageManifest: writeTestManifest(t), operatorPubkey: pubPath}
 	plan := mustPlan(t, cfg)
-	if !bytes.Equal(plan.pins.rtmr3, want) {
-		t.Fatalf("derived RTMR[3] = %x, want the bare operator-key seed %x", plan.pins.rtmr3, want)
+	if !bytes.Equal(plan.pins.anchor, pubPEM) || plan.pins.rtmr3 != nil {
+		t.Fatalf("pins = anchor %q, rtmr3 %x; want the key file as the anchor and no RTMR[3] pin", plan.pins.anchor, plan.pins.rtmr3)
 	}
 
-	// The hex an operator computes by hand and the key file must be two ways of
-	// saying the same thing.
-	byHand := mustPlan(t, config{imageManifest: writeTestManifest(t), expectedRTMR3Hex: hex.EncodeToString(want)})
-	if !bytes.Equal(byHand.pins.rtmr3, plan.pins.rtmr3) {
-		t.Errorf("--expected-rtmr3 %x and --operator-pkey %x must agree", byHand.pins.rtmr3, plan.pins.rtmr3)
-	}
-
-	// End to end: a node reporting the seed verifies and the verdict says which
-	// register it enforced.
-	seedHex := hex.EncodeToString(want)
-	rtmrs := map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2, "rtmr_3": seedHex}
-	oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, rtmrs), nil, plan)
+	oc := newOutcome(cfg, &evidence{platform: "tdx"}, operatorResult(operatorBinding(pubPEM), zeroRTMR), nil, plan)
 	if !oc.Verified {
-		t.Fatalf("a node reporting the derived seed must verify: %s", oc.Error)
+		t.Fatalf("a node launched for the key must verify: %s", oc.Error)
 	}
-	if len(oc.RTMRsPinned) != 3 || oc.RTMRsPinned[2] != "3:"+seedHex {
-		t.Errorf("RTMRsPinned = %v, want RTMR[3] reported as %s", oc.RTMRsPinned, seedHex)
+	if _, pinned := pinnedRegister(oc, 3); pinned {
+		t.Errorf("RTMRsPinned = %v, want no RTMR[3] pin: --operator-pkey replays the runtime log", oc.RTMRsPinned)
+	}
+	if note := initDataNote(plan); note != "verified: matches --operator-pkey" {
+		t.Errorf("init-data note = %q, want the --operator-pkey binding", note)
 	}
 }
 
-// The derived pin inherits every rule --expected-rtmr3 already carries: it is
-// the same slot, so a wrong or absent claim fails closed and a non-TDX platform
-// is a policy error rather than an ignored flag.
-func TestOperatorPkeyPinEnforcedLikeExpectedRTMR3(t *testing.T) {
+// A by-hand RTMR[3] pin is the runtime log, never the operator-key binding:
+// it neither verifies MRCONFIGID nor replays a policy history.
+func TestManualRTMR3PinIsNotTheOperatorKey(t *testing.T) {
+	cfg := config{imageManifest: writeTestManifest(t), rtmrs: []string{"3=" + testRTMR3}}
+	plan := mustPlan(t, cfg)
+	if plan.pins.anchor != nil {
+		t.Fatal("a by-hand RTMR[3] pin must not bind an operator key")
+	}
+	ev := &evidence{platform: "tdx", measured: []string{testPolicyP}}
+	oc := newOutcome(cfg, ev, operatorResult(make([]byte, 48), testRTMR3), nil, plan)
+	if len(oc.MeasuredPolicies) != 0 || initDataNote(plan) != "not pinned: the digest the evidence commits, compared against nothing (pass --init-data to pin it)" {
+		t.Errorf("verdict = history %v, init-data note %q; want no history and an unpinned MRCONFIGID", oc.MeasuredPolicies, initDataNote(plan))
+	}
+	oc = newOutcome(cfg, ev, operatorResult(make([]byte, 48), zeroRTMR), nil, plan)
+	if oc.Verified || !strings.Contains(oc.Error, "RTMR[3] (runtime log)") || strings.Contains(oc.Error, "operator") {
+		t.Errorf("mismatch = %q; want it labelled the runtime log, not an operator key", oc.Error)
+	}
+}
+
+// Every way the evidence can fail the launch binding fails closed, and a
+// non-TDX platform is a policy error rather than an ignored flag.
+func TestOperatorPkeyPinFailsClosed(t *testing.T) {
 	pubPath, _, pubPEM := operatorKeypair(t)
 	cfg := config{imageManifest: writeTestManifest(t), operatorPubkey: pubPath}
 	plan := mustPlan(t, cfg)
+	_, _, otherPEM := operatorKeypair(t)
+	extended := runtimemeasure.Extend(runtimemeasure.Zero, runtimemeasure.Event(testPolicyP))
 
-	t.Run("a different key's register fails", func(t *testing.T) {
-		otherPub, _, _ := operatorKeypair(t)
-		other := mustPlan(t, config{imageManifest: writeTestManifest(t), operatorPubkey: otherPub})
-		rtmrs := map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2, "rtmr_3": hex.EncodeToString(other.pins.rtmr3)}
-		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, rtmrs), nil, plan)
-		if oc.Verified || !strings.Contains(oc.Error, "RTMR[3]") {
-			t.Errorf("a node launched to trust another key must fail: %+v", oc)
-		}
-	})
+	for _, tc := range []struct {
+		name   string
+		result *teetypes.VerificationResult
+		want   string
+	}{
+		{"another key's binding", operatorResult(operatorBinding(otherPEM), zeroRTMR), "MRCONFIGID"},
+		{"keyless launch", operatorResult(make([]byte, 48), zeroRTMR), "MRCONFIGID"},
+		{"an unlisted runtime extension", operatorResult(operatorBinding(pubPEM), hex.EncodeToString(extended[:])), "runtime log differs"},
+		{"an absent RTMR[3] claim", operatorResult(operatorBinding(pubPEM), ""), "carry no rtmr_3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oc := newOutcome(cfg, &evidence{platform: "tdx"}, tc.result, nil, plan)
+			if oc.Verified || !strings.Contains(oc.Error, tc.want) {
+				t.Errorf("verdict = verified %v, error %q; want a failure naming %q", oc.Verified, oc.Error, tc.want)
+			}
+		})
+	}
 
-	t.Run("an absent claim fails closed", func(t *testing.T) {
-		rtmrs := map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2}
-		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, rtmrs), nil, plan)
-		if oc.Verified || !strings.Contains(oc.Error, "carry no rtmr_3") {
-			t.Errorf("an unreportable register must fail closed: %+v", oc)
+	t.Run("a binding mismatch names no policy history", func(t *testing.T) {
+		ev := &evidence{platform: "tdx", measured: []string{testPolicyP}}
+		oc := newOutcome(cfg, ev, operatorResult(operatorBinding(otherPEM), zeroRTMR), nil, plan)
+		if oc.Verified || !strings.Contains(oc.Error, "MRCONFIGID") || strings.Contains(oc.Error, "no prefix of the") {
+			t.Errorf("error = %q; want the MRCONFIGID mismatch alone", oc.Error)
 		}
 	})
 
@@ -143,23 +167,62 @@ func TestOperatorPkeyPinEnforcedLikeExpectedRTMR3(t *testing.T) {
 		}
 		oc := newOutcome(cfg, &evidence{platform: "snp"}, result, nil, plan)
 		if oc.Verified || !strings.Contains(oc.Error, "--operator-pkey") {
-			t.Errorf("SNP has no runtime measurement registers; the pin must be a named policy error: %+v", oc)
+			t.Errorf("the pin must be a named policy error on SNP: %+v", oc)
 		}
 	})
 
-	// Unrelated to the seed but worth stating once: the derivation hashes the
-	// pubkey file verbatim, so a byte the operator "cleaned up" is a different
-	// key as far as the register is concerned.
+	// The launcher hashes the pubkey file verbatim, so a byte the operator
+	// "cleaned up" is a different key as far as MRCONFIGID is concerned.
 	t.Run("the file bytes are hashed verbatim", func(t *testing.T) {
 		trimmed := filepath.Join(t.TempDir(), "operator.pub")
 		if err := os.WriteFile(trimmed, bytes.TrimRight(pubPEM, "\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		other := mustPlan(t, config{imageManifest: writeTestManifest(t), operatorPubkey: trimmed})
-		if bytes.Equal(other.pins.rtmr3, plan.pins.rtmr3) {
-			t.Error("a stripped trailing newline must change the seed — the initrd hashed the file, armor and all")
+		trimmedCfg := config{imageManifest: writeTestManifest(t), operatorPubkey: trimmed}
+		oc := newOutcome(trimmedCfg, &evidence{platform: "tdx"}, operatorResult(operatorBinding(pubPEM), zeroRTMR), nil, mustPlan(t, trimmedCfg))
+		if oc.Verified {
+			t.Error("a stripped trailing newline must change the binding — the launcher hashed the file, armor and all")
 		}
 	})
+}
+
+// --operator-pkey and an RTMR[3] pin check different things, the launch
+// binding with its replayed log and the exact register, so both apply.
+func TestOperatorPkeyWithRTMR3PinChecksBoth(t *testing.T) {
+	pubPath, _, pubPEM := operatorKeypair(t)
+	_, _, otherPEM := operatorKeypair(t)
+	reg := runtimemeasure.FromDigests([]string{testPolicyP})
+	logged := hex.EncodeToString(reg[:])
+	cfg := config{imageManifest: writeTestManifest(t), operatorPubkey: pubPath, rtmrs: []string{"3=" + logged}}
+	plan := mustPlan(t, cfg)
+	ev := &evidence{platform: "tdx", measured: []string{testPolicyP}}
+
+	oc := newOutcome(cfg, ev, operatorResult(operatorBinding(pubPEM), logged), nil, plan)
+	if v, _ := pinnedRegister(oc, 3); !oc.Verified || v != logged || !slices.Equal(oc.MeasuredPolicies, ev.measured) {
+		t.Fatalf("verdict = verified %v (%s), RTMR[3] pin %q, history %v; want both checks passed", oc.Verified, oc.Error, v, oc.MeasuredPolicies)
+	}
+	for _, tc := range []struct {
+		name   string
+		result *teetypes.VerificationResult
+		want   string
+	}{
+		{"another key", operatorResult(operatorBinding(otherPEM), logged), "MRCONFIGID"},
+		{"another runtime log", operatorResult(operatorBinding(pubPEM), zeroRTMR), "RTMR[3] (runtime log) is"},
+	} {
+		if oc := newOutcome(cfg, ev, tc.result, nil, plan); oc.Verified || !strings.Contains(oc.Error, tc.want) {
+			t.Errorf("%s: verdict = verified %v, error %q; want a failure naming %q", tc.name, oc.Verified, oc.Error, tc.want)
+		}
+	}
+}
+
+// pinnedRegister returns the value RTMRsPinned records for register idx.
+func pinnedRegister(oc Outcome, idx int) (string, bool) {
+	for _, p := range oc.RTMRsPinned {
+		if n, v, _ := strings.Cut(p, ":"); n == strconv.Itoa(idx) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func TestOperatorPkeyFlagErrors(t *testing.T) {
@@ -184,13 +247,8 @@ func TestOperatorPkeyFlagErrors(t *testing.T) {
 		cfg  config
 		want []string
 	}{
-		// Both flags write one RTMR[3] slot; two different expected values mean
-		// the operator gets a verdict on neither.
-		{"mutually exclusive with --expected-rtmr3",
-			config{imageManifest: manifest, operatorPubkey: pubPath, expectedRTMR3Hex: testRTMR3},
-			[]string{"--expected-rtmr3", "--operator-pkey", "name the register once"}},
 		// Same rule as --expected-rtmr3, from one check: the host stages the
-		// operator key, so it can reproduce this register under any image.
+		// operator key, so it can reproduce this binding under any image.
 		{"requires --image-manifest",
 			config{operatorPubkey: pubPath},
 			[]string{"--operator-pkey requires --image-manifest"}},
@@ -208,7 +266,7 @@ func TestOperatorPkeyFlagErrors(t *testing.T) {
 			[]string{"not a parseable PKIX public key"}},
 	}
 	// The private half by mistake: everything hashes to something, so without a
-	// check this would be a pin no node can match, reported as an RTMR[3]
+	// check this would be a pin no node can match, reported as an MRCONFIGID
 	// mismatch that reads like a compromised node.
 	for _, keyPath := range keyPaths {
 		cases = append(cases, struct {
@@ -241,7 +299,7 @@ func TestOperatorPkeyFlagErrors(t *testing.T) {
 	}
 
 	// The pin itself is fine — only the combinations above are refused.
-	if plan := mustPlan(t, config{imageManifest: manifest, operatorPubkey: pubPath}); !bytes.Equal(plan.pins.rtmr3, operatorSeed(pubPEM)) {
-		t.Error("the valid case must still resolve the derived pin")
+	if plan := mustPlan(t, config{imageManifest: manifest, operatorPubkey: pubPath}); !bytes.Equal(plan.pins.anchor, pubPEM) {
+		t.Error("the valid case must still resolve the pin")
 	}
 }

@@ -17,7 +17,7 @@ Layout:
   generated at build time; TDX and SNP do not share a measurement or image
   digest. SNP also has one launch digest per supported vCPU count. Both
   platforms support operator-key-bound launch configuration and credential
-  release: TDX binds the public key in RTMR[3], SNP in HOST_DATA.
+  release: TDX binds the public key in MRCONFIGID, SNP in HOST_DATA.
 - `kernel/` — the guest-kernel config fragments (`c8s.config`,
   `c8s-dev.config`), passed via `--kernel-config-fragment`.
   confos's `required`/`hardening`
@@ -73,9 +73,8 @@ at its root:
 
 - `pubkey`: the launch public key for this cluster and role. The measured
   initrd stages the exact PEM bytes in read-only `/run/confai`, exposed through
-  `/etc/confai/operator-pubkey`, and binds them into TDX RTMR[3]. An SNP
-  launcher must set HOST_DATA to the SHA-256 of
-  those same bytes.
+  `/etc/confai/operator-pubkey`. The launcher must bind those same bytes: TDX
+  MRCONFIGID to their SHA-384, SNP HOST_DATA to their SHA-256.
 - `launch.yaml`: the strict `c8s-launch/v2` document selecting `server` or
   `agent`, the image measurements, cluster/node identity, join tokens,
   trusted role keys, TLS SAN and the CDS this cluster's clients trust.

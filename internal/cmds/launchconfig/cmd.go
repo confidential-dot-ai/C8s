@@ -43,10 +43,10 @@ signed launch.yaml per node and the client policy that pins the server.
   <out>/<agent>/      the same three files for each --agent
 
 Attach each node directory as its opkeydata disk (an ISO labelled opkeydata,
-or a KubeVirt Secret volume with volumeLabel opkeydata). On SNP, also set
-HOST_DATA to SHA-256 of that node's pubkey file. Launch the CDS VM on
-cds-config.yaml, binding it the same way: on SNP set HOST_DATA to SHA-256 of
-that file. See docs/operator.md, "Authenticated launch configuration".`,
+or a KubeVirt Secret volume with volumeLabel opkeydata), and bind it: set
+HOST_DATA to SHA-256 of that node's pubkey file on SNP, or MRCONFIGID to its
+SHA-384 on TDX. Launch the CDS VM on cds-config.yaml, binding that file the
+same way. See docs/operator.md, "Authenticated launch configuration".`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

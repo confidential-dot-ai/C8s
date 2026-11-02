@@ -101,9 +101,11 @@ func TestWithRuntimeExtensions(t *testing.T) {
 // tdxClaims are the claims of a TDX node launched for anchor that extended
 // RTMR[3] with extended.
 func tdxClaims(mrtd, anchor []byte, extended ...string) teetypes.Claims {
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(anchor), extended)
+	binding := sha512.Sum384(anchor)
+	reg := runtimemeasure.FromDigests(extended)
 	return teetypes.Claims{
 		LaunchDigest: hex.EncodeToString(mrtd),
+		InitData:     binding[:],
 		PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
 	}
 }
@@ -124,8 +126,8 @@ func TestEnforceImagesRuntimeExtensions(t *testing.T) {
 		claimed []string
 		wantErr bool
 	}{
-		{name: "bare seed, no list", claims: tdxClaims(mrtd, anchor)},
-		{name: "bare seed, list ahead of the quote", claims: tdxClaims(mrtd, anchor), claimed: []string{p}},
+		{name: "zero register, no list", claims: tdxClaims(mrtd, anchor)},
+		{name: "zero register, list ahead of the quote", claims: tdxClaims(mrtd, anchor), claimed: []string{p}},
 		{name: "replaying prefix", claims: tdxClaims(mrtd, anchor, p), claimed: []string{p, q}},
 		{name: "whole list", claims: tdxClaims(mrtd, anchor, p, q), claimed: []string{p, q}},
 		{name: "extended, no list", claims: tdxClaims(mrtd, anchor, p), wantErr: true},

@@ -14,7 +14,7 @@ import (
 // TestPublicKeyPEMFromPrivateMatchesMarshal confirms deriving the pubkey from a
 // private key yields the PKIX PEM the launcher put on the opkeydata disk (the
 // same encoding openssl ec -pubout / x509.MarshalPKIXPublicKey produce), so the
-// RTMR[3] expected value matches. Both SEC1 and PKCS#8 private-key PEMs work.
+// expected launch binding matches. Both SEC1 and PKCS#8 private-key PEMs work.
 func TestPublicKeyPEMFromPrivate(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

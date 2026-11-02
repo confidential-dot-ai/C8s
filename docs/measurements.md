@@ -28,16 +28,18 @@ the TCB versions, which `c8s verify --allow-debug` and `--min-tcb-*` judge.
 
 ## Intel TDX
 
-TDX measures the firmware into one launch register, MRTD, and exposes four
-runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
+TDX measures the firmware into one launch register, MRTD, carries the
+`MRCONFIGID` field the launcher commits, and exposes four runtime measurement
+registers, RTMR[0] to RTMR[3], extendable in the guest.
 
 | Register | Holds | Pinned with |
 |---|---|---|
 | `MRTD` | The launch digest: the TDX virtual firmware (TDVF) alone. | `--measurements`, config `mrtd` |
+| `MRCONFIGID` | 48 bytes the launcher commits at launch. On a measured node image, SHA-384 of the launch key's exact PEM bytes; all zero when a guest is launched for no key. | `c8s verify --init-data` or `--operator-pkey`, config `approver_key` |
 | `RTMR[0]` | TD HOB and VMM ACPI tables. It varies with the VM's vCPU and memory shape, so nothing pins it. | — |
 | `RTMR[1]` | The guest kernel. | `--rtmr 1=<HEX>`, `--image-manifest`, config `rtmr[1]` |
 | `RTMR[2]` | The kernel command line, which carries the dm-verity root hash of the read-only root. | `--rtmr 2=<HEX>`, `--image-manifest`, config `rtmr[2]` |
-| `RTMR[3]` | The launch key the node was started for, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy` or `--trust-operator` then judge the replayed policies |
+| `RTMR[3]` | Zero at launch, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` exactly, or `--operator-pkey` by replay, both needing `--image-manifest`; `--pin-policy` or `--trust-operator` then judge the replayed policies |
 | `REPORTDATA` | As SEV-SNP's `REPORT_DATA`. | Derived by the verifier |
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
@@ -49,21 +51,21 @@ RTMR[2] from one build.
 RTMR[3] is extended by software inside the guest, so on its own it says nothing
 about which image booted: pin it only together with an image, which is why
 `--rtmr 3=` and `--operator-pkey` both require `--image-manifest`. The register
-holds a chain: the seed the measured initrd extends from the node's launch key,
-then one event per image a node's workload measurer extended, in first-extend
-order (`c8s get-kubeconfig --workload-image` names them; the C8s node image
-runs no such measurer), then one per allowlist policy the node applied.
+starts at zero and holds a chain: one event per image a node's workload
+measurer extended, in first-extend order (`c8s get-kubeconfig --workload-image`
+names them; the C8s node image runs no such measurer), then one per allowlist
+policy the node applied. It carries no launch key: that is `MRCONFIGID`.
 
 ```text
-seed      = SHA-384( 0x00 * 48 ‖ SHA-384(launch key PEM bytes) )
 extend(d) = SHA-384( register ‖ SHA-384("sha256:<hex>") )
 ```
 
 Policies are measured only on TDX and only where the node plugin has
 `measure_policies` on: the chart value `nriImagePolicy.measurePolicies`, which
 the chart refuses unless it also deploys the node's attestation-api, so not on
-the lane that bakes it. The measurer seeds its journal from the staged launch
-key, so a node without one applies no pulled allowlist while the setting is on
+the lane that bakes it. The measurer requires a staged launch key and a
+register that was zero at boot, so a node without either applies no pulled
+allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
 Each policy digest is SHA-256 of the exact allowlist bytes served by CDS, the
@@ -78,8 +80,8 @@ Evidence carries the list for replay: as `runtimeExtensions` in the armTLS
 attestation extension, and as `measured_policies` in the bundle from attest-pq
 or attest-lb, the router's two attested handshakes
 ([routes-evidence.md](routes-evidence.md)). `c8s verify --operator-pkey`
-derives the seed, replays the list and reports the longest prefix the register
-proves; `--pin-policy` or `--trust-operator` then judge the policies. Without
+checks `MRCONFIGID`, replays the list from zero and reports the longest prefix
+the register proves; `--pin-policy` or `--trust-operator` then judge the policies. Without
 one of those, a non-empty history leaves the verdict partial: the register is
 accounted for, the policies are not ([verify.md](verify.md)).
 
@@ -98,8 +100,8 @@ accounted for, the policies are not ([verify.md](verify.md)).
   PCR.
 
 The launch-key binding is `bare-metal` only: only the measured node image
-commits a launch key, and on the managed lanes the cloud's own stack owns the
-field or register that would carry it. So `c8s node launch-config` and
+commits a launch key, and on `aks` Azure's paravisor owns the field that would
+carry it. So `c8s node launch-config` and
 `c8s get-kubeconfig` are `bare-metal` commands
 ([launch-configuration.md](launch-configuration.md)).
 
@@ -138,8 +140,8 @@ node with `--image-manifest`.
 | `measurement` | SEV-SNP only and required there: the launch digest, 96 lowercase hex. |
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
-| `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
-| `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
+| `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — `MRCONFIGID` on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
+| `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file and, on TDX, that RTMR[3] is zero. Excludes `approver_key`, which binds the same field. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.

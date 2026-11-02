@@ -287,13 +287,13 @@ func TestRunErrors(t *testing.T) {
 	})
 }
 
-// TestRunRejectsWrongRTMR3 covers the trust gate end to end: the node's quote
-// verifies but rtmr_3 doesn't match the operator-key chain, so Run must stop
-// before ever contacting cred-release.
-func TestRunRejectsWrongRTMR3(t *testing.T) {
+// TestRunRejectsWrongLaunchBinding covers the trust gate end to end: the
+// node's quote verifies but its MRCONFIGID binds no operator key, so Run must
+// stop before ever contacting cred-release.
+func TestRunRejectsWrongLaunchBinding(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
 	res := verifiedResultFor(env.operatorPubPEM)
-	res.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
+	res.Claims.InitData = teetypes.HexBytes(make([]byte, 48))
 	stubVerify(t, res, nil) // overrides the env's stub
 
 	// A failure of the explicit nonce gate must prevent the release request.
@@ -307,8 +307,8 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	cfg.ReleaseBaseURL = release.URL
 
 	err := Run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "not bound to the expected anchor") {
-		t.Fatalf("want an anchor-binding refusal, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "expected launch binding") {
+		t.Fatalf("want a launch-binding refusal, got %v", err)
 	}
 	if n := releaseHits.Load(); n != 0 {
 		t.Fatalf("cred-release hits = %d, want 0 (Run must stop at the trust gate)", n)

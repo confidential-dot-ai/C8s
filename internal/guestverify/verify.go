@@ -100,17 +100,16 @@ func (exp Policy) MeasuredPolicies() []string {
 	return exp.policies.current()
 }
 
-// platform is the bare-metal tag of the manifest's family. Cloud overlays are
-// deliberately excluded: on az-*/gcp-* the launch-binding field is owned by the
-// cloud stack, so it cannot carry the operator-key binding this gate reads.
+// platform is the bare-metal tag of the manifest's family: the gate serves the
+// measured node image, which commits a launch key only on bare metal.
 func (exp Policy) platform() teetypes.PlatformType {
 	return exp.identity.Family().DefaultPlatform()
 }
 
 // PolicyFor builds the trust gate from the operator's inputs: the image
 // manifest (loaded atomically, its shape naming the platform), the operator
-// public key PEM (the exact bytes the initrd hashed, so it must not be
-// re-encoded), and the digest-pinned workload images the node's measurer is
+// public key PEM (the exact bytes the launch binding commits, so it must not
+// be re-encoded), and the digest-pinned workload images the node's measurer is
 // expected to have extended, in first-extend order. Tag references are
 // rejected — only a canonical digest identifies an image.
 func PolicyFor(manifestPath string, operatorPubPEM []byte, workloadImages []string) (Policy, error) {
@@ -129,7 +128,7 @@ func PolicyFor(manifestPath string, operatorPubPEM []byte, workloadImages []stri
 }
 
 // workloadChain canonicalizes --workload-image into the deduped, ordered
-// digest set VerifyBinding folds onto the operator-key seed.
+// digest set VerifyBinding folds into RTMR[3] from zero.
 func workloadChain(family teetypes.Family, workloadImages []string) ([]string, error) {
 	if len(workloadImages) == 0 {
 		return nil, nil
@@ -163,7 +162,8 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 // attestation-go extracted from the signature-verified quote: the pinned image
 // booted, and the node was launched for the operator's key and measured
 // exactly these workloads. runtimemeasure resolves which field carries the
-// binding (RTMR[3] on TDX, HOSTDATA on SNP) and how wide it is.
+// binding (MRCONFIGID on TDX, HOSTDATA on SNP) and how wide it is; on TDX,
+// RTMR[3] must replay the workloads from zero.
 //
 // workloadDigests is empty on SNP — it has no runtime-extend register, and
 // workloadChain refuses --workload-image there — so the binding checked is the
@@ -223,8 +223,7 @@ func verifyEvidence(envelopeJSON, expectedReportData []byte, exp platformVerifie
 		return nil, fmt.Errorf("parse evidence envelope: %w", err)
 	}
 	// The policy's platform comes from the manifest; the node must be that
-	// platform. Bare-metal snp only: on az-snp/gcp-snp the HOSTDATA field is
-	// owned by the cloud stack, so it cannot carry the operator-key binding.
+	// platform.
 	if env.Platform != exp.platform() {
 		return nil, fmt.Errorf("node platform is %q but --image-manifest pins %q: credential release requires the node to be the platform the manifest describes", env.Platform, exp.platform())
 	}
