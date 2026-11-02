@@ -67,6 +67,7 @@ jobs:
           shellcheck \
             .github/scripts/calculate-release-version.sh \
             .github/scripts/pin-manifest.sh \
+            .github/scripts/release-pin.sh \
             .github/scripts/repro-gate-changes \
             .github/scripts/build-gate-images.sh \
             .github/scripts/tests/test-pin-manifest.sh \

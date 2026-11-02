@@ -1,5 +1,7 @@
 # Build pins must stay immutable refs (c8s#264): a branch name or short sha
-# here silently changes what a "pinned" build means.
+# here silently changes what a "pinned" build means. Each source pin also
+# names the release tag it is, and the two must agree: a SHA that no release
+# names is an unreleased commit riding into a measured build.
 name: pin hygiene
 on:
   pull_request:
@@ -8,6 +10,7 @@ on:
       - ".github/actions/**"
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
+      - ".github/scripts/release-pin.sh"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
@@ -21,7 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           set -euo pipefail
           fail=0
           bash .github/scripts/pin-manifest.sh validate \
@@ -37,6 +42,23 @@ jobs:
             done
             fail=1
           fi
+          # Each pinned SHA is the commit its release tag names, in the
+          # source repository, today. The builds check out the SHA; this is
+          # the only place the tag is looked up.
+          node=$(jq -c '.builds["node-image"]' .github/build-pins.json)
+          for pin in "confidential-dot-ai/confidential-os-builder confos_ref confos_tag" \
+                     "confidential-dot-ai/attestation-rs attestation_rs_ref attestation_rs_tag"; do
+            read -r repo ref_key tag_key <<<"$pin"
+            pinned=$(jq -r --arg k "$ref_key" '.[$k]' <<<"$node")
+            tag=$(jq -r --arg k "$tag_key" '.[$k]' <<<"$node")
+            if ! resolved=$(bash .github/scripts/release-pin.sh "$repo" "$tag"); then
+              echo "::error file=.github/build-pins.json::$tag_key=$tag does not resolve in $repo"; fail=1
+              continue
+            fi
+            if [ "${resolved#* }" != "$pinned" ]; then
+              echo "::error file=.github/build-pins.json::$ref_key=$pinned is not what $repo tag $tag names (${resolved#* })"; fail=1
+            fi
+          done
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
             echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1

@@ -1,12 +1,15 @@
-# Watches the confos source pin the measured builds ride and opens a bump PR
-# when upstream main moves — never merges: each bump rolls a measurement, so a
-# human owns the merge. The attestation-rs pin is held at the manifest's value:
-# its main has broken the attestation-api config and /verify contracts c8s and
-# confos consume, so it moves only in a PR that ports them. The mkosi ref is not
-# watched independently: it is scraped from the target confos commit's own
-# base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep
-# by construction. The canonical data lives in .github/build-pins.json;
-# .github/scripts/pin-manifest.sh validates the full schema before updating it.
+# Watches the confos and attestation-rs source pins the measured builds ride
+# and opens a bump PR when either repository publishes a new release — never
+# merges: each bump rolls a measurement, so a human owns the merge. Releases,
+# not main: attestation-rs main once broke the attestation-api config and
+# /verify contracts c8s and confos consume, and a release is the upstream's
+# statement that a commit is meant to be consumed. A release that changes
+# those contracts still needs the c8s and confos ports in the bump PR. The
+# mkosi ref is not watched independently: it is scraped from the target confos
+# commit's own base.yml, which keeps MinimumVersion= and the installed mkosi
+# in lockstep by construction. The canonical data lives in
+# .github/build-pins.json; .github/scripts/pin-manifest.sh validates the full
+# schema before updating it.
 #
 # The one measurement domain today is node-image (node rootfs / RTMR + SNP
 # digests); each roll is its own PR.
@@ -18,7 +21,7 @@ name: confos pin watch
 
 on:
   schedule:
-    - cron: "23 6 * * 1" # weekly; a no-op while the pins match upstream main
+    - cron: "23 6 * * 1" # weekly; a no-op while the pins match the latest releases
   workflow_dispatch: {}
 
 permissions:
@@ -53,9 +56,8 @@ jobs:
           DOMAIN: node-image
         run: |
           set -euo pipefail
-          confos=$(gh api repos/confidential-dot-ai/confidential-os-builder/commits/main --jq .sha)
-          # Held, not watched: see the header.
-          attest=$(jq -er --arg d "$DOMAIN" '.builds[$d].attestation_rs_ref' .github/build-pins.json)
+          read -r confos_tag confos < <(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder)
+          read -r attest_tag attest < <(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs)
           mapfile -t mkosi_lines < <(
             curl -fsSL --retry 3 \
               "https://raw.githubusercontent.com/confidential-dot-ai/confidential-os-builder/${confos}/.github/workflows/base.yml" |
@@ -69,7 +71,8 @@ jobs:
           out=$(bash .github/scripts/pin-manifest.sh update \
             --manifest .github/build-pins.json \
             --domain "$DOMAIN" \
-            --confos "$confos" --attest "$attest" \
+            --confos "$confos" --confos-tag "$confos_tag" \
+            --attest "$attest" --attest-tag "$attest_tag" \
             --mkosi-sha "$(grep -oE '[0-9a-f]{40}' <<<"$mkosi_line")" \
             --mkosi-ver "$(grep -oE 'v[0-9.]+$' <<<"$mkosi_line")")
           echo "$out"
@@ -81,7 +84,7 @@ jobs:
             exit 1
           fi
           branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
-          title="build(${DOMAIN}): pin-watch bump — confos ${confos:0:7}"
+          title="build(${DOMAIN}): pin-watch bump — confos ${confos_tag}, attestation-rs ${attest_tag}"
           open_pr=$(
             gh pr list --state open --limit 100 \
               --json headRefName,isCrossRepository,number |
@@ -161,4 +164,4 @@ jobs:
             echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
             exit 1
           fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\`: confos main \`${confos:0:9}\` and mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow; attestation-rs stays at \`${attest:0:9}\`. This rolls the affected measurements; review the upstream logs and reproducibility gate before merging."
+          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."

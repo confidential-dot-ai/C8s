@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Validate, export, and atomically update C8s's measured-build pin manifest.
+#
+# Each source pin is a commit SHA, which is what the builds check out, beside
+# the release tag that names it. The SHA stays the build input because a tag
+# is whatever its owner repoints it at; the tag says which release the SHA is
+# and lets pin hygiene check that the two still agree.
 
 set -euo pipefail
 
@@ -23,7 +28,8 @@ usage:
   pin-manifest.sh export --manifest PATH --domain DOMAIN
       --format github-env|github-output [--confos-override REF]
   pin-manifest.sh update --manifest PATH --domain node-image
-      --confos SHA --attest SHA --mkosi-sha SHA --mkosi-ver VERSION
+      --confos SHA --confos-tag TAG --attest SHA --attest-tag TAG
+      --mkosi-sha SHA --mkosi-ver VERSION
 EOF
   exit 2
 }
@@ -40,12 +46,20 @@ is_version() {
   [[ "$1" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*$ ]]
 }
 
+is_release_tag() {
+  [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
 require_sha() {
   is_sha "$1" || die "$2 must be a full lowercase 40-hex SHA"
 }
 
 require_version() {
   is_version "$1" || die "$2 must look like v27 or v27.1"
+}
+
+require_release_tag() {
+  is_release_tag "$1" || die "$2 must be a release tag like v0.6.0"
 }
 
 validate_override() {
@@ -74,17 +88,23 @@ validate_manifest() {
     def version:
       type == "string"
       and test("^v(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))*$");
+    def release_tag:
+      type == "string"
+      and test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$");
 
     (. | exact_keys(["schema_version", "builds"]))
-    and (.schema_version == 1)
+    and (.schema_version == 2)
     and (.builds |
       exact_keys(["node-image"]))
     and (.builds["node-image"] |
       exact_keys([
-        "confos_ref", "attestation_rs_ref", "mkosi_ref", "mkosi_version"
+        "confos_ref", "confos_tag", "attestation_rs_ref", "attestation_rs_tag",
+        "mkosi_ref", "mkosi_version"
       ])
       and (.confos_ref | sha)
+      and (.confos_tag | release_tag)
       and (.attestation_rs_ref | sha)
+      and (.attestation_rs_tag | release_tag)
       and (.mkosi_ref | sha)
       and (.mkosi_version | version))
   ' "$manifest" >/dev/null; then
@@ -98,7 +118,9 @@ validate_manifest() {
     [
       ["schema_version"],
       ["builds", "node-image", "confos_ref"],
+      ["builds", "node-image", "confos_tag"],
       ["builds", "node-image", "attestation_rs_ref"],
+      ["builds", "node-image", "attestation_rs_tag"],
       ["builds", "node-image", "mkosi_ref"],
       ["builds", "node-image", "mkosi_version"]
     ] as $allowed
@@ -113,6 +135,7 @@ validate_manifest() {
   fi
 }
 
+# The exported values are the SHAs: the tags are for readers and hygiene.
 export_pins() {
   local manifest=$1 domain=$2 format=$3 override=$4
   local confos attest mkosi mkosi_version
@@ -150,25 +173,31 @@ export_pins() {
 }
 
 update_manifest() {
-  local manifest=$1 domain=$2 confos=$3 attest=$4 mkosi=$5 mkosi_version=$6
+  local manifest=$1 domain=$2 confos=$3 confos_tag=$4 attest=$5 attest_tag=$6
+  local mkosi=$7 mkosi_version=$8
 
   case "$domain" in
     node-image) ;;
     *) die "unknown update domain: $domain" ;;
   esac
   require_sha "$confos" "--confos"
+  require_release_tag "$confos_tag" "--confos-tag"
   require_sha "$attest" "--attest"
+  require_release_tag "$attest_tag" "--attest-tag"
   require_sha "$mkosi" "--mkosi-sha"
   require_version "$mkosi_version" "--mkosi-ver"
   validate_manifest "$manifest"
 
   if [[ "$domain" == node-image ]]; then
     if jq -e \
-      --arg confos "$confos" --arg attest "$attest" \
+      --arg confos "$confos" --arg confos_tag "$confos_tag" \
+      --arg attest "$attest" --arg attest_tag "$attest_tag" \
       --arg mkosi "$mkosi" --arg version "$mkosi_version" '
         .builds["node-image"] == {
           confos_ref: $confos,
+          confos_tag: $confos_tag,
           attestation_rs_ref: $attest,
+          attestation_rs_tag: $attest_tag,
           mkosi_ref: $mkosi,
           mkosi_version: $version
         }
@@ -182,11 +211,14 @@ update_manifest() {
   cp -p -- "$manifest" "$tmp_path"
   if [[ "$domain" == node-image ]]; then
     jq \
-      --arg confos "$confos" --arg attest "$attest" \
+      --arg confos "$confos" --arg confos_tag "$confos_tag" \
+      --arg attest "$attest" --arg attest_tag "$attest_tag" \
       --arg mkosi "$mkosi" --arg version "$mkosi_version" '
         .builds["node-image"] = {
           confos_ref: $confos,
+          confos_tag: $confos_tag,
           attestation_rs_ref: $attest,
+          attestation_rs_tag: $attest_tag,
           mkosi_ref: $mkosi,
           mkosi_version: $version
         }
@@ -208,13 +240,15 @@ domain=
 output_format=
 confos_override=
 confos=
+confos_tag=
 attest=
+attest_tag=
 mkosi_sha=
 mkosi_ver=
 
 while (($# > 0)); do
   case "$1" in
-    --manifest | --domain | --format | --confos-override | --confos | --attest | --mkosi-sha | --mkosi-ver)
+    --manifest | --domain | --format | --confos-override | --confos | --confos-tag | --attest | --attest-tag | --mkosi-sha | --mkosi-ver)
       (($# >= 2)) || usage
       case "$1" in
         --manifest) manifest=$2 ;;
@@ -222,7 +256,9 @@ while (($# > 0)); do
         --format) output_format=$2 ;;
         --confos-override) confos_override=$2 ;;
         --confos) confos=$2 ;;
+        --confos-tag) confos_tag=$2 ;;
         --attest) attest=$2 ;;
+        --attest-tag) attest_tag=$2 ;;
         --mkosi-sha) mkosi_sha=$2 ;;
         --mkosi-ver) mkosi_ver=$2 ;;
       esac
@@ -243,10 +279,11 @@ case "$command_name" in
     export_pins "$manifest" "$domain" "$output_format" "$confos_override"
     ;;
   update)
-    [[ -n "$domain" && -n "$confos" && -n "$attest" &&
-      -n "$mkosi_sha" && -n "$mkosi_ver" ]] || usage
+    [[ -n "$domain" && -n "$confos" && -n "$confos_tag" && -n "$attest" &&
+      -n "$attest_tag" && -n "$mkosi_sha" && -n "$mkosi_ver" ]] || usage
     update_manifest \
-      "$manifest" "$domain" "$confos" "$attest" "$mkosi_sha" "$mkosi_ver"
+      "$manifest" "$domain" "$confos" "$confos_tag" "$attest" "$attest_tag" \
+      "$mkosi_sha" "$mkosi_ver"
     ;;
   *) usage ;;
 esac
