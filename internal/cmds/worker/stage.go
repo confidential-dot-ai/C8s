@@ -26,19 +26,21 @@ const workerImageMarker = "/usr/lib/c8s/worker-image"
 
 // NewStageCmd returns `worker stage`, run on a worker at boot.
 func NewStageCmd() *cobra.Command {
-	var document string
+	var document, bootstrapTokenFile string
 	cmd := &cobra.Command{
 		Use:   "stage",
-		Short: "Stage this worker's measured document into its NRI floor",
+		Short: "Stage this worker's measured document into its NRI floor and kubelet",
 		Long: `Read the worker document the initrd staged, confirm through the node-local
 attestation API that this worker's launch binding commits the document,
-then publish the CDS pin and router settings under /run/c8s-node and write
-the NRI floor with the document's CDS and pod and Service ranges. Every
-output is removed first, and again if any step fails.`,
+then publish the CDS pin and router settings under /run/c8s-node, write
+the NRI floor with the document's CDS and pod and Service ranges, and write
+the kubelet's configuration, bootstrap kubeconfig and static pods under
+/etc/kubernetes. The node name is derived from this boot's ID. Every output
+is removed first, and again if any step fails.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := stage(cmd.Context(), "", document, launchconfig.DefaultAttestationAPIURL); err != nil {
+			if err := stage(cmd.Context(), "", document, bootstrapTokenFile, launchconfig.DefaultAttestationAPIURL); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "worker document staged")
@@ -46,24 +48,37 @@ output is removed first, and again if any step fails.`,
 		},
 	}
 	cmd.Flags().StringVar(&document, "document", stagedLaunchFile, "the worker document: the measured launch file the initrd stages here")
+	cmd.Flags().StringVar(&bootstrapTokenFile, "bootstrap-token-file", "", "file holding the Kubernetes bootstrap token the kubelet joins with")
+	_ = cmd.MarkFlagRequired("bootstrap-token-file")
 	return cmd
 }
 
-// stage removes every output, then publishes them from the document at path.
-// On any error it removes them again, so nothing usable is left behind. Off a
-// worker image it touches nothing. rootDir rebases the outputs and the marker
-// for tests.
-func stage(ctx context.Context, rootDir, path, attestationAPIURL string) error {
+// stage removes every output, then writes them from the document at
+// documentPath and the bootstrap token at tokenPath. On any error it removes
+// them again, so nothing usable is left behind. Off a worker image it touches
+// nothing. rootDir rebases the outputs, the marker, the static pod templates
+// and the boot ID for tests.
+func stage(ctx context.Context, rootDir, documentPath, tokenPath, attestationAPIURL string) error {
 	if err := requireWorkerImage(rootDir); err != nil {
 		return err
 	}
-	if err := nodeservices.Clear(rootDir); err != nil {
+	if err := clearOutputs(rootDir); err != nil {
 		return fmt.Errorf("remove stale outputs: %w", err)
 	}
-	if err := stageDocument(ctx, rootDir, path, attestationAPIURL); err != nil {
-		return errors.Join(err, nodeservices.Clear(rootDir))
+	if err := stageDocument(ctx, rootDir, documentPath, tokenPath, attestationAPIURL); err != nil {
+		return errors.Join(err, clearOutputs(rootDir))
 	}
 	return nil
+}
+
+// clearOutputs removes the kubelet's inputs before the floor, the reverse of
+// the order stage writes them, so an interrupted clear leaves no kubelet
+// input without its floor.
+func clearOutputs(rootDir string) error {
+	if err := os.RemoveAll(filepath.Join(rootDir, kubernetesDir)); err != nil {
+		return err
+	}
+	return nodeservices.Clear(rootDir)
 }
 
 // requireWorkerImage refuses an image without the worker image's marker.
@@ -80,14 +95,15 @@ func requireWorkerImage(rootDir string) error {
 
 // stageDocument reads the document once, and parses it only after this
 // worker's launch binding proves it is the document the worker launched with.
-func stageDocument(ctx context.Context, rootDir, path, attestationAPIURL string) error {
-	data, err := readDocument(path)
+// It renders every output before writing the first.
+func stageDocument(ctx context.Context, rootDir, documentPath, tokenPath, attestationAPIURL string) error {
+	data, err := readDocument(documentPath)
 	if err != nil {
 		return err
 	}
 	err = credrelease.VerifyLaunchBinding(ctx, attestationAPIURL, filepath.Join(rootDir, armtls.NodeJournal), data)
 	if errors.Is(err, credrelease.ErrLaunchFileNotBound) {
-		return fmt.Errorf("--document %s is not the document this worker launched with: %w", path, err)
+		return fmt.Errorf("--document %s is not the document this worker launched with: %w", documentPath, err)
 	}
 	if err != nil {
 		return fmt.Errorf("check this worker's launch binding: %w", err)
@@ -96,15 +112,32 @@ func stageDocument(ctx context.Context, rootDir, path, attestationAPIURL string)
 	if err != nil {
 		return err
 	}
+	token, err := readBootstrapToken(tokenPath)
+	if err != nil {
+		return err
+	}
+	name, err := nodeName(rootDir)
+	if err != nil {
+		return err
+	}
+	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name)
+	if err != nil {
+		return err
+	}
 	router, err := nodeservices.RouterOutputs(doc.Router)
 	if err != nil {
 		return err
 	}
-	return nodeservices.Prepare(rootDir, nodeservices.FloorInputs{
+	err = nodeservices.Prepare(rootDir, nodeservices.FloorInputs{
 		CDS:           doc.CDS,
 		ClusterRanges: []string{doc.Kubernetes.PodCIDR, doc.Kubernetes.ServiceCIDR},
+		Placeholders:  workerValues(name, doc.Kubernetes),
 		Outputs:       router,
 	})
+	if err != nil {
+		return err
+	}
+	return kubelet.write(rootDir)
 }
 
 func readDocument(path string) ([]byte, error) {
