@@ -87,7 +87,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	port, err := d.CDSPort()
+	port, err := d.CDS.Port()
 	if err != nil {
 		return err
 	}
