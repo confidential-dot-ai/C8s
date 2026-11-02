@@ -20,6 +20,11 @@ What CDS does for a cluster is unchanged, and this page assumes it:
 The procedures are in [cds-ha-runbooks.md](cds-ha-runbooks.md), the alarms in
 [cds-ha-alerts.md](cds-ha-alerts.md).
 
+An opt-in [encrypted object-WAL pilot](cds-object-wal-pilot.md) implements the
+same CDS state machine using conditional object writes. Its separate runbook
+describes the different storage authority and lifecycle limits. This page
+continues to describe the default Raft backend.
+
 ## Versions
 
 A cluster counts the operator commands it has applied. That count is its

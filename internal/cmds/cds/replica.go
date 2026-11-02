@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -40,6 +41,19 @@ const (
 
 var _ backend = (*clusterCDS)(nil)
 
+// The serving side is independent of how a node commits the shared CDS FSM.
+// Raft remains the default; the object WAL pilot implements the same contract.
+type clusterNode interface {
+	Allowlist() *allowlist.Handle
+	ClusterState() cdsha.ClusterState
+	Status() cdsha.Status
+	Decrees() []cdsha.DecreeRecord
+	TakeDecree(cdsdecree.Signed) (cdsha.Delivered, error)
+	CA() (*issuer.CA, bool)
+	Serving() cdsha.Serving
+	ConfirmRead() error
+}
+
 // joinPoll is how often a starting replica asks whether it serves its cluster
 // yet, and caFollow how often a serving one looks at the cluster's mesh CA.
 const (
@@ -52,7 +66,9 @@ const (
 type clusterCDS struct {
 	handles
 	challengePools
-	node *cdsha.Node
+	node            clusterNode
+	extraRoutes     map[string]http.HandlerFunc
+	freshPerRequest bool
 	// stopNode ends the member's loop and waits for it; ended is closed when
 	// that loop is gone, whether it was stopped or it failed.
 	stopNode func()
@@ -266,10 +282,25 @@ func (r *clusterCDS) Ready() bool {
 }
 
 func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
-	return clusterRoutes(r.node)
+	routes := clusterRoutes(r.node)
+	for path, handler := range r.extraRoutes {
+		routes[path] = handler
+	}
+	return routes
 }
 
 func (r *clusterCDS) Gate(next http.Handler) http.Handler {
+	if r.freshPerRequest {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if !servedUnjoined(req.URL.Path) {
+				if err := r.node.ConfirmRead(); err != nil {
+					http.Error(w, "object WAL: no current read watermark", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			haGate(r.Ready, next).ServeHTTP(w, req)
+		})
+	}
 	return haGate(r.Ready, next)
 }
 
@@ -308,7 +339,7 @@ func (r *clusterCDS) Stop() {
 }
 
 type clusterCA struct {
-	node *cdsha.Node
+	node clusterNode
 }
 
 func (c clusterCA) Current() (issuer.CurrentCA, bool) {
@@ -325,7 +356,7 @@ func (c clusterCA) Current() (issuer.CurrentCA, bool) {
 // INVARIANT: haGate answers nothing from this replica while it may not serve
 // its cluster, so a set read here is one the cluster has not moved past.
 type clusterNodeImages struct {
-	node *cdsha.Node
+	node clusterNode
 }
 
 // None while this replica holds no cluster; a set naming no image certifies
@@ -357,7 +388,7 @@ func (c clusterNodeImages) Refresh() error {
 // clusterKey derives one pool's challenge key from the cluster's mesh CA
 // private key, so a nonce one replica minted is redeemable at every other. A
 // key rotation invalidates the nonces outstanding under the old one.
-func clusterKey(node *cdsha.Node, purpose string) attestation.ClusterKey {
+func clusterKey(node clusterNode, purpose string) attestation.ClusterKey {
 	return func() []byte {
 		ca, issuing := node.CA()
 		if !issuing {

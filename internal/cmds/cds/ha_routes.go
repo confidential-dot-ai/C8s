@@ -21,14 +21,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // clusterRoutes are answered to a caller with no client certificate, each
 // named by its method and path.
-func clusterRoutes(node *cdsha.Node) map[string]http.HandlerFunc {
+func clusterRoutes(node clusterNode) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"GET /ha/status":   reportJSON(node.Status),
 		"GET /ha/pins":     reportPinDecree(node),
@@ -43,7 +42,7 @@ const maxDecreeBody = 1 << 20
 
 // takeDecree hands the decree an operator posts to this replica to the
 // cluster, and answers what the cluster made of it.
-func takeDecree(node *cdsha.Node) http.HandlerFunc {
+func takeDecree(node clusterNode) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := readutil.ReadAll(r.Body, maxDecreeBody)
 		if err != nil {
@@ -72,7 +71,7 @@ func reportJSON[T any](read func() T) http.HandlerFunc {
 
 // reportPinDecree serves the pin decree the cluster applied, as the operator
 // signed it, and nothing while it applied none.
-func reportPinDecree(node *cdsha.Node) http.HandlerFunc {
+func reportPinDecree(node clusterNode) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		applied := node.ClusterState().PinsDecree
 		if applied == nil {
@@ -117,6 +116,8 @@ func servedUnjoined(path string) bool {
 		"/ha/status",
 		"/ha/pins",
 		"/ha/decrees":
+		return true
+	case objectProvisionPath, objectStatsPath:
 		return true
 	}
 	return false

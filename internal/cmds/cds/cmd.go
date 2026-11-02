@@ -104,6 +104,7 @@ func NewCmd() *cobra.Command {
 	cmd.AddCommand(cdsca.NewCmd())
 	cmd.AddCommand(cdslaunch.NewCmd())
 	cmd.AddCommand(newHACmd())
+	cmd.AddCommand(newObjectWALCmd())
 
 	return cmd
 }
