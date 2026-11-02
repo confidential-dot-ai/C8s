@@ -21,5 +21,8 @@ containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
 # prepare; never resolved's live list, which the host's DHCP can extend.
 resolvConf: /run/c8s-pod/resolv.conf
 maxPods: 1
+# Every container runs under the runtime's default seccomp profile unless its
+# manifest names another; the admission plugin refuses one that runs unfiltered.
+seccompDefault: true
 failSwapOn: false
 serializeImagePulls: false

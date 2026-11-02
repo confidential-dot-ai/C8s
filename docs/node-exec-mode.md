@@ -85,7 +85,10 @@ session has no way in even there.
 
 A pod CVM's measured policy is the node's with the mesh role alone and no exempt
 namespace, so the floor covers every container of its pod; its `mesh.pod`
-section is what marks the policy as a pod CVM's.
+section is what marks the policy as a pod CVM's. A pod CVM adds one bound the
+node does not: its kubelet applies the runtime's default seccomp profile to
+every container that names none, and the admission plugin refuses a container
+that runs without a filter, which a node judges under its own TCB rules.
 
 ## Pod admission before start
 

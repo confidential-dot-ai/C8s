@@ -321,7 +321,10 @@ renders from the upstream resolvers the measured image names under
 address nor a resolver the host's DHCP supplied reaches the pod, and
 preparation refuses to stage a pod when the image names no remote IPv4
 resolver. Pod preparation sets `dnsPolicy: Default` and drops `dnsConfig`
-overrides. Before
+overrides. The
+kubelet applies the runtime's default seccomp profile to every container whose
+manifest names none, and the admission plugin refuses a container that opts out
+of filtering. Before
 containerd starts, preparation stages the baked CNI template under
 `/run/c8s-pod/cni` with bridge and veth MTU set to the smallest of 1500, the
 default-route interface MTU and any explicit default-route MTU cap. The route
