@@ -34,6 +34,8 @@ CDS_ASSERTIONS = [
 SCENARIO_ASSERTIONS = {
     "connected": ASSERTIONS, "verification-timeout": TIMEOUT_ASSERTIONS,
     "warm-assignment": WARM_ASSERTIONS, "cds-outage": CDS_ASSERTIONS,
+    "cds-renewal-outage": sorted(CDS_ASSERTIONS + ["renewalAfterOutage", "taskContinuity"]),
+    "cds-decree": ['attestedReadiness', 'cdsAccessControl', 'certificateIdentity', 'cleanup', 'exactDigests', 'genesisApplied', 'localGenericTrustPreserved', 'normalScheduler', 'pinDecreeApplied', 'policyRefusals', 'providerDeletion', 'staticPinFloor', 'taskContinuity', 'unjoinedRefusal'],
 }
 PROVIDER_SOURCE = "1" * 40
 DOUBLE = r'''#!/usr/bin/env python3
@@ -319,7 +321,7 @@ class RunnerTests(unittest.TestCase):
                 self.input.write_text(json.dumps(self.config))
                 result = self.run_driver()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("scenario must be connected, verification-timeout, warm-assignment or cds-outage", result.stderr)
+                self.assertIn("scenario must be connected, verification-timeout, warm-assignment, cds-outage, cds-renewal-outage or cds-decree", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
                 self.assertFalse((self.state / "execution-started").exists())
 

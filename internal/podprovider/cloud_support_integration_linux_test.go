@@ -280,15 +280,19 @@ func (c cloudRunConfig) scenario() string {
 	return c.Scenario
 }
 
+func (c cloudRunConfig) cdsOutageScenario() bool {
+	return c.scenario() == "cds-outage" || c.scenario() == "cds-renewal-outage"
+}
+
 func (c cloudRunConfig) instanceCount() int64 {
-	if c.scenario() == "verification-timeout" || c.scenario() == "cds-outage" {
+	if c.scenario() == "verification-timeout" || c.scenario() == "cds-decree" || c.cdsOutageScenario() {
 		return 2 // CDS and one Pod guest.
 	}
 	return 3
 }
 
 func (c cloudRunConfig) validate(artifacts bool) error {
-	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" && c.scenario() != "cds-outage" {
+	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" && c.scenario() != "cds-decree" && !c.cdsOutageScenario() {
 		return errors.New("unknown live Cloud acceptance scenario")
 	}
 	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-cds@", 1) {

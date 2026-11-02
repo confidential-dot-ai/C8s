@@ -327,8 +327,46 @@ Private evidence includes `cds-outage.json`, numbered `cds-observation-*.json`,
 and policy/ingress intents and receipts. Authenticated observations are retained
 before phase validation, including samples that fail. All 12 scenario assertions,
 provider deletion and owned cleanup must pass. This tests CDS network outage and
-served policy retention; guest service restart, CDS process restart and long-outage
-certificate renewal require separate acceptance.
+served policy retention. The scenario below covers renewal across an outage;
+guest service restart and CDS process restart still require separate acceptance.
+
+Set `"scenario": "cds-renewal-outage"` for the same two-VM setup with an outage
+spanning certificate renewal. The production guest schedules renewal at most one
+hour after issuance; this lane keeps the owned CDS ingress closed for at least
+65 minutes. The app observes reachability before the fault, then continuous
+failure; it withdraws readiness after the interval without exiting. The runner
+requires authenticated task/boot/assignment continuity and an unchanged leaf
+throughout that interval. Restoring ingress must restore readiness and produce a
+new serial and SPKI under the same CDS CA within 25 minutes, allowing normal
+transport-retry backoff. Signed revocation and 70 seconds without readmission
+finish the test before provider deletion and confirmed cleanup.
+
+The initial authenticated certificate must outlive the outage and recovery bound.
+This proves renewal after temporary unavailability, not leaf expiry, guest service
+restart, CDS process restart or multi-replica HA. Private evidence includes
+`cds-renewal-outage.json`, individual `cds-renewal-*.json` samples, authenticated
+Pod observations and owned network receipts. All 14 scenario assertions and
+cleanup must pass; partial restoration or a replacement task cannot count.
+
+Set `"scenario": "cds-decree"` for one CDS replica and one static Pod. The pinned
+CDS image and paired CLI must support HA configuration and decree APIs. The
+measured CDS configuration uses Cloud's documented guest address `10.0.2.2`
+and one voter. Before Genesis, attested `/readyz` and `/ca` must refuse with
+HTTP 503. The paired CLI signs Genesis with `--alone`; independent attested
+status, decree history, pin policy and CA observations must show it applied at
+version 1. A signed pin decree for the same real image must reach version 2.
+The exported applied decree supplies the Pod's cold-boot image set and pin floor
+(`AppliesAt()`, currently base version 1), checked against its actual signed
+launch and authenticated readiness/digests.
+
+Pod-key, server-key, wrong-cluster, wrong-launch-binding and stale-base decrees
+must receive their exact authenticated refusals. Each must leave the applied
+history, pins, CA, CDS member/VM/boot, and Pod assignment/tasks/leaf unchanged.
+Private `ha-proof.json`, decree files and Pod observations retain the evidence;
+all 14 assertions, provider deletion and owned cleanup are required. Generic
+signing/assignment preservation is checked locally, without launching a warm
+Pod. This lane does not prove multi-replica failover, image roll, rejection of an
+actual old image, node-image extension, CDS restart or Pod service restart.
 
 These scenarios compile the current checkout's provider. Its commit, dirty status
 and executable hash are recorded in

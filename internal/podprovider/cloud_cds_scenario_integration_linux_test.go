@@ -111,9 +111,8 @@ func (r *cloudRun) cdsImmutablePolicy(expected, actual []byte) error {
 	return r.cdsPolicyRequire("immutable-base", canonical[0], canonical[1])
 }
 
-func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *Config, guest *cloudGuest, cds endpoint) (result error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
-	defer cancel()
+// Both outage scenarios must start with the exact signed, served-only app rule.
+func (r *cloudRun) cdsRequireInitialAppPolicy(ctx context.Context, cfg *Config, guest *cloudGuest, cds endpoint, stage string) error {
 	base, added, err := r.cdsPolicies(cfg)
 	if err != nil {
 		return err
@@ -133,15 +132,21 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 	if err != nil {
 		return err
 	}
-	ca, err := r.ca(ctx, cds)
-	if err != nil {
-		return err
-	}
 	_, actual, err := r.policy(ctx, cds)
 	if err != nil {
 		return err
 	}
-	if err = r.cdsPolicyRequire("outage-before", added, actual); err != nil {
+	return r.cdsPolicyRequire(stage, added, actual)
+}
+
+func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *Config, guest *cloudGuest, cds endpoint) (result error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	if err := r.cdsRequireInitialAppPolicy(ctx, cfg, guest, cds, "outage-before"); err != nil {
+		return err
+	}
+	ca, err := r.ca(ctx, cds)
+	if err != nil {
 		return err
 	}
 	sequence := 0
@@ -275,50 +280,14 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 	if !afterRestore.Ready || !afterRestore.Running || afterRestore.Restarts != 1 || !afterRestore.AppStart.Equal(restarted.AppStart) || !afterRestore.MeshStart.Equal(restarted.MeshStart) {
 		return errors.New("application did not remain in its retained start before signed revocation")
 	}
-	if err = r.cdsPolicyUpdate(ctx, cfg, cds, false); err != nil {
+	revocation, err := r.cdsRevoke(ctx, h, cfg, cds, restarted, func(p cloudCDSPhase) (cloudCDSState, error) {
+		phase = p
+		return observe()
+	})
+	if err != nil {
 		return err
 	}
-	proof.RevokedAt = time.Now().UTC()
-	phase = cloudCDSRevocation
-	var refusedAt time.Time
-	var stopped *podstatus.ContainerTerminated
-	until := time.Now().Add(3 * time.Minute)
-	for {
-		state, err := observe()
-		if err != nil {
-			return err
-		}
-		refused, err := cloudCDSRevoked(restarted, state)
-		if err != nil {
-			return err
-		}
-		if !refusedAt.IsZero() && (!refused || !reflect.DeepEqual(stopped, state.Exit)) {
-			return errors.New("revoked application or mesh credentials resumed, or its stopped process changed")
-		}
-		if refused {
-			if refusedAt.IsZero() {
-				refusedAt, stopped = time.Now(), state.Exit
-				proof.MeshWithdrawnAt = refusedAt.UTC()
-			}
-			if time.Since(refusedAt) >= cloudCDSRetention {
-				pod, err := r.bootPod(ctx, h, cfg, "a")
-				if err != nil {
-					return err
-				}
-				if controlPlanePodReady(pod) {
-					return errors.New("provider still reports the revoked application ready")
-				}
-				proof.RefusedUntil = time.Now().UTC()
-				break
-			}
-		}
-		if time.Now().After(until) {
-			return errors.New("signed policy deletion did not cause sustained application revocation")
-		}
-		if err = cloudPause(ctx, 3*time.Second); err != nil {
-			return err
-		}
-	}
+	proof.RevokedAt, proof.MeshWithdrawnAt, proof.RefusedUntil = revocation.RevokedAt, revocation.MeshWithdrawnAt, revocation.RefusedUntil
 	finalCDS, err := r.getOwned(ctx, "cds")
 	if err != nil {
 		return err
@@ -335,4 +304,59 @@ func (r *cloudRun) cdsProofComplete() bool {
 	raw, err := os.ReadFile(filepath.Join(r.dir, "cds-outage.json"))
 	var proof cloudCDSProof
 	return err == nil && json.Unmarshal(raw, &proof) == nil && proof.Passed && proof.Run == r.ledger.Run && proof.InitialLeaf != nil && proof.RetainedLeaf != nil && proof.InitialLeaf.Workload == "cloud-a" && proof.RetainedLeaf.Workload == "cloud-a" && proof.InitialLeaf.Denied && proof.RetainedLeaf.Denied && proof.InitialLeaf.SandboxID != "" && proof.InitialLeaf.SandboxID == proof.RetainedLeaf.SandboxID && proof.InitialLeaf.SPKI != "" && proof.InitialLeaf.SPKI == proof.RetainedLeaf.SPKI && cloudHex.MatchString(proof.CABeforeSHA256) && proof.CAAfterSHA256 == proof.CABeforeSHA256 && proof.UID != "" && proof.CDSInstance != "" && proof.PodInstance != "" && proof.RetainedAt.Sub(proof.DisconnectedAt) >= cloudCDSRetention && proof.RestartedAt.After(proof.RetainedAt) && proof.RestoredAt.After(proof.RestartedAt) && proof.RevokedAt.After(proof.RestoredAt) && proof.MeshWithdrawnAt.After(proof.RevokedAt) && proof.RefusedUntil.Sub(proof.MeshWithdrawnAt) >= cloudCDSRetention
+}
+
+// Both outage scenarios require sustained termination and credential withdrawal.
+type cloudCDSRevocationProof struct {
+	RevokedAt       time.Time `json:"revokedAt"`
+	MeshWithdrawnAt time.Time `json:"meshWithdrawnAt"`
+	RefusedUntil    time.Time `json:"refusedUntil"`
+}
+
+func (r *cloudRun) cdsRevoke(ctx context.Context, h *providerControlPlane, cfg *Config, cds endpoint, before cloudCDSState, observe func(cloudCDSPhase) (cloudCDSState, error)) (cloudCDSRevocationProof, error) {
+	var proof cloudCDSRevocationProof
+	if err := r.cdsPolicyUpdate(ctx, cfg, cds, false); err != nil {
+		return proof, err
+	}
+	proof.RevokedAt = time.Now().UTC()
+	var refusedAt time.Time
+	var stopped *podstatus.ContainerTerminated
+	until := time.Now().Add(3 * time.Minute)
+	for {
+		state, err := observe(cloudCDSRevocation)
+		if err != nil {
+			return proof, err
+		}
+		refused, err := cloudCDSRevoked(before, state)
+		if err != nil {
+			return proof, err
+		}
+		if !refusedAt.IsZero() && (!refused || !reflect.DeepEqual(stopped, state.Exit)) {
+			return proof, errors.New("revoked application or mesh credentials resumed, or its stopped process changed")
+		}
+		if refused {
+			if refusedAt.IsZero() {
+				refusedAt, stopped = time.Now(), state.Exit
+				proof.MeshWithdrawnAt = refusedAt.UTC()
+			}
+			if time.Since(refusedAt) >= cloudCDSRetention {
+				pod, err := r.bootPod(ctx, h, cfg, "a")
+				if err != nil {
+					return proof, err
+				}
+				if controlPlanePodReady(pod) {
+					return proof, errors.New("provider still reports the revoked application ready")
+				}
+				proof.RefusedUntil = time.Now().UTC()
+				break
+			}
+		}
+		if time.Now().After(until) {
+			return proof, errors.New("signed policy deletion did not cause sustained application revocation")
+		}
+		if err := cloudPause(ctx, 3*time.Second); err != nil {
+			return proof, err
+		}
+	}
+	return proof, nil
 }
