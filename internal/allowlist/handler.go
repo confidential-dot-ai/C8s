@@ -37,7 +37,15 @@ type WriteAuthorizer func(r *http.Request, body []byte) error
 // HandleList handles GET /allowlist: the full allowlist document as canonical
 // JSON. Emits a weak ETag from the store version; a matching If-None-Match
 // returns 304.
+//
+// The response is Cache-Control: no-store. The version is a counter, not a
+// digest of the document, so it names a document only to the CDS that
+// served it: a cache that kept one cluster's document would revalidate it
+// against another cluster with the same count and be told 304. Enforcers
+// hold the ETag themselves and are not caches; browsers and proxies are.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+
 	// Every enforcer polls this route on its refresh interval and is current
 	// almost every time, so settle the 304 on the single-row version read
 	// rather than loading every entry under the writers' lock.

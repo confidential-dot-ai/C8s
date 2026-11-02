@@ -569,6 +569,34 @@ func TestAllowlistListEmitsETag(t *testing.T) {
 	}
 }
 
+// GET /allowlist is served Cache-Control: no-store, on the document and on a
+// 304: the ETag is a per-cluster counter, so a cache that kept one cluster's
+// document would revalidate it against another cluster at the same count
+// and be told it is current.
+func TestAllowlistListIsNotCacheable(t *testing.T) {
+	app, _, _ := testAllowlistApp(t)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	for _, ifNoneMatch := range []string{"", `W/"1"`} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("If-None-Match %q (status %d): Cache-Control = %q, want no-store", ifNoneMatch, resp.StatusCode, got)
+		}
+	}
+}
+
 func TestAllowlistListMatchingIfNoneMatchReturns304(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)

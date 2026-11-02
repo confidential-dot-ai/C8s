@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // A configuration with no replica set serves its cluster from this process:
@@ -19,6 +21,34 @@ func TestAConfigurationWithoutAReplicaSetServesTheClusterAlone(t *testing.T) {
 	defer back.Stop()
 	if !back.Ready() {
 		t.Error("the CDS of a cluster with no replica set does not serve the state it holds")
+	}
+}
+
+// A CDS serving its cluster alone raises the allowlist version to its start
+// time, as a replica set does on its start decree: a fresh store counts from
+// 1, and two clusters at the same count would serve the same ETag, so a
+// client holding one cluster's document would be told by the other that it
+// is current.
+func TestAClusterServedAloneStartsItsAllowlistVersionAtItsStart(t *testing.T) {
+	cfg, state := singletonRunConfig(t, attestingAPI(t))
+	before := time.Now().UnixMilli()
+
+	back, err := newBackend(context.Background(), cfg, state)
+	if err != nil {
+		t.Fatalf("newBackend = %v", err)
+	}
+	defer back.Stop()
+
+	served, err := state.allowlist.Version()
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	version, err := strconv.ParseInt(served, 10, 64)
+	if err != nil {
+		t.Fatalf("version %q is not a counter: %v", served, err)
+	}
+	if version < before || version > time.Now().UnixMilli() {
+		t.Fatalf("version %d is not this start (between %d and now)", version, before)
 	}
 }
 

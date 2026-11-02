@@ -156,10 +156,24 @@ func newSingleton(cfg config, st stores) (backend, error) {
 		mesh:  mesh,
 		nodes: armtls.FixedPins(cfg.measured.Nodes),
 	}
+	start := time.Now()
 	if !cfg.allowlistPersistent {
-		only.started = time.Now()
+		only.started = start
 		slog.Warn("allowlist store is not persistent: a restart resets the served allowlist to the configured workloads and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
 	}
+	// Every start is a new life of the cluster (the mesh CA is minted here),
+	// so the served allowlist version is raised to the start time, as a
+	// replica set does on its start decree (cdsha.FSM). A fresh store counts
+	// from 1, and two clusters both on their Nth upload serve the same ETag
+	// W/"N": a client holding the old cluster's document asks the new one
+	// with If-None-Match: W/"N", is told 304, and keeps the old document.
+	// The start time in ms is unique to this life and above every version an
+	// earlier life served, so enforcers that hold the old one re-pull once.
+	version, err := st.allowlist.RaiseVersion(start.UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("raise the allowlist version to the cluster's start: %w", err)
+	}
+	slog.Info("the allowlist version is raised to this start", "version", version, "started_at_ms", start.UnixMilli())
 	return only, nil
 }
 
