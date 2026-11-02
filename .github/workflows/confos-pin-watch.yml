@@ -1,6 +1,8 @@
-# Watches the confos / attestation-rs source pins the measured builds ride
-# and opens bump PRs when upstream main moves — never merges: each bump
-# rolls a measurement, so a human owns the merge. The mkosi ref is not
+# Watches the confos source pin the measured builds ride and opens a bump PR
+# when upstream main moves — never merges: each bump rolls a measurement, so a
+# human owns the merge. The attestation-rs pin is held at the manifest's value:
+# its main has broken the attestation-api config and /verify contracts c8s and
+# confos consume, so it moves only in a PR that ports them. The mkosi ref is not
 # watched independently: it is scraped from the target confos commit's own
 # base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep
 # by construction. The canonical data lives in .github/build-pins.json;
@@ -52,7 +54,8 @@ jobs:
         run: |
           set -euo pipefail
           confos=$(gh api repos/confidential-dot-ai/confidential-os-builder/commits/main --jq .sha)
-          attest=$(gh api repos/confidential-dot-ai/attestation-rs/commits/main --jq .sha)
+          # Held, not watched: see the header.
+          attest=$(jq -er --arg d "$DOMAIN" '.builds[$d].attestation_rs_ref' .github/build-pins.json)
           mapfile -t mkosi_lines < <(
             curl -fsSL --retry 3 \
               "https://raw.githubusercontent.com/confidential-dot-ai/confidential-os-builder/${confos}/.github/workflows/base.yml" |
@@ -78,7 +81,7 @@ jobs:
             exit 1
           fi
           branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
-          title="build(${DOMAIN}): pin-watch bump — confos ${confos:0:7}, attestation-rs ${attest:0:7}"
+          title="build(${DOMAIN}): pin-watch bump — confos ${confos:0:7}"
           open_pr=$(
             gh pr list --state open --limit 100 \
               --json headRefName,isCrossRepository,number |
@@ -158,4 +161,4 @@ jobs:
             echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
             exit 1
           fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\`: confos main \`${confos:0:9}\`, attestation-rs main \`${attest:0:9}\`, and mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow. This rolls the affected measurements; review the upstream logs and reproducibility gate before merging."
+          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\`: confos main \`${confos:0:9}\` and mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow; attestation-rs stays at \`${attest:0:9}\`. This rolls the affected measurements; review the upstream logs and reproducibility gate before merging."
