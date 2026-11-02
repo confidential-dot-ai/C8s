@@ -48,7 +48,7 @@ verify)
         "$work/baseline.raw" "$5" "$fixture" "$work"
     ;;
 capture)
-    python3 "$fixture/capture.py" "$work" "$5" "$GITHUB_RUN_ID" "$GITHUB_SHA"
+    bash "$fixture/capture.sh" "$work" "$5" "$GITHUB_RUN_ID" "$GITHUB_SHA"
     ;;
 *) echo 'unknown fixture build phase' >&2; exit 1 ;;
 esac

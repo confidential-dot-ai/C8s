@@ -190,8 +190,10 @@ insufficient. [Launch and cleanup requirements](../test/integration/pod-cloud/RE
 include the exact wire contract. Historical `2026.10.30-1` results validate their
 recorded v1 source and images, not this v2 lane. A new hardware run is required.
 
-The live lane needs Go, Docker, kind, jq, Python 3 and GNU timeout, an authorized Cloud
-credential, and an admitted matching production Pod/CDS image pair. Supply an
+The live lane needs Go, Docker, kind, jq and GNU timeout, an authorized Cloud
+credential, and an admitted matching production Pod/CDS image pair. Every
+invocation, cleanup included, builds the runner tool in `test/integration/pod-cloud/tool`
+from the current checkout for the host lock and private markers. Supply an
 absolute JSON input path with these fields:
 
 ```json
@@ -488,8 +490,7 @@ fixture_ref='<branch-or-tag-at-the-fixture-build-commit>'
 build_run='<successful-fixture-build-run-id>'
 gh run download "$build_run" --repo confidential-dot-ai/C8s \
   --name "pod-recovery-fixture-$build_run" --dir recovery-build
-receipt_sha256="$(python3 -c \
-  'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("recovery-build/image.json").read_bytes()).hexdigest())')"
+receipt_sha256="$(sha256sum recovery-build/image.json | cut -d' ' -f1)"
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
   --ref "$fixture_ref" -f pod_recovery=true \
   -F pod_recovery_receipt=@recovery-build/image.json \

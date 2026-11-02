@@ -203,7 +203,9 @@ jobs:
       - uses: ./.github/actions/setup-go-c8s
       - uses: ./.github/actions/setup-kind-harness
       - name: Test live runner recovery offline
-        run: python3 -m unittest discover -s test/integration/pod-cloud
+        run: go test -count=1 ./test/integration/pod-cloud/tool
+      - name: Test the embedded CDS guest probe offline
+        run: python3 test/integration/pod-cloud/test_cds_probe.py
       - name: Test live Cloud ownership and recovery offline
         run: go test -race -count=1 -tags podprovider_integration,podprovider_cloud -run '^TestCloudAcceptance' ./internal/podprovider
       - name: Run the Pod provider scheduler integration

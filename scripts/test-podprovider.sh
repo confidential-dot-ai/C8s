@@ -5,7 +5,7 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-for tool in go docker kind python3; do
+for tool in go docker kind jq; do
     command -v "$tool" >/dev/null || { echo "required tool missing: $tool" >&2; exit 1; }
 done
 if command -v timeout >/dev/null; then
@@ -103,28 +103,18 @@ printf 'kind image: %s\ncluster: %s\nCloud and guest attestation: explicit test 
 for receipt in result.json lifecycle-result.json; do
     "$deadline" 15 docker cp "$node:/podprovider-test/artifacts/$receipt" "$artifacts/$receipt"
 done
-python3 - "$artifacts/result.json" "$artifacts/lifecycle-result.json" <<'PY'
-import json
-import sys
-
-for path in sys.argv[1:]:
-    with open(path, encoding="utf-8") as stream:
-        receipt = json.load(stream)
-    if receipt.get("result") != "PASS" or receipt.get("ownedFakeVMsRemaining") != 0:
-        raise SystemExit("scheduler integration did not produce a passing, cleaned-up receipt")
-    if receipt.get("scheduler") != "real kind control plane" or not receipt.get("cloud", "").startswith("explicit fake"):
-        raise SystemExit("scheduler receipt has an unexpected execution scope")
-
-with open(sys.argv[2], encoding="utf-8") as stream:
-    lifecycle = json.load(stream)
-required = (
+for receipt in result.json lifecycle-result.json; do
+    jq -e '.result == "PASS" and .ownedFakeVMsRemaining == 0' "$artifacts/$receipt" >/dev/null || {
+        echo 'scheduler integration did not produce a passing, cleaned-up receipt' >&2; exit 1; }
+    jq -e '.scheduler == "real kind control plane" and ((.cloud // "") | type == "string" and startswith("explicit fake"))' "$artifacts/$receipt" >/dev/null || {
+        echo 'scheduler receipt has an unexpected execution scope' >&2; exit 1; }
+done
+jq -e '. as $lifecycle | all(
     "verificationDeadlineSurvivesManagerRestart", "lateStatusCannotReviveFailedPod",
     "terminalCleanupWaitsForTermination", "genericIdleBootHasNoPodAuthority",
     "twoScheduledPodsClaimDistinctSlots", "assignmentIntentPrecedesPOST",
     "lostAssignmentReplySurvivesManagerRestart", "staleClaimWriteRejectedByAPI",
     "forcedPodDeletionRetainsAllocationBudget", "newPodUIDGetsNewAllocationGeneration",
-    "poolDisabledAndDrained",
-)
-if any(lifecycle.get(name) is not True for name in required):
-    raise SystemExit("required scheduler lifecycle assertion is absent or did not pass")
-PY
+    "poolDisabledAndDrained";
+    $lifecycle[.] == true)' "$artifacts/lifecycle-result.json" >/dev/null || {
+    echo 'required scheduler lifecycle assertion is absent or did not pass' >&2; exit 1; }

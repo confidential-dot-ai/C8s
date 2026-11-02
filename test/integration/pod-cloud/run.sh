@@ -7,15 +7,32 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo_root"
 mode="${1:-}"
 [[ "${C8S_PODCLOUD_LIVE:-}" == 1 ]] || { echo 'Set C8S_PODCLOUD_LIVE=1 to enable this live lane.' >&2; exit 1; }
+compatible_source() {
+    # Only one SchemaVersion constant, naming the v2 contract, in a source
+    # file of ordinary size. The compiled Go entry point checks its actual value.
+    local source="$repo_root/internal/cmds/launchconfig/config.go" versions
+    [[ -f "$source" && "$(wc -c < "$source")" -le $((1 << 20)) ]] || return 1
+    versions="$(grep -E '^[[:space:]]*SchemaVersion[[:space:]]*=[[:space:]]*"[^"]+"[[:space:]]*$' "$source" | sed -E 's/.*"([^"]+)".*/\1/')"
+    [[ "$versions" == "c8s-launch/v2" ]]
+}
 if [[ "$mode" == run ]]; then
     # Reject unsupported source before acquiring a lock, creating state, reading
     # credentials or invoking build/provisioning tools. Cleanup uses its runner.
-    python3 "$repo_root/test/integration/pod-cloud/compatibility.py"
+    compatible_source || {
+        echo 'This Cloud acceptance lane requires c8s-launch/v2 and a dedicated measured CDS. Retained runs must use their original cleanup binary.' >&2
+        exit 1
+    }
 fi
+# The runner tool holds the host lock and writes the private markers; it is
+# built from this checkout before any state exists.
+runner_tool="$repo_root/build/pod-cloud-tool"
 if [[ "${C8S_PODCLOUD_LOCKED:-}" != 1 ]]; then
-    exec python3 "$repo_root/test/integration/pod-cloud/lock.py" "$repo_root/test/integration/pod-cloud/run.sh" "$@"
+    command -v go >/dev/null || { echo 'go is required to build the runner tool' >&2; exit 1; }
+    mkdir -p "$(dirname "$runner_tool")"
+    go build -o "$runner_tool" ./test/integration/pod-cloud/tool
+    exec "$runner_tool" lock "$repo_root/test/integration/pod-cloud/run.sh" "$@"
 fi
-python3 "$repo_root/test/integration/pod-cloud/lock.py" --verify "$repo_root/test/integration/pod-cloud/run.sh" "$@"
+"$runner_tool" lock --verify "$repo_root/test/integration/pod-cloud/run.sh" "$@"
 for tool in docker kind jq; do
     command -v "$tool" >/dev/null || { echo "required tool missing: $tool" >&2; exit 1; }
 done
@@ -134,31 +151,8 @@ if [[ "$mode" == run ]]; then
     [[ "$docker_arch" == amd64 || "$docker_arch" == arm64 ]] || { echo 'unsupported Docker architecture' >&2; exit 1; }
     "$deadline" 600 env GOOS=linux GOARCH="$docker_arch" CGO_ENABLED=0 go test -c \
         -tags podprovider_integration,podprovider_cloud -o "$state/provider.test" ./internal/podprovider
-    provider_binary_sha256="$(python3 - "$state" <<'PYBUILD'
-import hashlib
-import json
-from pathlib import Path
-import subprocess
-import sys
-
-state = Path(sys.argv[1])
-def git(*args):
-    return subprocess.run(["git", *args], check=True, capture_output=True,
-                          text=True, timeout=15).stdout.strip()
-
-# The provider is built from this checkout; config.source identifies guest/CLI.
-source = git("rev-parse", "--verify", "HEAD")
-dirty = bool(git("status", "--porcelain=v1", "--untracked-files=normal"))
-digest = hashlib.sha256()
-with (state / "provider.test").open("rb") as runner:
-    for chunk in iter(lambda: runner.read(1024 * 1024), b""):
-        digest.update(chunk)
-with (state / "provider-build.json").open("x") as receipt:
-    json.dump({"source": source, "dirty": dirty,
-               "providerBinarySHA256": digest.hexdigest()}, receipt)
-print(digest.hexdigest())
-PYBUILD
-)"
+    # The provider is built from this checkout; config.source identifies guest/CLI.
+    provider_binary_sha256="$("$runner_tool" build-receipt "$state")"
     cluster="c8s-podcloud-$(date +%s)-$$"
     existing="$("$deadline" 15 kind get clusters)"
     if printf '%s\n' "$existing" | grep -Fxq "$cluster"; then
@@ -201,28 +195,7 @@ verify_state_mount() {
     local expected observed
     # Docker's mount metadata can name the requested host path even when a
     # remote daemon or VM sees a different, empty directory at that path.
-    expected="$(python3 - "$state" "$provider_binary_sha256" <<'PY'
-import hashlib
-import os
-import secrets
-import sys
-
-directory = sys.argv[1]
-nonce = secrets.token_hex(32) + "\n"
-fd = os.open(os.path.join(directory, ".mount-nonce"),
-             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-with os.fdopen(fd, "w") as marker:
-    marker.write(nonce)
-digest = hashlib.sha256()
-with open(os.path.join(directory, "provider.test"), "rb") as runner:
-    for chunk in iter(lambda: runner.read(1024 * 1024), b""):
-        digest.update(chunk)
-if digest.hexdigest() != sys.argv[2]:
-    raise SystemExit("built provider binary changed before execution")
-print(nonce, end="")
-print(digest.hexdigest() + "  /podcloud/provider.test")
-PY
-)"
+    expected="$("$runner_tool" mount-proof "$state" "$provider_binary_sha256")"
     if ! observed="$("$deadline" 30 docker exec "$node_id" /bin/sh -ec '
         test -f /podcloud/.mount-nonce && test ! -L /podcloud/.mount-nonce
         test -f /podcloud/provider.test && test ! -L /podcloud/provider.test
@@ -239,22 +212,7 @@ if [[ "$mode" == run ]]; then
     # Keep execution-started absent on mount failure so partial cleanup needs
     # no in-container runner and cannot be confused with a live Cloud attempt.
     verify_state_mount
-    python3 - "$state" <<'PY'
-import os
-import sys
-directory = sys.argv[1]
-fd = os.open(os.path.join(directory, "execution-started"),
-             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-with os.fdopen(fd, "wb") as marker:
-    marker.write(b"Cloud execution may start\n")
-    marker.flush()
-    os.fsync(marker.fileno())
-parent = os.open(directory, os.O_RDONLY)
-try:
-    os.fsync(parent)
-finally:
-    os.close(parent)
-PY
+    "$runner_tool" started "$state"
 fi
 set +e
 if [[ "$mode" == run ]]; then
@@ -269,17 +227,7 @@ if [[ "$status" != 0 ]] || ! jq -e '.complete == true' "$state/ledger.json" >/de
     exit 1
 fi
 if [[ "$mode" == run ]]; then
-    observed_binary_sha256="$(python3 - "$state/provider.test" <<'PY'
-import hashlib
-import sys
-
-digest = hashlib.sha256()
-with open(sys.argv[1], "rb") as runner:
-    for chunk in iter(lambda: runner.read(1024 * 1024), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-PY
-)"
+    observed_binary_sha256="$("$runner_tool" sha256 "$state/provider.test")"
     jq -e --arg scenario "$scenario" --arg binary "$provider_binary_sha256" \
       --arg observed "$observed_binary_sha256" --slurpfile build "$state/provider-build.json" \
       --slurpfile cfg "$state/config.json" --slurpfile ledger "$state/ledger.json" '

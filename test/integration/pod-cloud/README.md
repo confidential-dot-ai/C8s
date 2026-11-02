@@ -46,6 +46,7 @@ Historical v1 receipts remain evidence only for their recorded source and image
 pins. For an existing run, retain its private state and original runner, then use
 `run.sh cleanup /absolute/existing-private-state`. Cleanup reuses the original
 `provider.test` and ownership ledger; it does not rebuild or apply the current
-launch parser. Never replace that saved binary to upgrade a run. Missing local
+launch parser. Only the host lock and marker tool is rebuilt from the
+current checkout. Never replace that saved binary to upgrade a run. Missing local
 interruption proof never authorizes deletion: exact owned Cloud receipts remain
 required. Keep all credentials, signed launch material and diagnostics private.

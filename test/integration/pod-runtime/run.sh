@@ -5,29 +5,24 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
 cd "$REPO_ROOT"
-for tool in docker go python3; do
+for tool in docker go; do
     command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
 done
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/c8s-pod-runtime.XXXXXXXX")
+# The lane's own tools: bounded commands, provenance, fixtures and receipts.
+fixtures="$work/fixtures"
+go build -o "$fixtures" ./test/integration/pod-runtime/fixtures
 
 # Bound local daemon calls as well as downloads; this runner never uses a
 # host runtime socket or bind-mounts host paths into its privileged container.
 bounded() {
-    python3 - "$@" <<'PY'
-import subprocess
-import sys
-
-try:
-    result = subprocess.run(sys.argv[2:], timeout=int(sys.argv[1]), check=False)
-except subprocess.TimeoutExpired:
-    raise SystemExit("command exceeded its bounded deadline: " + sys.argv[2])
-raise SystemExit(result.returncode)
-PY
+    "$fixtures" bounded "$@"
 }
 
 # Refuse source/pin drift before any Docker calls or owned resources.
-bounded 30 python3 "$SCRIPT_DIR/test_fixtures.py"
+bounded 120 go test -count=1 ./test/integration/pod-runtime/fixtures
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/c8s-pod-runtime.XXXXXXXX")
 stage="$work/stage"
 mkdir -p "$stage/runtime" "$stage/cni" "$stage/artifacts"
 artifacts="${C8S_POD_RUNTIME_ARTIFACTS:-$work/artifacts}"
@@ -63,7 +58,7 @@ cleanup() {
     echo "Pod runtime artifacts: $artifacts"
     # Keep the default artifacts; binaries and staged source are disposable.
     rm -rf "$stage"
-    rm -f "$work/container.log"
+    rm -f "$work/container.log" "$fixtures"
     if [[ "$artifacts" != "$work/artifacts" ]]; then
         rmdir "$work" 2>/dev/null || true
     fi
@@ -74,23 +69,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Never mix a failed invocation with receipts from an earlier successful run.
-python3 - "$artifacts" <<'PY'
-import sys
-from pathlib import Path
-
-if any(Path(sys.argv[1]).iterdir()):
-    raise SystemExit("runtime artifacts directory must be empty; use a new directory")
-PY
+if [[ -n "$(ls -A "$artifacts")" ]]; then
+    echo "runtime artifacts directory must be empty; use a new directory" >&2
+    exit 1
+fi
 
 arch=$(bounded 30 docker version --format '{{.Server.Arch}}')
-python3 "$SCRIPT_DIR/fixtures.py" prepare "$REPO_ROOT" "$stage" "$arch"
+"$fixtures" prepare "$REPO_ROOT" "$stage" "$arch"
 input() {
-    python3 - "$stage/inputs.json" "$1" <<'PY'
-import json
-import sys
-
-print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])
-PY
+    "$fixtures" json-string "$stage/inputs.json" "$1"
 }
 runtime_image=$(input runtimeImage)
 runner_image=$(input runnerImage)
@@ -105,7 +92,7 @@ bounded 300 env GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
 bounded 300 env GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
     go test -tags pod_runtime_integration -c -o "$stage/nri-runtime.test" \
     ./internal/cmds/nri-image-policy
-python3 "$SCRIPT_DIR/fixtures.py" image "$stage" "$arch"
+"$fixtures" image "$stage" "$arch"
 cp "$SCRIPT_DIR/inside.sh" "$stage/inside.sh"
 cp images/node-guest/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml "$stage/kubelet-base.yaml"
 
@@ -150,21 +137,7 @@ for file in images/node-guest/c8s/image-policy.yaml.in \
     cp "$file" "$stage/source/$file"
 done
 mkdir -p "$stage/source/internal/cmds/nri-image-policy"
-python3 - "$stage" "$artifacts/runtime-binaries.json" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-stage = Path(sys.argv[1])
-files = sorted((stage / "runtime").iterdir()) + sorted((stage / "cni").iterdir()) + [stage / "c8s-runc", stage / "nri-runtime.test"]
-records = {}
-for path in files:
-    with path.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    records[str(path.relative_to(stage))] = {"sha256": digest, "size": path.stat().st_size}
-Path(sys.argv[2]).write_text(json.dumps(records, indent=2) + "\n")
-PY
+"$fixtures" binaries "$stage" "$artifacts/runtime-binaries.json"
 
 test_container=$(bounded 30 docker create --platform "linux/$arch" \
     --label confidential.ai/pod-runtime-test=1 \
@@ -176,24 +149,16 @@ test_container=$(bounded 30 docker create --platform "linux/$arch" \
 bounded 60 docker cp "$stage/." "$test_container:/validation"
 bounded 580 docker start -a "$test_container"
 
-python3 - "$test_container" <<'PY'
-import subprocess
-import sys
-
-state = subprocess.check_output(
-    ["docker", "inspect", "--format", "{{.State.ExitCode}}", sys.argv[1]], timeout=30
-).decode().strip()
-if state != "0":
-    raise SystemExit("runtime-test container exited with " + state)
-PY
+state=$(bounded 30 docker inspect --format '{{.State.ExitCode}}' "$test_container")
+[[ "$state" == 0 ]] || { echo "runtime-test container exited with $state" >&2; exit 1; }
 
 # A successful test command that matched no tests must still fail this lane.
 # Copy into this invocation's private staging tree, never trust old artifacts.
 bounded 30 docker cp "$test_container:/validation/artifacts/result.json" "$stage/result.json"
-python3 "$SCRIPT_DIR/fixtures.py" receipt "$stage/inputs.json" "$stage/result.json"
+"$fixtures" receipt "$stage/inputs.json" "$stage/result.json"
 
 bounded 30 docker cp "$test_container:/validation/artifacts/recovery-result.json" "$stage/recovery-result.json"
-python3 "$SCRIPT_DIR/fixtures.py" recovery-receipt "$stage/inputs.json" "$stage/recovery-result.json"
+"$fixtures" recovery-receipt "$stage/inputs.json" "$stage/recovery-result.json"
 
 bounded 30 docker cp "$test_container:/validation/artifacts/kubelet-recovery-result.json" "$stage/kubelet-recovery-result.json"
-python3 "$SCRIPT_DIR/fixtures.py" kubelet-receipt "$stage/inputs.json" "$stage/kubelet-recovery-result.json"
+"$fixtures" kubelet-receipt "$stage/inputs.json" "$stage/kubelet-recovery-result.json"
