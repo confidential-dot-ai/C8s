@@ -267,14 +267,21 @@ func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
 	return pins
 }
 
-// The node images bind no launch file of their own.
 func testNodeImages(t *testing.T, digests ...byte) *cdsdecree.NodeImages {
+	t.Helper()
+	return nodeImagesBoundTo(t, nil, digests...)
+}
+
+// nodeImagesBoundTo pins one TDX node image per digest, each bound to the
+// launch file of this SHA-384, none for nil.
+func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *cdsdecree.NodeImages {
 	t.Helper()
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
 		images = append(images, remote.ImagePin{
-			Name:   fmt.Sprintf("node-%02x", digest),
-			Digest: bytes.Repeat([]byte{digest}, refvalues.DigestSize),
+			Name:             fmt.Sprintf("node-%02x", digest),
+			Digest:           bytes.Repeat([]byte{digest}, refvalues.DigestSize),
+			LaunchFileDigest: launched,
 		})
 	}
 	document, err := refvalues.Format(refvalues.ReferenceValues{

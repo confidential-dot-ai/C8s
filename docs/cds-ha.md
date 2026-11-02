@@ -193,10 +193,13 @@ during the overlap needs a new one.
 ## The node images the cluster certifies
 
 The cluster certifies the node images its log names, and a `node-images`
-decree replaces that set. An upgrade is two decrees with the node relaunches
-between them: first the old and the new image together, then the new image
-alone. No launch file, client pin or CDS VM changes for it. Runbook 5 has the
-steps.
+decree replaces that set. Every entry of the set it carries must bind the
+launch of the nodes it certifies (`approver_key`, `launch_file` or
+`launch_file_digest`): `c8s cds ha decree node-images` and the leader it is
+posted to refuse one that binds none. A Genesis carries the nodes it names as
+they are. An upgrade is two decrees with the node relaunches between them:
+first the old and the new image together, then the new image alone. No launch
+file, client pin or CDS VM changes for it. Runbook 5 has the steps.
 
 For a verifier this moves where the set comes from. The launch file's `nodes`
 is only the set the cluster started from, so

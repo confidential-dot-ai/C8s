@@ -43,6 +43,22 @@ func TestGenesisStartsTheCluster(t *testing.T) {
 	}
 }
 
+// The binding check runs where a set is posted, never where a logged one
+// applies, so every release replays a log the same way.
+func TestALoggedNodeImageSetBindingNoLaunchStillApplies(t *testing.T) {
+	r := newReplica(t)
+	r.genesis()
+	unbound := nodeImagesBoundTo(t, nil, 0x44)
+	logged := r.decree(cdsdecree.SetNodeImages)
+	logged.NodePins = unbound
+	if res := r.applyDecreeEntry(r.entryFor(logged)); res.Refused != "" {
+		t.Fatalf("a logged node image set binding no launch was refused: %s", res.Refused)
+	}
+	if images := certifiedImages(t, r.ClusterState()).Images; len(images) != 1 || images[0].Name != "node-44" {
+		t.Fatalf("the cluster certifies %+v, want the logged set", images)
+	}
+}
+
 func TestSetNodeImagesReplacesTheWholeSet(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
