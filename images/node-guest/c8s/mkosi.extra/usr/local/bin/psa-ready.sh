@@ -28,7 +28,7 @@ operator_group=c8s:node-operators
 probe=confos-psa-readiness-probe
 probe_user=confos:psa-readiness-probe
 expected_message='pod-security.kubernetes.io/enforce may not be set below restricted'
-expected_scope_message='may not write in the privileged namespaces'
+expected_scope_message='may not write in privileged namespaces'
 
 fail() {
     echo "psa-ready: $1" >&2

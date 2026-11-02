@@ -23,12 +23,14 @@ import (
 // to hold against the credential holder, so the role must not reach RBAC,
 // admission, the privileged namespaces, or the kubelet.
 const (
-	nodeImageCredReleaseService = "../../../images/node-guest/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
-	nodeImageCredReleaseDropIns = nodeImageCredReleaseService + ".d/*.conf"
-	nodeImageCredReleaseRBAC    = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml"
-	nodeImagePSAReadyScript     = "../../../images/node-guest/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
-	nodeImageLogReaderRBAC      = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/log-reader-rbac.yaml"
-	nodeImageSync               = "../../../images/node-guest/c8s/mkosi.sync"
+	nodeImageCredReleaseService  = "../../../images/node-guest/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
+	nodeImageCredReleaseDropIns  = nodeImageCredReleaseService + ".d/*.conf"
+	nodeImageCredReleaseRBAC     = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml"
+	nodeImagePSAReadyScript      = "../../../images/node-guest/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
+	nodeImageLogReaderRBAC       = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/log-reader-rbac.yaml"
+	nodeImagePSALevelPolicy      = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/psa-level-policy.yaml"
+	nodeImageOperatorScopePolicy = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/operator-scope-policy.yaml"
+	nodeImageSync                = "../../../images/node-guest/c8s/mkosi.sync"
 )
 
 func TestNodeImageCredentialReleaseConfiguration(t *testing.T) {
@@ -157,10 +159,32 @@ func TestNodeImageCredentialReleaseConfiguration(t *testing.T) {
 		"--as-group=\"$operator_group\"",
 		"probe_scope default",
 		"probe_scope kube-system",
-		"may not write in the privileged namespaces",
+		"may not write in privileged namespaces",
 	} {
 		if !strings.Contains(gateText, want) {
 			t.Errorf("psa-ready.sh does not contain required gate %q", want)
+		}
+	}
+	// The gate tells each guard's refusal apart by the message its policy
+	// emits, so the text the script waits for must be a substring of the
+	// baked policy. A reworded message that is not checked here leaves the
+	// gate retrying until cred-release's start timeout, and the node never
+	// releases credentials.
+	for _, tc := range []struct{ variable, policy string }{
+		{"expected_message", nodeImagePSALevelPolicy},
+		{"expected_scope_message", nodeImageOperatorScopePolicy},
+	} {
+		m := regexp.MustCompile(`(?m)^` + tc.variable + `='([^']+)'$`).FindStringSubmatch(gateText)
+		if m == nil {
+			t.Errorf("psa-ready.sh does not define %s", tc.variable)
+			continue
+		}
+		policy, err := os.ReadFile(filepath.Clean(tc.policy))
+		if err != nil {
+			t.Fatalf("read node-image policy %s: %v", filepath.Base(tc.policy), err)
+		}
+		if !strings.Contains(string(policy), m[1]) {
+			t.Errorf("psa-ready.sh waits for %s=%q, but no message in %s contains it: the gate would never pass", tc.variable, m[1], filepath.Base(tc.policy))
 		}
 	}
 	sync, err := os.ReadFile(filepath.Clean(nodeImageSync))
