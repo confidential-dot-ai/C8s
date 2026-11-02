@@ -48,6 +48,16 @@ const (
 	// workload-name mismatch is a different refusal ("backend unavailable"),
 	// so matching this body does not retry an intended rejection.
 	backendDigestMismatchBody = "backend_digest_mismatch"
+	// routerDigestChangedBody is the 503 (routes specification E6,
+	// policy/routes.md §9) the router returns when its own mesh leaf renewed
+	// under a different allowlist digest than the request's handshake bound —
+	// its leaves renew on their own schedule, and any allowlist write rolls
+	// them (routes.md:327). The sanctioned recovery is to attest again
+	// (pkg/types.ErrorCodeRouterDigestChanged), which each routerGet attempt
+	// already does on a fresh connection. route_digest_changed and the
+	// membership refusals carry other bodies, so matching this one does not
+	// retry an intended rejection.
+	routerDigestChangedBody = "router_digest_changed"
 )
 
 // routerState is what the scenario has learnt of the router: its rendered
@@ -187,8 +197,14 @@ func (w *world) routerGet(path string, headers ...string) error {
 		if a, err = w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...); err != nil {
 			return false, err
 		}
-		settled := a.status != http.StatusBadGateway || !bytes.Contains(a.body, []byte(backendDigestMismatchBody))
-		return settled, nil
+		// Retry through the two transient refusals a just-applied allowlist
+		// or route change provokes: the 502 while the backend pool lags the
+		// digest, and the 503 while the router's own leaf has rolled but this
+		// attested attempt bound the old one. Each is body-discriminated, so
+		// an intended rejection (a different body) still surfaces.
+		transient := (a.status == http.StatusBadGateway && bytes.Contains(a.body, []byte(backendDigestMismatchBody))) ||
+			(a.status == http.StatusServiceUnavailable && bytes.Contains(a.body, []byte(routerDigestChangedBody)))
+		return !transient, nil
 	}); err != nil {
 		return err
 	}
