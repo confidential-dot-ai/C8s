@@ -10,6 +10,7 @@ on:
       - ".github/scripts/pin-manifest.sh"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
+      - "**/go.mod"
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,17 @@ jobs:
           fail=0
           bash .github/scripts/pin-manifest.sh validate \
             --manifest .github/build-pins.json
+          # attestation-go is consumed at a release, never at a pseudo-version:
+          # its /verify request must match the attestation-rs release the
+          # node and CDS images stage, and only a release names that pairing.
+          pseudo=$(grep -rnE 'confidential-dot-ai/attestation-go v[0-9.]+-(0\.|[0-9]+\.)?[0-9]{14}-[0-9a-f]{12}' \
+                     --include=go.mod . || true)
+          if [ -n "$pseudo" ]; then
+            echo "$pseudo" | while IFS= read -r line; do
+              echo "::error file=${line%%:*}::attestation-go must be required at a release tag, not a pseudo-version: ${line#*:*:}"
+            done
+            fail=1
+          fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
             echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
