@@ -70,22 +70,15 @@ for required in 'oras manifest fetch --descriptor' '${repo}@${digest}'; do
 done
 
 # One verifier version for every VM in the cluster: the attester is the
-# attestation-rs build .github/build-pins.json names for the node images,
-# staged after the one the attest profile pins.
+# attestation-api image .github/build-pins.json pins by digest for the node
+# images' attestation-rs release, staged after the one the attest profile pins
+# and fetched by that digest, not by whatever a tag names on build day.
 if ! grep -qF '.github/build-pins.json' "$build" \
-   || ! grep -qF 'attestation_rs_ref' "$build" \
-   || ! grep -qF -- '--sync-input "attestation-rs-ref=' "$build" \
-   || ! grep -qF 'sync_input attestation-rs-ref' "$profile/mkosi.sync"; then
-  echo "::error::the attestation-rs ref must flow from $build (read from .github/build-pins.json) into $profile/mkosi.sync; the CDS must not verify with another attestation-api than the nodes"
-  exit 1
-fi
-# ...and its bytes are the manifest's digest, not whatever the sha- tag names
-# on build day: the digest flows the same way and is passed to the staging.
-if ! grep -qF 'attestation_api_digest' "$build" \
+   || ! grep -qF 'attestation_api_digest' "$build" \
    || ! grep -qF -- '--sync-input "attestation-api-digest=' "$build" \
    || ! grep -qF 'sync_input attestation-api-digest' "$profile/mkosi.sync" \
    || ! grep -qF -- '"$ATTESTATION_API_DIGEST"' "$profile/mkosi.sync"; then
-  echo "::error::the attestation-api digest must flow from $build (read from .github/build-pins.json) into $profile/mkosi.sync and pin the staged attestation-api"
+  echo "::error::the attestation-api digest must flow from $build (read from .github/build-pins.json) into $profile/mkosi.sync and be what it stages; the CDS must not verify with another attestation-api than the nodes"
   exit 1
 fi
 if ! grep -qF -- '"$STAGE_DIR/usr/local/bin/attestation-api"' "$profile/mkosi.sync"; then

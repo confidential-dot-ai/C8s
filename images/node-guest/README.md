@@ -599,9 +599,10 @@ pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
 pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
 so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
 is the published attestation-api image of that release: the CDS image fetches
-it by that digest (`images/cds-guest/cds/mkosi.sync`, failing when
-`sha-<ref7>` no longer names it) and the host DaemonSet runs it as the chart's
-`attestationApi` `pinnedDigest` (`internal/helmchart/c8s/values.yaml`), a copy
+it by that digest (`images/cds-guest/cds/mkosi.sync`) and the host DaemonSet
+runs it as the chart's `attestationApi` `pinnedDigest`
+(`internal/helmchart/c8s/values.yaml`), a copy that
+`.github/scripts/chart-attestation-api-digest.sh` reads and writes and that
 pin-hygiene holds equal to the manifest. pin-hygiene also resolves
 `attestation-api:<attestation_rs_tag>` and
 `attestation-api:sha-<attestation_rs_ref[0:7]>` with

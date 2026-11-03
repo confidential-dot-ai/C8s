@@ -206,27 +206,6 @@ update_manifest() {
   require_version "$mkosi_version" "--mkosi-ver"
   validate_manifest "$manifest"
 
-  if [[ "$domain" == node-image ]]; then
-    if jq -e \
-      --arg confos "$confos" --arg confos_tag "$confos_tag" \
-      --arg attest "$attest" --arg attest_tag "$attest_tag" \
-      --arg attest_digest "$attest_digest" \
-      --arg mkosi "$mkosi" --arg version "$mkosi_version" '
-        .builds["node-image"] == {
-          confos_ref: $confos,
-          confos_tag: $confos_tag,
-          attestation_rs_ref: $attest,
-          attestation_rs_tag: $attest_tag,
-          attestation_api_digest: $attest_digest,
-          mkosi_ref: $mkosi,
-          mkosi_version: $version
-        }
-      ' "$manifest" >/dev/null; then
-      echo "no-drift"
-      return
-    fi
-  fi
-
   tmp_path=$(mktemp "${manifest}.tmp.XXXXXX")
   cp -p -- "$manifest" "$tmp_path"
   if [[ "$domain" == node-image ]]; then
@@ -245,6 +224,14 @@ update_manifest() {
           mkosi_version: $version
         }
       ' "$manifest" >"$tmp_path"
+  fi
+  # Same pins, same manifest: compare the documents, not the bytes, so a
+  # hand-formatted manifest is not rewritten for nothing.
+  if jq -e -s '.[0] == .[1]' "$manifest" "$tmp_path" >/dev/null; then
+    rm -f -- "$tmp_path"
+    tmp_path=
+    echo "no-drift"
+    return
   fi
   validate_manifest "$tmp_path"
   mv -f -- "$tmp_path" "$manifest"

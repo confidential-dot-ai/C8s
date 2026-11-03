@@ -12,6 +12,7 @@ on:
       - ".github/scripts/release-pin.sh"
       - ".github/scripts/confos-mkosi-pin.sh"
       - ".github/scripts/ghcr-digest.sh"
+      - ".github/scripts/chart-attestation-api-digest.sh"
       - "internal/helmchart/c8s/values.yaml"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
@@ -86,11 +87,12 @@ jobs:
             fi
           done
           values=internal/helmchart/c8s/values.yaml
-          chart_digest=$(grep -oE '^[[:space:]]*pinnedDigest:[[:space:]]*sha256:[0-9a-f]{64}' "$values" | grep -oE 'sha256:[0-9a-f]{64}')
-          if [ "$(wc -l <<<"$chart_digest")" -ne 1 ]; then
-            echo "::error file=$values::expected exactly one pinnedDigest in the chart values"; fail=1
-          elif [ "$chart_digest" != "$ATTESTATION_API_DIGEST" ]; then
-            echo "::error file=$values::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST"; fail=1
+          if chart_digest=$(bash .github/scripts/chart-attestation-api-digest.sh get "$values"); then
+            if [ "$chart_digest" != "$ATTESTATION_API_DIGEST" ]; then
+              echo "::error file=$values::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST; run .github/scripts/chart-attestation-api-digest.sh set"; fail=1
+            fi
+          else
+            echo "::error file=$values::could not read the chart's pinnedDigest"; fail=1
           fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then

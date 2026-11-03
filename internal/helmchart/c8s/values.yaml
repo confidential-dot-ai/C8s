@@ -54,8 +54,8 @@ c8sComponents:
     ## A copy of .github/build-pins.json's attestation_api_digest: the image
     ## of attestation_rs_tag (v0.6.0), which also carries the sha-<ref7> name
     ## of attestation_rs_ref, and the bytes the CDS image stages. pin-watch
-    ## writes both; by hand, bump both to
-    ##   .github/scripts/ghcr-digest.sh confidential-dot-ai/attestation-api <attestation_rs_tag>
+    ## writes both; by hand, after bumping the manifest, run
+    ##   .github/scripts/chart-attestation-api-digest.sh set <attestation_api_digest>
     ## pin-hygiene fails the PR when the manifest, the tags and this disagree.
     pinnedDigest: sha256:8d983edc5beb9d56f74adf93c2dac8af8bda58c6bfd681f6ff576254df0dff8a
     ## The injected mesh endpoint: every covered pod runs it, so the node

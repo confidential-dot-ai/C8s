@@ -84,21 +84,16 @@ jobs:
             --mkosi-sha "$mkosi_sha" --mkosi-ver "$mkosi_ver")
           echo "$out"
           grep -q '^no-drift$' <<<"$out" && exit 0
-          # The host DaemonSet's copy of the digest moves with the manifest.
-          files=(.github/build-pins.json)
+          # The host DaemonSet's copy of the digest moves with the manifest (a
+          # no-op when only confos moved). Both files are staged; the commit
+          # below carries whatever changed, and nothing else may have.
           values=internal/helmchart/c8s/values.yaml
-          if [ "$attest_digest" != "$ATTESTATION_API_DIGEST" ]; then
-            pattern='^[[:space:]]*pinnedDigest:[[:space:]]*sha256:[0-9a-f]{64}$'
-            [ "$(grep -cE "$pattern" "$values")" -eq 1 ] || { echo "::error file=$values::expected exactly one pinnedDigest"; exit 1; }
-            sed -i -E "s|^([[:space:]]*pinnedDigest:[[:space:]]*)sha256:[0-9a-f]{64}$|\1${attest_digest}|" "$values"
-            grep -qF "pinnedDigest: ${attest_digest}" "$values" || { echo "::error file=$values::pinnedDigest was not rewritten"; exit 1; }
-            files+=("$values")
-          fi
-          expected=$(printf '%s\n' "${files[@]}" | sort)
-          changes=$(git status --short --untracked-files=all)
-          if [ "$(awk '{print $2}' <<<"$changes" | sort)" != "$expected" ] || grep -qv '^ M ' <<<"$changes"; then
+          bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
+          git add -- .github/build-pins.json "$values"
+          mapfile -t files < <(git diff --cached --name-only)
+          if git status --porcelain --untracked-files=all | grep -qv '^M  '; then
             echo "::error::pin updater changed an unexpected path"
-            printf '%s\n' "$changes"
+            git status --porcelain --untracked-files=all
             exit 1
           fi
           branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
@@ -114,8 +109,6 @@ jobs:
             exit 0
           fi
 
-          git add -- "${files[@]}"
-          test "$(git diff --cached --name-only | sort)" = "$expected"
           desired_tree=$(git write-tree)
           base_oid=$(git rev-parse HEAD)
           base_tree=$(git rev-parse 'HEAD^{tree}')
