@@ -74,6 +74,11 @@ func TestALeaderWhoseBarriersRaftRefusesEndsItsRun(t *testing.T) {
 	c.genesis(3)
 	leader := c.leader()
 	follower := c.follower()
+	// A passing background barrier must not clear the injected refusal.
+	if !leader.node.barriers.take(time.Now().Add(c.timing.Apply)) {
+		t.Fatal("a barrier did not finish before injecting refused barriers")
+	}
+	defer leader.node.barriers.give()
 	term := leader.node.following().term
 	now := time.Now()
 
@@ -87,16 +92,17 @@ func TestALeaderWhoseBarriersRaftRefusesEndsItsRun(t *testing.T) {
 	if err := leader.node.wedged(); err != nil {
 		t.Fatalf("a leader whose barriers Raft has refused for half a DeadAfter: %v", err)
 	}
+	if err := follower.node.wedged(); err != nil {
+		t.Errorf("a replica that leads nothing: %v", err)
+	}
+	leader.mayLeave()
 	leader.node.refusals.run.Store(&barrierRun{
 		term:  term,
 		since: now.Add(-2 * c.timing.DeadAfter),
 	})
 
-	err := leader.node.wedged()
+	err := c.leftWithin(leader, c.timing.Apply+5*time.Second)
 	if !errors.Is(err, ErrLeftItsCluster) {
 		t.Errorf("a leader whose every barrier Raft refuses answers %v, want it leaving its cluster", err)
-	}
-	if err := follower.node.wedged(); err != nil {
-		t.Errorf("a replica that leads nothing: %v", err)
 	}
 }
