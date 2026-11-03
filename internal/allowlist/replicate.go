@@ -52,7 +52,7 @@ func (h *Handle) Version() (string, error) {
 	return h.store.Version()
 }
 
-func (h *Handle) History() ([]HistoryEntry, error) {
+func (h *Handle) History() (History, error) {
 	return h.store.History()
 }
 

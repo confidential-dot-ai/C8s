@@ -315,7 +315,7 @@ differs from the head. A policy digest is `sha256:<hex>` of the exact bytes
 
 | Route | Returns |
 |---|---|
-| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/history` | `{"hostPrivilege":{"declaredBySeed","firstOperatorGrant"},"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
 | `GET /allowlist/objects/sha256/<hex>` | the exact bytes of a document in the history |
 | `GET /allowlist/objects/sha256/<hex>/signature` | its operator signature as `text/plain`; 404 when unsigned |
 
@@ -329,6 +329,17 @@ exactly the canonical bytes replaces the document but stores no signature.
 live entries with their change made — so the operator key signs every entry in
 it, not only the ones the command names: read the diff the command prints
 before confirming it.
+
+`hostPrivilege` reports the host privilege the allowlist declared: an entry
+declares it with `hostPorts`, a container `capabilities`, or a `host` mount
+rule — a `nodeRootFile` rule names a measured node-image file and declares
+none. `declaredBySeed` is whether the measured seed this CDS booted on
+declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
+first operator write that served a declaration the document it replaced did
+not serve, and is `null` until one does; a write that moves a declaration to
+another entry name grants nothing, and no later write clears the record. Both
+last as long as the store: a CDS restart that starts from an empty database
+reports its seed again and no grant.
 
 ## Measured policy history
 

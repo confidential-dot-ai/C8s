@@ -595,10 +595,7 @@ func TestRaiseVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	putEntry(t, allowlist, "web", oneContainerWorkload(mustParseDigest(t, digestA)))
-	before, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := mustHistory(t, store)
 
 	raised, err := store.RaiseVersion(1_800_000_000_000)
 	if err != nil {
@@ -624,7 +621,7 @@ func TestRaiseVersion(t *testing.T) {
 	if len(doc.Workloads) != 1 {
 		t.Fatalf("raising the version changed the document: %v", doc.Workloads)
 	}
-	if after, _ := store.History(); len(after) != len(before) {
+	if after := mustHistory(t, store); len(after) != len(before) {
 		t.Fatalf("raising the version journaled %d entries", len(after)-len(before))
 	}
 }

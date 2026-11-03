@@ -145,11 +145,32 @@ func publishTx(tx *sql.Tx, at time.Time) ([]byte, error) {
 	return body, nil
 }
 
-// History returns every document the store has served, oldest first.
-func (s *Store) History() ([]HistoryEntry, error) {
+// History is what GET /allowlist/history serves: the host privilege the
+// allowlist declared and every document CDS served, oldest first.
+type History struct {
+	HostPrivilege HostPrivilege  `json:"hostPrivilege"`
+	Entries       []HistoryEntry `json:"entries"`
+}
+
+// History returns the host privilege record and every document the store has
+// served, oldest first.
+func (s *Store) History() (History, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	record, err := s.hostPrivilege()
+	if err != nil {
+		return History{}, err
+	}
+	entries, err := s.historyEntries()
+	if err != nil {
+		return History{}, err
+	}
+	return History{HostPrivilege: record, Entries: entries}, nil
+}
+
+// historyEntries reads the history. Callers must hold s.mu.
+func (s *Store) historyEntries() ([]HistoryEntry, error) {
 	rows, err := s.db.Query(`SELECT e.position, e.version, e.digest, e.published_at_ms, s.digest IS NOT NULL
 		FROM journal_event e LEFT JOIN journal_signature s ON s.digest = e.digest ORDER BY e.position`)
 	if err != nil {

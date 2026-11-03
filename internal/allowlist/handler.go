@@ -218,17 +218,15 @@ func readFailed(w http.ResponseWriter, err error) {
 }
 
 // HandleHistory handles GET /allowlist/history: every document CDS served,
-// oldest first.
+// oldest first, and the host privilege the allowlist declared.
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
-	entries, err := h.Allowlist.History()
+	history, err := h.Allowlist.History()
 	if err != nil {
 		readFailed(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Entries []HistoryEntry `json:"entries"`
-	}{entries})
+	json.NewEncoder(w).Encode(history)
 }
 
 var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)

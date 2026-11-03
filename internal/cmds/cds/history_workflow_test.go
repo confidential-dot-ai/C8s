@@ -103,7 +103,16 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		"app":    entry("sha256:" + strings.Repeat("a", 64)),
 		"app-v2": entry("sha256:" + strings.Repeat("b", 64)),
 	})
-	q := doc(map[string]pkgallowlist.Workload{"app-v2": entry("sha256:" + strings.Repeat("b", 64))})
+	hostBound := entry("sha256:" + strings.Repeat("b", 64))
+	hostBound.Containers[0].Mounts = pkgallowlist.MountPolicy{
+		Policy: pkgallowlist.PolicyExact,
+		Rules: []pkgallowlist.MountRule{{
+			Destination: "/node",
+			Kind:        pkgallowlist.MountHost,
+			Source:      "/var/lib/c8s",
+		}},
+	}
+	q := doc(map[string]pkgallowlist.Workload{"app-v2": hostBound})
 
 	put := func(body []byte, authorization string) int {
 		req, err := http.NewRequest(http.MethodPut, srv.URL+"/allowlist", bytes.NewReader(body))
@@ -145,15 +154,18 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("GET /allowlist/history = %d, want 200", code)
 	}
-	var history struct {
-		Entries []allowlist.HistoryEntry `json:"entries"`
-	}
+	var history allowlist.History
 	if err := json.Unmarshal(raw, &history); err != nil {
 		t.Fatal(err)
 	}
 	// Position 1 is the empty document CDS served at start.
 	if len(history.Entries) != 4 {
 		t.Fatalf("history has %d entries, want the start document then P, P∪Q, Q: %s", len(history.Entries), raw)
+	}
+	// Only Q declares host privilege, and no seed reached this store.
+	if history.HostPrivilege.DeclaredBySeed || history.HostPrivilege.FirstOperatorGrant == nil ||
+		history.HostPrivilege.FirstOperatorGrant.Digest != history.Entries[3].Digest {
+		t.Fatalf("history reports %+v, want Q named as the write that granted host privilege", history.HostPrivilege)
 	}
 	published := history.Entries[1:]
 	for i, want := range [][]byte{p, pq, q} {
