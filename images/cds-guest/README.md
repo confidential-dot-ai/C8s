@@ -27,8 +27,9 @@ digests and the TDX measurement block a CDS pin is derived from.
 confos's `base` + `attest` profiles and this profile: the `c8s` binary at
 `/usr/local/bin/c8s`, `cds.service`, and the attestation API on
 `127.0.0.1:8400`. Its `attestation-api` is the attestation-rs build
-`.github/build-pins.json` pins for the node images, so a cluster has one
-verifier version. No RKE2, kubelet, container runtime or SSH server, and
+`.github/build-pins.json` pins for the node images, fetched by the manifest's
+`attestation_api_digest` and by nothing a registry tag names on build day, so
+a cluster has one verifier version. No RKE2, kubelet, container runtime or SSH server, and
 cloud-init is disabled. The CDS never talks to a Kubernetes API.
 
 Nothing platform-specific is baked, so one build measures the SNP launch

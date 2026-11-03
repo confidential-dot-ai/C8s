@@ -35,8 +35,9 @@ new_fixture() {
 new_confos=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 new_attest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 new_mkosi=cccccccccccccccccccccccccccccccccccccccc
+new_digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 update_args=(--confos "$new_confos" --confos-tag v9.0.0
-  --attest "$new_attest" --attest-tag v9.1.0
+  --attest "$new_attest" --attest-tag v9.1.0 --attest-digest "$new_digest"
   --mkosi-sha "$new_mkosi" --mkosi-ver v28)
 
 bash "$script" validate --manifest "$source_manifest" >/dev/null
@@ -47,13 +48,14 @@ pass
 source_manifest="$fixture_dir/source.json"
 cat >"$source_manifest" <<'EOF'
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "builds": {
     "node-image": {
       "confos_ref": "1111111111111111111111111111111111111111",
       "confos_tag": "v1.0.0",
       "attestation_rs_ref": "2222222222222222222222222222222222222222",
       "attestation_rs_tag": "v2.0.0",
+      "attestation_api_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "mkosi_ref": "3333333333333333333333333333333333333333",
       "mkosi_version": "v27"
     }
@@ -69,6 +71,8 @@ grep -Eq '^CONFOS_REF=[0-9a-f]{40}$' <<<"$exported" ||
   fail "node confos export is invalid"
 grep -Fxq 'CONFOS_TAG=v1.0.0' <<<"$exported" ||
   fail "the export must carry the tag beside the SHA, for hygiene and pin-watch"
+grep -Fxq 'ATTESTATION_API_DIGEST=sha256:4444444444444444444444444444444444444444444444444444444444444444' <<<"$exported" ||
+  fail "the export must carry the attestation-api digest the CDS build fetches"
 pass
 
 exported=$(bash "$script" export --manifest "$source_manifest" \
@@ -88,6 +92,8 @@ bash "$script" update --manifest "$node_fixture" --domain node-image \
   "$new_attest" ]] || fail "node attestation pin did not update"
 [[ $(jq -r '.builds["node-image"].attestation_rs_tag' "$node_fixture") == \
   v9.1.0 ]] || fail "node attestation tag did not update"
+[[ $(jq -r '.builds["node-image"].attestation_api_digest' "$node_fixture") == \
+  "$new_digest" ]] || fail "node attestation-api digest did not update"
 pass
 
 no_drift_fixture=$(new_fixture no-drift)
@@ -101,6 +107,7 @@ current_args=(--confos "$(jq -r .confos_ref <<<"$node")"
   --confos-tag "$(jq -r .confos_tag <<<"$node")"
   --attest "$(jq -r .attestation_rs_ref <<<"$node")"
   --attest-tag "$(jq -r .attestation_rs_tag <<<"$node")"
+  --attest-digest "$(jq -r .attestation_api_digest <<<"$node")"
   --mkosi-sha "$(jq -r .mkosi_ref <<<"$node")"
   --mkosi-ver "$(jq -r .mkosi_version <<<"$node")")
 result=$(bash "$script" update --manifest "$no_drift_fixture" \
@@ -117,12 +124,30 @@ result=$(bash "$script" update --manifest "$retag_fixture" \
 [[ "$result" == "updated node-image" ]] || fail "a retag was not treated as drift"
 pass
 
+# A moved attestation-api digest under the same ref is drift: the CDS image
+# fetches those bytes.
+redigest_fixture=$(new_fixture redigest)
+result=$(bash "$script" update --manifest "$redigest_fixture" \
+  --domain node-image "${current_args[@]}" --attest-digest "$new_digest")
+[[ "$result" == "updated node-image" ]] || fail "a digest move was not treated as drift"
+pass
+
 invalid_target=$(new_fixture invalid-target)
 cp "$invalid_target" "$invalid_target.before"
 expect_failure bash "$script" update --manifest "$invalid_target" \
   --domain node-image "${update_args[@]}" --mkosi-sha not-a-sha
 cmp -s "$invalid_target" "$invalid_target.before" ||
   fail "invalid target changed the manifest"
+pass
+
+# A digest is sha256:<64 hex>; a bare hex, a short hash or another algorithm
+# is not one.
+for bad_digest in 8d983edc sha256:8d983edc "${new_digest#sha256:}" "sha512:${new_digest#sha256:}" "${new_digest^^}"; do
+  expect_failure bash "$script" update --manifest "$invalid_target" \
+    --domain node-image "${update_args[@]}" --attest-digest "$bad_digest"
+done
+cmp -s "$invalid_target" "$invalid_target.before" ||
+  fail "invalid digest changed the manifest"
 pass
 
 # A branch, a bare version or a short tag is not a release tag.
@@ -141,9 +166,12 @@ expect_failure bash "$script" validate --manifest "$missing_tag"
 pass
 
 old_schema=$(new_fixture old-schema)
-jq '.schema_version = 1 | del(.builds["node-image"].confos_tag, .builds["node-image"].attestation_rs_tag)' \
+jq '.schema_version = 1 | del(.builds["node-image"].confos_tag, .builds["node-image"].attestation_rs_tag, .builds["node-image"].attestation_api_digest)' \
   "$old_schema" >"$old_schema.next"
 mv "$old_schema.next" "$old_schema"
+expect_failure bash "$script" validate --manifest "$old_schema"
+jq '.schema_version = 2 | del(.builds["node-image"].attestation_api_digest)' \
+  "$source_manifest" >"$old_schema"
 expect_failure bash "$script" validate --manifest "$old_schema"
 pass
 
@@ -154,7 +182,7 @@ expect_failure bash "$script" validate --manifest "$unknown_key"
 pass
 
 duplicate_key=$(new_fixture duplicate-key)
-sed '1,/"schema_version": 2/s/"schema_version": 2/"schema_version": 2, "schema_version": 2/' \
+sed '1,/"schema_version": 3/s/"schema_version": 3/"schema_version": 3, "schema_version": 3/' \
   "$duplicate_key" >"$duplicate_key.next"
 mv "$duplicate_key.next" "$duplicate_key"
 expect_failure bash "$script" validate --manifest "$duplicate_key"

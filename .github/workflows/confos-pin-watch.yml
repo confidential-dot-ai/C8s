@@ -6,6 +6,10 @@
 # base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep by
 # construction. The canonical data lives in .github/build-pins.json;
 # .github/scripts/pin-manifest.sh validates the full schema before updating it.
+# An attestation-rs bump also resolves the release's attestation-api image to
+# its digest (the CDS image's build input) and writes the same digest to the
+# chart's attestationApi pinnedDigest, the host DaemonSet's copy that
+# pin-hygiene holds equal to the manifest.
 #
 # The one measurement domain today is node-image (node rootfs / RTMR + SNP
 # digests); each roll is its own PR.
@@ -61,20 +65,35 @@ jobs:
           newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder --floor "$confos_tag")
           [ -z "$newer" ] || read -r confos_tag confos <<<"$newer"
           newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs --floor "$attest_tag")
-          [ -z "$newer" ] || read -r attest_tag attest <<<"$newer"
+          # The digest follows the release, never a repointed tag: an unmoved
+          # pin keeps the digest it was set with (pin-hygiene checks the tag
+          # still names it). A release whose image attestation-rs has not
+          # named yet fails here, so no manifest points at a missing image.
+          attest_digest=$ATTESTATION_API_DIGEST
+          if [ -n "$newer" ]; then
+            read -r attest_tag attest <<<"$newer"
+            attest_digest=$(bash .github/scripts/ghcr-digest.sh confidential-dot-ai/attestation-api "$attest_tag")
+          fi
           read -r mkosi_sha mkosi_ver < <(bash .github/scripts/confos-mkosi-pin.sh "$confos")
           out=$(bash .github/scripts/pin-manifest.sh update \
             --manifest .github/build-pins.json \
             --domain "$DOMAIN" \
             --confos "$confos" --confos-tag "$confos_tag" \
             --attest "$attest" --attest-tag "$attest_tag" \
+            --attest-digest "$attest_digest" \
             --mkosi-sha "$mkosi_sha" --mkosi-ver "$mkosi_ver")
           echo "$out"
           grep -q '^no-drift$' <<<"$out" && exit 0
-          changes=$(git status --short --untracked-files=all)
-          if [ "$changes" != " M .github/build-pins.json" ]; then
+          # The host DaemonSet's copy of the digest moves with the manifest (a
+          # no-op when only confos moved). Both files are staged; the commit
+          # below carries whatever changed, and nothing else may have.
+          values=internal/helmchart/c8s/values.yaml
+          bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
+          git add -- .github/build-pins.json "$values"
+          mapfile -t files < <(git diff --cached --name-only)
+          if git status --porcelain --untracked-files=all | grep -qv '^M  '; then
             echo "::error::pin updater changed an unexpected path"
-            printf '%s\n' "$changes"
+            git status --porcelain --untracked-files=all
             exit 1
           fi
           branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
@@ -90,8 +109,6 @@ jobs:
             exit 0
           fi
 
-          git add -- .github/build-pins.json
-          test "$(git diff --cached --name-only)" = ".github/build-pins.json"
           desired_tree=$(git write-tree)
           base_oid=$(git rev-parse HEAD)
           base_tree=$(git rev-parse 'HEAD^{tree}')
@@ -117,10 +134,10 @@ jobs:
           else
             if [ "$remote_tree" != "$base_tree" ]; then
               # A branch left behind by a pin-watch PR closed without merging
-              # differs from main only in the manifest; anything else on it
-              # is someone's work and stays put.
-              if [ "$(git diff-tree -r --name-only "$base_tree" "$remote_tree")" != ".github/build-pins.json" ]; then
-                echo "::error::candidate branch $branch carries changes beyond .github/build-pins.json; refusing to overwrite it (delete the branch to let pin-watch recreate it)"
+              # differs from main only in the manifest and the chart digest;
+              # anything else on it is someone's work and stays put.
+              if git diff-tree -r --name-only "$base_tree" "$remote_tree" | grep -qvxF -e .github/build-pins.json -e "$values"; then
+                echo "::error::candidate branch $branch carries changes beyond .github/build-pins.json and $values; refusing to overwrite it (delete the branch to let pin-watch recreate it)"
                 exit 1
               fi
               echo "resetting stale pin-watch branch $branch to $base_oid" >> "$GITHUB_STEP_SUMMARY"
@@ -129,26 +146,30 @@ jobs:
               remote_oid=$base_oid
             fi
             mutation=$(cat <<'GRAPHQL'
-          mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $headline: String!, $path: String!, $contents: Base64String!) {
+          mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $headline: String!, $additions: [FileAddition!]!) {
             createCommitOnBranch(input: {
               branch: {repositoryNameWithOwner: $repository, branchName: $branch}
               expectedHeadOid: $expected
               message: {headline: $headline}
-              fileChanges: {additions: [{path: $path, contents: $contents}]}
+              fileChanges: {additions: $additions}
             }) {
               commit { oid }
             }
           }
           GRAPHQL
             )
-            commit_json=$(gh api graphql \
-              -f query="$mutation" \
-              -f repository="$GITHUB_REPOSITORY" \
-              -f branch="$branch" \
-              -f expected="$remote_oid" \
-              -f headline="$title" \
-              -f path=.github/build-pins.json \
-              -f contents="$(base64 -w0 .github/build-pins.json)")
+            additions=$(for f in "${files[@]}"; do
+              jq -n --arg path "$f" --arg contents "$(base64 -w0 "$f")" '{path: $path, contents: $contents}'
+            done | jq -s .)
+            commit_json=$(jq -n \
+              --arg query "$mutation" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg branch "$branch" \
+              --arg expected "$remote_oid" \
+              --arg headline "$title" \
+              --argjson additions "$additions" \
+              '{query: $query, variables: {repository: $repository, branch: $branch, expected: $expected, headline: $headline, additions: $additions}}' \
+              | gh api graphql --input -)
             new_oid=$(jq -er '.data.createCommitOnBranch.commit.oid' <<<"$commit_json")
           fi
 
@@ -158,4 +179,4 @@ jobs:
             echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
             exit 1
           fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
+          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`, image \`${attest_digest:0:19}…\`, also written to the chart's \`attestationApi\` \`pinnedDigest\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."

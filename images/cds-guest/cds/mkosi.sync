@@ -7,7 +7,8 @@
 # attestation-api the CDS self-check verifies against. The attest profile
 # stages its own pinned attestation-api; this hook runs after it (profile
 # order in images/cds-guest/build), so the measured attester is the
-# attestation-rs build .github/build-pins.json names for the node images.
+# attestation-api image .github/build-pins.json pins by digest, the same
+# release the node images build from.
 #
 # Both binaries' bytes sit in the verity-protected root, so a new C8S_REF or
 # attestation-rs pin changes the launch measurement of any `--profile cds`
@@ -34,22 +35,27 @@ sync_input() {
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# Install the binary a published image carries at its root; the target's
-# basename names it. Both images are built by docker and published as an OCI
-# image index (amd64 image + provenance manifest).
-stage_published_binary() {
-    local repo=$1 ref=$2 target=$3
-    local binary digest child layers extract
-    binary=$(basename "$target")
-
-    # Resolve the ref once, then fetch every blob by that digest: a tag that
-    # moves mid-build cannot swap the bytes under the measurement.
+# Resolve a published tag to its manifest digest, once: every blob is then
+# fetched by that digest, so a tag that moves mid-build cannot swap the bytes
+# under the measurement.
+resolve_published() {
+    local repo=$1 ref=$2 digest
     digest=$(oras manifest fetch --descriptor "${repo}:${ref}" | jq -r '.digest' || true)
     case "$digest" in
         sha256:*) ;;
         *) echo "cds sync: FATAL cannot resolve ${repo}:${ref}" >&2; exit 1 ;;
     esac
-    echo "cds sync: ref ${ref} -> ${binary} ${digest}"
+    echo "cds sync: ref ${ref} -> ${digest}" >&2
+    printf '%s' "$digest"
+}
+
+# Install the binary a published image carries at its root; the target's
+# basename names it. Both images are built by docker and published as an OCI
+# image index (amd64 image + provenance manifest).
+stage_published_binary() {
+    local repo=$1 digest=$2 target=$3
+    local binary child layers extract
+    binary=$(basename "$target")
 
     child=$(oras manifest fetch "${repo}@${digest}" \
         | jq -r '[.manifests[] | select(.platform.architecture == "amd64")][0].digest')
@@ -85,11 +91,16 @@ stage_published_binary() {
 }
 
 C8S_REF=$(sync_input c8s-ref)
-ATTESTATION_RS_REF=$(sync_input attestation-rs-ref)
+ATTESTATION_API_DIGEST=$(sync_input attestation-api-digest)
 
-# `c8s cds` is the service the image runs.
-stage_published_binary ghcr.io/confidential-dot-ai/c8s-operator \
-    "$C8S_REF" "$STAGE_DIR/usr/local/bin/c8s"
-# attestation-rs CI publishes one image per main commit, tagged sha-<short>.
+# `c8s cds` is the service the image runs; its image is this repository's own
+# build at C8S_REF, published by the run that builds this image.
+C8S_OPERATOR_REPO=ghcr.io/confidential-dot-ai/c8s-operator
+stage_published_binary "$C8S_OPERATOR_REPO" \
+    "$(resolve_published "$C8S_OPERATOR_REPO" "$C8S_REF")" \
+    "$STAGE_DIR/usr/local/bin/c8s"
+# The attestation-api is pinned by digest in .github/build-pins.json, so the
+# pin and not the registry decides which bytes are measured; pin-hygiene
+# checks the attestation-rs release still names it.
 stage_published_binary ghcr.io/confidential-dot-ai/attestation-api \
-    "sha-${ATTESTATION_RS_REF:0:7}" "$STAGE_DIR/usr/local/bin/attestation-api"
+    "$ATTESTATION_API_DIGEST" "$STAGE_DIR/usr/local/bin/attestation-api"
