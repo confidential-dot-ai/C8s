@@ -60,24 +60,27 @@ func TestRateLimiterEviction(t *testing.T) {
 	rl.allow("10.0.0.2")
 	rl.allow("10.0.0.3")
 
-	rl.mu.Lock()
-	if len(rl.limiters) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(rl.limiters))
+	if rl.Len() != 3 {
+		t.Fatalf("expected 3 entries, got %d", rl.Len())
 	}
 
 	oldTime := time.Now().Add(-10 * time.Minute)
-	rl.limiters["10.0.0.1"].Value.(*ipLimiterEntry).lastSeen = oldTime
-	rl.limiters["10.0.0.2"].Value.(*ipLimiterEntry).lastSeen = oldTime
-	rl.mu.Unlock()
+	for _, key := range []string{"10.0.0.1", "10.0.0.2"} {
+		s := rl.shard(key)
+		s.mu.Lock()
+		s.limiters[key].Value.(*ipLimiterEntry).lastSeen = oldTime
+		s.mu.Unlock()
+	}
 
 	rl.evict(5 * time.Minute)
 
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	if len(rl.limiters) != 1 {
-		t.Errorf("expected 1 entry after eviction, got %d", len(rl.limiters))
+	if rl.Len() != 1 {
+		t.Errorf("expected 1 entry after eviction, got %d", rl.Len())
 	}
-	if _, ok := rl.limiters["10.0.0.3"]; !ok {
+	s := rl.shard("10.0.0.3")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.limiters["10.0.0.3"]; !ok {
 		t.Error("expected 10.0.0.3 to survive eviction")
 	}
 }
@@ -101,10 +104,12 @@ func TestRateLimiterMaxEntries(t *testing.T) {
 	if got := rl.Len(); got != 3 {
 		t.Errorf("Len() = %d, want 3", got)
 	}
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
 	for key, want := range map[string]bool{"a": true, "b": false, "c": true, "d": true} {
-		if _, got := rl.limiters[key]; got != want {
+		s := rl.shard(key)
+		s.mu.Lock()
+		_, got := s.limiters[key]
+		s.mu.Unlock()
+		if got != want {
 			t.Errorf("bucket for %q held = %v, want %v", key, got, want)
 		}
 	}
@@ -405,7 +410,7 @@ func TestCapacityEvictionIsCountedNotRejected(t *testing.T) {
 
 // TestConcurrentAllowNeverExceedsCapacity stresses the admission path from many
 // goroutines with far more keys than the map holds: the map never grows past
-// MaxEntries. allow releases rl.mu before touching the bucket, so -race
+// MaxEntries. allow releases the shard lock before touching the bucket, so -race
 // exercises the guarded eviction and insert and the unlocked bucket call.
 func TestConcurrentAllowNeverExceedsCapacity(t *testing.T) {
 	const capacity, keys, goroutines, iterations = 64, 256, 32, 5000

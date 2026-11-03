@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 
 			value := []byte("synthetic local pilot secret")
 			body := jsonBody(t, secrets.PutRequest{Value: base64.StdEncoding.EncodeToString(value)})
-			authorization, err := c.signer.Authorization(http.MethodPut, "/secrets/pilot/operator", body)
+			authorization, err := c.signer.WithTTL(operatorauth.MaxTokenValidity).Authorization(http.MethodPut, "/secrets/pilot/operator", body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,6 +89,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 			generated := w.raceCreate()
 			w.assertEveryReplicaReads("/pilot/generated", generated)
 			t.Log("cross-replica issuance/release, operator replay rejection and concurrent create passed")
+			w.issuanceBurst(value)
 
 			lost := c.replicas[0]
 			var originalWriter objectwal.Owner
@@ -175,25 +177,56 @@ func TestWorkloadBackendParity(t *testing.T) {
 
 			w.setPolicy(false)
 			revokedAt := time.Now()
-			staleReads := 0
 			for _, r := range c.replicas {
-				for {
-					req := w.secretRequest(r, http.MethodGet, "/pilot/operator")
-					started := time.Now()
-					code, _ := pilotDo(t, w.client, req)
-					if code == http.StatusForbidden {
-						break
-					}
-					// Current Raft reads under a cached confirmation. Object WAL
-					// promises a fresh read per request, in either build mode.
-					if objects != nil || code != http.StatusOK || started.Sub(revokedAt) >= processReadLease() {
-						t.Fatalf("revocation exceeded %s freshness contract at replica %d after %s: HTTP %d", backend, r.index, started.Sub(revokedAt), code)
-					}
-					staleReads++
-					time.Sleep(50 * time.Millisecond)
+				req := w.secretRequest(r, http.MethodGet, "/pilot/operator")
+				if code, _ := pilotDo(t, w.client, req); code != http.StatusForbidden {
+					t.Fatalf("post-acknowledgement revocation on %s replica %d: HTTP %d", backend, r.index, code)
 				}
 			}
-			t.Logf("all replicas revoked the existing leaf's grant after %s; %d reads used the previous grant within the %s Raft lease", time.Since(revokedAt), staleReads, processReadLease())
+			t.Logf("all replicas enforced acknowledged revocation in %s; zero stale release reads", time.Since(revokedAt))
+
+			// A rolling restart keeps a surviving authority in every backend.
+			// This checks recovery of this binary, not a mixed-version upgrade.
+			for _, r := range c.replicas {
+				if objects == nil {
+					c.waitRollSafe(time.Minute)
+				}
+				// A fresh, spent token keeps this probe inside its validity
+				// window even when a release-mode Raft handoff is slow.
+				authorization, err = c.signer.WithTTL(operatorauth.MaxTokenValidity).Authorization(http.MethodPut, "/secrets/pilot/operator", body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if code, response := put(r); code != http.StatusConflict || strings.TrimSpace(string(response)) == operatorauth.ErrTokenReused.Error() {
+					t.Fatalf("could not consume fresh replay probe before restart: HTTP %d %s", code, response)
+				}
+				c.kill(r)
+				c.restart(r)
+				if objects != nil {
+					c.provisionObjects(r)
+				}
+				c.waitServing(time.Minute)
+				if objects == nil {
+					// A replacement may serve as a non-voter while the retired
+					// member still holds its seat. Readiness alone is not the
+					// barrier for taking the next voter down in a rolling restart.
+					c.waitVoter(r, time.Minute)
+					c.waitRollSafe(time.Minute)
+				}
+				if c.servedCA(r) != ca {
+					t.Fatal("rolling restart changed the mesh identity")
+				}
+				if code, response := put(r); code != http.StatusConflict || strings.TrimSpace(string(response)) != operatorauth.ErrTokenReused.Error() {
+					t.Fatalf("rolling restart forgot spent token: HTTP %d %s", code, response)
+				}
+				if code, _ := pilotDo(t, w.client, w.secretRequest(r, http.MethodGet, "/pilot/operator")); code != http.StatusForbidden {
+					t.Fatalf("rolling restart resurrected revoked grant: HTTP %d", code)
+				}
+			}
+			w.setPolicy(true)
+			w.assertEveryReplicaReads("/pilot/operator", value)
+			w.assertEveryReplicaReads("/pilot/generated", generated)
+			t.Log("rolling restart retained mesh identity, acknowledged secrets, token replay history and revocation")
 		})
 	}
 }
@@ -245,6 +278,42 @@ type pilotWorkload struct {
 	key    *ecdsa.PrivateKey
 	csr    string
 	client *http.Client
+}
+
+// Exercise the current attested certificate issuance/renewal path under a
+// burst. Managed-k8s node-token enrollment lives on a separate branch and is
+// deliberately not claimed as covered by this workload-certificate test.
+func (w *pilotWorkload) issuanceBurst(secret []byte) {
+	t := w.c.t
+	const size = 12
+	workers := make([]pilotWorkload, size)
+	for i := range workers {
+		workers[i] = *w
+		workers[i].client = nil
+		workers[i].key = newKey(t)
+		csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, workers[i].key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workers[i].csr = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr}))
+	}
+	for round := range 2 {
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range workers {
+			wg.Go(func() {
+				<-start
+				workers[i].issue(w.c.replicas[i%3], w.c.replicas[(i+1)%3])
+				workers[i].assertReads(w.c.replicas[(i+2)%3], "/pilot/operator", secret)
+			})
+		}
+		close(start)
+		wg.Wait()
+		if t.Failed() {
+			return
+		}
+		t.Logf("attested certificate burst round %d: %d issuances and releases", round+1, size)
+	}
 }
 
 func startPilotWorkload(c *cluster, listener net.Listener, host string) *pilotWorkload {

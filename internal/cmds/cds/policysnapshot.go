@@ -1,9 +1,10 @@
 package cds
 
 import (
+	"context"
 	"fmt"
-	"sync"
 
+	"github.com/confidential-dot-ai/c8s/internal/snapshotcache"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -95,34 +96,18 @@ type policyGenerationSource interface {
 // LoadAll that produced the document: the generation only decides whether to
 // reuse, and is never mixed into what a leaf is stamped with.
 type policySnapshotCache struct {
-	mu   sync.Mutex
-	held *PolicySnapshot // nil until the first successful load
-	gen  uint64
+	cache snapshotcache.Cache[uint64, *PolicySnapshot]
 }
 
-// snapshot returns the memoized snapshot, loading one if the store has been
-// written since it was built. The lock is held across the load so a burst of
-// concurrent issuances collapses onto one LoadAll rather than racing to repeat
-// it.
+// snapshot uses an immutable view for unchanged policy. One refresh owner
+// coalesces a burst; waiters recheck their generation after that owner finishes.
 func (c *policySnapshotCache) snapshot(store policyStore) (*PolicySnapshot, error) {
 	src, ok := store.(policyGenerationSource)
 	if !ok {
 		return loadPolicySnapshot(store)
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	gen := src.Generation()
-	if c.held != nil && c.gen == gen {
-		return c.held, nil
-	}
-	snapshot, err := loadPolicySnapshot(store)
-	if err != nil {
-		return nil, err
-	}
-	c.held, c.gen = snapshot, gen
-	return snapshot, nil
+	return c.cache.Load(context.Background(), func() (uint64, error) { return src.Generation(), nil },
+		func() (*PolicySnapshot, error) { return loadPolicySnapshot(store) })
 }
 
 // Contains reports whether a canonical digest string is admitted as any

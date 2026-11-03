@@ -120,7 +120,7 @@ func (s *Store) replaceIfItHolds(ctx context.Context, conn *sql.Conn, content [3
 	}
 	// The backup API copies pages, so no row hook reports the content.
 	s.dig.startsFrom(acc)
-	s.gen++
+	s.gen.Add(1)
 	return nil
 }
 

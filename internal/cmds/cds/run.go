@@ -230,7 +230,9 @@ func run(cfg config) error {
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
 	// The gate refuses what the state this CDS serves no longer answers for.
-	router := back.Gate(newRouter(deps))
+	admission := newRequestAdmission(ctx)
+	defer admission.Close() // Drain handlers before stopping the backend or stores.
+	router := admission.Handler(back.Gate(newRouter(deps)))
 
 	go checker.Run(ctx)
 

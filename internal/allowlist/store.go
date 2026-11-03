@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -35,7 +36,7 @@ type Store struct {
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
-	gen uint64
+	gen atomic.Uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest
 }
@@ -129,6 +130,9 @@ func requireSpentTokenWindow(db *sql.DB) error {
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.gen.Add(1) // Invalidate derived views even when the database closes with an error.
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -237,18 +241,14 @@ func (s *Store) commitTx(tx *sql.Tx, sig documentSignature, at time.Time) error 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.gen++
+	s.gen.Add(1)
 	return nil
 }
 
 // Generation returns the number of mutations committed to this store in this
 // process. A reader that caches a derived view invalidates it when the value
 // changes; it never goes backwards, and it costs no database round-trip.
-func (s *Store) Generation() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.gen
-}
+func (s *Store) Generation() uint64 { return s.gen.Load() }
 
 // bumpVersionTx increments the store version within tx. The version is the
 // worker pull ETag, so it is bumped once per mutation that changes the set.
@@ -283,7 +283,7 @@ func (s *Store) RaiseVersion(floor int64) (string, error) {
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
-	s.gen++
+	s.gen.Add(1)
 	return raised, nil
 }
 

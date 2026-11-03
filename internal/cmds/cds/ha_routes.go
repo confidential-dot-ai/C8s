@@ -136,11 +136,13 @@ func servedUnjoined(path string) bool {
 // cluster routes alone, attested as the full server is. The operator reads an
 // unjoined replica's member id and mesh CA there, and posts the Genesis decree
 // it then acts on. stop returns once the port is free for the full server.
-func (r *clusterCDS) answerWhileJoining(cfg config) (stop func(), err error) {
-	server := newHTTPServer(clientAddress(cfg), joiningMux(r.ClusterRoutes()), cfg)
+func (r *clusterCDS) answerWhileJoining(ctx context.Context, cfg config) (stop func(), err error) {
+	admission := newRequestAdmission(ctx)
+	server := newHTTPServer(clientAddress(cfg), admission.Handler(joiningMux(r.ClusterRoutes())), cfg)
 	// A replica holding no mesh CA verifies no client chain.
 	tlsCfg, _, err := armtls.NewServerTLSConfig(servingConfig(cfg, nil))
 	if err != nil {
+		admission.Close()
 		return nil, fmt.Errorf("cds-ha: the attested server a replica answers on while it joins: %w", err)
 	}
 	server.TLSConfig = tlsCfg
@@ -152,6 +154,7 @@ func (r *clusterCDS) answerWhileJoining(cfg config) (stop func(), err error) {
 		}
 	}()
 	return func() {
+		defer admission.Close()
 		closing, done := context.WithTimeout(context.Background(), joiningShutdown)
 		defer done()
 		_ = server.Shutdown(closing)

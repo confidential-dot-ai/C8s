@@ -222,7 +222,7 @@ func exitToRestart(reason string) {
 // this replica serves. An operator reads the member id and the mesh CA of an
 // unjoined replica there, and signs the Genesis decree it then acts on.
 func (r *clusterCDS) join(ctx context.Context, cfg config) error {
-	stopAnswering, err := r.answerWhileJoining(cfg)
+	stopAnswering, err := r.answerWhileJoining(ctx, cfg)
 	if err != nil {
 		return err
 	}

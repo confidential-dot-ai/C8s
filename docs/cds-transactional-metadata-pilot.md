@@ -82,6 +82,11 @@ records cannot. New commands require a durable object before publication.
 
 ## Run the metadata service
 
+The [cluster concurrency pilot](cds-cluster-concurrency.md) adds an optional
+shared TLS listener with an independent actor, database, credential and bounded
+queue for each configured cluster. The single-cluster command below retains
+its existing behavior.
+
 Build `go build -o cds-metadata-pilot ./cmd/cds-metadata-pilot`. Supply a dedicated
 durable directory, a valid TLS certificate/key, and an independent random bearer
 token in a mode-0600 file. For example, generate the token with

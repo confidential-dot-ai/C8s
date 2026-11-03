@@ -2,6 +2,7 @@ package issuer
 
 import (
 	"context"
+	"hash/maphash"
 	"sync"
 	"time"
 
@@ -29,55 +30,69 @@ type nodeEntry struct {
 // NodeTracker tracks aggregate certificate issuance metrics without per-IP
 // cardinality. Entries older than 2*MaxTTL are evicted on UpdateMetrics().
 type NodeTracker struct {
-	mu     sync.Mutex
-	nodes  map[string]nodeEntry
+	shards [64]nodeShard
+	seed   maphash.Seed
 	maxTTL time.Duration
 }
 
+type nodeShard struct {
+	mu    sync.Mutex
+	nodes map[string]nodeEntry
+}
+
 func NewNodeTracker(maxTTL time.Duration) *NodeTracker {
-	return &NodeTracker{
-		nodes:  make(map[string]nodeEntry),
-		maxTTL: maxTTL,
+	nt := &NodeTracker{seed: maphash.MakeSeed(), maxTTL: maxTTL}
+	for i := range nt.shards {
+		nt.shards[i].nodes = make(map[string]nodeEntry)
 	}
+	return nt
+}
+
+func (nt *NodeTracker) shard(ip string) *nodeShard {
+	return &nt.shards[maphash.String(nt.seed, ip)%uint64(len(nt.shards))]
 }
 
 func (nt *NodeTracker) Track(ip string, certExpiry time.Time) {
-	nt.mu.Lock()
-	defer nt.mu.Unlock()
-	nt.nodes[ip] = nodeEntry{
+	s := nt.shard(ip)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodes[ip] = nodeEntry{
 		lastSeen:   time.Now(),
 		certExpiry: certExpiry,
 	}
 }
 
 // UpdateMetrics recomputes aggregate gauges. Call periodically from a
-// background goroutine.
+// background goroutine. Each shard is scanned separately, so issuance never
+// waits for a whole-fleet scan. Gauges are approximate during concurrent writes.
 func (nt *NodeTracker) UpdateMetrics() {
-	nt.mu.Lock()
-	defer nt.mu.Unlock()
-
 	now := time.Now()
 	cutoff := now.Add(-2 * nt.maxTTL)
-
-	for ip, entry := range nt.nodes {
-		if entry.lastSeen.Before(cutoff) {
-			delete(nt.nodes, ip)
+	count := 0
+	var oldest time.Time
+	for i := range nt.shards {
+		s := &nt.shards[i]
+		s.mu.Lock()
+		for ip, entry := range s.nodes {
+			if entry.lastSeen.Before(cutoff) {
+				delete(s.nodes, ip)
+				continue
+			}
+			count++
+			if oldest.IsZero() || entry.certExpiry.Before(oldest) {
+				oldest = entry.certExpiry
+			}
 		}
+		s.mu.Unlock()
 	}
 
-	activeNodes.Set(float64(len(nt.nodes)))
+	activeNodes.Set(float64(count))
 
-	if len(nt.nodes) == 0 {
+	if count == 0 {
 		oldestActiveCertExpiry.Set(0)
 		return
 	}
 
-	var oldest time.Time
-	for _, entry := range nt.nodes {
-		if oldest.IsZero() || entry.certExpiry.Before(oldest) {
-			oldest = entry.certExpiry
-		}
-	}
 	oldestActiveCertExpiry.Set(oldest.Sub(now).Seconds())
 }
 

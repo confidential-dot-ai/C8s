@@ -139,8 +139,12 @@ func (deps dependencies) challengeProtected(next http.Handler) http.Handler {
 
 // allowlistWrite is protected with the larger allowlist body cap. Its callers
 // are operators reaching CDS directly, so the source address is the caller.
+// Its bucket has its own namespace: issuance from the same address cannot
+// spend an operator's rate budget, including when both use one proxy/NAT.
 func (deps dependencies) allowlistWrite(next http.Handler) http.Handler {
-	return issuer.RateLimitMiddleware(deps.RateLimiter, capBody(allowlistWriteBodyCap, next))
+	return issuer.RateLimitBy(deps.RateLimiter, func(r *http.Request) string {
+		return "control:" + issuer.SourceAddrKey(r)
+	}, capBody(allowlistWriteBodyCap, next))
 }
 
 // perSandbox rate-limits by the caller's attested sandbox instead of its

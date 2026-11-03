@@ -73,15 +73,19 @@ func TestADeadVoterKeepsItsVoteUntilAReplacementIsSeated(t *testing.T) {
 	c.stop(dying)
 
 	eventually(t, 30*time.Second, "a spare replica seated for the dead voter", func() bool {
-		return slices.ContainsFunc(c.voters(c.leader()), func(voter raft.ServerID) bool {
+		leader := c.leader()
+		if leader == nil {
+			return false
+		} // An election is a transient observation.
+		return slices.ContainsFunc(c.voters(leader), func(voter raft.ServerID) bool {
 			return slices.Contains(spares, voter)
 		})
 	})
 	c.votersSeated(c.launch.Voters)
-	if voters := c.voters(c.leader()); slices.Contains(voters, raft.ServerID(dying.node.member)) {
-		t.Fatalf("the cluster holds voters %v, want the dead voter %s retired",
-			voters, dying.node.member)
-	}
+	eventually(t, 30*time.Second, "the dead voter retired from the surviving configuration", func() bool {
+		leader := c.leader()
+		return leader != nil && !slices.Contains(c.voters(leader), raft.ServerID(dying.node.member))
+	})
 }
 
 // A process the host restarts comes back at the address of the process it
@@ -98,7 +102,8 @@ func TestTheReplicaAtADeadVotersAddressTakesItsSeat(t *testing.T) {
 	c.followsWithoutAVote(restarted)
 
 	eventually(t, 30*time.Second, "the replica at the dead voter's address seated", func() bool {
-		return slices.Contains(c.voters(c.leader()), raft.ServerID(restarted.node.member))
+		leader := c.leader()
+		return leader != nil && slices.Contains(c.voters(leader), raft.ServerID(restarted.node.member))
 	})
 	c.votersSeated(c.launch.Voters)
 }

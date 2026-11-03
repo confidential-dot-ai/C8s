@@ -4,9 +4,11 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"hash/maphash"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,7 +24,7 @@ var (
 
 	rateLimitCapacityEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "cds_rate_limit_capacity_evictions_total",
-		Help: "Total new keys admitted to a full rate limiter by evicting its least recently seen bucket.",
+		Help: "Total new keys admitted to a full rate limiter shard by evicting its least recently seen bucket.",
 	})
 
 	rateLimiterEntries = promauto.NewGauge(prometheus.GaugeOpts{
@@ -38,17 +40,24 @@ type ipLimiterEntry struct {
 }
 
 // IPRateLimiter implements keyed rate limiting with bounded memory. It holds
-// at most MaxEntries buckets; once it is full a new key takes the least
-// recently seen bucket, so a busy key is never the one evicted. EvictionLoop
-// reclaims buckets idle longer than IdleTimeout.
+// at most MaxEntries buckets, divided among up to 64 independent shards.
+// A full shard evicts its least recently seen bucket. Unused capacity in a
+// different shard is not borrowed; no global lock sits on every request.
+// Small limiters stay in one shard. EvictionLoop reclaims idle buckets.
 // RateLimitMiddleware keys on the source address; RateLimitBy keys on whatever
 // identifies the caller.
 type IPRateLimiter struct {
+	shards  []limiterShard
+	seed    maphash.Seed
+	entries atomic.Int64
+	rate    rate.Limit
+	burst   int
+}
+
+type limiterShard struct {
 	mu         sync.Mutex
 	limiters   map[string]*list.Element
 	recency    *list.List // of *ipLimiterEntry, most recently seen first
-	rate       rate.Limit
-	burst      int
 	maxEntries int
 }
 
@@ -57,45 +66,54 @@ func NewIPRateLimiter(r rate.Limit, burst, maxEntries int) (*IPRateLimiter, erro
 		// A non-positive cap leaves no room for even the key being admitted.
 		return nil, fmt.Errorf("rate limiter maxEntries must be positive, got %d", maxEntries)
 	}
-	return &IPRateLimiter{
-		limiters:   make(map[string]*list.Element),
-		recency:    list.New(),
-		rate:       r,
-		burst:      burst,
-		maxEntries: maxEntries,
-	}, nil
+	// At least 64 slots per shard (unless the entire limiter is smaller) keeps
+	// a few colliding sources from continually resetting one another's buckets.
+	n := max(1, min(64, maxEntries/64))
+	rl := &IPRateLimiter{shards: make([]limiterShard, n), seed: maphash.MakeSeed(), rate: r, burst: burst}
+	for i := range rl.shards {
+		capacity := maxEntries / n
+		if i < maxEntries%n {
+			capacity++
+		}
+		rl.shards[i] = limiterShard{limiters: make(map[string]*list.Element), recency: list.New(), maxEntries: capacity}
+	}
+	return rl, nil
+}
+
+func (rl *IPRateLimiter) shard(key string) *limiterShard {
+	return &rl.shards[maphash.String(rl.seed, key)%uint64(len(rl.shards))]
 }
 
 // allow charges one request to key's bucket and reports whether it may
-// proceed. A new key arriving at a full map evicts the least recently seen
-// bucket: that only resets the evicted key's allowance, which never lets any
-// key exceed its rate, whereas refusing would lock new callers out.
+// proceed. Eviction resets the evicted key's allowance if it returns, as in
+// the previous global LRU. Rate limiting is not an authorization boundary.
 func (rl *IPRateLimiter) allow(key string) bool {
-	rl.mu.Lock()
+	s := rl.shard(key)
+	s.mu.Lock()
 	var entry *ipLimiterEntry
-	if elem, ok := rl.limiters[key]; ok {
-		rl.recency.MoveToFront(elem)
+	if elem, ok := s.limiters[key]; ok {
+		s.recency.MoveToFront(elem)
 		entry = elem.Value.(*ipLimiterEntry)
 	} else {
-		if len(rl.limiters) >= rl.maxEntries {
-			oldest := rl.recency.Back()
-			rl.recency.Remove(oldest)
-			delete(rl.limiters, oldest.Value.(*ipLimiterEntry).key)
+		if len(s.limiters) >= s.maxEntries {
+			oldest := s.recency.Back()
+			s.recency.Remove(oldest)
+			delete(s.limiters, oldest.Value.(*ipLimiterEntry).key)
 			rateLimitCapacityEvictionsTotal.Inc()
+		} else {
+			rl.entries.Add(1)
 		}
 		entry = &ipLimiterEntry{key: key, limiter: rate.NewLimiter(rl.rate, rl.burst)}
-		rl.limiters[key] = rl.recency.PushFront(entry)
+		s.limiters[key] = s.recency.PushFront(entry)
 	}
 	entry.lastSeen = time.Now()
-	rl.mu.Unlock()
+	s.mu.Unlock()
 	return entry.limiter.Allow()
 }
 
 // Len reports how many callers the limiter is metering, for metrics and tests.
 func (rl *IPRateLimiter) Len() int {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	return len(rl.limiters)
+	return int(rl.entries.Load())
 }
 
 // EvictionLoop removes rate limiter entries idle longer than idleTimeout.
@@ -114,19 +132,23 @@ func (rl *IPRateLimiter) EvictionLoop(ctx context.Context, interval, idleTimeout
 }
 
 func (rl *IPRateLimiter) evict(idleTimeout time.Duration) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
 	cutoff := time.Now().Add(-idleTimeout)
-	// recency is ordered by lastSeen, so the idle entries are a run at the back.
-	for elem := rl.recency.Back(); elem != nil; elem = rl.recency.Back() {
-		entry := elem.Value.(*ipLimiterEntry)
-		if !entry.lastSeen.Before(cutoff) {
-			break
+	for i := range rl.shards {
+		s := &rl.shards[i]
+		s.mu.Lock()
+		// recency is ordered by lastSeen, so the idle entries are a run at the back.
+		for elem := s.recency.Back(); elem != nil; elem = s.recency.Back() {
+			entry := elem.Value.(*ipLimiterEntry)
+			if !entry.lastSeen.Before(cutoff) {
+				break
+			}
+			s.recency.Remove(elem)
+			delete(s.limiters, entry.key)
+			rl.entries.Add(-1)
 		}
-		rl.recency.Remove(elem)
-		delete(rl.limiters, entry.key)
+		s.mu.Unlock()
 	}
-	rateLimiterEntries.Set(float64(len(rl.limiters)))
+	rateLimiterEntries.Set(float64(rl.Len()))
 }
 
 // KeyFunc names the bucket a request is charged to. Returning "" charges it to

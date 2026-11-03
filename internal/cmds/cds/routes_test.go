@@ -109,8 +109,8 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 }
 
 // TestRouter_RateLimitsAllowlistWrites pins that allowlist mutations sit behind
-// the same per-IP limiter as the attestation endpoints: token verification
-// costs ECDSA verifies before any authentication.
+// their own per-IP budget: token verification costs ECDSA verifies before any
+// authentication, but issuance must not spend the revocation budget.
 func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
@@ -133,6 +133,12 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 	}
 	r := newRouter(deps)
 
+	// Spend this address's issuance bucket first. Policy updates retain theirs.
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`invalid JSON`)))
+		req.RemoteAddr = "10.0.0.2:1234"
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}
 	do := func() int {
 		req := httptest.NewRequest(http.MethodPut, "/allowlist", bytes.NewReader([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`)))
 		req.RemoteAddr = "10.0.0.2:1234"

@@ -13,15 +13,15 @@ import (
 func TestNodeTrackerEvictsOnlyBeyondRetention(t *testing.T) {
 	nt := NewNodeTracker(time.Hour)
 	now := time.Now()
-	nt.nodes["stale"] = nodeEntry{lastSeen: now.Add(-3 * time.Hour), certExpiry: now.Add(time.Hour)}
-	nt.nodes["fresh"] = nodeEntry{lastSeen: now.Add(-90 * time.Minute), certExpiry: now.Add(time.Hour)}
+	nt.shard("stale").nodes["stale"] = nodeEntry{lastSeen: now.Add(-3 * time.Hour), certExpiry: now.Add(time.Hour)}
+	nt.shard("fresh").nodes["fresh"] = nodeEntry{lastSeen: now.Add(-90 * time.Minute), certExpiry: now.Add(time.Hour)}
 
 	nt.UpdateMetrics()
 
-	if _, ok := nt.nodes["stale"]; ok {
+	if _, ok := nt.shard("stale").nodes["stale"]; ok {
 		t.Error("entry idle beyond 2*maxTTL was not evicted")
 	}
-	if _, ok := nt.nodes["fresh"]; !ok {
+	if _, ok := nt.shard("fresh").nodes["fresh"]; !ok {
 		t.Error("entry idle within 2*maxTTL was evicted")
 	}
 }

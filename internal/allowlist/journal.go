@@ -355,7 +355,7 @@ func (s *Store) pruneHistory(keep int) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.gen++
+	s.gen.Add(1)
 	return nil
 }
 
