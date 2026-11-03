@@ -9,10 +9,13 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("object WAL: object not found")
-	ErrConflict = errors.New("object WAL: conditional write conflicted")
-	ErrInDoubt  = errors.New("object WAL: commit outcome unknown; do not replay the operation blindly")
-	ErrCorrupt  = errors.New("object WAL: invalid or rolled-back history")
+	ErrNotFound     = errors.New("object WAL: object not found")
+	ErrConflict     = errors.New("object WAL: conditional write conflicted")
+	ErrInDoubt      = errors.New("object WAL: commit outcome unknown; do not replay the operation blindly")
+	ErrCorrupt      = errors.New("object WAL: invalid or rolled-back history")
+	ErrBackpressure = errors.New("object WAL: admission capacity exhausted; retry later")
+	ErrClosed       = errors.New("object WAL: actor stopped")
+	ErrReplayLimit  = errors.New("object WAL: replay exceeds memory bound; recover a fresh replica from a checkpoint")
 )
 
 const MaxObjectBytes = 64 << 20

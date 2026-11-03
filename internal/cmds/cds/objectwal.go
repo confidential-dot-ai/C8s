@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -38,8 +40,13 @@ func newObjectReplica(ctx context.Context, cfg config, st stores) (backend, erro
 	node, err := cdsobject.New(running, cdsobject.Config{
 		Launch: cdsha.Launch{ClusterID: cfg.measured.ClusterID, OperatorKeys: cfg.measured.OperatorKeys.Keys(),
 			ConfigSHA256: hex.EncodeToString(launch[:]), Voters: cfg.measured.HA.Voters},
-		Storage:   *cfg.measured.HA.ObjectWALPilot,
-		Allowlist: st.allowlist, Secrets: st.secrets, Ledger: st.bindings,
+		Storage:        *cfg.measured.HA.ObjectWALPilot,
+		WALOptions:     cfg.measured.HA.ObjectWALPilot.WALOptions(),
+		Address:        net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port)),
+		PeerHosts:      cfg.measured.HA.Replicas,
+		LaunchFile:     cfg.measuredFile,
+		AttestationURL: cfg.attestationApiURL,
+		Allowlist:      st.allowlist, Secrets: st.secrets, Ledger: st.bindings,
 	})
 	if err != nil {
 		cancel()
@@ -55,8 +62,9 @@ func newObjectReplica(ctx context.Context, cfg config, st stores) (backend, erro
 		},
 		node: node, stopNode: func() { cancel(); <-ended }, ended: ended, freshPerRequest: true,
 		extraRoutes: map[string]http.HandlerFunc{
-			"POST " + objectProvisionPath: provisionObjectWAL(node),
-			"GET " + objectStatsPath:      reportJSON(node.WALStats),
+			"POST " + cdsobject.ForwardPath: node.ServeForward,
+			"POST " + objectProvisionPath:   provisionObjectWAL(node),
+			"GET " + objectStatsPath:        reportJSON(node.WALStats),
 		},
 	}
 	if err := r.join(ctx, cfg); err != nil {

@@ -80,6 +80,7 @@ func openLog(t testing.TB, s Store) (*Log, *counter) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(l.Close)
 	return l, c
 }
 
@@ -277,6 +278,7 @@ func TestWrongKeyScopeTamperingAndRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(other.Close)
 			if err := other.Sync(t.Context()); !errors.Is(err, ErrCorrupt) {
 				t.Fatalf("got %v", err)
 			}

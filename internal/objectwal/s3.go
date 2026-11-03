@@ -107,12 +107,15 @@ func (s *S3) Put(ctx context.Context, key string, data []byte, expected string) 
 
 func storageError(err error) error {
 	var api smithy.APIError
+	code := "unclassified"
 	if errors.As(err, &api) {
 		switch api.ErrorCode() {
 		case "NoSuchKey", "NotFound":
 			return ErrNotFound
 		case "PreconditionFailed", "ConditionalRequestConflict":
 			return ErrConflict
+		case "AccessDenied", "ExpiredToken", "InvalidToken", "InvalidAccessKeyId", "SignatureDoesNotMatch", "SlowDown", "RequestTimeout", "InternalError", "ServiceUnavailable", "InvalidRequest":
+			code = api.ErrorCode() // allowlisted names only; never echo provider text
 		}
 	}
 	// Do not include provider response bodies, request URLs or credentials in
@@ -123,5 +126,9 @@ func storageError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
-	return fmt.Errorf("object WAL: S3 request failed (%T)", err)
+	var response interface{ HTTPStatusCode() int }
+	if errors.As(err, &response) {
+		return fmt.Errorf("object WAL: S3 request failed (HTTP %d, %s)", response.HTTPStatusCode(), code)
+	}
+	return fmt.Errorf("object WAL: S3 request failed (%s, %T)", code, err)
 }

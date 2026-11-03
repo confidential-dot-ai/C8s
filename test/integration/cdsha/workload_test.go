@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -86,6 +87,18 @@ func TestWorkloadBackendParity(t *testing.T) {
 			t.Log("cross-replica issuance/release, operator replay rejection and concurrent create passed")
 
 			lost := c.replicas[0]
+			var originalWriter objectwal.Owner
+			if objects != nil {
+				code, body := c.get(lost, "/ha/object-wal/status")
+				var stats objectwal.Stats
+				if code != http.StatusOK || json.Unmarshal(body, &stats) != nil {
+					t.Fatal("writer status unavailable")
+				}
+				originalWriter = stats.Writer
+				if originalWriter.ID != c.awaitStatus(lost).ID {
+					t.Fatal("healthy preferred writer unexpectedly changed")
+				}
+			}
 			if objects == nil {
 				c.waitRollSafe(time.Minute)
 				lost = c.waitLeader(30 * time.Second)
@@ -98,6 +111,13 @@ func TestWorkloadBackendParity(t *testing.T) {
 			survivors := c.others(lost)
 			w.assertReads(survivors[0], "/pilot/operator", value)
 			w.issue(survivors[0], survivors[1])
+			if objects != nil {
+				code, body := c.get(survivors[1], "/ha/object-wal/status")
+				var stats objectwal.Stats
+				if code != http.StatusOK || json.Unmarshal(body, &stats) != nil || stats.Writer.ID == originalWriter.ID || stats.Writer.Epoch <= originalWriter.Epoch {
+					t.Fatal("issuance did not establish a fenced replacement writer")
+				}
+			}
 			c.restart(lost)
 			if objects != nil {
 				c.provisionObjects(lost)

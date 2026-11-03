@@ -422,7 +422,7 @@ func (c *cluster) attestationAPI(name, measurement string) string {
 func (c *cluster) restart(r *replica) {
 	c.t.Helper()
 	var env []string
-	if c.objectWAL != nil {
+	if c.objectWAL != nil && c.objectWAL.certificate != "" {
 		env = []string{"SSL_CERT_FILE=" + c.objectWAL.certificate}
 	}
 	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, []string{

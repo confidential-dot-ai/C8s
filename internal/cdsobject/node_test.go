@@ -91,6 +91,9 @@ func newFixture(t testing.TB) *fixture {
 		launch: cdsha.Launch{ClusterID: "object-pilot", ConfigSHA256: hex.EncodeToString(hash[:]), OperatorKeys: []*ecdsa.PublicKey{&key.PublicKey}, Voters: 3}}
 }
 func (f *fixture) node(t testing.TB) *Node {
+	return f.nodeConfig(t, func(*Config) {})
+}
+func (f *fixture) nodeConfig(t testing.TB, configure func(*Config)) *Node {
 	t.Helper()
 	al, err := allowlist.OpenInMemory()
 	if err != nil {
@@ -98,13 +101,16 @@ func (f *fixture) node(t testing.TB) *Node {
 	}
 	t.Cleanup(func() { _ = al.Close() })
 	hash := sha256.Sum256(f.key)
-	n, err := New(t.Context(), Config{Launch: f.launch, Storage: cdsconfig.ObjectWALPilot{
+	cfg := Config{Launch: f.launch, Storage: cdsconfig.ObjectWALPilot{
 		Bucket: "pilot", Region: "us-west-2", Prefix: "isolated", KeySHA256: hex.EncodeToString(hash[:])},
 		Allowlist: al, Secrets: secrets.NewMemoryStore(1024, 100, 4096), Ledger: sandboxledger.New(time.Hour, 100),
-		OpenStore: func(objectwal.Credentials) (objectwal.Store, error) { return f.bucket, nil }})
+		OpenStore: func(objectwal.Credentials) (objectwal.Store, error) { return f.bucket, nil }}
+	configure(&cfg)
+	n, err := New(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(n.Close)
 	if err := n.Provision(Provision{Key: f.key}); err != nil {
 		t.Fatal(err)
 	}

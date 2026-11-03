@@ -14,11 +14,14 @@ import (
 	"io"
 	"math"
 	"strings"
-	"sync"
 	"time"
 )
 
-const maxEntryBytes = 4 << 20
+const (
+	maxEntryBytes   = 4 << 20
+	maxBatchEntries = 128
+	maxBatchBytes   = 8 << 20
+)
 
 type ref struct {
 	Key   string `json:"key"`
@@ -31,29 +34,48 @@ type head struct {
 	Revision uint64 `json:"revision"`
 	Tail     ref    `json:"tail"`
 	Snapshot ref    `json:"snapshot,omitempty"`
+	Writer   Owner  `json:"writer,omitempty"`
 }
 
 type record struct {
-	ID       string `json:"id"`
-	Index    uint64 `json:"index"`
-	Previous ref    `json:"previous"`
-	Payload  []byte `json:"payload"`
+	ID       string  `json:"id,omitempty"` // version-one records
+	Index    uint64  `json:"index"`
+	Previous ref     `json:"previous"`
+	Payload  []byte  `json:"payload,omitempty"` // version-one records
+	Entries  []entry `json:"entries,omitempty"`
 }
+
+type Entry struct {
+	ID      string `json:"id"`
+	Payload []byte `json:"payload"`
+}
+
+type entry = Entry
 
 type Stats struct {
-	Applied   uint64 `json:"applied"`
-	Revision  uint64 `json:"revision"`
-	Snapshot  uint64 `json:"snapshot"`
-	Gets      uint64 `json:"gets"`
-	Puts      uint64 `json:"puts"`
-	Conflicts uint64 `json:"conflicts"`
-	Ambiguous uint64 `json:"ambiguous"`
-	Replayed  uint64 `json:"replayed"`
-	Stopped   bool   `json:"stopped"`
+	Applied            uint64 `json:"applied"`
+	Revision           uint64 `json:"revision"`
+	Snapshot           uint64 `json:"snapshot"`
+	Gets               uint64 `json:"gets"`
+	Puts               uint64 `json:"puts"`
+	Conflicts          uint64 `json:"conflicts"`
+	Ambiguous          uint64 `json:"ambiguous"`
+	Replayed           uint64 `json:"replayed"`
+	Stopped            bool   `json:"stopped"`
+	Batches            uint64 `json:"batches"`
+	CommittedCommands  uint64 `json:"committed_commands"`
+	LargestBatch       uint64 `json:"largest_batch"`
+	Admitted           int64  `json:"admitted"`
+	AdmittedBytes      int64  `json:"admitted_bytes"`
+	AdmissionLimit     int    `json:"admission_limit"`
+	AdmissionByteLimit int64  `json:"admission_byte_limit"`
+	Rejected           uint64 `json:"rejected"`
+	Writer             Owner  `json:"writer"`
+	Forwarded          uint64 `json:"forwarded"`
+	Takeovers          uint64 `json:"takeovers"`
 }
 
-type Log struct {
-	mu      sync.Mutex
+type logState struct {
 	store   Store
 	machine Machine
 	aead    cipher.AEAD
@@ -64,12 +86,14 @@ type Log struct {
 	applied ref
 	stats   Stats
 	stopped error
+	options Options
+	fresh   time.Time
 }
 
 // New opens no objects and changes no state. scope binds ciphertext to the
 // cluster and measured configuration; prefix is an exclusive, nonempty object
 // namespace. The 256-bit key is provisioned into TEE memory, never a launch file.
-func New(store Store, machine Machine, key []byte, prefix, scope string) (*Log, error) {
+func newState(store Store, machine Machine, key []byte, prefix, scope string) (*logState, error) {
 	if store == nil || machine == nil || len(key) != 32 || scope == "" ||
 		prefix == "" || strings.Trim(prefix, "/") != prefix || strings.Contains(prefix, "..") {
 		return nil, errors.New("object WAL: store, machine, 32-byte key, scope and clean prefix are required")
@@ -82,24 +106,21 @@ func New(store Store, machine Machine, key []byte, prefix, scope string) (*Log, 
 	if err != nil {
 		return nil, err
 	}
-	return &Log{store: store, machine: machine, aead: aead, prefix: prefix, scope: scope}, nil
+	return &logState{store: store, machine: machine, aead: aead, prefix: prefix, scope: scope}, nil
 }
 
-func (l *Log) Stats() Stats {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func (l *logState) Stats() Stats {
 	s := l.stats
 	s.Applied, s.Revision, s.Snapshot = l.applied.Index, l.head.Revision, l.head.Snapshot.Index
 	s.Stopped = l.stopped != nil
+	s.Writer = l.head.Writer
 	return s
 }
 
 // Sync establishes a fresh read watermark and applies through it. Polling or a
 // successful upload is not a substitute for this operation before a fresh read.
-func (l *Log) Sync(ctx context.Context) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_, _, err := l.sync(ctx, "")
+func (l *logState) Sync(ctx context.Context) error {
+	_, err := l.sync(ctx, nil)
 	return err
 }
 
@@ -107,24 +128,33 @@ func (l *Log) Sync(ctx context.Context) error {
 // this request. Its private request ID is reused across every attempt. After an
 // ambiguous response we replay the authoritative history before retrying, even
 // if another writer has already advanced the head past our record.
-func (l *Log) Append(ctx context.Context, payload []byte) (any, error) {
-	if len(payload) == 0 || len(payload) > maxEntryBytes {
-		return nil, errors.New("object WAL: entry must be between 1 byte and 4 MiB")
+func (l *logState) appendBatch(ctx context.Context, entries []entry, live func() bool, required *Owner) (map[string]any, error) {
+	wanted := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		wanted[e.ID] = struct{}{}
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	id := randomID()
 	uncertain := false
+	var failedOwner *Owner
+	acknowledged := false
 	for {
-		answer, found, err := l.sync(ctx, id)
+		answers, err := l.sync(ctx, wanted)
 		if err != nil {
 			if uncertain {
 				return nil, fmt.Errorf("%w: %w", ErrInDoubt, err)
 			}
 			return nil, err
 		}
-		if found {
-			return answer, nil
+		if len(answers) == len(entries) {
+			return answers, nil
+		}
+		if required != nil && l.head.Writer != *required {
+			return nil, ErrNotWriter
+		}
+		if len(answers) != 0 {
+			return nil, l.stop(fmt.Errorf("%w: partially committed batch", ErrCorrupt))
+		}
+		if acknowledged {
+			return nil, fmt.Errorf("%w: preferred writer acknowledged no committed batch", ErrInDoubt)
 		}
 		if err := ctx.Err(); err != nil {
 			if uncertain {
@@ -132,10 +162,54 @@ func (l *Log) Append(ctx context.Context, payload []byte) (any, error) {
 			}
 			return nil, err
 		}
-		if l.head.Revision == math.MaxUint64 || l.applied.Index == math.MaxUint64 {
+		if !live() {
+			if uncertain {
+				return nil, fmt.Errorf("%w: %w", ErrInDoubt, context.Canceled)
+			}
+			return nil, context.Canceled
+		}
+		if writer := l.options.Writer; writer != nil && l.head.Writer.ID != writer.ID {
+			owner := l.head.Writer
+			if required != nil {
+				return nil, ErrNotWriter
+			}
+			if owner.ID != "" && (failedOwner == nil || *failedOwner != owner) {
+				forwardCtx, cancel := context.WithTimeout(ctx, writer.ForwardTimeout)
+				l.stats.Forwarded++
+				err := writer.Forward(forwardCtx, owner, ForwardRequest{Owner: owner, After: l.applied.Index, Entries: entries})
+				cancel()
+				if errors.Is(err, ErrBackpressure) || errors.Is(err, ErrRequestMismatch) {
+					return nil, err
+				}
+				// A transport error can hide a commit. The next Sync searches
+				// every record since forwarding began before any replacement write.
+				uncertain = true
+				if err == nil {
+					acknowledged = true
+				} else {
+					failedOwner = &owner
+				}
+				continue
+			}
+			if err := l.claim(ctx); err != nil {
+				if errors.Is(err, ErrConflict) {
+					l.stats.Conflicts++
+				} else {
+					l.stats.Ambiguous++
+				}
+				if err := retryDelay(ctx); err != nil {
+					if uncertain {
+						return nil, fmt.Errorf("%w: %w", ErrInDoubt, err)
+					}
+					return nil, err
+				}
+			}
+			continue
+		}
+		if l.head.Revision == math.MaxUint64 || l.applied.Index > math.MaxUint64-uint64(len(entries)) {
 			return nil, l.stop(errors.New("object WAL: sequence exhausted"))
 		}
-		r := record{ID: id, Index: l.applied.Index + 1, Previous: l.applied, Payload: payload}
+		r := record{Index: l.applied.Index + uint64(len(entries)), Previous: l.applied, Entries: entries}
 		body, err := json.Marshal(r)
 		if err != nil {
 			return nil, err
@@ -148,7 +222,7 @@ func (l *Log) Append(ctx context.Context, payload []byte) (any, error) {
 			return nil, err
 		}
 		next := l.head
-		next.Version, next.Revision, next.Tail = 1, l.head.Revision+1, written
+		next.Version, next.Revision, next.Tail = 2, l.head.Revision+1, written
 		etag, err := l.publish(ctx, next)
 		if err != nil {
 			if errors.Is(err, ErrConflict) {
@@ -158,71 +232,89 @@ func (l *Log) Append(ctx context.Context, payload []byte) (any, error) {
 				l.stats.Ambiguous++
 			}
 			// Back off contention and outage retries, bounded by the caller.
-			timer := time.NewTimer(10 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			if err := retryDelay(ctx); err != nil {
 				if uncertain {
-					return nil, fmt.Errorf("%w: %w", ErrInDoubt, ctx.Err())
+					return nil, fmt.Errorf("%w: %w", ErrInDoubt, err)
 				}
-				return nil, ctx.Err()
-			case <-timer.C:
+				return nil, err
 			}
 			continue
 		}
 		// The object store has committed. Apply exactly these bytes; subsequent
 		// writers may already have published newer records, which Sync will read.
 		l.head, l.etag = next, etag
-		answer, err = l.apply(written, r)
-		return answer, err
+		answers, err = l.apply(written, r)
+		if err == nil {
+			l.committedBatch(len(entries))
+		}
+		return answers, err
 	}
 }
 
-func (l *Log) sync(ctx context.Context, wanted string) (any, bool, error) {
+func (l *logState) committedBatch(size int) {
+	l.stats.Batches++
+	l.stats.CommittedCommands += uint64(size)
+	l.stats.LargestBatch = max(l.stats.LargestBatch, uint64(size))
+}
+
+func retryDelay(ctx context.Context) error {
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (l *logState) sync(ctx context.Context, wanted map[string]struct{}) (map[string]any, error) {
 	if l.stopped != nil {
-		return nil, false, l.stopped
+		return nil, l.stopped
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	obj, err := l.get(ctx, l.prefix+"/head")
 	if errors.Is(err, ErrNotFound) && l.applied.Index == 0 && l.head.Revision == 0 {
-		return nil, false, nil
+		return nil, nil
 	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			err = l.stop(fmt.Errorf("%w: head disappeared", ErrCorrupt))
 		}
-		return nil, false, err
+		return nil, err
 	}
 	if obj.ETag == "" {
-		return nil, false, l.stop(fmt.Errorf("%w: head has no ETag", ErrCorrupt))
+		return nil, l.stop(fmt.Errorf("%w: head has no ETag", ErrCorrupt))
 	}
 	plain, err := l.open(l.prefix+"/head", obj.Data)
 	if err != nil {
-		return nil, false, l.stop(err)
+		return nil, l.stop(err)
 	}
 	var h head
 	if err := decode(plain, &h); err != nil {
-		return nil, false, l.stop(err)
+		return nil, l.stop(err)
 	}
-	if h.Version != 1 || h.Revision == 0 || h.Tail.Index == 0 ||
+	if (h.Version != 1 && h.Version != 2) || h.Revision == 0 ||
+		(h.Tail.Index == 0 && (h.Version != 2 || h.Writer.ID == "" || h.Tail != (ref{}))) ||
+		!h.Writer.valid() || h.Writer.Epoch > h.Revision ||
 		h.Revision < l.head.Revision || h.Tail.Index < l.applied.Index ||
 		h.Snapshot.Index > h.Tail.Index ||
 		(h.Revision == l.head.Revision && h != l.head) {
-		return nil, false, l.stop(ErrCorrupt)
+		return nil, l.stop(ErrCorrupt)
 	}
 	// Only a fresh process installs a snapshot. An existing process replays
 	// every missing record, including a pending operation's response. Retained
 	// history makes that possible even while other writers publish checkpoints.
-	if wanted == "" && l.applied.Index == 0 && h.Snapshot.Index != 0 {
+	if len(wanted) == 0 && l.applied.Index == 0 && h.Snapshot.Index != 0 {
 		data, err := l.readRef(ctx, h.Snapshot, "snapshots")
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		index, err := l.machine.Restore(data)
 		if err != nil || index != h.Snapshot.Index {
-			return nil, false, l.stop(fmt.Errorf("%w: snapshot restore at %d: %v", ErrCorrupt, index, err))
+			return nil, l.stop(fmt.Errorf("%w: snapshot restore at %d: %v", ErrCorrupt, index, err))
 		}
 		// Find the precise WAL reference at the restored index below, then
 		// retain it to validate the link from the next record.
@@ -233,19 +325,22 @@ func (l *Log) sync(ctx context.Context, wanted string) (any, bool, error) {
 		record record
 	}
 	cursor := h.Tail
+	replayBytes := 0
 	for cursor.Index > l.applied.Index {
 		data, err := l.readRef(ctx, cursor, "wal")
 		if err != nil {
-			return nil, false, err
+			return nil, err
+		}
+		replayBytes += len(data)
+		if replayBytes > l.options.ReplayBytes || len(pending) >= 4096 {
+			return nil, ErrReplayLimit
 		}
 		var r record
 		if err := decode(data, &r); err != nil {
-			return nil, false, l.stop(err)
+			return nil, l.stop(err)
 		}
-		if r.ID == "" || r.Index != cursor.Index || r.Previous.Index != r.Index-1 ||
-			len(r.Payload) == 0 || len(r.Payload) > maxEntryBytes ||
-			(r.Previous.Index == 0 && r.Previous != (ref{})) {
-			return nil, false, l.stop(ErrCorrupt)
+		if !r.valid() || r.Index != cursor.Index {
+			return nil, l.stop(ErrCorrupt)
 		}
 		pending = append(pending, struct {
 			ref    ref
@@ -254,50 +349,91 @@ func (l *Log) sync(ctx context.Context, wanted string) (any, bool, error) {
 		cursor = r.Previous
 	}
 	if l.applied.Key == "" && l.applied.Index != 0 {
+		if cursor.Index != l.applied.Index {
+			return nil, l.stop(ErrCorrupt)
+		}
 		l.applied = cursor
 	}
 	if cursor != l.applied {
-		return nil, false, l.stop(fmt.Errorf("%w: history fork", ErrCorrupt))
+		return nil, l.stop(fmt.Errorf("%w: history fork", ErrCorrupt))
 	}
-	var answer any
-	found := false
+	answers := make(map[string]any, len(wanted))
 	for i := len(pending) - 1; i >= 0; i-- {
 		item := pending[i]
 		res, err := l.apply(item.ref, item.record)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
-		l.stats.Replayed++
-		if wanted != "" && item.record.ID == wanted {
-			answer, found = res, true
+		l.stats.Replayed += uint64(len(res))
+		for id, answer := range res {
+			if _, ok := wanted[id]; ok {
+				answers[id] = answer
+			}
 		}
 	}
 	l.head, l.etag = h, obj.ETag
-	return answer, found, nil
+	return answers, nil
 }
 
-func (l *Log) apply(at ref, r record) (any, error) {
-	if at.Index != l.applied.Index+1 || r.Previous != l.applied {
+func (l *logState) apply(at ref, r record) (map[string]any, error) {
+	if !r.valid() || at.Index != r.Index || r.Previous != l.applied {
 		return nil, l.stop(ErrCorrupt)
 	}
-	answer, err := l.machine.Apply(at.Index, r.Payload)
-	if err != nil {
-		return nil, l.stop(err)
+	entries := r.entries()
+	answers := make(map[string]any, len(entries))
+	for i, e := range entries {
+		answer, err := l.machine.Apply(r.Previous.Index+uint64(i)+1, e.Payload)
+		if err != nil {
+			return nil, l.stop(err)
+		}
+		answers[e.ID] = answer
 	}
 	l.applied = at
-	return answer, nil
+	return answers, nil
+}
+
+func (r record) entries() []entry {
+	if len(r.Entries) != 0 {
+		return r.Entries
+	}
+	return []entry{{ID: r.ID, Payload: r.Payload}}
+}
+
+func (r record) valid() bool {
+	if len(r.Entries) > 0 && (r.ID != "" || len(r.Payload) != 0) {
+		return false
+	}
+	entries := r.entries()
+	if len(entries) > maxBatchEntries || r.Index <= r.Previous.Index || r.Index-r.Previous.Index != uint64(len(entries)) ||
+		(r.Previous.Index == 0 && r.Previous != (ref{})) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(entries))
+	bytes := 0
+	for _, e := range entries {
+		if e.ID == "" || len(e.ID) > 128 || len(e.Payload) == 0 || len(e.Payload) > maxEntryBytes {
+			return false
+		}
+		if _, ok := seen[e.ID]; ok {
+			return false
+		}
+		seen[e.ID] = struct{}{}
+		bytes += len(e.Payload)
+	}
+	return bytes <= maxBatchBytes
 }
 
 // Checkpoint publishes an encrypted snapshot through the same head CAS. A
 // competing append may win; in that case the snapshot is an unreferenced object
 // and no log record is removed. This pilot deliberately implements no GC.
-func (l *Log) Checkpoint(ctx context.Context) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if _, _, err := l.sync(ctx, ""); err != nil {
+func (l *logState) Checkpoint(ctx context.Context) error {
+	if _, err := l.sync(ctx, nil); err != nil {
 		return err
 	}
 	if l.applied.Index == 0 || l.head.Snapshot.Index == l.applied.Index {
+		return nil
+	}
+	if writer := l.options.Writer; writer != nil && l.head.Writer.ID != writer.ID {
 		return nil
 	}
 	if l.head.Revision == math.MaxUint64 {
@@ -312,6 +448,7 @@ func (l *Log) Checkpoint(ctx context.Context) error {
 		return err
 	}
 	next := l.head
+	next.Version = 2
 	next.Revision++
 	next.Snapshot = r
 	etag, err := l.publish(ctx, next)
@@ -322,7 +459,7 @@ func (l *Log) Checkpoint(ctx context.Context) error {
 	return nil
 }
 
-func (l *Log) publish(ctx context.Context, h head) (string, error) {
+func (l *logState) publish(ctx context.Context, h head) (string, error) {
 	data, err := json.Marshal(h)
 	if err != nil {
 		return "", err
@@ -332,7 +469,7 @@ func (l *Log) publish(ctx context.Context, h head) (string, error) {
 	return l.store.Put(ctx, key, l.seal(key, data), l.etag)
 }
 
-func (l *Log) immutable(ctx context.Context, kind string, index uint64, data []byte) (ref, error) {
+func (l *logState) immutable(ctx context.Context, kind string, index uint64, data []byte) (ref, error) {
 	key := l.prefix + "/" + kind + "/" + randomID()
 	body := l.seal(key, data)
 	if len(body) > MaxObjectBytes {
@@ -351,7 +488,7 @@ func (l *Log) immutable(ctx context.Context, kind string, index uint64, data []b
 	return ref{Key: key, Hash: hex.EncodeToString(sum[:]), Index: index}, nil
 }
 
-func (l *Log) readRef(ctx context.Context, r ref, kind string) ([]byte, error) {
+func (l *logState) readRef(ctx context.Context, r ref, kind string) ([]byte, error) {
 	if r.Index == 0 || len(r.Hash) != 64 || !strings.HasPrefix(r.Key, l.prefix+"/"+kind+"/") {
 		return nil, l.stop(ErrCorrupt)
 	}
@@ -370,16 +507,16 @@ func (l *Log) readRef(ctx context.Context, r ref, kind string) ([]byte, error) {
 	return data, nil
 }
 
-func (l *Log) get(ctx context.Context, key string) (Object, error) {
+func (l *logState) get(ctx context.Context, key string) (Object, error) {
 	l.stats.Gets++
 	return l.store.Get(ctx, key)
 }
 
-func (l *Log) seal(key string, data []byte) []byte {
+func (l *logState) seal(key string, data []byte) []byte {
 	return l.aead.Seal(nil, nil, data, []byte("c8s-object-wal-v1\x00"+l.scope+"\x00"+key))
 }
 
-func (l *Log) open(key string, data []byte) ([]byte, error) {
+func (l *logState) open(key string, data []byte) ([]byte, error) {
 	if len(data) > MaxObjectBytes {
 		return nil, ErrCorrupt
 	}
@@ -390,7 +527,7 @@ func (l *Log) open(key string, data []byte) ([]byte, error) {
 	return plain, nil
 }
 
-func (l *Log) stop(err error) error {
+func (l *logState) stop(err error) error {
 	if l.stopped == nil {
 		l.stopped = err
 	}

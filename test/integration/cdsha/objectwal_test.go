@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,21 +33,35 @@ type objectFixture struct {
 	certificate string
 	provision   []byte
 	outage      atomic.Bool
-	mu          sync.Mutex
-	objects     map[string]objectwal.Object
-	version     int
+	delayNS     atomic.Int64
+	shards      [32]objectShard
+	version     atomic.Uint64
+}
+
+type objectShard struct {
+	mu      sync.Mutex
+	objects map[string]objectwal.Object
+}
+
+func (f *objectFixture) shard(key string) *objectShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return &f.shards[h.Sum32()%uint32(len(f.shards))]
 }
 
 func newObjectFixture(t *testing.T) *objectFixture {
 	t.Helper()
-	f := &objectFixture{objects: map[string]objectwal.Object{}}
+	f := &objectFixture{}
+	for i := range f.shards {
+		f.shards[i].objects = map[string]objectwal.Object{}
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
 	f.certificate = filepath.Join(t.TempDir(), "object-server.pem")
 	write(t, f.certificate, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
 	key := bytes.Repeat([]byte{7}, 32)
 	hash := sha256.Sum256(key)
-	f.config = cdsconfig.ObjectWALPilot{Bucket: "pilot", Region: "us-west-2", Prefix: "integration", Endpoint: server.URL, PathStyle: true, KeySHA256: hex.EncodeToString(hash[:])}
+	f.config = cdsconfig.ObjectWALPilot{Bucket: "pilot", Region: "us-east-2", Prefix: "integration", Endpoint: server.URL, PathStyle: true, KeySHA256: hex.EncodeToString(hash[:])}
 	var err error
 	f.provision, err = json.Marshal(cdsobject.Provision{Key: key, Credentials: objectwal.Credentials{AccessKeyID: "synthetic", SecretAccessKey: "test-only"}})
 	if err != nil {
@@ -56,15 +71,25 @@ func newObjectFixture(t *testing.T) *objectFixture {
 }
 
 func (f *objectFixture) serve(w http.ResponseWriter, r *http.Request) {
+	if delay := time.Duration(f.delayNS.Load()); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if f.outage.Load() {
 		http.Error(w, "injected outage", http.StatusServiceUnavailable)
 		return
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	old, exists := f.objects[r.URL.Path]
+	shard := f.shard(r.URL.Path)
 	switch r.Method {
 	case http.MethodGet:
+		shard.mu.Lock()
+		old, exists := shard.objects[r.URL.Path]
+		shard.mu.Unlock()
 		if !exists {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code></Error>`)
@@ -73,23 +98,27 @@ func (f *objectFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", old.ETag)
 		_, _ = w.Write(old.Data)
 	case http.MethodPut:
-		if (r.Header.Get("If-None-Match") == "*" && exists) || (r.Header.Get("If-Match") != "" && (!exists || r.Header.Get("If-Match") != old.ETag)) {
-			w.WriteHeader(http.StatusPreconditionFailed)
-			_, _ = io.WriteString(w, `<Error><Code>PreconditionFailed</Code></Error>`)
-			return
-		}
-		if r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Match") == "" {
-			http.Error(w, "conditional write required", http.StatusBadRequest)
-			return
-		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, objectwal.MaxObjectBytes+1))
 		if err != nil || len(body) > objectwal.MaxObjectBytes {
 			http.Error(w, "bad body", http.StatusBadRequest)
 			return
 		}
-		f.version++
-		etag := fmt.Sprintf(`"%d"`, f.version)
-		f.objects[r.URL.Path] = objectwal.Object{Data: body, ETag: etag}
+		shard.mu.Lock()
+		old, exists := shard.objects[r.URL.Path]
+		if (r.Header.Get("If-None-Match") == "*" && exists) || (r.Header.Get("If-Match") != "" && (!exists || r.Header.Get("If-Match") != old.ETag)) {
+			shard.mu.Unlock()
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = io.WriteString(w, `<Error><Code>PreconditionFailed</Code></Error>`)
+			return
+		}
+		if r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Match") == "" {
+			shard.mu.Unlock()
+			http.Error(w, "conditional write required", http.StatusBadRequest)
+			return
+		}
+		etag := fmt.Sprintf(`"%d"`, f.version.Add(1))
+		shard.objects[r.URL.Path] = objectwal.Object{Data: body, ETag: etag}
+		shard.mu.Unlock()
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusOK)
 	default:
@@ -175,11 +204,15 @@ func TestObjectWALWholeClusterRestartAndOutage(t *testing.T) {
 	if !c.allServe("survives-total-process-loss") {
 		t.Fatal("outage recovery lost policy")
 	}
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
-	for key, obj := range objects.objects {
-		if strings.Contains(string(obj.Data), "survives-total-process-loss") || strings.Contains(string(obj.Data), "BEGIN PRIVATE KEY") {
-			t.Fatalf("plaintext persisted at %s", key)
+	for i := range objects.shards {
+		shard := &objects.shards[i]
+		shard.mu.Lock()
+		for key, obj := range shard.objects {
+			if strings.Contains(string(obj.Data), "survives-total-process-loss") || strings.Contains(string(obj.Data), "BEGIN PRIVATE KEY") {
+				shard.mu.Unlock()
+				t.Fatalf("plaintext persisted at %s", key)
+			}
 		}
+		shard.mu.Unlock()
 	}
 }

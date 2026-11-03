@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsobject"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -117,7 +118,7 @@ func servedUnjoined(path string) bool {
 		"/ha/pins",
 		"/ha/decrees":
 		return true
-	case objectProvisionPath, objectStatsPath:
+	case objectProvisionPath, objectStatsPath, cdsobject.ForwardPath:
 		return true
 	}
 	return false

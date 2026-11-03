@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/aws/smithy-go"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -102,5 +103,17 @@ func TestS3ConditionalHeadersAndNoHiddenRetry(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, "key"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStorageErrorKeepsSafeClassificationWithoutProviderText(t *testing.T) {
+	for _, code := range []string{"AccessDenied", "ExpiredToken", "secret-from-provider"} {
+		err := storageError(&smithy.GenericAPIError{Code: code, Message: "do-not-publish-credential-or-url"})
+		if strings.Contains(err.Error(), "do-not-publish") || strings.Contains(err.Error(), "secret-from-provider") {
+			t.Fatal("provider text leaked")
+		}
+		if code == "AccessDenied" && !strings.Contains(err.Error(), code) {
+			t.Fatal("safe diagnostic code lost")
+		}
 	}
 }

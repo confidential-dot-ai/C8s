@@ -10,18 +10,33 @@ The implementation and local tests are a pilot, not a production migration.
 No existing cluster can switch backend by editing its measured launch file.
 Run two isolated clusters and compare them before choosing a production design.
 
+See [the recorded actor/batching comparison](cds-object-wal-results.md) for the
+local matrix and the unsuccessful live-S3 comparison attempt, including limits.
+
 ## What commits a change
 
 1. A replica reads the current `PREFIX/head` and applies missing committed state.
-2. It uploads an AES-256-GCM encrypted immutable command at `PREFIX/wal/RANDOM`.
+2. Its actor groups admitted commands into one AES-256-GCM encrypted immutable
+   batch at `PREFIX/wal/RANDOM`.
 3. It replaces the encrypted head using `If-Match: ETAG`, or `If-None-Match: *`
    for the first record. **That successful conditional write is the commit.**
-4. It applies the command through `cdsha.FSM` and returns the result.
+4. It applies each command in order through `cdsha.FSM` and returns each result.
 
-All provisioned replicas can propose writes. A losing conditional write reads
-the winner's history and rebases. A paused writer cannot replace a head that
-has advanced. There is no CDS leader or quorum to elect: the object service's
-linearizable GET and conditional PUT supply the ordering authority.
+All replicas can propose writes. By default they forward batches to a preferred
+writer whose identity, address and epoch are in the **same encrypted CAS head**
+as the committed tail. No clock lease grants commit authority. After an
+unreachable writer, a contender resolves any ambiguous commit, then claims a
+new epoch through that head CAS. An old writer cannot commit with its old ETag
+or rebase a forwarded batch across the new epoch. The object service supplies
+linearizable ordering; this backend runs no Raft election or peer quorum.
+
+Forwarding uses pinned armTLS with the committed CDS images and exact launch
+bytes. A domain-separated HMAC from the attested WAL key authenticates the body.
+Only measured replica addresses on the CDS client port are dialed. Redirects
+and transparent POST retries are disabled. A receipt causes the origin to replay
+its original results. Duplicate requests are checked against retained history,
+including across checkpoints. Writer backpressure does not trigger takeover.
+`directWriters: true` selects the competing-CAS baseline for comparison.
 
 A request ID survives internal retries. After a lost commit response, the
 replica searches committed history for that ID, even if other writers have
@@ -81,10 +96,10 @@ Both arms use the same image, CPU/memory, workload policy and client location.
 For the load matrix below, set `--secrets-max-paths 20000` on both arms so quota
 does not masquerade as a backend limit. Local allowlist storage must be tmpfs
 and `--allowlist-persistent` must remain false. The object arm needs outbound
-HTTPS to its S3 service and no replica-to-replica Raft port. Both serve clients
+HTTPS to its S3 service and replica forwarding on 8443. Both serve clients
 on 8443; the Raft arm additionally needs its existing peer connectivity on 8444.
 
-Start with a **dedicated AWS S3 Standard bucket in `us-west-2`**, with a unique
+Start with a **dedicated AWS S3 Standard bucket in `us-east-2`**, with a unique
 prefix for this exact cluster/launch file. Disable public access and lifecycle
 deletion for the active prefix. Grant `s3:GetObject` and `s3:PutObject` on
 `BUCKET/PREFIX/*`, plus `s3:ListBucket` on the dedicated bucket. S3 needs the
@@ -111,9 +126,15 @@ ha:
   voters: 3
   objectWALPilot:
     bucket: YOUR-DEDICATED-PILOT-BUCKET
-    region: us-west-2
+    region: us-east-2
     prefix: cds-object-pilot/RUN-ID
     keySHA256: LOWERCASE-SHA256-OF-THE-32-BYTE-KEY
+    # directWriters: false   # preferred writer, fenced by head CAS
+    # batchMaxEntries: 64
+    # batchMaxBytes: 4194304
+    # batchDelayMS: 2
+    # queueMaxRequests: 256
+    # queueMaxBytes: 16777216
     # endpoint: https://objects.example.org  # optional custom service
     # pathStyle: true                       # optional custom service
 ```
@@ -187,7 +208,11 @@ normal operator-token floor after first Genesis before starting writes.
 
 `GET /ha/object-wal/status` reports per-process applied index, head revision,
 snapshot index, GET/PUT attempts, CAS conflicts, ambiguous responses, replayed
-records and a stopped flag. Collect it through an attestation-verifying client.
+commands, batches, writer/epoch, forwards, takeovers, admitted requests/bytes,
+admission limits, rejections and a stopped flag. Collect it through a verified
+client. Batch/committed-command counters count positive local CAS replies; a
+commit recovered after a lost reply appears in the applied index but can be
+absent from those two counters.
 Counters reset with the process and include background reads and checkpoints.
 The regular `/ha/status`, `/ha/decrees`, `/readyz` and CDS metrics remain available.
 
@@ -219,7 +244,8 @@ enough runs to exhaust the configured ceiling.
 Compare each mode separately. Current Raft serves under a confirmed read
 lease; this pilot confirms each protected request against storage. An operator
 secret write commits token consumption and the secret as separate commands,
-each requiring a WAL object and a head PUT. Background polling and checkpoint
+each eligible for grouping with other requests. Each batch requires a WAL object
+and a head PUT. Background polling and checkpoint
 writes add to request cost. Report those differences with latency and costs;
 do not label an object PUT or a local fixture timing as end-to-end CDS latency.
 
@@ -301,26 +327,93 @@ real TDX evidence, container-runtime discovery, independent object-service
 semantics and AWS performance still require separate runs. Local latency
 numbers are diagnostics, not an S3 or Raft performance comparison.
 
-## Next implementation steps
+## Actors, admission and batching
 
-The current pilot commits one command at a time and allows every replica to
-compete for the head. Before drawing throughput conclusions from the
-Turbopuffer-inspired design, add bounded group commit, then a preferred writer
-per CDS cluster. Batching should preserve command order and individual results;
-acknowledgments must still wait for the batch's durable head commit. The
-preferred writer reduces competing uploads and CAS retries; storage CAS must
-continue to fence obsolete writers when routing overlaps during failover.
+One actor owns each CDS cluster's WAL state and FSM application. A separate
+bounded control actor owns provisioning and credential refresh. Atomic immutable
+snapshots expose readiness and diagnostics without waiting for storage IO.
+There is no application mutex around WAL or provisioning IO. The local object
+fixture uses 32 key shards and holds no lock during network IO or injected delay.
+The reused CDS stores retain their existing short locks, also used by Raft.
+Go channels use runtime synchronization; this is not a formal claim that the
+whole application is lock-free.
 
-Keep these process scenarios as the correctness baseline. Extend fault tests
-to cover batches and writer handover, then compare both backends with controlled
-object latency and the isolated real-S3/TDX cloud matrix above. Measure latency,
-availability and storage request cost separately before choosing the backend.
+| Bound | Default / behavior |
+|---|---|
+| Admitted work | 256 messages, 16 MiB payload; includes active work |
+| Group commit | At most 64 commands / 4 MiB, up to 2 ms collection delay |
+| Remote ingress | 16 concurrent bodies, 32 MiB total encoded bytes, 12 MiB per body |
+| Actor IO | 5 seconds per operation; 2 seconds for a forwarding attempt |
+| Replay | 64 MiB decoded record data and 4,096 records per catch-up |
+
+Admission reserves capacity before copying payloads. Full queues reject promptly
+instead of spawning work or waiting without a bound. Cancellation while queued
+prevents execution; cancellation after execution starts reports an unknown write
+outcome. One canceled caller cannot cancel other commands in its batch. Shutdown
+closes admission and drains every admitted request before closing the FSM.
+Coalesced reads share only an observation started after they arrived.
+
+Batch records and writer metadata use head version 2. This implementation reads
+old single-command records, but older binaries reject version 2. Use fresh pilot
+prefixes; do not mix versions, measured configurations or writer modes.
+
+## Reproduce the local and S3 comparisons
+
+The opt-in process harness runs the same release binary and signed HTTP policy
+workload against four variants: Raft, single-command direct object writers,
+batched direct object writers, and batched preferred writer. Each HTTP write
+commits a token consumption and policy update. It does not retry failed writes.
+It reports successes, errors, latency, throughput and object-attempt counters,
+then checks that replicas recover and converge. Errors remain in the report even
+if convergence succeeds; a passing test is not a zero-error claim.
+
+```sh
+CDSHA_RELEASE=1 CDSHA_COMPARE=1 \
+  CDSHA_COMPARE_REQUESTS=48 CDSHA_COMPARE_CONCURRENCY=1,16 \
+  CDSHA_COMPARE_LATENCY_MS=0,25,100 CDSHA_COMPARE_OUTPUT=/tmp/local-comparison.json \
+  test/integration/cdsha/run.sh -race -run TestPilotComparison
+```
+
+The delay is added to each object request outside fixture locks. No provider
+request-rate cap is simulated. Raft runs only zero-delay cells because it does
+not use this service. These short, single-run cells are diagnostic; repeat larger
+runs before drawing capacity conclusions. Counters include background polls and
+checkpoints within the sampling window. Latency percentiles cover successes;
+failed or unknown outcomes are counted separately.
+
+For actual S3, prepare an **operator-local mode-0600 file** containing `bucket`,
+`region`, `prefix` and `credentials` using the credential fields above. Use a
+dedicated bucket and temporary credentials with GetObject/PutObject on the test
+prefix and ListBucket on that bucket.
+
+```sh
+CDSHA_RELEASE=1 CDSHA_COMPARE=1 \
+  CDSHA_COMPARE_REQUESTS=48 CDSHA_COMPARE_CONCURRENCY=1,16 \
+  CDSHA_COMPARE_S3_FILE=/private/pilot-s3.json \
+  CDSHA_COMPARE_OUTPUT=/tmp/s3-comparison.json \
+  test/integration/cdsha/run.sh -race -run TestPilotComparison
+```
+
+`CDSHA_COMPARE_BACKENDS` optionally selects comma-separated variants named
+`raft`, `object-single-direct`, `object-batch-direct`, `object-batch-preferred`.
+Every S3 cell creates a random DEK and unique subprefix. The comparison discards
+these synthetic test keys afterward; its encrypted test objects are disposable.
+The harness creates no buckets, changes no IAM policy and deletes no objects.
+Clean up its dedicated resources separately. CDS still loads credentials only
+through attested provisioning, never the host chain.
+
+The three CDS processes and client run locally; only the object service is AWS.
+This measures this machine's path to S3, not CDS running inside AWS or our TDX
+cloud. Compare object variants directly; local Raft versus remote S3 is not a
+matched cloud deployment comparison. Raft's cached read confirmation and the
+object pilot's fresh-per-request gate also have different freshness contracts.
 
 ## Remaining lifecycle limits
 
 The pilot checkpoints after 100 commands and retains all WAL, snapshots and
 orphans. It has no garbage collection or compaction; a lagging live process
-replays its missing history. Commands are capped at 4 MiB and encrypted objects
+replays its missing history within the replay bound; a replica beyond that bound
+must restart from a checkpoint. Commands are capped at 4 MiB and encrypted objects
 at 64 MiB. Monitor the reported snapshot index for checkpoint progress. A full
 restart needs the retained key, credentials and original measured launch bytes.
 
