@@ -1,0 +1,18 @@
+[Unit]
+Description=Stage the measured worker document, the NRI floor and the kubelet's inputs
+Requires=attestation-api.service
+After=network-online.target attestation-api.service
+Wants=network-online.target
+# A worker that cannot stage its document powers off.
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/worker-stage.sh
+# Bounds worker-stage.sh's disk wait and retries.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

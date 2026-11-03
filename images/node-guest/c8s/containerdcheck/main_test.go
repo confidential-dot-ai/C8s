@@ -17,7 +17,7 @@ const bakedConfigDir = "../mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
 // The image as committed must pass: RKE2's own base template and the baked
 // drop-ins.
 func TestBakedConfigWrapsEveryHandler(t *testing.T) {
-	cfg, err := effectiveConfig(bakedConfigDir, nil)
+	cfg, err := effectiveConfig(bakedConfigDir, "", nil)
 	if err != nil {
 		t.Fatalf("effectiveConfig(baked) = %v", err)
 	}
@@ -30,6 +30,67 @@ func TestBakedConfigWrapsEveryHandler(t *testing.T) {
 	}
 }
 
+// workerConfig is the worker image's baked main config.
+const workerConfig = "../../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml"
+
+// workerDropIns is a containerd directory holding the drop-ins the worker
+// image stages from the c8s profile (worker/shared).
+func workerDropIns(t *testing.T) string {
+	t.Helper()
+	shared, err := os.ReadFile("../../worker/shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	const prefix = "var/lib/rancher/rke2/agent/etc/containerd/"
+	for _, line := range strings.Split(string(shared), "\n") {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), prefix+dropInDirName+"/")
+		if !ok {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(bakedConfigDir, dropInDirName, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, dropInDirName), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, dropInDirName, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// The worker image as committed must pass: its baked config and the drop-ins
+// it stages; a handler it adds unwrapped fails.
+func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
+	dropIns := workerDropIns(t)
+	cfg, err := effectiveConfig(dropIns, workerConfig, nil)
+	if err != nil {
+		t.Fatalf("effectiveConfig(worker) = %v", err)
+	}
+	if handlers, err := checkHandlers(cfg, wrapper); err != nil || len(handlers) != 1 || handlers[0] != "runc" {
+		t.Fatalf("checkHandlers(worker) = %v, %v; want the runc handler wrapped", handlers, err)
+	}
+	data, err := os.ReadFile(workerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrapped := filepath.Join(t.TempDir(), "config.toml")
+	extra := "\n[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+	if err := os.WriteFile(unwrapped, append(data, extra...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = effectiveConfig(dropIns, unwrapped, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkHandlers(cfg, wrapper); err == nil || !strings.Contains(err.Error(), "crun") {
+		t.Fatalf("checkHandlers(worker + crun) = %v, want the unwrapped crun handler refused", err)
+	}
+}
+
 // RKE2 adds a handler for every runtime binary it finds on PATH. None of them
 // is wrapped, so the gate must fail rather than publish the image.
 func TestAutoDetectedRuntimeFails(t *testing.T) {
@@ -38,7 +99,7 @@ func TestAutoDetectedRuntimeFails(t *testing.T) {
 		"nvidia": "/usr/local/nvidia/toolkit/nvidia-container-runtime",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := effectiveConfig(bakedConfigDir, extraRuntimes{name: binary})
+			cfg, err := effectiveConfig(bakedConfigDir, "", extraRuntimes{name: binary})
 			if err != nil {
 				t.Fatalf("effectiveConfig = %v", err)
 			}
@@ -118,7 +179,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := buildConfigDir(t, tt.dropIns)
-			cfg, err := effectiveConfig(dir, nil)
+			cfg, err := effectiveConfig(dir, "", nil)
 			if err != nil {
 				t.Fatalf("effectiveConfig = %v", err)
 			}
@@ -140,7 +201,7 @@ func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 		"20-kata.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.kata-qemu-tdx]\n" +
 			`runtime_type = "io.containerd.kata-qemu-tdx.v2"` + "\n",
 	})
-	cfg, err := effectiveConfig(dir, nil)
+	cfg, err := effectiveConfig(dir, "", nil)
 	if err != nil {
 		t.Fatalf("effectiveConfig = %v", err)
 	}
@@ -159,7 +220,7 @@ func TestUserTemplateWithoutBaseFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, userTemplateName), []byte("version = 3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := effectiveConfig(dir, nil); err == nil || !strings.Contains(err.Error(), "no import matching") {
+	if _, err := effectiveConfig(dir, "", nil); err == nil || !strings.Contains(err.Error(), "no import matching") {
 		t.Fatalf("effectiveConfig(user template without base) = %v, want an error about the missing import", err)
 	}
 }
