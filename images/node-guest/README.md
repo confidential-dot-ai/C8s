@@ -583,9 +583,9 @@ repository (`.github/scripts/release-pin.sh`) and fails when it no longer
 names the pinned SHA. Pin-watch follows each repository's latest release, not
 its `main`, so an unreleased commit never enters a measured build, and it
 only moves a pin forward: a latest release older than the pinned one is kept
-out. An
-attestation-rs release that changes the attestation-api config or `/verify`
-contract still needs the c8s and confos ports in the same PR as its bump.
+out. An attestation-rs release that changes the attestation-api config or
+`/verify` contract still needs the c8s and confos ports in the same PR as its
+bump.
 
 Published builds resolve C8s container digests from the registry tag
 `C8S_REF` at build time. The rendered manifests, component seed and measured OCI

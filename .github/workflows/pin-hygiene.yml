@@ -1,7 +1,6 @@
 # Build pins must stay immutable refs (c8s#264): a branch name or short sha
 # here silently changes what a "pinned" build means. Each source pin also
-# names the release tag it is, and the two must agree: a SHA that no release
-# names is an unreleased commit riding into a measured build.
+# names its release tag; images/node-guest/README.md, "Component pins".
 name: pin hygiene
 on:
   pull_request:
@@ -42,21 +41,23 @@ jobs:
             done
             fail=1
           fi
-          # Each pinned SHA is the commit its release tag names, in the
-          # source repository, today. The builds check out the SHA; this is
-          # the only place the tag is looked up.
-          node=$(jq -c '.builds["node-image"]' .github/build-pins.json)
-          for pin in "confidential-dot-ai/confidential-os-builder confos_ref confos_tag" \
-                     "confidential-dot-ai/attestation-rs attestation_rs_ref attestation_rs_tag"; do
-            read -r repo ref_key tag_key <<<"$pin"
-            pinned=$(jq -r --arg k "$ref_key" '.[$k]' <<<"$node")
-            tag=$(jq -r --arg k "$tag_key" '.[$k]' <<<"$node")
+          # Each pinned SHA is the commit its release tag names in the source
+          # repository today, so an upstream retag fails every PR this runs
+          # on; that is deliberate.
+          eval "$(bash .github/scripts/pin-manifest.sh export \
+                    --manifest .github/build-pins.json --domain node-image --format github-env)"
+          for pin in "confidential-dot-ai/confidential-os-builder CONFOS" \
+                     "confidential-dot-ai/attestation-rs ATTESTATION_RS"; do
+            read -r repo var <<<"$pin"
+            ref_var=${var}_REF tag_var=${var}_TAG
+            pinned=${!ref_var} tag=${!tag_var}
             if ! resolved=$(bash .github/scripts/release-pin.sh "$repo" "$tag"); then
-              echo "::error file=.github/build-pins.json::$tag_key=$tag does not resolve in $repo"; fail=1
+              echo "::error file=.github/build-pins.json::$tag_var=$tag does not resolve in $repo"; fail=1
               continue
             fi
-            if [ "${resolved#* }" != "$pinned" ]; then
-              echo "::error file=.github/build-pins.json::$ref_key=$pinned is not what $repo tag $tag names (${resolved#* })"; fail=1
+            resolved=${resolved#* }
+            if [ "$resolved" != "$pinned" ]; then
+              echo "::error file=.github/build-pins.json::$ref_var=$pinned is not what $repo tag $tag names ($resolved)"; fail=1
             fi
           done
           # mkosi.sync must not carry a C8S_REF default (see the comment there).

@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Validate, export, and atomically update C8s's measured-build pin manifest.
-#
-# Each source pin is a commit SHA, which is what the builds check out, beside
-# the release tag that names it. The SHA stays the build input because a tag
-# is whatever its owner repoints it at; the tag says which release the SHA is
-# and lets pin hygiene check that the two still agree.
+# Each source pin is the commit SHA the builds check out beside the release
+# tag that names it; see images/node-guest/README.md, "Component pins".
 
 set -euo pipefail
 
@@ -47,7 +44,7 @@ is_version() {
 }
 
 is_release_tag() {
-  [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+  [[ "$1" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
 }
 
 require_sha() {
@@ -90,7 +87,7 @@ validate_manifest() {
       and test("^v(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))*$");
     def release_tag:
       type == "string"
-      and test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$");
+      and test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$");
 
     (. | exact_keys(["schema_version", "builds"]))
     and (.schema_version == 2)
@@ -135,10 +132,11 @@ validate_manifest() {
   fi
 }
 
-# The exported values are the SHAs: the tags are for readers and hygiene.
+# The builds consume the *_REF SHAs; the tags ride along for pin hygiene and
+# pin-watch, which read the manifest through here and nowhere else.
 export_pins() {
   local manifest=$1 domain=$2 format=$3 override=$4
-  local confos attest mkosi mkosi_version
+  local confos confos_tag attest attest_tag mkosi mkosi_version
 
   case "$domain" in
     node-image) ;;
@@ -153,8 +151,12 @@ export_pins() {
   validate_manifest "$manifest"
   confos=$(jq -er --arg domain "$domain" \
     '.builds[$domain].confos_ref' "$manifest")
+  confos_tag=$(jq -er --arg domain "$domain" \
+    '.builds[$domain].confos_tag' "$manifest")
   attest=$(jq -r --arg domain "$domain" \
     '.builds[$domain].attestation_rs_ref // ""' "$manifest")
+  attest_tag=$(jq -r --arg domain "$domain" \
+    '.builds[$domain].attestation_rs_tag // ""' "$manifest")
   mkosi=$(jq -er --arg domain "$domain" \
     '.builds[$domain].mkosi_ref' "$manifest")
   mkosi_version=$(jq -er --arg domain "$domain" \
@@ -162,12 +164,12 @@ export_pins() {
   [[ -z "$override" ]] || confos=$override
 
   if [[ "$format" == github-env ]]; then
-    printf 'CONFOS_REF=%s\n' "$confos"
-    [[ -z "$attest" ]] || printf 'ATTESTATION_RS_REF=%s\n' "$attest"
+    printf 'CONFOS_REF=%s\nCONFOS_TAG=%s\n' "$confos" "$confos_tag"
+    [[ -z "$attest" ]] || printf 'ATTESTATION_RS_REF=%s\nATTESTATION_RS_TAG=%s\n' "$attest" "$attest_tag"
     printf 'MKOSI_REF=%s\nMKOSI_VERSION=%s\n' "$mkosi" "$mkosi_version"
   else
-    printf 'confos=%s\n' "$confos"
-    [[ -z "$attest" ]] || printf 'attest=%s\n' "$attest"
+    printf 'confos=%s\nconfos_tag=%s\n' "$confos" "$confos_tag"
+    [[ -z "$attest" ]] || printf 'attest=%s\nattest_tag=%s\n' "$attest" "$attest_tag"
     printf 'mkosi=%s\nmkosi_version=%s\n' "$mkosi" "$mkosi_version"
   fi
 }

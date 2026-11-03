@@ -67,8 +67,8 @@ grep -Fxq 'MKOSI_VERSION=v27' <<<"$exported" ||
   fail "node environment export is incomplete"
 grep -Eq '^CONFOS_REF=[0-9a-f]{40}$' <<<"$exported" ||
   fail "node confos export is invalid"
-grep -q 'v1.0.0' <<<"$exported" &&
-  fail "the export must carry the SHA the builds check out, not the tag"
+grep -Fxq 'CONFOS_TAG=v1.0.0' <<<"$exported" ||
+  fail "the export must carry the tag beside the SHA, for hygiene and pin-watch"
 pass
 
 exported=$(bash "$script" export --manifest "$source_manifest" \
@@ -95,14 +95,16 @@ jq -c . "$no_drift_fixture" >"$no_drift_fixture.compact"
 mv "$no_drift_fixture.compact" "$no_drift_fixture"
 cp "$no_drift_fixture" "$no_drift_fixture.before"
 node=$(jq -r '.builds["node-image"]' "$no_drift_fixture")
-result=$(bash "$script" update --manifest "$no_drift_fixture" \
-  --domain node-image \
-  --confos "$(jq -r .confos_ref <<<"$node")" \
-  --confos-tag "$(jq -r .confos_tag <<<"$node")" \
-  --attest "$(jq -r .attestation_rs_ref <<<"$node")" \
-  --attest-tag "$(jq -r .attestation_rs_tag <<<"$node")" \
-  --mkosi-sha "$(jq -r .mkosi_ref <<<"$node")" \
+# The fixture's own pins as update flags; a flag repeated later wins, so a
+# case appends only the flag it changes.
+current_args=(--confos "$(jq -r .confos_ref <<<"$node")"
+  --confos-tag "$(jq -r .confos_tag <<<"$node")"
+  --attest "$(jq -r .attestation_rs_ref <<<"$node")"
+  --attest-tag "$(jq -r .attestation_rs_tag <<<"$node")"
+  --mkosi-sha "$(jq -r .mkosi_ref <<<"$node")"
   --mkosi-ver "$(jq -r .mkosi_version <<<"$node")")
+result=$(bash "$script" update --manifest "$no_drift_fixture" \
+  --domain node-image "${current_args[@]}")
 [[ "$result" == no-drift ]] || fail "no-drift result was not reported"
 cmp -s "$no_drift_fixture" "$no_drift_fixture.before" ||
   fail "no-drift update rewrote the manifest"
@@ -111,21 +113,14 @@ pass
 # The same SHA under a new tag is drift: the release name is part of the pin.
 retag_fixture=$(new_fixture retag)
 result=$(bash "$script" update --manifest "$retag_fixture" \
-  --domain node-image \
-  --confos "$(jq -r .confos_ref <<<"$node")" --confos-tag v1.0.1 \
-  --attest "$(jq -r .attestation_rs_ref <<<"$node")" \
-  --attest-tag "$(jq -r .attestation_rs_tag <<<"$node")" \
-  --mkosi-sha "$(jq -r .mkosi_ref <<<"$node")" \
-  --mkosi-ver "$(jq -r .mkosi_version <<<"$node")")
+  --domain node-image "${current_args[@]}" --confos-tag v1.0.1)
 [[ "$result" == "updated node-image" ]] || fail "a retag was not treated as drift"
 pass
 
 invalid_target=$(new_fixture invalid-target)
 cp "$invalid_target" "$invalid_target.before"
 expect_failure bash "$script" update --manifest "$invalid_target" \
-  --domain node-image --confos "$new_confos" --confos-tag v9.0.0 \
-  --attest "$new_attest" --attest-tag v9.1.0 \
-  --mkosi-sha not-a-sha --mkosi-ver v28
+  --domain node-image "${update_args[@]}" --mkosi-sha not-a-sha
 cmp -s "$invalid_target" "$invalid_target.before" ||
   fail "invalid target changed the manifest"
 pass
@@ -133,9 +128,7 @@ pass
 # A branch, a bare version or a short tag is not a release tag.
 for bad_tag in main v1 v1.0 1.0.0 v1.0.0-rc1 'v1.0.0 '; do
   expect_failure bash "$script" update --manifest "$invalid_target" \
-    --domain node-image --confos "$new_confos" --confos-tag "$bad_tag" \
-    --attest "$new_attest" --attest-tag v9.1.0 \
-    --mkosi-sha "$new_mkosi" --mkosi-ver v28
+    --domain node-image "${update_args[@]}" --confos-tag "$bad_tag"
 done
 cmp -s "$invalid_target" "$invalid_target.before" ||
   fail "invalid tag changed the manifest"

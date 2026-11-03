@@ -65,6 +65,13 @@ jq '.builds["node-image"].confos_ref = "1111111111111111111111111111111111111111
 set_paths .github/build-pins.json
 expect_result true
 
+# The tag beside a SHA is not a build input: correcting it rolls nothing.
+reset_case
+jq '.builds["node-image"].confos_tag = "v9.9.9"' \
+  "$base_manifest" >"$current_manifest"
+set_paths .github/build-pins.json
+expect_result false
+
 reset_case
 printf 'not-json\n' >"$current_manifest"
 if bash "$CLASSIFIER" "$current_manifest" "$base_manifest" "$changed_paths" \

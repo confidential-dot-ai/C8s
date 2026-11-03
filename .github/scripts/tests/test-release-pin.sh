@@ -31,13 +31,14 @@ cat >"$work/bin/gh" <<EOF
 #!/usr/bin/env bash
 # Answers what the real gh --jq would print for each endpoint the script uses.
 [ "\$1" = api ] || exit 2
-case "\$2" in
+shift
+while [ "\$1" = -H ]; do shift 2; done
+case "\$1" in
   repos/acme/widget/releases/latest) echo v1.2.0 ;;
   repos/acme/widget/git/ref/tags/v1.2.0) echo "tag $tag_object" ;;
   repos/acme/widget/git/tags/$tag_object) echo "commit $commit" ;;
   repos/acme/widget/git/ref/tags/v1.1.0) echo "commit $old_commit" ;;
   repos/acme/widget/git/ref/tags/v1.1.1) echo "blob $blob" ;;
-  repos/acme/empty/releases/latest) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac
 EOF

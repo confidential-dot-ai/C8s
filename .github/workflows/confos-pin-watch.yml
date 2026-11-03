@@ -1,15 +1,11 @@
 # Watches the confos and attestation-rs source pins the measured builds ride
 # and opens a bump PR when either repository publishes a new release — never
 # merges: each bump rolls a measurement, so a human owns the merge. Releases,
-# not main: attestation-rs main once broke the attestation-api config and
-# /verify contracts c8s and confos consume, and a release is the upstream's
-# statement that a commit is meant to be consumed. A release that changes
-# those contracts still needs the c8s and confos ports in the bump PR. The
-# mkosi ref is not watched independently: it is scraped from the target confos
-# commit's own base.yml, which keeps MinimumVersion= and the installed mkosi
-# in lockstep by construction. The canonical data lives in
-# .github/build-pins.json; .github/scripts/pin-manifest.sh validates the full
-# schema before updating it.
+# not main: images/node-guest/README.md, "Component pins". The mkosi ref is
+# not watched independently: it is scraped from the target confos commit's own
+# base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep by
+# construction. The canonical data lives in .github/build-pins.json;
+# .github/scripts/pin-manifest.sh validates the full schema before updating it.
 #
 # The one measurement domain today is node-image (node rootfs / RTMR + SNP
 # digests); each roll is its own PR.
@@ -56,15 +52,14 @@ jobs:
           DOMAIN: node-image
         run: |
           set -euo pipefail
-          node=$(jq -c --arg d "$DOMAIN" '.builds[$d]' .github/build-pins.json)
+          eval "$(bash .github/scripts/pin-manifest.sh export \
+                    --manifest .github/build-pins.json --domain "$DOMAIN" --format github-env)"
+          confos=$CONFOS_REF confos_tag=$CONFOS_TAG
+          attest=$ATTESTATION_RS_REF attest_tag=$ATTESTATION_RS_TAG
           # Only a release newer than the pinned one moves a pin; the latest
           # release being an older line, or the pinned one, keeps it.
-          confos_tag=$(jq -er .confos_tag <<<"$node")
-          confos=$(jq -er .confos_ref <<<"$node")
           newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder --floor "$confos_tag")
           [ -z "$newer" ] || read -r confos_tag confos <<<"$newer"
-          attest_tag=$(jq -er .attestation_rs_tag <<<"$node")
-          attest=$(jq -er .attestation_rs_ref <<<"$node")
           newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs --floor "$attest_tag")
           [ -z "$newer" ] || read -r attest_tag attest <<<"$newer"
           mapfile -t mkosi_lines < <(
