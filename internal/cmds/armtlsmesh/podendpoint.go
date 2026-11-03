@@ -431,13 +431,11 @@ func (e *podEndpoint) requireDeliverable(dst netip.AddrPort) error {
 	return e.rejectMeshPort(dst)
 }
 
-// requireMeshDestination holds that a captured connection leaves the pod, and
-// enters its peer on an application port rather than a mesh port.
+// requireMeshDestination holds that a captured connection leaves the pod.
+// A provider may translate any remote port to the peer's application port;
+// requireDeliverable still excludes local endpoint control ports.
 func (e *podEndpoint) requireMeshDestination(dst netip.AddrPort) error {
-	if err := e.rejectOwnAddress(dst.Addr()); err != nil {
-		return err
-	}
-	return e.rejectMeshPort(dst)
+	return e.rejectOwnAddress(dst.Addr())
 }
 
 func (e *podEndpoint) rejectOwnAddress(addr netip.Addr) error {
