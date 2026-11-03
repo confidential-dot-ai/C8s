@@ -36,11 +36,22 @@ type objectFixture struct {
 	delayNS     atomic.Int64
 	shards      [32]objectShard
 	version     atomic.Uint64
+	metadata    *metadataFixture
+	gets        atomic.Uint64
+	puts        atomic.Uint64
 }
 
 type objectShard struct {
 	mu      sync.Mutex
 	objects map[string]objectwal.Object
+}
+
+func (f *objectFixture) setAuthorityOutage(outage bool) {
+	if f.metadata != nil {
+		f.metadata.outage.Store(outage)
+	} else {
+		f.outage.Store(outage)
+	}
 }
 
 func (f *objectFixture) shard(key string) *objectShard {
@@ -87,6 +98,7 @@ func (f *objectFixture) serve(w http.ResponseWriter, r *http.Request) {
 	shard := f.shard(r.URL.Path)
 	switch r.Method {
 	case http.MethodGet:
+		f.gets.Add(1)
 		shard.mu.Lock()
 		old, exists := shard.objects[r.URL.Path]
 		shard.mu.Unlock()
@@ -98,6 +110,7 @@ func (f *objectFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", old.ETag)
 		_, _ = w.Write(old.Data)
 	case http.MethodPut:
+		f.puts.Add(1)
 		body, err := io.ReadAll(io.LimitReader(r.Body, objectwal.MaxObjectBytes+1))
 		if err != nil || len(body) > objectwal.MaxObjectBytes {
 			http.Error(w, "bad body", http.StatusBadRequest)
@@ -138,11 +151,14 @@ func (c *cluster) provisionObjects(r *replica) {
 // Both backends run the same binary, process count, signed policy workload and
 // client. Timings are diagnostic; no local timing is an AWS latency claim.
 func TestStorageBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata"} {
 		t.Run(backend, func(t *testing.T) {
 			var objects *objectFixture
-			if backend == "object-wal" {
+			if backend != "raft" {
 				objects = newObjectFixture(t)
+				if backend == "transactional-metadata" {
+					attachMetadata(t, objects)
+				}
 			}
 			c := newClusterWithObjects(t, threeReplicas, objects)
 			ca := c.servedCA(c.replicas[0])

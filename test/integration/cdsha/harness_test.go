@@ -113,9 +113,10 @@ const seededWorkload = "attestation-api"
 // binaries are the programs the harness runs: the CDS, built with the tag that
 // serves a replica set, and the attestation-api a replica attests through.
 type binaries struct {
-	cds  string
-	api  string
-	logs string
+	cds      string
+	api      string
+	metadata string
+	logs     string
 }
 
 var built binaries
@@ -137,9 +138,10 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	built = binaries{
-		cds:  filepath.Join(dir, "c8s"),
-		api:  filepath.Join(dir, "mock-attestation"),
-		logs: filepath.Join(dir, "logs"),
+		cds:      filepath.Join(dir, "c8s"),
+		api:      filepath.Join(dir, "mock-attestation"),
+		metadata: filepath.Join(dir, "cds-metadata-pilot"),
+		logs:     filepath.Join(dir, "logs"),
 	}
 	cdsBuild := []string{"build", "-o", built.cds}
 	if !releaseProcesses {
@@ -149,6 +151,7 @@ func TestMain(m *testing.M) {
 	for _, build := range [][]string{
 		cdsBuild,
 		{"build", "-o", built.api, "github.com/confidential-dot-ai/c8s/test/mock-attestation"},
+		{"build", "-o", built.metadata, "github.com/confidential-dot-ai/c8s/cmd/cds-metadata-pilot"},
 	} {
 		cmd := exec.Command("go", build...)
 		cmd.Stdout = os.Stdout
@@ -425,7 +428,7 @@ func (c *cluster) restart(r *replica) {
 	if c.objectWAL != nil && c.objectWAL.certificate != "" {
 		env = []string{"SSL_CERT_FILE=" + c.objectWAL.certificate}
 	}
-	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, []string{
+	args := []string{
 		"cds",
 		"--config", c.configPath,
 		"--attestation-api-url", r.apiURL,
@@ -433,8 +436,15 @@ func (c *cluster) restart(r *replica) {
 		"--host", r.host,
 		"--port", strconv.Itoa(clientPort),
 		"--jwt-clock-skew", strconv.Itoa(clockSkewSeconds),
+		"--secrets-max-paths", "20000",
 		"--log-level", "debug",
-	}, env)
+	}
+	if os.Getenv("CDSHA_TRANSACTIONAL_COMPARE") == "1" {
+		// Isolate backend admission/commit costs from the default per-IP
+		// front-door limiter. All comparison arms use the same explicit budget.
+		args = append(args, "--rate-limit", "10000", "--rate-burst", "10000")
+	}
+	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, args, env)
 }
 
 // kill ends a replica's CDS process, as a lost VM does. The attestation-api

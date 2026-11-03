@@ -43,12 +43,15 @@ var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 // issuance and workload secret requests are real. Hardware evidence, sandbox
 // discovery and object storage are fixtures; no container runtime is required.
 func TestWorkloadBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
-			if backend == "object-wal" {
+			if backend != "raft" {
 				objects = newObjectFixture(t)
+				if backend == "transactional-metadata" {
+					attachMetadata(t, objects)
+				}
 			}
 			nodes := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"` + seededNodeImage.mrtd + `"}]}`
 			c := newClusterWithNodes(t, threeReplicas, objects, nodes, []string{host + "/32"})
@@ -154,7 +157,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 				// gate withholds both issuance and release despite cached state.
 				attest := w.attestRequest(c.replicas[0], c.replicas[1])
 				read := w.secretRequest(c.replicas[2], http.MethodGet, "/pilot/operator")
-				objects.outage.Store(true)
+				objects.setAuthorityOutage(true)
 				for _, check := range []struct {
 					client *http.Client
 					req    *http.Request
@@ -163,7 +166,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 						t.Fatalf("%s during storage outage: HTTP %d", check.req.URL.Path, code)
 					}
 				}
-				objects.outage.Store(false)
+				objects.setAuthorityOutage(false)
 				c.waitServing(30 * time.Second)
 				w.assertEveryReplicaReads("/pilot/operator", value)
 				w.issue(c.replicas[0], c.replicas[2])

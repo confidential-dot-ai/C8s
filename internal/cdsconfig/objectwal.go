@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/metadatapilot"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 )
 
@@ -18,6 +19,7 @@ type ObjectWALPilot struct {
 	Region           string `yaml:"region"`
 	Prefix           string `yaml:"prefix"`
 	Endpoint         string `yaml:"endpoint,omitempty"`
+	MetadataEndpoint string `yaml:"metadataEndpoint,omitempty"`
 	PathStyle        bool   `yaml:"pathStyle,omitempty"`
 	KeySHA256        string `yaml:"keySHA256"`
 	DirectWriters    bool   `yaml:"directWriters,omitempty"`
@@ -35,6 +37,11 @@ func (p ObjectWALPilot) WALOptions() objectwal.Options {
 var objectWALName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
 func (p ObjectWALPilot) Check() error {
+	if p.MetadataEndpoint != "" {
+		if err := metadatapilot.CheckEndpoint(p.MetadataEndpoint); err != nil {
+			return err
+		}
+	}
 	if p.BatchDelayMS < 0 || p.BatchDelayMS > 1000 {
 		return errors.New("ha.objectWALPilot.batchDelayMS must be between 0 and 1000")
 	}

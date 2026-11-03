@@ -21,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/metadatapilot"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -30,8 +31,9 @@ import (
 const operationTimeout = 5 * time.Second
 
 type Provision struct {
-	Key         []byte                `json:"key"`
-	Credentials objectwal.Credentials `json:"credentials"`
+	Key           []byte                `json:"key"`
+	Credentials   objectwal.Credentials `json:"credentials"`
+	MetadataToken string                `json:"metadata_token,omitempty"`
 }
 
 type Config struct {
@@ -61,6 +63,7 @@ type Node struct {
 	cancel        context.CancelFunc
 	closed        chan struct{}
 	s3            *objectwal.S3
+	metadata      *metadatapilot.Client
 	allowlist     *allowlist.Handle
 	secrets       *secrets.Handle
 	bindings      *sandboxledger.Handle
@@ -183,13 +186,28 @@ func (n *Node) provisionLoop() {
 func (n *Node) Close() {
 	n.cancel()
 	<-n.closed
+	if n.metadata != nil {
+		n.metadata.Close()
+	}
 	if client := n.peerClient.Load(); client != nil {
 		client.CloseIdleConnections()
 	}
 }
 
 func (n *Node) provisionOwned(p Provision) error {
+	if n.cfg.Storage.MetadataEndpoint != "" {
+		if !metadatapilot.ValidToken(p.MetadataToken) {
+			return errors.New("metadata pilot: separate metadata token required")
+		}
+	} else if p.MetadataToken != "" {
+		return errors.New("metadata token supplied without a measured endpoint")
+	}
 	if n.wal.Load() != nil {
+		if n.metadata != nil {
+			if err := n.metadata.SetToken(p.MetadataToken); err != nil {
+				return err
+			}
+		}
 		if n.s3 != nil {
 			return n.s3.SetCredentials(p.Credentials)
 		}
@@ -207,14 +225,26 @@ func (n *Node) provisionOwned(p Provision) error {
 	if err != nil {
 		return err
 	}
+	var metadata *metadatapilot.Client
+	if endpoint := n.cfg.Storage.MetadataEndpoint; endpoint != "" {
+		metadata, err = metadatapilot.NewClient(endpoint, n.cfg.Storage.Prefix, p.MetadataToken, nil)
+		if err != nil {
+			return err
+		}
+		store = metadatapilot.SplitStore{Objects: store, Metadata: metadata, HeadKey: n.cfg.Storage.Prefix + "/head"}
+	}
 	options := n.cfg.WALOptions
 	if n.cfg.Address != "" && !n.cfg.Storage.DirectWriters {
 		options.Writer = &objectwal.WriterConfig{ID: n.id, Address: n.cfg.Address, Forward: n.forward}
 	}
 	wal, err := objectwal.NewWithOptions(n.ctx, store, machine{n.fsm}, p.Key, n.cfg.Storage.Prefix, n.cfg.Launch.ClusterID+"/"+n.cfg.Launch.ConfigSHA256, options)
 	if err != nil {
+		if metadata != nil {
+			metadata.Close()
+		}
 		return err
 	}
+	n.metadata = metadata
 	n.forwardKey.Store(deriveForwardKey(p.Key, n.cfg.Launch))
 	n.wal.Store(wal)
 	return nil
@@ -302,6 +332,9 @@ func (n *Node) Status() cdsha.Status {
 	s := cdsha.Status{ClusterID: core.ClusterID, ID: n.id, Joined: core.Joined(), Serving: n.Serving(),
 		Version: core.Version, NodeImagesVersion: core.NodeImagesVersion, AppliedIndex: n.fsm.AppliedIndex(),
 		State: "ObjectWALPilot", Stuck: n.fsm.Stuck()}
+	if n.cfg.Storage.MetadataEndpoint != "" {
+		s.State = "TransactionalMetadataPilot"
+	}
 	if core.Joined() {
 		s.CAFingerprint = certutil.CertFingerprint(core.MeshCACert)
 	} else {

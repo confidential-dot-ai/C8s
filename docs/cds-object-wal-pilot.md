@@ -12,6 +12,9 @@ Run two isolated clusters and compare them before choosing a production design.
 
 See [the recorded actor/batching comparison](cds-object-wal-results.md) for the
 local matrix and the unsuccessful live-S3 comparison attempt, including limits.
+The separate [transactional metadata experiment](cds-transactional-metadata-pilot.md)
+routes only the encrypted head to a SQL-backed service when `metadataEndpoint`
+is explicitly selected; the protocol below describes the original object-head arm.
 
 ## What commits a change
 
