@@ -208,7 +208,7 @@ func fetchDocument(ctx context.Context, client *http.Client, base *url.URL) ([]b
 // verifyDocument parses a discovery document, verifies its attestation
 // evidence, and returns the attested serving certificate. REPORTDATA =
 // SHA-384(cert pubkey ‖ challenge), matching get-cert's issuance binding
-// (reportDataForCSR → armtls.ReportDataForKey), passed as the unpadded 48-byte
+// (attestclient nodeReportData → armtls.ReportDataForKey), passed as the unpadded 48-byte
 // anchor.
 func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyFunc, measurements [][]byte) (*x509.Certificate, error) {
 	var d types.DiscoveryDocument

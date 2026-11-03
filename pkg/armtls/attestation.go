@@ -58,6 +58,7 @@ const (
 //	1.3.6.1.4.1.66378.1.5 - matched workload extension (matchedworkload.go)
 //	1.3.6.1.4.1.66378.1.6 - CDS HA peer evidence (internal/cdsha)
 //	1.3.6.1.4.1.66378.1.7 - CDS HA peer member id (internal/cdsha)
+//	1.3.6.1.4.1.66378.1.8 - assigned workload ID extension (assignedworkload.go)
 //
 // .1.3 was the armTLS config-claims extension; it is retired, not reusable.
 var (
@@ -83,10 +84,11 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 	return &withList
 }
 
-// The measured-policy journal lists the allowlist policies a TDX node extends
-// into RTMR[3]. Its writer is the policy measurer in nri-image-policy, which
-// keeps it in the plugin's runtime directory (workload_claims.socket_dir, the
-// chart's nriImagePolicy.hostPaths.runtimeDir).
+// The measured-policy journal lists what a TDX guest extends into RTMR[3]: the
+// allowlist policies of a node, the admitted image digests of a pod CVM. Its
+// one writer per boot is nri-image-policy, which keeps it in the plugin's
+// runtime directory (workload_claims.socket_dir, the chart's
+// nriImagePolicy.hostPaths.runtimeDir).
 // NodeJournal is its path on the node and in pods that mount that directory at
 // its host path; workloadclaims.MeasuredPoliciesJournal is its path in the
 // sidecars the plugin mounts the directory into.

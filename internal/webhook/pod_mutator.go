@@ -43,7 +43,7 @@ import (
 const (
 	// AnnotationWorkload names the workload a pod belongs to and requests a
 	// SAN for its leaf. Injection does not depend on it.
-	AnnotationWorkload = "confidential.ai/cw"
+	AnnotationWorkload = workloadclaims.AnnotationWorkloadID
 
 	// AnnotationInjected is stamped on pods after a successful mutation
 	// so re-invocations of the webhook are no-ops. Shared with the node's

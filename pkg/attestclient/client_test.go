@@ -59,9 +59,13 @@ func TestObtainCertificateWithEvidenceReturnsAttestationMaterial(t *testing.T) {
 
 	csrPEM := testCSRPEM(t)
 	challengeBytes := []byte("test-challenge")
-	expectedReportData, err := reportDataForCSR(csrPEM, challengeBytes)
+	csr, err := parseCSR(csrPEM)
 	if err != nil {
-		t.Fatalf("reportDataForCSR: %v", err)
+		t.Fatalf("parseCSR: %v", err)
+	}
+	expectedReportData, err := nodeReportData(csr.PublicKey, challengeBytes)
+	if err != nil {
+		t.Fatalf("nodeReportData: %v", err)
 	}
 
 	var attestationApiSawReportData []byte

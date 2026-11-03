@@ -119,6 +119,12 @@ const CDSAddressPath = "/run/c8s/cds-address"
 // it.
 const AnnotationInjected = "confidential.ai/c8s-injected"
 
+// AnnotationWorkloadID names the workload a pod belongs to: node mode selects a
+// SAN from it (get-cert), a pod CVM carries it as the tenant identity of its
+// credential claims (PodClaims.AssignedWorkloadID). It is control-plane input
+// that a leaf states only where something the relying party trusts signed it.
+const AnnotationWorkloadID = "confidential.ai/cw"
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
@@ -156,6 +162,11 @@ const MeshProbeTimeout = 5 * time.Second
 // not a mount, both of which a node's measured policy pins alike for every
 // member pod's endpoint.
 const MeshProbesEnv = "C8S_MESH_PROBES"
+
+// MeshConnectSocketEnv names, to a guest Pod's endpoint, the unix socket its
+// guest connects peers through (internal/podmesh/connectbroker). Unset, as in a
+// member pod, the endpoint dials its peers itself.
+const MeshConnectSocketEnv = "C8S_MESH_CONNECT_SOCKET"
 
 // JoinMeshProbePaths renders the MeshProbesEnv value carrying paths.
 func JoinMeshProbePaths(paths []string) string {
