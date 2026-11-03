@@ -24,6 +24,9 @@ jobs:
       - name: Test the confos mkosi pin reader
         run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
 
+      - name: Test the ghcr digest resolver
+        run: bash .github/scripts/tests/test-ghcr-digest.sh
+
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
 
@@ -75,11 +78,13 @@ jobs:
             .github/scripts/pin-manifest.sh \
             .github/scripts/release-pin.sh \
             .github/scripts/confos-mkosi-pin.sh \
+            .github/scripts/ghcr-digest.sh \
             .github/scripts/repro-gate-changes \
             .github/scripts/build-gate-images.sh \
             .github/scripts/tests/test-pin-manifest.sh \
             .github/scripts/tests/test-release-pin.sh \
             .github/scripts/tests/test-confos-mkosi-pin.sh \
+            .github/scripts/tests/test-ghcr-digest.sh \
             .github/scripts/tests/test-repro-gate-changes.sh \
             .github/scripts/publish-ref-images.sh \
             .github/scripts/tests/test-publish-ref-images.sh
