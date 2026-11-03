@@ -1,0 +1,55 @@
+name: CDS metadata failover pilot
+
+on:
+  pull_request:
+    branches: [pilot/cds-storage-lifecycle]
+    paths:
+      - '.github/workflows/cds-metadata-failover.yml'
+      - 'cmd/cds-metadata-pilot/**'
+      - 'internal/metadatapilot/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cds-metadata-failover-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  failover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go-c8s
+      - name: Check out the isolated etcd fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: etcd-io/etcd
+          ref: d2809cf0019f84c221e026bb2ac6486d011b1d91 # v3.6.6
+          path: .ci-etcd
+          persist-credentials: false
+      - name: Build the fixture server
+        env:
+          GOWORK: 'off'
+        run: go build -C .ci-etcd/server -o "$RUNNER_TEMP/cds-pilot-etcd" .
+      - name: Verify dependencies and formatting
+        run: |
+          go mod tidy
+          gofmt -w internal/metadatapilot cmd/cds-metadata-pilot
+          git diff --exit-code -- go.mod go.sum internal/metadatapilot cmd/cds-metadata-pilot
+      - name: Check and test metadata actors
+        run: |
+          go vet ./internal/metadatapilot ./cmd/cds-metadata-pilot
+          go test -race -count=1 -timeout 5m ./internal/metadatapilot ./cmd/cds-metadata-pilot
+      - name: Exercise a real three-member authority
+        env:
+          CDS_ETCD_BINARY: ${{ runner.temp }}/cds-pilot-etcd
+        run: |
+          go test -tags=integration -list '^TestEtcd' ./internal/metadatapilot | grep -q '^TestEtcd'
+          go test -race -tags=integration -count=1 -timeout 5m -v -run '^TestEtcd' ./internal/metadatapilot
