@@ -3,12 +3,8 @@
 package podprovider
 
 import (
-	"bytes"
-	"compress/zlib"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -35,25 +31,11 @@ func TestCloudAcceptanceVerificationWorkloadUsesStandaloneAppAndExactPolicy(t *t
 		t.Fatal("timeout workload must schedule one standalone application through the normal provider")
 	}
 	app := pod.Spec.Containers[0]
-	if app.Name != "app" || app.Image != podfixture.PythonImage || !slices.Equal(app.Command, []string{"/usr/local/bin/python3"}) || len(app.Args) != 3 || app.Args[0] != "-u" || app.Args[1] != "-c" {
-		t.Fatal("timeout workload retained a connected checker/configuration or changed its pinned interpreter")
+	if app.Name != "app" || app.Image != podfixture.Image || !slices.Equal(app.Command, podfixture.Command()) || !slices.Equal(app.Args, podfixture.HelloArgs()) {
+		t.Fatal("timeout workload retained a connected checker/configuration or did not select the independent HTTP application")
 	}
 	if app.ReadinessProbe == nil || app.ReadinessProbe.HTTPGet == nil || app.ReadinessProbe.HTTPGet.Path != "/ready" || app.ReadinessProbe.HTTPGet.Port.IntVal != 8080 || app.LivenessProbe == nil || app.LivenessProbe.HTTPGet == nil || app.LivenessProbe.HTTPGet.Path != "/live" || app.LivenessProbe.HTTPGet.Port.IntVal != 8080 || len(app.Ports) != 1 || app.Ports[0].ContainerPort != 8080 {
 		t.Fatal("standalone application lost its HTTP readiness/liveness probes or declared ingress")
-	}
-	encoded := strings.TrimSuffix(strings.TrimPrefix(app.Args[2], "import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('"), "')),'<string>','exec'))")
-	packed, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reader, err := zlib.NewReader(bytes.NewReader(packed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	program, err := io.ReadAll(reader)
-	if err != nil || string(program) != cloudVerificationScript {
-		t.Fatal("timeout workload did not select the independent HTTP application")
 	}
 	raw, err := json.Marshal(policy)
 	if err != nil {

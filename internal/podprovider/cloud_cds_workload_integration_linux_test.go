@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,83 +27,7 @@ import (
 // unreachable for two minutes before its one successful exit. Only the RAM
 // marker survives that restart. Renewal mode instead withdraws readiness after
 // 65 minutes without restarting. Neither mode adds control or guest privilege.
-const cloudCDSScript = `import errno
-import os
-import socket
-import sys
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-# EmptyDir's writable directory is checked before readiness; permission loss
-# cannot masquerade as the successful outage-triggered exit.
-try:
-    fd = os.open("/restart/.writable", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    os.close(fd)
-    os.unlink("/restart/.writable")
-except OSError:
-    sys.exit(42)
-
-seen = threading.Event()
-renewal = len(sys.argv) == 3
-hold = int(sys.argv[2]) if renewal else 120
-if renewal and hold != 3900:
-    sys.exit(47)
-
-def observe_cds():
-    deadline = time.monotonic() + (hold + 900 if renewal else 600)
-    reachable_deadline = time.monotonic() + 60
-    reachable = False
-    failed_since = None
-    completed = False
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((sys.argv[1], 8443), timeout=2):
-                pass
-        except OSError as error:
-            if not isinstance(error, TimeoutError) and error.errno not in (errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT):
-                os._exit(43)
-            if reachable:
-                if failed_since is None:
-                    failed_since = time.monotonic()
-                if time.monotonic() - failed_since >= hold:
-                    if renewal:
-                        completed = True
-                        seen.clear()
-                        time.sleep(1)
-                        continue
-                    try:
-                        fd = os.open("/restart/once", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                        os.close(fd)
-                    except OSError:
-                        os._exit(44)
-                    os._exit(0)
-            elif time.monotonic() >= reachable_deadline:
-                os._exit(45)
-        else:
-            reachable = True
-            seen.set()
-            if renewal and completed:
-                return
-            failed_since = None
-        time.sleep(1)
-    os._exit(46)
-
-if os.path.exists("/restart/once"):
-    seen.set()
-else:
-    threading.Thread(target=observe_cds, daemon=True).start()
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200 if self.path == "/live" or (self.path == "/ready" and seen.is_set()) else 503)
-        self.end_headers()
-
-    def log_message(self, *_args):
-        pass
-
-HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
-`
+// The probe is the cds-probe mode of the connected workload image.
 
 // Finalize the exact workload only after the owned CDS endpoint is known.
 func (r *cloudRun) cdsWorkload(cds endpoint) (*corev1.Pod, map[string]any, error) {
@@ -117,10 +40,11 @@ func (r *cloudRun) cdsWorkload(cds endpoint) (*corev1.Pod, map[string]any, error
 		return nil, nil, err
 	}
 	app := &pod.Spec.Containers[0]
-	app.Args = append(app.Args, cds.Host)
+	hold := time.Duration(0)
 	if r.cfg.scenario() == "cds-renewal-outage" {
-		app.Args = append(app.Args, strconv.Itoa(int(cloudCDSRenewalHold.Seconds())))
+		hold = cloudCDSRenewalHold
 	}
+	app.Args = podfixture.CDSProbeArgs(cds.Host, hold)
 	rules := policy["workloads"].(map[string]any)["cloud-a"].(map[string]any)["containers"].([]any)
 	rules[0].(map[string]any)["args"].(map[string]any)["argv"] = app.Args
 	return pod, policy, nil
@@ -146,7 +70,7 @@ func (r *cloudRun) cdsPolicies(cfg *Config) ([]byte, []byte, error) {
 		return nil, nil, errors.New("CDS outage requires exactly one separate application rule")
 	}
 	meshRule, appRule := base.Workloads["pod-mesh-membership"].Containers[0], app.Workloads["cloud-a"].Containers[0]
-	if meshRule.Image != r.cfg.MeshImage || meshRule.Digest.String() != strings.TrimPrefix(r.cfg.MeshImage, "ghcr.io/confidential-dot-ai/armtls-mesh@") || appRule.Image != podfixture.PythonImage || appRule.Digest == meshRule.Digest {
+	if meshRule.Image != r.cfg.MeshImage || meshRule.Digest.String() != strings.TrimPrefix(r.cfg.MeshImage, "ghcr.io/confidential-dot-ai/armtls-mesh@") || appRule.Image != podfixture.Image || appRule.Digest == meshRule.Digest {
 		return nil, nil, errors.New("served-only application overlaps the immutable mesh policy")
 	}
 	before, err := base.Canonical()

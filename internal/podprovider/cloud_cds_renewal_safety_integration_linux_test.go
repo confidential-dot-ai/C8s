@@ -15,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podcvmtest"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	podfixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-connected"
 )
 
 func cloudRenewalProofFixture() cloudCDSRenewalProof {
@@ -145,7 +146,7 @@ func TestCloudAcceptanceCDSRenewalWorkload(t *testing.T) {
 		t.Fatal("renewal workload lost its normally scheduled single app")
 	}
 	app := pod.Spec.Containers[0]
-	if len(app.Args) != 5 || app.Args[3] != "203.0.113.5" || app.Args[4] != "3900" {
+	if !slices.Equal(app.Args, podfixture.CDSProbeArgs("203.0.113.5", cloudCDSRenewalHold)) || app.Args[2] != "3900" {
 		t.Fatal("guest outage duration or owned endpoint differs")
 	}
 	raw, _ := json.Marshal(wire)

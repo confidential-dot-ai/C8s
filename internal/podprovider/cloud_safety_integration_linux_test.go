@@ -462,7 +462,7 @@ func TestCloudAcceptanceWorkloadUsesAllocatedPeerAndExistingFixture(t *testing.T
 			Port int
 		}
 	}
-	if json.Unmarshal([]byte(pod.Spec.Containers[0].Args[3]), &cfg) != nil || cfg.Peer.Host != peer.Host || cfg.Peer.Port != peer.Port {
+	if json.Unmarshal([]byte(pod.Spec.Containers[0].Args[1]), &cfg) != nil || cfg.Peer.Host != peer.Host || cfg.Peer.Port != peer.Port {
 		t.Fatal("fixture ignored allocated peer tuple")
 	}
 }

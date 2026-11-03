@@ -4,9 +4,7 @@ package podprovider
 
 import (
 	"bytes"
-	"compress/zlib"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
@@ -27,42 +25,20 @@ func (r *cloudRun) cli(ctx context.Context, args ...string) ([]byte, error) {
 	return r.runTool(ctx, r.cfg.CLIFile, args...)
 }
 
-// The timeout lane needs an independently ready guest, without the connected
-// fixture's peer receipts, readiness cycle or long-running checker.
-const cloudVerificationScript = `from http.server import BaseHTTPRequestHandler, HTTPServer
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200 if self.path in ("/live", "/ready") else 404)
-        self.end_headers()
-
-    def log_message(self, *_args):
-        pass
-
-HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
-`
-
+// workload renders one side's pod and its exact allowlist rules from the
+// connected workload image: the application and checker for the connected
+// scenario, the independently ready hello application for the verification
+// lanes, and the CDS guest probe, whose argv cdsWorkload completes once the
+// owned CDS endpoint is known.
 func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[string]any, error) {
-	program, names := podfixture.Script, []string{"app", "checker"}
+	names := []string{"app", "checker"}
 	verification := r.cfg.scenario() != "connected"
 	if verification {
 		if side != "a" || peer != nil {
 			return nil, nil, errors.New("standalone scenario requires one A workload")
 		}
-		program, names = cloudVerificationScript, []string{"app"}
-		if r.cfg.cdsOutageScenario() {
-			program = cloudCDSScript
-		}
+		names = []string{"app"}
 	}
-	var packed bytes.Buffer
-	w := zlib.NewWriter(&packed)
-	if _, err := w.Write([]byte(program)); err != nil {
-		return nil, nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, nil, err
-	}
-	script := "import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('" + base64.StdEncoding.EncodeToString(packed.Bytes()) + "')),'<string>','exec'))"
 	config := map[string]any{"role": "responder", "podUID": r.ledger.Run + "-" + side, "initiatorPodUID": r.ledger.Run + "-b", "dnsIPv4": "1.1.1.1"}
 	if side == "b" {
 		if peer == nil {
@@ -71,25 +47,23 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 		config["role"] = "initiator"
 		config["peer"] = map[string]any{"host": peer.Host, "port": peer.Port, "podUID": r.ledger.Run + "-a"}
 	}
+	settings, err := json.Marshal(config)
+	if err != nil {
+		return nil, nil, err
+	}
 	var containers, rules []any
 	for _, name := range names {
-		command := []string{"/usr/local/bin/python3"}
-		args := []string{"-u", "-c", script}
-		if !verification {
-			mode := map[string]any{}
-			for k, v := range config {
-				mode[k] = v
-			}
-			if name == "checker" {
-				mode["mode"] = "checker"
-			}
-			raw, err := json.Marshal(mode)
-			if err != nil {
-				return nil, nil, err
-			}
-			args = append(args, string(raw))
+		command := podfixture.Command()
+		args := podfixture.HelloArgs()
+		switch {
+		case r.cfg.cdsOutageScenario():
+			args = []string{podfixture.ModeCDSProbe}
+		case !verification && name == "checker":
+			args = podfixture.CheckArgs(string(settings))
+		case !verification:
+			args = podfixture.ServeArgs(string(settings))
 		}
-		c := map[string]any{"name": name, "image": podfixture.PythonImage, "command": command, "args": args, "securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1500, "runAsGroup": 1500, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}}, "resources": map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "64Mi"}, "limits": map[string]string{"cpu": "500m", "memory": "256Mi"}}}
+		c := map[string]any{"name": name, "image": podfixture.Image, "command": command, "args": args, "securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1500, "runAsGroup": 1500, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}}, "resources": map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "64Mi"}, "limits": map[string]string{"cpu": "500m", "memory": "256Mi"}}}
 		if name == "app" {
 			c["ports"] = []any{map[string]any{"name": "http", "containerPort": 8080, "protocol": "TCP"}}
 			c["readinessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/ready", "port": 8080}, "periodSeconds": 5, "timeoutSeconds": 2, "failureThreshold": 1}
@@ -99,7 +73,7 @@ func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[strin
 			c["volumeMounts"] = []any{map[string]any{"name": "restart", "mountPath": "/restart"}}
 		}
 		containers = append(containers, c)
-		rules = append(rules, map[string]any{"digest": strings.Split(podfixture.PythonImage, "@")[1], "image": podfixture.PythonImage, "command": map[string]any{"policy": "exact", "argv": command}, "args": map[string]any{"policy": "exact", "argv": args}, "mounts": map[string]any{"policy": "any"}})
+		rules = append(rules, map[string]any{"digest": strings.Split(podfixture.Image, "@")[1], "image": podfixture.Image, "command": map[string]any{"policy": "exact", "argv": command}, "args": map[string]any{"policy": "exact", "argv": args}, "mounts": map[string]any{"policy": "any"}})
 	}
 	wire := map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": "cloud-" + side, "namespace": "tenant", "annotations": map[string]string{Annotation: "true"}}, "spec": map[string]any{"automountServiceAccountToken": false, "restartPolicy": "Never", "containers": containers, "schedulingGates": []any{map[string]any{"name": "acceptance.confidential.ai/durable-intent"}}}}
 	if r.cfg.cdsOutageScenario() {

@@ -15,13 +15,12 @@ import (
 )
 
 // The connected fixture: three Services allocated before any VM exists, a
-// signed Pod manifest running the pinned python image with app.py as its
-// argv, and the launch bundles the paired CLI signs for the server and two
-// Pods. It renders offline inputs only; nothing here talks to a cluster.
+// signed Pod manifest running the pinned workload image in its serve and
+// check modes, and the launch bundles the paired CLI signs for the server
+// and two Pods. It renders offline inputs only; nothing here talks to a
+// cluster.
 
-const pythonImage = podfixture.PythonImage
-
-var appScript = podfixture.Script
+const appImage = podfixture.Image
 
 var sides = []string{"server", "a", "b"}
 
@@ -236,25 +235,19 @@ func renderBundle(in bundleInputs) (*identity, error) {
 	if err := writeNew(filepath.Join(out, "pod-image-policy.json"), policy); err != nil {
 		return nil, err
 	}
-	config := map[string]any{"peers": []string{in.endpoints["a"].IP, in.endpoints["b"].IP}, "dnsIPv4": "1.1.1.1", "podUID": in.name, "collectorURL": in.collectorURL}
-	checkerConfig := map[string]any{}
-	for k, v := range config {
-		checkerConfig[k] = v
+	config, err := json.Marshal(map[string]any{"peers": []string{in.endpoints["a"].IP, in.endpoints["b"].IP}, "dnsIPv4": "1.1.1.1", "podUID": in.name, "collectorURL": in.collectorURL})
+	if err != nil {
+		return nil, err
 	}
-	checkerConfig["mode"] = "checker"
-	compact := func(v any) string {
-		b, _ := json.Marshal(v)
-		return string(b)
-	}
-	argv := []string{"-u", "-c", appScript, compact(config)}
-	checkerArgv := []string{"-u", "-c", appScript, compact(checkerConfig)}
+	argv := podfixture.ServeArgs(string(config))
+	checkerArgv := podfixture.CheckArgs(string(config))
 	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1500, "runAsGroup": 1500, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}}
-	container := map[string]any{"name": "app", "image": pythonImage, "command": []string{"/usr/local/bin/python3"}, "args": argv,
+	container := map[string]any{"name": "app", "image": appImage, "command": podfixture.Command(), "args": argv,
 		"securityContext": security, "ports": []map[string]any{{"name": "http", "containerPort": 8080, "protocol": "TCP"}},
 		"readinessProbe": map[string]any{"httpGet": map[string]any{"path": "/ready", "port": 8080}, "periodSeconds": 5, "timeoutSeconds": 2, "failureThreshold": 1},
 		"livenessProbe":  map[string]any{"httpGet": map[string]any{"path": "/live", "port": 8080}, "periodSeconds": 10, "timeoutSeconds": 2, "failureThreshold": 6},
 		"resources":      map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "64Mi"}, "limits": map[string]string{"cpu": "1", "memory": "256Mi"}}}
-	checker := map[string]any{"name": "checker", "image": pythonImage, "command": []string{"/usr/local/bin/python3"}, "args": checkerArgv,
+	checker := map[string]any{"name": "checker", "image": appImage, "command": podfixture.Command(), "args": checkerArgv,
 		"securityContext": security, "resources": map[string]any{"requests": map[string]string{"cpu": "50m", "memory": "32Mi"}, "limits": map[string]string{"cpu": "1", "memory": "128Mi"}}}
 	pod := map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": "connected", "namespace": "acceptance", "uid": in.name},
 		"spec": map[string]any{"automountServiceAccountToken": false, "restartPolicy": "Never", "containers": []map[string]any{container, checker}}}
@@ -266,8 +259,8 @@ func renderBundle(in bundleInputs) (*identity, error) {
 		return nil, err
 	}
 	rule := func(args []string) map[string]any {
-		return map[string]any{"digest": digestOf(pythonImage), "image": pythonImage,
-			"command": map[string]any{"policy": "exact", "argv": []string{"/usr/local/bin/python3"}},
+		return map[string]any{"digest": digestOf(appImage), "image": appImage,
+			"command": map[string]any{"policy": "exact", "argv": podfixture.Command()},
 			"args":    map[string]any{"policy": "exact", "argv": args}, "mounts": map[string]any{"policy": "any"}}
 	}
 	workloads := map[string]any{"connected": map[string]any{"containers": []map[string]any{rule(argv), rule(checkerArgv)}}}
@@ -301,8 +294,8 @@ func renderBundle(in bundleInputs) (*identity, error) {
 			return nil, err
 		}
 	}
-	id := &identity{Source: in.source, ManifestSHA256: in.manifestSHA256, ApplicationImage: pythonImage, MeshImage: in.meshImage,
-		Services: in.endpoints, SamePodManifestSHA256: sha256Hex(podJSON), ExpectedDigests: []string{digestOf(pythonImage), digestOf(in.meshImage)},
+	id := &identity{Source: in.source, ManifestSHA256: in.manifestSHA256, ApplicationImage: appImage, MeshImage: in.meshImage,
+		Services: in.endpoints, SamePodManifestSHA256: sha256Hex(podJSON), ExpectedDigests: []string{digestOf(appImage), digestOf(in.meshImage)},
 		Scope: "native KubeVirt TDX hardware; no Cloud API or dynamic endpoint discovery claim"}
 	return id, writeNew(filepath.Join(out, "identity.json"), id)
 }

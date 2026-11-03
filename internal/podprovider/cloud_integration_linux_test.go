@@ -498,7 +498,7 @@ func (r *cloudRun) observation(name string, raw []byte, verdict any, accepted bo
 }
 
 func (r *cloudRun) exactAttestation(ctx context.Context, g *cloudGuest) error {
-	report, hc, err := podstatus.Attest(ctx, podstatus.AttestConfig{Node: net.JoinHostPort(g.status.Host, strconv.Itoa(g.status.Port)), LaunchKeyPubPath: filepath.Join(r.dir, "provider.pub"), ImageManifestPath: r.cfg.ManifestFile, ExpectDigests: []string{strings.Split(podfixture.PythonImage, "@")[1], strings.Split(r.cfg.MeshImage, "@")[1]}, Timeout: 45 * time.Second})
+	report, hc, err := podstatus.Attest(ctx, podstatus.AttestConfig{Node: net.JoinHostPort(g.status.Host, strconv.Itoa(g.status.Port)), LaunchKeyPubPath: filepath.Join(r.dir, "provider.pub"), ImageManifestPath: r.cfg.ManifestFile, ExpectDigests: []string{strings.Split(podfixture.Image, "@")[1], strings.Split(r.cfg.MeshImage, "@")[1]}, Timeout: 45 * time.Second})
 	if err != nil {
 		return errors.New("fresh exact workload attestation failed")
 	}

@@ -42,7 +42,7 @@ func TestCloudAcceptanceCDSServedOnlyWorkload(t *testing.T) {
 		t.Fatal("CDS scenario lost its bounded normally scheduled single-app RAM-only workload")
 	}
 	app := pod.Spec.Containers[0]
-	if app.Image != podfixture.PythonImage || len(app.Args) != 4 || app.Args[3] != "203.0.113.5" || len(app.VolumeMounts) != 1 || app.VolumeMounts[0].MountPath != "/restart" || app.SecurityContext == nil || app.SecurityContext.RunAsNonRoot == nil || !*app.SecurityContext.RunAsNonRoot {
+	if app.Image != podfixture.Image || !slices.Equal(app.Args, podfixture.CDSProbeArgs("203.0.113.5", 0)) || len(app.VolumeMounts) != 1 || app.VolumeMounts[0].MountPath != "/restart" || app.SecurityContext == nil || app.SecurityContext.RunAsNonRoot == nil || !*app.SecurityContext.RunAsNonRoot {
 		t.Fatal("CDS probe lost its exact owned target, RAM mount or unprivileged identity")
 	}
 	raw, _ := json.Marshal(wire)

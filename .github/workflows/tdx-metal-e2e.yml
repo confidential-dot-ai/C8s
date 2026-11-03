@@ -277,7 +277,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/pod-acceptance-bin/virtctl"
           echo "$RUNNER_TEMP/pod-acceptance-bin" >> "$GITHUB_PATH"
           go test ./test/tdxpod/ ./.github/scripts/pod-mesh-probe
-          python3 test/tdxpod/fixtures/pod-connected/test_app.py
+          go test ./test/tdxpod/fixtures/pod-connected/...
 
       - name: Run server and two Pods through timed credential renewal
         timeout-minutes: 125
@@ -357,7 +357,7 @@ jobs:
             sudo apt-get install -y -qq --no-install-recommends expect jq
           fi
           go test ./test/tdxpod/
-          python3 test/tdxpod/fixtures/pod-connected/test_app.py
+          go test ./test/tdxpod/fixtures/pod-connected/...
 
       - name: Observe the owned server and two development Pod guests
         timeout-minutes: 55
@@ -444,7 +444,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/pod-service-recovery-bin/virtctl"
           echo "$RUNNER_TEMP/pod-service-recovery-bin" >> "$GITHUB_PATH"
           go test ./test/tdxpod/ ./.github/scripts/pod-mesh-probe
-          python3 test/tdxpod/fixtures/pod-connected/test_app.py
+          go test ./test/tdxpod/fixtures/pod-connected/...
 
       - name: Assign generic Pods and observe fixed same-boot service restarts
         timeout-minutes: 66

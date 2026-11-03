@@ -140,7 +140,7 @@ virtual node. Existing node selectors are preserved. Scheduler CI advertises
 two Pod slots and verifies that two opted-in workloads can run concurrently,
 with infrastructure DaemonSets excluded from those slots.
 
-Run `make test-integration-pod-runtime` with Go, Python 3 and Docker supporting
+Run `make test-integration-pod-runtime` with Go and Docker supporting
 privileged containers. The existing `Integration (Pod runtime)` CI job invokes
 this command and requires all three checks:
 
@@ -412,8 +412,10 @@ cleanup runner; their authority is never migrated to the new image contract.
 The manual `tdx-metal-e2e.yml` input `pod_acceptance: true` starts a real CDS
 server and two standalone Pod guests. The image, image manifest, disk, mesh
 container and matching CLI source are pinned in
-`test/tdxpod/fixtures/pod-connected/production-image.json`. Image profile
-and component sources must agree. Update the complete pin set together after
+`test/tdxpod/fixtures/pod-connected/production-image.json`. The workload image
+the two Pods run, `pod-netcheck`, is pinned by digest in `fixture.go` beside
+the Dockerfile it is built from; `conformance-images.yml` publishes it. Image
+profile and component sources must agree. Update the complete pin set together after
 a paired production image build; the harness does not accept a development
 image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
 CLI build with the dispatched commit's Go toolchain, so the pinned source's
