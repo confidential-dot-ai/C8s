@@ -119,3 +119,18 @@ func TestNewRefusesADocumentAWorkerWouldRefuse(t *testing.T) {
 		t.Fatalf("a refused document was written: %v", err)
 	}
 }
+
+func TestNewRefusesAnOutThatExists(t *testing.T) {
+	pinPath, caPath := newFiles(t, "192.168.0.0/16")
+	out := filepath.Join(t.TempDir(), "worker.yaml")
+	if err := os.WriteFile(out, []byte("measured"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath}, kubernetesFlags(caPath)...)
+	if _, err := runNew(t, args...); err == nil || !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("got %v, want the existing --out refused", err)
+	}
+	if data, _ := os.ReadFile(out); string(data) != "measured" {
+		t.Fatalf("--out now holds %q, want it untouched", data)
+	}
+}

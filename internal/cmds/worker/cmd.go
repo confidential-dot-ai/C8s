@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
 // NewCmd returns the worker command group.
@@ -51,7 +52,7 @@ parses it with, then written to --out, or to stdout without one.`,
 				_, err := cmd.OutOrStdout().Write(data)
 				return err
 			}
-			if err := os.WriteFile(d.out, data, 0o644); err != nil {
+			if err := fileutil.WriteNew(d.out, data, 0o644); err != nil {
 				return fmt.Errorf("--out: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "wrote worker document %s\n", d.out)
@@ -59,7 +60,7 @@ parses it with, then written to --out, or to stdout without one.`,
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&d.out, "out", "", "file to write the document to (default stdout)")
+	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
 	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
 	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
 	f.Uint64Var(&d.cds.PinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
