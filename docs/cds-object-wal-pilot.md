@@ -51,7 +51,7 @@ not independently detect an entire old history served to a cold cluster.
 | `internal/cdsobject` | Adapter to the existing CDS state machine and stores |
 | `internal/cdsconfig` | Measured public `ha.objectWALPilot` settings |
 | `internal/cmds/cds` | Backend selection, fresh-read gate, attested provisioning and diagnostics |
-| `test/integration/cdsha` | Same three-process policy workload against Raft and object WAL; total restart and outage |
+| `test/integration/cdsha` | Same three-process policy, issuance and secret-release flows against Raft and object WAL; process loss, total restart and outage |
 | `test/pilot/cds-load` | Pinned HTTP load generator usable against either cloud pilot arm |
 | `cloud/internal/launchcontract` (companion branch) | Accept the public pilot block in the existing measured-file envelope; reject embedded keys and credentials |
 
@@ -65,8 +65,9 @@ routing. The workspace specification is unchanged by this experiment.
 Use the existing `c8s-cds/1` launch-file transport and TDX VM path in our cloud.
 Build a CDS image from this branch with the normal release build settings and
 publish its reference measurements through the existing image-build procedure.
-The local integration tests use `c8s_dev` timing overrides; **cloud comparisons
-must use normal release timings for both arms**.
+The usual integration suite uses `c8s_dev` timing overrides; the local pilot
+command below selects release processes. **Cloud comparisons must use normal
+release timings for both arms**.
 
 Create separate pilot projects/namespaces and cluster IDs, e.g.
 `cds-raft-pilot` and `cds-object-pilot`, each with three identical CDS VMs and
@@ -222,6 +223,13 @@ each requiring a WAL object and a head PUT. Background polling and checkpoint
 writes add to request cost. Report those differences with latency and costs;
 do not label an object PUT or a local fixture timing as end-to-end CDS latency.
 
+These read contracts differ: the current CDS Raft implementation permits the
+previous grant during its cached read-confirmation window (one second with
+`c8s_dev`, five seconds with release timings). This is a CDS serving choice,
+not a limitation of Raft itself. The object pilot requires a fresh head for
+every protected request. Compare revocation latency alongside response latency;
+an equal-freshness performance comparison would need equivalent serving gates.
+
 | Scenario | Evidence to collect / required behavior |
 |---|---|
 | Steady reads and writes | Success/error counts, latency distribution, throughput, CPU/RSS, S3 requests/bytes and CAS conflicts |
@@ -233,7 +241,7 @@ do not label an object PUT or a local fixture timing as end-to-end CDS latency.
 | Lost PUT response | Original operation appears once in committed history; unresolved outcomes are reported as unknown |
 | Concurrent create at one secret path | One successful creation; every replica agrees on its value and origin |
 | Snapshot plus suffix replay | Cold recovery preserves CA, replay protection and acknowledged commands |
-| Workload attestation and secret release | Run existing C8s workload end-to-end flows against each arm; the load tool alone does not exercise these |
+| Workload attestation and secret release | Local `TestWorkloadBackendParity` exercises the full CDS flow against each arm; repeat with real workloads and hardware evidence in the cloud. The load tool alone does not exercise these |
 
 Zero acknowledged-write loss, CA divergence, accepted token replay, competing
 create winners or stale service after a failed freshness read are hard correctness
@@ -245,14 +253,70 @@ or TDX end-to-end result is claimed by the local tests.
 
 ```sh
 go test -race -count=1 ./internal/objectwal ./internal/cdsobject ./internal/cdsconfig ./internal/cmds/cds
-test/integration/cdsha/run.sh -run 'TestStorageBackendParity|TestObjectWALWholeClusterRestartAndOutage'
+CDSHA_RELEASE=1 test/integration/cdsha/run.sh -race -run 'TestStorageBackendParity|TestWorkloadBackendParity|TestObjectWALWholeClusterRestartAndOutage'
 # In the companion cloud checkout:
-go test -race -count=1 ./internal/launchcontract
+GOWORK=off go test -race -count=1 ./internal/launchcontract
 ```
 
-The process harness uses mock attestation and a local HTTPS conditional-object
-server with the real AWS SDK. It checks process wiring and failure behavior;
-real TDX evidence and AWS service semantics still require the isolated cloud run.
+Run from the C8s checkout on Linux with the Go version in `go.mod`. No AWS
+credentials, Docker or TEE hardware are needed. The workload scenario needs a
+local non-loopback IPv4 address and permission to bind TCP port 1019, such as
+`CAP_NET_BIND_SERVICE` or an isolated test environment allowing that port. It
+selects a local address and measures exactly its /32 into the node CIDR bound;
+the production inventory address and port checks remain enabled. The CI job
+permits the port on its disposable runner. `CDSHA_RELEASE=1` builds the child
+CDS processes without `c8s_dev`; omitting it keeps the existing suite's fast
+election and lease settings. CI runs this workload scenario with release
+processes separately from the accelerated membership/fault scenarios.
+
+`TestWorkloadBackendParity` launches three real CDS processes for each backend,
+plus mock attestation services and the real inventory token/digests handlers.
+The inventory uses a Unix socket for workload tokens and mutual armTLS for CDS
+callbacks. The scenario verifies:
+
+- A challenge from one replica produces a CA-verified workload certificate at
+  another, including its sandbox and matched-workload identities.
+- Every replica releases an operator-provided secret to that workload over
+  mutual TLS; a reused operator token is rejected on another replica.
+- Three simultaneous workload creates at one path produce one winner and two
+  conflicts; all replicas read the winning value.
+- Issuance and release continue after one process dies (the leader in the Raft
+  arm), and the replacement catches up.
+- After total object-arm process loss and reprovisioning, the same CA, secrets,
+  sandbox binding and spent operator token recover. A pre-restart workload
+  certificate remains usable, and new issuance succeeds.
+- A storage outage refuses already-prepared valid issuance and release
+  requests with 503; restoring storage restores both operations.
+- Revoking the workload's secret grant blocks release at every replica even
+  though its issued certificate remains valid. Object WAL must reject the
+  first request after acknowledgment; the Raft arm reports any reads of the
+  previous grant and must stop them within its configured lease (five seconds
+  in the release run, one second in the development run).
+
+The process harness uses simulated SNP evidence, a fixed sandbox inventory and
+a local HTTPS conditional-object server with the real AWS SDK. The race flag
+instruments the test harness; its child CDS binaries are not race-instrumented.
+This checks CDS process wiring and failure behavior;
+real TDX evidence, container-runtime discovery, independent object-service
+semantics and AWS performance still require separate runs. Local latency
+numbers are diagnostics, not an S3 or Raft performance comparison.
+
+## Next implementation steps
+
+The current pilot commits one command at a time and allows every replica to
+compete for the head. Before drawing throughput conclusions from the
+Turbopuffer-inspired design, add bounded group commit, then a preferred writer
+per CDS cluster. Batching should preserve command order and individual results;
+acknowledgments must still wait for the batch's durable head commit. The
+preferred writer reduces competing uploads and CAS retries; storage CAS must
+continue to fence obsolete writers when routing overlaps during failover.
+
+Keep these process scenarios as the correctness baseline. Extend fault tests
+to cover batches and writer handover, then compare both backends with controlled
+object latency and the isolated real-S3/TDX cloud matrix above. Measure latency,
+availability and storage request cost separately before choosing the backend.
+
+## Remaining lifecycle limits
 
 The pilot checkpoints after 100 commands and retains all WAL, snapshots and
 orphans. It has no garbage collection or compaction; a lagging live process

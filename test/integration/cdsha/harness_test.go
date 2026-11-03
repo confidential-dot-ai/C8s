@@ -120,6 +120,17 @@ type binaries struct {
 
 var built binaries
 
+// The default suite accelerates elections and leases. The pilot can also run
+// the exact release build, without changing the backend's timing constants.
+var releaseProcesses = os.Getenv("CDSHA_RELEASE") == "1"
+
+func processReadLease() time.Duration {
+	if releaseProcesses {
+		return 5 * time.Second // internal/cdsha/node.go: releaseTiming.Lease
+	}
+	return time.Second // internal/cmds/cds/ha_dev.go: haTimingOverride.Lease
+}
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "cdsha-it-")
 	if err != nil {
@@ -130,8 +141,13 @@ func TestMain(m *testing.M) {
 		api:  filepath.Join(dir, "mock-attestation"),
 		logs: filepath.Join(dir, "logs"),
 	}
+	cdsBuild := []string{"build", "-o", built.cds}
+	if !releaseProcesses {
+		cdsBuild = append(cdsBuild, "-tags", "c8s_dev")
+	}
+	cdsBuild = append(cdsBuild, "github.com/confidential-dot-ai/c8s/cmd/c8s")
 	for _, build := range [][]string{
-		{"build", "-tags", "c8s_dev", "-o", built.cds, "github.com/confidential-dot-ai/c8s/cmd/c8s"},
+		cdsBuild,
 		{"build", "-o", built.api, "github.com/confidential-dot-ai/c8s/test/mock-attestation"},
 	} {
 		cmd := exec.Command("go", build...)
@@ -142,7 +158,7 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	fmt.Println("cdsha integration: logs in", built.logs)
+	fmt.Printf("cdsha integration: release processes=%t, logs in %s\n", releaseProcesses, built.logs)
 	code := m.Run()
 	if code == 0 {
 		_ = os.RemoveAll(dir)
@@ -290,11 +306,16 @@ func newCluster(t *testing.T, size shape) *cluster {
 
 func newClusterWithObjects(t *testing.T, size shape, objects *objectFixture) *cluster {
 	t.Helper()
+	return newClusterWithNodes(t, size, objects, nodeImagesDocument, []string{"10.0.0.0/24"})
+}
+
+func newClusterWithNodes(t *testing.T, size shape, objects *objectFixture, nodes string, nodeCIDRs []string) *cluster {
+	t.Helper()
 	c := &cluster{t: t, dir: t.TempDir(), objectWAL: objects}
 	c.requireFreeAddresses(size.replicas)
 	c.operator = newKey(t)
 	c.signer = c.operatorSigner()
-	c.configure(size)
+	c.configure(size, nodes, nodeCIDRs)
 	c.client = c.attestedClient(testutil.TestMeasurement)
 	for i := range size.replicas {
 		c.replicas = append(c.replicas, c.start(i))
@@ -304,7 +325,7 @@ func newClusterWithObjects(t *testing.T, size shape, objects *objectFixture) *cl
 			c.provisionObjects(r)
 		}
 	}
-	c.genesis(c.replicas[0])
+	c.genesisCertifying(c.replicas[0], nodes, 0)
 	c.waitServing(time.Minute)
 	return c
 }
@@ -328,7 +349,7 @@ func (c *cluster) requireFreeAddresses(replicas int) {
 
 // configure writes the launch file every replica of the cluster boots: one
 // document serves them all, and nothing in it names one replica.
-func (c *cluster) configure(size shape) {
+func (c *cluster) configure(size shape, nodes string, nodeCIDRs []string) {
 	c.t.Helper()
 	addresses := make([]string, 0, size.replicas)
 	for i := range size.replicas {
@@ -345,8 +366,8 @@ func (c *cluster) configure(size shape) {
 		"workloads": `{"schema":"c8s.allowlist/v1","workloads":{"` + seededWorkload +
 			`":{"label":"ghcr.io/x/` + seededWorkload + `:v1","containers":[{"digest":"sha256:` +
 			strings.Repeat("11", 32) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
-		"nodes":        nodeImagesDocument,
-		"nodeCIDRs":    []string{"10.0.0.0/24"},
+		"nodes":        nodes,
+		"nodeCIDRs":    nodeCIDRs,
 		"leafDNSNames": []string{"workload." + clusterID + ".svc"},
 		"ha":           ha,
 	})
