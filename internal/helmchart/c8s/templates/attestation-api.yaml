@@ -4,6 +4,8 @@ enableServiceLinks: false
 serviceAccountName: {{ include "c8s.attestationApiName" . }}
 tolerations:
   - operator: Exists
+affinity:
+  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
 containers:
   - name: attestation-api
     image: {{ include "c8s.attestationApiImage" . }}
