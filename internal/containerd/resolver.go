@@ -1,4 +1,5 @@
-// Package containerd provides tag-to-digest resolution via the containerd image store.
+// Package containerd talks to a node's containerd: image digests, a sandbox's
+// recorded network, and stopping a container.
 package containerd
 
 import (
