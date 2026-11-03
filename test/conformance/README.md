@@ -62,9 +62,10 @@ Where a backend cannot exec into a pod whose argv and mounts a scenario pins,
 it reads the pod's files from the pod's log instead. The reporter image
 ([`images/reporter`](images/reporter)) is `image_ref`'s model-server with the
 reporter as its `sleep`: it sleeps as asked and, while it does, prints each
-file of the certificate volume but the key, and of the secret client's output
-directory, as `c8s-report file <path> <base64>` when it appears or changes,
-and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+file of the certificate volume but the key, of the secret client's output
+directory, and of the discovery volume the metal backend adds, as
+`c8s-report file <path> <base64>` when it appears or changes, and that
+directory's filesystem type, as `c8s-report fstype <dir> <type>`.
 The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
 python with the programs the steps run in a tenant pod on its `PATH`: the
 hello API, the echo API a workload backend serves, and a UDP listener and
