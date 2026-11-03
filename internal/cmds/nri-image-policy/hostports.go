@@ -9,7 +9,6 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -22,13 +21,16 @@ import (
 // reads it decides nothing.
 var errRecordGone = errors.New("containerd no longer has the record")
 
+// hostPortRule names the rule in a refusal's log and audit record.
+const hostPortRule = "host_port"
+
 // admitSandboxHostPorts refuses a sandbox whose host ports no entry declares;
 // containerd takes a refused sandbox's port mappings down with it.
 func (p *plugin) admitSandboxHostPorts(ctx context.Context, cfg *config, pod *api.PodSandbox) error {
 	if !cfg.sandboxObserved() {
 		return nil
 	}
-	subject := sandboxSubject(pod)
+	subject := sandboxSubject(hostPortRule, pod)
 	mappings, err := p.sandboxHostPorts(ctx, pod)
 	if err != nil {
 		return p.refuseSandbox(cfg, subject, err)
@@ -38,15 +40,15 @@ func (p *plugin) admitSandboxHostPorts(ctx context.Context, cfg *config, pod *ap
 	}
 	refusal := fmt.Errorf("the sandbox maps host ports no allowlist entry declares: %s", namedMappings(mappings))
 	if cfg.sandboxMode() == SandboxAudit {
-		p.auditHostPorts(subject, refusal)
+		p.auditPrivilege(subject, refusal)
 		return nil
 	}
 	return p.refuseSandbox(cfg, subject, refusal)
 }
 
 // refuseSandbox records a sandbox refusal and returns it, or nil under audit mode.
-func (p *plugin) refuseSandbox(cfg *config, subject hostPortSubject, refusal error) error {
-	p.denyHostPorts(subject, refusal)
+func (p *plugin) refuseSandbox(cfg *config, subject privilegeSubject, refusal error) error {
+	p.denyPrivilege(subject, refusal)
 	if cfg.Policy.Mode == ModeAudit {
 		return nil
 	}
@@ -56,14 +58,14 @@ func (p *plugin) refuseSandbox(cfg *config, subject hostPortSubject, refusal err
 // hostPortRefusal is why a container of a pod that maps host ports may not run,
 // "" when it may; the caller downgrades a denial under audit mode.
 func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) string {
-	subject := containerSubject(pod, ctr, imageRef)
+	subject := containerSubject(hostPortRule, pod, ctr, imageRef)
 	mappings, err := p.sandboxHostPorts(ctx, pod)
 	switch {
 	// A sandbox containerd no longer has runs no container to refuse.
 	case errors.Is(err, errRecordGone):
 		return ""
 	case err != nil:
-		p.denyHostPorts(subject, err)
+		p.denyPrivilege(subject, err)
 		return err.Error()
 	}
 	if len(mappings) == 0 {
@@ -75,10 +77,10 @@ func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, pod *api.PodS
 	}
 	refusal := fmt.Errorf("the pod maps host ports %s, which no allowlist entry declares for this launch", namedMappings(mappings))
 	if cfg.sandboxMode() == SandboxAudit {
-		p.auditHostPorts(subject, refusal)
+		p.auditPrivilege(subject, refusal)
 		return ""
 	}
-	p.denyHostPorts(subject, refusal)
+	p.denyPrivilege(subject, refusal)
 	return refusal.Error()
 }
 
@@ -151,62 +153,4 @@ func namedMappings(mappings []allowlist.HostPort) string {
 		out = append(out, fmt.Sprintf("%s %d->%d", m.Protocol, m.HostPort, m.ContainerPort))
 	}
 	return strings.Join(out, ", ")
-}
-
-// hostPortSubject is what a host-port refusal names in the node's log and its
-// audit record. A sandbox is refused before it has a container or an image.
-type hostPortSubject struct {
-	namespace, pod, container, image string
-}
-
-func sandboxSubject(pod *api.PodSandbox) hostPortSubject {
-	return hostPortSubject{namespace: pod.GetNamespace(), pod: pod.GetName()}
-}
-
-func containerSubject(pod *api.PodSandbox, ctr *api.Container, imageRef string) hostPortSubject {
-	return hostPortSubject{
-		namespace: pod.GetNamespace(),
-		pod:       pod.GetName(),
-		container: ctr.GetName(),
-		image:     imageRef,
-	}
-}
-
-func (s hostPortSubject) logAttrs() []any {
-	return []any{
-		"namespace", s.namespace,
-		"pod", s.pod,
-		"container", s.container,
-		"image", s.image,
-	}
-}
-
-// denyHostPorts records a refusal the node enforces.
-func (p *plugin) denyHostPorts(subject hostPortSubject, refusal error) {
-	p.logger.Warn("refusing host ports outside what an allowlist entry declares",
-		append(subject.logAttrs(), "error", refusal)...)
-	p.audit.Log(audit.Event{
-		Action:    "deny",
-		Reason:    "host_port",
-		Namespace: subject.namespace,
-		Pod:       subject.pod,
-		Container: subject.container,
-		Image:     subject.image,
-		Error:     refusal.Error(),
-	})
-}
-
-// auditHostPorts records host ports the sandbox policy's audit mode admits.
-func (p *plugin) auditHostPorts(subject hostPortSubject, refusal error) {
-	p.logger.Warn("admitting host ports outside what an allowlist entry declares",
-		append(subject.logAttrs(), "sandbox", SandboxAudit, "error", refusal)...)
-	p.audit.Log(audit.Event{
-		Action:    "allow",
-		Reason:    "host_port",
-		Overrides: refusal.Error(),
-		Namespace: subject.namespace,
-		Pod:       subject.pod,
-		Container: subject.container,
-		Image:     subject.image,
-	})
 }

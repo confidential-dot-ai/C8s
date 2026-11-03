@@ -33,8 +33,7 @@ func testFloor() nriimagepolicy.MeshFloor {
 }
 
 // workloadBundle is the OCI configuration containerd writes for an ordinary
-// member-pod container: the runtime's default capabilities less the three the
-// floor removes, a non-root non-reserved user, and its own namespaces.
+// member-pod container: a non-root non-reserved user and its own namespaces.
 func workloadBundle() *specs.Spec {
 	return &specs.Spec{
 		Annotations: map[string]string{
@@ -49,11 +48,6 @@ func workloadBundle() *specs.Spec {
 			},
 			Cwd:             "/",
 			NoNewPrivileges: true,
-			Capabilities: &specs.LinuxCapabilities{
-				Bounding:  append([]string{}, workloadCapabilities...),
-				Effective: append([]string{}, workloadCapabilities...),
-				Permitted: append([]string{}, workloadCapabilities...),
-			},
 		},
 		Root: &specs.Root{Path: "/run/containerd/bundle/rootfs"},
 		Mounts: []specs.Mount{
@@ -105,46 +99,6 @@ func TestFloorRefusals(t *testing.T) {
 	}{
 		{name: "an ordinary container"},
 		{
-			name: "CAP_NET_ADMIN",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_NET_ADMIN")
-			},
-			wants: "effective capability CAP_NET_ADMIN",
-		},
-		{
-			name: "CAP_NET_RAW",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Permitted = append(s.Process.Capabilities.Permitted, "CAP_NET_RAW")
-			},
-			wants: "permitted capability CAP_NET_RAW",
-		},
-		{
-			name: "CAP_SYS_ADMIN in the bounding set alone",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Bounding = append(s.Process.Capabilities.Bounding, "CAP_SYS_ADMIN")
-			},
-			wants: "bounding capability CAP_SYS_ADMIN",
-		},
-		{
-			name: "CAP_BPF",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_BPF")
-			},
-			wants: "capability CAP_BPF",
-		},
-		{
-			name: "CAP_SETUID",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SETUID")
-			},
-			wants: "capability CAP_SETUID",
-		},
-		{
-			name:   "CAP_SETGID in the ambient set",
-			bundle: func(s *specs.Spec) { s.Process.Capabilities.Ambient = []string{"CAP_SETGID"} },
-			wants:  "ambient capability CAP_SETGID",
-		},
-		{
 			name:   "no_new_privs unset",
 			bundle: func(s *specs.Spec) { s.Process.NoNewPrivileges = false },
 			wants:  "no_new_privs is not set",
@@ -183,11 +137,6 @@ func TestFloorRefusals(t *testing.T) {
 			wants: "cgroup2 is mounted writable",
 		},
 		{
-			name:   "no capability sets at all",
-			bundle: func(s *specs.Spec) { s.Process.Capabilities = nil },
-			wants:  "no capability sets",
-		},
-		{
 			name: "host PID namespace",
 			bundle: func(s *specs.Spec) {
 				s.Linux.Namespaces = slices.DeleteFunc(s.Linux.Namespaces, func(ns specs.LinuxNamespace) bool {
@@ -215,9 +164,9 @@ func TestFloorRefusals(t *testing.T) {
 				// Only the sandbox's own bundle carries its id as its own
 				// container id; a workload claiming the type is still covered.
 				s.Annotations[annotationContainerType] = containerTypeSandbox
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
+				s.Process.NoNewPrivileges = false
 			},
-			wants: "effective capability CAP_SYS_ADMIN",
+			wants: "no_new_privs is not set",
 		},
 		{
 			name: "a user namespace",
@@ -267,17 +216,6 @@ func TestFloorRefusals(t *testing.T) {
 			wants:  "gid 1339 is reserved for the router role",
 		},
 		{
-			name: "an image whose USER is the mesh endpoint's reserved uid",
-			bundle: func(s *specs.Spec) {
-				// An empty securityContext leaves the image's own USER, so
-				// this container holds the default capabilities while
-				// claiming the mesh endpoint's identity.
-				s.Process.User.UID = testMeshUID
-				s.Process.User.GID = testMeshUID
-			},
-			wants: "capability",
-		},
-		{
 			name: "a bundle without a process",
 			bundle: func(s *specs.Spec) {
 				s.Process = nil
@@ -304,25 +242,6 @@ func TestFloorRefusals(t *testing.T) {
 	}
 }
 
-// A role's container holds no capabilities, whichever role it is.
-func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
-	for _, uid := range []uint32{testMeshUID, testRouterUID} {
-		bundle := workloadBundle()
-		bundle.Process.User = specs.User{
-			UID: uid,
-			GID: uid,
-		}
-		bundle.Process.Capabilities = &specs.LinuxCapabilities{}
-		if err := requireFloor(bundle, "ctr", nil, testFloor()); err != nil {
-			t.Fatalf("the role at uid %d was refused with no capability: %v", uid, err)
-		}
-		bundle.Process.Capabilities.Effective = []string{"CAP_NET_BIND_SERVICE"}
-		if err := requireFloor(bundle, "ctr", nil, testFloor()); err == nil {
-			t.Fatalf("the role at uid %d kept a capability", uid)
-		}
-	}
-}
-
 // Trusted policy names the namespaces that host no member pods, and the pod's
 // own sandbox container is the runtime's: both keep what they are given.
 func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
@@ -330,14 +249,14 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	cilium.Annotations[annotationSandboxNamespace] = "kube-system"
 	cilium.Process.User = specs.User{}
 	cilium.Process.NoNewPrivileges = false
-	cilium.Process.Capabilities.Effective = append(cilium.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
 	if err := requireFloor(cilium, "ctr", nil, testFloor()); err != nil {
 		t.Fatalf("an exempt namespace's container was refused: %v", err)
 	}
 
 	pause := workloadBundle()
 	pause.Annotations[annotationContainerType] = containerTypeSandbox
-	pause.Process.Capabilities.Effective = append(pause.Process.Capabilities.Effective, "CAP_NET_RAW", "CAP_SETUID")
+	pause.Process.User = specs.User{}
+	pause.Process.NoNewPrivileges = false
 	if err := requireFloor(pause, "sandbox-1", nil, testFloor()); err != nil {
 		t.Fatalf("the pod's own sandbox container was refused: %v", err)
 	}
@@ -464,7 +383,7 @@ func floorWrapper(rec *recorder, stderr *bytes.Buffer, configPath string) Wrappe
 // the floor, whichever way runc was told where that bundle is.
 func TestCreateIsGatedOnTheBundle(t *testing.T) {
 	privileged := workloadBundle()
-	privileged.Process.Capabilities.Effective = append(privileged.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+	privileged.Mounts[0].Options = []string{"nosuid", "noexec", "nodev"}
 	for _, tc := range []struct {
 		name string
 		args func(bundle string) []string
@@ -531,11 +450,11 @@ func TestCreateIsGatedOnTheBundle(t *testing.T) {
 	if rec.called || code != exitDenied {
 		t.Fatalf("a privileged bundle reached the real runtime (code %d)", code)
 	}
-	if !strings.Contains(stderr.String(), "CAP_NET_ADMIN") {
-		t.Fatalf("stderr = %q, want the refused capability named", stderr.String())
+	if !strings.Contains(stderr.String(), "sysfs is mounted writable") {
+		t.Fatalf("stderr = %q, want the refused privilege named", stderr.String())
 	}
 	logged, err := os.ReadFile(logPath)
-	if err != nil || !strings.Contains(string(logged), "CAP_NET_ADMIN") {
+	if err != nil || !strings.Contains(string(logged), "sysfs is mounted writable") {
 		t.Fatalf("runc log = %q (%v), want the denial", string(logged), err)
 	}
 }

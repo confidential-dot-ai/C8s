@@ -33,23 +33,6 @@ const (
 	containerTypeSandbox       = "sandbox"
 )
 
-// workloadCapabilities is what a container outside every platform role may
-// hold: the runtime's default set less NET_RAW, SETUID and SETGID, each of
-// which defeats the pod ruleset.
-var workloadCapabilities = []string{
-	"CAP_AUDIT_WRITE",
-	"CAP_CHOWN",
-	"CAP_DAC_OVERRIDE",
-	"CAP_FOWNER",
-	"CAP_FSETID",
-	"CAP_KILL",
-	"CAP_MKNOD",
-	"CAP_NET_BIND_SERVICE",
-	"CAP_SETFCAP",
-	"CAP_SETPCAP",
-	"CAP_SYS_CHROOT",
-}
-
 // kernelFSTypes are the filesystem types a privileged container is given
 // writable (containerd pkg/oci, WithWriteableSysfs and WithWriteableCgroupfs).
 var kernelFSTypes = []string{
@@ -59,9 +42,9 @@ var kernelFSTypes = []string{
 }
 
 // requireFloor refuses a bundle that would start a container of a member pod
-// with privileges the pod's protection cannot survive. A role's container
-// holds no capabilities. Attachability is refused for every container the
-// wrapper creates, whether or not the floor covers it.
+// with privileges the pod's protection cannot survive. Attachability is
+// refused for every container the wrapper creates, whether or not the floor
+// covers it.
 func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
@@ -80,14 +63,9 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
 	user := spec.Process.User
-	allowed := workloadCapabilities
 	role := ""
 	if bound, reserved := floor.ReservedIDs[user.UID]; reserved {
 		role = bound.Name
-		allowed = nil
-	}
-	if err := requireFloorCapabilities(spec.Process.Capabilities, allowed); err != nil {
-		return err
 	}
 	if err := requireNoNewPrivileges(spec.Process); err != nil {
 		return err
@@ -224,39 +202,6 @@ func isPodSandbox(spec *specs.Spec, containerID string) bool {
 	sandboxID := spec.Annotations[annotationSandboxID]
 	return spec.Annotations[annotationContainerType] == containerTypeSandbox &&
 		sandboxID != "" && sandboxID == containerID
-}
-
-// requireFloorCapabilities refuses a capability outside the floor in any of
-// the five sets: one in the bounding set is one an exec can still take. A
-// bundle that names no sets at all is refused rather than read as none.
-func requireFloorCapabilities(held *specs.LinuxCapabilities, allowed []string) error {
-	if held == nil {
-		return errors.New("the bundle names no capability sets")
-	}
-	if err := requireCapabilitySet("bounding", held.Bounding, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("effective", held.Effective, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("permitted", held.Permitted, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("inheritable", held.Inheritable, allowed); err != nil {
-		return err
-	}
-	return requireCapabilitySet("ambient", held.Ambient, allowed)
-}
-
-// requireCapabilitySet refuses a capability of one set that the floor does
-// not allow.
-func requireCapabilitySet(name string, held, allowed []string) error {
-	for _, capability := range held {
-		if !slices.Contains(allowed, capability) {
-			return fmt.Errorf("%s capability %s is outside the floor", name, capability)
-		}
-	}
-	return nil
 }
 
 // requireNoNewPrivileges requires the bit that bounds what an execve inside

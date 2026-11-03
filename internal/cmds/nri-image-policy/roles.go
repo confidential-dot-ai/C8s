@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -110,6 +111,11 @@ type MeshFloor struct {
 // RoleFloor is one platform role as the floor reads it.
 type RoleFloor struct {
 	Name string
+}
+
+// exempts reports a namespace trusted policy leaves to the node's own rules.
+func (p meshPolicy) exempts(namespace string) bool {
+	return slices.Contains(p.ExemptNamespaces, namespace)
 }
 
 // LoadMeshFloor reads the measured config and returns its mesh floor.
@@ -220,6 +226,17 @@ func (p meshPolicy) reservedIdentities() map[string]uint32 {
 	ids[acmeRole] = workloadclaims.AcmeUID
 	ids[upstreamRole] = workloadclaims.UpstreamUID
 	return ids
+}
+
+// roleIdentity is the platform role a stored process's identity belongs to,
+// where one does: a role's number is reserved as both a UID and a GID.
+func (p meshPolicy) roleIdentity(user specs.User) (string, bool) {
+	for _, id := range append([]uint32{user.UID, user.GID}, user.AdditionalGids...) {
+		if role, reserved := p.roleHolding(id); reserved {
+			return role, true
+		}
+	}
+	return "", false
 }
 
 // roleHolding is the role a reserved identity belongs to, where one does.

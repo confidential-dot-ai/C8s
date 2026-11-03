@@ -279,6 +279,27 @@ func (i *Index) GrantsHostBind(r RunningContainer, m ObservedMount) bool {
 	return i.AdmitsContainerWhere(r, Container.LaunchPinned)
 }
 
+// GrantsCapabilities reports whether one declaration declares every capability
+// in caps and admits this launch whole; declarations are never combined.
+func (i *Index) GrantsCapabilities(r RunningContainer, caps []string) bool {
+	if len(caps) == 0 {
+		return false
+	}
+	return i.AdmitsContainerWhere(r, func(c Container) bool {
+		return c.declaresCapabilities(caps)
+	})
+}
+
+// declaresCapabilities reports whether the container declares every capability in caps.
+func (c Container) declaresCapabilities(caps []string) bool {
+	for _, name := range caps {
+		if !slices.Contains(c.Capabilities, name) {
+			return false
+		}
+	}
+	return true
+}
+
 // hostPortGrant is one entry's mappings and the containers it declares them for.
 type hostPortGrant struct {
 	ports      HostPortList

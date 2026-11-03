@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -129,6 +130,62 @@ func TestCapabilitiesRequireAPinnedLaunch(t *testing.T) {
 				if c.Capabilities != nil {
 					t.Fatalf("capabilities = %v, want them dropped", c.Capabilities)
 				}
+			}
+		})
+	}
+}
+
+// A declaration adds to the set a container holds anyway.
+func TestTheDefaultSetIsNotDeclarable(t *testing.T) {
+	for _, name := range DefaultCapabilities {
+		if slices.Contains(declarableCapabilities, name) {
+			t.Errorf("%s is both held by default and declarable", name)
+		}
+	}
+}
+
+// One declaration must declare every capability asked for and admit the launch.
+func TestGrantsCapabilities(t *testing.T) {
+	open := fmt.Sprintf(`{"containers":[{"digest":%q,"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`, capabilityDigest)
+	index := func(t *testing.T, workloads string) *Index {
+		t.Helper()
+		al, err := ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{` + workloads + `}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return al.BuildIndex()
+	}
+	declaring := `"w":` + capabilitiesEntry(`,"capabilities":["SYS_PTRACE"]`)
+	env, err := ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		index *Index
+		argv  []string
+		caps  []string
+		want  bool
+	}{
+		{name: "the declaring launch", index: index(t, declaring), want: true},
+		{name: "a capability it does not declare", index: index(t, declaring), caps: []string{"BPF"}},
+		{name: "another launch of the same image", index: index(t, declaring), argv: []string{"/other"}},
+		{name: "an open entry sharing the digest", index: index(t, declaring+`,"open":`+open), argv: []string{"/other"}},
+		{name: "no capability to grant", index: index(t, declaring), caps: []string{}},
+		{name: "no allowlist"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv := tc.argv
+			if argv == nil {
+				argv = []string{"/app"}
+			}
+			caps := tc.caps
+			if caps == nil {
+				caps = []string{"SYS_PTRACE"}
+			}
+			launch := RunningContainer{Digest: capabilityDigest, Argv: argv, Mounts: []ObservedMount{}, Env: env}
+			if got := tc.index.GrantsCapabilities(launch, caps); got != tc.want {
+				t.Fatalf("GrantsCapabilities(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})
 	}

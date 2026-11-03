@@ -133,9 +133,9 @@ pid, or uts namespace; a bind mount whose source the pod does not own; a device
 node, a CDI device, or a host network device; an OCI hook; a container sysctl;
 or the marks of a privileged container, which are no cgroup namespace or a
 writable `sysfs` or `cgroupfs`. Privilege is inferred, not read: the runtime
-view carries no capabilities, privileged flag, `no_new_privs`, masked paths, or
-AppArmor profile, and an unobservable namespace reads as a violation, so a pod
-or container spec the plugin cannot see is denied rather than assumed safe. The
+view carries no privileged flag, `no_new_privs`, masked paths, or AppArmor
+profile, and an unobservable namespace reads as a violation, so a pod or
+container spec the plugin cannot see is denied rather than assumed safe. The
 kubelet event names the violated rules; the whole observation stays in the
 node's own log.
 
@@ -163,6 +163,20 @@ each refuse the pod; a sandbox containerd no longer has decides nothing about a
 container already running. A pod on the node's network maps no host port of its
 own: the kubelet records its container ports as host ports there, which name
 the node's.
+
+A container's capabilities are read, not inferred: the runtime view carries
+none, so the plugin reads the OCI spec containerd stored for the container.
+Every capability in the spec's five sets — bounding, effective, permitted,
+inheritable and ambient — has to be in the node's default set (the container
+runtime's default less `NET_RAW`, `SETUID` and `SETGID`) or declared by the
+entry that admits the whole launch. A container on a platform role holds none,
+whatever an entry declares. A spec the plugin cannot read, one describing no
+process, and one naming no capability sets each refuse the container, whatever
+the sandbox policy mode; a container containerd no longer has decides nothing
+about one already running. A pod in a namespace the measured mesh policy
+exempts keeps the capabilities the runtime gave it, as it does under the
+runtime wrapper's floor
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
