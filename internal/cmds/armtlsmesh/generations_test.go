@@ -64,6 +64,8 @@ type leafSpec struct {
 	notAfter       time.Time
 	purposes       []x509.ExtKeyUsage
 	omitInstanceID bool
+	// workloadID is the assigned workload ID CDS stamped, none when empty.
+	workloadID string
 	// armtlsExt is an armTLS attestation extension the leaf also carries, as
 	// CDS copies the requester's onto it.
 	armtlsExt *pkix.Extension
@@ -106,6 +108,13 @@ func (ca meshCA) issue(t *testing.T, spec leafSpec) credvolume.Set {
 	}
 	if spec.armtlsExt != nil {
 		tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, *spec.armtlsExt)
+	}
+	if spec.workloadID != "" {
+		ext, err := armtls.MarshalAssignedWorkloadIDExtension(spec.workloadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, ext)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, key.Public(), ca.key)
 	if err != nil {
