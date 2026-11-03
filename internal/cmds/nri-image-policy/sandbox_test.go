@@ -394,7 +394,7 @@ func TestSandboxViolations(t *testing.T) {
 				cdsPins:    tt.ownPins,
 				cdsAddress: tt.ownAddress,
 			}
-			got := observeSandbox(pod, ctr, own, nil, nil, cdiExpansion{}).violations()
+			got := observeSandbox(pod, ctr, own, nil, nil, cdiExpansion{}).violations(false)
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -817,5 +817,32 @@ func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	}
 	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted, cdiExpansion{}).HostBinds; len(got) != 1 {
 		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
+	}
+}
+
+// A pod CVM refuses a container that runs without a seccomp filter; a node
+// judges that under its own TCB rules and observes it only.
+func TestPodRoleRefusesUnfilteredSeccomp(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		seccomp *api.LinuxSeccomp
+		podRole bool
+		want    bool
+	}{
+		{"pod role, runtime default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_ERRNO"}, true, false},
+		{"pod role, unfiltered", nil, true, true},
+		{"pod role, allow by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_ALLOW"}, true, true},
+		{"pod role, log by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_LOG"}, true, true},
+		{"pod role, kill by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_KILL_PROCESS"}, true, false},
+		{"node role, unfiltered", nil, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctr := sandboxedContainer()
+			ctr.Linux.SeccompPolicy = tt.seccomp
+			got := observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, nil, cdiExpansion{}).violations(tt.podRole)
+			if slices.Contains(got, "unfiltered seccomp") != tt.want {
+				t.Fatalf("violations(podRole=%v) = %v, want unfiltered seccomp: %v", tt.podRole, got, tt.want)
+			}
+		})
 	}
 }
