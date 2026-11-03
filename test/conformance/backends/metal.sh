@@ -206,8 +206,9 @@ AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ 
 
 manifest_filter() { agent_wrap | discovery_wrap; }
 
-# A pod carrying a workload ID whose first container the agent runs in also
-# asks its credential client for the discovery document (the webhook's
+# A pod carrying a workload ID whose first container the agent runs in, or
+# whose first container's mounts no entry restricts (c8s-conformance/mounts-free),
+# also asks its credential client for the discovery document (the webhook's
 # c8s-discovery annotations), which carries the leaf, and mounts the volume
 # the client writes it into, so pod_cert_file can read the leaf of a pod
 # whose certificate volume no readable container may mount. The volume is a
@@ -217,7 +218,8 @@ DISCOVERY_VOLUME=c8s-conformance-discovery
 DISCOVERY_MOUNT=/run/c8s-conformance-discovery
 discovery_wrap() {
     jq -c --arg a "$AGENT" --arg v "$DISCOVERY_VOLUME" --arg dir "$DISCOVERY_MOUNT" '
-        if .metadata.annotations[$a] == "yes" and .metadata.annotations["confidential.ai/cw"] != null then
+        if (.metadata.annotations[$a] == "yes" or .metadata.annotations["c8s-conformance/mounts-free"] == "yes")
+            and .metadata.annotations["confidential.ai/cw"] != null then
             .metadata.annotations += {
                 "confidential.ai/c8s-discovery-volume": $v,
                 "confidential.ai/c8s-discovery-out": "/run/c8s/discovery/discovery.json",
@@ -346,9 +348,9 @@ pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 # Only the platform containers mount the credential volume (the webhook's
 # rejectCredentialMounts), so the chain is read from the discovery document
 # the credential client writes for a pod discovery_wrap shaped, through the
-# agent in its first container: tls.crt alone, and from that container
-# alone; nothing while the document is absent, as pod_cert_file answers
-# elsewhere. The key never leaves the pod.
+# agent in its first container or from the reporter's log (pod_read):
+# tls.crt alone, and from that container alone; nothing while the document
+# is absent, as pod_cert_file answers elsewhere. The key never leaves the pod.
 pod_cert_file() {
     local out rc=0
     [ "$3" = tls.crt ] && [ -z "${4:-}" ] || return "$UNSUPPORTED"

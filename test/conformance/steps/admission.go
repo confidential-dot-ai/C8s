@@ -159,6 +159,11 @@ func environment(ctx context.Context, line string) error {
 // harness chose, beside which a backend may run its pod agent (metal.sh).
 const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
+// annotationMountsFree marks a pod carrying a workload ID whose first
+// container no entry restricts the mounts of, to which a backend may add a
+// volume (metal.sh, discovery_wrap).
+const annotationMountsFree = "c8s-conformance/mounts-free"
+
 // pinsLaunch reports whether an entry the scenario described pins the argv
 // or the mounts of the image at ref.
 func (w *world) pinsLaunch(ref string) bool {
@@ -166,6 +171,19 @@ func (w *world) pinsLaunch(ref string) bool {
 	for _, e := range w.entries {
 		for _, c := range e.containers() {
 			if c.Image == ref && (!free(c.Command) || !free(c.Args) || c.Mounts.Policy == "exact") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// restrictsMounts reports whether an entry the scenario described leaves the
+// mounts of the image at ref anything but free.
+func (w *world) restrictsMounts(ref string) bool {
+	for _, e := range w.entries {
+		for _, c := range e.containers() {
+			if c.Image == ref && c.Mounts.Policy != "any" {
 				return true
 			}
 		}
@@ -215,6 +233,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		// The backend may run more beside an argv the harness chose, unless
 		// an entry pins that argv or the mounts, which more would break.
 		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
+	}
+	if p.workloadID && !w.restrictsMounts(p.containers[0].ref) {
+		args = append(args, "--annotation", annotationMountsFree+"=yes")
 	}
 	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {
