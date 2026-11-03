@@ -552,6 +552,12 @@ func TestStageWritesTheKubeletsInputs(t *testing.T) {
 // stagedBase is the measured base of the floor stage wrote under root.
 func stagedBase(t *testing.T, root string) *allowlist.Index {
 	t.Helper()
+	return (&allowlist.Allowlist{Workloads: stagedWorkloads(t, root)}).BuildIndex()
+}
+
+// stagedWorkloads are the base entries of the floor stage wrote under root.
+func stagedWorkloads(t *testing.T, root string) map[string]allowlist.Workload {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -567,7 +573,7 @@ func stagedBase(t *testing.T, root string) *allowlist.Index {
 	if err := floor.Allowlist.Base.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	return floor.Allowlist.Base.BuildIndex()
+	return floor.Allowlist.Base.Workloads
 }
 
 // launches are the digest and argv of every container of the rendered static

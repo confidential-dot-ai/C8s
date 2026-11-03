@@ -52,7 +52,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		}
 		return data
 	}
-	floor, err := worker.Floor([]byte(nodeFloor), read("allowlist-seed.json"))
+	floor, err := worker.Floor([]byte(nodeFloor), read("allowlist-seed.json"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

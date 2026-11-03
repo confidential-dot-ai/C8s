@@ -124,7 +124,7 @@ var platformRoleEntries = []string{
 func TestFloorKeepsThePlatformRolesAndTheRouter(t *testing.T) {
 	nodeFloor := renderedNodeFloor(t)
 	seed := routerSeed("/run/c8s-node/cds.json", "/run/c8s-node/operator-pubkey", "/run/c8s-node/router/hostnames")
-	floor, err := Floor(nodeFloor, seed)
+	floor, err := Floor(nodeFloor, seed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestFloorWritesNoSettingTheNodeFloorLacks(t *testing.T) {
 	} {
 		t.Run(strings.Join(path, "."), func(t *testing.T) {
 			nodeFloor := withoutKey(t, renderedNodeFloor(t), path...)
-			floor, err := Floor(nodeFloor, routerSeed("/run/c8s-node/cds.json"))
+			floor, err := Floor(nodeFloor, routerSeed("/run/c8s-node/cds.json"), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -221,7 +221,7 @@ func TestFloorRefusesInputsItCannotBuildAWorkersFloorFrom(t *testing.T) {
 		{"a router mounting operator data", nodeFloor, []byte(strings.Replace(string(seed), `"rules":[`, `"rules":[{"destination":"/mnt/c8s-data/keys","kind":"data"},`, 1)), "mounts data, which the control plane fills"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Floor(tc.nodeFloor, tc.seed); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := Floor(tc.nodeFloor, tc.seed, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Floor = %v, want a refusal naming %q", err, tc.want)
 			}
 		})
