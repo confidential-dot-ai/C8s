@@ -24,7 +24,11 @@ main() {
   bash "$PIN_MANIFEST" validate --manifest "$current_manifest" >/dev/null
   jq -e '.builds["node-image"] | type == "object"' "$base_manifest" >/dev/null
 
-  if ! jq -e -s '.[0].builds["node-image"] == .[1].builds["node-image"]' \
+  # Only the build inputs roll the measurement; a release tag beside a SHA
+  # does not (pin-manifest.sh export_pins).
+  if ! jq -e -s '
+      map(.builds["node-image"] | {confos_ref, attestation_rs_ref, mkosi_ref, mkosi_version})
+      | .[0] == .[1]' \
     "$base_manifest" "$current_manifest" >/dev/null; then
     image=true
   fi

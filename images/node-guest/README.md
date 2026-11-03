@@ -593,9 +593,19 @@ reviewed commit.
 `.github/build-pins.json` is the canonical source for the measured workflows'
 confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
-therefore change the manifest rather than workflow files. Pin-watch follows
-confos `main` only: the attestation-rs pin moves by hand, in the same PR that
-ports c8s and the confos attest config to that attestation-api.
+therefore change the manifest rather than workflow files.
+
+The confos and attestation-rs pins are release commits: each `*_ref` SHA is
+what the builds check out, and the `*_tag` beside it is the release that
+names it (`vMAJOR.MINOR.PATCH`). The SHA stays the build input because a tag
+can be repointed; the pin-hygiene workflow resolves each tag in its source
+repository (`.github/scripts/release-pin.sh`) and fails when it no longer
+names the pinned SHA. Pin-watch follows each repository's latest release, not
+its `main`, so an unreleased commit never enters a measured build, and it
+only moves a pin forward: a latest release older than the pinned one is kept
+out. An attestation-rs release that changes the attestation-api config or
+`/verify` contract still needs the c8s and confos ports in the same PR as its
+bump.
 
 Published builds resolve C8s container digests from the registry tag
 `C8S_REF` at build time. The rendered manifests, component seed and measured OCI
