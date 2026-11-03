@@ -172,7 +172,9 @@ protocols is two mappings. The node's own service ports are refused: 1019 (the
 workload inventory), 2379 and 2380 (etcd), 6443 (the Kubernetes API), 8443
 (credential release), 9345 (the agent join endpoint), and 10250 (the kubelet).
 An entry with host ports pins every container's launch: `command`, `args` and
-`mounts` not `any`, and `env` constrained.
+`mounts` not `any`, and `env` constrained. A node refuses a pod publishing a
+mapping no entry declares, and a container of such a pod unless the entry
+declaring its mappings admits that launch.
 
 ## Matching
 

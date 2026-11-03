@@ -11,6 +11,9 @@ import (
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
+	// published are the entries that declare host ports, which belong to the
+	// whole entry rather than to a digest.
+	published []hostPortGrant
 }
 
 // BuildIndex projects an Allowlist into an admission index.
@@ -22,6 +25,9 @@ func (a *Allowlist) BuildIndex() *Index {
 		}
 		for _, c := range w.Containers {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
+		}
+		if len(w.HostPorts) > 0 {
+			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
 		}
 	}
 	return idx
@@ -271,6 +277,55 @@ func (i *Index) GrantsHostBind(r RunningContainer, m ObservedMount) bool {
 		return false
 	}
 	return i.AdmitsContainerWhere(r, Container.LaunchPinned)
+}
+
+// hostPortGrant is one entry's mappings and the containers it declares them for.
+type hostPortGrant struct {
+	ports      HostPortList
+	containers []Container
+}
+
+// declares reports whether the entry declares every mapping in ports.
+func (p hostPortGrant) declares(ports []HostPort) bool {
+	for _, m := range ports {
+		if !slices.Contains(p.ports, m) {
+			return false
+		}
+	}
+	return true
+}
+
+// admits reports whether a container of the entry admits r whole.
+func (p hostPortGrant) admits(r RunningContainer) bool {
+	return slices.ContainsFunc(p.containers, func(c Container) bool {
+		return c.admits(r)
+	})
+}
+
+// DeclaresHostPorts reports whether some entry declares every mapping in ports.
+func (i *Index) DeclaresHostPorts(ports []HostPort) bool {
+	if i == nil || len(ports) == 0 {
+		return false
+	}
+	return slices.ContainsFunc(i.published, func(p hostPortGrant) bool {
+		return p.declares(ports)
+	})
+}
+
+// GrantsHostPorts reports whether one entry declares every mapping in ports and
+// admits this launch whole; entries are never combined.
+func (i *Index) GrantsHostPorts(r RunningContainer, ports []HostPort) bool {
+	if i == nil || len(ports) == 0 {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	return slices.ContainsFunc(i.published, func(p hostPortGrant) bool {
+		return p.declares(ports) && p.admits(r)
+	})
 }
 
 // DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile

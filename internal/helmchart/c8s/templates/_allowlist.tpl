@@ -889,6 +889,16 @@ null
 {{- end -}}
 {{- $spec := include "router.podSpec" . | fromYaml -}}
 {{- $volumes := default list $spec.volumes -}}
+{{- /* The host ports this pod publishes, which the node holds a pod of this
+       entry to (docs/allowlist-and-capabilities.md). */ -}}
+{{- $mappings := list -}}
+{{- range $c := concat (default list $spec.initContainers) (default list $spec.containers) -}}
+{{- range $port := default list $c.ports -}}
+{{- with $port.hostPort -}}
+{{- $mappings = append $mappings (dict "protocol" (default "TCP" $port.protocol) "hostPort" (int .) "containerPort" (int $port.containerPort)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $inits := list -}}
 {{- $mains := list -}}
 {{- range $init := list true false -}}
@@ -912,7 +922,11 @@ null
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{ dict "initContainers" $inits "containers" $mains | toJson }}
+{{- $entry := dict "initContainers" $inits "containers" $mains -}}
+{{- with $mappings -}}
+{{- $_ := set $entry "hostPorts" . -}}
+{{- end -}}
+{{ $entry | toJson }}
 {{- end -}}
 
 {{- /* c8s-router-<12 hex of sha256 over the entry>, so a changed digest, argv

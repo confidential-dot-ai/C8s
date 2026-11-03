@@ -265,15 +265,49 @@ func TestNodeImageRender(t *testing.T) {
 			if len(allowlist.Workloads) != 5 {
 				t.Errorf("seed has %d workloads, want the three core images, kube-state-metrics and the router pod", len(allowlist.Workloads))
 			}
-			routerEntry := false
+			routerEntry := ""
 			for name := range allowlist.Workloads {
-				routerEntry = routerEntry || strings.HasPrefix(name, "c8s-router-")
+				if strings.HasPrefix(name, "c8s-router-") {
+					routerEntry = name
+				}
 			}
-			if !routerEntry {
+			if routerEntry == "" {
 				t.Error("router pod entry missing from the baked seed")
+			} else {
+				assertRouterDeclaresItsHostPorts(t, allowlist.Workloads[routerEntry], docs["c8s-router/Deployment/c8s-router"])
 			}
 			assertLocalPathDenied(t, allowlist)
 		})
+	}
+}
+
+// The seeded router entry must declare what the baked router pod publishes.
+func assertRouterDeclaresItsHostPorts(t *testing.T, entry pkgallowlist.Workload, deployment []byte) {
+	t.Helper()
+	var router appsv1.Deployment
+	if err := yaml.Unmarshal(deployment, &router); err != nil {
+		t.Fatal(err)
+	}
+	pod := router.Spec.Template.Spec
+	var published []pkgallowlist.HostPort
+	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
+		for _, p := range c.Ports {
+			if p.HostPort == 0 {
+				continue
+			}
+			// The pod spec's default, which the template writes out.
+			protocol := string(corev1.ProtocolTCP)
+			if p.Protocol != "" {
+				protocol = string(p.Protocol)
+			}
+			published = append(published, pkgallowlist.HostPort{Protocol: protocol, HostPort: int(p.HostPort), ContainerPort: int(p.ContainerPort)})
+		}
+	}
+	slices.SortFunc(published, func(a, b pkgallowlist.HostPort) int {
+		return int(a.HostPort) - int(b.HostPort)
+	})
+	if declared := []pkgallowlist.HostPort(entry.HostPorts); !slices.Equal(declared, published) {
+		t.Errorf("the baked router entry declares %+v, its pod publishes %+v", declared, published)
 	}
 }
 

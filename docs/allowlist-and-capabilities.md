@@ -148,6 +148,22 @@ declaration has to grant the bind on its own; `mounts: any` grants nothing.
 Only that bind is set aside: every other violation still denies the container,
 and a writable `host` rule grants write access to the node path it names.
 
+A pod's host ports are the one host privilege the exemption below never
+excuses: the node's own pods take the node's network, so a published port is
+the pod's own doing. NRI carries no port mapping, so the plugin reads the
+mappings containerd recorded for the sandbox, checked against the pod's name,
+namespace and UID. Unless an entry declares every one of them, the sandbox is
+refused before a container of it exists and containerd takes the port mappings
+down with it. A container of such a pod then runs only under an entry that
+declares those mappings and admits its launch; the mesh and credential clients
+the node injects into a member pod are not held to it, as no entry declares
+them. A record the plugin cannot read, one that puts the sandbox on the node's
+network where NRI shows its own, and a mapping bound to a single node address
+each refuse the pod; a sandbox containerd no longer has decides nothing about a
+container already running. A pod on the node's network maps no host port of its
+own: the kubelet records its container ports as host ports there, which name
+the node's.
+
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
 measured base and a chart-rendered base is the cluster admin's to choose. What

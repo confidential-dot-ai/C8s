@@ -38,6 +38,9 @@ var sandboxNamespaces = []string{"ipc", "network", "pid", "uts"}
 // its own (requirePrivatePIDNamespace).
 const pidNamespace = "pid"
 
+// networkNamespace is the namespace type a pod on its own network holds.
+const networkNamespace = "network"
+
 // cgroupNamespace is present on every container containerd creates under
 // unified cgroups and omitted for a privileged one
 // (internal/cri/server/container_create.go). NRI carries no privileged flag, so
@@ -204,6 +207,12 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 		out = append(out, ns.GetType())
 	}
 	return out
+}
+
+// nodeNetwork reports whether the pod shares the node's network namespace, read
+// from the absence of the sandbox's own entry as violations() reads it.
+func nodeNetwork(pod *api.PodSandbox) bool {
+	return !slices.Contains(namespaceTypes(pod.GetLinux().GetNamespaces()), networkNamespace)
 }
 
 // hostBinds returns the bind sources the pod does not own. A bind mount is one
