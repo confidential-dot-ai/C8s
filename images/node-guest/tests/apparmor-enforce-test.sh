@@ -165,8 +165,7 @@ printf 'N\n' > "$WORK/sys/module/apparmor/parameters/enabled"
 ok "fails closed" not run_enforce
 ok "names disabled module" stderr_has 'AppArmor is disabled'
 
-# The package default (1) stacks every container's profile with unconfined;
-# a kernel without the knob cannot prove either way.
+# The package default is 1; a kernel without the knob cannot prove either way.
 for state in on absent; do
     CASE="unconfined restriction $state"
     reset_probe
