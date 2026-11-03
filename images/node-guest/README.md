@@ -599,10 +599,12 @@ pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
 pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
 so a hand-moved `confos_ref` has to carry mkosi along. The host attestation-api
 DaemonSet is pinned by digest in the chart (`attestationApi` `pinnedDigest` in
-`internal/helmchart/c8s/values.yaml`); pin-hygiene resolves
+`internal/helmchart/c8s/values.yaml`); pin-hygiene resolves both
+`attestation-api:<attestation_rs_tag>` and
 `attestation-api:sha-<attestation_rs_ref[0:7]>` with
-`.github/scripts/ghcr-digest.sh` and fails when the chart names another build,
-so the host and the guests verify with the same attestation-api.
+`.github/scripts/ghcr-digest.sh` (attestation-rs names one manifest both
+ways) and fails when the chart names another build, so the host and the
+guests verify with the same attestation-api release.
 
 The confos and attestation-rs pins are release commits: each `*_ref` SHA is
 what the builds check out, and the `*_tag` beside it is the release that
