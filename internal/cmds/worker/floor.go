@@ -70,9 +70,9 @@ type workerFloor struct {
 }
 
 // Floor builds a worker image's NRI floor from the node image's floor, its
-// digests filled, and the seed `c8s node-image render` writes. See
-// NewFloorCmd for what it keeps.
-func Floor(nodeFloorData, seed []byte) ([]byte, error) {
+// digests filled, the seed `c8s node-image render` writes, and the image's
+// static pod templates by file name. See NewFloorCmd for what it keeps.
+func Floor(nodeFloorData, seed []byte, templates map[string][]byte) ([]byte, error) {
 	node, err := parseNodeFloor(nodeFloorData)
 	if err != nil {
 		return nil, err
@@ -89,6 +89,16 @@ func Floor(nodeFloorData, seed []byte) ([]byte, error) {
 		return nil, fmt.Errorf("node floor: a platform role is named %s, the router's entry", name)
 	}
 	base.Workloads[name] = router
+	for file, data := range templates {
+		pod, entry, err := staticPodEntry(data)
+		if err != nil {
+			return nil, fmt.Errorf("static pod template %s: %w", file, err)
+		}
+		if _, taken := base.Workloads[pod]; taken {
+			return nil, fmt.Errorf("static pod template %s: pod %s is named as another entry", file, pod)
+		}
+		base.Workloads[pod] = entry
+	}
 	return yaml.Marshal(workerFloor{
 		floorSettings: node.floorSettings,
 		Allowlist:     *node.Allowlist,

@@ -120,18 +120,18 @@ func (d draft) render() ([]byte, error) {
 
 // NewFloorCmd returns `worker floor`, run when a worker image is built.
 func NewFloorCmd() *cobra.Command {
-	var nodeFloor, renderDir, out string
+	var nodeFloor, renderDir, staticPodDir, out string
 	cmd := &cobra.Command{
 		Use:   "floor",
 		Short: "Build a worker image's NRI floor",
 		Long: `Build a worker image's NRI floor from the node image's floor, its digests
 filled in, and the allowlist seed 'c8s node-image render' wrote to --render-dir.
 The floor keeps the node floor's settings and the entries whose every container
-holds a platform role, adds the chart's router entry, and leaves the mesh's
-resolver and cluster ranges to worker stage. It refuses a node floor key it does
-not know, and a router entry that leaves its launch open, takes a mount the
-control plane fills, or names a file under /run/c8s-node that worker stage does
-not publish.`,
+holds a platform role, adds the chart's router entry and an entry pinning each
+static pod template in --static-pods, and leaves the mesh's resolver and cluster
+ranges to worker stage. It refuses a node floor key it does not know, and a
+router entry that leaves its launch open, takes a mount the control plane fills,
+or names a file under /run/c8s-node that worker stage does not publish.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -143,7 +143,11 @@ not publish.`,
 			if err != nil {
 				return err
 			}
-			floor, err := Floor(node, seed)
+			templates, err := readTemplates(staticPodDir)
+			if err != nil {
+				return err
+			}
+			floor, err := Floor(node, seed, templates)
 			if err != nil {
 				return err
 			}
@@ -153,9 +157,31 @@ not publish.`,
 	f := cmd.Flags()
 	f.StringVar(&nodeFloor, "node-floor", "", "the node image's NRI floor, its digests filled in")
 	f.StringVar(&renderDir, "render-dir", "", "the --output-dir of 'c8s node-image render'")
+	f.StringVar(&staticPodDir, "static-pods", "", "the worker image's static pod templates, as stage reads them")
 	f.StringVar(&out, "out", "", "file to write the worker's floor to")
-	for _, name := range []string{"node-floor", "render-dir", "out"} {
+	for _, name := range []string{"node-floor", "render-dir", "static-pods", "out"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// readTemplates are the files in dir by name, which must all be regular, as
+// stage requires.
+func readTemplates(dir string) (map[string][]byte, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("--static-pods: %w", err)
+	}
+	templates := map[string][]byte{}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			return nil, fmt.Errorf("--static-pods: %s is not a regular file", entry.Name())
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		templates[entry.Name()] = data
+	}
+	return templates, nil
 }
