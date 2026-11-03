@@ -5,5 +5,5 @@ package main
 import "github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 
 func init() {
-	workerCmd.AddCommand(worker.NewNewCmd())
+	workerCmd.AddCommand(worker.NewNewCmd(), worker.NewFloorCmd())
 }
