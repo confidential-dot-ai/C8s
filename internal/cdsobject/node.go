@@ -227,7 +227,11 @@ func (n *Node) provisionOwned(p Provision) error {
 	}
 	var metadata *metadatapilot.Client
 	if endpoint := n.cfg.Storage.MetadataEndpoint; endpoint != "" {
-		metadata, err = metadatapilot.NewClient(endpoint, n.cfg.Storage.Prefix, p.MetadataToken, nil)
+		transport, err := metadatapilot.Transport(n.cfg.Storage.MetadataRootCA)
+		if err != nil {
+			return err
+		}
+		metadata, err = metadatapilot.NewClient(endpoint, n.cfg.Storage.Prefix, p.MetadataToken, transport)
 		if err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ type ObjectWALPilot struct {
 	Prefix           string `yaml:"prefix"`
 	Endpoint         string `yaml:"endpoint,omitempty"`
 	MetadataEndpoint string `yaml:"metadataEndpoint,omitempty"`
+	MetadataRootCA   string `yaml:"metadataRootCA,omitempty"`
 	PathStyle        bool   `yaml:"pathStyle,omitempty"`
 	KeySHA256        string `yaml:"keySHA256"`
 	DirectWriters    bool   `yaml:"directWriters,omitempty"`
@@ -41,6 +42,11 @@ func (p ObjectWALPilot) Check() error {
 		if err := metadatapilot.CheckEndpoint(p.MetadataEndpoint); err != nil {
 			return err
 		}
+		if _, err := metadatapilot.Transport(p.MetadataRootCA); err != nil {
+			return err
+		}
+	} else if p.MetadataRootCA != "" {
+		return errors.New("metadata root CA requires a metadata endpoint")
 	}
 	if p.BatchDelayMS < 0 || p.BatchDelayMS > 1000 {
 		return errors.New("ha.objectWALPilot.batchDelayMS must be between 0 and 1000")

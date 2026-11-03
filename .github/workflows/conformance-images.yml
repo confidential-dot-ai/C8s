@@ -6,6 +6,11 @@ name: Conformance images
 # backends' CONFORMANCE_IMAGES pin the digests the summary prints.
 on:
   workflow_dispatch:
+    inputs:
+      cds_metadata_only:
+        description: Build only the isolated CDS transactional metadata helper
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,6 +18,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ !inputs.cds_metadata_only }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -56,3 +62,34 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           echo "$IMAGE: ghcr.io/confidential-dot-ai/c8s-conformance-$IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  metadata:
+    if: ${{ inputs.cds_metadata_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go-c8s
+      - name: Test and build the isolated helper
+        run: |
+          go test -race ./internal/metadatapilot ./internal/cdsconfig ./internal/cdsobject ./test/pilot/cds-load
+          mkdir -p build
+          CGO_ENABLED=0 go build -trimpath -o build/cds-metadata-pilot ./cmd/cds-metadata-pilot
+      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: image
+        with:
+          context: .
+          file: test/pilot/cds-metadata/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/confidential-dot-ai/cds-metadata-pilot:${{ github.sha }}
+      - name: Record immutable image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: echo "Metadata helper ghcr.io/confidential-dot-ai/cds-metadata-pilot@$DIGEST from $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -34,6 +34,8 @@ func TestObjectWALConfigRejectsUnsafeOrSecretFields(t *testing.T) {
 	for name, change := range map[string]func(*ObjectWALPilot){
 		"HTTP":                func(p *ObjectWALPilot) { p.Endpoint = "http://storage.example" },
 		"metadata HTTP":       func(p *ObjectWALPilot) { p.MetadataEndpoint = "http://metadata.example" },
+		"metadata bad CA":     func(p *ObjectWALPilot) { p.MetadataRootCA = "not a certificate" },
+		"metadata CA alone":   func(p *ObjectWALPilot) { p.MetadataEndpoint = ""; p.MetadataRootCA = "not a certificate" },
 		"metadata credential": func(p *ObjectWALPilot) { p.MetadataEndpoint = "https://secret@metadata.example" },
 		"metadata query":      func(p *ObjectWALPilot) { p.MetadataEndpoint = "https://metadata.example?token=secret" },
 		"userinfo":            func(p *ObjectWALPilot) { p.Endpoint = "https://key:secret@storage.example" },

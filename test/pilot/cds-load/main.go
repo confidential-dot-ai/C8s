@@ -59,7 +59,9 @@ func main() {
 func run() error {
 	targets := flag.String("targets", "", "comma-separated direct HTTPS CDS origins")
 	pins := flag.String("cds-pin", "", "CDS image and launch-file pin document")
-	mode := flag.String("mode", "allowlist-read", "allowlist-read or secret-create (writes synthetic secrets)")
+	mode := flag.String("mode", "allowlist-read", "allowlist-read, secret-create or single-policy")
+	phase := flag.String("phase", "load", "load, replay, or revoke-policy")
+	journal := flag.String("journal", "", "private request journal, required for replay")
 	keyFile := flag.String("operator-key", "", "operator PEM file, required for secret-create")
 	count := flag.Int("n", 1000, "number of requests; no automatic retries")
 	concurrency := flag.Int("concurrency", 1, "maximum concurrent requests")
@@ -68,11 +70,14 @@ func run() error {
 	if *targets == "" || *pins == "" || *count < 1 || *count > 1_000_000 || *concurrency < 1 || *concurrency > 1024 || *timeout <= 0 {
 		return errors.New("provide --targets, --cds-pin, 1..1000000 requests, 1..1024 concurrency and a positive timeout")
 	}
-	if *mode != "allowlist-read" && *mode != "secret-create" {
+	if *mode != "allowlist-read" && *mode != "secret-create" && *mode != "single-policy" {
 		return errors.New("unknown workload")
 	}
+	if *phase != "load" && *phase != "replay" && *phase != "revoke-policy" {
+		return errors.New("unknown phase")
+	}
 	var signer *operatorauth.Signer
-	if *mode == "secret-create" {
+	if *mode != "allowlist-read" || *phase == "revoke-policy" {
 		key, err := os.ReadFile(*keyFile)
 		if err != nil {
 			return err
@@ -82,6 +87,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		signer = signer.WithTTL(operatorauth.MaxTokenValidity)
 	}
 	var endpoints []endpoint
 	for _, named := range strings.Split(*targets, ",") {
@@ -112,9 +118,41 @@ func run() error {
 		}
 		endpoints = append(endpoints, endpoint{origin, client})
 	}
+	if *phase == "replay" {
+		return replay(endpoints, *journal, *timeout)
+	}
+	if *phase == "revoke-policy" {
+		return revokePolicy(endpoints, signer, *timeout)
+	}
 	var id [16]byte
 	_, _ = rand.Read(id[:])
 	runID := hex.EncodeToString(id[:])
+	recorded := requestJournal{Run: runID, CreatedAt: time.Now(), Mode: *mode, Requests: make([]recordedRequest, *count)}
+	for i := range *count {
+		r := recordedRequest{Method: http.MethodGet, Path: "/allowlist", Expected: http.StatusOK}
+		if signer != nil {
+			r.Method = http.MethodPut
+			if *mode == "secret-create" {
+				r.Path = fmt.Sprintf("/secrets/pilot/%s/%d", runID, i)
+				r.Body = []byte(`{"value":"c3ludGhldGljLXBpbG90LXZhbHVl"}`)
+				r.Expected = http.StatusCreated
+			} else {
+				r.Body = policyDocument(fmt.Sprintf("policy-%s-%d", runID, i))
+				r.Expected = http.StatusNoContent
+			}
+			var err error
+			r.Authorization, err = signer.Authorization(r.Method, r.Path, r.Body)
+			if err != nil {
+				return err
+			}
+		}
+		recorded.Requests[i] = r
+	}
+	if *journal != "" {
+		if err := saveJournal(*journal, recorded, true); err != nil {
+			return err
+		}
+	}
 	results := make([]sample, *count)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -123,20 +161,13 @@ func run() error {
 		wg.Go(func() {
 			for i := range jobs {
 				target := endpoints[i%len(endpoints)]
-				method, path := http.MethodGet, "/allowlist"
-				var body []byte
-				if signer != nil {
-					method = http.MethodPut
-					path = fmt.Sprintf("/secrets/pilot/%s/%d", runID, i)
-					body = []byte(`{"value":"c3ludGhldGljLXBpbG90LXZhbHVl"}`)
-				}
+				r := recorded.Requests[i]
 				began := time.Now()
 				ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-				req, err := http.NewRequestWithContext(ctx, method, target.url+path, bytes.NewReader(body))
-				if err == nil && signer != nil {
-					var auth string
-					auth, err = signer.Authorization(method, path, body)
-					req.Header.Set("Authorization", auth)
+				req, err := http.NewRequestWithContext(ctx, r.Method, target.url+r.Path, bytes.NewReader(r.Body))
+				if err == nil {
+					req.GetBody = nil // A lost write reply is ambiguous, never retried.
+					req.Header.Set("Authorization", r.Authorization)
 					req.Header.Set("Content-Type", "application/json")
 				}
 				status := 0
@@ -161,12 +192,22 @@ func run() error {
 	}
 	close(jobs)
 	wg.Wait()
+	for i, result := range results {
+		recorded.Requests[i].Status = result.status
+	}
+	if *journal != "" {
+		if err := saveJournal(*journal, recorded, false); err != nil {
+			return err
+		}
+	}
 	duration := time.Since(start)
 	r := report{Mode: *mode, Run: runID, Requests: *count, Concurrency: *concurrency, Seconds: duration.Seconds(), RequestsPerSecond: float64(*count) / duration.Seconds(), Statuses: map[int]int{}}
 	var success, all []time.Duration
 	expected := http.StatusOK
-	if signer != nil {
+	if *mode == "secret-create" {
 		expected = http.StatusCreated
+	} else if *mode == "single-policy" {
+		expected = http.StatusNoContent
 	}
 	for _, result := range results {
 		r.Statuses[result.status]++
