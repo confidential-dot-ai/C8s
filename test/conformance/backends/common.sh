@@ -37,6 +37,7 @@
 #   node_refuses                     yes/no: a connect from the node to the CDS
 #                                    fails or hangs now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   api_service_name                 the fully qualified DNS name of the cluster's
 #                                    API Service
 #   mesh_restart                     recreate every controller-owned mesh member and wait

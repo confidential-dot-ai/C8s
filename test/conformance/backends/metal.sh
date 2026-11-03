@@ -426,6 +426,9 @@ node_refuses() { return "$UNSUPPORTED"; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
+# What the CDS VM keeps across a restart is the lane's storage, which the
+# harness cannot see.
+cds_volatile() { return $UNSUPPORTED; }
 
 
 dispatch "$@"

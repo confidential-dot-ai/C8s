@@ -37,6 +37,7 @@ var constant = map[string]bool{
 	"evidence_signed":  true,
 	"exempt_namespace": true,
 	"api_service_name": true,
+	"cds_volatile":     true,
 
 	"requester_source_is_own_address": true,
 }
