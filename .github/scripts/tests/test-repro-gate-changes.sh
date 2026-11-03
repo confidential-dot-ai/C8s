@@ -72,6 +72,13 @@ jq '.builds["node-image"].confos_tag = "v9.9.9"' \
 set_paths .github/build-pins.json
 expect_result false
 
+# The attestation-api digest is: the CDS image fetches those bytes.
+reset_case
+jq '.builds["node-image"].attestation_api_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' \
+  "$base_manifest" >"$current_manifest"
+set_paths .github/build-pins.json
+expect_result true
+
 reset_case
 printf 'not-json\n' >"$current_manifest"
 if bash "$CLASSIFIER" "$current_manifest" "$base_manifest" "$changed_paths" \

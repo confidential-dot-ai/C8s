@@ -597,14 +597,18 @@ therefore change the manifest rather than workflow files. The mkosi pin is
 derived, not chosen: `.github/scripts/confos-mkosi-pin.sh` reads it from the
 pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
 pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
-so a hand-moved `confos_ref` has to carry mkosi along. The host attestation-api
-DaemonSet is pinned by digest in the chart (`attestationApi` `pinnedDigest` in
-`internal/helmchart/c8s/values.yaml`); pin-hygiene resolves both
+so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
+is the published attestation-api image of that release: the CDS image fetches
+it by that digest (`images/cds-guest/cds/mkosi.sync`, failing when
+`sha-<ref7>` no longer names it) and the host DaemonSet runs it as the chart's
+`attestationApi` `pinnedDigest` (`internal/helmchart/c8s/values.yaml`), a copy
+pin-hygiene holds equal to the manifest. pin-hygiene also resolves
 `attestation-api:<attestation_rs_tag>` and
 `attestation-api:sha-<attestation_rs_ref[0:7]>` with
 `.github/scripts/ghcr-digest.sh` (attestation-rs names one manifest both
-ways) and fails when the chart names another build, so the host and the
-guests verify with the same attestation-api release.
+ways) and fails when either names another build, so the host and the guests
+verify with the same attestation-api release. pin-watch resolves the digest of
+a new attestation-rs release and writes the manifest and the chart together.
 
 The confos and attestation-rs pins are release commits: each `*_ref` SHA is
 what the builds check out, and the `*_tag` beside it is the release that

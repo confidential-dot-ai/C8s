@@ -79,6 +79,15 @@ if ! grep -qF '.github/build-pins.json' "$build" \
   echo "::error::the attestation-rs ref must flow from $build (read from .github/build-pins.json) into $profile/mkosi.sync; the CDS must not verify with another attestation-api than the nodes"
   exit 1
 fi
+# ...and its bytes are the manifest's digest, not whatever the sha- tag names
+# on build day: the digest flows the same way and is passed to the staging.
+if ! grep -qF 'attestation_api_digest' "$build" \
+   || ! grep -qF -- '--sync-input "attestation-api-digest=' "$build" \
+   || ! grep -qF 'sync_input attestation-api-digest' "$profile/mkosi.sync" \
+   || ! grep -qF -- '"$ATTESTATION_API_DIGEST"' "$profile/mkosi.sync"; then
+  echo "::error::the attestation-api digest must flow from $build (read from .github/build-pins.json) into $profile/mkosi.sync and pin the staged attestation-api"
+  exit 1
+fi
 if ! grep -qF -- '"$STAGE_DIR/usr/local/bin/attestation-api"' "$profile/mkosi.sync"; then
   echo "::error::$profile/mkosi.sync must stage that attestation-api at /usr/local/bin/attestation-api, the path attestation-api.service runs"
   exit 1

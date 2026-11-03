@@ -36,9 +36,11 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Install the binary a published image carries at its root; the target's
 # basename names it. Both images are built by docker and published as an OCI
-# image index (amd64 image + provenance manifest).
+# image index (amd64 image + provenance manifest). With a fourth argument the
+# image is pinned: the tag must still name that digest, and the fetch is by
+# the digest, so the pin and not the registry decides which bytes are measured.
 stage_published_binary() {
-    local repo=$1 ref=$2 target=$3
+    local repo=$1 ref=$2 target=$3 pinned=${4:-}
     local binary digest child layers extract
     binary=$(basename "$target")
 
@@ -49,6 +51,10 @@ stage_published_binary() {
         sha256:*) ;;
         *) echo "cds sync: FATAL cannot resolve ${repo}:${ref}" >&2; exit 1 ;;
     esac
+    if [ -n "$pinned" ] && [ "$digest" != "$pinned" ]; then
+        echo "cds sync: FATAL ${repo}:${ref} is ${digest}, but the pin is ${pinned}; the tag moved or the pin is stale" >&2
+        exit 1
+    fi
     echo "cds sync: ref ${ref} -> ${binary} ${digest}"
 
     child=$(oras manifest fetch "${repo}@${digest}" \
@@ -86,10 +92,13 @@ stage_published_binary() {
 
 C8S_REF=$(sync_input c8s-ref)
 ATTESTATION_RS_REF=$(sync_input attestation-rs-ref)
+ATTESTATION_API_DIGEST=$(sync_input attestation-api-digest)
 
 # `c8s cds` is the service the image runs.
 stage_published_binary ghcr.io/confidential-dot-ai/c8s-operator \
     "$C8S_REF" "$STAGE_DIR/usr/local/bin/c8s"
-# attestation-rs CI publishes one image per main commit, tagged sha-<short>.
+# attestation-rs CI publishes one image per main commit, tagged sha-<short>;
+# the pin manifest carries the digest that tag named when the pin was set.
 stage_published_binary ghcr.io/confidential-dot-ai/attestation-api \
-    "sha-${ATTESTATION_RS_REF:0:7}" "$STAGE_DIR/usr/local/bin/attestation-api"
+    "sha-${ATTESTATION_RS_REF:0:7}" "$STAGE_DIR/usr/local/bin/attestation-api" \
+    "$ATTESTATION_API_DIGEST"
