@@ -1,0 +1,22 @@
+[Unit]
+Description=Measured test-only Pod service recovery sequence
+ConditionPathExists=/run/confos/role-pod
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service podcvm-status.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/pod-recovery-fixture
+Restart=no
+RuntimeMaxSec=50min
+TimeoutStopSec=10
+RuntimeDirectory=pod-recovery-fixture
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/pod-recovery-fixture
+
+[Install]
+WantedBy=multi-user.target
