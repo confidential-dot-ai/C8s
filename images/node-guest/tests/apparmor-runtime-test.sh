@@ -95,8 +95,9 @@ label_probe=$(cat <<'EOF'
 set -eu
 export LC_ALL=C
 label=$(cat /proc/self/attr/current)
-[ "$label" = 'cri-containerd.apparmor.d (enforce)' ]
+# Report the label before judging it, so a failed probe names what it saw.
 printf '%s\n' "$label" > /dev/termination-log
+[ "$label" = 'cri-containerd.apparmor.d (enforce)' ]
 EOF
 )
 labels=$(jq -n --arg ns "$ns" --arg image "$image" --arg node "$node" --arg probe "$label_probe" '{
@@ -125,6 +126,7 @@ probe=$(cat <<'EOF'
 set -eu
 export LC_ALL=C
 label=$(cat /proc/self/attr/current)
+printf '%s\n' "$label" > /dev/termination-log
 mkdir /tmp/apparmor-mount
 if [ "$1" = control ]; then
     [ "$label" = unconfined ]
@@ -137,7 +139,6 @@ else
         exit 1
     fi
 fi
-printf '%s\n' "$label" > /dev/termination-log
 EOF
 )
 manifest=$(jq -n --arg image "$image" --arg node "$node" --arg probe "$probe" '{
