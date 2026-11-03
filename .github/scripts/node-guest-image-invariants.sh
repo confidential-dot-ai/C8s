@@ -465,6 +465,28 @@ grep -qE '^\s*apparmor\s*$' "$image/c8s/mkosi.conf" \
   || { echo "::error::$image/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
 grep -qFx 'disable apparmor.service' "$image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \
   || { echo "::error::50-rke2.preset must disable apparmor.service (only the parser is wanted)"; exit 1; }
+# The apparmor package's 10-apparmor.conf turns the unconfined restriction on,
+# which stacks every RuntimeDefault container's profile with unconfined
+# (README, "Workload isolation"). The profile's drop-in turns it off and the
+# boot gate refuses to start RKE2 otherwise, so a dropped drop-in or a later
+# sysctl.d file (profile or pinned confos base) setting the key again would
+# surface only as a node powering itself off at first boot.
+key=kernel.apparmor_restrict_unprivileged_unconfined
+dropin="$image/c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf"
+grep -qE "^$key *= *0$" "$dropin" \
+  || { echo "::error::$dropin must set $key = 0; apparmor-enforce.sh refuses to boot the node without it"; exit 1; }
+grep -qF "/proc/sys/${key//.//}" "$image/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh" \
+  || { echo "::error::apparmor-enforce.sh must assert /proc/sys/${key//.//}; the drop-in and the gate move together"; exit 1; }
+# sysctl.d applies files by basename order across every directory, so any
+# later (or same-named) basename that sets the key wins over the drop-in.
+later=$(find "$image/c8s/mkosi.extra" confos/mkosi -path '*/sysctl.d/*.conf' \
+          -exec grep -lE "^$key *=" {} + 2>/dev/null \
+        | awk -F/ -v name="${dropin##*/}" -v self="$dropin" '$NF >= name && $0 != self' || true)
+if [ -n "$later" ]; then
+  echo "::error::these sysctl.d files sort after ${dropin##*/} and set $key, overriding the drop-in:"
+  echo "$later"
+  exit 1
+fi
 
 # The image renders Kubernetes integration from its staged binary at BUILD
 # time. It must not revive a C8s HelmChart or boot-time values merge.

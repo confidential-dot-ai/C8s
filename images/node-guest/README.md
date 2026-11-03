@@ -410,7 +410,11 @@ loaded profile; this image has none to switch into, and container tasks are
 confined by a profile with no `change_profile` rule, so turning it off removes
 nothing here. If a permissive profile is ever loaded on the node, turn it back
 on with that change. The user-namespace restriction from the same package file
-stays on. `tests/apparmor-runtime-test.sh` asserts the plain label.
+stays on. The invariant gate checks that the drop-in sets the key to 0, that
+`apparmor-enforce.sh` asserts it, and that no sysctl.d file sorting after it in
+the profile or the pinned confos base sets the key again; without that, the
+failure would be a node powering itself off at first boot.
+`tests/apparmor-runtime-test.sh` asserts the plain label.
 
 Containerd selects `cri-containerd.apparmor.d` for non-privileged containers
 with omitted or explicit RuntimeDefault AppArmor settings. It denies mounts
