@@ -391,10 +391,26 @@ fragments pin the complete `CONFIG_LSM` order; the invariant gate checks
 them and the committed snapshot, and `build` checks the actual resolved
 kernel `.config`, including cache hits. Before either RKE2 role starts,
 `apparmor-enforce.service` requires an active AppArmor LSM, an executable
-parser, and a disabled, inactive `apparmor.service`. It loads a temporary
+parser, a disabled, inactive `apparmor.service`, and
+`kernel.apparmor_restrict_unprivileged_unconfined = 0`. It loads a temporary
 profile, verifies its enforce-mode label and a denied read against a
 successful unconfined control, then removes the profile. Failure blocks
 RKE2. The package's stock host profiles are not loaded.
+
+The apparmor package turns that sysctl on in `/usr/lib/sysctl.d/10-apparmor.conf`;
+`c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf` turns it back off. On, it
+makes the kernel stack the profile a task asks for at exec with unconfined
+when the task lacks `CAP_MAC_OVERRIDE` (Linux 6.18.60, upstream
+`08c2f7c8d4b1`). runc has dropped the pod's capabilities by then, so every
+RuntimeDefault container would run as `cri-containerd.apparmor.d//&unconfined`,
+and containerd's `signal` and `ptrace` rules, which name the plain profile as
+the peer, would no longer match a container's own processes. The restriction
+stops an unconfined, unprivileged task from switching into a more permissive
+loaded profile; this image has none to switch into, and container tasks are
+confined by a profile with no `change_profile` rule, so turning it off removes
+nothing here. If a permissive profile is ever loaded on the node, turn it back
+on with that change. The user-namespace restriction from the same package file
+stays on. `tests/apparmor-runtime-test.sh` asserts the plain label.
 
 Containerd selects `cri-containerd.apparmor.d` for non-privileged containers
 with omitted or explicit RuntimeDefault AppArmor settings. It denies mounts
