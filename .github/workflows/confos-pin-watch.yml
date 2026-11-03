@@ -62,23 +62,13 @@ jobs:
           [ -z "$newer" ] || read -r confos_tag confos <<<"$newer"
           newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs --floor "$attest_tag")
           [ -z "$newer" ] || read -r attest_tag attest <<<"$newer"
-          mapfile -t mkosi_lines < <(
-            curl -fsSL --retry 3 \
-              "https://raw.githubusercontent.com/confidential-dot-ai/confidential-os-builder/${confos}/.github/workflows/base.yml" |
-              grep -oE 'systemd/mkosi@[0-9a-f]{40} # v[0-9.]+'
-          )
-          if (( ${#mkosi_lines[@]} != 1 )); then
-            echo "::error::expected exactly one mkosi pin in confos base.yml; found ${#mkosi_lines[@]}"
-            exit 1
-          fi
-          mkosi_line=${mkosi_lines[0]}
+          read -r mkosi_sha mkosi_ver < <(bash .github/scripts/confos-mkosi-pin.sh "$confos")
           out=$(bash .github/scripts/pin-manifest.sh update \
             --manifest .github/build-pins.json \
             --domain "$DOMAIN" \
             --confos "$confos" --confos-tag "$confos_tag" \
             --attest "$attest" --attest-tag "$attest_tag" \
-            --mkosi-sha "$(grep -oE '[0-9a-f]{40}' <<<"$mkosi_line")" \
-            --mkosi-ver "$(grep -oE 'v[0-9.]+$' <<<"$mkosi_line")")
+            --mkosi-sha "$mkosi_sha" --mkosi-ver "$mkosi_ver")
           echo "$out"
           grep -q '^no-drift$' <<<"$out" && exit 0
           changes=$(git status --short --untracked-files=all)
@@ -168,4 +158,4 @@ jobs:
             echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
             exit 1
           fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
+          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
