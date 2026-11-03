@@ -5,7 +5,15 @@ on:
     branches: [main, beta, "feat/**"]
     # The packages and lane scripts these jobs run.
     paths: &cdsha-paths
+      - ".github/workflows/cdsha.yml"
+      - "go.mod"
+      - "go.sum"
       - "internal/cdsha/**"
+      - "internal/cdsobject/**"
+      - "internal/objectwal/**"
+      - "internal/cdsconfig/**"
+      - "internal/cmds/cds/**"
+      - "test/pilot/cds-load/**"
       - "test/integration/cdsha/**"
   push:
     branches: [main]
@@ -33,11 +41,28 @@ jobs:
 
       - uses: ./.github/actions/setup-go-c8s
 
+      - name: Permit the local inventory fixture on port 1019
+        # Only this disposable runner: CDS keeps its fixed privileged-port
+        # inventory check, and the fixture binds one local address explicitly.
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1019
+
+      - name: Check the object-WAL pilot and shared CDS backend
+        run: |
+          go test -race -count=1 ./internal/objectwal ./internal/cdsobject ./internal/cdsconfig ./internal/cmds/cds
+          go build ./test/pilot/cds-load
+
       - name: Run the -short subset
         if: github.event_name == 'pull_request' && hashFiles('test/integration/cdsha/run.sh') != ''
-        run: ./test/integration/cdsha/run.sh -short
+        run: ./test/integration/cdsha/run.sh -short -skip '^TestWorkloadBackendParity$'
 
       - name: Run every scenario
         if: github.event_name != 'pull_request' && hashFiles('test/integration/cdsha/run.sh') != ''
-        run: ./test/integration/cdsha/run.sh
+        run: ./test/integration/cdsha/run.sh -skip '^TestWorkloadBackendParity$'
+
+      - name: Run the workload pilot with release processes
+        # Keep the deployed timers for this serving-flow comparison. The
+        # membership/fault scenarios above use the accelerated c8s_dev build.
+        env:
+          CDSHA_RELEASE: "1"
+        run: ./test/integration/cdsha/run.sh -race -run '^TestWorkloadBackendParity$'
 

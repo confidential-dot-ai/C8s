@@ -26,12 +26,16 @@ type HA struct {
 	Replicas []string
 	// Voters seeds the voter count at Genesis.
 	Voters int
+	// ObjectWALPilot opts into the experimental object-storage backend. Nil
+	// retains Raft. This block contains public settings only.
+	ObjectWALPilot *ObjectWALPilot
 }
 
 // haWire mirrors the document's ha block.
 type haWire struct {
-	Replicas []string `yaml:"replicas"`
-	Voters   int      `yaml:"voters"`
+	Replicas       []string        `yaml:"replicas"`
+	Voters         int             `yaml:"voters"`
+	ObjectWALPilot *ObjectWALPilot `yaml:"objectWALPilot,omitempty"`
 }
 
 // parse reads the block; a document without one runs the singleton CDS.
@@ -46,9 +50,15 @@ func (w *haWire) parse() (*HA, error) {
 	if err := checkVoters(w.Voters); err != nil {
 		return nil, err
 	}
+	if w.ObjectWALPilot != nil {
+		if err := w.ObjectWALPilot.Check(); err != nil {
+			return nil, err
+		}
+	}
 	return &HA{
-		Replicas: replicas,
-		Voters:   w.Voters,
+		Replicas:       replicas,
+		Voters:         w.Voters,
+		ObjectWALPilot: w.ObjectWALPilot,
 	}, nil
 }
 
@@ -59,13 +69,14 @@ func (h HA) wire() *haWire {
 		return nil
 	}
 	return &haWire{
-		Replicas: h.Replicas,
-		Voters:   h.Voters,
+		Replicas:       h.Replicas,
+		Voters:         h.Voters,
+		ObjectWALPilot: h.ObjectWALPilot,
 	}
 }
 
 func (h HA) namesNoReplicaSet() bool {
-	return len(h.Replicas) == 0 && h.Voters == 0
+	return len(h.Replicas) == 0 && h.Voters == 0 && h.ObjectWALPilot == nil
 }
 
 func parseReplicas(entries []string) ([]string, error) {

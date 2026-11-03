@@ -1,0 +1,46 @@
+{
+  "region": "us-east-2",
+  "stale_cas_rejected": true,
+  "samples": [
+    {
+      "operation": "conditional_put",
+      "ms": 397.4683710002864
+    },
+    {
+      "operation": "get",
+      "ms": 351.06775000167545
+    },
+    {
+      "operation": "conditional_put",
+      "ms": 389.78117799706524
+    },
+    {
+      "operation": "get",
+      "ms": 360.54851000153576
+    },
+    {
+      "operation": "conditional_put",
+      "ms": 374.491599999601
+    },
+    {
+      "operation": "get",
+      "ms": 399.74448400244
+    },
+    {
+      "operation": "conditional_put",
+      "ms": 445.39247200009413
+    },
+    {
+      "operation": "get",
+      "ms": 362.42210699856514
+    },
+    {
+      "operation": "conditional_put",
+      "ms": 371.57749199832324
+    },
+    {
+      "operation": "get",
+      "ms": 345.5049809999764
+    }
+  ]
+}

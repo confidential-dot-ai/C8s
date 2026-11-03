@@ -129,13 +129,72 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 		"/secrets/a/secret": http.StatusServiceUnavailable,
 	} {
 		for serving, want := range map[bool]int{true: answered, false: unserved} {
-			gated := haGate(func() bool { return serving }, routed)
+			gated := haGate(func() bool { return serving }, func() error { return nil }, routed)
 			w := httptest.NewRecorder()
 			gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 			if w.Code != want {
 				t.Errorf("GET %s with serving=%v = %d, want %d", path, serving, w.Code, want)
 			}
 		}
+	}
+}
+
+// Readiness can remain true while a follower still holds a revoked grant.
+// Each protected request must advance to the leader's committed watermark
+// before the handler decides whether to release a secret.
+func TestTheGateReadsCommittedPolicyInsteadOfACachedGrant(t *testing.T) {
+	committedGrant, appliedGrant := true, true
+	confirmations := 0
+	gated := haGate(func() bool { return true }, func() error {
+		confirmations++
+		appliedGrant = committedGrant
+		return nil
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !appliedGrant {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	if code := get(t, gated, http.MethodGet, "/secrets/a/secret"); code != http.StatusOK {
+		t.Fatalf("initial secret read: HTTP %d", code)
+	}
+	committedGrant = false // The revocation has been acknowledged by the leader.
+	if code := get(t, gated, http.MethodGet, "/secrets/a/secret"); code != http.StatusForbidden {
+		t.Fatalf("secret read after acknowledged revocation: HTTP %d", code)
+	}
+	if confirmations != 2 {
+		t.Fatalf("confirmed %d reads, want one per protected request", confirmations)
+	}
+}
+
+// A valid cached readiness lease is insufficient when the quorum cannot be
+// reached. Recovery and diagnostic routes must remain reachable in that state.
+func TestTheGateRefusesUnconfirmedReadsWhileReady(t *testing.T) {
+	for _, path := range []string{"/attest", "/allowlist", "/ca", "/measurements", "/secrets/a/secret"} {
+		t.Run(path, func(t *testing.T) {
+			called := false
+			gated := haGate(func() bool { return true }, func() error {
+				return errors.New("quorum unavailable")
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			if code := get(t, gated, http.MethodGet, path); code != http.StatusServiceUnavailable || called {
+				t.Fatalf("unconfirmed %s: HTTP %d, handler called=%v", path, code, called)
+			}
+		})
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/ha/status", "/ha/pins", "/ha/decrees"} {
+		t.Run(path, func(t *testing.T) {
+			gated := haGate(func() bool { return false }, func() error {
+				t.Fatal("recovery route tried to confirm a read")
+				return nil
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			if code := get(t, gated, http.MethodGet, path); code != http.StatusOK {
+				t.Fatalf("recovery route %s: HTTP %d", path, code)
+			}
+		})
 	}
 }
 

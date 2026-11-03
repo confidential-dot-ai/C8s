@@ -982,14 +982,22 @@ jobs:
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          # Pilot and explicit-ref builds publish only their commit tags.
+          # A test image must not replace the current CDS release aliases.
+          CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
+          ARTIFACT_TAGS="${VARIANT}-${SHORT_SHA}"
+          if [ -z "$C8S_REF_INPUT" ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            CDI_TAGS="${VARIANT}-cdi,${CDI_TAGS}"
+            ARTIFACT_TAGS="${VARIANT},${ARTIFACT_TAGS}"
+          fi
           # CDI first, oras artifact last, as the node image publishes: a
           # partial failure re-publishes everything on the next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
+            --tag "$CDI_TAGS"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "${VARIANT},${VARIANT}-${SHORT_SHA}"
+            --tag "$ARTIFACT_TAGS"
 
       - name: Summary
         env:

@@ -97,6 +97,32 @@ func TestAWriteTakenByAnyReplicaReachesEveryReplica(t *testing.T) {
 	})
 }
 
+// A successful replacement has revoked the preceding policy. The next read
+// through any replica must observe that replacement without waiting for the
+// background readiness lease to refresh or retrying a stale response.
+func TestAcknowledgedPolicyReplacementsAreImmediatelyVisible(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	c.waitRollSafe(time.Minute)
+	for version := range 12 {
+		want := fmt.Sprintf("revocation-watermark-%d", version)
+		c.replaceAllowlist(c.replicas[version%len(c.replicas)], want)
+		for _, r := range c.replicas {
+			c.waitFor("the replica to confirm the acknowledged policy", 10*time.Second, func() bool {
+				code, body := c.get(r, "/allowlist")
+				// A leadership transition may fail closed; a successful stale
+				// answer is always a failure, including the very first read.
+				if code == http.StatusServiceUnavailable {
+					return false
+				}
+				if code != http.StatusOK || !strings.Contains(string(body), want) {
+					t.Fatalf("replica %d read after acknowledged replacement %d: HTTP %d %s", r.index, version, code, body)
+				}
+				return true
+			})
+		}
+	}
+}
+
 // A cluster of one voter seat loses that voter, and every replica stops
 // serving: a replica answers a read under a lease its leader confirmed, so
 // one that cannot reach a leader fails closed instead of answering from the

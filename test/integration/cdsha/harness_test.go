@@ -113,12 +113,24 @@ const seededWorkload = "attestation-api"
 // binaries are the programs the harness runs: the CDS, built with the tag that
 // serves a replica set, and the attestation-api a replica attests through.
 type binaries struct {
-	cds  string
-	api  string
-	logs string
+	cds      string
+	api      string
+	metadata string
+	logs     string
 }
 
 var built binaries
+
+// The default suite accelerates elections and leases. The pilot can also run
+// the exact release build, without changing the backend's timing constants.
+var releaseProcesses = os.Getenv("CDSHA_RELEASE") == "1"
+
+func processReadLease() time.Duration {
+	if releaseProcesses {
+		return 5 * time.Second // internal/cdsha/node.go: releaseTiming.Lease
+	}
+	return time.Second // internal/cmds/cds/ha_dev.go: haTimingOverride.Lease
+}
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "cdsha-it-")
@@ -126,13 +138,20 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	built = binaries{
-		cds:  filepath.Join(dir, "c8s"),
-		api:  filepath.Join(dir, "mock-attestation"),
-		logs: filepath.Join(dir, "logs"),
+		cds:      filepath.Join(dir, "c8s"),
+		api:      filepath.Join(dir, "mock-attestation"),
+		metadata: filepath.Join(dir, "cds-metadata-pilot"),
+		logs:     filepath.Join(dir, "logs"),
 	}
+	cdsBuild := []string{"build", "-o", built.cds}
+	if !releaseProcesses {
+		cdsBuild = append(cdsBuild, "-tags", "c8s_dev")
+	}
+	cdsBuild = append(cdsBuild, "github.com/confidential-dot-ai/c8s/cmd/c8s")
 	for _, build := range [][]string{
-		{"build", "-tags", "c8s_dev", "-o", built.cds, "github.com/confidential-dot-ai/c8s/cmd/c8s"},
+		cdsBuild,
 		{"build", "-o", built.api, "github.com/confidential-dot-ai/c8s/test/mock-attestation"},
+		{"build", "-o", built.metadata, "github.com/confidential-dot-ai/c8s/cmd/cds-metadata-pilot"},
 	} {
 		cmd := exec.Command("go", build...)
 		cmd.Stdout = os.Stdout
@@ -142,7 +161,7 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	fmt.Println("cdsha integration: logs in", built.logs)
+	fmt.Printf("cdsha integration: release processes=%t, logs in %s\n", releaseProcesses, built.logs)
 	code := m.Run()
 	if code == 0 {
 		_ = os.RemoveAll(dir)
@@ -166,6 +185,7 @@ type cluster struct {
 	configPath string
 	operator   *ecdsa.PrivateKey
 	signer     *operatorauth.Signer
+	objectWAL  *objectFixture // nil runs the existing Raft backend
 	// client verifies through an attestation-api of its own, so no scenario's
 	// kill takes the verifier with it.
 	client   *http.Client
@@ -284,17 +304,31 @@ func replicaHost(index int) string {
 // newCluster boots the replicas of a cluster of this shape, decrees the
 // Genesis of the first, and returns once every replica serves.
 func newCluster(t *testing.T, size shape) *cluster {
+	return newClusterWithObjects(t, size, nil)
+}
+
+func newClusterWithObjects(t *testing.T, size shape, objects *objectFixture) *cluster {
 	t.Helper()
-	c := &cluster{t: t, dir: t.TempDir()}
+	return newClusterWithNodes(t, size, objects, nodeImagesDocument, []string{"10.0.0.0/24"})
+}
+
+func newClusterWithNodes(t *testing.T, size shape, objects *objectFixture, nodes string, nodeCIDRs []string) *cluster {
+	t.Helper()
+	c := &cluster{t: t, dir: t.TempDir(), objectWAL: objects}
 	c.requireFreeAddresses(size.replicas)
 	c.operator = newKey(t)
 	c.signer = c.operatorSigner()
-	c.configure(size)
+	c.configure(size, nodes, nodeCIDRs)
 	c.client = c.attestedClient(testutil.TestMeasurement)
 	for i := range size.replicas {
 		c.replicas = append(c.replicas, c.start(i))
 	}
-	c.genesis(c.replicas[0])
+	if objects != nil {
+		for _, r := range c.replicas {
+			c.provisionObjects(r)
+		}
+	}
+	c.genesisCertifying(c.replicas[0], nodes, 0)
 	c.waitServing(time.Minute)
 	return c
 }
@@ -318,11 +352,15 @@ func (c *cluster) requireFreeAddresses(replicas int) {
 
 // configure writes the launch file every replica of the cluster boots: one
 // document serves them all, and nothing in it names one replica.
-func (c *cluster) configure(size shape) {
+func (c *cluster) configure(size shape, nodes string, nodeCIDRs []string) {
 	c.t.Helper()
 	addresses := make([]string, 0, size.replicas)
 	for i := range size.replicas {
 		addresses = append(addresses, replicaHost(i))
+	}
+	ha := map[string]any{"replicas": addresses, "voters": size.voters}
+	if c.objectWAL != nil {
+		ha["objectWALPilot"] = c.objectWAL.config
 	}
 	document, err := yaml.Marshal(map[string]any{
 		"schemaVersion":      cdsconfig.SchemaVersion,
@@ -331,13 +369,10 @@ func (c *cluster) configure(size shape) {
 		"workloads": `{"schema":"c8s.allowlist/v1","workloads":{"` + seededWorkload +
 			`":{"label":"ghcr.io/x/` + seededWorkload + `:v1","containers":[{"digest":"sha256:` +
 			strings.Repeat("11", 32) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
-		"nodes":        nodeImagesDocument,
-		"nodeCIDRs":    []string{"10.0.0.0/24"},
+		"nodes":        nodes,
+		"nodeCIDRs":    nodeCIDRs,
 		"leafDNSNames": []string{"workload." + clusterID + ".svc"},
-		"ha": map[string]any{
-			"replicas": addresses,
-			"voters":   size.voters,
-		},
+		"ha":           ha,
 	})
 	if err != nil {
 		c.t.Fatal(err)
@@ -389,7 +424,11 @@ func (c *cluster) attestationAPI(name, measurement string) string {
 // new member of the cluster, over an allowlist database the log refills.
 func (c *cluster) restart(r *replica) {
 	c.t.Helper()
-	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, []string{
+	var env []string
+	if c.objectWAL != nil && c.objectWAL.certificate != "" {
+		env = []string{"SSL_CERT_FILE=" + c.objectWAL.certificate}
+	}
+	args := []string{
 		"cds",
 		"--config", c.configPath,
 		"--attestation-api-url", r.apiURL,
@@ -397,8 +436,15 @@ func (c *cluster) restart(r *replica) {
 		"--host", r.host,
 		"--port", strconv.Itoa(clientPort),
 		"--jwt-clock-skew", strconv.Itoa(clockSkewSeconds),
+		"--secrets-max-paths", "20000",
 		"--log-level", "debug",
-	}, nil)
+	}
+	if os.Getenv("CDSHA_TRANSACTIONAL_COMPARE") == "1" {
+		// Isolate backend admission/commit costs from the default per-IP
+		// front-door limiter. All comparison arms use the same explicit budget.
+		args = append(args, "--rate-limit", "10000", "--rate-burst", "10000")
+	}
+	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, args, env)
 }
 
 // kill ends a replica's CDS process, as a lost VM does. The attestation-api

@@ -21,14 +21,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsobject"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // clusterRoutes are answered to a caller with no client certificate, each
 // named by its method and path.
-func clusterRoutes(node *cdsha.Node) map[string]http.HandlerFunc {
+func clusterRoutes(node clusterNode) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"GET /ha/status":   reportJSON(node.Status),
 		"GET /ha/pins":     reportPinDecree(node),
@@ -43,7 +43,7 @@ const maxDecreeBody = 1 << 20
 
 // takeDecree hands the decree an operator posts to this replica to the
 // cluster, and answers what the cluster made of it.
-func takeDecree(node *cdsha.Node) http.HandlerFunc {
+func takeDecree(node clusterNode) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := readutil.ReadAll(r.Body, maxDecreeBody)
 		if err != nil {
@@ -72,7 +72,7 @@ func reportJSON[T any](read func() T) http.HandlerFunc {
 
 // reportPinDecree serves the pin decree the cluster applied, as the operator
 // signed it, and nothing while it applied none.
-func reportPinDecree(node *cdsha.Node) http.HandlerFunc {
+func reportPinDecree(node clusterNode) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		applied := node.ClusterState().PinsDecree
 		if applied == nil {
@@ -96,14 +96,22 @@ func writeJSON(w http.ResponseWriter, report any) {
 	_, _ = w.Write(body)
 }
 
-// haGate refuses every route but servedUnjoined while this replica may not
-// serve its cluster: it must not issue a leaf, release a secret or hand out
-// policy the cluster has moved past.
-func haGate(serving func() bool, next http.Handler) http.Handler {
+// haGate requires a fresh committed watermark for every route but
+// servedUnjoined. Readiness alone is a cached lease: a follower can still be
+// ready while its policy predates an acknowledged revocation. Confirmation
+// waits for the leader's barrier and this replica's application of its watermark
+// before a handler can issue a leaf, release a secret or read policy.
+func haGate(serving func() bool, confirmRead func() error, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !servedUnjoined(r.URL.Path) && !serving() {
-			http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
-			return
+		if !servedUnjoined(r.URL.Path) {
+			if !serving() {
+				http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
+				return
+			}
+			if err := confirmRead(); err != nil {
+				http.Error(w, "cds-ha: no current read watermark", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -117,6 +125,8 @@ func servedUnjoined(path string) bool {
 		"/ha/status",
 		"/ha/pins",
 		"/ha/decrees":
+		return true
+	case objectProvisionPath, objectStatsPath, cdsobject.ForwardPath:
 		return true
 	}
 	return false

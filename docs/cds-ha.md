@@ -20,6 +20,11 @@ What CDS does for a cluster is unchanged, and this page assumes it:
 The procedures are in [cds-ha-runbooks.md](cds-ha-runbooks.md), the alarms in
 [cds-ha-alerts.md](cds-ha-alerts.md).
 
+An opt-in [encrypted object-WAL pilot](cds-object-wal-pilot.md) implements the
+same CDS state machine using conditional object writes. Its separate runbook
+describes the different storage authority and lifecycle limits. This page
+continues to describe the default Raft backend.
+
 ## Versions
 
 A cluster counts the operator commands it has applied. That count is its
@@ -166,9 +171,19 @@ the pin decree the cluster applied and writes the pin document it makes, which
 is what a client pins and what `--cds-pin` takes during an image roll.
 
 `/readyz` answers for one replica: it serves when it holds the cluster,
-follows the log, and holds a read lease its leader confirmed. A replica that
-cannot reach a leader stops serving rather than answering from the state it
-still holds.
+follows the log, and holds a read lease its leader confirmed. This cached
+readiness lease does not authorize a protected request. Each such request
+also confirms a new watermark through the leader's Raft barrier and waits
+for that watermark to apply locally before reading policy or releasing a
+secret. A revocation acknowledged before the request starts therefore applies
+to its authorization, even on a follower whose readiness lease is still valid.
+
+If confirmation fails, the request returns HTTP 503 without reaching its
+handler. This adds a quorum confirmation to protected requests and can increase
+latency or refusals during leader transitions. Health, readiness, metrics and
+`/ha/status`, `/ha/pins`, `/ha/decrees` remain reachable for diagnosis and
+recovery without a fresh confirmation. `/readyz` can briefly remain successful
+while protected requests fail their confirmation.
 
 **roll_safe** is the other gate, and the leader alone answers it: the seats
 are filled by voters that answer, none of them is retiring, and every staying
