@@ -159,6 +159,18 @@ type Container struct {
 	Args    ArgvPolicy   `json:"args" yaml:"args"`
 	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`
 	Env     EnvPolicy    `json:"env" yaml:"env,omitempty"`
+	// Capabilities are what these bytes may hold beyond the node's default set.
+	Capabilities CapabilityList `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+}
+
+// CapabilityList decodes each name strictly; an undecodable value becomes the
+// empty name normalizeCapabilities refuses.
+type CapabilityList []string
+
+// UnmarshalJSON never fails: what does not decode is the empty name above.
+func (l *CapabilityList) UnmarshalJSON(data []byte) error {
+	*l = strictMembers[string](data)
+	return nil
 }
 
 // ArgvPolicy governs part of a container's effective argv (the OCI process.args
@@ -365,15 +377,22 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := w.pinnedForHostPorts(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
 	}
+	if err := w.normalizeDeclaredCapabilities(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
+	if err := w.pinnedForCapabilities(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
 }
 
 var (
-	errGrantUnpinnedArgv       = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts     = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
-	errHostPortsUnpinnedLaunch = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
+	errGrantUnpinnedArgv          = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+	errGrantUnpinnedMounts        = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
+	errHostPortsUnpinnedLaunch    = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
+	errCapabilitiesUnpinnedLaunch = fmt.Errorf("declared capabilities need every container to pin its launch: command, args and mounts not any, and env constrained")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -465,12 +484,30 @@ func (w Workload) pinnedForHostPorts() error {
 	if len(w.HostPorts) == 0 {
 		return nil
 	}
-	for _, c := range w.containers() {
-		if !c.LaunchPinned() {
-			return errHostPortsUnpinnedLaunch
-		}
+	if !w.launchPinned() {
+		return errHostPortsUnpinnedLaunch
 	}
 	return nil
+}
+
+// pinnedForCapabilities refuses a declared capability unless every container pins its launch.
+func (w Workload) pinnedForCapabilities() error {
+	declares := func(c Container) bool {
+		return len(c.Capabilities) > 0
+	}
+	if slices.ContainsFunc(w.containers(), declares) && !w.launchPinned() {
+		return errCapabilitiesUnpinnedLaunch
+	}
+	return nil
+}
+
+func (w Workload) launchPinned() bool {
+	for _, c := range w.containers() {
+		if !c.LaunchPinned() {
+			return false
+		}
+	}
+	return true
 }
 
 // HostIndependent reports whether every runtime field that can change what a
@@ -620,6 +657,22 @@ func (a *Allowlist) normalize(strict bool) error {
 				"name", name, "error", err)
 			w.HostPorts = nil
 		}
+		if err := w.normalizeDeclaredCapabilities(); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
+			slog.Warn("allowlist: dropping a served workload entry's capabilities this consumer cannot validate",
+				"name", name, "error", err)
+			w.dropDeclaredCapabilities()
+		}
+		if err := w.pinnedForCapabilities(); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
+			slog.Warn("allowlist: dropping a served workload entry's capabilities no pinned launch holds",
+				"name", name, "error", err)
+			w.dropDeclaredCapabilities()
+		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
@@ -765,6 +818,89 @@ func compareHostPorts(a, b HostPort) int {
 		return c
 	}
 	return strings.Compare(a.Protocol, b.Protocol)
+}
+
+// declarableCapabilities are the Linux capabilities outside the container
+// runtime's default set, less NET_ADMIN, NET_RAW, SETUID and SETGID, spelled as
+// a pod spec spells them: no CAP_ prefix.
+var declarableCapabilities = []string{
+	"AUDIT_CONTROL",
+	"AUDIT_READ",
+	"BLOCK_SUSPEND",
+	"BPF",
+	"CHECKPOINT_RESTORE",
+	"DAC_READ_SEARCH",
+	"IPC_LOCK",
+	"IPC_OWNER",
+	"LEASE",
+	"LINUX_IMMUTABLE",
+	"MAC_ADMIN",
+	"MAC_OVERRIDE",
+	"NET_BROADCAST",
+	"PERFMON",
+	"SYSLOG",
+	"SYS_ADMIN",
+	"SYS_BOOT",
+	"SYS_MODULE",
+	"SYS_NICE",
+	"SYS_PACCT",
+	"SYS_PTRACE",
+	"SYS_RAWIO",
+	"SYS_RESOURCE",
+	"SYS_TIME",
+	"SYS_TTY_CONFIG",
+	"WAKE_ALARM",
+}
+
+// normalizeCapabilities validates a container's declared capabilities and sorts
+// them. An empty list becomes nil, so a container declaring none carries no key.
+func normalizeCapabilities(caps *CapabilityList) error {
+	list := *caps
+	if len(list) == 0 {
+		*caps = nil
+		return nil
+	}
+	declared := make(map[string]bool, len(list))
+	for _, name := range list {
+		switch {
+		case name == "":
+			return fmt.Errorf("capabilities is not a list of capability names")
+		case !slices.Contains(declarableCapabilities, name):
+			return fmt.Errorf("%q is not a capability an entry may declare (SYS_PTRACE, with no CAP_ prefix)", name)
+		case declared[name]:
+			return fmt.Errorf("capability %s is declared twice", name)
+		}
+		declared[name] = true
+	}
+	slices.Sort(list)
+	*caps = list
+	return nil
+}
+
+// normalizeContainerCapabilities names the failing list and index.
+func normalizeContainerCapabilities(field string, cs []Container) error {
+	for i := range cs {
+		if err := normalizeCapabilities(&cs[i].Capabilities); err != nil {
+			return fmt.Errorf("%s[%d] capabilities: %w", field, i, err)
+		}
+	}
+	return nil
+}
+
+func (w *Workload) normalizeDeclaredCapabilities() error {
+	if err := normalizeContainerCapabilities("initContainers", w.InitContainers); err != nil {
+		return err
+	}
+	return normalizeContainerCapabilities("containers", w.Containers)
+}
+
+func (w *Workload) dropDeclaredCapabilities() {
+	for i := range w.InitContainers {
+		w.InitContainers[i].Capabilities = nil
+	}
+	for i := range w.Containers {
+		w.Containers[i].Capabilities = nil
+	}
 }
 
 func normalizeContainers(workload, field string, cs []Container) error {
@@ -939,6 +1075,8 @@ func sortContainers(cs []Container) {
 }
 
 func policyKey(c Container) string {
-	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env})
+	caps := slices.Clone(c.Capabilities)
+	slices.Sort(caps)
+	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env, caps})
 	return string(b)
 }
