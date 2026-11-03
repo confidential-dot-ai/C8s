@@ -72,8 +72,8 @@ func checkAPIServer(address string) error {
 		return fmt.Errorf("%q must name a port 1..65535 without leading zeros", address)
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		if !isUnicastIPv4(addr) {
-			return fmt.Errorf("%q must name a unicast IPv4 address", address)
+		if err := launchconfig.ValidateRoutableIPv4(addr); err != nil {
+			return fmt.Errorf("%q host %w", address, err)
 		}
 		return nil
 	}
@@ -86,13 +86,6 @@ func checkAPIServer(address string) error {
 func isCanonicalPort(text string) bool {
 	port, err := strconv.ParseUint(text, 10, 16)
 	return err == nil && port >= 1 && !strings.HasPrefix(text, "0")
-}
-
-// isUnicastIPv4 accepts a unicast IPv4 address, private ones such as 10.0.0.1
-// included; unspecified, loopback, link-local, multicast and broadcast are
-// refused.
-func isUnicastIPv4(addr netip.Addr) bool {
-	return addr.Is4() && addr.IsGlobalUnicast()
 }
 
 // checkCACertificate accepts one PEM CERTIFICATE block holding a CA
