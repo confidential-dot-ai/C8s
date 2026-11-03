@@ -593,7 +593,11 @@ reviewed commit.
 `.github/build-pins.json` is the canonical source for the measured workflows'
 confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
-therefore change the manifest rather than workflow files.
+therefore change the manifest rather than workflow files. The mkosi pin is
+derived, not chosen: `.github/scripts/confos-mkosi-pin.sh` reads it from the
+pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
+pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
+so a hand-moved `confos_ref` has to carry mkosi along.
 
 The confos and attestation-rs pins are release commits: each `*_ref` SHA is
 what the builds check out, and the `*_tag` beside it is the release that
