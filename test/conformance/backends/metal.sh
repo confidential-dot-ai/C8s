@@ -71,7 +71,7 @@ injected_image() { return $UNSUPPORTED; }
 
 # model-server's reporter image (images/reporter), whose log the steps read
 # in place of an exec (pod_read).
-CONFORMANCE_IMAGES[model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
+CONFORMANCE_IMAGES[model-server]=sha256:2f70f844a31ac3573c38d742bad0ba37d4bf1cb755b6dfdb18f2f0ca0521835f
 
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
