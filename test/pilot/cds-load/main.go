@@ -60,7 +60,7 @@ func run() error {
 	targets := flag.String("targets", "", "comma-separated direct HTTPS CDS origins")
 	pins := flag.String("cds-pin", "", "CDS image and launch-file pin document")
 	mode := flag.String("mode", "allowlist-read", "allowlist-read, secret-create or single-policy")
-	phase := flag.String("phase", "load", "load, replay, or revoke-policy")
+	phase := flag.String("phase", "load", "load, replay, revoke-policy, or inspect")
 	journal := flag.String("journal", "", "private request journal, required for replay")
 	keyFile := flag.String("operator-key", "", "operator PEM file, required for secret-create")
 	count := flag.Int("n", 1000, "number of requests; no automatic retries")
@@ -73,7 +73,7 @@ func run() error {
 	if *mode != "allowlist-read" && *mode != "secret-create" && *mode != "single-policy" {
 		return errors.New("unknown workload")
 	}
-	if *phase != "load" && *phase != "replay" && *phase != "revoke-policy" {
+	if *phase != "load" && *phase != "replay" && *phase != "revoke-policy" && *phase != "inspect" {
 		return errors.New("unknown phase")
 	}
 	var signer *operatorauth.Signer
@@ -123,6 +123,31 @@ func run() error {
 	}
 	if *phase == "revoke-policy" {
 		return revokePolicy(endpoints, signer, *timeout)
+	}
+	if *phase == "inspect" {
+		var reports []map[string]any
+		for _, target := range endpoints {
+			report := map[string]any{"target": target.url}
+			for name, path := range map[string]string{"status": "/ha/status", "wal": "/ha/object-wal/status"} {
+				status, body, err := send(target, recordedRequest{Method: http.MethodGet, Path: path}, *timeout)
+				if err != nil {
+					return err
+				}
+				if name == "wal" && status == http.StatusNotFound {
+					continue
+				}
+				if status != http.StatusOK {
+					return fmt.Errorf("inspect %s: HTTP %d", name, status)
+				}
+				var decoded any
+				if err := json.Unmarshal(body, &decoded); err != nil {
+					return err
+				}
+				report[name] = decoded
+			}
+			reports = append(reports, report)
+		}
+		return json.NewEncoder(os.Stdout).Encode(reports)
 	}
 	var id [16]byte
 	_, _ = rand.Read(id[:])
