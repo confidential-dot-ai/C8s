@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# mkosi sync hook for the worker profile. Stages into mkosi.local/mkosi.extra:
+#
+#   1. kubelet, containerd, containerd-shim-runc-v2 and runc from the pinned
+#      RKE2 release's rke2-runtime image -> usr/lib/c8s/worker/bin/, and
+#      var/lib/rancher/rke2/bin linked to it, where c8s-runc execs runc. No
+#      rke2, kubectl, ctr or crictl.
+#   2. the multi-command c8s binary images/node-guest/build pre-stages at
+#      usr/local/bin/c8s, also as the NRI plugin and c8s-runc.
+#   3. the router's nginx files and the worker's NRI floor, rendered from the
+#      chart in that binary and the node profile's floor, which the build
+#      pre-stages at mkosi.local/node-floor.yaml.in.
+#
+# The RKE2 and Helm pins equal the c8s profile's (profile_test.go).
+set -euo pipefail
+
+STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
+CACHE_DIR="$SRCDIR/mkosi.pkgcache/c8s"
+SYNC_INPUTS="$SRCDIR/mkosi.local/.confos-sync-inputs"
+mkdir -p "$STAGE_DIR" "$CACHE_DIR" "${TMPDIR:=/tmp}"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+HELM_VERSION="v3.14.4"
+HELM_LINUX_AMD64_SHA256="a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259"
+RKE2_VERSION="v1.36.4+rke2r1"
+RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
+RUNTIME_BINARIES=(containerd containerd-shim-runc-v2 kubelet runc)
+
+input() { cat "$SYNC_INPUTS/$1" 2>/dev/null || true; }
+fail() { echo "worker sync: FATAL $*" >&2; exit 1; }
+
+PLATFORM=$(input platform)
+case "$PLATFORM" in
+    tdx) LABEL_PLATFORM=tdx ;;
+    snp) LABEL_PLATFORM=sev-snp ;;
+    *) fail "platform sync-input must be tdx or snp, got '$PLATFORM'" ;;
+esac
+C8S_REF=$(input c8s-ref)
+[ -n "$C8S_REF" ] || fail "c8s-ref sync-input is empty"
+C8S_REGISTRY=$(input c8s-registry)
+C8S_REGISTRY=${C8S_REGISTRY:-ghcr.io/confidential-dot-ai}
+C8S="$STAGE_DIR/usr/local/bin/c8s"
+[ -f "$C8S" ] || fail "no c8s binary pre-staged at usr/local/bin/c8s"
+NODE_FLOOR="$SRCDIR/mkosi.local/node-floor.yaml.in"
+[ -f "$NODE_FLOOR" ] || fail "no node floor pre-staged at mkosi.local/node-floor.yaml.in"
+
+# fetch <url> <dest> <sha256>: download once into the package cache.
+fetch() {
+    if [ -f "$2" ] && echo "$3  $2" | sha256sum -c --status; then
+        return
+    fi
+    curl -fL --retry 3 --retry-delay 5 --output "$2" "$1"
+    echo "$3  $2" | sha256sum -c --status || fail "sha256 mismatch for ${2##*/}"
+}
+
+# digest <repo>: the digest C8S_REF names in repo.
+digest() {
+    local d
+    d=$(oras manifest fetch --descriptor "$1:$C8S_REF" | jq -r .digest)
+    case "$d" in sha256:*) echo "$d" ;; *) fail "cannot resolve $1:$C8S_REF" ;; esac
+}
+
+OPERATOR_REPO="$C8S_REGISTRY/c8s-operator"
+MESH_REPO="$C8S_REGISTRY/armtls-mesh"
+OPERATOR_DIGEST=$(digest "$OPERATOR_REPO")
+MESH_DIGEST=$(digest "$MESH_REPO")
+
+# --- 1. Runtime binaries from the rke2-runtime image's one layer ----------
+CORE="$CACHE_DIR/rke2-images-core-${RKE2_VERSION//+/-}.tar.zst"
+fetch "https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}/rke2-images-core.linux-amd64.tar.zst" \
+    "$CORE" "$RKE2_IMAGES_CORE_SHA256"
+zstd -dc "$CORE" | tar -x -C "$TMP" manifest.json
+LAYER=$(jq -er --arg tag "rancher/rke2-runtime:${RKE2_VERSION//+/-}" \
+    '[.[] | select(.RepoTags | index($tag)) | .Layers] | if length == 1 and (.[0] | length) == 1 then .[0][0] else error("want one one-layer \($tag)") end' \
+    "$TMP/manifest.json")
+zstd -dc "$CORE" | tar -x -C "$TMP" "$LAYER"
+mkdir -p "$TMP/runtime"
+tar -x -C "$TMP/runtime" -f "$TMP/$LAYER" "${RUNTIME_BINARIES[@]/#/bin/}"
+for bin in "${RUNTIME_BINARIES[@]}"; do
+    install -D -m 0755 "$TMP/runtime/bin/$bin" "$STAGE_DIR/usr/lib/c8s/worker/bin/$bin"
+done
+mkdir -p "$STAGE_DIR/var/lib/rancher/rke2"
+ln -sfn /usr/lib/c8s/worker/bin "$STAGE_DIR/var/lib/rancher/rke2/bin"
+
+# --- 2. The c8s binary, plugin and runtime wrapper -------------------------
+chmod 0755 "$C8S"
+install -D -m 0755 "$C8S" "$STAGE_DIR/opt/nri/plugins/10-nri-image-policy"
+install -D -m 0755 "$C8S" "$STAGE_DIR/usr/local/bin/c8s-runc"
+
+# --- 3. Router files and the worker floor ---------------------------------
+HELM="$CACHE_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" "$HELM" "$HELM_LINUX_AMD64_SHA256"
+tar -xzf "$HELM" -C "$TMP" linux-amd64/helm
+RENDER="$TMP/render"
+PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
+    --hardware-platform "$LABEL_PLATFORM" \
+    --kube-version "${RKE2_VERSION%%+*}" \
+    --image-repository "$OPERATOR_REPO" \
+    --image-digest "$OPERATOR_DIGEST" \
+    --armtls-mesh-image-repository "$MESH_REPO" \
+    --armtls-mesh-image-digest "$MESH_DIGEST" \
+    --output-dir "$RENDER"
+ROUTER_IMAGE=$(cat "$RENDER/router-image.txt")
+case "$ROUTER_IMAGE" in *@sha256:*) ;; *) fail "the render's router image '$ROUTER_IMAGE' is not pinned by digest" ;; esac
+sed \
+    -e "s|@PLATFORM@|$PLATFORM|g" \
+    -e "s|@MESH_REPO@|$MESH_REPO|g" \
+    -e "s|@MESH_DIGEST@|$MESH_DIGEST|g" \
+    -e "s|@OPERATOR_REPO@|$OPERATOR_REPO|g" \
+    -e "s|@OPERATOR_DIGEST@|$OPERATOR_DIGEST|g" \
+    -e "s|@ROUTER_REPO@|${ROUTER_IMAGE%@*}|g" \
+    -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
+    "$NODE_FLOOR" > "$TMP/node-floor.yaml"
+! grep -o '@[A-Z_]*@' "$TMP/node-floor.yaml" || fail "the node floor names a placeholder this sync does not fill"
+mkdir -p "$STAGE_DIR/usr/lib/c8s"
+"$C8S" worker floor \
+    --node-floor "$TMP/node-floor.yaml" \
+    --render-dir "$RENDER" \
+    --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
+printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
+install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/router-nginx" "$RENDER"/router-nginx/*
+# The initrd overlays only directories the image bakes (usr/lib/confai/state.d).
+mkdir -p "$STAGE_DIR/etc/cni/net.d" "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/nri/conf.d" \
+    "$STAGE_DIR/usr/lib/c8s/worker/static-pods"
+echo "worker sync: staged the RKE2 ${RKE2_VERSION} runtime and the worker floor for c8s ${C8S_REF}"

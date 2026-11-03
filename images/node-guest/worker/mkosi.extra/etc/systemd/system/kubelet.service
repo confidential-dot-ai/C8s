@@ -1,0 +1,19 @@
+[Unit]
+Description=kubelet joining the worker document's API server
+Requires=worker-stage.service containerd.service
+After=worker-stage.service containerd.service
+
+[Service]
+EnvironmentFile=/run/kubernetes/kubelet.env
+ExecStart=/usr/lib/c8s/worker/bin/kubelet \
+    --config=/run/kubernetes/kubelet-config.yaml \
+    --bootstrap-kubeconfig=/run/kubernetes/bootstrap-kubelet.conf \
+    --kubeconfig=/var/lib/kubelet/kubeconfig \
+    --hostname-override=${NODE_NAME} \
+    --node-ip=${NODE_IP} \
+    --cloud-provider=external
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

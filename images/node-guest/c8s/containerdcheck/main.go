@@ -64,6 +64,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	wrapper := flags.String("wrapper", "/usr/local/bin/c8s-runc", "absolute path every ordinary-pod handler must run")
 	configDir := flags.String("config-dir", "", "containerd config directory holding "+dropInDirName+" and, optionally, "+userTemplateName)
+	mainConfig := flags.String("config", "", "a containerd main config to check in place of RKE2's rendering, as the worker image bakes one")
 	var extra extraRuntimes
 	flags.Var(&extra, "extra-runtime", "NAME=BINARY handler RKE2 auto-detection would add (repeatable; for negative tests)")
 	if err := flags.Parse(args); err != nil {
@@ -73,7 +74,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "containerdcheck: -config-dir is required")
 		return 2
 	}
-	cfg, err := effectiveConfig(*configDir, extra)
+	if *mainConfig != "" && len(extra) > 0 {
+		fmt.Fprintln(stderr, "containerdcheck: -extra-runtime renders RKE2's template, which -config replaces")
+		return 2
+	}
+	cfg, err := effectiveConfig(*configDir, *mainConfig, extra)
 	if err != nil {
 		fmt.Fprintf(stderr, "containerdcheck: %v\n", err)
 		return 1
@@ -104,12 +109,22 @@ func (e *extraRuntimes) Set(v string) error {
 	return nil
 }
 
-// effectiveConfig renders the template in configDir and merges its drop-ins,
-// returning what containerd would hold after loading the imports.
-func effectiveConfig(configDir string, extra extraRuntimes) (map[string]any, error) {
-	rendered, err := render(filepath.Join(configDir, userTemplateName), extra)
-	if err != nil {
-		return nil, err
+// effectiveConfig renders the template in configDir, or reads mainConfig when
+// given, and merges configDir's drop-ins, returning what containerd would
+// hold after loading the imports.
+func effectiveConfig(configDir, mainConfig string, extra extraRuntimes) (map[string]any, error) {
+	var rendered string
+	if mainConfig != "" {
+		data, err := os.ReadFile(mainConfig)
+		if err != nil {
+			return nil, err
+		}
+		rendered = string(data)
+	} else {
+		var err error
+		if rendered, err = render(filepath.Join(configDir, userTemplateName), extra); err != nil {
+			return nil, err
+		}
 	}
 	cfg := map[string]any{}
 	if err := toml.Unmarshal([]byte(rendered), &cfg); err != nil {
