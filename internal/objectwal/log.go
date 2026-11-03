@@ -129,6 +129,10 @@ func (l *logState) Sync(ctx context.Context) error {
 // ambiguous response we replay the authoritative history before retrying, even
 // if another writer has already advanced the head past our record.
 func (l *logState) appendBatch(ctx context.Context, entries []entry, live func() bool, required *Owner) (map[string]any, error) {
+	return l.appendBatchIfCurrent(ctx, entries, live, required, nil)
+}
+
+func (l *logState) appendBatchIfCurrent(ctx context.Context, entries []entry, live func() bool, required *Owner, expected *uint64) (map[string]any, error) {
 	wanted := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		wanted[e.ID] = struct{}{}
@@ -146,6 +150,11 @@ func (l *logState) appendBatch(ctx context.Context, entries []entry, live func()
 		}
 		if len(answers) == len(entries) {
 			return answers, nil
+		}
+		// Resolve a possibly committed request first. A newer index is not a
+		// failed precondition when this very request advanced the history.
+		if expected != nil && l.applied.Index != *expected {
+			return nil, ErrStateChanged
 		}
 		if required != nil && l.head.Writer != *required {
 			return nil, ErrNotWriter
@@ -168,7 +177,7 @@ func (l *logState) appendBatch(ctx context.Context, entries []entry, live func()
 			}
 			return nil, context.Canceled
 		}
-		if writer := l.options.Writer; writer != nil && l.head.Writer.ID != writer.ID {
+		if writer := l.options.Writer; expected == nil && writer != nil && l.head.Writer.ID != writer.ID {
 			owner := l.head.Writer
 			if required != nil {
 				return nil, ErrNotWriter

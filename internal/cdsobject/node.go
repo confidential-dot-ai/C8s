@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -267,6 +268,9 @@ func (n *Node) Run(ctx context.Context) {
 		if n.ConfirmRead() != nil {
 			continue
 		}
+		if err := n.renewMeshCA(time.Now()); err != nil && !errors.Is(err, objectwal.ErrStateChanged) {
+			slog.Warn("object WAL: mesh CA certificate renewal did not commit", "error", err)
+		}
 		wal := n.wal.Load()
 		stats := wal.Stats()
 		if stats.Applied-stats.Snapshot >= 100 {
@@ -367,9 +371,23 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (cdsha.Delivered, error) {
 		}
 	case cdsdecree.SetNodeImages:
 		// Policy changes retain exactly the shared FSM's validation.
+	case cdsdecree.RotateKey:
+		// The signed intent and base version still pass through the shared
+		// FSM. Concurrent or replayed rotations can install only one new key.
+		mesh, err := issuer.NewMeshCA(issuer.DefaultCACommonName, issuer.DefaultCAValidity)
+		if err != nil {
+			return cdsha.Delivered{}, err
+		}
+		ca := mesh.Current().CA
+		de.MeshCACert = ca.Cert.Raw
+		de.MeshCAKey, err = x509.MarshalPKCS8PrivateKey(ca.Key)
+		if err != nil {
+			return cdsha.Delivered{}, err
+		}
 	default:
-		return cdsha.Delivered{}, fmt.Errorf("object WAL pilot supports Genesis and SetNodeImages; %s requires a separate lifecycle design", d.Kind)
+		return cdsha.Delivered{}, fmt.Errorf("object WAL pilot supports Genesis, SetNodeImages and RotateKey; %s requires a separate lifecycle design", d.Kind)
 	}
+	defer clear(de.MeshCAKey)
 	res, err := n.propose(cdsha.Entry{Kind: cdsha.KindDecree, Decree: &de})
 	if err != nil {
 		return cdsha.Delivered{}, err
@@ -392,6 +410,7 @@ func (n *Node) propose(e cdsha.Entry) (cdsha.Result, error) {
 	if err != nil {
 		return cdsha.Result{}, err
 	}
+	defer clear(body)
 	ctx, cancel := context.WithTimeout(n.ctx, operationTimeout)
 	defer cancel()
 	answer, err := wal.Append(ctx, body)

@@ -11,6 +11,7 @@ import (
 var (
 	ErrNotFound     = errors.New("object WAL: object not found")
 	ErrConflict     = errors.New("object WAL: conditional write conflicted")
+	ErrStateChanged = errors.New("object WAL: application state changed before conditional append")
 	ErrInDoubt      = errors.New("object WAL: commit outcome unknown; do not replay the operation blindly")
 	ErrCorrupt      = errors.New("object WAL: invalid or rolled-back history")
 	ErrBackpressure = errors.New("object WAL: admission capacity exhausted; retry later")

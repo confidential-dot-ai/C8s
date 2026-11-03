@@ -419,8 +419,10 @@ must restart from a checkpoint. Commands are capped at 4 MiB and encrypted objec
 at 64 MiB. Monitor the reported snapshot index for checkpoint progress. A full
 restart needs the retained key, credentials and original measured launch bytes.
 
-Only Genesis and SetNodeImages decrees are enabled. CDS image-policy changes,
-CA rotation/renewal, DEK rotation, Raft membership/recovery decrees, automatic
+Genesis, SetNodeImages and signed RotateKey decrees are enabled. The
+[storage lifecycle extension](cds-storage-lifecycle.md) also renews the CA
+certificate through a conditional WAL commit while retaining its key.
+CDS image-policy changes, DEK rotation, Raft membership/recovery decrees, automatic
 credential issuance and storage disaster-recovery procedures need separate
 lifecycle work before production. Use a short-lived pilot, unique bucket
 prefixes, synthetic state and the unchanged Raft deployment as the comparison.

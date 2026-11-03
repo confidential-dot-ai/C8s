@@ -119,6 +119,10 @@ WAL encryption key. The service certificate must chain to the CDS image's trust
 roots. Never disable certificate verification. Status reports
 `TransactionalMetadataPilot`.
 
+The [storage lifecycle extension](cds-storage-lifecycle.md) adds durable CA
+certificate renewal and operator-signed CA-key rotation to both storage arms.
+It does not change the metadata deployment or its failure domain.
+
 Do not repoint an existing cluster or reuse an object-WAL prefix with a fresh
 metadata database. There is no migration, garbage collection, automatic token
 rotation, replicated metadata failover or production rollout in this pilot.

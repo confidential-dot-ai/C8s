@@ -76,6 +76,7 @@ const (
 	syncOp
 	checkpointOp
 	forwardOp
+	conditionalAppendOp
 )
 
 type request struct {
@@ -83,8 +84,11 @@ type request struct {
 	ctx     context.Context
 	entry   entry
 	forward *ForwardRequest
-	size    int64
-	reply   chan response
+	// expected is an application index, not a head revision: checkpoints and
+	// preferred-writer changes do not change the state the command was built on.
+	expected uint64
+	size     int64
+	reply    chan response
 	// Only the admission/cancellation handshake is shared. The actor owns all
 	// log state; a caller can cancel a queued message before it starts.
 	state atomic.Uint32 // 0 queued, 1 executing, 2 canceled before execution
@@ -174,6 +178,22 @@ func (l *Log) Append(ctx context.Context, payload []byte) (any, error) {
 	return l.submit(ctx, appendOp, payload)
 }
 
+// AppendIfCurrent commits one command only if expected is still the applied
+// application index. A conflicting application write returns ErrStateChanged;
+// the caller must re-evaluate its command against the new state. Lost replies
+// are reconciled by request ID before testing the precondition again.
+//
+// Conditional maintenance is unbatched and publishes directly by head CAS,
+// preserving the preferred writer's identity and epoch. It never forwards a
+// stale command or changes writer ownership to perform maintenance. The entry
+// and object formats are the same as Append's.
+func (l *Log) AppendIfCurrent(ctx context.Context, expected uint64, payload []byte) (any, error) {
+	if len(payload) == 0 || len(payload) > min(maxEntryBytes, l.options.BatchBytes) {
+		return nil, errors.New("object WAL: entry must be between 1 byte and 4 MiB")
+	}
+	return l.submitRequest(ctx, conditionalAppendOp, payload, nil, expected)
+}
+
 // CommitForwarded is called only by the authenticated replica transport. A nil
 // result is a durable receipt; the origin replays to recover its own FSM result.
 func (l *Log) CommitForwarded(ctx context.Context, forwarded ForwardRequest) error {
@@ -187,15 +207,15 @@ func (l *Log) CommitForwarded(ctx context.Context, forwarded ForwardRequest) err
 	if bytes > l.options.BatchBytes {
 		return ErrRequestMismatch
 	}
-	_, err := l.submitRequest(ctx, forwardOp, nil, &forwarded)
+	_, err := l.submitRequest(ctx, forwardOp, nil, &forwarded, 0)
 	return err
 }
 
 func (l *Log) submit(ctx context.Context, kind operation, payload []byte) (any, error) {
-	return l.submitRequest(ctx, kind, payload, nil)
+	return l.submitRequest(ctx, kind, payload, nil, 0)
 }
 
-func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte, forwarded *ForwardRequest) (any, error) {
+func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte, forwarded *ForwardRequest, expected uint64) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -218,8 +238,8 @@ func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte,
 		l.rejected.Add(1)
 		return nil, ErrBackpressure
 	}
-	r := &request{kind: kind, ctx: ctx, reply: make(chan response, 1), size: size}
-	if kind == appendOp {
+	r := &request{kind: kind, ctx: ctx, reply: make(chan response, 1), size: size, expected: expected}
+	if kind == appendOp || kind == conditionalAppendOp {
 		r.entry = entry{ID: randomID(), Payload: bytes.Clone(payload)}
 	}
 	if forwarded != nil {
@@ -244,7 +264,7 @@ func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte,
 	case result := <-r.reply:
 		return result.value, result.err
 	case <-ctx.Done():
-		if r.state.CompareAndSwap(0, 2) || (kind != appendOp && kind != forwardOp) {
+		if r.state.CompareAndSwap(0, 2) || !kind.appends() {
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("%w: %w", ErrInDoubt, ctx.Err())
@@ -255,11 +275,15 @@ func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte,
 			return result.value, result.err
 		default:
 		}
-		if (kind == appendOp || kind == forwardOp) && r.state.Load() == 1 {
+		if kind.appends() && r.state.Load() == 1 {
 			return nil, fmt.Errorf("%w: %w", ErrInDoubt, ErrClosed)
 		}
 		return nil, ErrClosed
 	}
+}
+
+func (kind operation) appends() bool {
+	return kind == appendOp || kind == forwardOp || kind == conditionalAppendOp
 }
 
 func (l *Log) admit() error {
@@ -456,19 +480,27 @@ func (l *Log) run(ctx context.Context, state *logState) {
 		operation, cancel := context.WithTimeout(ctx, l.options.OperationTimeout)
 		start := time.Now()
 		var err error
-		if r.kind == syncOp {
+		var value any
+		switch r.kind {
+		case syncOp:
 			err = state.Sync(operation)
-		} else {
+		case checkpointOp:
 			err = state.Checkpoint(operation)
+		case conditionalAppendOp:
+			var answers map[string]any
+			answers, err = state.appendBatchIfCurrent(operation, []entry{r.entry}, func() bool {
+				return r.ctx.Err() == nil
+			}, nil, &r.expected)
+			value = answers[r.entry.ID]
 		}
 		cancel()
 		state.fresh = start
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrStateChanged) {
 			state.fresh = time.Time{}
 		}
 		l.publish(state)
 		for _, item := range active {
-			l.finish(item, nil, err)
+			l.finish(item, value, err)
 		}
 	}
 }
