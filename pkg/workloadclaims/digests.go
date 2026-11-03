@@ -291,6 +291,22 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {
 		return nil, fmt.Errorf("workloadclaims: warm up sandbox-digests client cert: %w", err)
 	}
+	// A handshake follows current pins; the pool must follow them too, so
+	// a connection authenticated before a retirement carries no later request.
+	// Clones share the same warmed certificate manager and its rotation loop.
+	transport, err := armtls.NewRefreshingTransport(cfg.NodeImages, func(_ armtls.Pins) (*http.Transport, error) {
+		return &http.Transport{
+			TLSClientConfig: tlsCfg.Clone(),
+			// No HTTP_PROXY can interpose on an attested inventory callback.
+			// Bound the idle pool whose dial targets come from requesters.
+			MaxIdleConns:        64,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     30 * time.Second,
+		}, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("workloadclaims: build sandbox-digests transport: %w", err)
+	}
 	go certMgr.RunRotation(ctx)
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -298,18 +314,8 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	}
 	return &DigestsClient{
 		http: &http.Client{
-			Timeout: timeout,
-			// Fresh Transport, so Proxy stays nil: no HTTP_PROXY can interpose
-			// on a call whose whole point is to reach one attested peer. The
-			// idle pool is bounded because the dial target is chosen by the
-			// requester: unbounded, never-expiring idle conns would be a
-			// retention primitive rather than a reuse optimisation.
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsCfg,
-				MaxIdleConns:        64,
-				MaxIdleConnsPerHost: 2,
-				IdleConnTimeout:     30 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: transport,
 		},
 	}, nil
 }
