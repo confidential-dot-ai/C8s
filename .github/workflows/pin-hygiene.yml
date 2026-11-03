@@ -11,6 +11,8 @@ on:
       - ".github/scripts/pin-manifest.sh"
       - ".github/scripts/release-pin.sh"
       - ".github/scripts/confos-mkosi-pin.sh"
+      - ".github/scripts/ghcr-digest.sh"
+      - "internal/helmchart/c8s/values.yaml"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
@@ -69,6 +71,20 @@ jobs:
             fi
           else
             echo "::error file=.github/build-pins.json::could not read the mkosi pin from confos $CONFOS_REF base.yml"; fail=1
+          fi
+          # The host attestation-api DaemonSet is the chart's pinnedDigest; it
+          # must be the image attestation-rs CI built from attestation_rs_ref,
+          # or the host verifies with a different build than the guests.
+          values=internal/helmchart/c8s/values.yaml
+          chart_digest=$(grep -oE '^[[:space:]]*pinnedDigest:[[:space:]]*sha256:[0-9a-f]{64}' "$values" | grep -oE 'sha256:[0-9a-f]{64}')
+          if [ "$(wc -l <<<"$chart_digest")" -ne 1 ]; then
+            echo "::error file=$values::expected exactly one pinnedDigest in the chart values"; fail=1
+          elif image_digest=$(bash .github/scripts/ghcr-digest.sh confidential-dot-ai/attestation-api "sha-${ATTESTATION_RS_REF:0:7}"); then
+            if [ "$image_digest" != "$chart_digest" ]; then
+              echo "::error file=$values::attestationApi pinnedDigest=$chart_digest but attestation-api:sha-${ATTESTATION_RS_REF:0:7} is $image_digest"; fail=1
+            fi
+          else
+            echo "::error file=$values::could not resolve attestation-api:sha-${ATTESTATION_RS_REF:0:7}"; fail=1
           fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
