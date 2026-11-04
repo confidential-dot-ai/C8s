@@ -1656,8 +1656,10 @@ func replayedBy(img remote.ImagePin, result *teetypes.VerificationResult, measur
 	if !anchored(img) {
 		return nil
 	}
+	// Evidence without RTMR[3] (SNP, or a report missing it) replays nothing
+	// either; the anchor check then fails closed on its own.
 	seed := runtimemeasure.Seed(img.Anchor)
-	if got, err := result.Claims.RTMR(3); err == nil && bytes.Equal(got, seed[:]) {
+	if got, err := result.Claims.RTMR(3); err != nil || bytes.Equal(got, seed[:]) {
 		return nil
 	}
 	return measured

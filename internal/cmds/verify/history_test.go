@@ -645,6 +645,7 @@ func TestOverCapListNeedsAnchoredImage(t *testing.T) {
 		{"unanchored", []remote.ImagePin{booted}, matchingRTMRs(), ""},
 		{"anchored", []remote.ImagePin{anchoredNode}, matchingRTMRs(), overCap},
 		{"anchored, at seed", []remote.ImagePin{anchoredNode}, rtmr3Claims(seed), ""},
+		{"anchored, no RTMR[3]", []remote.ImagePin{anchoredNode}, map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2}, "rtmr"},
 		{"mixed, booted unanchored", []remote.ImagePin{other, booted}, matchingRTMRs(), ""},
 		{"mixed, booted unanchored fails its registers", []remote.ImagePin{staleBooted, otherLaunch}, matchingRTMRs(), "--image-policy-file: node: "},
 		{"no image matches", []remote.ImagePin{otherLaunch}, matchingRTMRs(), "no pinned image has this launch measurement"},
