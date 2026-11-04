@@ -790,9 +790,10 @@ func TestPolicyMeasurer(t *testing.T) {
 
 // memRegister is an in-memory RTMR[3] seeded by the launch anchor.
 type memRegister struct {
-	val     [runtimemeasure.Size]byte
-	extends int
-	fail    error
+	val      [runtimemeasure.Size]byte
+	extends  int
+	fail     error
+	readFail error
 }
 
 func (r *memRegister) Extend(event []byte) error {
@@ -804,7 +805,12 @@ func (r *memRegister) Extend(event []byte) error {
 	return nil
 }
 
-func (r *memRegister) Extension() ([]byte, error) { return slices.Clone(r.val[:]), nil }
+func (r *memRegister) Extension() ([]byte, error) {
+	if r.readFail != nil {
+		return nil, r.readFail
+	}
+	return slices.Clone(r.val[:]), nil
+}
 
 // The hook extends each digest once and leaves the journal readable by the
 // router's non-root cds-attest, also after a failed extend rewrote it 0600.
@@ -1026,6 +1032,39 @@ func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 	}
 	if err := hook(digest); err != nil {
 		t.Fatalf("hook(%s) after the register came up = %v, want nil", digest, err)
+	}
+	if reg.extends != 1 {
+		t.Errorf("register extended %d times, want 1", reg.extends)
+	}
+}
+
+// A journal opened over an unreadable register is not reconciled with it, so
+// the hook extends nothing and reopens it on the next call.
+func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	reg := &memRegister{val: runtimemeasure.Seed(anchor), readFail: errors.New("register unreadable")}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	hook := policyMeasurer(cfg, discardLogger())
+	digest := "sha256:" + strings.Repeat("1", 64)
+	if err := hook(digest); err == nil || errors.Is(err, errPolicyRefused) {
+		t.Fatalf("hook(%s) over an unreadable register = %v, want a retryable error", digest, err)
+	}
+	if reg.extends != 0 {
+		t.Fatalf("register extended %d times over an unreadable register, want 0", reg.extends)
+	}
+	reg.readFail = nil
+	if err := hook(digest); err != nil {
+		t.Fatalf("hook(%s) after the register became readable = %v, want nil", digest, err)
 	}
 	if reg.extends != 1 {
 		t.Errorf("register extended %d times, want 1", reg.extends)
