@@ -38,12 +38,18 @@ def digest(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def archive_receiver(size, destination):
+def archive_receiver(size, destination, completion=""):
     need(isinstance(size, int) and 0 < size <= 8 * 1024**3, "invalid archive byte bound")
+    need(not completion or re.fullmatch(r"[0-9a-f]{32}", completion), "invalid completion token")
     # Some exec proxies leave remote stdin open after the local file ends.
     # Frame the transfer explicitly so gzip sees EOF after these exact bytes.
     # Values travel as quoted positional arguments, never shell source.
-    return ["sh", "-c", 'head -c "$1" | tar -xz -C "$2"', "archive-receiver", str(size), destination]
+    # Expansion can take longer than a streaming proxy's idle timeout under
+    # the population Pod's CPU limit. GNU tar reports actual extraction work
+    # every 10 MiB; progress never substitutes for the later artifact hashes.
+    return ["sh", "-c", 'head -c "$1" | tar --checkpoint=1024 --checkpoint-action=echo -xz -C "$2" && '
+            '{ [ -z "$3" ] || printf "%s" "$3" > "$2/.cds-upload-complete"; }',
+            "archive-receiver", str(size), destination, completion]
 
 
 def image_inputs(directory):
@@ -105,6 +111,42 @@ class Run:
 
     def kubectl(self, *args):
         return [self.args.kubectl, "--kubeconfig", self.args.kubeconfig, "-n", NS, *args]
+
+    def upload(self, pod, archive, destination):
+        # Some exec streaming paths deliver all input but never deliver the
+        # command's exit status. Require a fresh receiver-completion token over
+        # a separate authenticated exec, then verify artifact hashes below.
+        # A transport timeout alone can never establish a completed upload.
+        name = pod + "-" + archive
+        token = secrets.token_hex(16)
+        with (self.directory / archive).open("rb") as data, \
+             (self.directory / (name + ".stdout")).open("wb") as out, \
+             (self.directory / (name + ".stderr")).open("wb") as err:
+            receiver = archive_receiver(os.fstat(data.fileno()).st_size, destination, token)
+            process = subprocess.Popen(self.kubectl("exec", "-i", pod, "--", *receiver),
+                                       stdin=data, stdout=out, stderr=err)
+            try:
+                deadline = time.monotonic() + 300
+                while time.monotonic() < deadline:
+                    marker = self.command(name + "-completion", self.kubectl("exec", pod, "--",
+                        "sh", "-c", 'if [ -f "$1" ]; then cat "$1"; fi', "upload-completion",
+                        destination + "/.cds-upload-complete"), timeout=20)
+                    if marker == token.encode():
+                        self.event("upload-receiver-completed", archive=archive,
+                                   client_exit_pending=process.poll() is None)
+                        return
+                    need(not marker, "unexpected upload completion token")
+                    need(process.poll() in (None, 0), "upload client failed before receiver completion")
+                    time.sleep(5)
+                raise TimeoutError("upload receiver completion timed out")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
     def wait_absent(self, path, timeout=120):
         deadline = time.monotonic() + timeout
@@ -280,7 +322,7 @@ class Run:
         # Archives contain only locally verified, fixed-basename public files.
         for archive, files in (("root.tar.gz", [("disk.raw", "disk.img")]),
                                ("boot.tar.gz", [("guest-smp2.igvm", "guest-smp2.igvm"), ("manifest.json", "manifest.json")])):
-            with tarfile.open(self.directory / archive, "w:gz") as tar:
+            with tarfile.open(self.directory / archive, "w:gz", compresslevel=1) as tar:
                 for src, dst in files:
                     tar.add(Path(self.args.image) / src, arcname=dst, recursive=False)
         receipts, vmis = [], []
@@ -312,9 +354,7 @@ class Run:
                 row["pv"] = {"name": pv["metadata"]["name"], "uid": pv["metadata"]["uid"]}
                 self.save()
             for archive, destination in (("root.tar.gz", "/rootdisk"), ("boot.tar.gz", "/bootfiles")):
-                with (self.directory / archive).open("rb") as data:
-                    receiver = archive_receiver(os.fstat(data.fileno()).st_size, destination)
-                    self.command(run + "-" + archive, self.kubectl("exec", "-i", run + "-populate", "--", *receiver), data=data, timeout=300)
+                self.upload(run + "-populate", archive, destination)
             sums = self.command(run + "-hashes", self.kubectl("exec", run + "-populate", "--", "sha256sum", "/rootdisk/disk.img", "/bootfiles/guest-smp2.igvm")).decode().splitlines()
             need(sums == [hashes["disk.raw"] + "  /rootdisk/disk.img", hashes["guest-smp2.igvm"] + "  /bootfiles/guest-smp2.igvm"], "uploaded artifact digest mismatch")
             self.remove(pop)

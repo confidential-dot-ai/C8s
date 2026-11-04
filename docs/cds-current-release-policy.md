@@ -113,16 +113,14 @@ continues to keep `full_acceptance_passed` and `production_qualified` false.
 
 ## Hardware run status
 
-The native SNP sentinel probe is still awaiting a measured image and an isolated
-guest run. On 2026-11-04, Cloud PR #1149 remained open, unmerged and conflicted at
-`0fdaa620`; its catalog entry pins an older TDX-only artifact. It cannot launch
-the SNP probe. The existing CDS image has no shell, and its image profile does
-not install the probe. Copying a binary into an ordinary guest would not qualify
-the protected runtime.
+The dedicated SNP sentinel image has now been built and inspected locally.
+Its qualification fixture uses the existing native VM API with new owned
+storage and one disposable guest at a time. It needs no Cloud catalog change,
+shared production rollout or CI. The image runs a bounded probe service with
+no shell or general-purpose workload interface, and carries no CDS or CA key.
 
-The local Docker daemon is available, but the confos checkout has no compiled
-builder, mkosi tools tree or kernel-builder output. The next hardware increment
-needs a dedicated probe image built locally, its measured artifact pinned in an
-isolated launch path, then same-chip restart and different-chip refusal checks.
-No CI, shared production release, host installation or production resource
-mutation was performed for this increment.
+See [SNP recovery qualification](cds-snp-recovery-qualification.md) for the
+exact image inputs, validation and remaining boundaries. Image construction
+alone does not establish same-chip recovery or different-chip refusal. The
+authority's production wiring, firmware policy and safe image retirement
+remain separate work; full acceptance and production qualification remain false.

@@ -106,6 +106,12 @@ population Pod into new claims; hashes must match before the Pod is removed
 and the halted VM is started. It needs no registry push or Cloud API rollout.
 This native hardware qualification is separate from the public API comparison.
 
+Uploads have an explicit byte bound and emit extraction progress. The receiver
+writes a fresh completion token only after successful extraction. The runner
+reads it over a separate authenticated exec and then checks the artifact hashes;
+it can close an upload client that is still waiting for a lost exit response.
+Neither a client timeout nor a full-size destination file counts as completion.
+
 ```sh
 python3 "$C8S_SOURCE/test/pilot/cds-sealed-recovery/hardware/run.py" run \
   --directory "$NEW_RUN_DIRECTORY" --cloud-repo "$CLOUD_SOURCE" \

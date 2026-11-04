@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import subprocess
+import sys
 import tarfile
 import types
 import unittest
@@ -58,13 +59,15 @@ class LifecycleTests(unittest.TestCase):
             info.size = len(payload)
             tar.addfile(info, io.BytesIO(payload))
         body = archive.getvalue()
-        process = subprocess.Popen(module.archive_receiver(len(body), self.tmp.name), stdin=subprocess.PIPE,
+        token = "ab" * 16
+        process = subprocess.Popen(module.archive_receiver(len(body), self.tmp.name, token), stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             process.stdin.write(body)
             process.stdin.flush()
             self.assertEqual(0, process.wait(timeout=5))  # deliberately keep stdin open
             self.assertEqual(payload, (Path(self.tmp.name) / "disk.img").read_bytes())
+            self.assertEqual(token, (Path(self.tmp.name) / ".cds-upload-complete").read_text())
         finally:
             process.stdin.close()
             if process.poll() is None:
@@ -72,6 +75,51 @@ class LifecycleTests(unittest.TestCase):
             process.wait()
             process.stdout.close()
             process.stderr.close()
+
+    def test_compressed_expansion_emits_progress_and_preserves_bytes(self):
+        payload = b"\0" * (21 * 1024**2)
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            info = tarfile.TarInfo("disk.img")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        body = archive.getvalue()
+        result = subprocess.run(module.archive_receiver(len(body), self.tmp.name), input=body,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(0, result.returncode)
+        self.assertGreaterEqual(len(result.stderr.splitlines()), 2)
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), module.digest(Path(self.tmp.name) / "disk.img"))
+
+    def test_invalid_archive_never_marks_completion(self):
+        result = subprocess.run(module.archive_receiver(7, self.tmp.name, "ab" * 16), input=b"invalid",
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse((Path(self.tmp.name) / ".cds-upload-complete").exists())
+
+    def test_upload_finishes_when_stream_client_never_reports_exit(self):
+        root = Path(self.tmp.name)
+        destination = root / "destination"
+        destination.mkdir()
+        payload = b"complete public artifact"
+        with tarfile.open(root / "root.tar.gz", "w:gz") as tar:
+            info = tarfile.TarInfo("disk.img")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        run = self.runner(FakeKube())
+
+        def local_exec(*args):
+            command = list(args[args.index("--") + 1:])
+            if "-i" in args:
+                # The remote command finishes; its client waits indefinitely.
+                return [sys.executable, "-c", "import subprocess,signal,sys; "
+                        "subprocess.run(sys.argv[1:],check=True); signal.pause()", *command]
+            return command
+
+        run.kubectl = local_exec
+        run.upload("owned-populate", "root.tar.gz", str(destination))
+        self.assertEqual(payload, (destination / "disk.img").read_bytes())
+        self.assertEqual("upload-receiver-completed", run.state["events"][-1]["event"])
+        self.assertTrue(run.state["events"][-1]["client_exit_pending"])
 
     def test_cleanup_refuses_changed_owner_uid_or_journal_path(self):
         for change in ("uid", "owner", "path"):
