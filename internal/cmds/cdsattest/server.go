@@ -768,7 +768,8 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 // is the leaf its binding attested, while kept and unexpired; otherwise the
 // leaf nginx serves new connections now. A cds front door serves the mesh
 // identity leaf, taken from identity so it cannot race a rotation; an acme
-// one serves --serving-cert-file, admitted inside its validity window.
+// one serves --serving-cert-file, admitted inside its and its chain's
+// validity windows.
 func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identity *meshIdentity) ([]byte, bool) {
 	if hash, bound := s.bindings.servingLeaf(connection); bound {
 		if der, kept := s.servedLeaves.find(hash, time.Now()); kept {
@@ -787,8 +788,8 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 				"the serving certificate is unavailable; attest-lb cannot bind this connection")
 			return nil, false
 		}
-		if err := checkACMEServingLeaf(cert); err != nil {
-			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", cert.NotAfter)
+		if err := checkACMEServingLeaf(cert, served.expires); err != nil {
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", served.expires)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
 				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
 			return nil, false

@@ -96,8 +96,11 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
-	servedUntil := issuer.NotAfter
-	for _, der := range pair.Certificate {
+	servedUntil := leaf.NotAfter
+	if issuer.NotAfter.Before(servedUntil) {
+		servedUntil = issuer.NotAfter
+	}
+	for _, der := range pair.Certificate[1:] {
 		cert, err := x509.ParseCertificate(der)
 		if err != nil {
 			return nil, fmt.Errorf("parse mesh identity chain: %w", err)
@@ -162,12 +165,17 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER,
 	return transcriptHash, proof, nil
 }
 
-// checkACMEServingLeaf admits a serving leaf read from --serving-cert-file.
-// An acme leaf is a distinct CA-issued certificate whose key the sidecar never
-// sees, so only its validity window can be checked here.
-func checkACMEServingLeaf(serving *x509.Certificate) error {
-	if err := certutil.CheckValidity(serving, time.Now()); err != nil {
+// checkACMEServingLeaf admits a serving leaf read from --serving-cert-file,
+// served with a chain that expires at expires. An acme leaf is a distinct
+// CA-issued certificate whose key the sidecar never sees, so only the
+// validity windows can be checked here.
+func checkACMEServingLeaf(serving *x509.Certificate, expires time.Time) error {
+	now := time.Now()
+	if err := certutil.CheckValidity(serving, now); err != nil {
 		return fmt.Errorf("acme serving leaf: %w", err)
+	}
+	if now.After(expires) {
+		return fmt.Errorf("acme serving chain expired at %s", expires.Format(time.RFC3339))
 	}
 	return nil
 }

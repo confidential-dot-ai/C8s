@@ -182,6 +182,20 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
 		return path
 	}
+	// A valid leaf served with an expired intermediate.
+	expiredChain := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeaf(t)
+		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: intermediate}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	// Same subject and key as the mesh leaf, but expired and self-signed.
 	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
 		tmpl := *identity.leaf
@@ -205,6 +219,7 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme not-yet-valid leaf", mode: types.FrontDoorModeACME, serving: futureLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
