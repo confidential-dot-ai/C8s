@@ -237,6 +237,9 @@ type plugin struct {
 	// and the nil-guarded hooks/seeding no-op rather than fail a container
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
+	// execGrants records the started containers the measured base grants execs,
+	// for the runtime wrapper (execgrants.go). nil where the base grants none.
+	execGrants *execGrants
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -311,6 +314,9 @@ func newPlugin(
 		}
 		p.inventory = newAdmissionInventory(procRoot)
 		p.inventory.needsVariableEvidence = store.needsVariableEvidence
+	}
+	if grantsExecs(cfg.Allowlist.Base) {
+		p.execGrants = &execGrants{dir: ExecGrantDir}
 	}
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
@@ -412,6 +418,7 @@ func wasStarted(ctr *api.Container) bool {
 // caller resolution; the sandbox's record keeps it (inventory.remove).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	p.running.remove(ctr.GetId())
+	p.execGrants.remove(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -505,13 +512,14 @@ func (p *plugin) denyContainerCreation(sandboxID, containerName string, refusal 
 }
 
 // recordForInventory resolves a container's image digest and records it for the
-// admission inventory. A resolve failure records an empty digest, which makes
-// the inventory refuse the pod's whole answer rather than commit a subset —
-// fail-closed, and logged at error because it costs the pod its claim.
+// admission inventory and the runtime wrapper's exec grants. A resolve
+// failure records an empty digest, which makes the inventory refuse the pod's
+// whole answer rather than commit a subset — fail-closed, and logged at error
+// because it costs the pod its claim.
 //
 // INVARIANT: callers record what runs, not what passed the checks.
 func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	if p.inventory == nil {
+	if p.inventory == nil && p.execGrants == nil {
 		return
 	}
 	digest := extractDigest(imageRef)
@@ -519,25 +527,31 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 		if resolved, err := p.containerd.Resolve(ctx, imageRef); err == nil {
 			digest = extractDigest(resolved)
 		} else {
-			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
+			p.logger.Error("cannot resolve the image digest of a running container; any sandbox inventory refuses to answer for its pod, and it is granted no execs", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, p.observedMounts(pod, ctr))
+	p.recordDigest(pod, ctr, digest, p.observedMounts(pod, ctr))
 }
 
-// recordDigest is the only inventory.record call site. ctr.Args is the
-// effective OCI process.args, the same value the checks read, and the role is
-// the one the measured base binds to that whole launch.
-func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
-	if p.inventory == nil {
-		return
-	}
+// recordDigest is the only inventory.record and exec-grant record call site.
+// ctr.Args is the effective OCI process.args, the same value the checks read,
+// and the role and execs are the ones the measured base binds to that whole
+// launch.
+func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	env := containerEnv(ctr)
 	launch := allowlist.RunningContainer{
 		Digest: digest,
 		Argv:   ctr.GetArgs(),
 		Env:    env,
 		Mounts: mounts,
+	}
+	if p.execGrants != nil {
+		if err := p.execGrants.note(ctr.GetId(), p.execsOf(pod, launch)); err != nil {
+			p.logger.Error("cannot record the container's exec grant; the runtime wrapper denies its execs", "container", ctr.GetId(), "error", err)
+		}
+	}
+	if p.inventory == nil {
+		return
 	}
 	role := p.roleOf(launch)
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
@@ -1470,6 +1484,16 @@ func (p *plugin) roleOf(launch allowlist.RunningContainer) string {
 		return ""
 	}
 	return p.policy.base.RoleOf(launch)
+}
+
+// execsOf is the commands the measured base lets the runtime wrapper start in
+// this finalized launch. Like a role, they come from the base alone, and a pod
+// the mesh gates cover holds none: no new process starts in a member.
+func (p *plugin) execsOf(pod *api.PodSandbox, launch allowlist.RunningContainer) [][]string {
+	if p.policy == nil || pod == nil || (p.mesh != nil && p.mesh.hosts(pod)) {
+		return nil
+	}
+	return p.policy.base.ExecsOf(launch)
 }
 
 // bindsRoleMounts reports whether the declaration granting this launch its
