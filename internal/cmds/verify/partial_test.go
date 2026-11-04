@@ -718,6 +718,15 @@ func TestApplyFinalNotesTrimsSandboxPinClause(t *testing.T) {
 	}
 }
 
+// A history the register replayed is a passed check, so a refusal drops it.
+func TestApplyFinalNotesDropsReplayedHistory(t *testing.T) {
+	oc := Outcome{Error: "a later pin failed", MeasuredPolicies: []string{"sha256:" + strings.Repeat("1", 64)}}
+	applyFinalNotes(&oc, &evidence{}, &teetypes.VerificationResult{}, &verifyPlan{policy: &armtls.VerifyPolicy{}})
+	if len(oc.MeasuredPolicies) != 0 {
+		t.Errorf("measured_policies = %v on a refusal, want none", oc.MeasuredPolicies)
+	}
+}
+
 // A served key set that does not match --operator-keys refuses the verdict,
 // and the refusal lists no keys: with no note, nothing says what they are.
 func TestVerifyEvidenceOperatorKeysMismatchDropsKeys(t *testing.T) {

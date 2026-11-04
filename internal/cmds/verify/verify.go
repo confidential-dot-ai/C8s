@@ -562,6 +562,9 @@ func applyFinalNotes(oc *Outcome, ev *evidence, result *teetypes.VerificationRes
 			oc.OperatorKeys, oc.OperatorKeysNote = nil, ""
 		}
 		oc.ChainAnchor = ""
+		// A replayed history is a passed check too; cert_body stays, as a
+		// description of how the leaf's body was authenticated.
+		oc.MeasuredPolicies = nil
 		oc.Binding = strings.TrimSuffix(oc.Binding, frontDoorAttestedNote)
 		oc.Warnings = slices.DeleteFunc(oc.Warnings, func(w string) bool { return w == frontDoorScopeWarning })
 		return
