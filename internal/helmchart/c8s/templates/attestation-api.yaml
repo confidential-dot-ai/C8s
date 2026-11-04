@@ -94,7 +94,7 @@ containers:
         drop: [ALL]
       seccompProfile:
         type: RuntimeDefault
-    # HTTP, not exec: a locked node image denies every runc exec, so an
+    # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
     # exec probe can never pass there (c8s internal/cmds/c8srunc). The
     # handler runs the same check the `attest-proxy healthcheck`
     # subcommand does — a /health round-trip over the proxy's own socket —
