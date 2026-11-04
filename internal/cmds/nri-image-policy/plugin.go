@@ -42,7 +42,7 @@ const (
 )
 
 // policySnapshot is an immutable admission view: an Index built from the
-// last-applied CDS pull, tagged with that pull's version (the ETag counter).
+// last-applied CDS pull, tagged with that pull's version.
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
 	index *allowlist.Index
@@ -197,6 +197,24 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	}
 	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), pulled: pulled, version: version})
 	return true
+}
+
+// raiseAppliedVersion raises the applied version to version, at which CDS
+// still serves the document the last pull named: a write that moved the
+// version and kept the bytes raises the version later pulls are judged
+// against. It never lowers it.
+func (s *policyStore) raiseAppliedVersion(version uint64) {
+	for {
+		cur := s.snap.Load()
+		if version <= cur.version {
+			return
+		}
+		next := *cur
+		next.version = version
+		if s.snap.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
 }
 
 // rolledBack reports whether version is below the applied one.

@@ -23,8 +23,9 @@ import (
 //
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
-// `allowlist_version` is the counter every mutation bumps (the worker pull
-// ETag). The journal tables (journal.go) keep the history of served documents.
+// `allowlist_version` is the counter every mutation bumps (the version nodes
+// refuse to go below). The journal tables (journal.go) keep the history of
+// served documents.
 // `route_manifest` holds the signed route manifest, which shares the database
 // and so its lifetime (route policy C5).
 type Store struct {
@@ -151,7 +152,7 @@ func (s *Store) Close() error {
 }
 
 // LoadAll builds the full allowlist document and returns it with the version
-// string (the ETag). It backs GET /allowlist.
+// string. It backs GET /allowlist.
 func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -222,8 +223,8 @@ func (s *Store) Contains(digest types.Digest) (bool, error) {
 	return true, nil
 }
 
-// Version returns the current allowlist version counter — the same value the
-// worker pull ETag carries. It is a single-row read, so a caller that must not
+// Version returns the current allowlist version counter — the same value
+// GET /allowlist serves. It is a single-row read, so a caller that must not
 // pay for LoadAll on every request can use it to decide whether a cached
 // document is still current.
 func (s *Store) Version() (string, error) {
@@ -269,8 +270,8 @@ func (s *Store) Generation() uint64 {
 	return s.gen
 }
 
-// bumpVersionTx increments the store version within tx. The version is the
-// worker pull ETag, so it is bumped once per mutation that changes the set.
+// bumpVersionTx increments the store version within tx, once per mutation
+// that changes the set.
 func bumpVersionTx(tx *sql.Tx) error {
 	_, err := tx.Exec(
 		"UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) + 1 AS TEXT)",

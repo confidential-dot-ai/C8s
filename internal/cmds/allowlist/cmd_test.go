@@ -132,7 +132,7 @@ func recordingCDS(t *testing.T) (url string, methods *[]string) {
 		mu.Unlock()
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"1"`)
+			w.Header().Set(pkgallowlist.VersionHeader, "1")
 			w.Write(body)
 			return
 		}
