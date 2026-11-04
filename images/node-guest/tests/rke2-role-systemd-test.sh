@@ -101,7 +101,7 @@ done
 
 # Application services are Kubernetes workloads. These host services retain
 # the authenticated launch dependency before any pod can start.
-core_units=(attest-proxy.service cred-release.service nri-node-ip.service cilium-node-ip.service)
+core_units=(attest-proxy.service cred-release.service nri-node-ip.service cilium-node-ip.service volumed.service)
 
 for unit in "${core_units[@]}"; do
     install -D -m644 "$SOURCE_UNITS/$unit" "/etc/systemd/system/$unit"

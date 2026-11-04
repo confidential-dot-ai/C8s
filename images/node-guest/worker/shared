@@ -11,6 +11,7 @@ etc/systemd/system/containerd-data-disk.service
 etc/systemd/system/gpu-cc-enforce.service
 etc/systemd/system/models-disk.service
 etc/systemd/system/scratch-enforce.service
+etc/systemd/system/volumed.service
 usr/local/bin/apparmor-enforce.sh
 usr/local/bin/containerd-data-disk.sh
 usr/local/bin/gpu-cc-enforce.sh
