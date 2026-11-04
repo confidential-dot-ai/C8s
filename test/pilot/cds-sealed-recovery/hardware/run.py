@@ -188,6 +188,8 @@ class Run:
             conditions = {c["type"]: c["status"] for c in status.get("conditions", [])}
             if name in self.args.nodes:
                 need(conditions.get("Ready") == "True" and not node.get("spec", {}).get("unschedulable"), "test worker not ready")
+                need(conditions.get("CloudQualified") == "True", "test worker is not currently qualified")
+                need(all(conditions.get(c) == "False" for c in ("MemoryPressure", "DiskPressure", "PIDPressure")), "test worker has resource pressure")
                 need(node["metadata"].get("labels", {}).get("confidential.ai/sev-snp") == "true", "test worker is not SNP")
                 need(not any(k.startswith("node-role.kubernetes.io/control-plane") or k.startswith("node-role.kubernetes.io/etcd") for k in node["metadata"].get("labels", {})), "control-plane placement refused")
             observed[name] = {"uid": node["metadata"]["uid"], "boot_id": status["nodeInfo"]["bootID"], "conditions": conditions}
@@ -213,6 +215,8 @@ class Run:
         _, current = self.kube.call("GET", row["path"])
         need(current["metadata"]["uid"] == row["uid"], "VM replaced before start")
         self.command(phase + "-start", [self.args.virtctl, "--kubeconfig", self.args.kubeconfig, "-n", NS, "start", vm["metadata"]["name"]])
+        _, started = self.kube.call("GET", row["path"])
+        need(started["metadata"]["uid"] == row["uid"] and started["spec"].get("runStrategy") == "Manual", "start changed VM identity or manual lifetime policy")
         path = VMI + "/" + vm["metadata"]["name"]
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
