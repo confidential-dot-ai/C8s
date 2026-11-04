@@ -34,8 +34,8 @@ certificate, names <dest-ip:port> as the destination pod, sends GET / and
 prints one JSON report on stdout. With --mesh it dials a pod's
 application address instead, negotiating the mesh ALPN and sending no
 destination header: the pod's mesh endpoint the connection is redirected to
-reads the destination from the redirect. Exactly one of --cert/--key or
---self-signed is required. With --write-cert/--write-key the minted
+reads the destination from the redirect. Exactly one of --cert/--key,
+--self-signed or --foreign-ca is required. With --write-cert/--write-key the minted
 certificate and key are written as PEM instead, for a later dial with
 --cert/--key, and nothing is dialed.
 
@@ -64,7 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var (
 		certFile       = fs.String("cert", "", "PEM certificate chain to present (a CDS-issued leaf written by get-cert)")
 		keyFile        = fs.String("key", "", "PEM private key of --cert")
-		selfSigned     = fs.Bool("self-signed", false, "mint a P-256 key and a self-signed attested TLS certificate")
+		selfSigned     = fs.Bool("self-signed", false, "mint a P-256 key and a self-signed certificate, attested with --attestation-url and --platform")
+		foreignCA      = fs.Bool("foreign-ca", false, "present a leaf signed by a throwaway CA, sent along with it: a mesh leaf from another cluster")
 		attestationURL = fs.String("attestation-url", "", "attestation API --self-signed gets evidence from: http(s)://host:port or unix:///path/to.sock")
 		platform       = fs.String("platform", "", "evidence family for --self-signed: sev-snp or tdx")
 		notBefore      = fs.Duration("not-before", 0, "NotBefore = now + DUR for --self-signed (negative allowed)")
@@ -105,22 +106,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fromFile := *certFile != "" || *keyFile != ""
+	sources := 0
+	for _, on := range []bool{fromFile, *selfSigned, *foreignCA} {
+		if on {
+			sources++
+		}
+	}
 	switch {
-	case fromFile && *selfSigned:
-		return usage("--cert/--key and --self-signed are mutually exclusive")
-	case !fromFile && !*selfSigned:
-		return usage("one of --cert/--key or --self-signed is required")
+	case sources > 1:
+		return usage("--cert/--key, --self-signed and --foreign-ca are mutually exclusive")
+	case sources == 0:
+		return usage("one of --cert/--key, --self-signed or --foreign-ca is required")
 	case fromFile && (*certFile == "" || *keyFile == ""):
 		return usage("--cert and --key go together")
 	}
-	if fromFile {
+	if !*selfSigned {
 		for _, name := range selfSignedOnly {
 			if set[name] {
 				return usage("--" + name + " applies to --self-signed only")
 			}
 		}
-	} else if *attestationURL == "" || *platform == "" {
-		return usage("--self-signed needs --attestation-url and --platform")
+	} else if (*attestationURL == "") != (*platform == "") {
+		return usage("--attestation-url and --platform go together")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -128,9 +135,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var cert tls.Certificate
 	var err error
-	if fromFile {
+	switch {
+	case fromFile:
 		cert, err = tls.LoadX509KeyPair(*certFile, *keyFile)
-	} else {
+	case *foreignCA:
+		cert, err = foreignCALeaf()
+	default:
 		cert, err = selfSignedCert(ctx, certOptions{
 			attestationURL: *attestationURL,
 			platform:       *platform,

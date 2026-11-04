@@ -11,7 +11,8 @@ the scenario chose, sends one HTTP GET and prints a JSON report.
 The scenarios test the inbound proxy's verification of *its peer*, so the
 tool **never verifies the server's certificate**. It is not a client anyone
 should trust; it exists to present certificates no well-behaved c8s client
-can: expired, not yet valid, not self-issued, or altered after signing.
+can: expired, not yet valid, not self-issued, altered after signing, or
+issued by another CA.
 
 ## CLI
 
@@ -20,7 +21,8 @@ armtls-dial [flags] <node-ip:port> <dest-ip:port>
 armtls-dial --mesh [flags] <pod-ip:port>
   --mesh                      dial a pod's application address as a mesh peer: offer ALPN c8s-mesh/1, send no destination header
   --cert FILE --key FILE      present this PEM chain and key (a CDS-issued leaf written by get-cert)
-  --self-signed               mint a P-256 key and a self-signed attested TLS certificate
+  --self-signed               mint a P-256 key and a self-signed certificate, attested when --attestation-url and --platform are given
+  --foreign-ca                present a leaf signed by a throwaway CA, sent along with it: the leaf a peer with its own mesh CA would present
   --attestation-url URL       the attestation API --self-signed gets evidence from: http(s)://host:port, or unix:///path/to.sock
   --platform FAMILY           evidence family for --self-signed: sev-snp or tdx
   --not-before DUR            NotBefore = now + DUR for --self-signed (default 0; negative allowed)
@@ -38,9 +40,12 @@ destination from the redirect, so no header is written; the endpoint refuses
 a peer that does not negotiate `c8s-mesh/1`, so the tool offers it.
 Without `--mesh` no ALPN is offered and the header comes first.
 
-Exactly one of `--cert/--key` or `--self-signed` is required; `--self-signed`
-needs `--attestation-url` and `--platform`; those two and the three flags
-shaping a minted certificate are refused with `--cert`. `--rewrite-not-after` applies
+Exactly one of `--cert/--key`, `--self-signed` or `--foreign-ca` is required.
+`--attestation-url` and `--platform` go together; without them `--self-signed`
+mints a certificate with no evidence extension. Those two and the flags
+shaping a minted certificate are refused without `--self-signed`. The
+`--foreign-ca` leaf carries both mesh key usages and a well-formed
+workload-instance extension, so a verifier can refuse it only for its chain. `--rewrite-not-after` applies
 to either source. `--write-cert/--write-key` take no positional arguments:
 they mint the certificate while its evidence can still be obtained and leave
 it for a later dial with `--cert/--key`.

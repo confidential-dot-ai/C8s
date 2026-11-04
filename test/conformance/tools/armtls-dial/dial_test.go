@@ -193,6 +193,10 @@ func TestRunUsage(t *testing.T) {
 		{"--cert", "a", "--key", "b", "--issuer-differs", "127.0.0.1:1", "10.0.0.2:80"},
 		{"--self-signed", "--platform", "sev-snp", "127.0.0.1:1", "10.0.0.2:80"},
 		{"--self-signed", "--platform", "sev-snp", "--attestation-url", "http://127.0.0.1:1", "127.0.0.1:1"},
+		{"--foreign-ca", "--self-signed", "127.0.0.1:1", "10.0.0.2:80"},
+		{"--foreign-ca", "--cert", "x", "--key", "y", "127.0.0.1:1", "10.0.0.2:80"},
+		{"--self-signed", "--platform", "tdx", "127.0.0.1:1", "10.0.0.2:80"},
+		{"--self-signed", "--attestation-url", "http://127.0.0.1:1", "127.0.0.1:1", "10.0.0.2:80"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != exitUsage || stdout.Len() != 0 || stderr.Len() == 0 {
