@@ -36,6 +36,9 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 	if cfg.trustOperatorKeys != "" && !cfg.trustOperator {
 		return nil, fmt.Errorf("--trust-operator-keys requires --trust-operator")
 	}
+	if cfg.timeout <= 0 && (cfg.trustOperator || cfg.fetchAllowlists != "") {
+		return nil, fmt.Errorf("--trust-operator and --fetch-allowlists need a positive --timeout: it bounds each policy fetch, and %d times it the whole history check", historyTimeouts)
+	}
 	var flag string
 	switch {
 	case len(cfg.pinPolicies) > 0:
@@ -231,11 +234,8 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		fail("%s: %v", code, err)
 		return false
 	}
-	if cfg.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
+	defer cancel()
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
 			fail("allowlist_fetch_failed: %v", err)

@@ -121,9 +121,40 @@ func TestHistoryFlags(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cfg.imageManifest = writeTestManifest(t)
+			tc.cfg.timeout = 15 * time.Second
 			_, err := buildPolicy(tc.cfg)
 			if (tc.wantErr == "" && err != nil) || (tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr))) {
 				t.Errorf("buildPolicy = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Without a positive --timeout the history fetches would have no deadline.
+func TestHistoryFetchNeedsTimeout(t *testing.T) {
+	pubPath, _, pubPEM := operatorKeypair(t)
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const wantErr = "need a positive --timeout"
+	for _, tc := range []struct {
+		name    string
+		cfg     config
+		wantErr bool
+	}{
+		{"trust, zero", config{trustOperator: true, trustOperatorKeys: keysPath}, true},
+		{"trust, negative", config{trustOperator: true, trustOperatorKeys: keysPath, timeout: -time.Second}, true},
+		{"fetch, zero", config{fetchAllowlists: t.TempDir()}, true},
+		{"fetch, positive", config{fetchAllowlists: t.TempDir(), timeout: time.Second}, false},
+		{"pin, zero", config{pinPolicies: []string{testPolicyP}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.imageManifest = writeTestManifest(t)
+			tc.cfg.operatorPubkey = pubPath
+			_, err := buildPolicy(tc.cfg)
+			if got := err != nil && strings.Contains(err.Error(), wantErr); got != tc.wantErr || (!tc.wantErr && err != nil) {
+				t.Errorf("buildPolicy(timeout %v) = %v, want error containing %q: %v", tc.cfg.timeout, err, wantErr, tc.wantErr)
 			}
 		})
 	}
