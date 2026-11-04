@@ -776,11 +776,17 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 			return der, true
 		}
 	}
+	// Warn, not Error: these failures repeat on every request until renewal
+	// recovers, and a missing cert.pem is normal before the first ACME order
+	// completes. Renewal monitoring alerts on them.
 	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
+	if now := time.Now(); now.After(leaf.expires) {
+		s.log.Warn("attest-lb serving leaf rejected", "error", "mesh identity served with an expired chain", "chain_expires", leaf.expires)
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+			"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+		return nil, false
+	}
 	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
-		// Warn, not Error: both failures repeat on every request until
-		// renewal recovers, and a missing cert.pem is normal before the
-		// first ACME order completes. Renewal monitoring alerts on them.
 		cert, served, err := s.servingLeaf()
 		if err != nil {
 			s.log.Warn("attest-lb binding unavailable", "error", err)
@@ -789,7 +795,7 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 			return nil, false
 		}
 		if err := checkACMEServingLeaf(cert, served.expires); err != nil {
-			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", served.expires)
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_before", cert.NotBefore, "not_after", cert.NotAfter, "chain_expires", served.expires)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
 				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
 			return nil, false

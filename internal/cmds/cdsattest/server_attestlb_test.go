@@ -196,6 +196,26 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		}
 		return path
 	}
+	appendBlock := func(t *testing.T, path string, der []byte) string {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// tls.crt carries an intermediate that has expired.
+	meshExpiredChain := func(t *testing.T, identity testMeshIdentity) string {
+		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return appendBlock(t, identity.certFile, intermediate)
+	}
+	// tls.crt carries a trailing block that is not a certificate.
+	meshGarbageChain := func(t *testing.T, identity testMeshIdentity) string {
+		return appendBlock(t, identity.certFile, []byte("not a certificate"))
+	}
 	// Same subject and key as the mesh leaf, but expired and self-signed.
 	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
 		tmpl := *identity.leaf
@@ -217,6 +237,8 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		{name: "cds mesh leaf", mode: types.FrontDoorModeCDS, serving: meshLeaf},
 		{name: "cds ignores other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf},
 		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
+		{name: "cds expired chain", mode: types.FrontDoorModeCDS, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "cds ignores a malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},

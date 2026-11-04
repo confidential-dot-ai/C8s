@@ -100,10 +100,12 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 	if issuer.NotAfter.Before(servedUntil) {
 		servedUntil = issuer.NotAfter
 	}
+	// X509KeyPair never parsed the extra blocks, so one that does not parse
+	// keeps loading the identity: it only cannot shorten servedUntil.
 	for _, der := range pair.Certificate[1:] {
 		cert, err := x509.ParseCertificate(der)
 		if err != nil {
-			return nil, fmt.Errorf("parse mesh identity chain: %w", err)
+			continue
 		}
 		if cert.NotAfter.Before(servedUntil) {
 			servedUntil = cert.NotAfter
