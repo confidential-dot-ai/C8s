@@ -1,9 +1,12 @@
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import tarfile
 import types
 import unittest
 from unittest.mock import patch
@@ -46,6 +49,29 @@ class LifecycleTests(unittest.TestCase):
     def runner(self, kube):
         args = types.SimpleNamespace(directory=self.tmp.name)
         return module.Run(args, kube, lambda p, v: Path(p).write_text(json.dumps(v)))
+
+    def test_archive_finishes_while_transport_stdin_stays_open(self):
+        archive = io.BytesIO()
+        payload = b"bounded disposable artifact" * 20
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            info = tarfile.TarInfo("disk.img")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        body = archive.getvalue()
+        process = subprocess.Popen(module.archive_receiver(len(body), self.tmp.name), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            process.stdin.write(body)
+            process.stdin.flush()
+            self.assertEqual(0, process.wait(timeout=5))  # deliberately keep stdin open
+            self.assertEqual(payload, (Path(self.tmp.name) / "disk.img").read_bytes())
+        finally:
+            process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            process.stderr.close()
 
     def test_cleanup_refuses_changed_owner_uid_or_journal_path(self):
         for change in ("uid", "owner", "path"):

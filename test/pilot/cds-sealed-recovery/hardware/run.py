@@ -38,6 +38,14 @@ def digest(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def archive_receiver(size, destination):
+    need(isinstance(size, int) and 0 < size <= 8 * 1024**3, "invalid archive byte bound")
+    # Some exec proxies leave remote stdin open after the local file ends.
+    # Frame the transfer explicitly so gzip sees EOF after these exact bytes.
+    # Values travel as quoted positional arguments, never shell source.
+    return ["sh", "-c", 'head -c "$1" | tar -xz -C "$2"', "archive-receiver", str(size), destination]
+
+
 def image_inputs(directory):
     p = Path(directory)
     manifest = json.loads((p / "manifest.json").read_text())
@@ -305,7 +313,8 @@ class Run:
                 self.save()
             for archive, destination in (("root.tar.gz", "/rootdisk"), ("boot.tar.gz", "/bootfiles")):
                 with (self.directory / archive).open("rb") as data:
-                    self.command(run + "-" + archive, self.kubectl("exec", "-i", run + "-populate", "--", "tar", "-xz", "-C", destination), data=data, timeout=300)
+                    receiver = archive_receiver(os.fstat(data.fileno()).st_size, destination)
+                    self.command(run + "-" + archive, self.kubectl("exec", "-i", run + "-populate", "--", *receiver), data=data, timeout=300)
             sums = self.command(run + "-hashes", self.kubectl("exec", run + "-populate", "--", "sha256sum", "/rootdisk/disk.img", "/bootfiles/guest-smp2.igvm")).decode().splitlines()
             need(sums == [hashes["disk.raw"] + "  /rootdisk/disk.img", hashes["guest-smp2.igvm"] + "  /bootfiles/guest-smp2.igvm"], "uploaded artifact digest mismatch")
             self.remove(pop)
