@@ -275,6 +275,12 @@ workers:
 - the `kube-dns` Service, at `kubernetes.clusterDNS`, which sends each lookup
   to its own node's CoreDNS.
 
+`c8s worker control-plane credentials --kubeconfig admin.kubeconfig
+--output-dir DIR` writes `DIR/c8s-operator.kubeconfig` and
+`DIR/c8s-cilium-operator.kubeconfig`: each key is generated there, and the
+cluster's `kubernetes.io/kube-apiserver-client` signer issues its certificate
+through a CertificateSigningRequest the command approves.
+
 The image flags must be the worker image build's, so the router it renders is
 the launch the image's floor pins. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
