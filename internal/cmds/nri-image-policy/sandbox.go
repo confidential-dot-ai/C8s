@@ -86,6 +86,27 @@ type sandboxObservation struct {
 	Seccomp string
 }
 
+// hostBindGrant reports whether an allowlist declaration hands this launch the
+// bind m is evidence of; it answers only for the mounts slice it was built from.
+type hostBindGrant interface {
+	grants(m allowlist.ObservedMount) bool
+}
+
+// declaredBindGrant hands a launch the binds an allowlist entry declares for it.
+type declaredBindGrant struct {
+	policy *policyStore
+	launch allowlist.RunningContainer
+}
+
+func (g declaredBindGrant) grants(m allowlist.ObservedMount) bool {
+	return g.policy.grantsHostBind(g.launch, m)
+}
+
+// noBindGrant hands a launch no bind.
+type noBindGrant struct{}
+
+func (noBindGrant) grants(allowlist.ObservedMount) bool { return false }
+
 // observeSandbox reads the host-privilege surface out of the NRI view. A field
 // the runtime did not fill reads as absent, which violations() treats as a
 // violation rather than as consent.
@@ -93,14 +114,14 @@ type sandboxObservation struct {
 // own names the binds this plugin adds itself (sidecarAdjustment); the policy
 // put them there, so it does not hold them against a container. mounts is the
 // container's mount evidence, as mountObserver.Observe returns it. A bind whose
-// evidence nodeRoot accepts carries measured node bytes an allowlist rule
-// pinned at that destination, so it is not a host bind either; nil accepts none.
-// The device nodes, hooks and binds cdi expanded are not observed.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) sandboxObservation {
+// evidence grant accepts is one an allowlist entry hands this launch, so it is
+// not a host bind either. The device nodes, hooks and binds cdi expanded are
+// not observed.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot, cdi),
+		HostBinds:        hostBinds(pod, ctr, own, mounts, grant, cdi),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks(), cdi),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -196,7 +217,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -218,7 +239,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 		if isInjectedNodeMount(pod, ctr, m, own) || cdi.mount(m) {
 			continue
 		}
-		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
+		if grantsBind(src, m.GetDestination(), mounts, grant) {
 			continue
 		}
 		out = append(out, src)
@@ -226,16 +247,16 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 	return out
 }
 
-// nodeRootBind reports whether mounts holds evidence for source at destination
-// and nodeRoot accepts all of it. Keying on the pair, not on the position, keeps
-// a duplicate bind with weaker evidence from riding on an accepted one.
-func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) bool {
+// grantsBind reports whether mounts holds evidence for source at destination
+// and grant accepts all of it. Keying on the pair, not on the position, keeps
+// a duplicate bind with weaker evidence from riding on a granted one.
+func grantsBind(source, destination string, mounts []allowlist.ObservedMount, grant hostBindGrant) bool {
 	found := false
 	for _, m := range mounts {
 		if m.Source != source || m.Destination != destination {
 			continue
 		}
-		if !nodeRoot(m) {
+		if !grant.grants(m) {
 			return false
 		}
 		found = true

@@ -139,6 +139,15 @@ or container spec the plugin cannot see is denied rather than assumed safe. The
 kubelet event names the violated rules; the whole observation stays in the
 node's own log.
 
+A host bind is set aside when an allowlist declaration hands it to that launch:
+one that pins the launch (command, args and mounts not `any`, the environment
+constrained), admits that launch whole, and names the bind in its `exact` mount
+policy — a `host` rule by source and access mode, a `nodeRootFile` rule also by
+node-root provenance. The base and a served document both grant, and one
+declaration has to grant the bind on its own; `mounts: any` grants nothing.
+Only that bind is set aside: every other violation still denies the container,
+and a writable `host` rule grants write access to the node path it names.
+
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
 measured base and a chart-rendered base is the cluster admin's to choose. What
@@ -174,7 +183,7 @@ host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
 operator run with the host network, so their entries pin every launch the
 node runs, environment included.
 
-GPU devices are the one exception outside the node TCB. containerd applies the
+GPU devices are set aside outside the node TCB too. containerd applies the
 edits of the CDI devices a container requests (the CRI `CDIDevices` field or a
 `cdi.k8s.io/` annotation) before the plugin sees the spec, so they arrive as
 plain device nodes, hooks, and bind mounts. For devices of the kinds

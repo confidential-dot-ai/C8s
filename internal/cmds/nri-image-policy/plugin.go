@@ -99,17 +99,17 @@ func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
 	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
 }
 
-// admitsNodeRoot reports whether the base or applied allowlist admits r with
-// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
-func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+// grantsHostBind reports whether the base or the applied allowlist hands r the
+// host bind m (allowlist.Index.GrantsHostBind).
+func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.AdmitsNodeRoot(r, m) {
+	if s.base.GrantsHostBind(r, m) {
 		return true
 	}
 	snap := s.current()
-	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
+	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
 // declaresNodeRoot reports whether the base or applied allowlist has a
@@ -830,12 +830,8 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // nodeTCBExempt says how much a base entry excuses. See
 // docs/allowlist-and-capabilities.md.
 //
-// The second exempts a single bind, not the container: one whose mount
-// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
-// the base or the served allowlist admits at that destination and source. A
-// served rule is safe here because it can only name read-only bytes of the
-// measured node image, and strict clients verify the served policy byte for
-// byte.
+// The second sets aside a single bind, not the container: one an entry of the
+// base or the served allowlist grants this launch (allowlist.Index.GrantsHostBind).
 //
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
@@ -845,26 +841,21 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
 			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
 	}
-	obs := observeSandbox(pod, ctr, nodeMounts{
+	own := nodeMounts{
 		socketDir:  cfg.WorkloadClaims.SocketDir,
 		cdsPins:    p.cdsPins,
 		cdsAddress: p.cdsAddress,
-	}, mounts, nil, cdi)
+	}
+	obs := observeSandbox(pod, ctr, own, mounts, noBindGrant{}, cdi)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
 	digest := ""
-	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
+	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs = observeSandbox(pod, ctr, nodeMounts{
-			socketDir:  cfg.WorkloadClaims.SocketDir,
-			cdsPins:    p.cdsPins,
-			cdsAddress: p.cdsAddress,
-		}, mounts, func(m allowlist.ObservedMount) bool {
-			return p.policy.admitsNodeRoot(rc, m)
-		}, cdi)
+		obs.HostBinds = hostBinds(pod, ctr, own, mounts, declaredBindGrant{policy: p.policy, launch: rc}, cdi)
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""
 		}

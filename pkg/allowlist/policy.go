@@ -264,29 +264,13 @@ func (c Container) mismatch(r RunningContainer, final bool) []string {
 	return fields
 }
 
-// AdmitsNodeRoot reports whether some entry that admits r does so through an
-// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
-// node image; mounts admitted under `any` or by a host rule do not.
-func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
-	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+// GrantsHostBind reports whether a declaration that pins its launch admits the
+// host bind m, which must be one of r.Mounts.
+func (i *Index) GrantsHostBind(r RunningContainer, m ObservedMount) bool {
+	if m.Class != MountHost || !slices.Contains(r.Mounts, m) {
 		return false
 	}
-	d, err := types.ParseDigest(r.Digest)
-	if err != nil {
-		return false
-	}
-	r.Digest = d.String()
-	for _, c := range i.byDigest[r.Digest] {
-		if c.Mounts.Policy != PolicyExact || !c.admits(r) {
-			continue
-		}
-		for _, rule := range c.Mounts.Rules {
-			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
-				return true
-			}
-		}
-	}
-	return false
+	return i.AdmitsContainerWhere(r, Container.LaunchPinned)
 }
 
 // DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
