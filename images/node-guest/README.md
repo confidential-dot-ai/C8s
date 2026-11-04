@@ -622,7 +622,7 @@ serves, and notices a tag upstream has rebuilt since; pin-watch's second step
 (`confos-pin-watch.yml`, weekly) proposes that rebuild as its own PR, never a
 version change. A version bump
 is a hand edit of the Resolve line, then `set` with the new tag's digest, then
-the block's `entrypoint` and `imageEnv` aligned with the image's config.
+the block's `entrypoint` and `imageEnv` aligned with the image's config, which pin-hygiene then checks (`chart-image-pins.sh check`).
 
 The confos and attestation-rs pins are release commits: each `*_ref` SHA is
 what the builds check out, and the `*_tag` beside it is the release that

@@ -117,25 +117,24 @@ jobs:
           # not this PR's.
           git reset -q --hard
           values=internal/helmchart/c8s/values.yaml
-          config() {
-            crane config --platform linux/amd64 "$1" |
-              jq -S '{Entrypoint: .config.Entrypoint, Cmd: .config.Cmd, Env: .config.Env}'
-          }
           resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")
           moved=() names=()
           while read -r repo tag digest current; do
             [ "$current" != "$digest" ] || continue
             bash .github/scripts/chart-image-pins.sh set "$repo:$tag" "$current" "$values"
             names+=("${repo##*/}")
-            if [ "$(config "$repo@$digest")" = "$(config "$repo@$current")" ]; then
-              moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`; the image config (entrypoint, cmd, env) is unchanged.")
-            else
-              moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`; **the image config moved**: align the block's \`entrypoint\` and \`imageEnv\` with \`crane config --platform linux/amd64 $repo@$current\` before merging.")
-            fi
+            moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`")
           done <<<"$resolved"
           if [ "${#moved[@]}" -eq 0 ]; then
             echo "every chart image tag names its pinned digest" >>"$GITHUB_STEP_SUMMARY"
             exit 0
+          fi
+          # pin-hygiene fails the PR until each rebuilt image's config matches
+          # the entrypoint/imageEnv seeded beside its digest; say so up front.
+          if mismatch=$(bash .github/scripts/chart-image-pins.sh check "$values" 2>&1 >/dev/null); then
+            configs="Every rebuilt image's config (entrypoint, cmd, env) still matches the \`entrypoint\` and \`imageEnv\` seeded beside its digest."
+          else
+            configs=$(printf '%s\n' "**An image's config moved; pin-hygiene fails this PR until the block beside its digest is aligned:**" "" '```' "$mismatch" '```')
           fi
           git add -- "$values"
           joined=$(printf '%s, ' "${names[@]}")
@@ -144,7 +143,9 @@ jobs:
             "" \
             "${moved[@]}" \
             "" \
-            "Each digest is seeded into the allowlist floor, so this changes what every node admits; review before merging. \`c8s install --resolve-digests\` refuses an nginx image whose config differs from the chart's \`imageEnv\`; kube-state-metrics has no such check, so compare its config by hand.")
+            "$configs" \
+            "" \
+            "Each digest is seeded into the allowlist floor, so this changes what every node admits; review before merging.")
           bash .github/scripts/pin-watch-pr.sh \
             --branch "pin-watch/chart-images-$(git write-tree | cut -c1-12)" \
             --prefix pin-watch/chart-images- \

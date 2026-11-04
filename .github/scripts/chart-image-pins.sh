@@ -3,6 +3,7 @@
 #
 #   chart-image-pins.sh list [VALUES_YAML]
 #   chart-image-pins.sh resolve [VALUES_YAML]
+#   chart-image-pins.sh check [VALUES_YAML]
 #   chart-image-pins.sh set REPOSITORY:TAG sha256:HEX [VALUES_YAML]
 #
 # Every non-empty image digest in values.yaml is a third-party image the
@@ -19,6 +20,11 @@
 # asks the registry (crane, HEAD requests) and prints "REPOSITORY TAG DIGEST
 # CURRENT", CURRENT being what the tag names today; a pinned digest or a tag
 # the registry no longer serves is an error, and the other rows still print.
+# check reads each pinned image's config (crane, linux/amd64) and requires
+# the `entrypoint` declared beside the digest to be a prefix of its
+# ENTRYPOINT+CMD and the `imageEnv` to equal its Env, as `c8s install
+# --resolve-digests` requires for the components it pins; a block that
+# declares no entrypoint is seeded argv-pinned and is skipped. Needs yq.
 # set rewrites the digest under the one line naming REPOSITORY:TAG, in place,
 # so the comments survive; pin-watch runs it for a rebuilt tag, and a version
 # bump edits the tag on that line, then runs set with the new tag's digest.
@@ -107,6 +113,41 @@ case "${1:-}" in
     done <<<"$rows"
     exit "$bad"
     ;;
+  check)
+    [[ $# -le 2 ]] || die "usage: check [VALUES_YAML]"
+    values=${2:-$default_values}
+    rows=$(list_pins "$values")
+    bad=0
+    while read -r repo tag digest; do
+      blocks=$(yq -o=json -I0 "[.. | select(type == \"!!map\" and has(\"image\") and (.image | type == \"!!map\") and .image.digest == \"$digest\")] | map({\"entrypoint\": .entrypoint, \"imageEnv\": .imageEnv})" "$values")
+      [[ "$(jq length <<<"$blocks")" -eq 1 ]] || die "$values has $(jq length <<<"$blocks") blocks pinning $digest, not one"
+      want=$(jq -c '.[0]' <<<"$blocks")
+      if [[ "$(jq -r '.entrypoint | length' <<<"$want")" -eq 0 ]]; then
+        echo "$repo $tag argv-pinned"
+        continue
+      fi
+      if ! cfg=$(crane config --platform linux/amd64 "$repo@$digest"); then
+        echo "chart-image-pins: could not read the config of $repo@$digest" >&2
+        bad=1
+        continue
+      fi
+      verdict=$(jq -r --argjson want "$want" '
+        def envmap: ((.config.Env // []) | map(split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries);
+        ((.config.Entrypoint // []) + (.config.Cmd // [])) as $argv
+        | $want.entrypoint as $ep
+        | ($want.imageEnv // {} | with_entries(select(.value != null) | .value |= tostring)) as $env
+        | if $argv[:($ep | length)] != $ep then "starts with \($argv | tojson), not the seeded entrypoint \($ep | tojson)"
+          elif envmap != $env then "sets env \(envmap | tojson), not the seeded imageEnv \($env | tojson)"
+          else "ok" end' <<<"$cfg")
+      if [[ "$verdict" == ok ]]; then
+        echo "$repo $tag ok"
+      else
+        echo "chart-image-pins: $repo@$digest $verdict; align the block beside the digest" >&2
+        bad=1
+      fi
+    done <<<"$rows"
+    exit "$bad"
+    ;;
   set)
     [[ $# -ge 3 && $# -le 4 ]] || die "usage: set REPOSITORY:TAG sha256:HEX [VALUES_YAML]"
     ref=$2 digest=$3 values=${4:-$default_values}
@@ -123,6 +164,6 @@ case "${1:-}" in
       die "the digest under $ref in $values was not rewritten to $digest"
     ;;
   *)
-    die "usage: list [VALUES_YAML] | resolve [VALUES_YAML] | set REPOSITORY:TAG sha256:HEX [VALUES_YAML]"
+    die "usage: list [VALUES_YAML] | resolve [VALUES_YAML] | check [VALUES_YAML] | set REPOSITORY:TAG sha256:HEX [VALUES_YAML]"
     ;;
 esac

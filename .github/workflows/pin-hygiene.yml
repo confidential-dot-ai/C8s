@@ -112,6 +112,14 @@ jobs:
             echo "::notice file=$values::$repo:$tag now names $current, not the pinned $digest; pin-watch proposes the bump"
             echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
           done <<<"$resolved"
+          # Each pinned image's config must match what the seeded entry pins
+          # beside its digest (the argv prefix and the exact env), as `c8s
+          # install --resolve-digests` requires for nginx; kube-state-metrics
+          # is seeded by the node-image render and checked nowhere else. A
+          # block without an entrypoint (busybox) is argv-pinned and skipped.
+          if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
+            echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
+          fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
             echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
