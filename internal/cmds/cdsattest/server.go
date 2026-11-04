@@ -95,6 +95,26 @@ const (
 	// sweepInterval paces the background eviction of idle and over-age
 	// sessions. Both conditions are also checked on use.
 	sweepInterval = 10 * time.Second
+	// lbBindingIdle is how long an attest-lb binding stays live after the
+	// last request on its connection; it exceeds nginx's keepalive_timeout.
+	lbBindingIdle = 2 * time.Minute
+	// lbBindingLife is when a lapsed binding is dropped. It exceeds the
+	// longest the router's nginx keeps a connection silent between requests
+	// (keepalive_timeout, client_header_timeout, send_timeout), so nginx has
+	// closed the connection by then.
+	lbBindingLife = 5 * time.Minute
+	// maxLBBindings and maxLBBindingsPerClient bound the attest-lb bindings in
+	// all and per client.
+	maxLBBindings          = 1 << 16
+	maxLBBindingsPerClient = maxSessionsPerClient
+	// maxConnectionIDBytes bounds the identifier nginx assigns
+	// ($nginx_start.$pid.$connection), so a caller bypassing nginx cannot grow
+	// the store.
+	maxConnectionIDBytes = 64
+	// maxServedLeaves bounds the serving leaves kept for connections opened
+	// before a renewal: one per renewal a connection may outlive.
+	maxServedLeaves = 8
+
 	// shutdownGrace bounds the wait for in-flight requests at shutdown.
 	shutdownGrace = 5 * time.Second
 	// defaultSessionMaxAge is the absolute session lifetime: however busy a
@@ -133,15 +153,18 @@ var (
 //
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
+// SyncRouterDigest returns the router digest bound sessions are checked
+// against, rereading the router's credential first when it differs from leaf.
 // Acquire reserves tunnel budget for a record of recordBytes from client.
-// Forward routes a request decrypted from the tunnel; outer is the tunnel
-// request itself, whose Host routes a sealed request that carries none (M1),
-// and an error is sealed as 502.
+// Forward routes a request decrypted from the tunnel of a session bound to
+// bound; outer is the tunnel request itself. A *routing.BindingChangedError
+// ends the session; any other error is sealed as 502.
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
+	SyncRouterDigest(leaf string) (string, error)
 	Acquire(client string, recordBytes int64) (release func(), ok bool)
-	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
+	Forward(outer *http.Request, req types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, error)
 }
 
 // Config configures the sidecar server.
@@ -180,6 +203,9 @@ type Config struct {
 	// Routes gates attested sessions, routes the tunnel and serves the route
 	// publication. Required.
 	Routes Router
+	// Bindings records attest-lb handshakes; the routing listener must read
+	// the same store. Required.
+	Bindings *Bindings
 	// PublishRoutes serves the applied signed manifest at
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
@@ -202,6 +228,7 @@ type Config struct {
 
 type establishedSession struct {
 	channel   *overenc.Channel
+	bound     routing.Binding
 	createdAt time.Time
 	lastUsed  time.Time
 	client    string
@@ -224,6 +251,11 @@ type Server struct {
 	mu         sync.Mutex
 	sessions   map[string]establishedSession // session id -> channel
 	sessionsBy *holders                      // client -> its session ids
+	bindings   *Bindings
+	// unboundOnce logs the first attest-lb handshake without a connection
+	// identifier.
+	unboundOnce  sync.Once
+	servedLeaves servedLeaves
 
 	sweepEvery time.Duration
 	evictEvery time.Duration
@@ -262,6 +294,7 @@ func NewServer(cfg Config) *Server {
 		idleAfter:        limiterIdleTimeout,
 		sessions:         make(map[string]establishedSession),
 		sessionsBy:       newHolders(),
+		bindings:         cfg.Bindings,
 	}
 }
 
@@ -284,7 +317,7 @@ func (s *Server) Serve(ctx context.Context, httpSrv *http.Server) error {
 	return nil
 }
 
-// maintain evicts expired sessions and quiet
+// maintain evicts expired sessions, expired attest-lb bindings and quiet
 // rate-limiter entries. It blocks until ctx is cancelled.
 func (s *Server) maintain(ctx context.Context) {
 	for _, limiter := range []*issuer.IPRateLimiter{s.establishLimiter, s.sessionLimiter, s.clientLimiter} {
@@ -306,6 +339,9 @@ func (s *Server) maintain(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
+	// Every request, matched or not, holds its connection's binding while it
+	// runs, so the binding cannot lapse under a long request.
+	r.Use(s.holdingBinding)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	// Unmetered: the kubelet probes it through the same front door as the
@@ -334,6 +370,17 @@ func (s *Server) Handler() http.Handler {
 		r.Method(http.MethodGet, routes.PublicationPath, s.perClient(http.HandlerFunc(s.handleRoutePublication)))
 	}
 	return r
+}
+
+// holdingBinding holds the binding of the request's connection, if any, until
+// the request ends.
+func (s *Server) holdingBinding(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if held := s.bindings.Hold(r.Header.Get(routing.ConnectionHeader)); held != nil {
+			defer held.Release()
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // establishing rate-limits the session-establishment endpoints per client.
@@ -499,6 +546,10 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "identity-bound PQ credentials are temporarily unavailable")
 		return
 	}
+	routerDigest, ok := s.routerDigest(w, identity)
+	if !ok {
+		return
+	}
 
 	xwingCT, sharedSecret, err := overenc.Encapsulate(xwingEK)
 	if err != nil {
@@ -534,7 +585,8 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 	id := base64.RawURLEncoding.EncodeToString(sessionID)
 	now := time.Now()
-	if err := s.addSession(client, id, establishedSession{channel: channel, createdAt: now, lastUsed: now}); err != nil {
+	bound := routing.Binding{RouteDigest: digest, RouterDigest: routerDigest}
+	if err := s.addSession(client, id, establishedSession{channel: channel, bound: bound, createdAt: now, lastUsed: now}); err != nil {
 		s.refuseSession(w, err)
 		return
 	}
@@ -560,12 +612,18 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
 // mesh leaf, the issuing mesh CA and the applied route digest
 // (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
-// over-encryption key exchange happens and no session is stored — the client
-// recomputes the transcript from the leaf it observed on its own TLS
-// connection and then rides that TLS.
+// over-encryption key exchange happens: the client recomputes the transcript
+// from the leaf it observed on its own TLS connection and then rides that
+// TLS. The handshake binds the public connection it arrived on to its route
+// and router digests.
 func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	nonceB64, nonce := attestNonce(w, r)
 	if nonce == nil {
+		return
+	}
+	connection := r.Header.Get(routing.ConnectionHeader)
+	if len(connection) > maxConnectionIDBytes {
+		writeErr(w, http.StatusBadRequest, types.ErrorCodeInvalidRequest, "connection identifier too long")
 		return
 	}
 	applied, ok := s.routesAdmit(w)
@@ -582,34 +640,27 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 			"attest-lb requires a TEE-held serving key (public_tls.mode=cds or acme); this front door is attest-pq-only")
 		return
 	}
+	// Before the report, as for attest-pq.
+	if err := s.connectionRoom(connection, clientKey(r)); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
+		return
+	}
 	identity, err := s.meshIdentity()
 	if err != nil {
 		s.log.Error("mesh identity binding unavailable", "error", err)
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "mesh identity credentials are temporarily unavailable")
 		return
 	}
-	// A cds front door serves the mesh identity leaf itself: binding it from
-	// the one credential load cannot race a get-cert rotation.
-	serving := identity.leaf
-	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
-		// Warn, not Error: both failures repeat on every request until
-		// renewal recovers, and a missing cert.pem is normal before the
-		// first ACME order completes. Renewal monitoring alerts on them.
-		if serving, err = s.servingLeaf(); err != nil {
-			s.log.Warn("attest-lb binding unavailable", "error", err)
-			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
-				"the serving certificate is unavailable; attest-lb cannot bind this connection")
-			return
-		}
-		if err := checkACMEServingLeaf(serving); err != nil {
-			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", serving.NotAfter)
-			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
-				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
-			return
-		}
+	servingLeafDER, ok := s.servingLeafOf(w, connection, identity)
+	if !ok {
+		return
+	}
+	routerDigest, ok := s.routerDigest(w, identity)
+	if !ok {
+		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, serving, nonce, digest[:])
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -623,7 +674,16 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servingLeafHash := sha256.Sum256(serving.Raw)
+	servingLeafHash := sha256.Sum256(servingLeafDER)
+	handshake := lbHandshake{
+		bound:       routing.Binding{RouteDigest: digest, RouterDigest: routerDigest},
+		servingLeaf: servingLeafHash,
+	}
+	if err := s.bindConnection(connection, clientKey(r), handshake); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
 		Version:           types.BindingAttestLB,
 		Platform:          platform,
@@ -643,8 +703,8 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 // (A2) or the applied one is stale (F2), each with its own code so a client
 // can tell an unconfigured router from one cut off from the CDS. It returns
 // the manifest it loaded, whose digest the handshake's evidence binds (E1);
-// the handshake loads no other (E2). Later requests in the session route by
-// whatever manifest is then applied (E3).
+// the handshake loads no other (E2). Later requests in the session route only
+// while that manifest is still the applied one.
 func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 	applied, err := s.routes.Session()
 	switch {
@@ -658,33 +718,172 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 	return applied, true
 }
 
+// connectionRoom reports whether bindConnection would admit connection for
+// client. A handshake without a connection identifier binds nothing.
+func (s *Server) connectionRoom(connection, client string) error {
+	if connection == "" {
+		return nil
+	}
+	return s.bindings.room(connection, client)
+}
+
+// bindConnection binds connection to handshake. A handshake that did not come
+// through nginx has no connection identifier and binds nothing.
+func (s *Server) bindConnection(connection, client string, handshake lbHandshake) error {
+	if connection == "" {
+		s.unboundOnce.Do(func() {
+			s.log.Warn("attest-lb handshake without " + routing.ConnectionHeader + ": its connection is not bound; binding needs the nginx relay to set the header")
+		})
+		return nil
+	}
+	return s.bindings.bind(connection, client, handshake)
+}
+
+// routerDigest returns the router digest of identity's leaf, syncing the
+// router to it first. While the two differ it refuses the handshake.
+func (s *Server) routerDigest(w http.ResponseWriter, identity *meshIdentity) (string, bool) {
+	leaf := identity.routerDigest()
+	current, err := s.routes.SyncRouterDigest(leaf)
+	switch {
+	case err != nil:
+		s.log.Warn("router credential unreadable; refusing the handshake", "error", err)
+	case current != leaf:
+		// Clients retry through a renewal; one line each would flood.
+		s.log.Debug("router digest differs from the attested mesh leaf's; refusing the handshake")
+	default:
+		return leaf, true
+	}
+	writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "the router's mesh identity is renewing; retry shortly")
+	return "", false
+}
+
 // meshIdentity loads the mesh credential set from the three files.
 func (s *Server) meshIdentity() (*meshIdentity, error) {
 	return loadMeshIdentity(s.cfg.MeshIdentityCertFile, s.cfg.MeshIdentityKeyFile, s.cfg.MeshIdentityCAFile)
 }
 
-// servingLeaf reads and parses the acme serving-leaf PEM. It is read per
-// request so a get-cert renewal (which SIGHUPs nginx to a new leaf) is picked
-// up without restarting the sidecar. Exactly one certificate is committed;
-// per-SNI or multi-certificate serving is unsupported and fails the client's
-// exact-DER comparison closed.
-func (s *Server) servingLeaf() (*x509.Certificate, error) {
+// servingLeafOf returns the serving leaf connection presents, or writes the
+// refusal. nginx reads its certificate per TLS handshake, so a connection
+// keeps the leaf it opened with across renewals: for a bound connection that
+// is the leaf its binding attested, while kept and unexpired; otherwise the
+// leaf nginx serves new connections now. A cds front door serves the mesh
+// identity leaf, taken from identity so it cannot race a rotation; an acme
+// one serves --serving-cert-file, admitted inside its validity window.
+func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identity *meshIdentity) ([]byte, bool) {
+	if hash, bound := s.bindings.servingLeaf(connection); bound {
+		if der, kept := s.servedLeaves.find(hash, time.Now()); kept {
+			return der, true
+		}
+	}
+	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.leaf.NotAfter}
+	if identity.ca.NotAfter.Before(leaf.expires) {
+		leaf.expires = identity.ca.NotAfter
+	}
+	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
+		// Warn, not Error: both failures repeat on every request until
+		// renewal recovers, and a missing cert.pem is normal before the
+		// first ACME order completes. Renewal monitoring alerts on them.
+		cert, served, err := s.servingLeaf()
+		if err != nil {
+			s.log.Warn("attest-lb binding unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
+				"the serving certificate is unavailable; attest-lb cannot bind this connection")
+			return nil, false
+		}
+		if err := checkACMEServingLeaf(cert); err != nil {
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", cert.NotAfter)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+			return nil, false
+		}
+		leaf = served
+	}
+	s.servedLeaves.remember(leaf)
+	return leaf.der, true
+}
+
+// servedLeaf is a serving leaf and when the chain it was served with
+// expires: the first NotAfter in it, as get-cert expires a generation.
+type servedLeaf struct {
+	der     []byte
+	expires time.Time
+}
+
+// servedLeaves holds the last maxServedLeaves serving leaves attest-lb
+// attested, oldest first. Its zero value is empty and ready.
+type servedLeaves struct {
+	mu     sync.Mutex
+	leaves []servedLeaf
+}
+
+func (l *servedLeaves) remember(leaf servedLeaf) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, kept := l.findLocked(sha256.Sum256(leaf.der)); kept {
+		return
+	}
+	l.leaves = append(l.leaves, leaf)
+	if len(l.leaves) > maxServedLeaves {
+		l.leaves = l.leaves[1:]
+	}
+}
+
+// find returns the DER of the kept leaf whose SHA-256 is hash, unless its
+// chain has expired by now.
+func (l *servedLeaves) find(hash [sha256.Size]byte, now time.Time) ([]byte, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	leaf, kept := l.findLocked(hash)
+	if !kept || now.After(leaf.expires) {
+		return nil, false
+	}
+	return leaf.der, true
+}
+
+func (l *servedLeaves) findLocked(hash [sha256.Size]byte) (servedLeaf, bool) {
+	for _, leaf := range l.leaves {
+		if sha256.Sum256(leaf.der) == hash {
+			return leaf, true
+		}
+	}
+	return servedLeaf{}, false
+}
+
+// servingLeaf reads the acme serving-leaf PEM nginx serves new connections:
+// the leaf first, then the rest of its chain. It is read per request so a
+// renewal is picked up without restarting the sidecar. Exactly one
+// leaf is committed; per-SNI or multi-certificate serving is unsupported and
+// fails the client's exact-DER comparison closed.
+func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if s.cfg.ServingCertFile == "" {
-		return nil, fmt.Errorf("no --serving-cert-file configured")
+		return nil, servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
 	}
 	pemBytes, err := os.ReadFile(s.cfg.ServingCertFile)
 	if err != nil {
-		return nil, fmt.Errorf("read serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
 	}
-	block, _ := pem.Decode(pemBytes)
+	block, rest := pem.Decode(pemBytes)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
+		return nil, servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
 	}
-	return cert, nil
+	leaf := servedLeaf{der: cert.Raw, expires: cert.NotAfter}
+	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		issuer, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
+		}
+		if issuer.NotAfter.Before(leaf.expires) {
+			leaf.expires = issuer.NotAfter
+		}
+	}
+	return cert, leaf, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer
@@ -777,11 +976,13 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		writeErr(w, status, code, msg)
 	}
-	channel := s.useSession(r.Header.Get(sessionHeader))
-	if channel == nil {
+	id := r.Header.Get(sessionHeader)
+	session, ok := s.useSession(id)
+	if !ok {
 		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
 		return
 	}
+	channel := session.channel
 	if r.ContentLength > tunnelBodyLimit {
 		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
 		return
@@ -852,7 +1053,14 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	resp, err := s.routes.Forward(r, env)
+	resp, err := s.routes.Forward(r, env, session.bound)
+	var changed *routing.BindingChangedError
+	if errors.As(err, &changed) {
+		// The client attests again rather than ride a session it did not verify.
+		s.endSession(id)
+		writeErr(w, http.StatusServiceUnavailable, changed.Code, "the router no longer routes by what this session attested; attest again")
+		return
+	}
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
@@ -913,8 +1121,10 @@ func setHeaderField(fields []types.HeaderField, name, value string) []types.Head
 	return append(kept, types.HeaderField{Name: name, Value: value})
 }
 
-// sweep evicts idle and over-age established sessions.
+// sweep evicts idle and over-age established sessions and expired attest-lb
+// bindings.
 func (s *Server) sweep() {
+	s.bindings.prune()
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -966,25 +1176,31 @@ func (s *Server) addSession(client, id string, entry establishedSession) error {
 	return nil
 }
 
-// useSession returns the channel id names, refreshing its idle deadline. An
+// useSession returns the session id names, refreshing its idle deadline. An
 // idle-expired or over-age session is dropped and reported as absent: use
 // refreshes the idle deadline but never the absolute one, so no amount of
 // traffic keeps one key schedule alive past SessionMaxAge.
-func (s *Server) useSession(id string) *overenc.Channel {
+func (s *Server) useSession(id string) (establishedSession, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.sessions[id]
 	if !ok {
-		return nil
+		return establishedSession{}, false
 	}
 	now := time.Now()
 	if now.Sub(entry.lastUsed) > s.cfg.SessionTTL || now.Sub(entry.createdAt) > s.cfg.SessionMaxAge {
 		s.dropSession(id)
-		return nil
+		return establishedSession{}, false
 	}
 	entry.lastUsed = now
 	s.sessions[id] = entry
-	return entry.channel
+	return entry, true
+}
+
+func (s *Server) endSession(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropSession(id)
 }
 
 func (s *Server) dropSession(id string) {

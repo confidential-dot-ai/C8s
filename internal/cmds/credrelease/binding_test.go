@@ -25,6 +25,10 @@ import (
 
 var operatorPub = []byte("operator public key bytes")
 
+// launchFile stands in for a whole configuration document a VM is launched
+// with, the anchor shape a CDS VM binds.
+var launchFile = []byte("schemaVersion: c8s-cds/v1\n")
+
 // TestMain shortens the attestation-api readiness wait so the unreachable-URL
 // cases fail in milliseconds rather than the 90s a real boot allows.
 func TestMain(m *testing.M) {
@@ -270,6 +274,56 @@ func TestSelfReportFailsWhenAttestationAPINeverReady(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not ready after") {
 		t.Errorf("error = %v, want the readiness wait to report the timeout", err)
+	}
+}
+
+// A VM whose launch file is its whole configuration is bound to it on both
+// platforms, and the platform it serves comes from the report rather than from
+// something it was configured to believe.
+func TestVerifyMeasuredLaunchFile(t *testing.T) {
+	for _, tc := range []struct {
+		platform teetypes.PlatformType
+		binding  []byte
+		want     teetypes.Family
+	}{
+		{teetypes.PlatformTDX, tdxBinding(launchFile), teetypes.FamilyTDX},
+		{teetypes.PlatformSNP, snpBinding(launchFile), teetypes.FamilySNP},
+		{teetypes.PlatformGcpSNP, snpBinding(launchFile), teetypes.FamilySNP},
+	} {
+		t.Run(string(tc.platform), func(t *testing.T) {
+			got, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, tc.platform, tc.binding), launchFile)
+			if err != nil {
+				t.Fatalf("VerifyMeasuredLaunchFile: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("platform = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// Serving a configuration the launch did not bind serves whatever the host
+// wrote, so every binding other than the launch file's own fails closed —
+// including a register extended past the seed, which no such VM does.
+func TestVerifyMeasuredLaunchFileFailsClosed(t *testing.T) {
+	extended := runtimemeasure.Extend(runtimemeasure.Seed(launchFile), runtimemeasure.Event("sha256:"+strings.Repeat("1", 64)))
+
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+	}{
+		{"tdx: another document", teetypes.PlatformTDX, tdxBinding([]byte("another document"))},
+		{"tdx: the seed extended at runtime", teetypes.PlatformTDX, extended[:]},
+		{"tdx: fileless launch leaves the register zero", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size)},
+		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document"))},
+		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, tc.platform, tc.binding), launchFile); err == nil {
+				t.Fatal("VerifyMeasuredLaunchFile = nil error, want a refusal")
+			}
+		})
 	}
 }
 

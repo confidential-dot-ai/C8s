@@ -228,7 +228,8 @@ func TestGPUWorkerGrantWithNodeRootCDIFiles(t *testing.T) {
 	}
 }
 
-func TestAdmitsNodeRoot(t *testing.T) {
+// A host bind is granted only by a declaration that pins its launch and names it.
+func TestGrantsHostBind(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	sourceDigest, err := HostSourceDigest(source)
 	if err != nil {
@@ -238,20 +239,34 @@ func TestAdmitsNodeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := func(command ArgvPolicy, mounts MountPolicy) *Index {
+	env, err := ObserveEnv([]string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declare := func(command ArgvPolicy, mounts MountPolicy, envPolicy EnvPolicy) Container {
 		if err := normalizeMounts(&mounts); err != nil {
 			t.Fatal(err)
 		}
-		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
-			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyAny},
-			Mounts: mounts, Env: EnvPolicy{Policy: PolicyAny},
-		}}}}}).BuildIndex()
+		return Container{
+			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyDeny},
+			Mounts: mounts, Env: envPolicy,
+		}
 	}
-	anyCommand := ArgvPolicy{Policy: PolicyAny}
-	rule := MountRule{Destination: source, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
-	plain := rule
-	plain.Kind = MountHost
-	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	index := func(declarations ...Container) *Index {
+		return (&Allowlist{Workloads: map[string]Workload{"w": {Containers: declarations}}}).BuildIndex()
+	}
+	argv := []string{"/bin/app"}
+	ownCommand := ArgvPolicy{Policy: PolicyExact, Argv: argv}
+	otherCommand := ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/other"}}
+	pinnedEnv := EnvPolicy{Policy: PolicyExact, Values: map[string]string{"PATH": "/usr/bin"}}
+	openEnv := EnvPolicy{Policy: PolicyAny}
+	nodeRootRule := MountRule{Destination: source, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
+	hostRule := nodeRootRule
+	hostRule.Kind = MountHost
+	exact := func(rule MountRule) MountPolicy {
+		return MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	}
+	open := MountPolicy{Policy: PolicyAny}
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
 	for _, tc := range []struct {
 		name   string
@@ -259,12 +274,20 @@ func TestAdmitsNodeRoot(t *testing.T) {
 		mutate func(*ObservedMount)
 		want   bool
 	}{
-		{"exact nodeRootFile rule", index(anyCommand, exact), nil, true},
-		{"mount policy any", index(anyCommand, MountPolicy{Policy: PolicyAny}), nil, false},
-		{"host rule", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
-		{"entry refuses argv", index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact), nil, false},
-		{"other source", index(anyCommand, exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
-		{"no observed provenance", index(anyCommand, exact), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"exact nodeRootFile rule", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), nil, true},
+		{"exact host rule", index(declare(ownCommand, exact(hostRule), pinnedEnv)), nil, true},
+		{"host rule, writable bind", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.ReadOnly = false }, false},
+		{"nodeRootFile rule, no provenance", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"host rule, other source", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
+		{"host rule, unlisted destination", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.Destination = "/app/verify" }, false},
+		{"unconstrained environment", index(declare(ownCommand, exact(hostRule), openEnv)), nil, false},
+		{"declaration refuses the argv", index(declare(otherCommand, exact(hostRule), pinnedEnv)), nil, false},
+		{
+			"a second declaration admits the launch, under mounts: any",
+			index(declare(otherCommand, exact(hostRule), pinnedEnv), declare(ownCommand, open, pinnedEnv)),
+			nil,
+			false,
+		},
 		{"no allowlist", nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,10 +295,29 @@ func TestAdmitsNodeRoot(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&m)
 			}
-			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/other"}, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}
-			if got := tc.index.AdmitsNodeRoot(r, m); got != tc.want {
-				t.Fatalf("AdmitsNodeRoot(%s) = %t, want %t", tc.name, got, tc.want)
+			r := RunningContainer{Digest: dApp, Argv: argv, Mounts: []ObservedMount{m}, Env: env}
+			if got := tc.index.GrantsHostBind(r, m); got != tc.want {
+				t.Fatalf("GrantsHostBind(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// The grant answers only for a mount the launch carries.
+func TestGrantsHostBindNeedsTheLaunchToCarryTheMount(t *testing.T) {
+	env, err := ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"/bin/app"}
+	index := (&Allowlist{Workloads: map[string]Workload{"w": {Containers: []Container{{
+		Digest: dig(t, dApp), Command: ArgvPolicy{Policy: PolicyExact, Argv: argv},
+		Args: ArgvPolicy{Policy: PolicyDeny}, Mounts: MountPolicy{Policy: PolicyDeny},
+		Env: EnvPolicy{Policy: PolicyDeny},
+	}}}}}).BuildIndex()
+	r := RunningContainer{Digest: dApp, Argv: argv, Mounts: []ObservedMount{}, Env: env}
+	m := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, ReadOnly: true}
+	if index.GrantsHostBind(r, m) {
+		t.Fatal("GrantsHostBind(a mount the launch does not carry) = true, want false")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -32,6 +33,17 @@ func TestNewCmdDurationDefaults(t *testing.T) {
 		}
 		if f.DefValue != tc.want {
 			t.Fatalf("default --%s = %q, want %q", tc.flag, f.DefValue, tc.want)
+		}
+	}
+}
+
+// TestNewCmdHasNoMeshIdentityFlags: no flag points the attestation endpoints
+// at a credential other than the member one the router dials with.
+func TestNewCmdHasNoMeshIdentityFlags(t *testing.T) {
+	flags := NewCmd().Flags()
+	for _, name := range []string{"mesh-identity-cert-file", "mesh-identity-key-file", "mesh-identity-ca-file"} {
+		if flags.Lookup(name) != nil {
+			t.Fatalf("--%s is defined, want no such flag", name)
 		}
 	}
 }
@@ -102,27 +114,23 @@ func TestRunRequiresCDSURL(t *testing.T) {
 // polling a CDS that cannot be reached.
 func routedRunConfig(t *testing.T, port int) config {
 	t.Helper()
-	identity := writeTestMeshIdentity(t)
 	return config{
-		host:                 "127.0.0.1",
-		port:                 port,
-		logLevel:             "error",
-		meshIdentityCertFile: identity.certFile,
-		meshIdentityKeyFile:  identity.keyFile,
-		meshIdentityCAFile:   identity.caFile,
-		attestationAPIURL:    "http://127.0.0.1:9",
-		readHeaderTimeout:    time.Second,
-		tunnelIOTimeout:      defaultTunnelIOTimeout,
-		attestOff:            true,
+		host:              "127.0.0.1",
+		port:              port,
+		logLevel:          "error",
+		attestationAPIURL: "http://127.0.0.1:9",
+		readHeaderTimeout: time.Second,
+		tunnelIOTimeout:   defaultTunnelIOTimeout,
+		attestOff:         true,
 		routing: routingConfig{
-			cdsURL:           "https://127.0.0.1:9",
-			launchKeysFile:   filepath.Join(t.TempDir(), "absent"),
-			allowUnpinnedCDS: true,
-			pollInterval:     time.Hour,
-			backendTimeout:   time.Hour,
-			host:             "127.0.0.1",
-			reservedPaths:    defaultReservedPaths,
-			tunnelBudget:     quantityFlag{bytes: oneRequestBudget, set: true},
+			cdsURL:          "https://127.0.0.1:9",
+			imagePolicyFile: testutil.CDSPinFile(t),
+			launchKeysFile:  filepath.Join(t.TempDir(), "absent"),
+			pollInterval:    time.Hour,
+			backendTimeout:  time.Hour,
+			host:            "127.0.0.1",
+			reservedPaths:   defaultReservedPaths,
+			tunnelBudget:    quantityFlag{bytes: oneRequestBudget, set: true},
 		},
 	}
 }

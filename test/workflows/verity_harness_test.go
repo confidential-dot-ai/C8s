@@ -11,7 +11,7 @@ import (
 // The harness must enter its own mount namespace before changing mount
 // propagation, even when it already runs outside the init namespace.
 func TestVerityHarnessAlwaysEntersPrivateNamespace(t *testing.T) {
-	script, err := filepath.Abs("../../node-guest-image/tests/mount-verity-test.sh")
+	script, err := filepath.Abs("../../images/node-guest/tests/mount-verity-test.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

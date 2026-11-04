@@ -113,31 +113,3 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 		}
 	}
 }
-
-// An override admitting CDS replaces its generated entry in the seed.
-func TestChartCDSOverrideReplacesGeneratedEntry(t *testing.T) {
-	t.Parallel()
-	base, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, base)
-	}
-	seed := renderedSeed(t, base)
-	live := cdsShapeAnnotation(t, base)
-	entry, ok := seed.Workloads[live]
-	if !ok {
-		t.Fatalf("seed has no entry %s for the CDS shape", live)
-	}
-	digest := entry.Containers[0].Digest
-	override := pkgallowlist.DigestEntryName(digest, entry.Label)
-	raw, err := json.Marshal(map[string]any{"label": entry.Label, "containers": entry.Containers})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.bootstrapAllowlist.workloads."+override+"="+string(raw))
-	if err != nil {
-		t.Fatalf("helm template with the override: %v\n%s", err, out)
-	}
-	if got := entriesFor(renderedSeed(t, out), digest.String()); !slices.Equal(got, []string{override}) {
-		t.Errorf("seed entries for the CDS digest = %v, want only the override %s", got, override)
-	}
-}

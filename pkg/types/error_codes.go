@@ -40,6 +40,9 @@ const (
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
 	ErrorCodeSecretStoreFull = "secret_store_full"
+	// ErrorCodeStateCapacity: the replicated state is near what a snapshot can
+	// hold, so writes that grow it are refused until it shrinks.
+	ErrorCodeStateCapacity = "state_capacity"
 	// ErrorCodeRoutesUnavailable: no route manifest is applied yet, so the
 	// automated ingress service refuses attested sessions (route policy A2).
 	// A retry succeeds after the operator writes a manifest and the router
@@ -49,6 +52,20 @@ const (
 	// automated ingress service refuses new attested sessions (route policy
 	// F2).
 	ErrorCodeRoutesStale = "routes_stale"
+	// ErrorCodeRouteDigestChanged: a manifest other than the one the
+	// session's handshake bound is applied. Attest again.
+	ErrorCodeRouteDigestChanged = "route_digest_changed"
+	// ErrorCodeRouterDigestChanged: the router's mesh leaf renewed under
+	// another allowlist digest than the session's handshake bound, or while
+	// the request was reaching a workload. Attest again; a request outside an
+	// attested session can retry.
+	ErrorCodeRouterDigestChanged = "router_digest_changed"
+	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
+	// it may, for this client or in all. Retry shortly.
+	ErrorCodeSessionsBusy = "sessions_busy"
+	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
+	// before the request. Attest again.
+	ErrorCodeBindingExpired = "binding_expired"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

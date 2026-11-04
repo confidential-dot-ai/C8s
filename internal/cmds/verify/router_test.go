@@ -75,6 +75,7 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 	// A cds front door serves the mesh identity leaf itself.
 	meshCertFile := writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw)
 	prov := &recordingProvider{}
+	bindings := cdsattest.NewBindings()
 	handler := cdsattest.NewServer(cdsattest.Config{
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
@@ -82,8 +83,9 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 		MeshIdentityCertFile: meshCertFile,
 		MeshIdentityKeyFile:  writePEM(t, "mesh-key.pem", "EC PRIVATE KEY", keyDER),
 		MeshIdentityCAFile:   writePEM(t, "mesh-ca.pem", "CERTIFICATE", id.ca.Raw),
-		Routes:               routing.NewProxy(routing.ProxyConfig{State: state}),
+		Routes:               routing.NewProxy(routing.ProxyConfig{State: state, Bindings: bindings}),
 		PublishRoutes:        true,
+		Bindings:             bindings,
 	}).Handler()
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)

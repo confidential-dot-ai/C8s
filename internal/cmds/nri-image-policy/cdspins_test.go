@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,38 +11,43 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-var (
-	testDigestA = strings.Repeat("a1", 48)
-	testDigestB = strings.Repeat("b2", 48)
-)
+// nodeCDSPins is the pin source Run builds from the node's configuration.
+func nodeCDSPins(t *testing.T, p *plugin) armtls.PinSource {
+	t.Helper()
+	pins, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger())
+	if err != nil {
+		t.Fatalf("the node's CDS pins: %v", err)
+	}
+	return pins
+}
 
-// identityPolicyFile is a complete sev-snp policy document, as a node's
-// measured config names one.
-const identityPolicyFile = "../../testdata/node-identities.json"
-
-// A node whose policy is a document hands those identities on whole, through
-// the same render path its independent pins take.
+// A node hands its CDS pin on whole, so every injected client holds CDS to the
+// same launch file the node does.
 func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 	renderInTempDir(t)
+	pin := testCDSPinFile(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
 	})
 
-	if err := p.prepareCDSPins(); err != nil {
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
 		t.Fatalf("pins path = %q, want %q", p.cdsPins, want)
 	}
-	configured, err := refvalues.Load(identityPolicyFile)
+	configured, err := refvalues.Load(pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,21 +66,14 @@ func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 // clients run as the credentials UID.
 func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	renderInTempDir(t)
-	document, err := os.ReadFile(identityPolicyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootOnly := filepath.Join(t.TempDir(), "cds.json")
-	if err := os.WriteFile(rootOnly, document, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	rootOnly := testCDSPinFile(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: rootOnly}},
 	})
 
-	if err := p.prepareCDSPins(); err != nil {
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	staged, err := os.Stat(p.cdsPins)
@@ -89,107 +86,54 @@ func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	}
 }
 
-// A configured document for another platform is refused at startup: a node
-// must not hand its pods pins it cannot itself verify CDS against.
-func TestPrepareCDSPinsRefusesAnotherPlatformsDocument(t *testing.T) {
-	p := testPlugin(t, &config{
-		Platform:       "sev-snp",
-		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}},
-	})
-
-	if err := p.prepareCDSPins(); err == nil {
-		t.Fatal("prepareCDSPins accepted a document for another platform")
-	}
-}
-
-// Independent pins become the same document, so one format reaches every
-// client. It must load back through the loader the clients use.
-func TestPrepareCDSPinsRendersIndependentPins(t *testing.T) {
-	dir := t.TempDir()
+// A CDS runs on the TEE family its own document declares, which an operator
+// chooses independently of the nodes it serves.
+func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
 	renderInTempDir(t)
 	p := testPlugin(t, &config{
-		Platform:       "sev-snp",
-		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA, testDigestB}}},
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
 
-	if err := p.prepareCDSPins(); err != nil {
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
-		t.Fatalf("pins path = %q, want %q", p.cdsPins, want)
-	}
-	set, err := refvalues.Load(p.cdsPins)
+	rendered, err := refvalues.Load(p.cdsPins)
 	if err != nil {
 		t.Fatalf("rendered pins do not load: %v", err)
 	}
-	if len(set.Images) != 2 {
-		t.Fatalf("rendered images = %d, want one per launch digest", len(set.Images))
-	}
-	for i, want := range []string{testDigestA, testDigestB} {
-		if got := hex.EncodeToString(set.Images[i].Digest); got != want {
-			t.Errorf("image %d pins %q, want the configured digest %q", i, got, want)
-		}
+	if rendered.Family != teetypes.FamilySNP {
+		t.Fatalf("rendered family = %s, want the document's own %s", rendered.Family, teetypes.FamilySNP)
 	}
 }
 
-// SNP evidence carries no registers, so a node configured with them for SNP
-// is refused rather than handed a document pinning fewer identities than it
-// asked for.
-func TestPrepareCDSPinsRefusesRegistersTheFamilyLacks(t *testing.T) {
+// Without an inventory directory no pod of this node is injected, so there is
+// nothing to render and nothing to mount.
+func TestPrepareCDSPinsEmptyWithoutInventory(t *testing.T) {
+	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}}})
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	if p.cdsPins != "" {
+		t.Fatalf("pins path = %q, want none", p.cdsPins)
+	}
+}
+
+// A CDS is pinned to the configuration it runs on, so a document naming only
+// its image is refused before anything is written: every client this node
+// injects would otherwise admit any CDS VM.
+func TestPrepareCDSPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
+	renderInTempDir(t)
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist: allowlistConfig{Pull: pullConfig{
-			CDSMeasurements: []string{testDigestA},
-			CDSRTMRs:        []string{"1=" + strings.Repeat("cd", 48)},
-		}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPinFile(t, unbound)}},
 	})
 
-	if err := p.prepareCDSPins(); err == nil {
-		t.Fatal("prepareCDSPins rendered register pins for a family whose evidence carries none")
-	}
-}
-
-// A node that pins nothing mounts nothing: the client then has no policy to
-// read, which its own unpinned check reports.
-func TestPrepareCDSPinsEmptyWithoutPins(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		cfg  *config
-	}{
-		{"no pins", &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}}},
-		{"no inventory directory", &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := testPlugin(t, tc.cfg)
-			if err := p.prepareCDSPins(); err != nil {
-				t.Fatalf("prepareCDSPins: %v", err)
-			}
-			if p.cdsPins != "" {
-				t.Fatalf("pins path = %q, want none", p.cdsPins)
-			}
-		})
-	}
-}
-
-// Competing sources are refused before anything is written: a node must not
-// hand out one policy while holding its CDS to another.
-func TestConfigRefusesCompetingPolicySources(t *testing.T) {
-	pull := pullConfig{
-		CDSMeasurementsConfig: identityPolicyFile,
-		CDSMeasurements:       []string{testDigestA},
-	}
-
-	if err := pull.checkPolicySources(); err == nil {
-		t.Fatal("a document beside independent pins was accepted")
-	}
-	if _, err := pull.policySet("tdx"); err == nil {
-		t.Fatal("the loader read a document beside independent pins")
-	}
-	if _, err := (pullConfig{CDSMeasurements: []string{testDigestA}}).policySet("moon"); err == nil {
-		t.Fatal("independent pins were accepted without a platform to render them for")
+	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("prepareCDSPins = %v, want a launch-binding refusal", err)
 	}
 }
 
@@ -201,9 +145,9 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
-	if err := p.prepareCDSPins(); err != nil {
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -281,10 +225,10 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
 	p.policy = newPolicyStore(base)
-	if err := p.prepareCDSPins(); err != nil {
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -334,12 +278,13 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	}
 }
 
-// A node that pins nothing adds no policy mount, so a client cannot mistake an
-// empty file for a policy.
-func TestSidecarAdjustmentWithoutPins(t *testing.T) {
+// A node that injects credential clients but pins no CDS refuses before any
+// container is created, and renders nothing a client could mistake for a
+// policy.
+func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if err := p.prepareCDSPins(); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "pins no image") {
+		t.Fatalf("the node's CDS pins = %v, want the unpinned-CDS refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -372,6 +317,68 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 		t.Fatalf("newPlugin: %v", err)
 	}
 	return p
+}
+
+// The certificate gate holds the credentials identity but is no socket
+// consumer: it takes the CDS policy and no socket directory, so the mounts the
+// node observes for it are the webhook's alone and its exact entry holds.
+func TestCertGateTakesNoSocketDirectory(t *testing.T) {
+	dir := t.TempDir()
+	renderInTempDir(t)
+	certs := allowlist.MountRule{Destination: workloadclaims.MemberCertDir, Kind: allowlist.MountEmptyDir, Source: "c8s-certs"}
+	base := &allowlist.Allowlist{
+		Schema: allowlist.Schema,
+		Workloads: map[string]allowlist.Workload{
+			"c8s-probe-file": {Containers: []allowlist.Container{{
+				Digest:  mustDigestOrPanic(pushDigestA),
+				Role:    CredentialRole,
+				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/c8s", "probe-file"}},
+				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{certs}},
+			}}},
+		},
+	}
+	p := testPlugin(t, &config{
+		Platform:       "sev-snp",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
+	})
+	p.policy = newPolicyStore(base)
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	p.inventory = newAdmissionInventory(t.TempDir())
+	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	pod := &api.PodSandbox{
+		Id:          "sandbox",
+		Uid:         "uid",
+		Namespace:   "default",
+		Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"},
+	}
+	gate := &api.Container{
+		Name:         workloadclaims.CertWaitContainerName,
+		PodSandboxId: "sandbox",
+		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
+		Args:         []string{"/c8s", "probe-file", "--wait", workloadclaims.MemberCertDir + "/tls.crt"},
+		User:         &api.User{Uid: workloadclaims.CredentialsUID},
+		Mounts: []*api.Mount{{
+			Source:      kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
+			Destination: workloadclaims.MemberCertDir,
+			Type:        "bind",
+			Options:     []string{"rbind", "rw"},
+		}},
+	}
+	adjust := mustCredentialMounts(t, p, pod, gate)
+	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
+		t.Error("the certificate gate was handed no CDS policy")
+	}
+	if m := mountTo(adjust, workloadclaims.SidecarSocketDir); m != nil {
+		t.Errorf("the certificate gate was handed the socket directory %s, which it observes as a host mount", m.GetSource())
+	}
+	gate.Mounts = append(gate.Mounts, adjust.GetMounts()...)
+	if got := p.measuredRole(context.Background(), pod, gate); got != CredentialRole {
+		t.Errorf("the gate with the node's own mounts holds the role %q, want %q", got, CredentialRole)
+	}
 }
 
 // mustCredentialMounts is the adjustment the node adds for one container, for

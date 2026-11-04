@@ -13,10 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
+	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // The CRI annotations containerd writes into every container's OCI spec
@@ -24,26 +27,11 @@ import (
 const (
 	annotationSandboxNamespace = "io.kubernetes.cri.sandbox-namespace"
 	annotationSandboxID        = "io.kubernetes.cri.sandbox-id"
+	annotationSandboxUID       = "io.kubernetes.cri.sandbox-uid"
+	annotationContainerName    = "io.kubernetes.cri.container-name"
 	annotationContainerType    = "io.kubernetes.cri.container-type"
 	containerTypeSandbox       = "sandbox"
 )
-
-// workloadCapabilities is what a container outside every platform role may
-// hold: the runtime's default set less NET_RAW, SETUID and SETGID, each of
-// which defeats the pod ruleset.
-var workloadCapabilities = []string{
-	"CAP_AUDIT_WRITE",
-	"CAP_CHOWN",
-	"CAP_DAC_OVERRIDE",
-	"CAP_FOWNER",
-	"CAP_FSETID",
-	"CAP_KILL",
-	"CAP_MKNOD",
-	"CAP_NET_BIND_SERVICE",
-	"CAP_SETFCAP",
-	"CAP_SETPCAP",
-	"CAP_SYS_CHROOT",
-}
 
 // kernelFSTypes are the filesystem types a privileged container is given
 // writable (containerd pkg/oci, WithWriteableSysfs and WithWriteableCgroupfs).
@@ -54,9 +42,9 @@ var kernelFSTypes = []string{
 }
 
 // requireFloor refuses a bundle that would start a container of a member pod
-// with privileges the pod's protection cannot survive. A role's container
-// holds no capabilities. Attachability is refused for every container the
-// wrapper creates, whether or not the floor covers it.
+// with privileges the pod's protection cannot survive. Attachability is
+// refused for every container the wrapper creates, whether or not the floor
+// covers it.
 func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
@@ -75,14 +63,9 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
 	user := spec.Process.User
-	allowed := workloadCapabilities
 	role := ""
 	if bound, reserved := floor.ReservedIDs[user.UID]; reserved {
 		role = bound.Name
-		allowed = nil
-	}
-	if err := requireFloorCapabilities(spec.Process.Capabilities, allowed); err != nil {
-		return err
 	}
 	if err := requireNoNewPrivileges(spec.Process); err != nil {
 		return err
@@ -93,7 +76,99 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 	if err := requireOwnNamespaces(spec.Linux); err != nil {
 		return err
 	}
-	return requireUnreservedIdentity(user, floor, role)
+	if err := requireUnreservedIdentity(user, floor, role); err != nil {
+		return err
+	}
+	return requireWorkingDirOnImage(spec)
+}
+
+// maxSymlinks bounds the links followed while resolving the working directory,
+// as the kernel's ELOOP limit does.
+const maxSymlinks = 40
+
+// requireWorkingDirOnImage refuses a working directory at or below a data or
+// host mount. The allowlist pins the command line, environment and mounts, but
+// the process resolves relative paths and, for an interpreter, its first module
+// search path against the working directory, so it must not be content the
+// control plane or the host supplies. An emptyDir starts empty and only the
+// pod's own admitted containers write it, so a working directory there stays
+// allowed. Symlinks are followed inside the root filesystem, where the runtime
+// follows them.
+func requireWorkingDirOnImage(spec *specs.Spec) error {
+	cwd := spec.Process.Cwd
+	if !filepath.IsAbs(cwd) {
+		return fmt.Errorf("the working directory %q is not absolute", cwd)
+	}
+	if spec.Root == nil || !filepath.IsAbs(spec.Root.Path) {
+		return errors.New("the bundle names no root filesystem to resolve the working directory in")
+	}
+	var supplied []string
+	for _, mount := range spec.Mounts {
+		if !suppliedContent(spec, mount) {
+			continue
+		}
+		supplied = append(supplied, filepath.Clean(mount.Destination))
+		if resolved, err := resolveInRoot(spec.Root.Path, mount.Destination, nil); err == nil {
+			supplied = append(supplied, resolved)
+		}
+	}
+	if _, err := resolveInRoot(spec.Root.Path, cwd, supplied); err != nil {
+		return fmt.Errorf("the working directory %s: %w", cwd, err)
+	}
+	return nil
+}
+
+// suppliedContent reports a mount admission classifies as data or host: its
+// content comes from the control plane or the host, not from the pod.
+func suppliedContent(spec *specs.Spec, mount specs.Mount) bool {
+	class, ok := nriimagepolicy.ClassifyBundleMount(
+		spec.Annotations[annotationSandboxUID],
+		spec.Annotations[annotationSandboxID],
+		spec.Annotations[annotationContainerName],
+		&api.Mount{Destination: mount.Destination, Source: mount.Source, Type: mount.Type, Options: mount.Options},
+	)
+	return ok && (class == allowlist.MountData || class == allowlist.MountHost)
+}
+
+// resolveInRoot resolves path inside the root filesystem at root, following
+// symlinks relative to root, and refuses to step onto any of mounts. A missing
+// component ends link resolution: the runtime creates the rest as directories.
+func resolveInRoot(root, path string, mounts []string) (string, error) {
+	current := "/"
+	pending := strings.Split(path, "/")
+	links := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, name)
+		if slices.Contains(mounts, next) {
+			return "", fmt.Errorf("is at or below the data or host mount at %s", next)
+		}
+		info, err := os.Lstat(filepath.Join(root, next))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if links++; links > maxSymlinks {
+			return "", errors.New("has too many levels of symbolic links")
+		}
+		target, err := os.Readlink(filepath.Join(root, next))
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			current = "/"
+		}
+		pending = append(strings.Split(target, "/"), pending...)
+	}
+	return current, nil
 }
 
 // requireNotAttachable refuses the two halves of what an attach session would
@@ -127,39 +202,6 @@ func isPodSandbox(spec *specs.Spec, containerID string) bool {
 	sandboxID := spec.Annotations[annotationSandboxID]
 	return spec.Annotations[annotationContainerType] == containerTypeSandbox &&
 		sandboxID != "" && sandboxID == containerID
-}
-
-// requireFloorCapabilities refuses a capability outside the floor in any of
-// the five sets: one in the bounding set is one an exec can still take. A
-// bundle that names no sets at all is refused rather than read as none.
-func requireFloorCapabilities(held *specs.LinuxCapabilities, allowed []string) error {
-	if held == nil {
-		return errors.New("the bundle names no capability sets")
-	}
-	if err := requireCapabilitySet("bounding", held.Bounding, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("effective", held.Effective, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("permitted", held.Permitted, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("inheritable", held.Inheritable, allowed); err != nil {
-		return err
-	}
-	return requireCapabilitySet("ambient", held.Ambient, allowed)
-}
-
-// requireCapabilitySet refuses a capability of one set that the floor does
-// not allow.
-func requireCapabilitySet(name string, held, allowed []string) error {
-	for _, capability := range held {
-		if !slices.Contains(allowed, capability) {
-			return fmt.Errorf("%s capability %s is outside the floor", name, capability)
-		}
-	}
-	return nil
 }
 
 // requireNoNewPrivileges requires the bit that bounds what an execve inside
@@ -311,6 +353,9 @@ func readBundle(args []string) (*specs.Spec, string, error) {
 	var spec specs.Spec
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	if spec.Root != nil && !filepath.IsAbs(spec.Root.Path) {
+		spec.Root.Path = filepath.Join(dir, spec.Root.Path)
 	}
 	return &spec, containerID, nil
 }

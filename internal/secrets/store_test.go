@@ -14,17 +14,17 @@ import (
 
 // holderTotal returns the sum of the per-holder counts and the number of paths,
 // which the store must keep equal.
-func holderTotal(s *MemoryStore) (total, paths int) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, n := range s.holders {
+func holderTotal(h *Handle) (total, paths int) {
+	h.store.mu.RLock()
+	defer h.store.mu.RUnlock()
+	for _, n := range h.store.holders {
 		total += n
 	}
-	return total, len(s.values)
+	return total, len(h.store.values)
 }
 
 func TestMemoryStoreGetMissing(t *testing.T) {
-	s := NewMemoryStore(10, 9, 64)
+	s := NewMemoryStore(10, 9, 64).Local()
 	if _, err := s.Get(context.Background(), "/nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -34,7 +34,7 @@ func TestMemoryStoreGetMissing(t *testing.T) {
 // that it did not create it — which is how a losing replica recovers.
 func TestMemoryStorePutIfAbsent(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(10, 9, 64)
+	s := NewMemoryStore(10, 9, 64).Local()
 
 	got, held, err := s.PutIfAbsent(ctx, "/a", []byte("first"), WorkloadHolder("api"))
 	if err != nil || held.Exists || !bytes.Equal(got, []byte("first")) {
@@ -59,7 +59,7 @@ func TestMemoryStorePutIfAbsent(t *testing.T) {
 // thing the operator write path learns about a value it did not write.
 func TestMemoryStorePut(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(10, 9, 64)
+	s := NewMemoryStore(10, 9, 64).Local()
 
 	held, err := s.Put(ctx, "/a", []byte("operator"))
 	if err != nil || held.Exists {
@@ -92,7 +92,7 @@ func TestMemoryStorePut(t *testing.T) {
 // consumes no room.
 func TestMemoryStorePutBounds(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(2, 1, 4)
+	s := NewMemoryStore(2, 1, 4).Local()
 
 	if _, err := s.Put(ctx, "/a", []byte("toolong")); err == nil {
 		t.Fatal("an oversized value was stored")
@@ -117,7 +117,7 @@ func TestMemoryStorePutBounds(t *testing.T) {
 // slice.
 func TestMemoryStoreCopiesValues(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(10, 9, 64)
+	s := NewMemoryStore(10, 9, 64).Local()
 	original := []byte("secret")
 	if _, _, err := s.PutIfAbsent(ctx, "/a", original, WorkloadHolder("api")); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestMemoryStoreCopiesValues(t *testing.T) {
 // One path each, so the ceiling is the bound the third write meets.
 func TestMemoryStoreBounds(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(2, 1, 4)
+	s := NewMemoryStore(2, 1, 4).Local()
 
 	if _, _, err := s.PutIfAbsent(ctx, "/big", []byte("toolong"), WorkloadHolder("api")); err == nil {
 		t.Fatal("an oversized value was stored")
@@ -166,7 +166,7 @@ func TestMemoryStoreBounds(t *testing.T) {
 // A holder meets its own quota while the ceiling is still far away.
 func TestMemoryStoreHolderQuota(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(64, 2, 8)
+	s := NewMemoryStore(64, 2, 8).Local()
 
 	flooder := WorkloadHolder("flooder")
 	stored := map[string]string{"/f/1": "one", "/f/2": "two"}
@@ -200,7 +200,7 @@ func TestMemoryStoreHolderQuota(t *testing.T) {
 // keeps writing.
 func TestFloodingHolderDoesNotRefuseAnother(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 2, 8)
+	s := NewMemoryStore(8, 2, 8).Local()
 
 	flooder, honest := WorkloadHolder("flooder"), WorkloadHolder("honest")
 	stored, refused := 0, 0
@@ -234,7 +234,7 @@ func TestDefaultMaxPathsPerHolder(t *testing.T) {
 	if DefaultMaxPathsPerHolder != 64 {
 		t.Fatalf("the shipped quota is %d, want 64", DefaultMaxPathsPerHolder)
 	}
-	s := NewMemoryStore(1024, DefaultMaxPathsPerHolder, 8)
+	s := NewMemoryStore(1024, DefaultMaxPathsPerHolder, 8).Local()
 	api := WorkloadHolder("api")
 
 	for i := range DefaultMaxPathsPerHolder {
@@ -278,7 +278,7 @@ func TestNewMemoryStoreRejectsAQuotaAboveTheCeiling(t *testing.T) {
 // the ceiling alone.
 func TestHolderQuotaAnswersBeforeTheCeiling(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(3, 2, 8)
+	s := NewMemoryStore(3, 2, 8).Local()
 	api, web := WorkloadHolder("api"), WorkloadHolder("web")
 
 	for _, p := range []string{"/api/1", "/api/2"} {
@@ -300,7 +300,7 @@ func TestHolderQuotaAnswersBeforeTheCeiling(t *testing.T) {
 // The key is (origin, name), so an entry named "operator" holds its own bucket.
 func TestWorkloadNamedOperatorIsNotTheOperator(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 1, 8)
+	s := NewMemoryStore(8, 1, 8).Local()
 
 	if _, _, err := s.PutIfAbsent(ctx, "/op/1", []byte("ok"), OperatorHolder()); err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestWorkloadNamedOperatorIsNotTheOperator(t *testing.T) {
 // produced is still bounded.
 func TestZeroHolderIsQuotaed(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 1, 8)
+	s := NewMemoryStore(8, 1, 8).Local()
 
 	if _, _, err := s.PutIfAbsent(ctx, "/a", []byte("ok"), Holder{}); err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestZeroHolderIsQuotaed(t *testing.T) {
 // The ceiling refuses and keeps what it has: a stored value is the only copy.
 func TestMemoryStoreCeilingRefusesWithoutEvicting(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(2, 1, 8)
+	s := NewMemoryStore(2, 1, 8).Local()
 
 	stored := map[string]string{"/one": "a-value", "/two": "b-value"}
 	for _, w := range []struct{ holder, path string }{{"a", "/one"}, {"b", "/two"}} {
@@ -353,7 +353,7 @@ func TestMemoryStoreCeilingRefusesWithoutEvicting(t *testing.T) {
 // still reach the ceiling, and the holder that arrives after them is refused.
 func TestManyHoldersStillReachTheCeiling(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 2, 8)
+	s := NewMemoryStore(8, 2, 8).Local()
 
 	for i := range 8 {
 		p := fmt.Sprintf("/w%d/1", i)
@@ -374,7 +374,7 @@ func TestManyHoldersStillReachTheCeiling(t *testing.T) {
 // Operator writes count against the ceiling only.
 func TestOperatorWritesAreNotQuotaed(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 1, 8)
+	s := NewMemoryStore(8, 1, 8).Local()
 
 	for i := range 4 {
 		if _, _, err := s.PutIfAbsent(ctx, fmt.Sprintf("/op/%d", i), []byte("ok"), OperatorHolder()); err != nil {
@@ -387,7 +387,7 @@ func TestOperatorWritesAreNotQuotaed(t *testing.T) {
 // workload's path returns that workload a unit of quota.
 func TestReplacingAValueMovesItsCharge(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(8, 1, 16)
+	s := NewMemoryStore(8, 1, 16).Local()
 	api := WorkloadHolder("api")
 
 	if _, _, err := s.PutIfAbsent(ctx, "/api/db", []byte("generated"), api); err != nil {
@@ -411,7 +411,7 @@ func TestReplacingAValueMovesItsCharge(t *testing.T) {
 // with the map.
 func TestMemoryStoreQuotaUnderConcurrentWrites(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(64, 4, 8)
+	s := NewMemoryStore(64, 4, 8).Local()
 
 	names := []string{"a", "b"}
 	stored := make([]atomic.Int64, len(names))
@@ -449,7 +449,7 @@ func TestMemoryStoreQuotaUnderConcurrentWrites(t *testing.T) {
 // tied at one path pin the tie-break: without it the order is the map's.
 func TestTopHolders(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(16, 4, 16)
+	s := NewMemoryStore(16, 4, 16).Local()
 
 	for i := range 2 {
 		if _, _, err := s.PutIfAbsent(ctx, fmt.Sprintf("/api/%d", i), []byte("api-value"), WorkloadHolder("api")); err != nil {

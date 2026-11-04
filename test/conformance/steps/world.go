@@ -50,9 +50,6 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
-	// cdsInstance is the CDS pod a seed-change sentence found serving, for
-	// the sentence that says it did not restart.
-	cdsInstance string
 }
 
 type pod struct {
@@ -96,9 +93,6 @@ type container struct {
 	// stated: the scenario gave the argv; otherwise the harness chose it (a
 	// placeholder sleep, a hello server, a datagram listener).
 	stated bool
-	// helper: the argv is a helper mode c8s injects, which the mesh gate
-	// starts only as the credentials role (leadWithHelpers).
-	helper bool
 }
 
 type worldKey struct{}

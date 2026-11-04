@@ -28,7 +28,7 @@ import (
 
 // operatorCDS serves CDS's allowlist routes over store, writes gated by an
 // operator key it writes to dir, and returns its URL and that key's path.
-func operatorCDS(t *testing.T, store *allowlist.Store, dir string) (url, keyPath string) {
+func operatorCDS(t *testing.T, store *allowlist.Handle, dir string) (url, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -43,7 +43,7 @@ func operatorCDS(t *testing.T, store *allowlist.Store, dir string) (url, keyPath
 		t.Fatal(err)
 	}
 	h := allowlist.Handler{
-		Store:             store,
+		Allowlist:         store,
 		WriteAuthorizer:   operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}, ClockSkew: 30 * time.Second}.Authorize,
 		MaxWriteBodyBytes: 1 << 20,
 	}
@@ -173,14 +173,15 @@ func publishOverride(t *testing.T, repository string) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
+	allowlistWrites := store.Local()
+	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartJournal(); err != nil {
+	if err := allowlistWrites.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	url, keyPath := operatorCDS(t, &store, dir)
+	url, keyPath := operatorCDS(t, allowlistWrites, dir)
 	n := &node{client: allowlistclient.NewClient(url)}
 	n.pull(t)
 	served := n.version

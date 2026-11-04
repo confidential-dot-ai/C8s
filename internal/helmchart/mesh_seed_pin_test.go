@@ -1,7 +1,7 @@
 // The mesh endpoint's seeded launch. CDS serves the chart's seed and the node
 // image bakes it, and the enforcer admits a container that either the measured
 // base or the served document admits — so a seed entry wider than the measured
-// base (node-guest-image/c8s/image-policy.yaml.in) is what the mesh image may
+// base (images/node-guest/c8s/image-policy.yaml.in) is what the mesh image may
 // actually run as, in any pod.
 package helmchart
 

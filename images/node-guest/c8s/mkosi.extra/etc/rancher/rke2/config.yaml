@@ -1,0 +1,81 @@
+# RKE2 server config — single-node cluster, Cilium CNI.
+#
+# Baked into the verity root so it's in place before rke2-server.service
+# starts at boot. Per-host overrides (cluster join token, alternate
+# encryption key, registries auth) belong in /etc/rancher/rke2/config.yaml.d/
+# at runtime — rke2 merges drop-ins from that dir on top of this file.
+#
+# INVARIANT: the measured base pins the argv and mounts RKE2 gives its static
+# pods from this file (c8s/image-policy.yaml.in), so a setting that changes
+# them, here or in a drop-in, changes the floor with it.
+
+# CNI: Cilium (VXLAN tunnel, BPF datapath, kube-proxy left in place).
+# Overrides live in var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml.
+#
+# INVARIANT: kube-proxy runs in iptables mode, in the node's own network
+# namespace. A member pod's traffic is captured by the nftables ruleset the
+# enforcer installs in that pod's namespace, which Service DNAT never reaches
+# (internal/podmesh/ruleset).
+cni: cilium
+disable-kube-proxy: false
+kube-proxy-arg:
+  - proxy-mode=iptables
+  # Keeps route_localnet=0, so 127.0.0.1 listeners (attestation-api) stay
+  # unreachable from off-host.
+  - iptables-localhost-nodeports=false
+
+# This node cluster normally runs inside a KubeVirt pod on an outer RKE2
+# cluster. Do not reuse RKE2's 10.42.0.0/16 pod and 10.43.0.0/16 service
+# defaults: KubeVirt masquerade preserves the outer client source address, so
+# overlapping routes make the guest send replies into its own pod network
+# after the CNI starts. Cilium takes its pool from cluster-cidr. Changing
+# cluster-cidr or service-cidr, here or in a drop-in, needs the floor's
+# control-plane argv changed with it (INVARIANT above).
+cluster-cidr: 10.52.0.0/16
+service-cidr: 10.53.0.0/16
+cluster-dns: 10.53.0.10
+
+# Drop RKE2's bundled ingress: it binds hostPorts 80/443, which collide with
+# C8s router's hostPort 443 (the attested front door for workloads —
+# `c8s install` preflights this exact conflict). RKE2 <= v1.35 bundles
+# rke2-ingress-nginx; v1.36+ bundles rke2-traefik — disable both so the image
+# works across versions. The node image's external surface is router, not a
+# generic ingress. Re-enabling one needs a measured base entry for its image
+# (images/node-guest/c8s/image-policy.yaml.in).
+disable:
+  - rke2-ingress-nginx
+  - rke2-traefik
+
+# Add a stable hostname SAN to the apiserver serving cert. The operator
+# reaches the guest at a per-launch KubeVirt-assigned IP that RKE2 can't know
+# to include as a SAN, so the released kubeconfig can't verify against the IP.
+# Instead the kubeconfig dials the IP but sets tls-server-name=c8s-cvm (this
+# SAN), so verification passes without --insecure-skip-tls-verify. See
+# `c8s get-kubeconfig` (it defaults tls-server-name to this).
+tls-san:
+  - c8s-cvm
+
+profile: cis
+pod-security-admission-config-file: /etc/rancher/rke2/psa-config.yaml
+# The platform self-label (for `c8s install --hardware-platform`) is
+# rendered by mkosi.sync into a config.yaml.d drop-in — this base file is
+# platform-neutral.
+kubelet-arg:
+  - max-pods=200
+  # The kubelet's debugging handlers back `kubectl logs` as well as
+  # exec/attach/port-forward, and there is no logs-only switch. Keep them on
+  # so logs work for every kubeconfig holder (the log-reader role in
+  # particular), and close exec/attach/port-forward/ephemeral containers at
+  # the apiserver instead: the baked pod-exec-policy AddOn denies those
+  # subresources in admission for every principal, the operator included.
+  # Probes are unaffected (they go over CRI).
+  - enable-debugging-handlers=true
+kube-apiserver-arg:
+  - audit-log-path=/var/log/kube-audit/audit.log
+  - audit-log-maxage=30
+  - audit-log-maxbackup=10
+  - audit-log-maxsize=100
+  - audit-policy-file=/etc/rancher/rke2/audit-policy.yaml
+# Throttles kube-apiserver's exec startup probe, denied forever on the locked image: docs/node-exec-mode.md
+control-plane-probe-configuration:
+  - kube-apiserver-startup-period-seconds=300

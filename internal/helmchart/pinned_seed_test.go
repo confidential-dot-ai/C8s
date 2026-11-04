@@ -1,6 +1,6 @@
 // Tests for the chart's argv-pinned seed entries (c8s.argvPinnedEntries):
 // platform images that carry a shell — the nri-image-policy installer image
-// and the rke2 busybox uses (containerd-prep, local-path helper) — must be
+// and the rke2 busybox use (containerd-prep) — must be
 // admitted by the served allowlist only under their exact expected argv,
 // never by digest alone. The boot config's base is digest-only
 // admission, so it must not carry any of them either.
@@ -25,19 +25,39 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-const (
-	// prepBusyboxDigest is values.yaml's nriImagePolicy.containerdPrep.image.digest.
-	prepBusyboxDigest = "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
-	// localPathHelperManifest is the node image's baked local-path provisioner
-	// manifest, whose helper pod the rke2.localPathHelper values pin in lockstep.
-	localPathHelperManifest = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml"
-)
+// chartImageDigest reads the digest values.yaml pins for one third-party
+// image, so a bump by pin-watch or through
+// .github/scripts/chart-image-pins.sh set needs no edit here.
+func chartImageDigest(t *testing.T, path ...string) string {
+	t.Helper()
+	raw, err := os.ReadFile("c8s/values.yaml")
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values map[string]any
+	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("parse values.yaml: %v", err)
+	}
+	var node any = values
+	for _, key := range path {
+		m, ok := node.(map[string]any)
+		if !ok {
+			t.Fatalf("values.yaml has no %s", strings.Join(path, "."))
+		}
+		node = m[key]
+	}
+	digest, ok := node.(string)
+	if !ok || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("values.yaml %s is %v, not a digest", strings.Join(path, "."), node)
+	}
+	return digest
+}
 
 // renderedSeed parses the allowlist document out of the rendered CDS seed
 // ConfigMap — the same JSON CDS feeds to pkg/allowlist.ParseJSON at startup.
 func renderedSeed(t *testing.T, manifest string) *pkgallowlist.Allowlist {
 	t.Helper()
-	cm := renderedConfigMap(t, manifest, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, manifest, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -130,7 +150,7 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// The node-as-CVM (baked) installer runs the pins script instead of the
+// The node-as-CVM (baked) installer runs the policy-measurement script instead of the
 // install script; the seed must admit exactly that argv from the nri image.
 func TestChartPinnedSeedAdmitsBakedPinsArgv(t *testing.T) {
 	t.Parallel()
@@ -161,32 +181,10 @@ func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
 	if !ok {
 		t.Fatalf("rke2 render missing the containerd-prep initContainer")
 	}
+	prepBusyboxDigest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
 	admitPlatformContainer(t, seed, prepBusyboxDigest, prep)
 	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "-c", "rm -rf /"})
 	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "/script/setup"})
-}
-
-// The local-path helper entry pins the node image's baked helper pod to its
-// two provisioner command prefixes; the per-PVC flags stay open.
-func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	seed := renderedSeed(t, out)
-	helperDigest := localPathHelperDigest(t)
-
-	for _, script := range []string{"/script/setup", "/script/teardown"} {
-		admitPlatformContainer(t, seed, helperDigest, corev1.Container{
-			Name: "local-path-helper", Command: []string{"/bin/sh", script},
-			Args:         []string{"-p", "/opt/local-path-provisioner/pvc-123", "-s", "1073741824", "-m", "Filesystem", "-a", "create"},
-			VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/opt/local-path-provisioner"}, {Name: "script", MountPath: "/script"}},
-		})
-	}
-	denyArgvs(t, seed, helperDigest, []string{"/bin/sh", "-c", "rm -rf /"})
-	denyArgvs(t, seed, helperDigest, []string{"/bin/sh", "/script/setup-evil"})
-	denyArgvs(t, seed, helperDigest, []string{"/bin/busybox", "/script/setup"})
 }
 
 // base is digest-only admission — carrying an argv-pinned image there
@@ -217,48 +215,6 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 	}
 }
 
-// localPathHelperDigest reads the helper image digest the chart pins from
-// values.yaml and proves it is the digest the node image's baked manifest
-// runs, with no setupCommand/teardownCommand override that would change the
-// helper's effective argv away from the pinned prefixes.
-func localPathHelperDigest(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
-	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
-	}
-	m := regexp.MustCompile(`(?ms)localPathHelper:\s*
-\s*image:\s*
-\s*repository: (\S+)\s*
-\s*digest: "?(sha256:[0-9a-f]{64})"?`).FindSubmatch(raw)
-	if m == nil {
-		t.Fatalf("rke2.localPathHelper.image not found in values.yaml")
-	}
-	repo, digest := string(m[1]), string(m[2])
-
-	manifest, err := os.ReadFile(localPathHelperManifest)
-	if err != nil {
-		t.Fatalf("read node-image manifest: %v", err)
-	}
-	helper := regexp.MustCompile(`(?ms)helperPod.yaml:.*?image: (\S+?@(sha256:[0-9a-f]{64}))`).FindSubmatch(manifest)
-	if helper == nil {
-		t.Fatalf("no digest-pinned helper image in %s", localPathHelperManifest)
-	}
-	// The manifest ref may carry a tag beside the digest (busybox:1.38.0@…);
-	// the repository is the ref before "@", with any ":tag" stripped.
-	manifestRepo, _, _ := strings.Cut(string(helper[1]), "@")
-	manifestRepo, _, _ = strings.Cut(manifestRepo, ":")
-	if manifestRepo != repo || string(helper[2]) != digest {
-		t.Fatalf("helper image drift: chart pins %s@%s, node image runs %s — bump rke2.localPathHelper.image", repo, digest, helper[1])
-	}
-	for _, key := range []string{"setupCommand", "teardownCommand"} {
-		if strings.Contains(string(manifest), key) {
-			t.Fatalf("%s sets %s: the helper's argv is then %s, not the seeded /script pin", localPathHelperManifest, key, key)
-		}
-	}
-	return digest
-}
-
 // An any-argv entry for a pinned digest voids the pin (admission is the union
 // across entries): with deriveComponents on, the derive loop must never emit
 // one for the installer or busybox images — the argvPinned skip is the only
@@ -273,7 +229,7 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	for _, digest := range []string{baseNRIDigest, prepBusyboxDigest, localPathHelperDigest(t)} {
+	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")} {
 		for name, w := range seed.Workloads {
 			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
 				if c.Digest.String() == digest && c.AnyArgv() {
@@ -465,7 +421,6 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 	pins := componentPinValues(t)
 	for valuePath, want := range map[string][]string{
 		"image":                dockerfileEntrypoint(t, "../../cmd/c8s/Dockerfile"),
-		"cds.image":            dockerfileEntrypoint(t, "../../cmd/cds/Dockerfile"),
 		"armtlsMesh.image":     dockerfileEntrypoint(t, "../../cmd/armtls-mesh/Dockerfile"),
 		"volumed.image":        dockerfileEntrypoint(t, "../../cmd/volumed/Dockerfile"),
 		"attestationApi.image": {"/attestation-api"},
@@ -522,7 +477,6 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	for valuePath, digest := range componentTestDigests {
 		pinned[digest] = pins[valuePath]
 	}
-	pinned["sha256:0000000000000000000000000000000000000000000000000000000000000001"] = pins["cds.image"]
 	nginxDigest := ""
 	for _, w := range renderedPodSpecs(t, out) {
 		for _, c := range w.spec.Containers {
@@ -556,34 +510,6 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 			if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
 				t.Errorf("%s admits %s with a volume mounted over %s", source, digest[:19], entrypoint[0])
 			}
-		}
-	}
-}
-
-// With derivation off, the seed and the base still carry the CDS and nginx
-// self-entries, pinned the same way.
-func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
-	pins := componentPinValues(t)
-	cds := runtimeArgv(renderedDeploymentContainer(t, out, "c8s-cds", "cds"), pins["cds.image"])
-	for source, al := range map[string]pkgallowlist.Allowlist{
-		"seed": *renderedSeed(t, out),
-		"base": bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base,
-	} {
-		index := al.BuildIndex()
-		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: cds}) {
-			t.Errorf("%s does not admit CDS as rendered", source)
-		}
-		if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: append(slices.Clone(cds), "--port=1")}) {
-			t.Errorf("%s admits CDS with another argument", source)
-		}
-		if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: []string{"/c8s", "get-secret"}}) {
-			t.Errorf("%s admits the CDS image in another mode", source)
 		}
 	}
 }

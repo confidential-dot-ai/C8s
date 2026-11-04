@@ -232,9 +232,9 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 			writeError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 			return
 		}
-		verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
+		verifyReq := remote.NewVerifyRequestNoToken(req.Evidence, &remote.VerifyParams{
 			ExpectedReportData: expectedReportData[:sha512.Size384],
-		}, false)
+		})
 		verifyResp, err := verifier.VerifyEnforced(r.Context(), verifyReq)
 		if err != nil {
 			status, code, msg := classifyVerifyError(err)

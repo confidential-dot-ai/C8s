@@ -5,6 +5,9 @@ services:
       dockerfile: test/mock-attestation/Dockerfile
     environment:
       PORT: "8400"
+      # The launch binding every report carries: run.sh derives it from the
+      # same bytes cds-pin.json pins as the mock CDS's launch file.
+      HOST_DATA: ${CDS_HOST_DATA:?run this through test/integration/run.sh}
 
   mock-cds:
     build:
@@ -57,8 +60,7 @@ services:
     command:
       - --cds-url=https://mock-cds:8080
       - --attestation-api-url=http://mock-attestation:8400
-      # The mock attestation-api's launch digest is all-zero; get-cert must pin it.
-      - --cds-measurements=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+      - --image-policy-file=/pin/cds-pin.json
       - --san=nginx-lb
       - --cert-path=/tls/cert.pem
       - --key-path=/tls/key.pem
@@ -66,6 +68,7 @@ services:
       - --verbose
     volumes:
       - tls-certs:/tls
+      - ${CDS_PIN:?run this through test/integration/run.sh}:/pin/cds-pin.json:ro
       # The inventory socket arrives read-only, as the NRI plugin mounts it.
       - workload-claims:/run/c8s/workload-claims:ro
     depends_on:

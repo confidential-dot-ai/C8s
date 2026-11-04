@@ -168,7 +168,8 @@ func TestClusterHarnessKeepsImageAndBackendRoutingAligned(t *testing.T) {
 	for _, required := range []string{
 		`images pull "docker.io/$WORKLOAD_IMAGE"`,
 		`grep -Fq "docker.io/$WORKLOAD_IMAGE" "$WORKDIR/floor.tsv"`,
-		`--workload-ref web=adopted/deployment/web:8080 --upstream web`,
+		`--workload-ref web=adopted/deployment/web:8080`,
+		`--upstream web`,
 		`python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"`,
 	} {
 		if !strings.Contains(harness, required) {

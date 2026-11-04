@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/c8s/test/conformance/tools/armtls-dial
 go 1.27.3
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.1
+	github.com/confidential-dot-ai/attestation-go v0.8.2
 	github.com/confidential-dot-ai/c8s v0.0.0
 	golang.org/x/crypto v0.58.0
 )
@@ -16,6 +16,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

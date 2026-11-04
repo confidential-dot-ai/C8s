@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -107,6 +108,18 @@ func checkValidity(now time.Time, cert *x509.Certificate, role string) error {
 	return nil
 }
 
+// routerDigest is the allowlist digest of the leaf's matched-workload stamp,
+// empty for a leaf without one. A damaged stamp also reads as empty, which
+// never equals the sentinel the router tracks for it, so handshakes are
+// refused until the leaf is replaced.
+func (m *meshIdentity) routerDigest() string {
+	stamp, err := armtls.MatchedWorkloadFromCert(m.leaf)
+	if err != nil || stamp == nil {
+		return ""
+	}
+	return string(stamp.AllowlistDigest)
+}
+
 func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
 	transcriptHash, err := overenc.IdentityTranscriptHash(mode, xwingEK, xwingCT, sessionID, nonce, m.leaf.Raw, m.ca.Raw, routeDigest)
 	if err != nil {
@@ -123,8 +136,8 @@ func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 // serving leaf alongside the mesh identity and signs that transcript. No
 // session key exists on this path — the TLS handshake itself proves possession
 // of the serving-leaf key.
-func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
-	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, serving.Raw, m.leaf.Raw, m.ca.Raw, routeDigest)
+func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
+	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, servingLeafDER, m.leaf.Raw, m.ca.Raw, routeDigest)
 	if err != nil {
 		return nil, nil, err
 	}

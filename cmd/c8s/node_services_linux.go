@@ -2,7 +2,8 @@
 // to compile, but these commands write to fixed root-owned host paths
 // (/run/c8s-node, /etc/nri/conf.d, /run/nri-image-policy) and are run
 // only by the node image's units after signed-launch staging: rke2-role.sh
-// calls `prepare` and nri-node-ip.service calls `node-ip`. Keeping
+// calls `prepare`, nri-node-ip.service calls `node-ip` and
+// cilium-node-ip.service calls `cilium-node-ip`. Keeping
 // them out of the operator's macOS and Windows builds means the CLI cannot
 // offer a host-mutating subcommand where no staged launch document can exist.
 package main
@@ -32,6 +33,10 @@ func init() {
 			return err
 		}
 		return nodeservices.PublishNodeIP("", doc)
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "cilium-node-ip", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		nodeservices.WatchCiliumNodeIP(cmd.Context(), "")
+		return nil
 	}})
 	rootCmd.AddCommand(cmd)
 }

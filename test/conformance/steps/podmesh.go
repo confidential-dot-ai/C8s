@@ -125,7 +125,8 @@ func (w *world) elsewhere(p *pod, fn string) error {
 const meshEndpointContainer = "c8s-mesh"
 
 // podLogs is, for every deployed pod, the state of each container and the
-// log of its endpoint and of its first container, where they have one.
+// log of its endpoint and of its first container, where they have one, and
+// the routing process's log, for a failure at the router→backend hop.
 func (w *world) podLogs() []godog.Attachment {
 	var logs []godog.Attachment
 	attach := func(file, out string, err error) {
@@ -145,6 +146,12 @@ func (w *world) podLogs() []godog.Attachment {
 			out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", c, "--tail=200")
 			attach(name+"-"+c+".log", out, err)
 		}
+	}
+	// A 502 at the router→backend hop names no reason on the wire, so a failed
+	// relay keeps the router's own log here; a backend that cannot read it
+	// leaves no attachment.
+	if out, err := w.be.call("router_logs"); err == nil {
+		attach("router-cds-attest.log", out, nil)
 	}
 	return logs
 }
