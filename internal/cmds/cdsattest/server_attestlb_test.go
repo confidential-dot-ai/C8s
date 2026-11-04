@@ -69,14 +69,16 @@ func writeTestServingLeafWithValidity(t *testing.T, notBefore, notAfter time.Tim
 	return path, der
 }
 
-func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile string) (*httptest.Server, *capturingProvider) {
+// newAttestLBServer serves attest-lb in cds mode, where the mesh leaf is the
+// serving leaf and --serving-cert-file is not read.
+func newAttestLBServer(t *testing.T, identity testMeshIdentity) (*httptest.Server, *capturingProvider) {
 	t.Helper()
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      servingCertFile,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -90,7 +92,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	servingDER := identity.leaf.Raw
-	ts, prov := newAttestLBServer(t, identity, identity.certFile)
+	ts, prov := newAttestLBServer(t, identity)
 
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
@@ -372,15 +374,14 @@ func TestAttestLBMissingServingCertFailsClosed(t *testing.T) {
 }
 
 func TestAttestLBMeshIdentityUnavailableFailsClosed(t *testing.T) {
-	// The serving leaf alone is not enough: without a loadable mesh identity
-	// there is nothing to sign the transcript, so the endpoint must 503 rather
-	// than serve an unsigned binding.
+	// Without a loadable mesh identity there is nothing to bind or to sign
+	// the transcript, so the endpoint must 503 rather than serve an unsigned
+	// binding.
 	identity := writeTestMeshIdentity(t)
-	certPath, _ := writeTestServingLeaf(t)
 	if err := os.Remove(identity.certFile); err != nil {
 		t.Fatal(err)
 	}
-	ts, _ := newAttestLBServer(t, identity, certPath)
+	ts, _ := newAttestLBServer(t, identity)
 
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, 32)))
 	if err != nil {
@@ -397,8 +398,7 @@ func TestAttestLBMeshIdentityUnavailableFailsClosed(t *testing.T) {
 
 func TestAttestLBWrongSizeNonce(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	certPath, _ := writeTestServingLeaf(t)
-	ts, _ := newAttestLBServer(t, identity, certPath)
+	ts, _ := newAttestLBServer(t, identity)
 	for _, size := range []int{16, 31, 33} {
 		resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, size)))
 		if err != nil {

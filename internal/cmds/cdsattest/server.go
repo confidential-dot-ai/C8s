@@ -775,10 +775,7 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 			return der, true
 		}
 	}
-	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.leaf.NotAfter}
-	if identity.ca.NotAfter.Before(leaf.expires) {
-		leaf.expires = identity.ca.NotAfter
-	}
+	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
 	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
 		// Warn, not Error: both failures repeat on every request until
 		// renewal recovers, and a missing cert.pem is normal before the

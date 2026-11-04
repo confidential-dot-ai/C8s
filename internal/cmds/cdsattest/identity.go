@@ -24,6 +24,9 @@ type meshIdentity struct {
 	ca        *x509.Certificate
 	private   *ecdsa.PrivateKey
 	bundlePEM []byte
+	// servedUntil is the earliest NotAfter across the served tls.crt chain
+	// and the issuing CA: when nginx's chain stops validating.
+	servedUntil time.Time
 }
 
 // loadMeshIdentity reads all three files for every attestation request so a
@@ -93,9 +96,20 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
+	servedUntil := issuer.NotAfter
+	for _, der := range pair.Certificate {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("parse mesh identity chain: %w", err)
+		}
+		if cert.NotAfter.Before(servedUntil) {
+			servedUntil = cert.NotAfter
+		}
+	}
+
 	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Raw})...)
-	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle}, nil
+	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle, servedUntil: servedUntil}, nil
 }
 
 // checkValidity delegates to the repo-wide validity window
