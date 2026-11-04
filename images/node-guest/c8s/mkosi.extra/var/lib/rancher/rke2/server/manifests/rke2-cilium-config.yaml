@@ -23,7 +23,7 @@ spec:
       # peers answer only from the primary's namespace.
       datapathMode: veth
     cni:
-      # The sealed image denies every runc exec; the default renders an
+      # The sealed image denies every runc exec it was not granted; the default renders an
       # exec hook, which kills the agent.
       iptablesRemoveAWSRules: false
       # The router's hostPort 443 needs the portmap chain.
