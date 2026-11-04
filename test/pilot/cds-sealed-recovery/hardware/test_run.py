@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("snp_run", Path(__file__).with_name("run.py"))
 module = importlib.util.module_from_spec(spec)
@@ -82,6 +83,54 @@ class LifecycleTests(unittest.TestCase):
             run.create(self.item)
         self.assertEqual([], run.state["resources"])
         self.assertFalse(any(method == "POST" for method, _, _ in kube.calls))
+
+    def test_cleanup_waits_for_volume_after_claim_delete_response_is_lost(self):
+        item = copy.deepcopy(self.item)
+        item["kind"] = "PersistentVolumeClaim"
+        item["metadata"]["name"] = "cds-snp-0123456789ab-root"
+        row = {"item": item, "path": module.resource_path(item), "uid": "claim-uid",
+               "pv": {"name": "owned-pv", "uid": "volume-uid"}}
+
+        class ReclaimingKube(FakeKube):
+            volume_reads = 0
+
+            def call(self, method, path, body=None, **kwargs):
+                if path == "/api/v1/persistentvolumes/owned-pv":
+                    self.volume_reads += 1
+                    return (200, {}) if self.volume_reads == 1 else (404, None)
+                return super().call(method, path, body, **kwargs)
+
+        kube = ReclaimingKube()
+        run = self.runner(kube)
+        with patch.object(module.time, "sleep"):
+            run.remove(row)
+        self.assertEqual(2, kube.volume_reads)
+        self.assertTrue(row["deleted"])
+        self.assertFalse(any(method == "DELETE" for method, _, _ in kube.calls))
+
+    def test_cleanup_discovers_volume_after_population_failure(self):
+        item = copy.deepcopy(self.item)
+        item["kind"] = "PersistentVolumeClaim"
+        item["metadata"]["name"] = "cds-snp-0123456789ab-root"
+        current = copy.deepcopy(item)
+        current["metadata"]["uid"] = "claim-uid"
+        current["spec"] = {"volumeName": "owned-pv"}
+
+        class BoundKube(FakeKube):
+            def call(self, method, path, body=None, **kwargs):
+                if method == "GET" and path == "/api/v1/persistentvolumes/owned-pv":
+                    return (200, {"metadata": {"uid": "volume-uid"}, "spec": {
+                        "claimRef": {"uid": "claim-uid"}, "persistentVolumeReclaimPolicy": "Delete"}}) if self.obj else (404, None)
+                return super().call(method, path, body, **kwargs)
+
+        kube = BoundKube(current)
+        run = self.runner(kube)
+        row = {"item": item, "path": module.resource_path(item), "uid": "claim-uid"}
+        run.state["resources"].append(row)
+        run.remove(row)
+        self.assertEqual({"name": "owned-pv", "uid": "volume-uid"}, row["pv"])
+        self.assertTrue(row["deleted"])
+        self.assertEqual([row["path"]], [path for method, path, _ in kube.calls if method == "DELETE"])
 
     def test_artifact_substitution_refused_before_cluster_access(self):
         root = Path(self.tmp.name)

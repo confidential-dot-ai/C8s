@@ -126,6 +126,8 @@ class Run:
             return
         code, current = self.kube.call("GET", row["path"], expected=(200, 404))
         if code == 404:
+            if row.get("pv"):
+                self.wait_absent("/api/v1/persistentvolumes/" + row["pv"]["name"])
             row["deleted"] = True
             self.save()
             return
@@ -135,6 +137,13 @@ class Run:
             row["uid"] = meta["uid"]  # recover this run's durable creation intent
             self.save()
         need(meta["uid"] == row["uid"], "cleanup UID mismatch; resource was replaced")
+        if row["item"]["kind"] == "PersistentVolumeClaim" and not row.get("pv"):
+            volume = current.get("spec", {}).get("volumeName")
+            if volume:
+                _, pv = self.kube.call("GET", "/api/v1/persistentvolumes/" + volume)
+                need(pv["spec"]["claimRef"]["uid"] == row["uid"] and pv["spec"].get("persistentVolumeReclaimPolicy") == "Delete", "unexpected backing PV during cleanup")
+                row["pv"] = {"name": volume, "uid": pv["metadata"]["uid"]}
+                self.save()
         self.kube.call("DELETE", row["path"], {"apiVersion": "v1", "kind": "DeleteOptions",
             "preconditions": {"uid": row["uid"]}, "propagationPolicy": "Foreground"}, expected=(200, 202, 404))
         self.wait_absent(row["path"])
