@@ -218,10 +218,12 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # out of the harness's reach answers unsupported from injected_image. The
 # suite's own images (images/, built by conformance-images.yml) stand in for
 # the logical images CONFORMANCE_IMAGES names, for every backend: tenant-app,
-# Alpine's python with the programs the steps run in it; a backend adds its own.
+# Alpine's python with the programs the steps run in it, and mesh-dialer,
+# busybox with armtls-dial; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
     [tenant-app]=sha256:e1c7fc0eef8212a8a5beaf993ed804e518f80cce32d858c3c7e9c1339bdb3938
+    [mesh-dialer]=sha256:08fad61e68f33b6ee9f1fbd9003d64f23ef9699fe24cb4f82a9450611febdfc2
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
