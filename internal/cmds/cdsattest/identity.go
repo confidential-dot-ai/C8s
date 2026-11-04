@@ -96,13 +96,15 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
-	// X509KeyPair never parsed the extra blocks, so one that does not parse
-	// keeps loading the identity: it only cannot shorten servedUntil.
+	// nginx refuses a chain with a block it cannot parse, so a front door
+	// serving this tls.crt is not up: fail closed, as servingLeaf does.
 	chain := []*x509.Certificate{issuer}
 	for _, der := range pair.Certificate[1:] {
-		if cert, err := x509.ParseCertificate(der); err == nil {
-			chain = append(chain, cert)
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("parse mesh identity chain: %w", err)
 		}
+		chain = append(chain, cert)
 	}
 	servedUntil := chainExpiry(leaf, chain...)
 

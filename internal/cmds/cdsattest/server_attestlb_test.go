@@ -205,7 +205,8 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
 		return appendBlock(t, identity.certFile, intermediate)
 	}
-	// tls.crt carries a trailing block that is not a certificate.
+	// tls.crt carries a trailing block that is not a certificate, which nginx
+	// would refuse to load.
 	meshGarbageChain := func(t *testing.T, identity testMeshIdentity) string {
 		return appendBlock(t, identity.certFile, []byte("not a certificate"))
 	}
@@ -231,7 +232,7 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		{name: "cds ignores other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf},
 		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
 		{name: "cds expired chain", mode: types.FrontDoorModeCDS, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
-		{name: "cds ignores a malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain},
+		{name: "cds malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain, wantErr: types.ErrorCodeBindingUnavailable},
 		{name: "acme ignores the mesh chain", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
 			meshExpiredChain(t, identity)
 			return otherLeaf(t, identity)
