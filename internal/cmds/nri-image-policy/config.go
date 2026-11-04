@@ -35,6 +35,9 @@ type config struct {
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
+	// Worker marks a worker, whose Kubernetes control plane runs outside
+	// its TEE; only the worker image's measured config sets it.
+	Worker bool `yaml:"worker"`
 
 	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
 	// from what names it (cdsaddress.go). "" when nothing does.
@@ -485,7 +488,36 @@ func (c *config) Validate() error {
 	if err := c.validateMesh(); err != nil {
 		return err
 	}
+	if err := c.validateWorker(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+// validateWorker requires a worker to enforce its policy and to exempt no
+// namespace.
+func (c *config) validateWorker() error {
+	if !c.Worker {
+		return nil
+	}
+	if !c.enforcesWorkerPolicy() {
+		return fmt.Errorf("worker requires allowlist.node_tcb, allowlist.base, policy.mode %q, policy.sandbox %q and policy.deny_missing_annotation", ModeFailClosed, SandboxEnforce)
+	}
+	if len(c.Mesh.ExemptNamespaces) > 0 {
+		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	return nil
+}
+
+// enforcesWorkerPolicy reports whether c's base allowlist is the node's TCB
+// and its policy fails closed, enforces sandbox checks and denies containers
+// without an image annotation.
+func (c *config) enforcesWorkerPolicy() bool {
+	return c.Allowlist.NodeTCB &&
+		c.Allowlist.Base != nil &&
+		c.Policy.Mode == ModeFailClosed &&
+		c.Policy.Sandbox == SandboxEnforce &&
+		c.Policy.DenyMissingAnnotation
 }
 
 // validateMesh requires a mesh policy this node can enforce.
