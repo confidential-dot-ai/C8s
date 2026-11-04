@@ -14,6 +14,9 @@ shell services are disabled. A measured timer powers the guest off after
 45 minutes; its fixture requires explicit starts and does not restart it.
 
 The image uses the pinned confos verity/UKI/IGVM chain, two vCPUs and 4 GiB.
+Its measured service listens on port 6443, already permitted by the native
+KubeVirt API Pods' egress policy. One owned ingress policy permits only those
+Pods to reach the probe; no shared network policy changes.
 The local builder's transport patch removes three unavailable package-mirror
 entries while retaining the exact official Ubuntu snapshot URLs and package
 versions. Download hashes and normal TLS verification remain enabled. No CI,
@@ -22,39 +25,62 @@ part of this build.
 
 | Input or output | Revision or SHA-256 |
 |---|---|
-| Image source revision | `9a2f179b3b38b132301c089cbce738dc3045c37f` |
+| Image source revision | `547a5f66aa1056c20e427392f616dd4a312829fc` |
 | confos revision | `133aeae5e006ee11a72b2a7200a9fb173a1c85ef` |
 | Builder transport patch | `3e1424232f572f1f4cccabc52ee9b208fccff23a8632c0cec8f9686ff98cdb1a` |
-| Manifest | `644f8daab376e5468fa174641a64763143c5a1b6d0bdf5333e6db46490452c33` |
+| Manifest | `22b34240e0678b47c5f8b352dd7ad6dda68c212fa4ea66fdbe63a5cec818e026` |
 | Probe binary | `6205afc24a0f0c75970078517c916ac7c78ee652484bdb72dd70e6e60d1b0ebb` |
-| Root disk | `9a98d2bb8b368efcf3273dcca20da231fdcd0e7e025c6e5fd6335cee87529377` |
-| IGVM | `e70f3df21c8689bd897a9ac62610590b08db2a3999cbab78de231fc31852db61` |
-| UKI | `3c3f2e57e530f4849cd4ffd651c48348b06f41d17ea2104569b8784572f77631` |
+| Root disk | `5398317be87a04863c583cea172f2c62c9b568158fb3ff02bb75bbcf371fb251` |
+| IGVM | `e00c6fa515f484734fbffda2daa9c7b80460052b5e5c4e424ecbde6236e114ca` |
+| UKI | `c66bf0168cc52829d12cf66261ffbdf88975def0e28de47006b9e4865c7a324b` |
+| Kernel | `bd22510c1c083effce81c838aae74739298e3dd4ae6683d2a8ab6208dc2a0216` |
+| Kernel fragment | `65ff8b7fafae1159e709bb644b5442deb30d532e81d2c2f5d58bc3edc17d623f` |
 | Firmware | `53c3bdc6654708a7b23f5db36c0548de4975322e5838e90bd258e082394bf8c0` |
 
 Independent inspection checked manifest hashes, GPT checksums, EROFS integrity,
 the embedded kernel and probe, root verity hash, locked root login, service
-masks, and enabled probe/expiry units. These are build checks, not hardware
+masks, enabled probe/expiry units and DHCP networking. The resolved kernel
+configuration enables the required UART driver and disables serial SysRq while
+retaining the hardened debugfs setting. Inspection also reads actual EROFS
+inode permissions: public DHCP/unit files must be root-owned `0644`, and their
+parent directories `0755`. These are build checks, not hardware
 attestation results. Build instructions and the exact exchange are in the
 [image README](../images/cds-snp-probe/README.md).
 
-## Native upload validation
+## Native launch evidence
 
 The native fixture has successfully transferred the disk and IGVM into its
-own claims and independently verified both SHA-256 values against this build.
+own claims and independently verified both SHA-256 values against the selected build.
 The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
-still gates VM creation. Fifteen local lifecycle tests include this failure mode,
+still gates VM creation. Failed completion reads retry within the original
+deadline. Eighteen local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
-ownership, and lost API responses during cleanup.
+ownership, explicit VM stops, and lost API responses during cleanup.
 
-That attempt stopped before VM creation because a baseline VM from a concurrent
-temporary workload had been deleted. Its normal shutdown events were retained
-for investigation; the workers and remaining baseline VMs stayed ready. All
-owned claims, backing volumes, public launch data and the population Pod were
-removed. This establishes the artifact transfer path, not the hardware recovery
-primitive or unchanged-fleet acceptance.
+The port-6443 attempt reached KubeVirt Ready but never returned a signed probe
+response. Its native port-forward failed with `no route to host`. KubeVirt
+readiness therefore establishes VM launch, not guest boot or successful recovery.
+That attempt's cleanup and baseline checks passed: no owned resources remained
+and no unexpected readiness regression was observed.
+
+A subsequent attempt was canceled during population, before VM launch, after
+inspection found that a console parameter alone cannot enable the hardened
+kernel's disabled UART driver. All five staged resources and their backing
+volumes were removed. Concurrent external VM deletions were recorded separately;
+they were not treated as an unchanged fleet. The corrected qualification kernel
+enables serial diagnostics, disables serial SysRq input, and retains the hardened
+debugfs setting. Console login stays masked. These diagnostics are appropriate
+only for this disposable sentinel image.
+
+The next native trace established guest boot, SNP driver initialization and the
+initrd HOST_DATA check, then exposed the networking failure. The private source
+checkout supplied a root-owned `0600` DHCP file, but networkd runs as
+`systemd-network` without discretionary-access bypass capabilities. The image
+finalizer now sets explicit permissions on that public file and the probe units.
+No shared network, host or production image configuration was changed. All
+resources from that failed attempt were removed before retrying.
 
 ## Required hardware evidence
 
@@ -76,10 +102,12 @@ Unexpected VMI loss or readiness regression stops the test. The runner captures
 each VMI's controller owner and separately checks the owning VM when a baseline
 VMI disappears or becomes unready. Only a matching owner with an API deletion
 timestamp, or an absent owning VM, is classified as an external deletion.
-Unknown or replaced owners and surviving owners without deletion intent still
-stop the test. These observations never mutate the external resources.
+A matching owner with explicit `runStrategy: Halted` is separately recorded as
+an external stop. A `Stopped` status alone is insufficient. Unknown or replaced
+owners and surviving owners without either explicit intent still stop the test.
+These observations never mutate the external resources.
 
-External deletions are preserved in the journal and keep its post-cleanup
+External stops and deletions are preserved in the journal and keep its post-cleanup
 `unchanged` claim false, even if the hardware primitive succeeds. That result
 does not establish fleet-wide availability or customer application latency.
 

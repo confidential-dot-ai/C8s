@@ -140,9 +140,18 @@ class Run:
             try:
                 deadline = time.monotonic() + 300
                 while time.monotonic() < deadline:
-                    marker = self.command(name + "-completion", self.kubectl("exec", pod, "--",
-                        "sh", "-c", 'if [ -f "$1" ]; then cat "$1"; fi', "upload-completion",
-                        destination + "/.cds-upload-complete"), timeout=20)
+                    try:
+                        marker = self.command(name + "-completion", self.kubectl("exec", pod, "--",
+                            "sh", "-c", 'if [ -f "$1" ]; then cat "$1"; fi', "upload-completion",
+                            destination + "/.cds-upload-complete"), timeout=20)
+                    except (RuntimeError, subprocess.TimeoutExpired) as error:
+                        # This read may lose its API connection independently
+                        # of the upload. Retry within the original deadline;
+                        # only the exact fresh token can establish completion.
+                        self.event("upload-completion-unavailable", archive=archive,
+                                   failure=type(error).__name__)
+                        time.sleep(5)
+                        continue
                     if marker == token.encode():
                         self.event("upload-receiver-completed", archive=archive,
                                    client_exit_pending=process.poll() is None,
@@ -277,22 +286,28 @@ class Run:
             for uid, before in self.state["vmis_before"].items():
                 if uid in vmis and (not before["ready"] or vmis[uid]["ready"]):
                     continue
-                # A declared deletion of the owning VM is an external
+                # A declared stop/deletion of the owning VM is an external
                 # lifecycle change, not evidence of an unexpected crash.
                 # Never infer this from a VMI/Pod disappearing, its name, or
-                # a workload label. A surviving owner without deletion intent
+                # a workload label. A surviving owner without explicit intent
                 # still fails closed; so does an unknown/replaced owner.
                 owner = before.get("vm_owner")
                 need(owner is not None, "existing VMI disappeared or readiness regressed; owner unknown")
                 code, current = self.kube.call("GET", "/apis/kubevirt.io/v1/namespaces/" + before["namespace"] +
                     "/virtualmachines/" + owner["name"], expected=(200, 404))
-                need(code == 404 or (current["metadata"]["uid"] == owner["uid"] and current["metadata"].get("deletionTimestamp")),
-                     "existing VMI disappeared or readiness regressed without owning VM deletion")
-                changes = self.state.setdefault("external_vm_deletions", {})
+                same_owner = code == 200 and current["metadata"]["uid"] == owner["uid"]
+                deleting = code == 404 or (same_owner and bool(current["metadata"].get("deletionTimestamp")))
+                halted = same_owner and current.get("spec", {}).get("runStrategy") == "Halted"
+                need(deleting or halted,
+                     "existing VMI disappeared or readiness regressed without explicit owning VM stop/deletion")
+                change = "deletion" if deleting else "stop"
+                changes = self.state.setdefault("external_vm_" + change + "s", {})
                 if uid not in changes:
                     changes[uid] = {"namespace": before["namespace"], "vmi_name": before["name"],
                                     "owner": owner, "owner_http_status": code}
-                    self.event("external-vm-deletion-observed", vmi_uid=uid, **changes[uid])
+                    if halted and not deleting:
+                        changes[uid]["run_strategy"] = "Halted"
+                    self.event("external-vm-" + change + "-observed", vmi_uid=uid, **changes[uid])
         return observed
 
     def boot(self, vm, phase):
@@ -488,7 +503,7 @@ def main():
             if "nodes_before" in run.state:
                 try:
                     run.health()
-                    run.event("post-cleanup-observations", unchanged=not bool(run.state.get("external_vm_deletions")),
+                    run.event("post-cleanup-observations", unchanged=not bool(run.state.get("external_vm_deletions") or run.state.get("external_vm_stops")),
                               unexpected_regression_detected=False)
                 except Exception as error:
                     run.event("post-cleanup-observations", unchanged=False, unexpected_regression_detected=True, reason=str(error))

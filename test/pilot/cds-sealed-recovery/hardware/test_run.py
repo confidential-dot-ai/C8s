@@ -105,8 +105,36 @@ class LifecycleTests(unittest.TestCase):
                     vmi["status"]["conditions"][0]["status"] = "False"
                 if replaced_owner:
                     kube.objects[owner_path]["metadata"].update(uid="replacement", deletionTimestamp="2026-11-04T01:00:00Z")
-                with self.assertRaisesRegex(RuntimeError, "without owning VM deletion"):
+                with self.assertRaisesRegex(RuntimeError, "without explicit owning VM stop/deletion"):
                     run.health()
+
+    def test_explicit_vm_halt_is_recorded_as_external_change(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                run, kube, owner_path, vmi = self.health_runner()
+                kube.objects[owner_path]["spec"] = {"runStrategy": "Halted"}
+                if missing:
+                    kube.objects["/apis/kubevirt.io/v1/virtualmachineinstances"]["items"] = []
+                else:
+                    vmi["status"]["conditions"][0]["status"] = "False"
+                run.health()
+                self.assertEqual("Halted", run.state["external_vm_stops"]["vmi-uid"]["run_strategy"])
+                self.assertEqual("external-vm-stop-observed", run.state["events"][-1]["event"])
+                self.assertNotIn("external_vm_deletions", run.state)
+
+    def test_stopped_status_or_replaced_halted_owner_is_not_stop_authority(self):
+        for replaced in (False, True):
+            with self.subTest(replaced=replaced):
+                run, kube, owner_path, vmi = self.health_runner()
+                kube.objects["/apis/kubevirt.io/v1/virtualmachineinstances"]["items"] = []
+                vm = kube.objects[owner_path]
+                vm["status"] = {"printableStatus": "Stopped"}
+                vm["spec"] = {"runStrategy": "Halted" if replaced else "Always"}
+                if replaced:
+                    vm["metadata"]["uid"] = "replacement"
+                with self.assertRaisesRegex(RuntimeError, "without explicit owning VM stop/deletion"):
+                    run.health()
+                self.assertNotIn("external_vm_stops", run.state)
 
     def test_archive_finishes_while_transport_stdin_stays_open(self):
         archive = io.BytesIO()
@@ -232,6 +260,36 @@ class LifecycleTests(unittest.TestCase):
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=5)
+
+    def test_lost_completion_read_does_not_abort_or_establish_upload(self):
+        root = Path(self.tmp.name)
+        destination = root / "destination"
+        destination.mkdir()
+        payload = b"receiver must finish before a later authenticated read succeeds"
+        with tarfile.open(root / "root.tar.gz", "w:gz") as tar:
+            info = tarfile.TarInfo("disk.img")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        run = self.runner(FakeKube())
+        reads = 0
+
+        def local_exec(*args):
+            nonlocal reads
+            command = list(args[args.index("--") + 1:])
+            if "-i" in args:
+                return [sys.executable, "-c", "import subprocess,signal,sys,time; "
+                        "time.sleep(1); subprocess.run(sys.argv[1:],check=True); signal.pause()", *command]
+            reads += 1
+            if reads == 1:
+                return [sys.executable, "-c", "raise SystemExit(1)"]
+            return command
+
+        run.kubectl = local_exec
+        run.upload("owned-populate", "root.tar.gz", str(destination))
+        self.assertEqual(payload, (destination / "disk.img").read_bytes())
+        self.assertGreaterEqual(reads, 2)
+        self.assertEqual(["upload-completion-unavailable", "upload-receiver-completed"],
+                         [e["event"] for e in run.state["events"]])
 
     def test_cleanup_refuses_changed_owner_uid_or_journal_path(self):
         for change in ("uid", "owner", "path"):

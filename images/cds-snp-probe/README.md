@@ -128,6 +128,8 @@ Uploads have an explicit byte bound and emit extraction progress. The receiver
 writes a fresh completion token only after successful extraction. The runner
 reads it over a separate authenticated exec and then checks the artifact hashes;
 it can close an upload client that is still waiting for a lost exit response.
+Failed completion reads retry within the original upload deadline; they never
+substitute for the exact token or the subsequent hash checks.
 Neither a client timeout nor a full-size destination file counts as completion.
 
 ```sh
@@ -146,10 +148,12 @@ ownership. No service/host/namespace deletion is permitted. The runner checks
 Node boot IDs and existing VMI readiness; it does not exercise customer
 application traffic or establish nondisruptive fleet upgrades.
 An unexpected VMI disappearance or readiness regression stops the run. If a
-separate read confirms that its recorded owning VM was deleted or is being
-deleted, the runner records that external lifecycle change and continues the
+separate read confirms that its recorded owning VM was deleted, is being
+deleted, or has explicitly requested `runStrategy: Halted`, the runner records
+that external lifecycle change and continues the
 hardware test, with its post-cleanup `unchanged` claim false. An unknown or
-replaced owner does not qualify for this distinction.
+replaced owner does not qualify for this distinction. A `Stopped` status without
+an explicit halt request does not qualify either.
 
 Prepare a run-specific manifest and durable ownership journal before creating
 anything. Use one 2-vCPU/4-GiB guest at a time, exact worker UIDs, only new
