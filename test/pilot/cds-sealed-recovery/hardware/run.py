@@ -248,6 +248,9 @@ class Run:
             observed[name] = {"uid": node["metadata"]["uid"], "boot_id": status["nodeInfo"]["bootID"], "conditions": conditions}
         _, live = self.kube.call("GET", "/apis/kubevirt.io/v1/virtualmachineinstances")
         vmis = {v["metadata"]["uid"]: {"namespace": v["metadata"]["namespace"], "name": v["metadata"]["name"],
+            "vm_owner": next(({"name": o["name"], "uid": o["uid"]} for o in v["metadata"].get("ownerReferences", [])
+                              if o.get("kind") == "VirtualMachine" and o.get("controller") is True and
+                              o.get("apiVersion", "").startswith("kubevirt.io/")), None),
             "phase": v.get("status", {}).get("phase"), "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in v.get("status", {}).get("conditions", []))}
             for v in live["items"]}
         if capture:
@@ -260,7 +263,24 @@ class Run:
                 if before["conditions"].get("Ready") == "True":
                     need(observed[name]["conditions"].get("Ready") == "True", "Node readiness regressed")
             for uid, before in self.state["vmis_before"].items():
-                need(uid in vmis and (not before["ready"] or vmis[uid]["ready"]), "existing VMI disappeared or readiness regressed")
+                if uid in vmis and (not before["ready"] or vmis[uid]["ready"]):
+                    continue
+                # A declared deletion of the owning VM is an external
+                # lifecycle change, not evidence of an unexpected crash.
+                # Never infer this from a VMI/Pod disappearing, its name, or
+                # a workload label. A surviving owner without deletion intent
+                # still fails closed; so does an unknown/replaced owner.
+                owner = before.get("vm_owner")
+                need(owner is not None, "existing VMI disappeared or readiness regressed; owner unknown")
+                code, current = self.kube.call("GET", "/apis/kubevirt.io/v1/namespaces/" + before["namespace"] +
+                    "/virtualmachines/" + owner["name"], expected=(200, 404))
+                need(code == 404 or (current["metadata"]["uid"] == owner["uid"] and current["metadata"].get("deletionTimestamp")),
+                     "existing VMI disappeared or readiness regressed without owning VM deletion")
+                changes = self.state.setdefault("external_vm_deletions", {})
+                if uid not in changes:
+                    changes[uid] = {"namespace": before["namespace"], "vmi_name": before["name"],
+                                    "owner": owner, "owner_http_status": code}
+                    self.event("external-vm-deletion-observed", vmi_uid=uid, **changes[uid])
         return observed
 
     def boot(self, vm, phase):
@@ -428,9 +448,10 @@ def main():
             if "nodes_before" in run.state:
                 try:
                     run.health()
-                    run.event("post-cleanup-observations", unchanged=True)
+                    run.event("post-cleanup-observations", unchanged=not bool(run.state.get("external_vm_deletions")),
+                              unexpected_regression_detected=False)
                 except Exception as error:
-                    run.event("post-cleanup-observations", unchanged=False, reason=str(error))
+                    run.event("post-cleanup-observations", unchanged=False, unexpected_regression_detected=True, reason=str(error))
                     raise
 
 

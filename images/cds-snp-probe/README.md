@@ -127,6 +127,11 @@ kubeconfig and native tool arguments. Cleanup refuses replaced UIDs or changed
 ownership. No service/host/namespace deletion is permitted. The runner checks
 Node boot IDs and existing VMI readiness; it does not exercise customer
 application traffic or establish nondisruptive fleet upgrades.
+An unexpected VMI disappearance or readiness regression stops the run. If a
+separate read confirms that its recorded owning VM was deleted or is being
+deleted, the runner records that external lifecycle change and continues the
+hardware test, with its post-cleanup `unchanged` claim false. An unknown or
+replaced owner does not qualify for this distinction.
 
 Prepare a run-specific manifest and durable ownership journal before creating
 anything. Use one 2-vCPU/4-GiB guest at a time, exact worker UIDs, only new

@@ -51,6 +51,63 @@ class LifecycleTests(unittest.TestCase):
         args = types.SimpleNamespace(directory=self.tmp.name)
         return module.Run(args, kube, lambda p, v: Path(p).write_text(json.dumps(v)))
 
+    def health_runner(self):
+        owner_path = "/apis/kubevirt.io/v1/namespaces/customer/virtualmachines/existing"
+        vmi = {"metadata": {"namespace": "customer", "name": "existing", "uid": "vmi-uid",
+                "ownerReferences": [{"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
+                                     "name": "existing", "uid": "vm-uid", "controller": True}]},
+               "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
+
+        class HealthKube:
+            def __init__(self):
+                self.calls = []
+                self.objects = {"/api/v1/nodes": {"items": []},
+                    "/apis/kubevirt.io/v1/virtualmachineinstances": {"items": [vmi]},
+                    owner_path: {"metadata": {"uid": "vm-uid"}}}
+
+            def call(self, method, path, *args, **kwargs):
+                self.calls.append((method, path))
+                assert method == "GET", "health observation must never mutate resources"
+                return (200, copy.deepcopy(self.objects[path])) if path in self.objects else (404, None)
+
+        kube = HealthKube()
+        run = self.runner(kube)
+        run.args.nodes = []
+        run.health(capture=True)
+        return run, kube, owner_path, vmi
+
+    def test_declared_vm_deletion_is_recorded_as_changed_fleet(self):
+        run, kube, owner_path, vmi = self.health_runner()
+        vmi["status"]["conditions"][0]["status"] = "False"
+        kube.objects[owner_path]["metadata"]["deletionTimestamp"] = "2026-11-04T01:00:00Z"
+        run.health()
+        self.assertIn("vmi-uid", run.state["external_vm_deletions"])
+        self.assertEqual(200, run.state["external_vm_deletions"]["vmi-uid"]["owner_http_status"])
+        self.assertEqual("external-vm-deletion-observed", run.state["events"][-1]["event"])
+
+    def test_missing_vm_owner_is_recorded_without_ignoring_unknown_vmi_loss(self):
+        run, kube, owner_path, vmi = self.health_runner()
+        kube.objects["/apis/kubevirt.io/v1/virtualmachineinstances"]["items"] = []
+        del kube.objects[owner_path]
+        run.health()
+        self.assertEqual(404, run.state["external_vm_deletions"]["vmi-uid"]["owner_http_status"])
+        run.state["vmis_before"]["vmi-uid"]["vm_owner"] = None
+        with self.assertRaisesRegex(RuntimeError, "owner unknown"):
+            run.health()
+
+    def test_unexpected_vmi_loss_or_readiness_regression_still_stops(self):
+        for missing, replaced_owner in ((False, False), (True, False), (True, True)):
+            with self.subTest(missing=missing, replaced_owner=replaced_owner):
+                run, kube, owner_path, vmi = self.health_runner()
+                if missing:
+                    kube.objects["/apis/kubevirt.io/v1/virtualmachineinstances"]["items"] = []
+                else:
+                    vmi["status"]["conditions"][0]["status"] = "False"
+                if replaced_owner:
+                    kube.objects[owner_path]["metadata"].update(uid="replacement", deletionTimestamp="2026-11-04T01:00:00Z")
+                with self.assertRaisesRegex(RuntimeError, "without owning VM deletion"):
+                    run.health()
+
     def test_archive_finishes_while_transport_stdin_stays_open(self):
         archive = io.BytesIO()
         payload = b"bounded disposable artifact" * 20

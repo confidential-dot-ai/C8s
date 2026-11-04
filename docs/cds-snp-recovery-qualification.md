@@ -45,7 +45,7 @@ own claims and independently verified both SHA-256 values against this build.
 The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
-still gates VM creation. Eleven local lifecycle tests include this failure mode,
+still gates VM creation. Fourteen local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
 ownership, and lost API responses during cleanup.
 
@@ -72,8 +72,16 @@ firmware error or unexpected launch configuration fails the test.
 Every attempt records creation intent before API writes and removes only its
 owned resource UIDs, including waiting for its backing volumes to disappear.
 Node identity/readiness and existing VM readiness are checked around the run.
-Concurrent deletion of an unrelated VM makes the unchanged-fleet check fail;
-that observation must be investigated rather than silently counted as a pass.
+Unexpected VMI loss or readiness regression stops the test. The runner captures
+each VMI's controller owner and separately checks the owning VM when a baseline
+VMI disappears or becomes unready. Only a matching owner with an API deletion
+timestamp, or an absent owning VM, is classified as an external deletion.
+Unknown or replaced owners and surviving owners without deletion intent still
+stop the test. These observations never mutate the external resources.
+
+External deletions are preserved in the journal and keep its post-cleanup
+`unchanged` claim false, even if the hardware primitive succeeds. That result
+does not establish fleet-wide availability or customer application latency.
 
 ## Remaining acceptance work
 
