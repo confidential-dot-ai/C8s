@@ -7,3 +7,11 @@ for unit in getty@.service serial-getty@.service console-getty.service rescue.se
 done
 test -x "$BUILDROOT/usr/local/bin/snp-probe"
 test -f "$BUILDROOT/etc/cloud/cloud-init.disabled"
+# Git records executable bits, not read permissions. A private checkout may
+# provide 0600 files; networkd drops privileges before reading this public
+# DHCP configuration. Set explicit modes for these public image inputs only.
+chmod 0644 "$BUILDROOT/etc/systemd/network/80-dhcp.network" \
+    "$BUILDROOT/etc/systemd/system/snp-probe.service" \
+    "$BUILDROOT/etc/systemd/system/snp-probe-expiry.service" \
+    "$BUILDROOT/etc/systemd/system/snp-probe-expiry.timer" \
+    "$BUILDROOT/etc/systemd/journald.conf.d/50-snp-probe-console.conf"

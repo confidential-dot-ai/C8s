@@ -13,7 +13,10 @@ or workload profiles. Only the SNP platform and 2-vCPU variant are built.
 The qualification kernel fragment enables the ISA serial driver, and the
 profile routes kernel boot diagnostics to `ttyS0`. Serial SysRq input and
 console login remain disabled. The host can read these diagnostics. This is
-a disposable sentinel image, not a CA custody image.
+a disposable sentinel image, not a CA custody image. Service startup logs are
+also forwarded to that console. Finalization explicitly makes the public DHCP
+configuration readable by the unprivileged network service, even when the
+source checkout was created with a restrictive umask.
 On failure the runner captures only its owned guest's console and display
 before cleanup, without guest input or memory inspection.
 
