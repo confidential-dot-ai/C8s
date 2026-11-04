@@ -23,10 +23,12 @@ import (
 // inputs sent to firmware; it provides no evidence about actual SNP sealing.
 type fixtureDevice struct {
 	client.Device
-	report   *sevsnp.Report
-	root     byte
-	keyCalls int
-	request  *linuxabi.SnpDerivedKeyReqABI
+	report    *sevsnp.Report
+	root      byte
+	keyCalls  int
+	keyError  error
+	keyStatus uint32
+	request   *linuxabi.SnpDerivedKeyReqABI
 }
 
 func (d *fixtureDevice) Ioctl(command uintptr, argument any) (uintptr, error) {
@@ -42,6 +44,10 @@ func (d *fixtureDevice) Ioctl(command uintptr, argument any) (uintptr, error) {
 		copy(req.RespData.(*linuxabi.SnpReportRespABI).Data[:], raw)
 	case linuxabi.IocSnpGetDerivedKey:
 		d.keyCalls++
+		if d.keyError != nil {
+			return 0, d.keyError
+		}
+		req.RespData.(*linuxabi.SnpDerivedKeyRespABI).Status = d.keyStatus
 		d.request = req.ReqData.(*linuxabi.SnpDerivedKeyReqABI)
 		params, _ := json.Marshal(d.request)
 		key := sha256.Sum256(append([]byte{d.root}, params...))

@@ -107,6 +107,9 @@ func exchange(d client.Device, launch []byte, req probeRequest) (probeReply, err
 		input = *req.Capsule
 	}
 	e, err := probe(d, req.Operation, m, launch, input)
+	if err != nil && !errors.Is(err, errCapsuleAuthentication) {
+		return probeReply{}, err
+	}
 	result := probeResult{Outcome: "rejected"}
 	if err == nil {
 		result.Outcome, result.Capsule = "sealed", &e
@@ -114,8 +117,8 @@ func exchange(d client.Device, launch []byte, req probeRequest) (probeReply, err
 			result.Outcome = "opened"
 		}
 	}
-	// Attest even a failed open, so a transport error cannot masquerade as a
-	// successful different-chip rejection. Invalid launches still fail closed.
+	// Attest a cryptographic rejection after successful key derivation.
+	// Device, firmware and transport failures never establish this outcome.
 	nonce := replyBinding(req, result)
 	raw, err := client.GetRawReportAtVmpl(d, nonce, 0)
 	if err != nil {
@@ -265,8 +268,8 @@ func checkReply(req probeRequest, reply probeReply, launch []byte) error {
 		return errors.New("primitive probe cannot establish full acceptance")
 	}
 	if reply.Result.Outcome == "rejected" {
-		if reply.Result.Capsule != nil {
-			return errors.New("rejected probe returned a capsule")
+		if req.Operation != "open" || reply.Result.Capsule != nil {
+			return errors.New("invalid rejection outcome")
 		}
 		return nil
 	}

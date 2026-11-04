@@ -73,7 +73,9 @@ request and response, including ciphertext and outcome. The host client
 checks the independent image/configuration pins, non-debug/non-migratable
 VMPL-0 policy, unmasked VCEK chip identity, report signature and issuer
 revocation. A network error cannot count as the different-chip rejection.
-Capsule files contain only ciphertext and public metadata; creation refuses
+Only an authentication failure after successful hardware key derivation counts
+as rejection; a device or firmware error fails the run. Capsule files contain
+only ciphertext and public metadata; creation refuses
 overwrite. Neither plaintext sentinel nor derived key leaves the probe.
 
 Compare the **verified chip hashes**, not only Kubernetes node names: same-node

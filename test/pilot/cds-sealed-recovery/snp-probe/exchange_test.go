@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -74,6 +75,35 @@ func TestExchangeBindsFreshRequestResultAndChip(t *testing.T) {
 	// A lost network response is not a verified hardware refusal.
 	if checkReply(open, probeReply{Result: probeResult{Outcome: "rejected"}}, launch) == nil {
 		t.Fatal("missing report accepted as rejection")
+	}
+}
+
+func TestExchangeDoesNotCountKeyFailuresAsRejection(t *testing.T) {
+	d, measurement, launch := deviceFixture()
+	req := probeRequest{Operation: "seal", Measurement: hex.EncodeToString(measurement), Nonce: bytes.Repeat([]byte{1}, 32)}
+	sealed, err := exchange(d, launch, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range []string{"device", "firmware", "foreign launch"} {
+		t.Run(failure, func(t *testing.T) {
+			next, _, _ := deviceFixture()
+			capsule := *sealed.Result.Capsule
+			open := req
+			open.Operation, open.Capsule = "open", &capsule
+			switch failure {
+			case "device":
+				next.keyError = errors.New("device unavailable")
+			case "firmware":
+				next.keyStatus = 1
+			case "foreign launch":
+				capsule.LaunchSHA256 = hex.EncodeToString(bytes.Repeat([]byte{9}, 32))
+			}
+			reply, err := exchange(next, launch, open)
+			if err == nil || reply.Result.Outcome == "rejected" || len(reply.Report) != 0 {
+				t.Fatal("operational failure counted as cryptographic rejection")
+			}
+		})
 	}
 }
 

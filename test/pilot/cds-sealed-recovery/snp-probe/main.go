@@ -39,6 +39,10 @@ type envelope struct {
 	Ciphertext     []byte `json:"ciphertext"`
 }
 
+// Only an authenticated-decryption failure establishes the negative case.
+// A firmware/device failure must never count as different-chip rejection.
+var errCapsuleAuthentication = errors.New("hardware/configuration cannot open this capsule")
+
 func readBounded(path string, max int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -160,7 +164,7 @@ func probe(d client.Device, mode string, measurement, launch []byte, e envelope)
 	} else {
 		sentinel, err = aead.Open(nil, nil, e.Ciphertext, aad)
 		if err != nil {
-			return e, errors.New("hardware/configuration cannot open this capsule")
+			return e, errCapsuleAuthentication
 		}
 		defer clear(sentinel)
 		h := sha256.Sum256(sentinel)
