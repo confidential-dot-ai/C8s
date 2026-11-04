@@ -73,10 +73,16 @@ container the measured mesh policy covers holds more than the floor:
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create. The floor is independent of the exec posture above, and leaves the
-exempt namespaces and the pod's own sandbox container as the measured policy
-found them. Attachability is refused for every container the wrapper creates — a
-terminal, and a create carrying the container's standard input — so an attach
-session has no way in even there.
+exempt namespaces, the pod's own sandbox container and a static pod as the
+measured policy found them. Attachability is refused for every container the
+wrapper creates — a terminal, and a create carrying the container's standard
+input — so an attach session has no way in even there.
+
+A static pod is known by the kubelet's `kubernetes.io/config.source: file`,
+which reaches the bundle only where the node's containerd passes it through
+(`pod_annotations`), as a worker's does. Before the create, the node's
+admission plugin refuses any NRI plugin's edit of that annotation and, on a
+worker, a static pod whose launch no base entry pins.
 
 ## What this means for debugging a workload
 

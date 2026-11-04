@@ -184,11 +184,15 @@ func requireNotAttachable(spec *specs.Spec, stdin *os.File) error {
 }
 
 // floorApplies reports a container the floor covers: a pod container — not the
-// sandbox the runtime creates for the pod itself — in a namespace trusted
-// policy does not exempt. A bundle that names no namespace is covered: the
-// floor follows what the node measured, not what a bundle leaves out.
+// sandbox the runtime creates for the pod itself, nor a static pod's, which is
+// never a member — in a namespace trusted policy does not exempt. A bundle
+// that names no namespace is covered: the floor follows what the node
+// measured, not what a bundle leaves out.
+//
+// The kubelet's static pod mark reaches a bundle only where the node's
+// containerd config passes it through (pod_annotations), as a worker's does.
 func floorApplies(spec *specs.Spec, containerID string, floor nriimagepolicy.MeshFloor) bool {
-	if isPodSandbox(spec, containerID) {
+	if isPodSandbox(spec, containerID) || nriimagepolicy.StaticPodAnnotations(spec.Annotations) {
 		return false
 	}
 	return !slices.Contains(floor.ExemptNamespaces, spec.Annotations[annotationSandboxNamespace])

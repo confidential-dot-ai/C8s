@@ -177,7 +177,8 @@ the sandbox policy mode; a container containerd no longer has decides nothing
 about one already running. A pod in a namespace the measured mesh policy
 exempts keeps the capabilities the runtime gave it, as it does under the
 runtime wrapper's floor
-([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)), and so does a
+worker's static pod whose launch a base entry pins.
 
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a

@@ -21,6 +21,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
+	if err := refuseSourceEdit(req.GetAdjust()); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
+	}
 	ctr, env := adjustedLaunchContainer(req)
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
@@ -36,6 +39,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		}
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
+	if err := p.unpinnedStaticPod(ctx, p.cfg, req.GetPod(), ctr, env, mounts); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
@@ -43,6 +49,29 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
+}
+
+// refuseSourceEdit refuses an NRI edit setting or removing the kubelet's
+// static pod mark, which c8s-runc's floor reads from the bundle.
+func refuseSourceEdit(adjust *api.ContainerAdjustment) error {
+	for key := range adjust.GetAnnotations() {
+		if name, _ := api.IsMarkedForRemoval(key); name == configSourceAnnotation {
+			return fmt.Errorf("an NRI plugin edits the %s annotation", configSourceAnnotation)
+		}
+	}
+	return nil
+}
+
+// unpinnedStaticPod refuses, on a worker, a static pod's container whose launch
+// no base entry pins: c8s-runc's floor leaves a static pod to its template.
+func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+	if !cfg.Worker || !staticPod(pod) {
+		return nil
+	}
+	if p.policy.baseAdmitsPinned(p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)) {
+		return nil
+	}
+	return errors.New("a worker runs a static pod only on a launch a base entry pins")
 }
 
 // gateMesh applies the mesh startup gate at the one hook whose error always
