@@ -169,14 +169,19 @@ func secretsGrant(p *pkgallowlist.SecretsPolicy) string {
 	return s
 }
 
-// egressList renders exits as cidr:port; parsing has already sorted them.
+// egressList renders exits as cidr:port, bracketing an IPv6 prefix so the port
+// stays apart from it; parsing has already sorted them.
 func egressList(l pkgallowlist.EgressList) string {
 	if len(l) == 0 {
 		return "none"
 	}
 	parts := make([]string, len(l))
 	for i, e := range l {
-		parts[i] = fmt.Sprintf("%s:%d", e.CIDR, e.Port)
+		format := "%s:%d"
+		if e.CIDR.Addr().Is6() {
+			format = "[%s]:%d"
+		}
+		parts[i] = fmt.Sprintf(format, e.CIDR, e.Port)
 	}
 	return strings.Join(parts, " ")
 }

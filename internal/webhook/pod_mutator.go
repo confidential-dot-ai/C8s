@@ -298,10 +298,10 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 		WorkloadID: id,
 		SAN:        selectSAN(annotations, id, namespace),
 		Secrets: secretsSpec{
-			Specs: listAnnotation(annotations, AnnotationSecrets),
+			Specs: workloadclaims.SplitList(annotations[AnnotationSecrets]),
 		},
 		Volumes: volumesSpec{
-			Specs: listAnnotation(annotations, AnnotationVolumes),
+			Specs: workloadclaims.SplitList(annotations[AnnotationVolumes]),
 			Dir:   strings.TrimSpace(annotations[AnnotationVolumeDir]),
 		},
 		Discovery: discoverySpec{
@@ -362,22 +362,6 @@ func boolAnnotation(annotations map[string]string, name string) (bool, error) {
 		return false, fmt.Errorf("%w %s: %v", errInvalidInjectionAnnotation, name, err)
 	}
 	return parsed, nil
-}
-
-func listAnnotation(annotations map[string]string, name string) []string {
-	value := strings.TrimSpace(annotations[name])
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	items := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item != "" {
-			items = append(items, item)
-		}
-	}
-	return items
 }
 
 func hasInjectionDetailAnnotations(annotations map[string]string) bool {

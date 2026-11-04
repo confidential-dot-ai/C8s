@@ -116,18 +116,10 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 // secrets. The webhook keeps a mount c already declares for the volume, so
 // those destinations win.
 func injectedMounts(annotations map[string]string, c templateContainer) []allowlist.MountRule {
-	if !requestsSecrets(annotations[workloadclaims.AnnotationSecrets]) {
+	if len(workloadclaims.SplitList(annotations[workloadclaims.AnnotationSecrets])) == 0 {
 		return nil
 	}
 	return c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)
-}
-
-// requestsSecrets matches the webhook, which injects the fetcher when the
-// comma-separated annotation names at least one non-blank item.
-func requestsSecrets(annotation string) bool {
-	return slices.ContainsFunc(strings.Split(annotation, ","), func(item string) bool {
-		return strings.TrimSpace(item) != ""
-	})
 }
 
 // withInjectedMounts adds rules to a deny or exact policy, keeping any rule
@@ -296,7 +288,7 @@ derives the same entry as the manifest it was admitted from.`,
 			}
 			if mountsMode == "" && mountsFile == "" {
 				msg := `mounts: no policy given; every container is "deny", which admits platform mounts alone`
-				if requestsSecrets(spec.annotations[workloadclaims.AnnotationSecrets]) {
+				if len(workloadclaims.SplitList(spec.annotations[workloadclaims.AnnotationSecrets])) > 0 {
 					msg = `mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone`
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), msg)

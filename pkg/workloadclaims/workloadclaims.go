@@ -128,6 +128,18 @@ const (
 	SecretDir         = "/run/c8s/secrets"
 )
 
+// SplitList returns the trimmed, non-blank items of a comma-separated
+// annotation value such as AnnotationSecrets.
+func SplitList(value string) []string {
+	var items []string
+	for _, part := range strings.Split(value, ",") {
+		if item := strings.TrimSpace(part); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the

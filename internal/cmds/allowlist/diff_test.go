@@ -186,8 +186,8 @@ func TestDiffEntryEgressAndHostPorts(t *testing.T) {
 			name:       "egress port changed",
 			live:       pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("2001:db8::/48", 443)}},
 			desired:    pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("2001:db8::/48", 8443)}},
-			wantEgress: &changedEntry{From: "2001:db8::/48:443", To: "2001:db8::/48:8443"},
-			wantText:   "    egress: 2001:db8::/48:443 -> 2001:db8::/48:8443\n",
+			wantEgress: &changedEntry{From: "[2001:db8::/48]:443", To: "[2001:db8::/48]:8443"},
+			wantText:   "    egress: [2001:db8::/48]:443 -> [2001:db8::/48]:8443\n",
 		},
 		{
 			name:          "host port removed",
