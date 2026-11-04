@@ -64,6 +64,13 @@ allowlist:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
+            # RKE2's exec startup, liveness and readiness probes of this
+            # container (rancher/rke2 pkg/podtemplate/spec.go, APIServer), the
+            # only commands the locked runtime wrapper starts in it
+            # (c8s docs/node-exec-mode.md, "Granted execs").
+            execs:
+              - ["kubectl", "get", "--server=https://localhost:6443/", "--client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", "--client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", "--certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt", "--raw=/livez"]
+              - ["kubectl", "get", "--server=https://localhost:6443/", "--client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", "--client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", "--certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt", "--raw=/readyz"]
             command: {policy: exact, argv: ["kube-apiserver"]}
             args:
               policy: exact

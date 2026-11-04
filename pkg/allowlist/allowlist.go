@@ -152,13 +152,18 @@ func (l *HostPortList) UnmarshalJSON(data []byte) error {
 // policy. It is YAML-only: a document on the wire carries no role, so a role
 // comes from a measured boot config and nothing a CDS serves can claim one.
 type Container struct {
-	Digest  types.Digest `json:"digest" yaml:"digest"`
-	Image   string       `json:"image,omitempty" yaml:"image,omitempty"`
-	Role    string       `json:"-" yaml:"role,omitempty"`
-	Command ArgvPolicy   `json:"command" yaml:"command"`
-	Args    ArgvPolicy   `json:"args" yaml:"args"`
-	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`
-	Env     EnvPolicy    `json:"env" yaml:"env,omitempty"`
+	Digest types.Digest `json:"digest" yaml:"digest"`
+	Image  string       `json:"image,omitempty" yaml:"image,omitempty"`
+	Role   string       `json:"-" yaml:"role,omitempty"`
+	// Execs are the exact commands a runtime wrapper may start in a running
+	// container of these bytes, beside the one it was created with. YAML-only,
+	// like Role: only a measured boot config grants one, and the JSON ingest
+	// rejects it.
+	Execs   [][]string  `json:"-" yaml:"execs,omitempty"`
+	Command ArgvPolicy  `json:"command" yaml:"command"`
+	Args    ArgvPolicy  `json:"args" yaml:"args"`
+	Mounts  MountPolicy `json:"mounts" yaml:"mounts,omitempty"`
+	Env     EnvPolicy   `json:"env" yaml:"env,omitempty"`
 	// Capabilities are what these bytes may hold beyond the node's default set.
 	Capabilities CapabilityList `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
@@ -950,6 +955,11 @@ func normalizeContainers(workload, field string, cs []Container) error {
 		c := &cs[i]
 		if c.Digest.String() == "" {
 			return fmt.Errorf("workload %q %s[%d]: digest is required", workload, field, i)
+		}
+		for j, argv := range c.Execs {
+			if len(argv) == 0 || argv[0] == "" {
+				return fmt.Errorf("workload %q %s %s execs[%d]: a command needs an executable", workload, field, c.Digest, j)
+			}
 		}
 		for _, constraint := range c.constraints() {
 			if policyField, err := constraint.normalize(); err != nil {

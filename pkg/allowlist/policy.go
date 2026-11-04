@@ -173,6 +173,32 @@ func (i *Index) RoleOf(r RunningContainer) string {
 	return roles[0]
 }
 
+// ExecsOf reports the commands this policy lets a runtime wrapper start in an
+// observed container. Like a role they ride on the whole verified identity,
+// and only a declaration that fixes the command, args and mounts grants them;
+// declarations admitting one launch that disagree grant none.
+func (i *Index) ExecsOf(r RunningContainer) [][]string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = d.String()
+	var execs [][]string
+	for _, c := range i.byDigest[r.Digest] {
+		if len(c.Execs) == 0 || c.Command.Policy == PolicyAny || c.Args.Policy == PolicyAny || !c.Mounts.pinned() || !c.admits(r) {
+			continue
+		}
+		if execs != nil && !slices.EqualFunc(execs, c.Execs, slices.Equal[[]string]) {
+			return nil
+		}
+		execs = c.Execs
+	}
+	return execs
+}
+
 // BindsRoleMounts reports whether a declaration that grants this launch the
 // role also pins its mount set. A namespace whose pods separate credentials by
 // mount set admits a role container only under such a declaration, so an entry
