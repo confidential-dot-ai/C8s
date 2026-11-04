@@ -83,6 +83,10 @@ proves; `--pin-policy` or `--trust-operator` then judge the policies. Without
 one of those, a non-empty history leaves the verdict partial: the register is
 accounted for, the policies are not ([verify.md](verify.md)).
 
+Nothing authenticates the list until it replays, so `c8s verify` checks it
+only where it replays: an `--image-policy-file` with no `approver_key`, or an
+RTMR[3] still at the `--operator-pkey` seed, ignores it.
+
 ## Where the evidence comes from
 
 - **`bare-metal`, `gke`**: the node's own report interface, so the fields above

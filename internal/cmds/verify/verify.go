@@ -1555,17 +1555,23 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			return oc
 		}
 		response := remote.VerifyResponse{Result: *result}
-		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
+		// Nothing authenticates the measured list, so only an anchored image,
+		// which replays it, may fail a verdict over it.
+		measured := ev.measured
+		if !slices.ContainsFunc(plan.refValues.Images, anchored) {
+			measured = nil
+		}
+		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), measured); err != nil {
 			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
 			return oc
 		}
-		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured)
+		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), measured)
 		// A TDX tuple covers the guest only when the matching entry pins both
 		// kernel and rootfs registers. A weak alternative must not borrow the
 		// completeness of an unrelated entry in the same policy.
 		for _, entry := range plan.refValues.Images {
 			if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), ev.measured) == nil {
+				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), measured) == nil {
 				fullImagePinned = true
 				break
 			}
@@ -1767,6 +1773,11 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
 		replay := pins.anchor != nil && len(measured) > 0
+		// A register still at the seed replays nothing, so the unauthenticated
+		// list cannot fail it.
+		if got, err := result.Claims.RTMR(3); err == nil && bytes.Equal(got, want) {
+			replay = false
+		}
 		if replay {
 			if err := checkMeasuredList(measured); err != nil {
 				oc.Error = err.Error()

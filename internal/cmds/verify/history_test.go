@@ -601,6 +601,37 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 	}
 }
 
+// Only an anchored --image-policy-file image replays the measured list, so
+// only it fails a verdict over an over-cap list.
+func TestOverCapListNeedsAnchoredImage(t *testing.T) {
+	reg := hexBytes(t)
+	over := make([]string, armtls.MaxRuntimeExtensions+1)
+	for i := range over {
+		over[i] = testPolicyP
+	}
+	for _, tc := range []struct {
+		name   string
+		anchor []byte
+		want   string
+	}{
+		{"unanchored", nil, ""},
+		{"anchored", approverKey(t), fmt.Sprintf("%d runtime extensions, at most %d", len(over), armtls.MaxRuntimeExtensions)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+				Family: teetypes.FamilyTDX,
+				Images: []remote.ImagePin{{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}, Anchor: tc.anchor}},
+			})
+			cfg := config{measurementsConfig: policy}
+			ev := &evidence{platform: "tdx", measured: over}
+			oc := newOutcome(cfg, ev, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
+			if oc.Verified != (tc.want == "") || !strings.Contains(oc.Error, tc.want) {
+				t.Errorf("newOutcome = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.want)
+			}
+		})
+	}
+}
+
 // approverKey returns a fresh P-256 public key PEM for an approver_key.
 func approverKey(t *testing.T) []byte {
 	t.Helper()
@@ -740,7 +771,7 @@ func TestOperatorPkeyReplayErrors(t *testing.T) {
 	for i := range over {
 		over[i] = testPolicyP
 	}
-	claims := rtmr3Claims(seed)
+	claims := rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, []string{testPolicyP}))
 	noRTMR3 := map[string]any{"rtmr_1": claims["rtmr_1"], "rtmr_2": claims["rtmr_2"]}
 	for _, tc := range []struct {
 		name     string
@@ -751,10 +782,17 @@ func TestOperatorPkeyReplayErrors(t *testing.T) {
 		{"over cap", over, claims, fmt.Sprintf("lists %d measured policies, at most %d", len(over), armtls.MaxRuntimeExtensions)},
 		{"non-canonical entry", []string{testPolicyP, "sha256:ABC"}, claims, `measured policy 1 ("sha256:ABC") is not a canonical sha256 digest`},
 		{"absent register", []string{testPolicyP}, noRTMR3, "register claim absent or malformed"},
+		{"over cap, bare seed", over, rtmr3Claims(seed), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: tc.measured}
 			oc := newOutcome(config{}, ev, tdxResult(testMRTD, tc.claims), nil, plan)
+			if tc.want == "" {
+				if !oc.Verified || len(oc.MeasuredPolicies) != 0 {
+					t.Errorf("newOutcome = verified %v, error %q, MeasuredPolicies %v; want verified with no history", oc.Verified, oc.Error, oc.MeasuredPolicies)
+				}
+				return
+			}
 			if oc.Verified || !strings.Contains(oc.Error, tc.want) || strings.Contains(oc.Error, "no prefix of the") {
 				t.Errorf("newOutcome = verified %v, error %q; want a failure containing %q only", oc.Verified, oc.Error, tc.want)
 			}
