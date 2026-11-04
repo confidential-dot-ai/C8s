@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -105,11 +104,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if exp.MeasuresPolicies() {
 			// The report comes from elsewhere: record cred-release's list
 			// first. The dial and step 3 share one wait for cred-release.
+			// A failed dial is reported once: by the gate when it lacks the
+			// list, else by step 3, which dials again.
 			releaseDeadline = time.Now().Add(cfg.ReleaseWait)
 			dialErr = dialRelease(ctx, cfg, releaseURL, exp)
-			if dialErr != nil {
-				slog.Warn("record cred-release measured policies", "error", dialErr)
-			}
 		}
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
