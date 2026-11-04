@@ -133,10 +133,13 @@ class Run:
                         destination + "/.cds-upload-complete"), timeout=20)
                     if marker == token.encode():
                         self.event("upload-receiver-completed", archive=archive,
-                                   client_exit_pending=process.poll() is None)
+                                   client_exit_pending=process.poll() is None,
+                                   client_returncode=process.poll())
                         return
                     need(not marker, "unexpected upload completion token")
-                    need(process.poll() in (None, 0), "upload client failed before receiver completion")
+                    # A lost stream can leave the receiver finishing data it
+                    # already received. Only its fresh token and the later
+                    # hashes establish completion, within this same deadline.
                     time.sleep(5)
                 raise TimeoutError("upload receiver completion timed out")
             finally:

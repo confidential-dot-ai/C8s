@@ -121,6 +121,43 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual("upload-receiver-completed", run.state["events"][-1]["event"])
         self.assertTrue(run.state["events"][-1]["client_exit_pending"])
 
+    def test_receiver_can_complete_after_client_connection_fails(self):
+        root = Path(self.tmp.name)
+        destination = root / "destination"
+        destination.mkdir()
+        payload = b"already delivered public artifact"
+        with tarfile.open(root / "root.tar.gz", "w:gz") as tar:
+            info = tarfile.TarInfo("disk.img")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        run = self.runner(FakeKube())
+        receivers = []
+
+        def local_exec(*args):
+            command = list(args[args.index("--") + 1:])
+            if "-i" in args:
+                # Independently model a receiver finishing buffered input after
+                # the client loses its connection. The failed client itself
+                # supplies neither a completion receipt nor a success status.
+                with (root / "root.tar.gz").open("rb") as data:
+                    receivers.append(subprocess.Popen([sys.executable, "-c",
+                        "import subprocess,sys,time; time.sleep(1); "
+                        "subprocess.run(sys.argv[1:],check=True)", *command], stdin=data,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                return [sys.executable, "-c", "raise SystemExit(1)"]
+            return command
+
+        run.kubectl = local_exec
+        try:
+            run.upload("owned-populate", "root.tar.gz", str(destination))
+            self.assertEqual(payload, (destination / "disk.img").read_bytes())
+            self.assertEqual(1, run.state["events"][-1]["client_returncode"])
+        finally:
+            for process in receivers:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
     def test_cleanup_refuses_changed_owner_uid_or_journal_path(self):
         for change in ("uid", "owner", "path"):
             with self.subTest(change=change):
