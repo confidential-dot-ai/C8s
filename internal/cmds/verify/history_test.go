@@ -162,16 +162,31 @@ func TestHistoryFetchNeedsTimeout(t *testing.T) {
 	}
 }
 
-// An --image-policy-file with no approver_key replays nothing, so the history
-// flags are a usage error rather than a policy_history_absent on every run.
+// An --image-policy-file with no approver_key, or one for SNP, which has no
+// RTMR[3], replays nothing, so the history flags are a usage error rather than
+// a policy_history_absent on every run.
 func TestHistoryFlagsNeedAnchoredImage(t *testing.T) {
-	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
-		Family: teetypes.FamilyTDX,
-		Images: []remote.ImagePin{{Name: "node", Digest: make([]byte, 48)}},
-	})
-	_, err := buildPolicy(config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}})
-	if err == nil || !strings.Contains(err.Error(), "pinning an approver_key") {
-		t.Errorf("buildPolicy(unanchored image policy, --pin-policy) = %v, want an approver_key usage error", err)
+	pubPEM := approverKey(t)
+	for _, tc := range []struct {
+		name    string
+		family  teetypes.Family
+		anchor  []byte
+		wantErr bool
+	}{
+		{"TDX, unanchored", teetypes.FamilyTDX, nil, true},
+		{"SNP, anchored", teetypes.FamilySNP, pubPEM, true},
+		{"TDX, anchored", teetypes.FamilyTDX, pubPEM, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+				Family: tc.family,
+				Images: []remote.ImagePin{{Name: "node", Digest: make([]byte, 48), Anchor: tc.anchor}},
+			})
+			_, err := buildPolicy(config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}})
+			if got := err != nil && strings.Contains(err.Error(), "pinning an approver_key"); got != tc.wantErr || (!tc.wantErr && err != nil) {
+				t.Errorf("buildPolicy(--pin-policy) = %v, want an approver_key usage error: %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
