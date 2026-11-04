@@ -41,7 +41,7 @@ launch digest comes from the independently built manifest, never from a guest
 response. The dedicated fixture renderer uses the SDK's opaque launch-file
 format. This file carries no key or command; the image has no SSH service.
 
-The probe listens on TCP 8445. It accepts only bounded `seal`/`open` messages
+The probe listens on TCP 6443. It accepts only bounded `seal`/`open` messages
 for disposable sentinels; it has no file, shell, arbitrary report-signing or
 secret-release endpoint. One actor owns the SNP device, with eight queued
 operations, HTTP 429 backpressure and at most 32 accepted connections. Do not
@@ -49,7 +49,7 @@ expose a public Service; use the authenticated native VM port-forward.
 
 ```sh
 virtctl --kubeconfig "$TEST_KUBECONFIG" -n "$TEST_NAMESPACE" \
-  port-forward "vmi/$OWNED_VMI" 24445:8445
+  port-forward "vmi/$OWNED_VMI" 24445:6443
 
 snp-probe request -operation seal -expect sealed \
   -measurement "$INDEPENDENT_SNP_MEASUREMENT" -launch-file ./launch.pub \
@@ -105,6 +105,11 @@ UID before advancing. Public disk/IGVM files travel through an owned temporary
 population Pod into new claims; hashes must match before the Pod is removed
 and the halted VM is started. It needs no registry push or Cloud API rollout.
 This native hardware qualification is separate from the public API comparison.
+The fixture adds one owned ingress policy selecting only its VM, permitting
+TCP 6443 only from `kubevirt.io=virt-api` Pods in the `kubevirt` namespace. That
+port is already permitted by the API Pods' existing egress policy. No shared
+policy, public ingress or guest egress permission changes. The runner validates
+the exact rule before creation and deletes it first during cleanup.
 
 Uploads have an explicit byte bound and emit extraction progress. The receiver
 writes a fresh completion token only after successful extraction. The runner

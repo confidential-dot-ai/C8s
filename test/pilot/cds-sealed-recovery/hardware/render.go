@@ -14,8 +14,10 @@ import (
 
 	"github.com/confidential-dot-ai/bare-metal-infra-management/pkg/confai"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
@@ -61,7 +63,7 @@ func main() {
 		// uploaded file hashes and the separate SNP measurement bind the bytes.
 		Image: confai.ImageRef{RootdiskPVC: root, IGVMPVC: boot}, CPUCores: 2, MemoryGi: 4,
 		NoCloudInit: true, OperatorKeyPub: data, OperatorKeyFormat: confai.OperatorKeyFormatLaunchFile,
-		ServiceType: confai.ServiceTypeClusterIP, Ports: []confai.Port{{Name: "probe", Port: 8445}}, ExactServicePorts: true, Labels: labels}
+		ServiceType: confai.ServiceTypeClusterIP, Ports: []confai.Port{{Name: "probe", Port: 6443}}, ExactServicePorts: true, Labels: labels}
 	objects, err := confai.Build(spec)
 	if err != nil {
 		panic(err)
@@ -89,6 +91,20 @@ func main() {
 			panic(fmt.Sprintf("unexpected SDK resource %T", obj))
 		}
 	}
+	// The existing namespace denies traffic by default. Permit only the native
+	// KubeVirt API tunnel to this owned guest's disposable probe; do not change
+	// a shared policy or grant public ingress/guest egress.
+	items = append(items, &networkingv1.NetworkPolicy{
+		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}, ObjectMeta: meta(*run),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"cloud.confidential.ai/qualification-owner": *run, "kubevirt.io/domain": *run}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kubevirt"}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubevirt.io": "virt-api"}}}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(6443))}},
+			}},
+		},
+	})
 	// Upload public disk/IGVM artifacts to NEW claims with native kubectl cp.
 	// Verify their hashes, then delete this exact Pod UID BEFORE starting the VM.
 	// The active deadline bounds an interrupted upload; the owner journal is

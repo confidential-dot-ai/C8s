@@ -45,7 +45,7 @@ own claims and independently verified both SHA-256 values against this build.
 The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
-still gates VM creation. Fourteen local lifecycle tests include this failure mode,
+still gates VM creation. Fifteen local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
 ownership, and lost API responses during cleanup.
 

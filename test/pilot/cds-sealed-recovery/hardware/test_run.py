@@ -133,6 +133,24 @@ class LifecycleTests(unittest.TestCase):
             process.stdout.close()
             process.stderr.close()
 
+    def test_probe_network_rule_refuses_broader_targets_peers_or_ports(self):
+        name = "cds-snp-0123456789ab"
+        policy = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+            "metadata": {"name": name, "namespace": "p-internal", "labels": {module.LABEL: name}},
+            "spec": {"podSelector": {"matchLabels": {module.LABEL: name, "kubevirt.io/domain": name}},
+                "policyTypes": ["Ingress"], "ingress": [{"ports": [{"protocol": "TCP", "port": 6443}],
+                "from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kubevirt"}},
+                          "podSelector": {"matchLabels": {"kubevirt.io": "virt-api"}}}]}]}}
+        module.check_probe_network_policy(policy, name)
+        for mutation in (lambda p: p["spec"].update(podSelector={}),
+                         lambda p: p["spec"]["ingress"][0]["from"][0].update(namespaceSelector={}),
+                         lambda p: p["spec"]["ingress"][0]["ports"][0].update(port=443),
+                         lambda p: p["spec"].update(egress=[{}])):
+            changed = copy.deepcopy(policy)
+            mutation(changed)
+            with self.assertRaises(RuntimeError):
+                module.check_probe_network_policy(changed, name)
+
     def test_compressed_expansion_emits_progress_and_preserves_bytes(self):
         payload = b"\0" * (21 * 1024**2)
         archive = io.BytesIO()

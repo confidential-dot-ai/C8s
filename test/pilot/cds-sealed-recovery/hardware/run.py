@@ -24,6 +24,7 @@ NS = "p-internal"
 LABEL = "cloud.confidential.ai/qualification-owner"
 KINDS = {"PersistentVolumeClaim": ("/api/v1", "persistentvolumeclaims"),
          "Secret": ("/api/v1", "secrets"), "Pod": ("/api/v1", "pods"),
+         "NetworkPolicy": ("/apis/networking.k8s.io/v1", "networkpolicies"),
          "VirtualMachine": ("/apis/kubevirt.io/v1", "virtualmachines")}
 VMI = f"/apis/kubevirt.io/v1/namespaces/{NS}/virtualmachineinstances"
 
@@ -80,6 +81,17 @@ def resource_path(item):
          meta["name"] in (run, run + "-root", run + "-boot", run + "-opkey", run + "-populate"), "invalid owned name")
     prefix, plural = KINDS[item["kind"]]
     return f"{prefix}/namespaces/{NS}/{plural}/{meta['name']}"
+
+
+def check_probe_network_policy(item, run):
+    resource_path(item)
+    need(item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == run and item["spec"] == {
+        "podSelector": {"matchLabels": {LABEL: run, "kubevirt.io/domain": run}},
+        "policyTypes": ["Ingress"],
+        "ingress": [{"ports": [{"protocol": "TCP", "port": 6443}], "from": [{
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kubevirt"}},
+            "podSelector": {"matchLabels": {"kubevirt.io": "virt-api"}}}]}]},
+        "network policy must permit only KubeVirt API TCP 6443 to the owned probe")
 
 
 class Run:
@@ -222,7 +234,7 @@ class Run:
     def cleanup(self):
         self.stop_forward()
         failures = []
-        for kind in ("VirtualMachine", "Pod", "Secret", "PersistentVolumeClaim"):
+        for kind in ("NetworkPolicy", "VirtualMachine", "Pod", "Secret", "PersistentVolumeClaim"):
             for row in self.state["resources"]:
                 if row["item"]["kind"] == kind:
                     try:
@@ -309,7 +321,7 @@ class Run:
             port = temporary.getsockname()[1]
         log = (self.directory / (phase + "-forward.log")).open("wb")
         process = subprocess.Popen([self.args.virtctl, "--kubeconfig", self.args.kubeconfig, "-n", NS,
-            "port-forward", "vmi/" + name, str(port) + ":8445"], stdout=log, stderr=subprocess.STDOUT)
+            "port-forward", "vmi/" + name, str(port) + ":6443"], stdout=log, stderr=subprocess.STDOUT)
         self.forward = process, log
         # VM Ready is not guest service readiness. Only retry failed connects;
         # a sent seal with a lost response is safe (disposable independent keys).
@@ -356,11 +368,16 @@ class Run:
                 "--node-uid", baseline[node]["uid"], "--launch-file", str(self.directory / "launch.json"),
                 "--expires", expiry, "--tools-image", self.args.tools_image])
             items = json.loads(rendered)["items"]
-            need(len(items) == 5, "unexpected fixture resource count")
+            need(len(items) == 6, "unexpected fixture resource count")
+            policy = next(i for i in items if i["kind"] == "NetworkPolicy")
+            check_probe_network_policy(policy, run)
             for item in items:
                 resource_path(item)
                 self.kube.call("POST", resource_path(item).rsplit("/", 1)[0] + "?dryRun=All", item, expected=(201,))
             vm = next(i for i in items if i["kind"] == "VirtualMachine")
+            need(all(vm["spec"]["template"]["metadata"]["labels"].get(k) == v
+                     for k, v in policy["spec"]["podSelector"]["matchLabels"].items()),
+                 "probe network policy does not select the owned VM")
             need(vm["spec"]["runStrategy"] == "Manual", "VM must require explicit starts and stay off after expiry")
             for item in items:
                 if item["kind"] != "VirtualMachine":

@@ -5,7 +5,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/snp-probe serve -listen=0.0.0.0:8445 -launch-file=/run/confai/operator-pubkey
+ExecStart=/usr/local/bin/snp-probe serve -listen=0.0.0.0:6443 -launch-file=/run/confai/operator-pubkey
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
