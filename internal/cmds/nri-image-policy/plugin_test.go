@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
@@ -40,11 +41,42 @@ func newTestPlugin(cfg *config) *plugin {
 
 // fakeContainerd is the containerdOps a test drives. An unset resolve or stop
 // hook panics, so a test that reaches containerd without arranging for it names
-// the call it made; an unset network hook maps no host port.
+// the call it made; an unset network hook maps no host port and an unset spec
+// hook reads as an ordinary container's.
 type fakeContainerd struct {
 	resolve func(ctx context.Context, imageRef string) (string, error)
 	stop    func(ctx context.Context, containerID string) error
 	network func(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
+	spec    func(ctx context.Context, containerID string) (*specs.Spec, error)
+}
+
+func (f *fakeContainerd) ContainerSpec(ctx context.Context, containerID string) (*specs.Spec, error) {
+	if f.spec == nil {
+		return workloadSpec(), nil
+	}
+	return f.spec(ctx, containerID)
+}
+
+// workloadSpec is the OCI spec containerd stores for an ordinary container: the
+// node's default capability set under an unreserved identity.
+func workloadSpec() *specs.Spec {
+	return &specs.Spec{Process: &specs.Process{
+		User: specs.User{UID: testWorkloadUID, GID: testWorkloadUID},
+		Capabilities: &specs.LinuxCapabilities{
+			Bounding:  capabilityNames(allowlist.DefaultCapabilities),
+			Effective: capabilityNames(allowlist.DefaultCapabilities),
+			Permitted: capabilityNames(allowlist.DefaultCapabilities),
+		},
+	}}
+}
+
+// capabilityNames is how an OCI spec spells the capabilities an entry names.
+func capabilityNames(declared []string) []string {
+	out := make([]string, 0, len(declared))
+	for _, name := range declared {
+		out = append(out, "CAP_"+name)
+	}
+	return out
 }
 
 func (f *fakeContainerd) SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {

@@ -49,18 +49,14 @@ not a setting.
 ## The privilege floor
 
 The same wrapper bounds the privileges of a member pod's containers, because the
-node's admission plugin cannot see capabilities, the privileged flag,
-`no_new_privs`, or user-namespace mappings
+node's admission plugin cannot see the privileged flag, `no_new_privs`, or
+user-namespace mappings
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
 On `create` and `run` it reads the bundle and refuses the create when a
 container the measured mesh policy covers holds more than the floor:
 
-- the runtime's default capabilities less `NET_RAW`, `SETUID` and `SETGID`, in
-  all five sets, since each of those defeats the pod's packet rules — and none
-  at all for a container on a platform role, one of C8s's own node-side
-  identities;
-- `no_new_privs` set, so a setuid binary in the image cannot raise what the
-  floor just bounded;
+- `no_new_privs` set, so a setuid binary in the image cannot raise its
+  capabilities;
 - none of the privileged marks: a device cgroup allowing every device, no
   masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`;
 - its own PID namespace, no user namespace or id mapping — the packet rules

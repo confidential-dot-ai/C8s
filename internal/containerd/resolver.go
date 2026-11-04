@@ -1,5 +1,5 @@
-// Package containerd talks to a node's containerd: image digests, a sandbox's
-// recorded network, and stopping a container.
+// Package containerd talks to a node's containerd: image digests, a container's
+// stored OCI spec, a sandbox's recorded network, and stopping a container.
 package containerd
 
 import (
@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -67,6 +68,23 @@ func (r *Resolver) Resolve(ctx context.Context, imageRef string) (string, error)
 	}
 
 	return img.Target().Digest.String(), nil
+}
+
+// ContainerSpec is the OCI spec containerd stored for a container.
+func (r *Resolver) ContainerSpec(ctx context.Context, containerID string) (*specs.Spec, error) {
+	nsCtx := namespaces.WithNamespace(ctx, r.namespace)
+	var spec *specs.Spec
+	if err := r.withReconnect(func() error {
+		container, err := r.client.LoadContainer(nsCtx, containerID)
+		if err != nil {
+			return err
+		}
+		spec, err = container.Spec(nsCtx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the OCI spec of container %s: %w", containerID, err)
+	}
+	return spec, nil
 }
 
 // StopContainer kills a container by its containerd ID.

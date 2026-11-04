@@ -2,9 +2,11 @@ package containerd
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/containerd/containerd/api/types"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -73,11 +76,13 @@ func (f *fakeImages) Get(ctx context.Context, req *imagesapi.GetImageRequest) (*
 	}, nil
 }
 
-// fakeContainers is a minimal containers service knowing a single container ID.
+// fakeContainers is a minimal containers service knowing a single container
+// ID, with the OCI spec containerd stores for it.
 type fakeContainers struct {
 	containersapi.UnimplementedContainersServer
 
 	knownID string
+	spec    *anypb.Any
 }
 
 func (f *fakeContainers) Get(_ context.Context, req *containersapi.GetContainerRequest) (*containersapi.GetContainerResponse, error) {
@@ -88,6 +93,7 @@ func (f *fakeContainers) Get(_ context.Context, req *containersapi.GetContainerR
 		Container: &containersapi.Container{
 			ID:      req.ID,
 			Runtime: &containersapi.Container_Runtime{Name: "io.containerd.runc.v2"},
+			Spec:    f.spec,
 		},
 	}, nil
 }
@@ -335,6 +341,36 @@ func TestResolveReconnects(t *testing.T) {
 	r.reconnectMu.Unlock()
 	if !last.Equal(throttledSince) {
 		t.Fatalf("lastReconnect advanced from %v to %v; throttled attempt re-dialed", throttledSince, last)
+	}
+}
+
+// The stored spec carries the five capability sets and the user.
+func TestContainerSpec(t *testing.T) {
+	const containerID = "abc123"
+	stored := &specs.Spec{Process: &specs.Process{
+		User:         specs.User{UID: 65532},
+		Capabilities: &specs.LinuxCapabilities{Bounding: []string{"CAP_CHOWN"}},
+	}}
+	value, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers := &fakeContainers{
+		knownID: containerID,
+		spec:    &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: value},
+	}
+	r := newTestResolver(t, startFakeContainerd(t, nil, containers, nil, nil))
+
+	spec, err := r.ContainerSpec(context.Background(), containerID)
+	if err != nil {
+		t.Fatalf("ContainerSpec: %v", err)
+	}
+	if spec.Process.User.UID != 65532 || !slices.Equal(spec.Process.Capabilities.Bounding, []string{"CAP_CHOWN"}) {
+		t.Fatalf("spec process = %+v, want the stored user and capabilities", spec.Process)
+	}
+
+	if _, err := r.ContainerSpec(context.Background(), "no-such-id"); err == nil {
+		t.Fatal("ContainerSpec succeeded for an unknown container")
 	}
 }
 

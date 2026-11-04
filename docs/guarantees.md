@@ -57,7 +57,8 @@ policy keeps host namespaces away from tenant pods
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
-  devices, hooks, and sysctls outside its own measured components.
+  devices, hooks, sysctls, and capabilities beyond its default set outside its
+  own measured components.
 
 All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
@@ -109,10 +110,9 @@ measurement, so exec posture is what a verifier pins. `gke` and `aks` keep the
 ordinary exec path
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
-- **Privilege floor**: the capabilities, `no_new_privs`, namespace, and
-  privileged-mark limits `c8s-runc` enforces on every container of a member pod
-  outside the node's own exempt namespaces; the pod sandbox keeps the
-  privileges the runtime gave it —
+- **Privilege floor**: the `no_new_privs`, namespace, and privileged-mark limits
+  `c8s-runc` enforces on every container of a member pod outside the node's own
+  exempt namespaces; the pod sandbox keeps the privileges the runtime gave it —
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor).
 - **Platform role**: the identity a measured base grants one C8s node-side
   invocation, with the command line and mounts its measured declaration pins —

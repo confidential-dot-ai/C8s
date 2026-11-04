@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -23,6 +24,67 @@ const (
 	// SandboxEnforce denies a container carrying host privilege.
 	SandboxEnforce sandboxMode = "enforce"
 )
+
+// privilegeSubject is what a host-privilege refusal names in the node's log and
+// its audit record. A sandbox is refused before it has a container or an image.
+type privilegeSubject struct {
+	rule                             string
+	namespace, pod, container, image string
+}
+
+func sandboxSubject(rule string, pod *api.PodSandbox) privilegeSubject {
+	return privilegeSubject{rule: rule, namespace: pod.GetNamespace(), pod: pod.GetName()}
+}
+
+func containerSubject(rule string, pod *api.PodSandbox, ctr *api.Container, imageRef string) privilegeSubject {
+	return privilegeSubject{
+		rule:      rule,
+		namespace: pod.GetNamespace(),
+		pod:       pod.GetName(),
+		container: ctr.GetName(),
+		image:     imageRef,
+	}
+}
+
+func (s privilegeSubject) logAttrs() []any {
+	return []any{
+		"rule", s.rule,
+		"namespace", s.namespace,
+		"pod", s.pod,
+		"container", s.container,
+		"image", s.image,
+	}
+}
+
+// denyPrivilege records a refusal the node enforces.
+func (p *plugin) denyPrivilege(subject privilegeSubject, refusal error) {
+	p.logger.Warn("refusing host privilege outside what an allowlist entry declares",
+		append(subject.logAttrs(), "error", refusal)...)
+	p.audit.Log(audit.Event{
+		Action:    "deny",
+		Reason:    subject.rule,
+		Namespace: subject.namespace,
+		Pod:       subject.pod,
+		Container: subject.container,
+		Image:     subject.image,
+		Error:     refusal.Error(),
+	})
+}
+
+// auditPrivilege records host privilege the sandbox policy's audit mode admits.
+func (p *plugin) auditPrivilege(subject privilegeSubject, refusal error) {
+	p.logger.Warn("admitting host privilege outside what an allowlist entry declares",
+		append(subject.logAttrs(), "sandbox", SandboxAudit, "error", refusal)...)
+	p.audit.Log(audit.Event{
+		Action:    "allow",
+		Reason:    subject.rule,
+		Overrides: refusal.Error(),
+		Namespace: subject.namespace,
+		Pod:       subject.pod,
+		Container: subject.container,
+		Image:     subject.image,
+	})
+}
 
 // sandboxNamespaces are the pod-sandbox namespaces whose ABSENCE from the
 // sandbox OCI spec means the pod shares the node's own. containerd removes the
@@ -57,10 +119,10 @@ var kernelFSTypes = []string{"sysfs", "cgroup"}
 // can complete a node-TCB rule from the record rather than from a re-run.
 //
 // What NRI v0.12.3 does NOT carry is listed in
-// docs/allowlist-and-capabilities.md: Linux capabilities, the privileged flag,
-// no_new_privs, masked and readonly paths, and the AppArmor profile are all in
-// the OCI spec containerd generates but absent from api.LinuxContainer, so this
-// policy infers privilege instead of reading it.
+// docs/allowlist-and-capabilities.md: the privileged flag, no_new_privs,
+// masked and readonly paths, and the AppArmor profile are all in the OCI spec
+// containerd generates but absent from api.LinuxContainer, so this policy
+// infers privilege instead of reading it.
 type sandboxObservation struct {
 	// PodNamespaces is the sandbox's OCI namespace types.
 	PodNamespaces []string

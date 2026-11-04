@@ -139,7 +139,9 @@ runtime's default set, less `NET_ADMIN`, `NET_RAW`, `SETUID` and `SETGID`,
 which rewrite the pod's mesh ruleset or take a platform role's reserved
 identity. Every name is declarable and is listed once. An entry declaring a
 capability pins every container's launch: `command`, `args` and `mounts` not
-`any`, and `env` constrained.
+`any`, and `env` constrained. A node holds a container to its default set plus
+what the entry admitting its whole launch declares, and a container on a
+platform role to none.
 
 ## `secrets`
 

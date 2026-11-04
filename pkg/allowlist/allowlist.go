@@ -820,6 +820,24 @@ func compareHostPorts(a, b HostPort) int {
 	return strings.Compare(a.Protocol, b.Protocol)
 }
 
+// DefaultCapabilities are the capabilities a container holds without an entry
+// declaring any: the runtime's default set less NET_RAW, SETUID and SETGID.
+//
+// INVARIANT: disjoint from declarableCapabilities below.
+var DefaultCapabilities = []string{
+	"AUDIT_WRITE",
+	"CHOWN",
+	"DAC_OVERRIDE",
+	"FOWNER",
+	"FSETID",
+	"KILL",
+	"MKNOD",
+	"NET_BIND_SERVICE",
+	"SETFCAP",
+	"SETPCAP",
+	"SYS_CHROOT",
+}
+
 // declarableCapabilities are the Linux capabilities outside the container
 // runtime's default set, less NET_ADMIN, NET_RAW, SETUID and SETGID, spelled as
 // a pod spec spells them: no CAP_ prefix.

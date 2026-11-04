@@ -14,6 +14,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
@@ -139,6 +140,19 @@ func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []a
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
+// grantsCapabilities reports whether the base or the applied allowlist hands r
+// every capability in caps (allowlist.Index.GrantsCapabilities).
+func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.GrantsCapabilities(r, caps) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.GrantsCapabilities(r, caps)
+}
+
 // declaresNodeRoot reports whether the base or applied allowlist has a
 // nodeRootFile rule for digest.
 func (s *policyStore) declaresNodeRoot(digest string) bool {
@@ -195,6 +209,7 @@ func (s *policyStore) rolledBack(version uint64) bool {
 // *Resolver satisfies it.
 type containerdOps interface {
 	Resolve(ctx context.Context, imageRef string) (string, error)
+	ContainerSpec(ctx context.Context, containerID string) (*specs.Spec, error)
 	StopContainer(ctx context.Context, containerID string) error
 	SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
 }
@@ -694,7 +709,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// Only the base keeps tags: the node's own manifests name its carried
 	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
 	// are not mesh members, so they never receive workload traffic.
-	if !pinned && !baseAdmitted && !slices.Contains(p.mesh.policy.ExemptNamespaces, check.Namespace) {
+	if !pinned && !baseAdmitted && !p.mesh.policy.exempts(check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
@@ -776,23 +791,34 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 // A sandbox denial is never downgraded by exemptNamespace: the snapshot says
 // which digests ran in the namespace, and host privilege is a property of the
 // pod spec, not of the image. Only the measured node TCB excuses it, and it
-// excuses no host port (hostports.go).
+// excuses neither a host port nor a capability (hostports.go,
+// capabilities.go).
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
 		mounts = p.observedMounts(pod, ctr)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
-	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
+	env := containerEnv(ctr)
+	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, env, mounts)
+	if verdict == verdictDeny || !sandboxPolicyApplies(cfg, phase) {
 		return verdict, reason
 	}
-	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); v == verdictDeny {
+	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, env, mounts); v == verdictDeny {
 		return v, r
 	}
-	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); refusal != "" {
+	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
+		return verdictDeny, refusal
+	}
+	if refusal := p.capabilityRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
 		return verdictDeny, refusal
 	}
 	return verdict, reason
+}
+
+// sandboxPolicyApplies reports whether the host-privilege rules run: they read
+// the persisted container spec, which only the final phase has.
+func sandboxPolicyApplies(cfg *config, phase launchPhase) bool {
+	return phase == launchFinal && cfg.sandboxObserved()
 }
 
 func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
