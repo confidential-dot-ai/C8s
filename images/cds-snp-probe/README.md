@@ -10,9 +10,10 @@ the existing confos verity root/kernel/IGVM boot chain. Cloud-init is disabled;
 console login, rescue/emergency shells, SSH and the QEMU guest-agent service
 are masked in the image. Do not compose it with `dev`, `ssh`, general-purpose
 or workload profiles. Only the SNP platform and 2-vCPU variant are built.
-The qualification profile explicitly routes kernel boot diagnostics to the
-existing `ttyS0` device. The host can read those diagnostics; console login
-remains disabled. This is a disposable sentinel image, not a CA custody image.
+The qualification kernel fragment enables the ISA serial driver, and the
+profile routes kernel boot diagnostics to `ttyS0`. Serial SysRq input and
+console login remain disabled. The host can read these diagnostics. This is
+a disposable sentinel image, not a CA custody image.
 On failure the runner captures only its owned guest's console and display
 before cleanup, without guest input or memory inspection.
 
@@ -33,7 +34,11 @@ PROBE_BUILD_DIR=/path/to/dedicated/probe-build images/cds-snp-probe/build
 parent/diff, Go version and builder pins. It does **not** produce a measured VM
 image. To finish in a local build container, copy this directory's `snp-probe/`
 profile and the staged `extra/` into that container and run the same pinned
-builder with `--platform snp --smp 2 --memory 4G`, `--profile-dir` and `--extra`.
+builder with `--platform snp --smp 2 --memory 4G`, `--profile-dir`, `--extra`
+and `--kernel-config-fragment` pointing to the staged `kernel.config`.
+Verify the resolved kernel enables `CONFIG_SERIAL_8250_CONSOLE`, disables
+`CONFIG_MAGIC_SYSRQ_SERIAL`, and retains the hardened debugfs setting. A console
+parameter alone is insufficient: the baseline kernel disables the UART driver.
 Record the firmware digest, final `manifest.json`, all artifact digests and
 the build log. A failed build must not emit a qualification result.
 

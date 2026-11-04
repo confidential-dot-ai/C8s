@@ -22,10 +22,12 @@ git rev-parse HEAD > "$PROBE_BUILD_DIR/source-parent.txt"
 git diff --binary HEAD > "$PROBE_BUILD_DIR/source.diff"
 go version > "$PROBE_BUILD_DIR/go-version.txt"
 cp "$SOURCE/.github/build-pins.json" "$PROBE_BUILD_DIR/build-pins.json"
+cp "$IMAGE_DIR/kernel.config" "$PROBE_BUILD_DIR/kernel.config"
 if [ "${1:-}" = --stage-only ]; then
     exit 0
 fi
 test "$#" -eq 0
 cd "$CONFOS_DIR"
 bin/confos build cds-snp-probe --platform snp --smp 2 --memory 4G \
+    --kernel-config-fragment "$PROBE_BUILD_DIR/kernel.config" \
     --profile-dir "$IMAGE_DIR/snp-probe" --extra "$PROBE_BUILD_DIR/extra"
