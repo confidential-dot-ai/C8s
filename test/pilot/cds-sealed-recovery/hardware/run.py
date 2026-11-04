@@ -112,6 +112,7 @@ class Run:
         code, _ = self.kube.call("GET", path, expected=(200, 404))
         need(code == 404, "refusing existing resource: " + path)
         row = {"item": item, "path": path, "uid": None}
+        self.state["cleanup_verified"] = False
         self.state["resources"].append(row)
         self.save()  # creation intent survives a lost POST response
         _, created = self.kube.call("POST", path.rsplit("/", 1)[0], item, expected=(201,))
@@ -166,6 +167,7 @@ class Run:
                         self.remove(row)
                     except Exception as error:
                         failures.append(str(error))
+        self.state["cleanup_verified"] = not failures
         self.event("cleanup", complete=not failures, errors=failures)
         need(not failures, "cleanup incomplete; retain journal and run cleanup again")
 
@@ -182,7 +184,7 @@ class Run:
             observed[name] = {"uid": node["metadata"]["uid"], "boot_id": status["nodeInfo"]["bootID"], "conditions": conditions}
         _, live = self.kube.call("GET", "/apis/kubevirt.io/v1/virtualmachineinstances")
         vmis = {v["metadata"]["uid"]: {"namespace": v["metadata"]["namespace"], "name": v["metadata"]["name"],
-            "phase": v["status"].get("phase"), "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in v["status"].get("conditions", []))}
+            "phase": v.get("status", {}).get("phase"), "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in v.get("status", {}).get("conditions", []))}
             for v in live["items"]}
         if capture:
             self.state["nodes_before"] = observed
@@ -206,7 +208,7 @@ class Run:
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             code, vmi = self.kube.call("GET", path, expected=(200, 404))
-            if code == 200 and any(x["type"] == "Ready" and x["status"] == "True" for x in vmi["status"].get("conditions", [])):
+            if code == 200 and any(x["type"] == "Ready" and x["status"] == "True" for x in vmi.get("status", {}).get("conditions", [])):
                 need(any(o["uid"] == row["uid"] for o in vmi["metadata"].get("ownerReferences", [])), "VMI has unexpected owner")
                 need(vmi["status"].get("nodeName") == vm["spec"]["template"]["spec"]["nodeSelector"]["kubernetes.io/hostname"], "wrong worker placement")
                 self.event("vm-ready", phase=phase, vmi_uid=vmi["metadata"]["uid"], vm_uid=row["uid"], node=vmi["status"]["nodeName"])
@@ -248,7 +250,7 @@ class Run:
         measurement, hashes = image_inputs(self.args.image)
         need(not self.state["resources"], "existing journal: run cleanup, then choose a new directory")
         self.state["artifact_hashes"], self.state["measurement"] = hashes, measurement
-        self.state["tool_hashes"] = {"probe": digest(self.args.probe), "renderer": digest(self.args.renderer)}
+        self.state["tool_hashes"] = {"probe": digest(self.args.probe), "renderer": digest(self.args.renderer), "runner": digest(__file__)}
         _, storage = self.kube.call("GET", "/apis/storage.k8s.io/v1/storageclasses/local-path")
         need(storage.get("reclaimPolicy") == "Delete" and storage.get("volumeBindingMode") == "WaitForFirstConsumer", "owned disk cleanup/placement contract unavailable")
         baseline = self.health(capture=True)
@@ -303,6 +305,15 @@ class Run:
                 receipt = self.probe(vm, phase, operation, expected, measurement)
                 receipts.append(receipt)
                 self.stop_forward()
+                if phase == "seal":
+                    control = self.probe(vm, "live-control", "open", "opened", measurement)
+                    self.stop_forward()
+                    need(control["guest_report_id_sha256"] == receipt["guest_report_id_sha256"] and
+                         control["chip_sha256"] == receipt["chip_sha256"] and
+                         control["reply"]["result"]["capsule"] == receipt["reply"]["result"]["capsule"] and
+                         control["request"]["nonce"] != receipt["request"]["nonce"], "live-guest identity control failed")
+                    self.state["live_guest_control_passed"] = True
+                    self.save()
                 self.remove(row)
                 self.wait_absent(VMI + "/" + run)
             self.cleanup()  # no concurrent guests; remove first worker's disks
@@ -346,7 +357,16 @@ def main():
         raise
     finally:
         signal.alarm(0)
-        run.cleanup()
+        try:
+            run.cleanup()
+        finally:
+            if "nodes_before" in run.state:
+                try:
+                    run.health()
+                    run.event("post-cleanup-observations", unchanged=True)
+                except Exception as error:
+                    run.event("post-cleanup-observations", unchanged=False, reason=str(error))
+                    raise
 
 
 if __name__ == "__main__":

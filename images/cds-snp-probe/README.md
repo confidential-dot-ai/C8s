@@ -79,8 +79,10 @@ overwrite. Neither plaintext sentinel nor derived key leaves the probe.
 Compare the **verified chip hashes**, not only Kubernetes node names: same-node
 placement alone does not prove same-socket execution. The seal and same-chip
 receipts must have identical capsule/digest and chip hash, fresh nonces,
-distinct firmware-signed guest report IDs and distinct VMI UIDs; the rejection receipt must have a different chip hash and
-the exact original capsule in its request.
+distinct firmware-signed guest report IDs and distinct VMI UIDs; the rejection
+receipt must have a different chip hash and the exact original capsule in its
+request. A control request before destruction must keep the live guest's
+report ID while changing the request nonce.
 
 ## Isolation and cleanup
 
@@ -94,8 +96,8 @@ go build -o "$PROBE_BUILD_DIR/render" \
   "$C8S_SOURCE/test/pilot/cds-sealed-recovery/hardware/render.go"
 ```
 
-`hardware/run.py` runs seal → destroy/recreate → same-chip open → cleanup →
-different-chip rejection → cleanup, sequentially. It uses the existing Cloud
+`hardware/run.py` runs seal → live-guest control → destroy/recreate → same-chip
+open → cleanup → different-chip rejection → cleanup, sequentially. It uses the existing Cloud
 rehearsal HTTP/kubeconfig helper and records every creation intent and object
 UID before advancing. Public disk/IGVM files travel through an owned temporary
 population Pod into new claims; hashes must match before the Pod is removed
