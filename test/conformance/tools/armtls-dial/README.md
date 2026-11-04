@@ -8,7 +8,7 @@ agent: it dials a c8s armTLS mesh inbound proxy, or with `--mesh` a member
 pod's application address, over TLS 1.3 presenting the client certificate
 the scenario chose, sends one HTTP GET and prints a JSON report.
 
-The scenarios test the inbound proxy's verification of *its peer*, so the
+The scenarios test the endpoint's verification of *its peer*, so the
 tool **never verifies the server's certificate**. It is not a client anyone
 should trust; it exists to present certificates no well-behaved c8s client
 can: expired, not yet valid, not self-issued, altered after signing, or
@@ -45,8 +45,8 @@ Exactly one of `--cert/--key`, `--self-signed` or `--foreign-ca` is required.
 mints a certificate with no evidence extension. Those two and the flags
 shaping a minted certificate are refused without `--self-signed`. The
 `--foreign-ca` leaf carries both mesh key usages and a well-formed
-workload-instance extension, so a verifier can refuse it only for its chain. `--rewrite-not-after` applies
-to either source. `--write-cert/--write-key` take no positional arguments:
+workload-instance extension, so a verifier can refuse it only for its chain.
+`--rewrite-not-after` applies to any source. `--write-cert/--write-key` take no positional arguments:
 they mint the certificate while its evidence can still be obtained and leave
 it for a later dial with `--cert/--key`.
 

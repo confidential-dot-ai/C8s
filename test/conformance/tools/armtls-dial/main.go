@@ -43,8 +43,8 @@ Flags:
 `
 )
 
-// selfSignedOnly are the flags that shape a minted certificate; with --cert
-// they would silently do nothing, so they are refused.
+// selfSignedOnly are the flags that shape a minted certificate; with any
+// other source they would silently do nothing, so they are refused.
 var selfSignedOnly = []string{"attestation-url", "platform", "not-before", "not-after", "issuer-differs", "write-cert", "write-key"}
 
 func main() {

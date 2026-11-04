@@ -29,6 +29,8 @@ const (
 	// peerAuthFailed is what a pod's endpoint logs for a refused handshake
 	// (internal/cmds/armtlsmesh/podendpoint.go, handleInbound).
 	peerAuthFailed = "peer authentication failed"
+	// chainRefusal is how the chain path names a leaf that does not chain.
+	chainRefusal = "mesh peer chain to a trusted mesh CA"
 	// endpointLogWait bounds the wait for that line, which the endpoint may
 	// write after the dialer has already read the alert.
 	endpointLogWait = 10 * time.Second
@@ -37,12 +39,13 @@ const (
 // peerVerifyState is the certificate source each dialing pod presents, as
 // armtls-dial flags, and what its last dial reported.
 type peerVerifyState struct {
-	flags map[string][]string
+	flags map[*pod][]string
 	last  *dialReport
-	// refusalsBefore counts the endpoint's refusal lines before the last
-	// dial, so only a refusal of that dial counts.
+	// refusalsBefore counts the endpoint's chain refusals of the dialer
+	// before the last dial, so only a refusal of that dial counts.
 	refusalsBefore int
 	dest           *pod
+	srcIP          string
 }
 
 // dialReport mirrors armtls-dial's report (tools/armtls-dial/dial.go).
@@ -75,9 +78,9 @@ func (w *world) setPeerFlags(name string, flags ...string) error {
 		return err
 	}
 	if w.peerVerify.flags == nil {
-		w.peerVerify.flags = map[string][]string{}
+		w.peerVerify.flags = map[*pod][]string{}
 	}
-	w.peerVerify.flags[p.name] = flags
+	w.peerVerify.flags[p] = flags
 	return nil
 }
 
@@ -105,7 +108,8 @@ func holdsCopiedLeaf(ctx context.Context, name, owner string) error {
 		return err
 	}
 	if key == nil {
-		return skipf("the key of a pod's leaf is not readable here (pod_cert_file)")
+		// A backend that cannot read the key answers UNSUPPORTED, a skip.
+		return fmt.Errorf("%q holds a leaf but no key beside it", owner)
 	}
 	script := fmt.Sprintf("cat > /tmp/peer.crt <<'PEM'\n%s\nPEM\ncat > /tmp/peer.key <<'PEM'\n%s\nPEM",
 		strings.TrimSpace(string(crt)), strings.TrimSpace(string(key)))
@@ -140,7 +144,7 @@ func connectsAsMeshPeer(ctx context.Context, src, dest string) error {
 	if err != nil {
 		return err
 	}
-	flags, ok := w.peerVerify.flags[p.name]
+	flags, ok := w.peerFlags(p)
 	if !ok {
 		return fmt.Errorf("the scenario has not said which certificate %q holds", src)
 	}
@@ -151,10 +155,14 @@ func connectsAsMeshPeer(ctx context.Context, src, dest string) error {
 	if err != nil {
 		return err
 	}
-	if w.peerVerify.refusalsBefore, err = endpointRefusals(d); err != nil {
+	srcIP, err := w.address(p)
+	if err != nil {
 		return err
 	}
-	w.peerVerify.dest = d
+	if w.peerVerify.refusalsBefore, err = endpointRefusals(d, srcIP); err != nil {
+		return err
+	}
+	w.peerVerify.dest, w.peerVerify.srcIP = d, srcIP
 	args := append(append([]string{"armtls-dial", "--mesh"}, flags...), net.JoinHostPort(ip, strconv.Itoa(d.hello)))
 	res, err := w.exec(p, strings.Join(args, " "))
 	if err != nil {
@@ -172,13 +180,35 @@ func connectsAsMeshPeer(ctx context.Context, src, dest string) error {
 	return nil
 }
 
-// endpointRefusals counts the refusal lines in the log of the pod's endpoint.
-func endpointRefusals(p *pod) (int, error) {
+// peerFlags is the certificate choice made for p.
+func (w *world) peerFlags(p *pod) ([]string, bool) {
+	f, ok := w.peerVerify.flags[p]
+	return f, ok
+}
+
+// chainRefusals counts the endpoint's log lines refusing a peer at srcIP
+// because its leaf does not chain to a trusted mesh CA
+// (pkg/armtls/tls.go, chainVerifyPeerCallback), so a refusal for another
+// reason or of another peer does not count.
+func chainRefusals(log, srcIP string) int {
+	n := 0
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, peerAuthFailed) && strings.Contains(line, chainRefusal) &&
+			(strings.Contains(line, "src="+srcIP+":") || strings.Contains(line, `"src":"`+srcIP+`:`)) {
+			n++
+		}
+	}
+	return n
+}
+
+// endpointRefusals counts the chain refusals of a peer at srcIP in the log
+// of the pod's endpoint.
+func endpointRefusals(p *pod, srcIP string) (int, error) {
 	out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", meshEndpointContainer)
 	if err != nil {
 		return 0, err
 	}
-	return strings.Count(out, peerAuthFailed), nil
+	return chainRefusals(out, srcIP), nil
 }
 
 func endpointRefusesPeer(ctx context.Context, name string) error {
@@ -194,14 +224,14 @@ func endpointRefusesPeer(ctx context.Context, name string) error {
 		return err
 	}
 	ok, err := poll(endpointLogWait, func() (bool, error) {
-		n, err := endpointRefusals(d)
+		n, err := endpointRefusals(d, w.peerVerify.srcIP)
 		return n > w.peerVerify.refusalsBefore, err
 	})
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("the dialer saw a tls alert, but the mesh endpoint of " + strconv.Quote(name) + " logged no " + strconv.Quote(peerAuthFailed) + " within " + endpointLogWait.String())
+		return errors.New("the dialer saw a tls alert, but the mesh endpoint of " + strconv.Quote(name) + " logged no chain refusal of " + w.peerVerify.srcIP + " within " + endpointLogWait.String())
 	}
 	return nil
 }
