@@ -162,7 +162,7 @@ func (j *Journal) Policies() []string {
 	if err == nil {
 		j.reported = ""
 		if list == nil && !j.absent && !j.present {
-			// ReadJournal reads a missing journal as an empty one.
+			// ReadRuntimeExtensions reads a missing journal as an empty one.
 			_, statErr := os.Stat(j.path)
 			j.present = statErr == nil
 			if errors.Is(statErr, fs.ErrNotExist) {

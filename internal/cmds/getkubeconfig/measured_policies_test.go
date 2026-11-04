@@ -199,15 +199,17 @@ func TestRunAttestURLSharesReleaseWait(t *testing.T) {
 }
 
 // A failed pre-dial is reported once: in the gate's error when the gate
-// lacks the list, else in the release step's.
+// fails, else in the release step's.
 func TestRunReportsFailedPreDialOnce(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	for _, tc := range []struct {
-		name     string
-		measured []string
-		wantErr  string
+		name       string
+		measured   []string
+		attestDown bool
+		wantErr    string
 	}{
 		{name: "gate lacks the list", measured: []string{p}, wantErr: "attestation gate"},
+		{name: "gate fails for another reason", attestDown: true, wantErr: "attestation gate"},
 		{name: "gate passes", wantErr: "credential release"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,7 +218,11 @@ func TestRunReportsFailedPreDialOnce(t *testing.T) {
 			t.Cleanup(func() { slog.SetDefault(orig) })
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 
-			env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
+			attestURL := newAttestStub(t).URL() + "/attest"
+			if tc.attestDown {
+				attestURL = failingAttest(t, http.StatusBadGateway).URL + "/attest"
+			}
+			env := newTestEnv(t, attestURL, http.StatusOK, goodRelease)
 			res := verifiedResultFor(env.operatorPubPEM)
 			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.operatorPubPEM), tc.measured)
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
