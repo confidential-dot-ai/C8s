@@ -33,7 +33,7 @@ Layout:
   AddOn so `kubectl exec`, `attach`, `port-forward` and `debug` (ephemeral
   containers) are denied in admission for everyone, the operator included, 
   and routes every ordinary pod through the measured
-  runtime wrapper, which denies `runc exec` outright — see
+  runtime wrapper, which denies `runc exec` but for kube-apiserver's probes — see
   [Post-start exec](#post-start-exec).
   `C8S_DEV=1` skips that AddOn (with the serial autologin), at a different
   measurement.
@@ -525,15 +525,16 @@ in a running container, nor a direct call to containerd. The locked image
 points the containerd runc handler's `BinaryName` at `/usr/local/bin/c8s-runc`
 (`mkosi.extra/.../config-v3.toml.d/10-c8s-runc.toml`), a measured wrapper that
 denies `runc exec` and passes every other verb to RKE2's runc. All of those
-paths end in that one call, so all of them fail.
+paths end in that one call, so all of them fail, except RKE2's own probes of
+kube-apiserver.
 
-The consequences for anything running on such a node: an exec probe never
+The consequences for anything else running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
 probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
-probes and never reports Ready. See
+probes, which its measured allowlist entry grants. See
 [docs/node-exec-mode.md](../../docs/node-exec-mode.md) for the wrapper, the build
 gate that proves no handler escapes it, what to do in a new component, and
-what the kube-apiserver's denied probes mean.
+which kube-apiserver probes it allows and why.
 
 ## Refreshing measurements
 

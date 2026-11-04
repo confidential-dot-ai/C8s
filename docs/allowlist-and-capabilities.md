@@ -234,6 +234,9 @@ argv and the exact mount table that invocation is given, so a pod's own
 container running the same invocation with mounts of its choosing holds no role
 ([secrets.md](secrets.md)). What this policy cannot see, the runtime wrapper
 reads from the container's bundle ([node-exec-mode.md](node-exec-mode.md)).
+A base entry may also list `execs`, the exact commands the wrapper lets
+through into a running container of its bytes, YAML-only for the same reason
+([node-exec-mode.md](node-exec-mode.md#granted-execs)).
 
 ## Writing policy
 
