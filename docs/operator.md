@@ -266,7 +266,9 @@ serves; a mesh leaf or CA outside its validity window is a credential failure,
 503 `binding_unavailable`. In mode `acme` it binds the leaf
 `--serving-cert-file` names and refuses with 503 `serving_leaf_rejected` while
 that leaf is outside its validity window. Either mode refuses with
-`serving_leaf_rejected` while the served chain has expired.
+`serving_leaf_rejected` while the served chain has expired. In mode `cds`, a
+`tls.crt` chain block that does not parse also gets 503 `binding_unavailable`
+from attest-lb; `/readyz` and attest-pq are unaffected.
 
 ACME issuance covers the names the sidecar is configured with — `router.san` on
 an installed cluster, the launch file's `hostnames` on a baked node — and never

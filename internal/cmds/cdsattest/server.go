@@ -780,8 +780,8 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 	// until renewal recovers, and renewal monitoring alerts on them.
 	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
 	if s.cfg.FrontDoorMode != types.FrontDoorModeACME {
-		// nginx refuses a chain with a block it cannot parse, so this front
-		// door is not serving tls.crt.
+		// nginx refuses to load a tls.crt with a block it cannot parse and
+		// keeps serving its previous one, so this leaf cannot be bound.
 		if identity.chainErr != nil {
 			s.log.Warn("attest-lb binding unavailable", "error", identity.chainErr)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,

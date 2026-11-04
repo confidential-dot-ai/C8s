@@ -628,9 +628,9 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 }
 
 // A malformed block after the leaf in tls.crt only matters to a cds front
-// door's attest-lb: the mesh identity still loads, so attest-pq and /readyz
-// keep working in every mode.
-func TestMeshIdentityLoadsWithMalformedChainBlock(t *testing.T) {
+// door's attest-lb: /readyz and attest-pq keep working, and attest-lb answers
+// binding_unavailable rather than binding a leaf nginx will not load.
+func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	f, err := os.OpenFile(identity.certFile, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -640,14 +640,32 @@ func TestMeshIdentityLoadsWithMalformedChainBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
-	got, err := loadMeshIdentity(identity.certFile, identity.keyFile, identity.caFile)
+	ts, _ := newAttestLBServer(t, identity)
+
+	resp, err := http.Get(ts.URL + "/readyz")
 	if err != nil {
-		t.Fatalf("loadMeshIdentity = %v, want the identity with chainErr set", err)
+		t.Fatal(err)
 	}
-	if got.chainErr == nil {
-		t.Fatal("chainErr = nil, want the parse error")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want 200", resp.StatusCode)
 	}
-	if !got.leaf.NotAfter.Equal(got.servedUntil) && !got.ca.NotAfter.Equal(got.servedUntil) {
-		t.Fatalf("servedUntil = %v, want the leaf's or CA's NotAfter", got.servedUntil)
+	ck, err := overenc.GenerateClientKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := fetchBundle(t, ts.URL, ck, bytes.Repeat([]byte{0x5a}, 32)); b.Version != types.BindingAttestPQ {
+		t.Fatalf("attest-pq bundle version = %q, want %q", b.Version, types.BindingAttestPQ)
+	}
+	resp, err = http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(bytes.Repeat([]byte{0x5a}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		resp.Body.Close()
+		t.Fatalf("GET attest-lb = %d, want 503", resp.StatusCode)
+	}
+	if e := decodeErr(t, resp); e.Error != types.ErrorCodeBindingUnavailable {
+		t.Fatalf("attest-lb error code = %q, want %q", e.Error, types.ErrorCodeBindingUnavailable)
 	}
 }
