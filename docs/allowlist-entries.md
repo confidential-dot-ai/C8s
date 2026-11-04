@@ -130,6 +130,13 @@ logs `node-root provenance unavailable` at startup. Lint allows a
 `nodeRootFile` rule on a pinned search path, where a `data` or `host` rule is
 an error.
 
+Mixed versions: a rule's `verityDigest` field is reserved for fs-verity and
+refused today. An enforcer predating node-root provenance decodes a served
+document leniently and ignores the field, so on such a node an fs-verity rollout
+keyed on `verityDigest` degrades to a plain `host` rule. An upgraded node keeps
+working with an older CDS: CDS decodes the node's inventory leniently and drops
+the provenance, which none of its rules asks for.
+
 ## `capabilities`
 
 The capabilities a container may hold beyond the node's default set, named as a
