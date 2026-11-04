@@ -144,6 +144,7 @@ The [document rules](#document-rules) apply.
 | `schemaVersion` | yes | `c8s-worker/v1`. |
 | `cds.address`, `cds.measurements` | yes | As in a node document above. |
 | `cds.pinFloor` | no | The lowest cluster version a worker takes a CDS pin decree at. |
+| `tlsSAN` | yes | The DNS name of the router's front-door certificate, as in a server document above. The CDS configuration `cds.measurements` binds must let a leaf carry it. |
 | `router.*` | no | As in a server document above. |
 | `kubernetes.apiServer` | yes | The API server's `<host>:<port>`, the host a lowercase DNS name or a unicast IPv4 address (private ones included), the port 1..65535 without leading zeros. No scheme, path, user or brackets. |
 | `kubernetes.caCertificate` | yes | One PEM `CERTIFICATE` block without headers, holding a CA certificate, followed by nothing but whitespace. |
@@ -193,16 +194,17 @@ pins another CDS, `--nodes` already admits the worker image with this
 document, or the set is one a `node-images` decree refuses. Otherwise the
 command prints, to standard error, the API server, the CA's subject and
 SHA-256 fingerprint, the pod and Service ranges, the cluster DNS address, the
-CDS address and pin floor, the router hostnames, and the name of every node
-image it would certify. It signs only once you confirm them on standard
-input: any answer but `y` or `yes`, or none, signs nothing. Every worker
-launched with this document joins with these facts. Workers launched with the
-same document need no new decree; a changed document, such as one naming a
-new CA, is admitted beside the old one by a decree on the set in force.
+CDS address and pin floor, the router's TLS SAN and hostnames, and the name of
+every node image it would certify. It signs only once you confirm them on
+standard input: any answer but `y` or `yes`, or none, signs nothing. Every
+worker launched with this document joins with these facts. Workers launched
+with the same document need no new decree; a changed document, such as one
+naming a new CA, is admitted beside the old one by a decree on the set in
+force.
 
 ### Staging a worker document
 
-At boot, `c8s worker stage`, in the node binary, reads the launch file the
+At boot, `c8s worker stage` reads the launch file the
 initrd staged at `/run/confai/operator-pubkey` (`--document`) once. It
 refuses, touching nothing, on an image without `/usr/lib/c8s/worker-image`.
 It confirms through the node-local attestation API that a fresh, verified
@@ -230,14 +232,17 @@ refused. It writes:
 |---|---|
 | `/run/c8s-node/cds.json` | The `cds.measurements` pin. |
 | `/run/c8s-node/router/*` | The router settings `router.*` gives, as on a server. |
-| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the CDS port, `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges, and its static-pod pins filled with this worker's values. |
-| `/etc/kubernetes/bootstrap-kubelet.conf` | Mode 0600: `https://` and `kubernetes.apiServer`, verified against `kubernetes.caCertificate` alone, with the bootstrap token. |
-| `/etc/kubernetes/kubelet-config.yaml` | The kubelet's configuration: `kubernetes.clusterDNS` for the cluster domain `cluster.local`, the static pods' directory, no anonymous access or read-only port, and debugging, log, profiling and debug-flag handlers off, so the kubelet serves no exec, attach, port-forward, logs or checkpoint. What it still serves (`/pods`, `/stats`, `/metrics`) takes bearer tokens the API server reviews and authorizes. |
-| `/etc/kubernetes/manifests/*` | The rendered static pods. |
-| `/etc/kubernetes/kubelet.env` | `NODE_NAME`. |
+| `/run/c8s-node/operator-pubkey` | The operator keys of the CDS configuration `cds.measurements` binds, which the router verifies route manifests under. |
+| `/run/c8s-node/tls-san` | `tlsSAN`. |
+| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the CDS port, `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges, `clusterDNS` as its resolver, and its static-pod pins filled with this worker's values. Stage loads it as the NRI plugin will, and refuses one the plugin would refuse or that does not set `worker: true`. |
+| `/run/nri-image-policy/node-ip` | The host's primary IPv4, the address the NRI inventory advertises. |
+| `/run/kubernetes/bootstrap-kubelet.conf` | Mode 0600: `https://` and `kubernetes.apiServer`, verified against `kubernetes.caCertificate` alone, with the bootstrap token. |
+| `/run/kubernetes/kubelet-config.yaml` | The kubelet's configuration: `kubernetes.clusterDNS` for the cluster domain `cluster.local`, the static pods' directory, no anonymous access or read-only port, and debugging, log, profiling and debug-flag handlers off, so the kubelet serves no exec, attach, port-forward, logs or checkpoint. What it still serves (`/pods`, `/stats`, `/metrics`) takes bearer tokens the API server reviews and authorizes. |
+| `/run/kubernetes/manifests/*` | The rendered static pods. |
+| `/run/kubernetes/kubelet.env` | `NODE_NAME`, and `NODE_IP`, the address in `node-ip`. |
 
 Every output is removed first, and again if a step fails, so a document the
 launch did not bind, one that breaks the rules, or a bad token leaves none.
-`/etc/kubernetes` is removed whole. A rerun in the same boot with the same
+`/run/kubernetes` is removed whole. A rerun in the same boot with the same
 document and token writes the same bytes; under a running kubelet it
 restarts the static pods.

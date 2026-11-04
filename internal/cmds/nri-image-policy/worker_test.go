@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -54,6 +55,8 @@ func TestWorkerConfigValidation(t *testing.T) {
 		{"an audited sandbox", func(c *config) { c.Policy.Sandbox = SandboxAudit }, "policy.sandbox"},
 		{"containers without an image annotation", func(c *config) { c.Policy.DenyMissingAnnotation = false }, "deny_missing_annotation"},
 		{"a mesh-exempt namespace", func(c *config) { c.Mesh.ExemptNamespaces = []string{"kube-system"} }, "mesh.exempt_namespaces"},
+		{"a mesh exit", func(c *config) { c.Mesh.Exits = []netip.AddrPort{netip.MustParseAddrPort("10.43.0.11:8080")} }, "mesh.exits"},
+		{"a credential attestation port", func(c *config) { c.Mesh.CredentialAttestationPort = 8400 }, "credential_attestation_port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := parseConfig([]byte(workerDocument))
@@ -67,6 +70,31 @@ func TestWorkerConfigValidation(t *testing.T) {
 				t.Fatalf("Validate = %v, want a worker accepted", err)
 			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 				t.Fatalf("Validate = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A worker's config loads as the plugin loads it; a key the plugin does not
+// read, or a config not marked as a worker, is refused rather than run as a
+// server's.
+func TestCheckWorkerConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, want string
+	}{
+		{"a worker", workerDocument, ""},
+		{"a misspelt worker key", strings.Replace(workerDocument, "\nworker: true\n", "\nworkers: true\n", 1), "field workers not found"},
+		{"no worker key", strings.Replace(workerDocument, "\nworker: true\n", "\n", 1), "worker: true"},
+		{"a config marked as no worker", strings.Replace(workerDocument, "\nworker: true\n", "\nworker: false\n", 1), "worker: true"},
+		{"a refused worker", strings.Replace(workerDocument, "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", 1), "worker requires no mesh.exempt_namespaces"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckWorkerConfig([]byte(tc.config))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("CheckWorkerConfig = %v, want a worker accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("CheckWorkerConfig = %v, want a refusal naming %q", err, tc.want)
 			}
 		})
 	}

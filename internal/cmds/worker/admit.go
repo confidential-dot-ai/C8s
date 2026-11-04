@@ -203,6 +203,7 @@ func (a Admission) Report(w io.Writer) error {
 	fact("cluster DNS", k.ClusterDNS)
 	fact("CDS address", a.document.CDS.Address)
 	fact("CDS pin floor", a.document.CDS.PinFloor)
+	fact("router TLS SAN", a.document.TLSSAN)
 	fact("router hostnames", hostnames)
 	set, err := refvalues.Parse(a.Nodes)
 	if err != nil {

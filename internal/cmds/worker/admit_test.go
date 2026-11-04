@@ -135,6 +135,7 @@ func TestAdmitPrintsTheFactsTheDocumentCarries(t *testing.T) {
 		"cluster DNS       10.53.0.10\n",
 		"CDS address       cds.acme.example:8443\n",
 		"CDS pin floor     1\n",
+		"router TLS SAN    c8s.acme.example\n",
 		"router hostnames  api.acme.example\n",
 		"Signing certifies these node images:\n  server\n",
 		"  worker-" + hex.EncodeToString(independentDigest(f.family, f.document)[:6]) + "  bound to this document, launch_file_digest " + hex.EncodeToString(independentDigest(f.family, f.document)) + "\n",

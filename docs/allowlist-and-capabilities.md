@@ -222,7 +222,11 @@ worker's measured config (`worker: true`) narrows both cases:
 
 A worker's config also names no mesh-exempt namespace, so the mesh protects
 every API pod with its own network namespace wherever the control plane puts
-it; a static pod is the node's own and is never a member, on any node.
+it; a static pod is the node's own and is never a member, on any node. It
+names no mesh exits, since a member's connections to one leave the mesh in
+the clear for endpoints the control plane chooses, and no credential
+attestation port: its credential clients verify through the node's
+attestation socket.
 
 An open entry admits its image, and the pod is sandboxed like any other, the
 host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium

@@ -314,3 +314,49 @@ func TestPrepareRefusesAnOutputItDoesNotClear(t *testing.T) {
 		}
 	}
 }
+
+// A caller's cluster DNS address completes the baked mesh policy, which may
+// declare that address but no other.
+func TestPrepareBindsTheResolverTheBakedPolicyAllows(t *testing.T) {
+	const bakedResolver = `  resolver: "10.53.0.10"` + "\n"
+	if !strings.Contains(goldenFloor, bakedResolver) {
+		t.Fatal("goldenFloor declares no resolver to replace")
+	}
+	for _, tc := range []struct {
+		name, baked, resolver, want string
+	}{
+		{"the baked address", bakedResolver, "10.53.0.10", ""},
+		{"none baked", "", "10.200.0.10", ""},
+		{"another address", bakedResolver, "10.200.0.10", "contradicts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := prepareRoot(t)
+			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(goldenFloor, bakedResolver, tc.baked, 1)))
+			err := Prepare(root, FloorInputs{CDS: document(t, launchconfig.Agent).CDS, Resolver: tc.resolver, Placeholders: nodeValues(launchconfig.Node{Name: "n1"})})
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("got %v, want %q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var staged struct {
+				Mesh struct {
+					Resolver string `yaml:"resolver"`
+				} `yaml:"mesh"`
+			}
+			if err := yaml.Unmarshal(data, &staged); err != nil {
+				t.Fatal(err)
+			}
+			if staged.Mesh.Resolver != tc.resolver {
+				t.Fatalf("resolver = %q, want %q", staged.Mesh.Resolver, tc.resolver)
+			}
+		})
+	}
+}

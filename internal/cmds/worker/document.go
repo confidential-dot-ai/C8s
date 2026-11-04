@@ -11,6 +11,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 )
 
@@ -22,6 +23,9 @@ type Document struct {
 	// CDS is the block node launch documents carry: where the cluster's CDS
 	// listens and the pin binding the configuration it runs on.
 	CDS launchconfig.CDS `yaml:"cds"`
+	// TLSSAN is the DNS name of the router's front-door certificate, which
+	// the CDS signs onto its leaf, as on a server.
+	TLSSAN string `yaml:"tlsSAN"`
 	// Router is the block server launch documents carry; nil when the
 	// document has none.
 	Router     *launchconfig.Router `yaml:"router,omitempty"`
@@ -65,9 +69,19 @@ func (d Document) validate() error {
 	if err != nil {
 		return err
 	}
-	nodeSubnets, err := pinnedNodeSubnets(launchFile)
+	config, err := cdsconfig.Parse(launchFile)
+	if err != nil {
+		return fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
+	}
+	nodeSubnets, err := pinnedNodeSubnets(config)
 	if err != nil {
 		return err
+	}
+	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
+		return fmt.Errorf("tlsSAN %w", err)
+	}
+	if !(issuer.CSRPolicy{DNSSANPatterns: config.DNSSANPatterns}).AdmitsDNSName(d.TLSSAN) {
+		return fmt.Errorf("tlsSAN %q is not a DNS name the pinned CDS configuration lets a leaf carry", d.TLSSAN)
 	}
 	if d.Router != nil {
 		if err := d.Router.Validate(); err != nil {
@@ -77,13 +91,23 @@ func (d Document) validate() error {
 	return d.Kubernetes.validate(nodeSubnets)
 }
 
-// pinnedNodeSubnets are the subnets the pinned CDS configuration may dial a
-// node in, read by the CDS's own parser.
-func pinnedNodeSubnets(launchFile []byte) ([]netip.Prefix, error) {
+// operatorKeys are the pinned CDS configuration's operator keys, PEM-encoded:
+// the keys the router verifies route manifests under.
+func (d Document) operatorKeys() ([]byte, error) {
+	launchFile, err := d.CDS.LaunchFile()
+	if err != nil {
+		return nil, err
+	}
 	config, err := cdsconfig.Parse(launchFile)
 	if err != nil {
 		return nil, fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
 	}
+	return config.OperatorKeys.PEM(), nil
+}
+
+// pinnedNodeSubnets are the subnets the pinned CDS configuration may dial a
+// node in.
+func pinnedNodeSubnets(config *cdsconfig.Config) ([]netip.Prefix, error) {
 	subnets := make([]netip.Prefix, 0, len(config.NodeCIDRs))
 	for _, subnet := range config.NodeCIDRs {
 		prefix, err := subnetPrefix(subnet)

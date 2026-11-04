@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -19,6 +20,9 @@ import (
 // stagedLaunchFile is where the measured initrd stages the launch file,
 // read-only, once its digest matched the launch's init data.
 const stagedLaunchFile = "/run/confai/operator-pubkey"
+
+// primaryIPv4 is a package var so tests can fake the host's routes.
+var primaryIPv4 = launchconfig.PrimaryIPv4
 
 // workerImageMarker is the file a worker image bakes; no other image runs
 // stage.
@@ -33,9 +37,10 @@ func NewStageCmd() *cobra.Command {
 		Long: `Read the worker document the initrd staged, confirm through the node-local
 attestation API that this worker's launch binding commits the document,
 then publish the CDS pin and router settings under /run/c8s-node, write
-the NRI floor with the document's CDS and pod and Service ranges, and write
+the NRI floor with the document's CDS, pod and Service ranges and cluster
+DNS, publish the node's primary IPv4 for the NRI inventory, and write
 the kubelet's configuration, bootstrap kubeconfig and static pods under
-/etc/kubernetes. The node name is derived from this boot's ID. Every output
+/run/kubernetes. The node name is derived from this boot's ID. Every output
 is removed first, and again if any step fails.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -71,11 +76,14 @@ func stage(ctx context.Context, rootDir, documentPath, tokenPath, attestationAPI
 	return nil
 }
 
-// clearOutputs removes the kubelet's inputs before the floor, the reverse of
-// the order stage writes them, so an interrupted clear leaves no kubelet
-// input without its floor.
+// clearOutputs removes the kubelet's inputs, the node address, then the
+// floor, the reverse of the order stage writes them, so an interrupted clear
+// leaves no kubelet input without its floor.
 func clearOutputs(rootDir string) error {
 	if err := os.RemoveAll(filepath.Join(rootDir, kubernetesDir)); err != nil {
+		return err
+	}
+	if err := nodeservices.ClearNodeIP(rootDir); err != nil {
 		return err
 	}
 	return nodeservices.Clear(rootDir)
@@ -116,28 +124,75 @@ func stageDocument(ctx context.Context, rootDir, documentPath, tokenPath, attest
 	if err != nil {
 		return err
 	}
+	return writeOutputs(rootDir, doc, token)
+}
+
+// writeOutputs checks the floor it writes before writing the node address and
+// the kubelet's inputs, the outputs clearOutputs removes first.
+func writeOutputs(rootDir string, doc *Document, token string) error {
 	name, err := nodeName(rootDir)
 	if err != nil {
 		return err
 	}
-	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name)
+	address, err := primaryIPv4()
+	if err != nil {
+		return fmt.Errorf("resolve node address: %w", err)
+	}
+	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address)
 	if err != nil {
 		return err
 	}
-	router, err := nodeservices.RouterOutputs(doc.Router)
+	outputs, err := routerOutputs(doc)
 	if err != nil {
 		return err
 	}
 	err = nodeservices.Prepare(rootDir, nodeservices.FloorInputs{
 		CDS:           doc.CDS,
 		ClusterRanges: []string{doc.Kubernetes.PodCIDR, doc.Kubernetes.ServiceCIDR},
+		Resolver:      doc.Kubernetes.ClusterDNS,
 		Placeholders:  workerValues(name, doc.Kubernetes),
-		Outputs:       router,
+		Outputs:       outputs,
 	})
 	if err != nil {
 		return err
 	}
+	if err := checkFloor(rootDir); err != nil {
+		return err
+	}
+	if err := nodeservices.PublishNodeAddress(rootDir, address); err != nil {
+		return err
+	}
 	return kubelet.write(rootDir)
+}
+
+// checkFloor loads the staged floor as the NRI plugin will, so a floor the
+// plugin would refuse, or run under a server's rules, stops the worker here.
+func checkFloor(rootDir string) error {
+	data, err := os.ReadFile(filepath.Join(rootDir, nriimagepolicy.DefaultConfigPath))
+	if err != nil {
+		return err
+	}
+	if err := nriimagepolicy.CheckWorkerConfig(data); err != nil {
+		return fmt.Errorf("staged NRI floor: %w", err)
+	}
+	return nil
+}
+
+// routerOutputs are the files the router reads under /run/c8s-node, as on a
+// server: its settings, the operator keys it verifies routes under and its
+// front-door name.
+func routerOutputs(doc *Document) (map[string][]byte, error) {
+	outputs, err := nodeservices.RouterOutputs(doc.Router)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := doc.operatorKeys()
+	if err != nil {
+		return nil, err
+	}
+	outputs["operator-pubkey"] = keys
+	outputs["tls-san"] = []byte(doc.TLSSAN + "\n")
+	return outputs, nil
 }
 
 func readDocument(path string) ([]byte, error) {
