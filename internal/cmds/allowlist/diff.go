@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -28,15 +29,17 @@ type containerDiff struct {
 
 // entryDiff is the field-level change set for one changed workload entry.
 type entryDiff struct {
-	Label   *changedEntry   `json:"label,omitempty"`
-	Secrets *changedEntry   `json:"secrets,omitempty"`
-	Added   []containerDiff `json:"containersAdded,omitempty"`
-	Removed []containerDiff `json:"containersRemoved,omitempty"`
-	Changed []containerDiff `json:"containersChanged,omitempty"`
+	Label     *changedEntry   `json:"label,omitempty"`
+	Secrets   *changedEntry   `json:"secrets,omitempty"`
+	Egress    *changedEntry   `json:"egress,omitempty"`
+	HostPorts *changedEntry   `json:"hostPorts,omitempty"`
+	Added     []containerDiff `json:"containersAdded,omitempty"`
+	Removed   []containerDiff `json:"containersRemoved,omitempty"`
+	Changed   []containerDiff `json:"containersChanged,omitempty"`
 }
 
 func (e entryDiff) empty() bool {
-	return e.Label == nil && e.Secrets == nil && len(e.Added) == 0 && len(e.Removed) == 0 && len(e.Changed) == 0
+	return e.Label == nil && e.Secrets == nil && e.Egress == nil && e.HostPorts == nil && len(e.Added) == 0 && len(e.Removed) == 0 && len(e.Changed) == 0
 }
 
 // allowlistDiff is the entry-level diff of two allowlists.
@@ -81,6 +84,12 @@ func diffEntry(live, desired pkgallowlist.Workload) entryDiff {
 	}
 	if from, to := secretsGrant(live.Secrets), secretsGrant(desired.Secrets); from != to {
 		ed.Secrets = &changedEntry{From: from, To: to}
+	}
+	if from, to := egressList(live.Egress), egressList(desired.Egress); from != to {
+		ed.Egress = &changedEntry{From: from, To: to}
+	}
+	if from, to := hostPortList(live.HostPorts), hostPortList(desired.HostPorts); from != to {
+		ed.HostPorts = &changedEntry{From: from, To: to}
 	}
 	added, removed, changed := diffContainers("init", live.InitContainers, desired.InitContainers)
 	ed.Added, ed.Removed, ed.Changed = added, removed, changed
@@ -160,6 +169,31 @@ func secretsGrant(p *pkgallowlist.SecretsPolicy) string {
 	return s
 }
 
+// egressList renders exits as cidr:port; parsing has already sorted them.
+func egressList(l pkgallowlist.EgressList) string {
+	if len(l) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(l))
+	for i, e := range l {
+		parts[i] = fmt.Sprintf("%s:%d", e.CIDR, e.Port)
+	}
+	return strings.Join(parts, " ")
+}
+
+// hostPortList renders mappings as protocol/hostPort:containerPort; parsing has
+// already sorted them.
+func hostPortList(l pkgallowlist.HostPortList) string {
+	if len(l) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(l))
+	for i, p := range l {
+		parts[i] = fmt.Sprintf("%s/%d:%d", p.Protocol, p.HostPort, p.ContainerPort)
+	}
+	return strings.Join(parts, " ")
+}
+
 // multisetSub returns the elements of a not covered by an equal element of b,
 // respecting multiplicity.
 func multisetSub(a, b []string) []string {
@@ -210,6 +244,12 @@ func printEntryDiff(w io.Writer, e entryDiff) {
 	}
 	if e.Secrets != nil {
 		fmt.Fprintf(w, "    secrets: %s -> %s\n", e.Secrets.From, e.Secrets.To)
+	}
+	if e.Egress != nil {
+		fmt.Fprintf(w, "    egress: %s -> %s\n", e.Egress.From, e.Egress.To)
+	}
+	if e.HostPorts != nil {
+		fmt.Fprintf(w, "    hostPorts: %s -> %s\n", e.HostPorts.From, e.HostPorts.To)
 	}
 	for _, c := range e.Added {
 		fmt.Fprintf(w, "    + %s %s %s\n", c.Kind, c.Digest, c.To)
