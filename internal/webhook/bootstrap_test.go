@@ -394,3 +394,31 @@ func assertValidatingBundle(t *testing.T, c client.Client, want ...[]byte) {
 		t.Fatalf("caBundle = %q, want %d CAs in order", got.Webhooks[0].ClientConfig.CABundle, len(want))
 	}
 }
+
+// An IP host, as a webhook URL names one, is the leaf's IP address, not a DNS
+// name.
+func TestBootstrapServingCertNamesAnIPHost(t *testing.T) {
+	ca, err := issuer.NewCA("test webhook", WebhookCATTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := BootstrapServingCert(ca, []string{"127.0.0.1"}, dir); err != nil {
+		t.Fatalf("BootstrapServingCert: %v", err)
+	}
+	crtPEM, err := os.ReadFile(filepath.Join(dir, "tls.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(crtPEM)
+	if block == nil {
+		t.Fatal("tls.crt is not PEM")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf.DNSNames) != 0 || len(leaf.IPAddresses) != 1 || leaf.VerifyHostname("127.0.0.1") != nil {
+		t.Fatalf("leaf names DNS %v and IPs %v, want 127.0.0.1 as its one IP", leaf.DNSNames, leaf.IPAddresses)
+	}
+}
