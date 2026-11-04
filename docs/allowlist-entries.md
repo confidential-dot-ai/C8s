@@ -25,7 +25,8 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
         ]},
         "env": {"policy": "match", "variables": {
           "HOSTNAME": {"present": true},
-          "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}}
+          "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}},
+        "capabilities": ["SYS_PTRACE"]
       }],
       "secrets": {"policy": "allow", "read": ["/tenant-a/**"]},
       "egress": [{"cidr": "203.0.113.7/32", "port": 443}],
@@ -128,6 +129,17 @@ no overlay above it; a node that does not denies every `nodeRootFile` rule and
 logs `node-root provenance unavailable` at startup. Lint allows a
 `nodeRootFile` rule on a pinned search path, where a `data` or `host` rule is
 an error.
+
+## `capabilities`
+
+The capabilities a container may hold beyond the node's default set, named as a
+pod spec names them: the kernel's constant without the `CAP_` prefix, such as
+`SYS_PTRACE`. A declarable name is a Linux capability outside the container
+runtime's default set, less `NET_ADMIN`, `NET_RAW`, `SETUID` and `SETGID`,
+which rewrite the pod's mesh ruleset or take a platform role's reserved
+identity. Every name is declarable and is listed once. An entry declaring a
+capability pins every container's launch: `command`, `args` and `mounts` not
+`any`, and `env` constrained.
 
 ## `secrets`
 
