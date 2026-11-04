@@ -24,7 +24,7 @@ func TestWorkerImageStaticPods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := slices.Sorted(maps.Keys(templates)), []string{"cilium.yaml"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(templates)), []string{"cilium.yaml", "coredns.yaml", "kube-proxy.yaml"}; !slices.Equal(got, want) {
 		t.Fatalf("templates = %v, want %v", got, want)
 	}
 	for file, data := range templates {
@@ -52,6 +52,9 @@ func TestWorkerImageStaticPods(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(imageTree, v.HostPath.Path)); err != nil {
 				t.Errorf("%s mounts %s, which the image does not hold: %v", rendered.Name, v.HostPath.Path, err)
 			}
+		}
+		if rendered.Name == "kube-proxy.yaml" && !slices.Contains(pod.Spec.Containers[0].Args, "--cluster-cidr=10.42.0.0/16") {
+			t.Errorf("kube-proxy args = %v, want this worker's pod range", pod.Spec.Containers[0].Args)
 		}
 	}
 }
@@ -95,5 +98,45 @@ func TestWorkerCiliumConfiguration(t *testing.T) {
 		if value, ok := config[listener]; ok {
 			t.Errorf("%s = %q opens a listener on the node", listener, value)
 		}
+	}
+}
+
+// kube-proxy serves only the iptables proxier on the worker, with no Service
+// reaching a node's loopback and its health and metrics on loopback alone; the
+// CoreDNS it fronts reads the Corefile the image holds.
+func TestWorkerKubeProxyAndCoreDNS(t *testing.T) {
+	proxy, err := os.ReadFile(filepath.Join(imageTree, staticPodTemplates, "kube-proxy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := decodeStaticPod(proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := pod.Spec.Containers[0].Args
+	for _, want := range []string{"--proxy-mode=iptables", "--iptables-localhost-nodeports=false", "--healthz-bind-address=127.0.0.1"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("kube-proxy args %v lack %s", args, want)
+		}
+	}
+	if i := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "--metrics-bind-address=") }); i >= 0 && !strings.HasPrefix(args[i], "--metrics-bind-address=127.0.0.1:") {
+		t.Errorf("kube-proxy serves metrics at %s, off loopback", args[i])
+	}
+	dns, err := os.ReadFile(filepath.Join(imageTree, staticPodTemplates, "coredns.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod, err = decodeStaticPod(dns); err != nil {
+		t.Fatal(err)
+	}
+	if args := pod.Spec.Containers[0].Args; !slices.Equal(args, []string{"-conf", "/etc/coredns/Corefile"}) {
+		t.Fatalf("coredns args = %v, want the Corefile the image mounts at /etc/coredns", args)
+	}
+	corefile, err := os.ReadFile(filepath.Join(imageTree, "usr/lib/c8s/worker/coredns/Corefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(corefile), "kubernetes cluster.local") || !strings.Contains(string(corefile), "kubeconfig /var/lib/kubelet/kubeconfig") {
+		t.Fatalf("Corefile serves no cluster.local through the kubelet's kubeconfig:\n%s", corefile)
 	}
 }

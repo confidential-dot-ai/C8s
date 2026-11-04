@@ -78,7 +78,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if err := yamlv3.Unmarshal(floor, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, pod := range []string{"cilium"} {
+	for _, pod := range []string{"cilium", "coredns", "kube-proxy"} {
 		if !doc.Allowlist.Base.Workloads[pod].StaticPod {
 			t.Errorf("the floor holds no static-pod entry for the image's %s", pod)
 		}
