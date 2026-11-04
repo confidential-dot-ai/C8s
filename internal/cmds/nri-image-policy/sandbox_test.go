@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -830,9 +832,9 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	}
 }
 
-// The served entry granting the bind is withdrawn the moment the tag is
-// resolved a second time: the sandbox exemption must judge the digest and
-// snapshot admission judged.
+// The served entry granting the privilege is withdrawn the moment the tag is
+// resolved a second time: every grant after admission must judge the digest
+// and snapshot admission judged.
 func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 	const source, imageRef = "/usr/bin/nvidia-smi", "registry/repo:tag"
 	base := anyAllowlist(map[string]string{pushDigestB: "tool"})
@@ -842,38 +844,86 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 	if err := base.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	served := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-	declared := served.Workloads["w"].Containers[0]
-	declared.Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
-	declared.Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
-	declared.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true}}}
-	served.Workloads["w"] = allowlist.Workload{Containers: []allowlist.Container{declared}}
-	if err := served.Normalize(); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &config{
-		Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://cds"}},
-		Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
-	}
-	p, store := newCachedPlugin(cfg, served)
-	resolves := 0
-	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
-		resolves++
-		if resolves > 1 {
-			store.apply(&allowlist.Allowlist{Schema: allowlist.Schema}, 2)
-		}
-		return pushDigestB, nil
-	}}
-	pod, ctr := sandboxedPod(), sandboxedContainer()
-	ctr.Annotations = map[string]string{annotationImageName: imageRef}
-	ctr.Args = []string{"/bin/app"}
-	ctr.Mounts = append(slices.DeleteFunc(ctr.Mounts, carriesHostBytes),
-		&api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
-	if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict != verdictAllow {
-		t.Fatalf("checkContainer(policy swapped after admission) = %d %q, want allow", verdict, reason)
-	}
-	if resolves != 1 {
-		t.Fatalf("checkContainer resolved the tag %d times, want 1", resolves)
+	for _, tc := range []struct {
+		name    string
+		grant   func(*allowlist.Workload)
+		ctr     func(*api.Container)
+		network ctrdresolver.SandboxNetwork
+		spec    func(*specs.Spec)
+	}{
+		{
+			name: "host bind",
+			grant: func(w *allowlist.Workload) {
+				w.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true}}}
+			},
+			ctr: func(ctr *api.Container) {
+				ctr.Mounts = append(slices.DeleteFunc(ctr.Mounts, carriesHostBytes),
+					&api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
+			},
+		},
+		{
+			name:    "host port",
+			grant:   func(w *allowlist.Workload) { w.HostPorts = declaredHTTPS },
+			network: ports(recordedHTTPS),
+		},
+		{
+			name:  "capability",
+			grant: func(w *allowlist.Workload) { w.Containers[0].Capabilities = allowlist.CapabilityList{"SYS_PTRACE"} },
+			spec: func(s *specs.Spec) {
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_PTRACE")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			declared := served.Workloads["w"]
+			declared.Containers[0].Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
+			declared.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+			declared.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
+			tc.grant(&declared)
+			served.Workloads["w"] = declared
+			if err := served.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config{
+				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://cds"}},
+				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+			}
+			p, store := newCachedPlugin(cfg, served)
+			resolves := 0
+			p.containerd = &fakeContainerd{
+				resolve: func(context.Context, string) (string, error) {
+					resolves++
+					if resolves > 1 {
+						store.apply(&allowlist.Allowlist{Schema: allowlist.Schema}, 2)
+					}
+					return pushDigestB, nil
+				},
+				network: func(context.Context, string, ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+					return tc.network, nil
+				},
+				spec: func(context.Context, string) (*specs.Spec, error) {
+					s := workloadSpec()
+					if tc.spec != nil {
+						tc.spec(s)
+					}
+					return s, nil
+				},
+			}
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Annotations = map[string]string{annotationImageName: imageRef}
+			ctr.Args = []string{"/bin/app"}
+			ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+			if tc.ctr != nil {
+				tc.ctr(ctr)
+			}
+			if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict != verdictAllow {
+				t.Fatalf("checkContainer(%s, policy swapped after admission) = %d %q, want allow", tc.name, verdict, reason)
+			}
+			if resolves != 1 {
+				t.Fatalf("checkContainer(%s) resolved the tag %d times, want 1", tc.name, resolves)
+			}
+		})
 	}
 }
 

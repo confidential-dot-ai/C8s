@@ -788,14 +788,14 @@ func mustDigest(t *testing.T, s string) types.Digest {
 	return d
 }
 
-// newCachedPlugin builds a plugin whose policy store admits wl (applied as a
-// version-1 pull) plus the config's base allowlist.
 // checkImagePhase is checkImageAt against the current snapshot.
 func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
 	verdict, reason, _ := p.checkImageAt(ctx, cfg, p.policy.current(), check, phase)
 	return verdict, reason
 }
 
+// newCachedPlugin builds a plugin whose policy store admits wl (applied as a
+// version-1 pull) plus the config's base allowlist.
 func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStore) {
 	if err := validateLabelRules(cfg.Policy.LabelRules); err != nil {
 		panic(err)

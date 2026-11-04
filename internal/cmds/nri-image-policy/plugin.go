@@ -126,29 +126,27 @@ func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
 	return snap != nil && snap.index.DeclaresHostPorts(mappings)
 }
 
-// grantsHostPorts reports whether the base or the applied allowlist hands r
-// every mapping (allowlist.Index.GrantsHostPorts).
-func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
+// grantsHostPorts reports whether the base or snap's allowlist hands r every
+// mapping (allowlist.Index.GrantsHostPorts).
+func (s *policyStore) grantsHostPorts(snap *policySnapshot, r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
 	if s.base.GrantsHostPorts(r, mappings) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
-// grantsCapabilities reports whether the base or the applied allowlist hands r
+// grantsCapabilities reports whether the base or snap's allowlist hands r
 // every capability in caps (allowlist.Index.GrantsCapabilities).
-func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
+func (s *policyStore) grantsCapabilities(snap *policySnapshot, r allowlist.RunningContainer, caps []string) bool {
 	if s == nil {
 		return false
 	}
 	if s.base.GrantsCapabilities(r, caps) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
 }
 
@@ -807,10 +805,10 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, digest, snap, env, mounts); v == verdictDeny {
 		return v, r
 	}
-	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
+	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, digest, snap, env, mounts); refusal != "" {
 		return verdictDeny, refusal
 	}
-	if refusal := p.capabilityRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
+	if refusal := p.capabilityRefusal(ctx, cfg, pod, ctr, imageRef, digest, snap, env, mounts); refusal != "" {
 		return verdictDeny, refusal
 	}
 	return verdict, reason
@@ -1499,6 +1497,15 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 		Env:    env,
 		Mounts: mounts,
 	}
+}
+
+// admittedLaunch is observedLaunch for the digest admission judged; it resolves
+// imageRef only when admission resolved none.
+func (p *plugin) admittedLaunch(ctx context.Context, ctr *api.Container, imageRef, digest string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) allowlist.RunningContainer {
+	if digest == "" {
+		digest = p.resolveDigest(ctx, imageRef)
+	}
+	return allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 }
 
 // credentialMounts bind-mounts what the node hands a credential client,

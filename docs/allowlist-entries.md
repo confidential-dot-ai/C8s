@@ -133,9 +133,11 @@ an error.
 Mixed versions: a rule's `verityDigest` field is reserved for fs-verity and
 refused today. An enforcer predating node-root provenance decodes a served
 document leniently and ignores the field, so on such a node an fs-verity rollout
-keyed on `verityDigest` degrades to a plain `host` rule. An upgraded node keeps
-working with an older CDS: CDS decodes the node's inventory leniently and drops
-the provenance, which none of its rules asks for.
+keyed on `verityDigest` degrades to a plain `host` rule. The same enforcer
+refuses a served document that carries a `nodeRootFile` rule, so roll out such
+a rule only once every node enforces it. An upgraded node keeps working with an
+older CDS: CDS decodes the node's inventory leniently and drops the provenance,
+which none of its rules asks for.
 
 ## `capabilities`
 
