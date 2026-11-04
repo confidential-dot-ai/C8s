@@ -71,7 +71,8 @@ func main() {
 		switch value := obj.(type) {
 		case *kubevirtv1.VirtualMachine:
 			value.Spec.Running = nil
-			value.Spec.RunStrategy = new(kubevirtv1.RunStrategyHalted)
+			// Explicit starts only: a guest's expiry poweroff must stay off.
+			value.Spec.RunStrategy = new(kubevirtv1.RunStrategyManual)
 			for k, v := range selector {
 				value.Spec.Template.Spec.NodeSelector[k] = v
 			}

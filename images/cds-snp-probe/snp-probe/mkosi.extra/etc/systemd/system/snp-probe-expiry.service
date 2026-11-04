@@ -1,0 +1,6 @@
+[Unit]
+Description=Power off expired disposable SNP guest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --no-block poweroff

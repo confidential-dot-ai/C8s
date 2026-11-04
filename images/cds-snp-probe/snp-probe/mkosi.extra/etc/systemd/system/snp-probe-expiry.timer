@@ -1,0 +1,10 @@
+[Unit]
+Description=Bound disposable SNP guest lifetime
+
+[Timer]
+OnBootSec=45min
+AccuracySec=1s
+Unit=snp-probe-expiry.service
+
+[Install]
+WantedBy=timers.target

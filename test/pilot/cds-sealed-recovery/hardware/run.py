@@ -275,7 +275,7 @@ class Run:
                 resource_path(item)
                 self.kube.call("POST", resource_path(item).rsplit("/", 1)[0] + "?dryRun=All", item, expected=(201,))
             vm = next(i for i in items if i["kind"] == "VirtualMachine")
-            need(vm["spec"]["runStrategy"] == "Halted", "VM must begin halted")
+            need(vm["spec"]["runStrategy"] == "Manual", "VM must require explicit starts and stay off after expiry")
             for item in items:
                 if item["kind"] != "VirtualMachine":
                     self.create(item)

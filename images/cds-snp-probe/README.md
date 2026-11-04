@@ -126,6 +126,10 @@ Prepare a run-specific manifest and durable ownership journal before creating
 anything. Use one 2-vCPU/4-GiB guest at a time, exact worker UIDs, only new
 test-owned storage, no hostPath writes, and a finite cleanup deadline. Preserve
 an encrypted capsule and public receipts locally before destroying a guest.
+The measured image powers off after 45 minutes. The fixture's `Manual` run
+strategy requires explicit starts and keeps an expired guest off. This fallback
+bounds guest runtime if the runner disappears; it does not delete the VM or
+claims, which still require the ownership journal's cleanup command.
 Never mutate shared image admission, deployments, KubeVirt configuration,
 network policy, firmware, host scheduling or existing VMs to unblock this test.
 If the existing launch path cannot admit the artifact, stop at the concrete

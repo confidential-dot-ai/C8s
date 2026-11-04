@@ -1,1 +1,2 @@
 enable snp-probe.service
+enable snp-probe-expiry.timer
