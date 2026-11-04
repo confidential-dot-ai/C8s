@@ -196,18 +196,12 @@ cds:
   ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin
   ## <file>` or `helm --set-file`. Required with address.
   measurementsConfig: ""
-  ## PEM bundle of operator EC public keys (public material, not a secret).
-  ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
-  ## short-lived token signed by one of the matching operator private keys (see
-  ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
-  ## token authorizes one request (allowlist, routes, secrets, including secrets
-  ## explain), and CDS publishes the token of a whole-document upload as that
-  ## document's signature.
-  ## Empty = allowlist writes are rejected (reads are still served), so an
-  ## upgrade that changes a component's shape cannot be published and needs a
-  ## reinstall; adding the keys later is such an upgrade
-  ## (docs/allowlist-and-capabilities.md). Prefer
-  ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
+  ## PEM bundle of operator EC public keys (public material, not a secret) the
+  ## router verifies route manifests under, via --operator-keys-file. Empty =
+  ## the router takes the keys from the verified CDS's GET /operator-keys. CDS
+  ## itself takes its write keys from its measured launch configuration
+  ## (`c8s cds config new --operator-keys`), not from this value. Set it with
+  ## `c8s install --operator-keys <file>` or `helm --set-file`.
   operatorKeys: ""
 
 ## DaemonSet running the attestation-api image from github.com/confidential-dot-ai/attestation-rs.
@@ -258,7 +252,7 @@ attestationApi:
   ##
   ## bare-metal (default): generalized node-as-CVM — our own nodes (self-managed
   ##   TDX/SNP) are themselves confidential VMs exposing a native TEE device
-  ##   (/dev/sev-guest, or /dev/tdx-guest with --hardware-platform tdx); pods run
+  ##   (/dev/sev-guest, or ConfigFS TSM with --hardware-platform tdx); pods run
   ##   as ordinary processes attested via the node's own quote. Cloud-agnostic.
   ## gke: GKE managed confidential VM — also native /dev/sev-guest.
   ## aks: Azure confidential VM — SEV-SNP via the vTPM at /dev/tpm0.

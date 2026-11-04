@@ -432,9 +432,8 @@ c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
 The install flag supplies the router's trusted route-signing keys; it does not
-change CDS's operator keys. `c8s install` requires `--force` when neither
-`--operator-keys` nor a values file is supplied. This CLI guard does not determine
-CDS write authorization. Supply the private key to the CLI by flag
+change CDS's operator keys. Without it the router uses the keys the pinned
+CDS serves. Supply the private key to the CLI by flag
 (`--operator-key`) or environment (`C8S_OPERATOR_KEY`). Write tokens are
 short-lived and bound to the request body, so a captured token cannot be
 replayed against a different payload. The private key remains on the operator
@@ -533,8 +532,8 @@ than let you discover them:
 - **The image allowlist gates digest and command line, not the rest of the
   pod spec.** Each container's `command` prefix and `args` remainder are
   enforced against the effective argv, env values are enforced by both backends,
-  and bind-mount destinations are enforceable in the guest; capabilities and the
-  remaining pod-spec fields are not. Nothing enforces which images run
+  and an `exact` mount policy pins each bind mount's destination and source
+  class; capabilities and the remaining pod-spec fields are not. Nothing enforces which images run
   *together* — every running image must be allowlisted, but no gate requires
   the set in one pod to match a single workload entry.
 
@@ -548,10 +547,7 @@ than let you discover them:
   injected secret fetcher is a native sidecar, so it keeps running alongside
   the workload.
 
-- **Encrypted volumes are attached at node boot, and a force-deleted volume
-  pod leaks its dm stack.** A volume reaches a node-as-CVM node as a block
-  device declared in the VM spec; adding one to a running node is not
-  supported (it is a VM spec change and a node reboot). `volumed` tears a
+- **A force-deleted volume pod leaks its dm stack.** `volumed` tears a
   volume down only when the pod's cgroup empties; a `kubectl delete pod
   --force --grace-period=0` that leaves it populated leaves the
   dm-crypt/dm-verity targets and the mount behind, with the volume key

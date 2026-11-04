@@ -47,10 +47,11 @@ a changed CA certificate only under the pod's bound issuer key.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--cds-url` | | *(required)* | URL of the running cds service |
+| `--cds-url` | | *(empty)* | URL of the running cds service; required unless the node hands this client a CDS endpoint, and refused in an injected sidecar |
 | `--image-policy-file` | | *(empty)* | JSON pin document for the CDS endpoint, every entry bound to the launch file CDS runs on; required unless the node pins CDS |
 | `--attestation-api-url` | | *(required)* | URL of the node attestation-api; pods use its mounted Unix socket |
 | `--san` | | | Subject Alternative Name — IP address or hostname; one of `--san`, `--san-file` or `--no-san` is required |
+| `--san-file` | | *(empty)* | Path to a file containing the certificate SAN |
 | `--no-san` | | `false` | Request a certificate with no SAN |
 | `--cert-path` | | *(required)* | Path where the certificate chain PEM of the published generation is read |
 | `--key-path` | | *(required)* | Path where the private key PEM is read, mode `0600` (`0640` in shared setgid directories); must be on a memory-backed filesystem |
@@ -58,6 +59,8 @@ a changed CA certificate only under the pod's bound issuer key.
 | `--renew-interval` | | `0` | Re-obtain the certificate at this interval; `0` runs once and exits |
 | `--ca-watch-interval` | | `1m` | With `--renew-interval`, compare CDS `/ca` against `--ca-path` and renew early for a changed certificate under the bound issuer key; also check allowlist policy unless `--no-workload-claims`. Replacing the CA key requires pod recreation. `0` disables |
 | `--reload-nginx` | | `true` | SIGHUP nginx after certificate renewal or watched file changes |
+| `--unnamed-renew-interval` | | `30s` | With `--renew-interval`, fast-poll renewal while the leaf carries no matched-workload stamp, starting at 2s and doubling up to this value; `0` disables |
+| `--expected-workload` | | *(empty)* | Allowlist entry this pod should be stamped with; a leaf stamped otherwise stays on the fast poll. Requires `--renew-interval` and a workload identity assertion |
 | `--continue-on-initial-error` | | `false` | In renewal mode, keep running when the first certificate request fails |
 | `--no-workload-claims` | | `false` | Request certificates without a workload identity assertion, for a pod whose node runs no admission inventory; the leaf then names no workload instance |
 | `--verbose` | `-v` | `false` | Enable debug logging |
@@ -77,6 +80,6 @@ The `--san` flag accepts either an IP address or a hostname. get-cert automatica
 
 ## Certificate TTL
 
-Certificate lifetime is controlled server-side by cds's `--cert-ttl` flag (default 24h). get-cert does not set the TTL — configure it on the cds server.
+Certificate lifetime is set server-side by cds: `--cert-ttl` (default and cap 24h) for a leaf with no matched-workload stamp, and `--named-cert-ttl` (default and cap 6h) for a named leaf. get-cert does not set the TTL.
 
 For long-running pods, set `--renew-interval` shorter than the server-side TTL. When the workload is not nginx, pass `--reload-nginx=false` and have the workload reload the republished cert files using its own mechanism.
