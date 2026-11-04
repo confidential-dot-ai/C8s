@@ -5,6 +5,7 @@ package cdsobject
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -21,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsrecovery"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/metadatapilot"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
@@ -32,7 +34,8 @@ import (
 const operationTimeout = 5 * time.Second
 
 type Provision struct {
-	Key           []byte                `json:"key"`
+	Key           []byte                `json:"key,omitempty"`
+	Grant         *cdsrecovery.Grant    `json:"grant,omitempty"`
 	Credentials   objectwal.Credentials `json:"credentials"`
 	MetadataToken string                `json:"metadata_token,omitempty"`
 }
@@ -72,6 +75,10 @@ type Node struct {
 	peerClient    atomic.Pointer[http.Client]
 	incoming      chan struct{}
 	incomingBytes atomic.Int64
+	recovery      *cdsrecovery.Recipient // immutable recipient; only control actor opens grants
+	authority     ed25519.PublicKey
+	recoveredHash [32]byte // control actor owns credential refresh/key consistency
+	allowGenesis  atomic.Bool
 }
 
 func New(ctx context.Context, cfg Config) (*Node, error) {
@@ -89,6 +96,16 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		fsm:      cdsha.NewFSM(cfg.Launch, cfg.Allowlist, cfg.Secrets, cfg.Ledger)}
 	n.cfg.PeerHosts = append([]string(nil), cfg.PeerHosts...)
 	n.cfg.LaunchFile = bytes.Clone(cfg.LaunchFile)
+	if cfg.Storage.RecoveryAuthority != "" {
+		n.authority, _ = cdsrecovery.ParseAuthority(cfg.Storage.RecoveryAuthority) // Check validated it.
+		n.recovery, err = cdsrecovery.NewRecipient(cdsrecovery.Identity{ClusterID: cfg.Launch.ClusterID, ConfigSHA256: cfg.Launch.ConfigSHA256, Prefix: cfg.Storage.Prefix})
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	} else {
+		n.allowGenesis.Store(true) // Legacy operator-held-key pilot.
+	}
 	if cfg.Address != "" {
 		check, stop := context.WithTimeout(ctx, operationTimeout)
 		err := n.checkPeer(check, cfg.Address)
@@ -111,17 +128,27 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	return n, nil
 }
 
-// Provision authorizes possession of the measured key commitment. The client
-// verifies the server's TEE and launch file before transmitting either secret.
-// Reprovisioning refreshes expiring S3 credentials without replacing local state.
+// Provision admits bounded work to the control actor. Protected mode accepts
+// only a signed grant sealed to this incarnation; legacy mode checks the
+// measured raw-key commitment. Refresh never changes the WAL's encryption key.
 func (n *Node) Provision(p Provision) error {
-	if len(p.Key) != 32 {
-		return errors.New("object WAL: a 32-byte key is required")
-	}
-	want, _ := hex.DecodeString(n.cfg.Storage.KeySHA256)
-	got := sha256.Sum256(p.Key)
-	if subtle.ConstantTimeCompare(want, got[:]) != 1 {
-		return errors.New("object WAL: key does not match the measured commitment")
+	if n.recovery != nil {
+		if len(p.Key) != 0 || p.Grant == nil {
+			return errors.New("object WAL: sealed recovery grant required; raw keys refused")
+		}
+		if err := p.Grant.Check(); err != nil {
+			return err
+		}
+		p.Grant = p.Grant.Clone()
+	} else {
+		if p.Grant != nil || len(p.Key) != 32 {
+			return errors.New("object WAL: a 32-byte key is required")
+		}
+		want, _ := hex.DecodeString(n.cfg.Storage.KeySHA256)
+		got := sha256.Sum256(p.Key)
+		if subtle.ConstantTimeCompare(want, got[:]) != 1 {
+			return errors.New("object WAL: key does not match the measured commitment")
+		}
 	}
 	ctx, cancel := context.WithTimeout(n.ctx, operationTimeout)
 	defer cancel()
@@ -196,6 +223,21 @@ func (n *Node) Close() {
 }
 
 func (n *Node) provisionOwned(p Provision) error {
+	initialize := n.allowGenesis.Load()
+	if n.recovery != nil {
+		material, err := n.recovery.Open(*p.Grant, n.authority)
+		if err != nil {
+			return err
+		}
+		defer clear(material.Key)
+		p.Key, initialize = material.Key, material.AllowGenesis
+		if n.wal.Load() != nil {
+			hash := sha256.Sum256(p.Key)
+			if subtle.ConstantTimeCompare(hash[:], n.recoveredHash[:]) != 1 {
+				return errors.New("object WAL: credential refresh cannot replace the recovery key")
+			}
+		}
+	}
 	if n.cfg.Storage.MetadataEndpoint != "" {
 		if !metadatapilot.ValidToken(p.MetadataToken) {
 			return errors.New("metadata pilot: separate metadata token required")
@@ -251,6 +293,8 @@ func (n *Node) provisionOwned(p Provision) error {
 	}
 	n.metadata = metadata
 	n.forwardKey.Store(deriveForwardKey(p.Key, n.cfg.Launch))
+	n.recoveredHash = sha256.Sum256(p.Key)
+	n.allowGenesis.Store(initialize)
 	n.wal.Store(wal)
 	return nil
 }
@@ -359,6 +403,9 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (cdsha.Delivered, error) {
 	de := cdsha.DecreeEntry{Decree: signed, AtMS: time.Now().UnixMilli()}
 	switch d.Kind {
 	case cdsdecree.Genesis:
+		if !n.allowGenesis.Load() {
+			return cdsha.Delivered{}, errors.New("object WAL: recovery grant does not authorize Genesis")
+		}
 		if d.TargetMember != n.id {
 			return cdsha.Delivered{}, errors.New("object WAL: Genesis names another process")
 		}

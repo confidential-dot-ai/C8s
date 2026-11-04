@@ -15,6 +15,9 @@ local matrix and the unsuccessful live-S3 comparison attempt, including limits.
 The separate [transactional metadata experiment](cds-transactional-metadata-pilot.md)
 routes only the encrypted head to a SQL-backed service when `metadataEndpoint`
 is explicitly selected; the protocol below describes the original object-head arm.
+The [sealed recovery increment](cds-protected-recovery.md) replaces raw-key
+provisioning with process-bound grants in an optional mode. Its trusted key
+authority is currently a local software fixture, not production key custody.
 
 ## What commits a change
 

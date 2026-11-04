@@ -39,6 +39,7 @@ type objectFixture struct {
 	metadata    *metadataFixture
 	gets        atomic.Uint64
 	puts        atomic.Uint64
+	recovery    *recoveryFixture
 }
 
 type objectShard struct {
@@ -142,7 +143,17 @@ func (f *objectFixture) serve(w http.ResponseWriter, r *http.Request) {
 func (c *cluster) provisionObjects(r *replica) {
 	c.t.Helper()
 	c.awaitStatus(r)
-	code, _ := c.send(r, http.MethodPost, "/ha/object-wal/provision", c.objectWAL.provision, nil)
+	payload := c.objectWAL.provision
+	if f := c.objectWAL.recovery; f != nil {
+		initialize := !f.initialized && r.index == 0
+		grant := f.grant(c, r, f.key, initialize, f.signer)
+		payload = f.payload(c, grant)
+		f.last[r.index] = payload
+		if initialize {
+			f.initialized = true
+		}
+	}
+	code, _ := c.send(r, http.MethodPost, "/ha/object-wal/provision", payload, nil)
 	if code != http.StatusNoContent {
 		c.t.Fatalf("attested provisioning returned HTTP %d", code)
 	}

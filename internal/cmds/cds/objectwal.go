@@ -19,6 +19,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cdsobject"
+	"github.com/confidential-dot-ai/c8s/internal/cdsrecovery"
+	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
@@ -62,9 +64,10 @@ func newObjectReplica(ctx context.Context, cfg config, st stores) (backend, erro
 		},
 		node: node, stopNode: func() { cancel(); <-ended }, ended: ended,
 		extraRoutes: map[string]http.HandlerFunc{
-			"POST " + cdsobject.ForwardPath: node.ServeForward,
-			"POST " + objectProvisionPath:   provisionObjectWAL(node),
-			"GET " + objectStatsPath:        reportJSON(node.WALStats),
+			"POST " + cdsobject.ForwardPath:  node.ServeForward,
+			"POST " + objectProvisionPath:    provisionObjectWAL(node),
+			"GET " + objectStatsPath:         reportJSON(node.WALStats),
+			"GET " + cdsrecovery.RequestPath: node.ServeRecoveryRequest,
 		},
 	}
 	if err := r.join(ctx, cfg); err != nil {
@@ -83,12 +86,17 @@ func provisionObjectWAL(node *cdsobject.Node) http.HandlerFunc {
 		}
 		defer clear(body)
 		p, err := parseProvision(body)
+		defer clear(p.Key)
 		if err != nil {
 			http.Error(w, "invalid provisioning body", http.StatusBadRequest)
 			return
 		}
-		defer clear(p.Key)
 		if err := node.Provision(p); err != nil {
+			if errors.Is(err, objectwal.ErrBackpressure) || errors.Is(err, context.DeadlineExceeded) {
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "object WAL provisioning busy", http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, "object WAL provisioning refused", http.StatusForbidden)
 			return
 		}
@@ -106,8 +114,18 @@ func parseProvision(body []byte) (cdsobject.Provision, error) {
 	if _, err := d.Token(); err != io.EOF {
 		return p, errors.New("multiple provisioning values")
 	}
-	if len(p.Key) != 32 || p.Credentials.AccessKeyID == "" || p.Credentials.SecretAccessKey == "" {
-		return p, errors.New("a 32-byte key and S3 credentials are required")
+	if p.Grant != nil {
+		if len(p.Key) != 0 {
+			return p, errors.New("choose a sealed grant or a raw key")
+		}
+		if err := p.Grant.Check(); err != nil {
+			return p, err
+		}
+	} else if len(p.Key) != 32 {
+		return p, errors.New("a sealed grant or a 32-byte key is required")
+	}
+	if p.Credentials.AccessKeyID == "" || p.Credentials.SecretAccessKey == "" {
+		return p, errors.New("S3 credentials are required")
 	}
 	return p, nil
 }
@@ -117,7 +135,7 @@ func newObjectWALCmd() *cobra.Command {
 	var target replica
 	var input string
 	provision := &cobra.Command{
-		Use: "provision", Short: "Deliver a WAL key and S3 credentials over pinned armTLS", Args: cobra.NoArgs, SilenceUsage: true,
+		Use: "provision", Short: "Deliver a sealed recovery grant or legacy WAL key and credentials over pinned armTLS", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			reader := cmd.InOrStdin()
 			if input != "-" {
@@ -134,10 +152,10 @@ func newObjectWALCmd() *cobra.Command {
 			}
 			defer clear(body)
 			p, err := parseProvision(body)
+			clear(p.Key)
 			if err != nil {
 				return errors.New("invalid provisioning document")
 			}
-			clear(p.Key)
 			client, address, err := target.dial(cmd.Context())
 			if err != nil {
 				return err
@@ -161,7 +179,7 @@ func newObjectWALCmd() *cobra.Command {
 		},
 	}
 	bindTargetFlags(provision, &target)
-	provision.Flags().StringVar(&input, "input", "-", "operator-local JSON file containing the key (base64) and credentials; - reads stdin")
+	provision.Flags().StringVar(&input, "input", "-", "JSON file containing a sealed grant (or legacy key) and credentials; - reads stdin")
 	group.AddCommand(provision)
 	return group
 }

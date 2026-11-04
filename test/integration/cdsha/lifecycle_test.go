@@ -20,14 +20,17 @@ import (
 // The durable arms must then recover the new key and acknowledged state after
 // losing every CDS process. Hardware evidence and inventory are fixtures.
 func TestCARotationBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
 			if backend != "raft" {
 				objects = newObjectFixture(t)
-				if backend == "transactional-metadata" {
+				if strings.HasPrefix(backend, "transactional-metadata") {
 					attachMetadata(t, objects)
+				}
+				if strings.HasSuffix(backend, "-protected") {
+					protectRecovery(t, objects)
 				}
 			}
 			c := newClusterWithNodes(t, threeReplicas, objects, nodeImagesCertifying(seededNodeImage), []string{host + "/32"})
@@ -97,6 +100,7 @@ func TestCARotationBackendParity(t *testing.T) {
 			t.Log("rotation rejected old leaves on existing TLS connections; newly issued leaves read the preserved secret")
 
 			if objects != nil {
+				w.setPolicy(false) // The revocation must survive losing every CDS process.
 				for _, r := range c.replicas {
 					c.kill(r)
 				}
@@ -110,12 +114,16 @@ func TestCARotationBackendParity(t *testing.T) {
 					if c.servedCA(r) != rotated {
 						t.Fatal("cold recovery replaced the rotated CA")
 					}
+					if code, _ := pilotDo(t, w.client, w.secretRequest(r, http.MethodGet, "/pilot/operator")); code != http.StatusForbidden {
+						t.Fatalf("cold recovery forgot acknowledged revocation on replica %d: HTTP %d", r.index, code)
+					}
 				}
+				w.setPolicy(true)
 				w.assertEveryReplicaReads("/pilot/operator", value)
 				if code, response := put(c.replicas[1]); code != http.StatusConflict || strings.TrimSpace(string(response)) != operatorauth.ErrTokenReused.Error() {
 					t.Fatalf("cold recovery forgot a spent operator token: HTTP %d %s", code, response)
 				}
-				t.Log("total CDS process loss retained the rotated CA, existing leaf, secret, binding and spent token")
+				t.Log("total CDS process loss retained the rotated CA, existing leaf, secret, binding, spent token and acknowledged revocation")
 			}
 			w.setPolicy(false)
 			for _, r := range c.replicas {

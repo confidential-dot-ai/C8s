@@ -1,9 +1,26 @@
 package cdsconfig
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
+
+func TestObjectWALRecoveryModeIsExplicit(t *testing.T) {
+	p := ObjectWALPilot{Bucket: "pilot", Region: "us-east-2", Prefix: "one", RecoveryAuthority: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+	if err := p.Check(); err != nil {
+		t.Fatal(err)
+	}
+	p.KeySHA256 = strings.Repeat("ab", 32)
+	if err := p.Check(); err == nil {
+		t.Fatal("accepted raw-key downgrade alongside recovery authority")
+	}
+	p.KeySHA256 = ""
+	p.RecoveryAuthority = "not-a-public-key"
+	if err := p.Check(); err == nil {
+		t.Fatal("accepted invalid recovery authority")
+	}
+}
 
 func TestObjectWALMeasuredConfigRoundTrip(t *testing.T) {
 	_, op := testKey(t)

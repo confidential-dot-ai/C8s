@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsrecovery"
 	"github.com/confidential-dot-ai/c8s/internal/metadatapilot"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 )
@@ -15,20 +16,21 @@ import (
 // ObjectWALPilot is bound by the measured launch file. Keys and S3 credentials
 // are provisioned separately through a pinned, attested connection to each VM.
 type ObjectWALPilot struct {
-	Bucket           string `yaml:"bucket"`
-	Region           string `yaml:"region"`
-	Prefix           string `yaml:"prefix"`
-	Endpoint         string `yaml:"endpoint,omitempty"`
-	MetadataEndpoint string `yaml:"metadataEndpoint,omitempty"`
-	MetadataRootCA   string `yaml:"metadataRootCA,omitempty"`
-	PathStyle        bool   `yaml:"pathStyle,omitempty"`
-	KeySHA256        string `yaml:"keySHA256"`
-	DirectWriters    bool   `yaml:"directWriters,omitempty"`
-	BatchMaxEntries  int    `yaml:"batchMaxEntries,omitempty"`
-	BatchMaxBytes    int    `yaml:"batchMaxBytes,omitempty"`
-	BatchDelayMS     int    `yaml:"batchDelayMS,omitempty"`
-	QueueMaxRequests int    `yaml:"queueMaxRequests,omitempty"`
-	QueueMaxBytes    int64  `yaml:"queueMaxBytes,omitempty"`
+	Bucket            string `yaml:"bucket"`
+	Region            string `yaml:"region"`
+	Prefix            string `yaml:"prefix"`
+	Endpoint          string `yaml:"endpoint,omitempty"`
+	MetadataEndpoint  string `yaml:"metadataEndpoint,omitempty"`
+	MetadataRootCA    string `yaml:"metadataRootCA,omitempty"`
+	PathStyle         bool   `yaml:"pathStyle,omitempty"`
+	KeySHA256         string `yaml:"keySHA256,omitempty"`
+	RecoveryAuthority string `yaml:"recoveryAuthority,omitempty"`
+	DirectWriters     bool   `yaml:"directWriters,omitempty"`
+	BatchMaxEntries   int    `yaml:"batchMaxEntries,omitempty"`
+	BatchMaxBytes     int    `yaml:"batchMaxBytes,omitempty"`
+	BatchDelayMS      int    `yaml:"batchDelayMS,omitempty"`
+	QueueMaxRequests  int    `yaml:"queueMaxRequests,omitempty"`
+	QueueMaxBytes     int64  `yaml:"queueMaxBytes,omitempty"`
 }
 
 func (p ObjectWALPilot) WALOptions() objectwal.Options {
@@ -54,9 +56,18 @@ func (p ObjectWALPilot) Check() error {
 	if err := p.WALOptions().Check(); err != nil {
 		return err
 	}
-	key, err := hex.DecodeString(p.KeySHA256)
-	if err != nil || len(key) != 32 || strings.ToLower(p.KeySHA256) != p.KeySHA256 {
-		return errors.New("ha.objectWALPilot.keySHA256 must be the lowercase SHA-256 of a random 32-byte key")
+	if p.RecoveryAuthority != "" {
+		if p.KeySHA256 != "" {
+			return errors.New("ha.objectWALPilot must choose recoveryAuthority or keySHA256, not both")
+		}
+		if _, err := cdsrecovery.ParseAuthority(p.RecoveryAuthority); err != nil {
+			return err
+		}
+	} else {
+		key, err := hex.DecodeString(p.KeySHA256)
+		if err != nil || len(key) != 32 || strings.ToLower(p.KeySHA256) != p.KeySHA256 {
+			return errors.New("ha.objectWALPilot.keySHA256 must be the lowercase SHA-256 of a random 32-byte key")
+		}
 	}
 	if p.Bucket == "" || strings.ContainsAny(p.Bucket, "/:@ ") || p.Region == "" || strings.ContainsAny(p.Region, "/:@ ") {
 		return errors.New("ha.objectWALPilot requires a bucket and region")

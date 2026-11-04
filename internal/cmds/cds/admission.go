@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsobject"
+	"github.com/confidential-dot-ai/c8s/internal/cdsrecovery"
 	"github.com/confidential-dot-ai/c8s/internal/requestgate"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
@@ -51,6 +52,9 @@ func (a *requestAdmission) Handler(next http.Handler) http.Handler {
 }
 
 func isControlRequest(r *http.Request) bool {
+	if r.Method == http.MethodGet && r.URL.Path == cdsrecovery.RequestPath {
+		return true
+	}
 	if r.Method == http.MethodPut {
 		return r.URL.Path == "/allowlist" || r.URL.Path == routes.Path || strings.HasPrefix(r.URL.Path, "/secrets/")
 	}
