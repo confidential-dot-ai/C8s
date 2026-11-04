@@ -1664,23 +1664,25 @@ func replayedBy(img remote.ImagePin, result *teetypes.VerificationResult, measur
 }
 
 // enforceEachImage is armtls.EnforceImages with each image judged against
-// the measured list it replays. A list is checked only for an image whose
-// launch measurement matched, so another image's list error cannot mask the
-// booted one's; the error reported is the last of those, as EnforceImages
+// the measured list it replays. An image's anchor and list are checked only
+// once its launch measurement, registers and launch file match, so a list
+// error cannot mask why another image was not booted; the error reported is
+// the last of an image whose launch measurement matched, as EnforceImages
 // does.
 func enforceEachImage(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) error {
 	var lastErr error
 	for _, img := range images {
-		single := []remote.ImagePin{img}
-		err := armtls.EnforceImages(response, single, platform, nil)
+		bare := img
+		bare.Anchor = nil
+		err := armtls.EnforceImages(response, []remote.ImagePin{bare}, platform, nil)
 		if errors.Is(err, remote.ErrMeasurementNotAllowed) {
 			if lastErr == nil {
 				lastErr = err
 			}
 			continue
 		}
-		if replayed := replayedBy(img, &response.Result, measured); replayed != nil {
-			err = armtls.EnforceImages(response, single, platform, replayed)
+		if err == nil && anchored(img) {
+			err = armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayedBy(img, &response.Result, measured))
 		}
 		if err == nil {
 			return nil

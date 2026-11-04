@@ -648,6 +648,7 @@ func TestOverCapListNeedsAnchoredImage(t *testing.T) {
 		{"mixed, booted unanchored", []remote.ImagePin{other, booted}, matchingRTMRs(), ""},
 		{"mixed, booted unanchored fails its registers", []remote.ImagePin{staleBooted, otherLaunch}, matchingRTMRs(), "--image-policy-file: node: "},
 		{"no image matches", []remote.ImagePin{otherLaunch}, matchingRTMRs(), "no pinned image has this launch measurement"},
+		{"anchored, same launch, registers differ", []remote.ImagePin{other}, matchingRTMRs(), "--image-policy-file: other: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: tc.images})
