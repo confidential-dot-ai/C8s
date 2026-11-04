@@ -44,14 +44,17 @@ var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 // issuance and workload secret requests are real. Hardware evidence, sandbox
 // discovery and object storage are fixtures; no container runtime is required.
 func TestWorkloadBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
 			if backend != "raft" {
 				objects = newObjectFixture(t)
-				if backend == "transactional-metadata" {
+				if strings.HasPrefix(backend, "transactional-metadata") {
 					attachMetadata(t, objects)
+				}
+				if strings.HasSuffix(backend, "-protected") {
+					protectRecovery(t, objects)
 				}
 			}
 			nodes := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"` + seededNodeImage.mrtd + `"}]}`

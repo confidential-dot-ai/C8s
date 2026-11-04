@@ -324,6 +324,9 @@ func newClusterWithNodes(t *testing.T, size shape, objects *objectFixture, nodes
 		c.replicas = append(c.replicas, c.start(i))
 	}
 	if objects != nil {
+		if objects.recovery != nil {
+			objects.recovery.enroll(c)
+		}
 		for _, r := range c.replicas {
 			c.provisionObjects(r)
 		}

@@ -145,13 +145,15 @@ func (c *cluster) provisionObjects(r *replica) {
 	c.awaitStatus(r)
 	payload := c.objectWAL.provision
 	if f := c.objectWAL.recovery; f != nil {
-		initialize := !f.initialized && r.index == 0
-		grant := f.grant(c, r, f.key, initialize, f.signer)
+		if f.authority == nil {
+			c.t.Fatal("authority must restore existing registration before recovery")
+		}
+		grant, err := f.authority.Release(c.t.Context(), r.base)
+		if err != nil {
+			c.t.Fatal(err)
+		}
 		payload = f.payload(c, grant)
 		f.last[r.index] = payload
-		if initialize {
-			f.initialized = true
-		}
 	}
 	code, _ := c.send(r, http.MethodPost, "/ha/object-wal/provision", payload, nil)
 	if code != http.StatusNoContent {

@@ -5,6 +5,10 @@ disposable CDS compute, durable recovery of the same identity, and a smaller
 protocol to operate. CDS still attests workers, issues certificates, enforces
 policy and releases secrets. Its durable state is stored separately.
 
+The [acceptance increment](cds-recovery-acceptance.md) adds an immutable signed
+enrollment and a reusable authority, replacing the fixture's initialization
+flag. It includes one local runner that reports hardware custody as unverified.
+
 The commit rule remains **upload encrypted state, conditionally publish the
 head, apply, acknowledge**. Protected requests still confirm that head before
 serving. Recovery uses that same history. This increment adds no peer quorum,

@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,15 +25,17 @@ import (
 )
 
 // This separate logical authority is a SOFTWARE FIXTURE. It owns the WAL key,
-// approves launch files, and remembers initialization; none of these claims is
-// hardware-backed or durable in this fixture. The relay payload contains only
+// approves launch files, and retains the signed public registration on disk.
+// Its secret keys remain in the test custodian's memory, without hardware
+// protection. The relay payload contains only
 // ciphertext and storage credentials. Tests run sequentially on fixed ports.
 type recoveryFixture struct {
-	key         []byte
-	signer      ed25519.PrivateKey
-	initialized bool
-	verifier    string
-	last        map[int][]byte
+	key       []byte
+	signer    ed25519.PrivateKey
+	verifier  string
+	record    string
+	authority *cdsrecovery.Authority
+	last      map[int][]byte
 }
 
 func protectRecovery(t *testing.T, f *objectFixture) {
@@ -44,13 +48,66 @@ func protectRecovery(t *testing.T, f *objectFixture) {
 	if err := json.Unmarshal(f.provision, &p); err != nil {
 		t.Fatal(err)
 	}
-	f.recovery = &recoveryFixture{key: p.Key, signer: signer, last: make(map[int][]byte)}
+	f.recovery = &recoveryFixture{key: p.Key, signer: signer, last: make(map[int][]byte), record: filepath.Join(t.TempDir(), "registration.json")}
 	f.config.KeySHA256 = ""
 	f.config.RecoveryAuthority = base64.StdEncoding.EncodeToString(public)
 	p.Key = nil
 	clear(f.provision)
 	f.provision = jsonBody(t, p) // Relay never receives plaintext key material.
-	t.Cleanup(func() { clear(f.recovery.key); clear(f.recovery.signer) })
+	t.Cleanup(func() {
+		if f.recovery.authority != nil {
+			f.recovery.authority.Close()
+		}
+		clear(f.recovery.key)
+		clear(f.recovery.signer)
+	})
+}
+
+func (f *recoveryFixture) enroll(c *cluster) {
+	c.t.Helper()
+	c.awaitStatus(c.replicas[0])
+	f.verifier = c.attestationAPI("recovery-authority", testutil.TestMeasurement)
+	hash := sha256.Sum256(c.config)
+	policy := cdsrecovery.Enrollment{Identity: cdsrecovery.Identity{ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix},
+		Pins: []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config)))}
+	for _, r := range c.replicas {
+		policy.Origins = append(policy.Origins, r.base)
+	}
+	record, err := cdsrecovery.Enroll(c.t.Context(), policy, c.replicas[0].base, f.verifier, f.key, f.signer)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	file, err := os.OpenFile(f.record, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.Write(record); err != nil {
+		c.t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		c.t.Fatal(err)
+	}
+	f.restore(c)
+}
+
+// Restore loads the same signed enrollment. It never infers initialization
+// permission from a missing head or a restarted authority's empty memory.
+func (f *recoveryFixture) restore(c *cluster) {
+	c.t.Helper()
+	if f.authority != nil {
+		f.authority.Close()
+	}
+	record, err := os.ReadFile(f.record)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	hash := sha256.Sum256(c.config)
+	expected := cdsrecovery.Identity{ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix}
+	f.authority, err = cdsrecovery.NewAuthority(c.t.Context(), expected, record, f.key, f.signer, f.verifier)
+	if err != nil {
+		c.t.Fatal(err)
+	}
 }
 
 func (f *recoveryFixture) grant(c *cluster, r *replica, key []byte, initialize bool, signer ed25519.PrivateKey) *cdsrecovery.Grant {
@@ -122,6 +179,7 @@ func TestProtectedRecoveryRefusesDowngradeReplayAndMissingHistory(t *testing.T) 
 	for _, r := range c.replicas {
 		c.kill(r)
 	}
+	f.restore(c)
 	// Delete only this fixture's head. Old immutable objects cannot establish
 	// which history is current. A recovering process must not invent a new CA.
 	head := "/" + objects.config.Bucket + "/" + objects.config.Prefix + "/head"

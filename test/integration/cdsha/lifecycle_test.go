@@ -104,6 +104,9 @@ func TestCARotationBackendParity(t *testing.T) {
 				for _, r := range c.replicas {
 					c.kill(r)
 				}
+				if objects.recovery != nil {
+					objects.recovery.restore(c)
+				}
 				for _, r := range c.replicas {
 					c.restart(r)
 					c.provisionObjects(r)
