@@ -182,33 +182,21 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
 		return path
 	}
-	appendBlock := func(t *testing.T, path string, der []byte) string {
-		t.Helper()
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
 	// A valid leaf served with an expired intermediate.
 	expiredChain := func(t *testing.T, _ testMeshIdentity) string {
 		path, _ := writeTestServingLeaf(t)
 		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
-		return appendBlock(t, path, intermediate)
+		return appendTestPEMBlock(t, path, intermediate)
 	}
 	// tls.crt carries an intermediate that has expired.
 	meshExpiredChain := func(t *testing.T, identity testMeshIdentity) string {
 		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
-		return appendBlock(t, identity.certFile, intermediate)
+		return appendTestPEMBlock(t, identity.certFile, intermediate)
 	}
 	// tls.crt carries a trailing block that is not a certificate, which nginx
 	// would refuse to load.
 	meshGarbageChain := func(t *testing.T, identity testMeshIdentity) string {
-		return appendBlock(t, identity.certFile, []byte("not a certificate"))
+		return appendTestPEMBlock(t, identity.certFile, []byte("not a certificate"))
 	}
 	// Same subject and key as the mesh leaf, but expired and self-signed.
 	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
@@ -632,14 +620,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 // binding_unavailable rather than binding a leaf nginx will not load.
 func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	f, err := os.OpenFile(identity.certFile, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a certificate")}); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
+	appendTestPEMBlock(t, identity.certFile, []byte("not a certificate"))
 	ts, _ := newAttestLBServer(t, identity)
 
 	resp, err := http.Get(ts.URL + "/readyz")
@@ -657,15 +638,23 @@ func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
 	if b := fetchBundle(t, ts.URL, ck, bytes.Repeat([]byte{0x5a}, 32)); b.Version != types.BindingAttestPQ {
 		t.Fatalf("attest-pq bundle version = %q, want %q", b.Version, types.BindingAttestPQ)
 	}
-	resp, err = http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(bytes.Repeat([]byte{0x5a}, 32)))
+	// The attest-lb refusal itself is the "cds malformed chain block" case of
+	// TestAttestLBServingLeafAdmission.
+}
+
+// appendTestPEMBlock appends der as a CERTIFICATE block to the PEM file at
+// path and returns path.
+func appendTestPEMBlock(t *testing.T, path string, der []byte) string {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		resp.Body.Close()
-		t.Fatalf("GET attest-lb = %d, want 503", resp.StatusCode)
+	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatal(err)
 	}
-	if e := decodeErr(t, resp); e.Error != types.ErrorCodeBindingUnavailable {
-		t.Fatalf("attest-lb error code = %q, want %q", e.Error, types.ErrorCodeBindingUnavailable)
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
+	return path
 }
