@@ -344,6 +344,25 @@ class Run:
                 time.sleep(3)
         raise RuntimeError("verified probe response timed out")
 
+    def capture_boot_diagnostics(self):
+        for row in self.state["resources"]:
+            if row["item"]["kind"] != "VirtualMachine" or row.get("deleted") or not row.get("uid"):
+                continue
+            name = row["item"]["metadata"]["name"]
+            code, vmi = self.kube.call("GET", VMI + "/" + name, expected=(200, 404))
+            if code != 200 or not any(o["uid"] == row["uid"] for o in vmi["metadata"].get("ownerReferences", [])):
+                continue
+            self.atomic(self.directory / (name + "-failed-vmi.json"), vmi)
+            _, pods = self.kube.call("GET", f"/api/v1/namespaces/{NS}/pods")
+            for pod in pods["items"]:
+                if not any(o["uid"] == vmi["metadata"]["uid"] for o in pod["metadata"].get("ownerReferences", [])):
+                    continue
+                self.command(name + "-guest-console", self.kubectl("logs", pod["metadata"]["name"],
+                    "-c", "guest-console-log", "--tail=300"), timeout=20)
+            # No cursor/keyboard input, guest agent, shell, or memory access.
+            self.command(name + "-screenshot", [self.args.virtctl, "--kubeconfig", self.args.kubeconfig,
+                "-n", NS, "vnc", "screenshot", name, "-f", str(self.directory / (name + "-screen.png"))], timeout=20)
+
     def exercise(self):
         measurement, hashes = image_inputs(self.args.image)
         need(not self.state["resources"], "existing journal: run cleanup, then choose a new directory")
@@ -456,6 +475,10 @@ def main():
         run.exercise()
     except BaseException as error:
         run.event("failed", reason=str(error))
+        try:
+            run.capture_boot_diagnostics()
+        except Exception as diagnostic_error:
+            run.event("diagnostics-unavailable", reason=str(diagnostic_error))
         raise
     finally:
         signal.alarm(0)

@@ -10,6 +10,11 @@ the existing confos verity root/kernel/IGVM boot chain. Cloud-init is disabled;
 console login, rescue/emergency shells, SSH and the QEMU guest-agent service
 are masked in the image. Do not compose it with `dev`, `ssh`, general-purpose
 or workload profiles. Only the SNP platform and 2-vCPU variant are built.
+The qualification profile explicitly routes kernel boot diagnostics to the
+existing `ttyS0` device. The host can read those diagnostics; console login
+remains disabled. This is a disposable sentinel image, not a CA custody image.
+On failure the runner captures only its owned guest's console and display
+before cleanup, without guest input or memory inspection.
 
 ## Local build
 
