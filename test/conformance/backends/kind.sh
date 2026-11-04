@@ -343,7 +343,6 @@ cds_restart() {
     cds_wait
 }
 
-# The number in the weak entity tag W/"<n>" of GET /allowlist.
 node_containers() { node_exec crictl ps -a -q --image "$2"; }
 
 dispatch "$@"

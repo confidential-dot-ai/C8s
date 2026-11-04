@@ -78,11 +78,12 @@ type node struct {
 
 func (n *node) pull(t *testing.T) {
 	t.Helper()
-	doc, etag, _, err := n.client.Fetch(context.Background(), "")
+	served, _, err := n.client.FetchServed(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err := strconv.ParseUint(allowlistclient.VersionFromETag(etag), 10, 64)
+	doc := served.Allowlist
+	version, err := strconv.ParseUint(served.Version, 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}

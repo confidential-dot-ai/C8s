@@ -248,9 +248,10 @@ a replay with 409).
 
 `PUT /allowlist` is the one write: it carries the whole document, and the token
 that authorized it is that document's signature ([below](#allowlist-history)).
-It takes `If-Match: "N"`, the strong tag of version N, the N of the ETag
-`W/"N"` that `GET /allowlist` serves: CDS replaces the document only while the
-version is still N and answers 412 otherwise, leaving the allowlist unchanged.
+It takes `If-Match: "N"`, the strong tag of version N, the version that
+`GET /allowlist` serves in `X-C8s-Allowlist-Version`: CDS replaces the document
+only while the version is still N and answers 412 otherwise, leaving the
+allowlist unchanged.
 A write without `If-Match` replaces the document unconditionally.
 
 `c8s allowlist add`, `apply`, `edit` and `delete` read the live document, make
@@ -262,9 +263,12 @@ since its file is the whole document: run it again to see the new diff.
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
-default) and refreshes when the version — the ETag counter — changes. The
-document swaps wholesale, gated by that monotone version: a consumer applies a
-pull only if its version is not below the last applied.
+default) and refreshes when the document changes: CDS tags it with its digest,
+`"sha256:<hex>"`, and sends its version in `X-C8s-Allowlist-Version`, and the
+response carries `Cache-Control: no-store`. The document swaps wholesale, gated
+by that monotone version: a consumer applies a pull only if its version is not
+below the last applied, and a 304 raises the last applied version to the one
+it names.
 
 This matters because policy can tighten: narrow `args`, revoke a grant, remove
 an entry. A merge would let a host that withholds an update keep the laxer

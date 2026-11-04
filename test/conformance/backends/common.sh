@@ -72,9 +72,9 @@
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
 #                                    that is not an operator key
-#   allowlist_get [version]          read the allowlist, naming version in
+#   allowlist_get [tag]              read the allowlist, naming tag in
 #                                    If-None-Match when given; prints
-#                                    "<status> <version>", then the body
+#                                    "<status> <version> <tag>", then the body
 #   cds_read <document> [plain]      read a document of the CDS with no client
 #                                    certificate (mesh-ca, reference-values,
 #                                    operator-key-set, allowlist, readiness),
@@ -463,15 +463,20 @@ allowlist_replace() {
     [ "$code" = 204 ] || { echo "backend: PUT /allowlist ($name): HTTP $code: $reply" >&2; return 1; }
 }
 
+# response_header <file> <name>: the value of header name in a curl -D dump.
+response_header() {
+    awk -v name="$2:" 'tolower($1) == name {sub(/\r$/, "", $2); print $2}' "$1"
+}
+
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
     headers="$(mktemp)"
     body="$(mktemp)"
     local -a match=()
-    [ -z "${1:-}" ] || match=(-H "If-None-Match: W/\"$1\"")
+    [ -z "${1:-}" ] || match=(-H "If-None-Match: $1")
     status="$(curl -sSk -o "$body" -D "$headers" -w '%{http_code}' ${match[@]+"${match[@]}"} "$url/allowlist")" || status=000
-    echo "$status $(awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}' "$headers")"
+    echo "$status $(response_header "$headers" x-c8s-allowlist-version) $(response_header "$headers" etag)"
     cat "$body"
     rm -f "$headers" "$body"
 }

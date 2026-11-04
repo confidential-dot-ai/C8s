@@ -40,6 +40,9 @@ func newStubRouter(t *testing.T) http.Handler {
 		t.Fatalf("allowlist: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Local().StartJournal(); err != nil {
+		t.Fatalf("start journal: %v", err)
+	}
 	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatalf("ca: %v", err)

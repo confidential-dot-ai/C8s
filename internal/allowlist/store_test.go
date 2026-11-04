@@ -129,9 +129,7 @@ func TestReplaceAllEmptyClears(t *testing.T) {
 	}
 }
 
-// A fresh store must start at version "1": CDS clients cache on the derived
-// ETag (W/"1"), so the initial value is part of the API contract, not an
-// implementation detail.
+// A fresh store must start at version "1" (allowlist specification S3).
 func TestInitialVersionIsOne(t *testing.T) {
 	store := openInMemory(t)
 
