@@ -441,10 +441,17 @@ func TestDeriveAddsInjectedMounts(t *testing.T) {
 		mounts     string
 		mountsFile string
 		want       pkgallowlist.MountPolicy
+		wantErr    string
+		wantStderr string
 	}{
 		{name: "no secrets", object: annotatedDeployJSON(`"confidential.ai/cw": "dynamo"`), want: pkgallowlist.MountPolicy{}},
 		{name: "empty secrets list", object: annotatedDeployJSON(`"confidential.ai/c8s-secrets": " ,\n "`), want: pkgallowlist.MountPolicy{}},
-		{name: "default", object: annotatedDeployJSON(withSecrets), want: exact(secrets)},
+		{
+			name:       "default",
+			object:     annotatedDeployJSON(withSecrets),
+			want:       exact(secrets),
+			wantStderr: "mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone\n",
+		},
 		{name: "deny", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=deny", want: exact(secrets)},
 		{name: "any", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=any", want: pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
 		{
@@ -459,6 +466,23 @@ func TestDeriveAddsInjectedMounts(t *testing.T) {
 				pkgallowlist.MountRule{Destination: "/mnt/c8s-data/db", Kind: pkgallowlist.MountData},
 				pkgallowlist.MountRule{Destination: "/secrets", Kind: pkgallowlist.MountEmptyDir},
 			),
+		},
+		{
+			name:    "secrets volume mounted by subpath outside the data prefix",
+			object:  mounting(`{"name": "c8s-secrets", "mountPath": "/etc/app/db", "subPath": "db"}`),
+			wantErr: `container "seed" mounts c8s-secrets by subpath at /etc/app/db`,
+		},
+		{
+			name:   "subpath outside the data prefix under any",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/etc/app/db", "subPath": "db"}`),
+			mounts: "--mounts=any",
+			want:   pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+		},
+		{
+			name:       "file lists the secrets destination with another kind",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"host","source":"/var/secrets"}]}`,
+			wantErr:    `gives /run/c8s/secrets kind "host", but c8s mounts its c8s-secrets volume there as "emptyDir"`,
 		},
 		{
 			name:       "exact file",
@@ -488,9 +512,18 @@ func TestDeriveAddsInjectedMounts(t *testing.T) {
 				}
 				args = append(args, "--mounts-file", file)
 			}
-			got, err := runDerive(t, tt.object, args...)
+			got, stderr, err := runDeriveStderr(t, tt.object, args...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("derive error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.wantStderr != "" && stderr != tt.wantStderr {
+				t.Errorf("stderr = %q, want %q", stderr, tt.wantStderr)
 			}
 			raw, err := json.Marshal(got["dynamo"])
 			if err != nil {

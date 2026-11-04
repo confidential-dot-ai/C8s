@@ -41,8 +41,9 @@ type templateContainer struct {
 
 // emptyDirMounts are the rules for every mount c declares of an emptyDir
 // volume, or one at fallback when it declares none. A subpath mount is
-// observed as data, so its rule is a data rule.
-func (c templateContainer) emptyDirMounts(volume, fallback string) []allowlist.MountRule {
+// observed as data, so its rule is a data rule, which must sit below
+// allowlist.DataMountPrefix.
+func (c templateContainer) emptyDirMounts(volume, fallback string) ([]allowlist.MountRule, error) {
 	var rules []allowlist.MountRule
 	for _, m := range c.VolumeMounts {
 		if m.Name != volume {
@@ -50,6 +51,10 @@ func (c templateContainer) emptyDirMounts(volume, fallback string) []allowlist.M
 		}
 		kind := allowlist.MountEmptyDir
 		if m.SubPath != "" || m.SubPathExpr != "" {
+			if !strings.HasPrefix(m.MountPath, allowlist.DataMountPrefix) {
+				return nil, fmt.Errorf("container %q mounts %s by subpath at %s: an allowlist can admit a subpath mount only below %s",
+					c.Name, volume, m.MountPath, allowlist.DataMountPrefix)
+			}
 			kind = allowlist.MountData
 		}
 		rules = append(rules, allowlist.MountRule{Destination: m.MountPath, Kind: kind})
@@ -57,7 +62,7 @@ func (c templateContainer) emptyDirMounts(volume, fallback string) []allowlist.M
 	if len(rules) == 0 {
 		rules = append(rules, allowlist.MountRule{Destination: fallback, Kind: allowlist.MountEmptyDir})
 	}
-	return rules
+	return rules, nil
 }
 
 // podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
@@ -111,30 +116,32 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 	return out, dropped
 }
 
-// injectedMounts are the mounts the webhook adds to c, which a deny or exact
-// policy must list to admit it: the secrets volume, when the pod requests
-// secrets. The webhook keeps a mount c already declares for the volume, so
-// those destinations win.
-func injectedMounts(annotations map[string]string, c templateContainer) []allowlist.MountRule {
-	if len(workloadclaims.SplitList(annotations[workloadclaims.AnnotationSecrets])) == 0 {
-		return nil
+// withInjectedMounts adds the mounts the webhook adds to c to a deny or exact
+// policy: the secrets volume, when the pod requests secrets. The webhook keeps
+// a mount c already declares for the volume, so those destinations win. A rule
+// p already gives for the same destination is kept if its kind matches and
+// refused otherwise, since it would refuse the injected mount. Any is returned
+// unchanged.
+func withInjectedMounts(p allowlist.MountPolicy, annotations map[string]string, c templateContainer) (allowlist.MountPolicy, error) {
+	if p.Policy == allowlist.PolicyAny || len(workloadclaims.SplitList(annotations[workloadclaims.AnnotationSecrets])) == 0 {
+		return p, nil
 	}
-	return c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)
-}
-
-// withInjectedMounts adds rules to a deny or exact policy, keeping any rule
-// already given for the same destination; any is returned unchanged.
-func withInjectedMounts(p allowlist.MountPolicy, rules []allowlist.MountRule) allowlist.MountPolicy {
-	if len(rules) == 0 || p.Policy == allowlist.PolicyAny {
-		return p
+	rules, err := c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)
+	if err != nil {
+		return p, err
 	}
 	out := allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: slices.Clone(p.Rules)}
 	for _, r := range rules {
-		if !slices.ContainsFunc(out.Rules, func(have allowlist.MountRule) bool { return have.Destination == r.Destination }) {
+		i := slices.IndexFunc(out.Rules, func(have allowlist.MountRule) bool { return have.Destination == r.Destination })
+		switch {
+		case i < 0:
 			out.Rules = append(out.Rules, r)
+		case out.Rules[i].Kind != r.Kind:
+			return p, fmt.Errorf("mount policy for container %q gives %s kind %q, but c8s mounts its %s volume there as %q",
+				c.Name, r.Destination, out.Rules[i].Kind, workloadclaims.SecretsVolumeName, r.Kind)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // argvPolicy renders one half of a container's argv policy.
@@ -346,7 +353,11 @@ derives the same entry as the manifest it was admitted from.`,
 					case mountsMode != "":
 						part.containers[i].Mounts = allowlist.MountPolicy{Policy: mountsMode}
 					}
-					part.containers[i].Mounts = withInjectedMounts(part.containers[i].Mounts, injectedMounts(spec.annotations, c))
+					mounts, err := withInjectedMounts(part.containers[i].Mounts, spec.annotations, c)
+					if err != nil {
+						return err
+					}
+					part.containers[i].Mounts = mounts
 				}
 			}
 			for name := range policies {
