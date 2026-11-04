@@ -345,19 +345,26 @@ func readBundle(args []string) (*specs.Spec, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	spec, err := readSpec(dir)
+	return spec, containerID, err
+}
+
+// readSpec reads the OCI configuration in bundle directory dir, with a
+// relative root path resolved against it.
+func readSpec(dir string) (*specs.Spec, error) {
 	path := filepath.Join(dir, "config.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the OCI configuration: %w", err)
+		return nil, fmt.Errorf("read the OCI configuration: %w", err)
 	}
 	var spec specs.Spec
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if spec.Root != nil && !filepath.IsAbs(spec.Root.Path) {
 		spec.Root.Path = filepath.Join(dir, spec.Root.Path)
 	}
-	return &spec, containerID, nil
+	return &spec, nil
 }
 
 // bundleAndID finds the two things the floor needs: the --bundle option's
