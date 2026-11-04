@@ -21,8 +21,14 @@ def main():
         "TestAuthorityRestartCannotRegrantGenesisToReplacement",
         "TestAuthorityRefusesMissingOrRewrittenRegistration",
         "TestAuthorityBackpressureIsPerClusterAndCloseDrains",
+        "TestWALAuthorityOriginalCapsuleUsesCurrentPolicyAfterRestart",
+        "TestWALAuthorityOrdersRevocationAgainstFinalRead",
+        "TestWALAuthorityFailsClosedOnOutageMissingHeadAndLiveRollback",
+        "TestWALAuthorityUsesOnlyAppliedSignedPolicy",
+        "TestWALAuthorityColdRollbackStillRequiresTrustedStorage",
+        "TestWALAuthorityBackpressureIsPerClusterAndCloseCancelsReplay",
     ]
-    variants = ["raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected"]
+    variants = ["raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current"]
     integration = prefix + "test/integration/cdsha"
     required_unit = {(prefix + p, "") for p in packages}
     required_unit.update((prefix + "internal/cdsrecovery", test) for test in authority_tests)
@@ -36,12 +42,15 @@ def main():
         "base_commit": (output / "base-commit.txt").read_text().strip(),
         "worktree_modified": bool((output / "worktree-status.txt").read_text().strip()),
         "local_protocol_result": "passed",
-        "backend_scenarios_passed": 10,
+        "backend_scenarios_passed": len(variants) * 2,
         "authority_restart": "passed; restored from signed public enrollment",
         "authority_backpressure_and_cluster_isolation": "passed",
         "same_identity_after_total_cds_loss": "passed for all storage variants",
         "spent_tokens_and_acknowledged_revocation_survive": "passed for all storage variants",
         "tampering_replay_and_missing_history_refused": "passed",
+        "current_release_policy": "passed for both current-policy storage arms; original capsule cannot override committed image policy",
+        "revocation_ordering": "release linearizes at final head read; overlapping revocation after that read may finish before delivery",
+        "retired_custody_code_exclusion": "not established; old code with an independently recoverable key cannot be revoked by this gate",
         "operator_cannot_obtain_ca_key": "unverified: authority keys and attestation use software fixtures",
         "storage_rollback_protection": "not established; linearizable storage remains trusted",
         "full_acceptance_passed": False,

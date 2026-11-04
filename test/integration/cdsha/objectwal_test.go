@@ -40,6 +40,7 @@ type objectFixture struct {
 	gets        atomic.Uint64
 	puts        atomic.Uint64
 	recovery    *recoveryFixture
+	client      *http.Client // TLS client pinned to this local object's fixture CA.
 }
 
 type objectShard struct {
@@ -68,6 +69,7 @@ func newObjectFixture(t *testing.T) *objectFixture {
 		f.shards[i].objects = map[string]objectwal.Object{}
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(f.serve))
+	f.client = server.Client()
 	t.Cleanup(server.Close)
 	f.certificate = filepath.Join(t.TempDir(), "object-server.pem")
 	write(t, f.certificate, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))

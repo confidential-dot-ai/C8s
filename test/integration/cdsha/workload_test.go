@@ -44,7 +44,7 @@ var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 // issuance and workload secret requests are real. Hardware evidence, sandbox
 // discovery and object storage are fixtures; no container runtime is required.
 func TestWorkloadBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
@@ -55,6 +55,9 @@ func TestWorkloadBackendParity(t *testing.T) {
 				}
 				if strings.HasSuffix(backend, "-protected") {
 					protectRecovery(t, objects)
+				}
+				if strings.HasSuffix(backend, "-current") {
+					protectCurrentRecovery(t, objects)
 				}
 			}
 			nodes := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"` + seededNodeImage.mrtd + `"}]}`
@@ -138,6 +141,9 @@ func TestWorkloadBackendParity(t *testing.T) {
 				for _, r := range c.replicas {
 					c.kill(r)
 				}
+				if objects.recovery != nil && objects.recovery.currentPolicy {
+					objects.recovery.restore(c)
+				}
 				for _, r := range c.replicas {
 					c.restart(r)
 					c.provisionObjects(r)
@@ -163,6 +169,11 @@ func TestWorkloadBackendParity(t *testing.T) {
 				attest := w.attestRequest(c.replicas[0], c.replicas[1])
 				read := w.secretRequest(c.replicas[2], http.MethodGet, "/pilot/operator")
 				objects.setAuthorityOutage(true)
+				if objects.recovery != nil && objects.recovery.currentPolicy {
+					if grant, err := objects.recovery.authority.Release(t.Context(), c.replicas[0].base); err == nil || grant != nil {
+						t.Fatal("recovery authority released a key without a current committed policy")
+					}
+				}
 				for _, check := range []struct {
 					client *http.Client
 					req    *http.Request

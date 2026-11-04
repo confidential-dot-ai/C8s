@@ -9,6 +9,11 @@ tests authority subprocess loss and independently wrapped recovery copies,
 and records the old-enrollment replay counterexample. That experiment is the
 current provider-free direction; hardware custody remains unqualified.
 
+The [current-policy increment](cds-current-release-policy.md) adds mandatory
+committed-policy checks for the new recovery authority. The runner now includes
+fourteen backend/scenario combinations; the ten-arm result recorded below
+remains the historical result for the earlier increment.
+
 This increment builds on sealed recovery at `20bd0df8`. It removes the test
 authority's mutable initialization flag and adds a reusable release authority
 with immutable policy and bounded admission. It does not qualify hardware
@@ -63,9 +68,10 @@ test/pilot/cds-recovery-acceptance/run-local.sh /tmp/cds-recovery-acceptance-001
 
 Use a fresh output directory. Go, Python 3, Linux loopback networking and the
 existing workload fixture's inventory port are required. The command runs
-local race suites and vet, then ten release-process scenarios sequentially:
+local race suites and vet, then fourteen release-process scenarios sequentially:
 rotation and workload tests for Raft, object WAL, transactional metadata, and
-both storage variants with sealed recovery. It also runs adversarial recovery.
+both storage variants with sealed recovery, and both with current-policy
+recovery. It also runs adversarial recovery.
 It uses no CI or cloud resources. Test processes are cleaned up by the harness.
 
 The report records test events and source state. Missing, failed or skipped

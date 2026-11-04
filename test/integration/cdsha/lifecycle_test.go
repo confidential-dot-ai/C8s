@@ -20,7 +20,7 @@ import (
 // The durable arms must then recover the new key and acknowledged state after
 // losing every CDS process. Hardware evidence and inventory are fixtures.
 func TestCARotationBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
@@ -31,6 +31,9 @@ func TestCARotationBackendParity(t *testing.T) {
 				}
 				if strings.HasSuffix(backend, "-protected") {
 					protectRecovery(t, objects)
+				}
+				if strings.HasSuffix(backend, "-current") {
+					protectCurrentRecovery(t, objects)
 				}
 			}
 			c := newClusterWithNodes(t, threeReplicas, objects, nodeImagesCertifying(seededNodeImage), []string{host + "/32"})

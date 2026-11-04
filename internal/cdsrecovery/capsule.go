@@ -80,6 +80,17 @@ func SealAuthority(expected Identity, record, key []byte, signer ed25519.Private
 // an old intact capsule plus its old registration can still be restored.
 // Version retirement needs an independently fresh decision before release.
 func RestoreSealedAuthority(parent context.Context, expected Identity, record []byte, capsule Capsule, wrappingKey []byte, verifier string) (*Authority, error) {
+	material, err := openCapsule(expected, record, capsule, wrappingKey)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(material)
+	signer := ed25519.NewKeyFromSeed(material[32:])
+	defer clear(signer)
+	return NewAuthority(parent, expected, record, material[:32], signer, verifier)
+}
+
+func openCapsule(expected Identity, record []byte, capsule Capsule, wrappingKey []byte) ([]byte, error) {
 	aad, err := capsuleContext(expected, record)
 	if err != nil {
 		return nil, err
@@ -95,8 +106,5 @@ func RestoreSealedAuthority(parent context.Context, expected Identity, record []
 	if err != nil {
 		return nil, errors.New("recovery: capsule binding or authentication failed")
 	}
-	defer clear(material)
-	signer := ed25519.NewKeyFromSeed(material[32:])
-	defer clear(signer)
-	return NewAuthority(parent, expected, record, material[:32], signer, verifier)
+	return material, nil
 }

@@ -6,6 +6,10 @@ the need for a separate stateful key service. It builds on
 [immutable enrollment](cds-recovery-acceptance.md); it does not replace that
 pilot or qualify a production Raft migration.
 
+The [current-release-policy increment](cds-current-release-policy.md) implements
+the mandatory WAL-based check described below and tests both storage variants.
+The static-sealing counterexample and hardware boundaries remain relevant.
+
 The candidate is: **encrypted WAL, replaceable CDS compute, and independently
 sealed recovery copies**. Each copy contains the same WAL encryption key and
 release-signing seed, encrypted under a different protected wrapping key.

@@ -4,6 +4,7 @@ package cdsha_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -34,8 +35,15 @@ type recoveryFixture struct {
 	signer    ed25519.PrivateKey
 	verifier  string
 	record    string
-	authority *cdsrecovery.Authority
-	last      map[int][]byte
+	authority interface {
+		Release(context.Context, string) (*cdsrecovery.Grant, error)
+		Close()
+	}
+	currentPolicy bool
+	wrappingKey   []byte // Software root only; never a hardware custody claim.
+	capsule       cdsrecovery.Capsule
+	closeReplay   func()
+	last          map[int][]byte
 }
 
 func protectRecovery(t *testing.T, f *objectFixture) {
@@ -55,11 +63,10 @@ func protectRecovery(t *testing.T, f *objectFixture) {
 	clear(f.provision)
 	f.provision = jsonBody(t, p) // Relay never receives plaintext key material.
 	t.Cleanup(func() {
-		if f.recovery.authority != nil {
-			f.recovery.authority.Close()
-		}
+		f.recovery.closeAuthority()
 		clear(f.recovery.key)
 		clear(f.recovery.signer)
+		clear(f.recovery.wrappingKey)
 	})
 }
 
@@ -88,6 +95,12 @@ func (f *recoveryFixture) enroll(c *cluster) {
 	if err := file.Sync(); err != nil {
 		c.t.Fatal(err)
 	}
+	if f.currentPolicy {
+		f.capsule, err = cdsrecovery.SealAuthority(policy.Identity, record, f.key, f.signer, f.wrappingKey)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+	}
 	f.restore(c)
 }
 
@@ -95,19 +108,22 @@ func (f *recoveryFixture) enroll(c *cluster) {
 // permission from a missing head or a restarted authority's empty memory.
 func (f *recoveryFixture) restore(c *cluster) {
 	c.t.Helper()
-	if f.authority != nil {
-		f.authority.Close()
-	}
+	f.closeAuthority()
 	record, err := os.ReadFile(f.record)
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	hash := sha256.Sum256(c.config)
 	expected := cdsrecovery.Identity{ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix}
-	f.authority, err = cdsrecovery.NewAuthority(c.t.Context(), expected, record, f.key, f.signer, f.verifier)
+	if f.currentPolicy {
+		f.restoreCurrent(c, expected, record)
+		return
+	}
+	authority, err := cdsrecovery.NewAuthority(c.t.Context(), expected, record, f.key, f.signer, f.verifier)
 	if err != nil {
 		c.t.Fatal(err)
 	}
+	f.authority = authority
 }
 
 func (f *recoveryFixture) grant(c *cluster, r *replica, key []byte, initialize bool, signer ed25519.PrivateKey) *cdsrecovery.Grant {

@@ -327,6 +327,17 @@ func newClusterWithNodes(t *testing.T, size shape, objects *objectFixture, nodes
 		if objects.recovery != nil {
 			objects.recovery.enroll(c)
 		}
+		if objects.recovery != nil && objects.recovery.currentPolicy {
+			// Only the originally enrolled process can obtain a key while
+			// history is empty. Commit Genesis before provisioning replacements.
+			c.provisionObjects(c.replicas[0])
+			c.genesisCertifying(c.replicas[0], nodes, 0)
+			for _, r := range c.replicas[1:] {
+				c.provisionObjects(r)
+			}
+			c.waitServing(time.Minute)
+			return c
+		}
 		for _, r := range c.replicas {
 			c.provisionObjects(r)
 		}
