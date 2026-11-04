@@ -631,6 +631,10 @@ func TestOverCapListNeedsAnchoredImage(t *testing.T) {
 	anchoredNode := booted
 	anchoredNode.Anchor = pubPEM
 	other := remote.ImagePin{Name: "other", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(strings.Repeat("5e", 48)), 2: reg(testRTMR2)}, Anchor: pubPEM}
+	otherLaunch := other
+	otherLaunch.Digest = reg(strings.Repeat("ab", 48))
+	staleBooted := booted
+	staleBooted.Registers = map[int][]byte{1: reg(strings.Repeat("6f", 48)), 2: reg(testRTMR2)}
 	overCap := fmt.Sprintf("%d runtime extensions, at most %d", len(over), armtls.MaxRuntimeExtensions)
 	for _, tc := range []struct {
 		name   string
@@ -642,6 +646,8 @@ func TestOverCapListNeedsAnchoredImage(t *testing.T) {
 		{"anchored", []remote.ImagePin{anchoredNode}, matchingRTMRs(), overCap},
 		{"anchored, at seed", []remote.ImagePin{anchoredNode}, rtmr3Claims(seed), ""},
 		{"mixed, booted unanchored", []remote.ImagePin{other, booted}, matchingRTMRs(), ""},
+		{"mixed, booted unanchored fails its registers", []remote.ImagePin{staleBooted, otherLaunch}, matchingRTMRs(), "--image-policy-file: node: "},
+		{"no image matches", []remote.ImagePin{otherLaunch}, matchingRTMRs(), "no pinned image has this launch measurement"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: tc.images})
