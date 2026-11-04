@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+# No host-controlled console, rescue shell, SSH or guest-agent command runner.
+# These masks are baked into the measured verity root.
+for unit in getty@.service serial-getty@.service console-getty.service rescue.service emergency.service ssh.service sshd.service qemu-guest-agent.service; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+test -x "$BUILDROOT/usr/local/bin/snp-probe"
+test -f "$BUILDROOT/etc/cloud/cloud-init.disabled"

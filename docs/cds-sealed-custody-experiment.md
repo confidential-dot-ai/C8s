@@ -91,13 +91,19 @@ A generic VM sharing a firmware measurement is insufficient. See Google's
 [derived-key limitations](https://github.com/google/go-sev-guest/blob/main/LIMITATIONS.md)
 and the AMD [SNP ABI](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).
 
-This primitive probe does not verify the report certificate chain or prove
+The original single-process primitive does not verify the report certificate chain or prove
 the guest's entire boot/workload boundary. Its output always reports
 `attestation_chain_verified`, `operator_exclusion_verified`,
 `version_retirement_verified` and `full_acceptance_passed` as **false**.
 It prints only public bindings and the random sentinel's digest. No plaintext
 secret or derived key is written to a file or stdout. Capsule creation refuses
 overwrite; recovery accepts bounded, unambiguous JSON.
+
+The [dedicated measured-image experiment](../images/cds-snp-probe/README.md)
+adds a bounded actor-owned exchange and an independent host client that checks
+AMD report signatures and issuer revocation. It binds a fresh request and its
+complete result into REPORT_DATA, including failed opens. Those checks still
+do not establish operator exclusion, a minimum TCB policy or image retirement.
 
 Build locally:
 

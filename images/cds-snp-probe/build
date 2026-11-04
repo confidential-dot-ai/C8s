@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="$(cd "$IMAGE_DIR/../.." && pwd)"
+CONFOS_DIR="${CONFOS_DIR:-$SOURCE/../confidential-os-builder}"
+: "${PROBE_BUILD_DIR:?set PROBE_BUILD_DIR to a dedicated local output directory}"
+mkdir -p "$PROBE_BUILD_DIR"
+PROBE_BUILD_DIR="$(cd "$PROBE_BUILD_DIR" && pwd)"
+expected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["builds"]["node-image"]["confos_ref"])' "$SOURCE/.github/build-pins.json")"
+test "$(git -C "$CONFOS_DIR" rev-parse HEAD)" = "$expected"
+git -C "$CONFOS_DIR" diff HEAD --quiet
+mkdir -p "$PROBE_BUILD_DIR/extra/usr/local/bin"
+cd "$SOURCE"
+if [ -n "$(git ls-files --others --exclude-standard -- test/pilot/cds-sealed-recovery/snp-probe images/cds-snp-probe)" ]; then
+    echo 'Stage new probe sources first so source.diff records every build input.' >&2
+    exit 1
+fi
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off go build -mod=readonly -trimpath -buildvcs=false \
+    -o "$PROBE_BUILD_DIR/extra/usr/local/bin/snp-probe" ./test/pilot/cds-sealed-recovery/snp-probe
+sha256sum "$PROBE_BUILD_DIR/extra/usr/local/bin/snp-probe" > "$PROBE_BUILD_DIR/probe.sha256"
+git rev-parse HEAD > "$PROBE_BUILD_DIR/source-parent.txt"
+git diff --binary HEAD > "$PROBE_BUILD_DIR/source.diff"
+go version > "$PROBE_BUILD_DIR/go-version.txt"
+cp "$SOURCE/.github/build-pins.json" "$PROBE_BUILD_DIR/build-pins.json"
+if [ "${1:-}" = --stage-only ]; then
+    exit 0
+fi
+test "$#" -eq 0
+cd "$CONFOS_DIR"
+bin/confos build cds-snp-probe --platform snp --smp 2 --memory 4G \
+    --profile-dir "$IMAGE_DIR/snp-probe" --extra "$PROBE_BUILD_DIR/extra"

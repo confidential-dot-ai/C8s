@@ -246,7 +246,17 @@ func run(args []string, out io.Writer) error {
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	entry := run
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			entry, args = serve, args[1:]
+		case "request":
+			entry, args = request, args[1:]
+		}
+	}
+	if err := entry(args, os.Stdout); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
