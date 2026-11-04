@@ -616,32 +616,43 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 	}
 }
 
-// Only an anchored --image-policy-file image replays the measured list, so
-// only it fails a verdict over an over-cap list.
+// Only an anchored --image-policy-file image whose RTMR[3] moved past its
+// seed replays the measured list, so only it fails a verdict over an over-cap
+// list.
 func TestOverCapListNeedsAnchoredImage(t *testing.T) {
 	reg := hexBytes(t)
+	pubPEM := approverKey(t)
+	seed := runtimemeasure.Seed(pubPEM)
 	over := make([]string, armtls.MaxRuntimeExtensions+1)
 	for i := range over {
 		over[i] = testPolicyP
 	}
+	booted := remote.ImagePin{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}}
+	anchoredNode := booted
+	anchoredNode.Anchor = pubPEM
+	other := remote.ImagePin{Name: "other", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(strings.Repeat("5e", 48)), 2: reg(testRTMR2)}, Anchor: pubPEM}
+	overCap := fmt.Sprintf("%d runtime extensions, at most %d", len(over), armtls.MaxRuntimeExtensions)
 	for _, tc := range []struct {
 		name   string
-		anchor []byte
+		images []remote.ImagePin
+		claims map[string]any
 		want   string
 	}{
-		{"unanchored", nil, ""},
-		{"anchored", approverKey(t), fmt.Sprintf("%d runtime extensions, at most %d", len(over), armtls.MaxRuntimeExtensions)},
+		{"unanchored", []remote.ImagePin{booted}, matchingRTMRs(), ""},
+		{"anchored", []remote.ImagePin{anchoredNode}, matchingRTMRs(), overCap},
+		{"anchored, at seed", []remote.ImagePin{anchoredNode}, rtmr3Claims(seed), ""},
+		{"mixed, booted unanchored", []remote.ImagePin{other, booted}, matchingRTMRs(), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
-				Family: teetypes.FamilyTDX,
-				Images: []remote.ImagePin{{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}, Anchor: tc.anchor}},
-			})
+			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: tc.images})
 			cfg := config{measurementsConfig: policy}
 			ev := &evidence{platform: "tdx", measured: over}
-			oc := newOutcome(cfg, ev, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
+			oc := newOutcome(cfg, ev, tdxResult(testMRTD, tc.claims), nil, mustPlan(t, cfg))
 			if oc.Verified != (tc.want == "") || !strings.Contains(oc.Error, tc.want) {
 				t.Errorf("newOutcome = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.want)
+			}
+			if len(oc.MeasuredPolicies) != 0 {
+				t.Errorf("MeasuredPolicies = %v, want none", oc.MeasuredPolicies)
 			}
 		})
 	}

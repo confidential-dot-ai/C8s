@@ -1555,23 +1555,17 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			return oc
 		}
 		response := remote.VerifyResponse{Result: *result}
-		// Nothing authenticates the measured list, so only an anchored image,
-		// which replays it, may fail a verdict over it.
-		measured := ev.measured
-		if !slices.ContainsFunc(plan.refValues.Images, anchored) {
-			measured = nil
-		}
-		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), measured); err != nil {
+		if err := enforceEachImage(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
 			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
 			return oc
 		}
-		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), measured)
+		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured)
 		// A TDX tuple covers the guest only when the matching entry pins both
 		// kernel and rootfs registers. A weak alternative must not borrow the
 		// completeness of an unrelated entry in the same policy.
 		for _, entry := range plan.refValues.Images {
 			if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), measured) == nil {
+				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), replayedBy(entry, result, ev.measured)) == nil {
 				fullImagePinned = true
 				break
 			}
@@ -1655,23 +1649,55 @@ func checkMeasuredList(measured []string) error {
 // anchored reports whether img pins a launch anchor.
 func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
 
+// replayedBy returns the part of the unauthenticated measured list img
+// replays: none for an unanchored image or a register still at its seed, so
+// the list cannot fail those.
+func replayedBy(img remote.ImagePin, result *teetypes.VerificationResult, measured []string) []string {
+	if !anchored(img) {
+		return nil
+	}
+	seed := runtimemeasure.Seed(img.Anchor)
+	if got, err := result.Claims.RTMR(3); err == nil && bytes.Equal(got, seed[:]) {
+		return nil
+	}
+	return measured
+}
+
+// enforceEachImage is armtls.EnforceImages with each image judged against
+// the measured list it replays. It reports the last error of an image whose
+// launch measurement matched, as EnforceImages does.
+func enforceEachImage(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) error {
+	var lastErr error
+	for _, img := range images {
+		err := armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayedBy(img, &response.Result, measured))
+		if err == nil {
+			return nil
+		}
+		if lastErr == nil || !errors.Is(err, remote.ErrMeasurementNotAllowed) {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // replayedHistory returns the prefix of measured that RTMR[3] proves on top of
 // the seed of an anchored image the evidence matches on its own, and whether
 // such an image bound RTMR[3]. Another image's anchor proves nothing about a
 // guest that booted an unanchored one.
 func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) ([]string, bool) {
 	for _, img := range images {
-		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, measured) != nil {
+		replayed := replayedBy(img, &response.Result, measured)
+		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayed) != nil {
 			continue
 		}
-		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, measured)
+		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, replayed)
 		if err != nil {
 			continue
 		}
 		if k == 0 {
 			return nil, true
 		}
-		return slices.Clone(measured[:k]), true
+		return slices.Clone(replayed[:k]), true
 	}
 	return nil, false
 }
