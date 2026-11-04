@@ -54,6 +54,7 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 		"--cds-address", "cds.acme.example:8443",
 		"--cds-pin", pinPath,
 		"--cds-pin-floor", "3",
+		"--tls-san", "c8s.acme.example",
 		"--router-hostname", "api.acme.example",
 		"--acme-email", "ops@acme.example",
 	}, kubernetesFlags(caPath)...)
@@ -73,6 +74,9 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 	if doc.CDS.Address != "cds.acme.example:8443" || doc.CDS.Measurements != string(pin) || doc.CDS.PinFloor != 3 {
 		t.Fatalf("cds = %+v, want the flags' address, floor and the pin file's bytes", doc.CDS)
 	}
+	if doc.TLSSAN != "c8s.acme.example" {
+		t.Fatalf("tlsSAN = %q, want the flag's", doc.TLSSAN)
+	}
 	if doc.Router == nil || len(doc.Router.Hostnames) != 1 || doc.Router.Hostnames[0] != "api.acme.example" || doc.Router.ACMEEmail != "ops@acme.example" {
 		t.Fatalf("router = %+v", doc.Router)
 	}
@@ -90,7 +94,7 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 
 func TestNewWritesToStdoutWithoutARouterBlockWhenNoneIsNamed(t *testing.T) {
 	pinPath, caPath := newFiles(t, "192.168.0.0/16")
-	args := append([]string{"--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath}, kubernetesFlags(caPath)...)
+	args := append([]string{"--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	stdout, err := runNew(t, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +114,7 @@ func TestNewWritesToStdoutWithoutARouterBlockWhenNoneIsNamed(t *testing.T) {
 func TestNewRefusesADocumentAWorkerWouldRefuse(t *testing.T) {
 	pinPath, caPath := newFiles(t, "10.52.0.0/24")
 	out := filepath.Join(t.TempDir(), "worker.yaml")
-	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath}, kubernetesFlags(caPath)...)
+	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	_, err := runNew(t, args...)
 	if err == nil || !strings.Contains(err.Error(), "overlaps the cluster range 10.52.0.0/16") {
 		t.Fatalf("got %v, want the node subnet overlap refused", err)
@@ -126,7 +130,7 @@ func TestNewRefusesAnOutThatExists(t *testing.T) {
 	if err := os.WriteFile(out, []byte("measured"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath}, kubernetesFlags(caPath)...)
+	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	if _, err := runNew(t, args...); err == nil || !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("got %v, want the existing --out refused", err)
 	}

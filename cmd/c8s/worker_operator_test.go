@@ -1,4 +1,4 @@
-//go:build !c8s_node
+//go:build !c8s_node && linux
 
 package main
 
@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// Only a worker image stages a worker document.
-func TestOperatorBuildOffersNoWorkerStage(t *testing.T) {
-	if got := workerSubcommands(t); !slices.Equal(got, []string{"new"}) {
-		t.Fatalf("worker commands = %v, want new", got)
+// The images bake this build, so it stages a worker document too.
+func TestOperatorBuildOffersEveryWorkerCommand(t *testing.T) {
+	if got := workerSubcommands(t); !slices.Equal(got, []string{"new", "stage"}) {
+		t.Fatalf("worker commands = %v, want new and stage", got)
 	}
 }

@@ -98,6 +98,7 @@ func workerDocument(t *testing.T, cdsPin []byte) []byte {
 	data, err := yaml.Marshal(worker.Document{
 		SchemaVersion: worker.SchemaVersion,
 		CDS:           launchconfig.CDS{Address: "cds.acme.example:8443", Measurements: string(cdsPin), PinFloor: 1},
+		TLSSAN:        "c8s-router.c8s-router.svc",
 		Kubernetes: worker.Kubernetes{
 			APIServer:     "acme.k8s.example:443",
 			CACertificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),

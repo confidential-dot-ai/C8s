@@ -24,7 +24,7 @@ import (
 
 // INVARIANT: on a worker image only stage writes under kubernetesDir; the
 // kubelet keeps its own kubeconfig and certificates under /var/lib/kubelet.
-const kubernetesDir = "/etc/kubernetes"
+const kubernetesDir = "/run/kubernetes"
 
 // The kubelet's inputs.
 const (
@@ -194,8 +194,9 @@ func workerValues(name string, k Kubernetes) map[string]string {
 	}
 }
 
-// renderKubelet renders the inputs of a kubelet registering as name.
-func renderKubelet(rootDir string, k Kubernetes, token, name string) (*kubeletInputs, error) {
+// renderKubelet renders the inputs of a kubelet registering as name at
+// address.
+func renderKubelet(rootDir string, k Kubernetes, token, name, address string) (*kubeletInputs, error) {
 	config, err := kubeletConfig(k)
 	if err != nil {
 		return nil, err
@@ -214,7 +215,7 @@ func renderKubelet(rootDir string, k Kubernetes, token, name string) (*kubeletIn
 			{Name: filepath.Base(kubeletConfigPath), Data: config, Mode: 0o644},
 		},
 		pods: pods,
-		env:  []byte("NODE_NAME=" + name + "\n"),
+		env:  []byte("NODE_NAME=" + name + "\nNODE_IP=" + address + "\n"),
 	}, nil
 }
 
