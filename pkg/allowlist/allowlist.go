@@ -73,6 +73,9 @@ type Workload struct {
 	// HostPorts are the ports a pod this entry matches publishes on the node's
 	// own address; like a secrets grant they belong to the whole entry.
 	HostPorts HostPortList `json:"hostPorts,omitempty" yaml:"hostPorts,omitempty"`
+	// StaticPod marks a kubelet static pod's entry. YAML-only, like
+	// Container.Role: only a measured boot config sets it.
+	StaticPod bool `json:"-" yaml:"staticPod,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.

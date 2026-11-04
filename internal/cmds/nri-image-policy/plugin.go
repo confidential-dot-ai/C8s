@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"slices"
@@ -58,7 +59,11 @@ type policySnapshot struct {
 // withheld pull never drops it.
 type policyStore struct {
 	base *allowlist.Index // the boot-time base allowlist document
-	snap atomic.Pointer[policySnapshot]
+	// grants is base without its static-pod entries, which grant no host
+	// bind, host port or capability: the node TCB excuses a static pod
+	// (nodeTCBExempt).
+	grants *allowlist.Index
+	snap   atomic.Pointer[policySnapshot]
 }
 
 // newPolicyStore seeds the store with an empty snapshot (version 0) so admission
@@ -68,9 +73,17 @@ func newPolicyStore(base *allowlist.Allowlist) *policyStore {
 	if base == nil {
 		base = &allowlist.Allowlist{}
 	}
-	s := &policyStore{base: base.BuildIndex()}
+	s := &policyStore{base: base.BuildIndex(), grants: withoutStaticPods(base).BuildIndex()}
 	s.snap.Store(&policySnapshot{index: (&allowlist.Allowlist{}).BuildIndex()})
 	return s
+}
+
+// withoutStaticPods is a without its allowlist.Workload.StaticPod entries.
+func withoutStaticPods(a *allowlist.Allowlist) *allowlist.Allowlist {
+	out := *a
+	out.Workloads = maps.Clone(a.Workloads)
+	maps.DeleteFunc(out.Workloads, func(_ string, w allowlist.Workload) bool { return w.StaticPod })
+	return &out
 }
 
 func (s *policyStore) current() *policySnapshot {
@@ -101,52 +114,54 @@ func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
 	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
 }
 
-// grantsHostBind reports whether the base or the applied allowlist hands r the
-// host bind m (allowlist.Index.GrantsHostBind).
+// grantsHostBind reports whether the base, less its static-pod entries, or the
+// applied allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
 func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsHostBind(r, m) {
+	if s.grants.GrantsHostBind(r, m) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
-// declaresHostPorts reports whether an entry of the base or the applied
-// allowlist declares every mapping (allowlist.Index.DeclaresHostPorts).
+// declaresHostPorts reports whether an entry of the base, less its static-pod
+// entries, or the applied allowlist declares every mapping
+// (allowlist.Index.DeclaresHostPorts).
 func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.DeclaresHostPorts(mappings) {
+	if s.grants.DeclaresHostPorts(mappings) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.DeclaresHostPorts(mappings)
 }
 
-// grantsHostPorts reports whether the base or the applied allowlist hands r
-// every mapping (allowlist.Index.GrantsHostPorts).
+// grantsHostPorts reports whether the base, less its static-pod entries, or the
+// applied allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
 func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsHostPorts(r, mappings) {
+	if s.grants.GrantsHostPorts(r, mappings) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
-// grantsCapabilities reports whether the base or the applied allowlist hands r
-// every capability in caps (allowlist.Index.GrantsCapabilities).
+// grantsCapabilities reports whether the base, less its static-pod entries, or
+// the applied allowlist hands r every capability in caps
+// (allowlist.Index.GrantsCapabilities).
 func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsCapabilities(r, caps) {
+	if s.grants.GrantsCapabilities(r, caps) {
 		return true
 	}
 	snap := s.current()
@@ -661,6 +676,16 @@ const (
 	launchFinal
 )
 
+// keepsTag reports whether a container may run an image by tag: the base's,
+// as the node's manifests name carried images by tag, or a mesh-exempt
+// namespace's, whose pods get no workload traffic. A worker keeps none.
+func (p *plugin) keepsTag(cfg *config, baseAdmitted bool, namespace string) bool {
+	if cfg.Worker {
+		return false
+	}
+	return baseAdmitted || p.mesh.policy.exempts(namespace)
+}
+
 // checkImagePhase checks the image and observed launch specification against
 // the base and served allowlists for the requested admission phase.
 func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
@@ -738,10 +763,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// A tag is resolved here, at hook time, while the runtime builds the
 	// rootfs from the image kubelet resolved earlier; a tag moved in between
 	// would let this check judge one image and the container run another.
-	// Only the base keeps tags: the node's own manifests name its carried
-	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
-	// are not mesh members, so they never receive workload traffic.
-	if !pinned && !baseAdmitted && !p.mesh.policy.exempts(check.Namespace) {
+	if !pinned && !p.keepsTag(cfg, baseAdmitted, check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
@@ -959,7 +981,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.nodeTCBExempt(pod, rc) {
+		if p.nodeTCBExempt(cfg, pod, rc) {
 			return verdictAllow, ""
 		}
 	}
@@ -1008,21 +1030,31 @@ const (
 	staticPodSource        = "file"
 )
 
+// staticPod reports a pod the kubelet read from its manifest directory.
+func staticPod(pod *api.PodSandbox) bool {
+	return pod.GetAnnotations()[configSourceAnnotation] == staticPodSource
+}
+
 // nodeTCBExempt reports whether the measured base excuses a launch holding
 // host privilege:
 //   - a kubelet static pod whose launch the base admits: its manifest is
-//     written only by RKE2 on the node, from the measured config and the signed
-//     launch document;
-//   - any other pod only for a launch a base entry pins
-//     (allowlist.Container.LaunchPinned).
+//     written only on the node, from the measured image and launch document.
+//     On a worker the entry must also pin the launch;
+//   - an API pod on a server or an agent, for a launch a base entry pins
+//     (allowlist.Container.LaunchPinned). A worker's control plane, outside
+//     its TEE, writes its API pods, so a worker excuses none.
 //
 // An open entry (command, args or mounts any) therefore admits its image but
-// never hands it host privilege, the host network included.
-func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
-	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource {
+// never hands an API pod host privilege, the host network included.
+func (p *plugin) nodeTCBExempt(cfg *config, pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
+	switch {
+	case staticPod(pod) && cfg.Worker:
+		return p.policy.baseAdmitsPinned(rc)
+	case staticPod(pod):
 		return p.policy.baseAdmits(rc, launchFinal)
+	default:
+		return !cfg.Worker && p.policy.baseAdmitsPinned(rc)
 	}
-	return p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,

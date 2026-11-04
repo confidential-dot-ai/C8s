@@ -134,10 +134,12 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 	}
 }
 
-// hosts reports a sandbox the enforcer protects: its own network namespace,
-// in a namespace trusted policy does not exempt.
+// hosts reports a sandbox the enforcer protects: an API pod's own network
+// namespace, in a namespace trusted policy does not exempt. A static pod is
+// the node's own, whatever its namespace.
 func (g *meshGate) hosts(pod *api.PodSandbox) bool {
-	return !slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+	return !staticPod(pod) &&
+		!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
 		podNetworkNamespace(pod) != ""
 }
 
