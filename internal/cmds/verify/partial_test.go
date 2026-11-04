@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -704,5 +705,39 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 				t.Errorf("refused verdict keeps the front-door scope warning: %s", warnings)
 			}
 		})
+	}
+}
+
+// A refusal keeps the unverified sandbox note but drops the pin clause, even
+// though buildPolicy keeps the CLI from composing that note.
+func TestApplyFinalNotesTrimsSandboxPinClause(t *testing.T) {
+	oc := Outcome{Error: "a later policy failed", SandboxID: "8d9f6c2b1a0e", SandboxIDNote: sandboxIDUnverifiedNote + ", and the ID matches --sandbox-id"}
+	applyFinalNotes(&oc, &evidence{}, &teetypes.VerificationResult{}, &verifyPlan{policy: &armtls.VerifyPolicy{}})
+	if oc.SandboxID != "8d9f6c2b1a0e" || oc.SandboxIDNote != sandboxIDUnverifiedNote {
+		t.Errorf("applyFinalNotes = %q / %q, want the ID with %q", oc.SandboxID, oc.SandboxIDNote, sandboxIDUnverifiedNote)
+	}
+}
+
+// A served key set that does not match --operator-keys refuses the verdict,
+// and the refusal lists no keys: with no note, nothing says what they are.
+func TestVerifyEvidenceOperatorKeysMismatchDropsKeys(t *testing.T) {
+	pubPEM, fingerprint := operatorPubPEM(t)
+	keysPath := filepath.Join(t.TempDir(), "op.pub")
+	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{operatorKeys: keysPath, output: "json"}
+	opKeys := operatorKeysReport{fingerprints: []string{fingerprint}, digest: []byte("different")}
+	var out, errOut bytes.Buffer
+	code := verifyEvidence(context.Background(), cfg, mustPlan(t, cfg), genoaFileEvidence(t), nil, opKeys, measurementsReport{}, &out, &errOut)
+	var parsed map[string]any
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json render: %v\n%s%s", err, out.String(), errOut.String())
+	}
+	if code != exitFailed || !strings.Contains(fmt.Sprint(parsed["error"]), "does not match") {
+		t.Fatalf("exit %d, error %v, want exit %d and a digest mismatch", code, parsed["error"], exitFailed)
+	}
+	if v, ok := parsed["operator_keys"]; ok {
+		t.Errorf("refused verdict carries operator_keys %v", v)
 	}
 }

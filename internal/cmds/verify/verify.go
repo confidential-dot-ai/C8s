@@ -548,13 +548,17 @@ func applyChainAnchorPolicy(oc *Outcome, cfg config, ev *evidence) {
 func applyFinalNotes(oc *Outcome, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) {
 	if oc.Error != "" {
 		// A value never appears without the note qualifying it.
-		if oc.SandboxIDNote != sandboxIDUnverifiedNote {
+		// buildPolicy refuses --sandbox-id without --mesh-ca, so the CLI never
+		// appends the pin clause to the unverified note; trim it regardless.
+		if strings.HasPrefix(oc.SandboxIDNote, sandboxIDUnverifiedNote) {
+			oc.SandboxIDNote = sandboxIDUnverifiedNote
+		} else {
 			oc.SandboxID, oc.SandboxIDNote = "", ""
 		}
 		if oc.WorkloadNote != workloadUnverifiedNote {
 			oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest, oc.WorkloadNote = "", "", "", ""
 		}
-		if oc.OperatorKeysNote == operatorKeysMatchedNote {
+		if oc.OperatorKeysNote == "" || oc.OperatorKeysNote == operatorKeysMatchedNote {
 			oc.OperatorKeys, oc.OperatorKeysNote = nil, ""
 		}
 		oc.ChainAnchor = ""

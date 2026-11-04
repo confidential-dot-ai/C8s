@@ -182,8 +182,8 @@ The `*_note` fields and `chain_anchor` say what stands behind a reported
 value. A failed verdict states no passed check. It keeps only:
 
 - `sandbox_id` and `workload` with their `not verified:` notes.
-- `operator_keys` and `operator_keys_note` when the note says the set was not
-  pinned, or why it was not fetched.
+- `operator_keys` and `operator_keys_note` only when the note says why the set
+  was not pinned or not fetched; otherwise both are dropped.
 - `binding`, without the front-door handshake clause.
 
 `chain_anchor`, `init_data_note` and `route_note` never appear on a failed
