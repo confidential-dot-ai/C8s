@@ -27,7 +27,7 @@ import (
 
 const (
 	// prepBusyboxDigest is values.yaml's nriImagePolicy.containerdPrep.image.digest.
-	prepBusyboxDigest = "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+	prepBusyboxDigest = "sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
 )
 
 // renderedSeed parses the allowlist document out of the rendered CDS seed
