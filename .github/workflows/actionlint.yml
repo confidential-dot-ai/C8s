@@ -33,6 +33,9 @@ jobs:
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
 
+      - name: Test the pin-watch PR opener
+        run: bash .github/scripts/tests/test-pin-watch-pr.sh
+
       - name: Test the one-command image publisher
         run: bash .github/scripts/tests/test-publish-ref-images.sh
 
@@ -91,5 +94,7 @@ jobs:
             .github/scripts/tests/test-ghcr-digest.sh \
             .github/scripts/tests/test-chart-attestation-api-digest.sh \
             .github/scripts/tests/test-repro-gate-changes.sh \
+            .github/scripts/pin-watch-pr.sh \
+            .github/scripts/tests/test-pin-watch-pr.sh \
             .github/scripts/publish-ref-images.sh \
             .github/scripts/tests/test-publish-ref-images.sh
