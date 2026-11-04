@@ -80,10 +80,16 @@ func TestPinsAndFinalizeAreTheC8sProfiles(t *testing.T) {
 	}
 }
 
+// baseUnits are the units the worker image's base packages provide.
+var baseUnits = []string{"attestation-api.service", "systemd-timesyncd.service", "systemd-time-wait-sync.service", "apparmor.service"}
+
 // Every unit containerd requires, and every unit the presets enable, is one
 // the worker image has or its base provides.
 func TestUnitsNameUnitsTheImageHas(t *testing.T) {
-	units := map[string]bool{"attestation-api.service": true, "systemd-timesyncd.service": true, "systemd-time-wait-sync.service": true, "apparmor.service": true}
+	units := map[string]bool{}
+	for _, unit := range baseUnits {
+		units[unit] = true
+	}
 	for _, shared := range lines(t, "shared") {
 		units[filepath.Base(shared)] = true
 	}
@@ -113,6 +119,128 @@ func TestUnitsNameUnitsTheImageHas(t *testing.T) {
 	for _, unit := range named {
 		if !units[unit] {
 			t.Errorf("%s is no unit of the worker image", unit)
+		}
+	}
+}
+
+// bootGates are the services the worker image defines that start before
+// staging: staging itself, the boot gates and the disks containerd mounts.
+var bootGates = []string{
+	"worker-stage.service",
+	"apparmor-enforce.service",
+	"c8s-modules-latch.service",
+	"scratch-enforce.service",
+	"gpu-cc-enforce.service",
+	"containerd-data-disk.service",
+	"models-disk.service",
+}
+
+// enabledUnits are the units 50-worker.preset enables.
+func enabledUnits(t *testing.T) []string {
+	t.Helper()
+	var enabled []string
+	for _, line := range lines(t, "mkosi.extra/usr/lib/systemd/system-preset/50-worker.preset") {
+		if unit, ok := strings.CutPrefix(line, "enable "); ok {
+			enabled = append(enabled, strings.TrimSpace(unit))
+		}
+	}
+	return enabled
+}
+
+// unitFile is unit's file in the worker image: the c8s profile's when the
+// worker shares it, otherwise the worker profile's.
+func unitFile(t *testing.T, unit string) string {
+	t.Helper()
+	if slices.Contains(lines(t, "shared"), "etc/systemd/system/"+unit) {
+		return filepath.Join(c8sProfile, "mkosi.extra/etc/systemd/system", unit)
+	}
+	return filepath.Join("mkosi.extra/etc/systemd/system", unit)
+}
+
+// dropIns are unit's drop-ins in the worker image: the worker profile's and
+// any the worker shares.
+func dropIns(t *testing.T, unit string) []string {
+	t.Helper()
+	dir := "etc/systemd/system/" + unit + ".d/"
+	paths, err := filepath.Glob(filepath.Join("mkosi.extra", dir, "*.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, shared := range lines(t, "shared") {
+		if strings.HasPrefix(shared, dir) {
+			paths = append(paths, filepath.Join(c8sProfile, "mkosi.extra", shared))
+		}
+	}
+	return paths
+}
+
+// unitDirectives maps each key of unit and its drop-ins, as systemd merges
+// them in the worker image, to the whitespace-separated words of its values.
+func unitDirectives(t *testing.T, unit string) map[string][]string {
+	t.Helper()
+	directives := map[string][]string{}
+	for _, path := range append([]string{unitFile(t, unit)}, dropIns(t, unit)...) {
+		for _, line := range lines(t, path) {
+			if key, value, ok := strings.Cut(line, "="); ok {
+				directives[key] = append(directives[key], strings.Fields(value)...)
+			}
+		}
+	}
+	return directives
+}
+
+func waitsForStaging(directives map[string][]string) bool {
+	return slices.Contains(directives["Requires"], "worker-stage.service") &&
+		slices.Contains(directives["After"], "worker-stage.service")
+}
+
+// namesRoleVerdict reports whether a directive's word names the node image's
+// role verdict or the unit that stages it, neither of which a worker has.
+func namesRoleVerdict(word string) bool {
+	return word == "rke2-role.service" || strings.Contains(word, "/run/confos/role-")
+}
+
+func waitsOnRoleVerdict(directives map[string][]string) bool {
+	for _, words := range directives {
+		if slices.ContainsFunc(words, namesRoleVerdict) {
+			return true
+		}
+	}
+	return false
+}
+
+// A worker shares a c8s profile service only to run it.
+func TestSharedServicesAreEnabled(t *testing.T) {
+	enabled := enabledUnits(t)
+	for _, shared := range lines(t, "shared") {
+		unit, ok := strings.CutPrefix(shared, "etc/systemd/system/")
+		if ok && strings.HasSuffix(unit, ".service") && !slices.Contains(enabled, unit) {
+			t.Errorf("shared %s is not enabled in 50-worker.preset", unit)
+		}
+	}
+}
+
+// Every service the worker image defines, other than a boot gate, requires
+// staging and starts after it.
+func TestServicesStartAfterStaging(t *testing.T) {
+	for _, unit := range enabledUnits(t) {
+		if slices.Contains(baseUnits, unit) || slices.Contains(bootGates, unit) {
+			continue
+		}
+		if !waitsForStaging(unitDirectives(t, unit)) {
+			t.Errorf("%s does not require and start after worker-stage.service", unit)
+		}
+	}
+}
+
+// No service the worker image defines waits on the node image's role verdict.
+func TestNoServiceWaitsOnRoleVerdict(t *testing.T) {
+	for _, unit := range enabledUnits(t) {
+		if slices.Contains(baseUnits, unit) {
+			continue
+		}
+		if waitsOnRoleVerdict(unitDirectives(t, unit)) {
+			t.Errorf("%s waits on the node image's role verdict", unit)
 		}
 	}
 }

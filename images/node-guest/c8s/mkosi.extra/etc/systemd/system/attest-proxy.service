@@ -1,9 +1,9 @@
 [Unit]
 Description=Local workload access to the measured hardware attester
-Requires=rke2-role.service attestation-api.service
-After=rke2-role.service attestation-api.service nri-node-ip.service
-ConditionPathExists=|/run/confos/role-server
-ConditionPathExists=|/run/confos/role-agent
+# Each image's attest-proxy.service.d/20-launch-staging.conf orders it after
+# that image's launch staging.
+Requires=attestation-api.service
+After=attestation-api.service
 StartLimitIntervalSec=0
 
 [Service]

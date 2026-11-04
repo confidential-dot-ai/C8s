@@ -105,6 +105,9 @@ core_units=(attest-proxy.service cred-release.service nri-node-ip.service cilium
 
 for unit in "${core_units[@]}"; do
     install -D -m644 "$SOURCE_UNITS/$unit" "/etc/systemd/system/$unit"
+    if [ -d "$SOURCE_UNITS/$unit.d" ]; then
+        install -D -m644 -t "/etc/systemd/system/$unit.d" "$SOURCE_UNITS/$unit.d"/*.conf
+    fi
     install -D -m644 /dev/stdin "/etc/systemd/system/$unit.d/90-test-payload.conf" <<'EOF'
 [Service]
 Type=simple

@@ -526,10 +526,16 @@ fi
 units="$image/c8s/mkosi.extra/etc/systemd/system"
 role="$units/rke2-role.service"
 role_sh="$image/c8s/mkosi.extra/usr/local/bin/rke2-role.sh"
+# systemd merges a unit's drop-ins into it, so its dependencies may come from
+# either.
 require_launch_dependency() {
   local unit=$1
-  if ! grep -qE '^Requires=.*rke2-role[.]service' "$unit" \
-     || ! grep -qE '^After=.*rke2-role[.]service' "$unit"; then
+  local files=("$unit")
+  if [ -d "$unit.d" ]; then
+    files+=("$unit".d/*.conf)
+  fi
+  if ! grep -qE '^Requires=.*rke2-role[.]service' "${files[@]}" \
+     || ! grep -qE '^After=.*rke2-role[.]service' "${files[@]}"; then
     echo "::error::$unit must require and start after authenticated launch staging"
     exit 1
   fi

@@ -5,6 +5,7 @@ etc/sysctl.d/90-rke2.conf
 etc/sysctl.d/99-c8s-bpf.conf
 etc/systemd/resolved.conf.d/10-upstream.conf
 etc/systemd/system/apparmor-enforce.service
+etc/systemd/system/attest-proxy.service
 etc/systemd/system/c8s-modules-latch.service
 etc/systemd/system/containerd-data-disk.service
 etc/systemd/system/gpu-cc-enforce.service
