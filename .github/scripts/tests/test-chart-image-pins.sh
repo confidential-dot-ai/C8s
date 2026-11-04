@@ -52,6 +52,11 @@ metrics:
     # Resolve registry.k8s.io/acme/metrics:v1.2.3 to bump this digest.
     digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     tag: ""
+  entrypoint: ["/metrics", "serve"]
+  imageEnv:
+    PATH: /usr/bin
+    PORT: "8080"
+    UNSET_BY_DEFAULT: null
 prep:
   image:
     repository: busybox
@@ -112,6 +117,16 @@ mkdir -p "$fixture/bin"
 cat >"$fixture/bin/crane" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CRANE_LOG"
+if [[ "$1" == config && "$2" == --platform && "$3" == linux/amd64 && $# -eq 4 ]]; then
+  case "$4" in
+    registry.k8s.io/acme/metrics@sha256:1111*)
+      cfg=${METRICS_CONFIG:-}
+      [[ -n "$cfg" ]] || cfg='{"config":{"Entrypoint":["/metrics"],"Cmd":["serve","--port=8080"],"Env":["PATH=/usr/bin","PORT=8080"]}}'
+      echo "$cfg" ;;
+    *) echo "MANIFEST_UNKNOWN: $4" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
 [[ "$1" == digest && $# -eq 2 ]] || { echo "unexpected crane call: $*" >&2; exit 1; }
 case "$2" in
   registry.k8s.io/acme/metrics@sha256:1111*|busybox@sha256:2222*) echo "${2#*@}" ;;
@@ -135,6 +150,25 @@ sed 's/# Resolve busybox:1.38.0/# Resolve busybox:1.37.0/' "$good" >"$bad"
 expect_failure_naming 'busybox:1.37.0 does not resolve' bash "$script" resolve "$bad"
 sed '/# Resolve busybox/d' "$good" >"$bad"
 expect_failure_naming 'names no tag' bash "$script" resolve "$bad"
+tests=$((tests + 1))
+
+# check reads the config of every image whose block declares an entrypoint
+# (one config read, linux/amd64) and requires the entrypoint to prefix
+# ENTRYPOINT+CMD and imageEnv, nulls dropped, to equal Env; a block without
+# an entrypoint is argv-pinned and skipped.
+: >"$CRANE_LOG"
+expected='registry.k8s.io/acme/metrics v1.2.3 ok
+busybox 1.38.0 argv-pinned'
+[[ "$(bash "$script" check "$good")" == "$expected" ]] || fail "check: $(bash "$script" check "$good")"
+[[ $(grep -c '^config ' "$CRANE_LOG") -eq 1 ]] || fail "check read $(grep -c '^config ' "$CRANE_LOG") configs, not one"
+sed 's|entrypoint: \["/metrics", "serve"\]|entrypoint: ["/metrics", "run"]|' "$good" >"$bad"
+expect_failure_naming 'not the seeded entrypoint ["/metrics","run"]' bash "$script" check "$bad"
+sed 's|PORT: "8080"|PORT: "9090"|' "$good" >"$bad"
+expect_failure_naming 'not the seeded imageEnv' bash "$script" check "$bad"
+sed 's|entrypoint: \["/metrics", "serve"\]|entrypoint: ["/metrics", "serve", "--port=8080", "--extra"]|' "$good" >"$bad"
+expect_failure_naming 'not the seeded entrypoint' bash "$script" check "$bad"
+METRICS_CONFIG='{"config":{"Entrypoint":["/metrics","serve"],"Env":["PATH=/usr/bin","PORT=8080","TOKEN=a=b"]}}' \
+  expect_failure_naming '"TOKEN":"a=b"' bash "$script" check "$good"
 tests=$((tests + 1))
 
 # The production file is never written by this test.
