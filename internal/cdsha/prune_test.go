@@ -68,8 +68,8 @@ func historyOf(t *testing.T, r *liveReplica) []string {
 	if err != nil {
 		t.Fatalf("read the history of replica %s: %v", r.node.member, err)
 	}
-	digests := make([]string, 0, len(history))
-	for _, entry := range history {
+	digests := make([]string, 0, len(history.Entries))
+	for _, entry := range history.Entries {
 		digests = append(digests, entry.Digest)
 	}
 	return digests

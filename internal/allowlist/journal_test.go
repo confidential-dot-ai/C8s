@@ -107,10 +107,7 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 		{"revert to the first document", func() error { return store.ReplaceAll(empty, OperatorWrite{}) }, true},
 	}
 
-	want, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	want := mustHistory(t, store)
 	if len(want) != 1 {
 		t.Fatalf("history after StartJournal = %+v, want the served document only", want)
 	}
@@ -122,10 +119,7 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 			digest, version := servedDigest(t, store)
 			want = append(want, HistoryEntry{Position: int64(len(want) + 1), Version: version, Digest: digest})
 		}
-		got, err := store.History()
-		if err != nil {
-			t.Fatalf("%s: History: %v", step.name, err)
-		}
+		got := mustHistory(t, store)
 		if len(got) != len(want) {
 			t.Fatalf("%s: history has %d entries, want %d: %+v", step.name, len(got), len(want), got)
 		}
@@ -137,7 +131,7 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 			t.Errorf("%s: published_at = %s, want now", step.name, head.PublishedAt)
 		}
 	}
-	got, _ := store.History()
+	got := mustHistory(t, store)
 	if got[0].Digest != got[len(got)-1].Digest {
 		t.Errorf("revert digest %s, want the first document's %s", got[len(got)-1].Digest, got[0].Digest)
 	}
@@ -176,10 +170,7 @@ func TestStartJournalAfterSeedAndRestart(t *testing.T) {
 	if err := allowlist.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := allowlist.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := mustHistory(t, allowlist)
 	if len(got) != 1 || got[0].Position != 1 || got[0].Digest != seeded {
 		t.Fatalf("history = %+v, want the seeded document %s at position 1 only", got, seeded)
 	}
@@ -256,10 +247,7 @@ func TestSignatureStoredOnlyForTheCanonicalDocument(t *testing.T) {
 	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := mustHistory(t, store)
 	var signed []bool
 	for _, e := range got {
 		signed = append(signed, e.Signed)
@@ -401,7 +389,8 @@ func TestHistoryRoutes(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/allowlist/history", nil))
 	var got struct {
-		Entries []map[string]any `json:"entries"`
+		HostPrivilege HostPrivilege    `json:"hostPrivilege"`
+		Entries       []map[string]any `json:"entries"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != 200 {
 		t.Fatalf("GET /allowlist/history = %d %s: %v", w.Code, w.Body, err)
@@ -410,16 +399,20 @@ func TestHistoryRoutes(t *testing.T) {
 		got.Entries[0]["position"] != 1.0 || got.Entries[0]["signed"] != false {
 		t.Fatalf("history = %s, want the empty then the signed document", w.Body)
 	}
+	if got.HostPrivilege.DeclaredBySeed || got.HostPrivilege.FirstOperatorGrant != nil {
+		t.Errorf("history = %s, want neither the seed nor a write reported as declaring host privilege", w.Body)
+	}
 	if _, err := time.Parse(time.RFC3339, got.Entries[0]["published_at"].(string)); err != nil {
 		t.Errorf("published_at: %v", err)
 	}
 }
 
-func mustHistory(t *testing.T, store *Handle) []HistoryEntry {
+// mustHistory is the history entries of a store or its handle.
+func mustHistory(t *testing.T, store interface{ History() (History, error) }) []HistoryEntry {
 	t.Helper()
 	got, err := store.History()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got
+	return got.Entries
 }

@@ -481,7 +481,7 @@ func (w Workload) PinnedForEgress() error {
 
 // pinnedForHostPorts refuses declared host ports unless every container pins its launch.
 func (w Workload) pinnedForHostPorts() error {
-	if len(w.HostPorts) == 0 {
+	if !w.declaresHostPorts() {
 		return nil
 	}
 	if !w.launchPinned() {
@@ -492,10 +492,7 @@ func (w Workload) pinnedForHostPorts() error {
 
 // pinnedForCapabilities refuses a declared capability unless every container pins its launch.
 func (w Workload) pinnedForCapabilities() error {
-	declares := func(c Container) bool {
-		return len(c.Capabilities) > 0
-	}
-	if slices.ContainsFunc(w.containers(), declares) && !w.launchPinned() {
+	if slices.ContainsFunc(w.containers(), Container.declaresAnyCapability) && !w.launchPinned() {
 		return errCapabilitiesUnpinnedLaunch
 	}
 	return nil
@@ -508,6 +505,33 @@ func (w Workload) launchPinned() bool {
 		}
 	}
 	return true
+}
+
+// DeclaresHostPrivilege reports whether the entry declares host ports, a
+// capability beyond the node's default set, or a host bind; a nodeRootFile rule
+// names a file of the measured node image and declares none.
+func (w Workload) DeclaresHostPrivilege() bool {
+	return w.declaresHostPorts() || slices.ContainsFunc(w.containers(), Container.declaresHostPrivilege)
+}
+
+func (w Workload) declaresHostPorts() bool {
+	return len(w.HostPorts) > 0
+}
+
+func (c Container) declaresHostPrivilege() bool {
+	return c.declaresAnyCapability() || c.declaresHostBind()
+}
+
+func (c Container) declaresAnyCapability() bool {
+	return len(c.Capabilities) > 0
+}
+
+// declaresHostBind relies on only an exact policy carrying rules (normalizeMounts).
+func (c Container) declaresHostBind() bool {
+	isHostRule := func(r MountRule) bool {
+		return r.Kind == MountHost
+	}
+	return c.Mounts.Policy == PolicyExact && slices.ContainsFunc(c.Mounts.Rules, isHostRule)
 }
 
 // HostIndependent reports whether every runtime field that can change what a

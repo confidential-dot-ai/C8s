@@ -46,6 +46,14 @@ func TestTheDigestFollowsEveryWrite(t *testing.T) {
 		{"replace it again", func() error {
 			return allowlist.ReplaceAll(document, OperatorWrite{Signature: "tok.en.sig2"})
 		}},
+		{"grant host privilege", func() error {
+			return allowlist.ReplaceAll(&pkgallowlist.Allowlist{
+				Schema: pkgallowlist.Schema,
+				Workloads: map[string]pkgallowlist.Workload{
+					"bound": hostBindWorkload(mustParseDigest(t, digestB), "/var/lib/c8s"),
+				},
+			}, OperatorWrite{})
+		}},
 		{"replace it with an empty one", func() error {
 			return allowlist.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema}, OperatorWrite{})
 		}},
