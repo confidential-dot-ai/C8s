@@ -62,6 +62,13 @@ func withoutKey(t *testing.T, floor []byte, path ...string) []byte {
 
 // settingsOf is floor without its allowlist base, its worker key and the
 // mesh keys named.
+// measured is a floor's settings with served allowlists measured, as a
+// worker's are.
+func measured(settings map[string]any) map[string]any {
+	settings["allowlist"].(map[string]any)["pull"].(map[string]any)["measure_policies"] = true
+	return settings
+}
+
 func settingsOf(t *testing.T, floor []byte, meshKeys ...string) map[string]any {
 	t.Helper()
 	var doc map[string]any
@@ -154,8 +161,8 @@ func TestFloorKeepsThePlatformRolesAndTheRouter(t *testing.T) {
 	if err := yaml.Unmarshal(floor, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := settingsOf(t, floor), settingsOf(t, nodeFloor, "exempt_namespaces", "exits", "resolver", "cluster_ranges"); !reflect.DeepEqual(got, want) {
-		t.Errorf("settings =\n%v\nwant the node floor's without what stage fills or a worker refuses\n%v", got, want)
+	if got, want := settingsOf(t, floor), measured(settingsOf(t, nodeFloor, "exempt_namespaces", "exits", "resolver", "cluster_ranges")); !reflect.DeepEqual(got, want) {
+		t.Errorf("settings =\n%v\nwant the node floor's, measuring served allowlists, without what stage fills or a worker refuses\n%v", got, want)
 	}
 	if !doc.Worker {
 		t.Fatal("the floor does not set worker: true")
@@ -176,7 +183,7 @@ func TestFloorWritesNoSettingTheNodeFloorLacks(t *testing.T) {
 	dropped := []string{"exempt_namespaces", "exits", "resolver", "cluster_ranges"}
 	for _, path := range [][]string{
 		{"platform"}, {"plugin"}, {"workload_claims"}, {"containerd"}, {"policy"}, {"logging"},
-		{"allowlist", "node_tcb"}, {"allowlist", "pull"}, {"mesh", "capture"}, {"mesh", "roles"},
+		{"allowlist", "node_tcb"}, {"mesh", "capture"}, {"mesh", "roles"},
 	} {
 		t.Run(strings.Join(path, "."), func(t *testing.T) {
 			nodeFloor := withoutKey(t, renderedNodeFloor(t), path...)
@@ -184,7 +191,7 @@ func TestFloorWritesNoSettingTheNodeFloorLacks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, want := settingsOf(t, floor), settingsOf(t, nodeFloor, dropped...); !reflect.DeepEqual(got, want) {
+			if got, want := settingsOf(t, floor), measured(settingsOf(t, nodeFloor, dropped...)); !reflect.DeepEqual(got, want) {
 				t.Errorf("settings =\n%v\nwant the node floor's\n%v", got, want)
 			}
 		})
@@ -209,6 +216,7 @@ func TestFloorRefusesInputsItCannotBuildAWorkersFloorFrom(t *testing.T) {
 		{"no mesh policy", withoutKey(t, nodeFloor, "mesh"), seed, "no allowlist base or mesh policy"},
 		{"no allowlist", withoutKey(t, nodeFloor, "allowlist"), seed, "no allowlist base or mesh policy"},
 		{"no allowlist base", withoutKey(t, nodeFloor, "allowlist", "base"), seed, "no allowlist base or mesh policy"},
+		{"no pull", withoutKey(t, nodeFloor, "allowlist", "pull"), seed, "no allowlist.pull"},
 		{"a top-level key it does not know", append(slices.Clone(nodeFloor), "extra: 1\n"...), seed, "field extra not found in type worker.nodeFloor"},
 		{"an allowlist key it does not know", []byte(strings.Replace(string(nodeFloor), "\n  node_tcb: true\n", "\n  node_tcb: true\n  extra: 1\n", 1)), seed, "field extra not found in type worker.floorAllowlist"},
 		{"a mesh key it does not know", []byte(strings.Replace(string(nodeFloor), "\nmesh:\n", "\nmesh:\n  extra: 1\n", 1)), seed, "field extra not found in type worker.nodeMesh"},

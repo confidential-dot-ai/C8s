@@ -379,7 +379,9 @@ it, so a verifier can replay what the node enforced since boot: proof of what it
 enforced, not that it was acceptable. A document the node fails to measure is
 not applied. How the register is seeded, journalled, and replayed is
 [measurements.md](measurements.md#policy-history). Set
-`nriImagePolicy.measurePolicies: true` to turn measuring on.
+`nriImagePolicy.measurePolicies: true` to turn measuring on. A worker always
+measures: its image's policy turns it on, and `c8s worker stage` refuses one
+that does not.
 
 It is off by default because checks that expect the bare seed reject a node
 that measures: armTLS verifiers built before runtime extensions, a pin on one

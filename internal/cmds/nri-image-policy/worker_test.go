@@ -40,6 +40,20 @@ mesh:
 worker: true
 `
 
+// stagedWorker is workerDocument as stage completes it: pulling from its CDS
+// and measuring each served allowlist.
+var stagedWorker = strings.Replace(workerDocument, "\npolicy:\n", `
+  pull:
+    url: https://192.0.2.10:8443
+    interval: 5s
+    timeout: 30s
+    attestation_api_url: http://127.0.0.1:8400
+    measure_policies: true
+workload_claims:
+  socket_dir: /run/nri-image-policy
+policy:
+`, 1)
+
 // A worker enforces its policy and exempts no namespace, and refuses a config
 // that would not.
 func TestWorkerConfigValidation(t *testing.T) {
@@ -77,13 +91,14 @@ func TestWorkerConfigValidation(t *testing.T) {
 }
 
 // A worker's config loads as the plugin loads it; a key the plugin does not
-// read, or a config not marked as a worker, is refused rather than run as a
-// server's.
+// read, a config not marked as a worker, or one that does not measure its
+// served allowlists, is refused rather than run as a server's.
 func TestCheckWorkerConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, config, want string
 	}{
-		{"a worker", workerDocument, ""},
+		{"a staged worker", stagedWorker, ""},
+		{"a worker measuring no policy", workerDocument, "allowlist.pull.measure_policies"},
 		{"a misspelt worker key", strings.Replace(workerDocument, "\nworker: true\n", "\nworkers: true\n", 1), "field workers not found"},
 		{"no worker key", strings.Replace(workerDocument, "\nworker: true\n", "\n", 1), "worker: true"},
 		{"a config marked as no worker", strings.Replace(workerDocument, "\nworker: true\n", "\nworker: false\n", 1), "worker: true"},
