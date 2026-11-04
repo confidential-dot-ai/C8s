@@ -4,6 +4,11 @@ The target is: lose every CDS replica, start approved replacements, recover
 the same identity, reject spent requests and revoked access, and keep the CA
 key inaccessible to the infrastructure operator.
 
+The follow-up [sealed-custody experiment](cds-sealed-custody-experiment.md)
+tests authority subprocess loss and independently wrapped recovery copies,
+and records the old-enrollment replay counterexample. That experiment is the
+current provider-free direction; hardware custody remains unqualified.
+
 This increment builds on sealed recovery at `20bd0df8`. It removes the test
 authority's mutable initialization flag and adds a reusable release authority
 with immutable policy and bounded admission. It does not qualify hardware
@@ -89,15 +94,11 @@ relax the release policy. Then repeat total CDS loss while the root survives,
 and test root-service failure/recovery separately. None of those hardware
 claims is established by the local fixture.
 
-[Azure Secure Key Release](https://learn.microsoft.com/en-us/azure/confidential-computing/concept-skr-attestation)
-is one concrete provider to evaluate: it can release HSM-protected keys to an
-attested environment. Its
-[example policies](https://learn.microsoft.com/en-us/azure/confidential-computing/skr-policy-examples)
-also illustrate why a generic compliant-VM predicate is insufficient for CDS:
-we need approved code and exact launch bindings. Compatibility with our cloud's
-evidence, policy administration, debug/migration settings, and the root's
-recovery path need qualification before choosing it. No Azure resources or
-provider adapter were added by this increment.
+The earlier Azure key-release investigation is no longer the selected path.
+The follow-up experiment uses native hardware sealing as its candidate, with
+no provider dependency. Approved code, exact launch bindings, policy
+administration, debug/migration settings and root recovery still require
+qualification; changing the root mechanism does not remove those requirements.
 
 Storage still supplies durable, linearizable head reads and CAS. Signed
 enrollment does not detect a complete old WAL history presented to a cold

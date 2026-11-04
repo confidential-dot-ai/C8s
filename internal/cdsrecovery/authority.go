@@ -117,23 +117,9 @@ type Authority struct {
 // destination nor a recovery request can change its pins, identity or initial
 // recipient. Authentication of the record is independent of where it is stored.
 func NewAuthority(parent context.Context, expected Identity, record, key []byte, signer ed25519.PrivateKey, verifier string) (*Authority, error) {
-	if len(record) == 0 || len(record) > maxRegistrationBytes || len(key) != 32 || len(signer) != ed25519.PrivateKeySize {
-		return nil, errors.New("recovery: existing registration and custody material required")
-	}
-	if strictjson.Validate(record) != nil {
-		return nil, errors.New("recovery: invalid registration JSON")
-	}
-	var r registration
-	if err := decode(record, &r); err != nil {
-		return nil, errors.New("recovery: invalid registration")
-	}
-	if r.Policy.Identity != expected {
-		return nil, errors.New("recovery: registration belongs to another custody identity")
-	}
-	hash := sha256.Sum256(key)
-	if r.Version != 1 || len(r.Genesis) != sha512.Size384 || len(r.KeyHash) != sha256.Size ||
-		subtle.ConstantTimeCompare(r.KeyHash, hash[:]) != 1 || !ed25519.Verify(signer.Public().(ed25519.PublicKey), registrationBytes(r), r.Signature) {
-		return nil, errors.New("recovery: registration or custody key mismatch")
+	r, err := checkRegistration(expected, record, key, signer)
+	if err != nil {
+		return nil, err
 	}
 	targets, err := r.Policy.targets(verifier)
 	if err != nil {
@@ -147,6 +133,28 @@ func NewAuthority(parent context.Context, expected Identity, record, key []byte,
 	}
 	return &Authority{identity: r.Policy.Identity, targets: targets, genesis: r.Genesis,
 		key: bytes.Clone(key), signer: bytes.Clone(signer), gate: gate, ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
+}
+
+func checkRegistration(expected Identity, record, key []byte, signer ed25519.PrivateKey) (registration, error) {
+	if len(record) == 0 || len(record) > maxRegistrationBytes || len(key) != 32 || len(signer) != ed25519.PrivateKeySize {
+		return registration{}, errors.New("recovery: existing registration and custody material required")
+	}
+	if strictjson.Validate(record) != nil {
+		return registration{}, errors.New("recovery: invalid registration JSON")
+	}
+	var r registration
+	if err := decode(record, &r); err != nil {
+		return registration{}, errors.New("recovery: invalid registration")
+	}
+	if r.Policy.Identity != expected {
+		return registration{}, errors.New("recovery: registration belongs to another custody identity")
+	}
+	hash := sha256.Sum256(key)
+	if r.Version != 1 || len(r.Genesis) != sha512.Size384 || len(r.KeyHash) != sha256.Size ||
+		subtle.ConstantTimeCompare(r.KeyHash, hash[:]) != 1 || !ed25519.Verify(signer.Public().(ed25519.PublicKey), registrationBytes(r), r.Signature) {
+		return registration{}, errors.New("recovery: registration or custody key mismatch")
+	}
+	return r, nil
 }
 
 // Release accepts only an enrolled origin. It fetches fresh evidence itself;
