@@ -236,6 +236,8 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	}
 	ctx, cancel := context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
 	defer cancel()
+	client := policyClient(cfg.server, cfg.timeout)
+	defer client.CloseIdleConnections()
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
 			fail("allowlist_fetch_failed: %v", err)
@@ -249,7 +251,7 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			return false
 		}
 		object := baseURL + "/allowlist/objects/sha256/" + hexDigest
-		body, err := fetchPolicy(ctx, object, cfg.server, cfg.timeout)
+		body, err := fetchPolicy(ctx, client, object)
 		if err != nil {
 			fail("%s: fetch %s: %v", code, digest, err)
 			return isConnectError(err)
@@ -267,7 +269,7 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		if !cfg.trustOperator {
 			continue
 		}
-		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
+		token, err := fetchPolicy(ctx, client, object+"/signature")
 		if errors.Is(err, errNotFound) {
 			fail("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
 			return false

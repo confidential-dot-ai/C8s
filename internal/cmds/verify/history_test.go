@@ -13,12 +13,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -456,6 +458,36 @@ func TestTrustOperatorTwoEntries(t *testing.T) {
 	}
 }
 
+// The history check fetches a policy and its signature over one connection.
+func TestTrustOperatorReusesConnection(t *testing.T) {
+	v := loadSignatureVector(t)
+	sum := sha256.Sum256(v.Policy)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	srv := httptest.NewUnstartedServer(objectServer(digest, v.Policy, v.Token))
+	var conns atomic.Int32
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
+	plan, _ := historyPlan(t, cfg)
+	oc := Outcome{Partial: true, MeasuredPolicies: []string{digest}}
+	checkPolicyHistory(context.Background(), &oc, cfg, &evidence{fresh: true}, plan.trustKeys)
+	if !oc.Partial || oc.Error != "" {
+		t.Fatalf("checkPolicyHistory = partial %v, error %q; want partial without error", oc.Partial, oc.Error)
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("checkPolicyHistory opened %d connections, want 1", got)
+	}
+}
+
 func TestFetchPolicyLimits(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /big", func(w http.ResponseWriter, _ *http.Request) { w.Write(make([]byte, maxPolicyBytes+1)) })
@@ -467,7 +499,7 @@ func TestFetchPolicyLimits(t *testing.T) {
 		{"/redirect", "status 302"},
 		{"/missing", errNotFound.Error()},
 	} {
-		if _, err := fetchPolicy(context.Background(), srv.URL+tc.path, "", 5*time.Second); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+		if _, err := fetchPolicy(context.Background(), policyClient("", 5*time.Second), srv.URL+tc.path); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 			t.Errorf("fetchPolicy(%s) = %v, want error containing %q", tc.path, err, tc.wantErr)
 		}
 	}
