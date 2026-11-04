@@ -36,6 +36,8 @@ import (
 // policy with the cluster ranges, resolver and credential role, and its
 // static pod's argv with this worker's values.
 const bakedFloor = `platform: sev-snp
+workload_claims:
+  socket_dir: /run/nri-image-policy
 allowlist:
   node_tcb: true
   base:
@@ -73,6 +75,7 @@ allowlist:
     url: https://127.0.0.1:30808
     timeout: 30s
     attestation_api_url: http://127.0.0.1:8400
+    measure_policies: true
 policy:
   mode: fail-closed
   fatal_existing: true
@@ -403,6 +406,7 @@ func TestStageRefusesAFloorThePluginWouldNotRunAsAWorkers(t *testing.T) {
 		{"a misspelt worker key", "\nworker: true\n", "\nworkers: true\n", "field workers not found"},
 		{"no worker key", "\nworker: true\n", "\n", "worker: true"},
 		{"a mesh-exempt namespace", "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", "mesh.exempt_namespaces"},
+		{"no policy measurement", "    measure_policies: true\n", "", "allowlist.pull.measure_policies"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := workerRoot(t)
