@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -69,10 +70,17 @@ type meshPolicy struct {
 	// socket serves the attestation-api. 0 names none.
 	CredentialAttestationPort uint16        `yaml:"credential_attestation_port"`
 	Roles                     []roleBinding `yaml:"roles"`
+	// nodeAddr is this node's own address, which the measured document cannot
+	// carry. The mesh gate fills it (rulesetPolicy).
+	nodeAddr netip.Addr
 	// ClusterRanges are this cluster's pod and Service ranges. A destination
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.
 	ClusterRanges []netip.Prefix `yaml:"cluster_ranges"`
+	// Exits are the platform services every container of a member pod
+	// reaches over TCP uncaptured, each one address and port: the baked
+	// kube-state-metrics Service.
+	Exits []netip.AddrPort `yaml:"exits"`
 }
 
 type capturePorts struct {
@@ -81,13 +89,14 @@ type capturePorts struct {
 	Health   uint16 `yaml:"health"`
 }
 
-// roleBinding binds a dialing role to its reserved UID and the services it
-// may reach. The mesh endpoint names none: the enforcer installs the pod
-// ruleset, so the endpoint only proxies.
+// roleBinding binds a dialing role to its reserved UID and the port it
+// reaches outside this cluster: where this cluster's CDS serves, which the
+// role's clients dial by name. The mesh endpoint names no port: the enforcer
+// installs the pod ruleset, so the endpoint only proxies.
 type roleBinding struct {
-	Name         string           `yaml:"name"`
-	UID          uint32           `yaml:"uid"`
-	Destinations []netip.AddrPort `yaml:"destinations"`
+	Name string `yaml:"name"`
+	UID  uint32 `yaml:"uid"`
+	Port uint16 `yaml:"port"`
 }
 
 // MeshFloor is the measured mesh policy as the node's runtime wrapper reads
@@ -102,6 +111,11 @@ type MeshFloor struct {
 // RoleFloor is one platform role as the floor reads it.
 type RoleFloor struct {
 	Name string
+}
+
+// exempts reports a namespace trusted policy leaves to the node's own rules.
+func (p meshPolicy) exempts(namespace string) bool {
+	return slices.Contains(p.ExemptNamespaces, namespace)
 }
 
 // LoadMeshFloor reads the measured config and returns its mesh floor.
@@ -142,6 +156,11 @@ func (p meshPolicy) validate() error {
 			return fmt.Errorf("mesh.cluster_ranges %s is not a masked prefix of one address family", in)
 		}
 	}
+	for _, exit := range p.Exits {
+		if !exit.IsValid() || exit.Port() == 0 || exit.Addr().Is4In6() {
+			return fmt.Errorf("mesh.exits %s needs one address of one family and a nonzero port", exit)
+		}
+	}
 	if slices.Contains(p.ExemptNamespaces, routerNamespace) {
 		return fmt.Errorf("mesh.exempt_namespaces lists %s, whose pods serve the router's ports and are members", routerNamespace)
 	}
@@ -176,16 +195,11 @@ func validateRole(role roleBinding) error {
 	if role.UID == 0 {
 		return fmt.Errorf("mesh.roles %s requires a nonzero uid", role.Name)
 	}
-	for _, destination := range role.Destinations {
-		if destination.Port() == 0 {
-			return fmt.Errorf("mesh.roles %s destination %s requires a nonzero port", role.Name, destination)
-		}
-	}
 	switch {
-	case role.Name != meshRole && len(role.Destinations) == 0:
-		return fmt.Errorf("mesh.roles %s reaches nothing: give it a destination or drop it", role.Name)
-	case role.Name == CredentialRole && len(role.Destinations) != 1:
-		return fmt.Errorf("mesh.roles %s needs exactly one destination, the CDS its clients dial", CredentialRole)
+	case role.Name != meshRole && role.Port == 0:
+		return fmt.Errorf("mesh.roles %s reaches nothing: give it the port it dials or drop it", role.Name)
+	case role.Name == meshRole && role.Port != 0:
+		return fmt.Errorf("mesh.roles %s reaches no port of its own: the enforcer installs the ruleset its pod rides", meshRole)
 	case role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
 	case role.Name == routerRole || role.Name == acmeRole || role.Name == upstreamRole:
@@ -212,6 +226,17 @@ func (p meshPolicy) reservedIdentities() map[string]uint32 {
 	ids[acmeRole] = workloadclaims.AcmeUID
 	ids[upstreamRole] = workloadclaims.UpstreamUID
 	return ids
+}
+
+// roleIdentity is the platform role a stored process's identity belongs to,
+// where one does: a role's number is reserved as both a UID and a GID.
+func (p meshPolicy) roleIdentity(user specs.User) (string, bool) {
+	for _, id := range append([]uint32{user.UID, user.GID}, user.AdditionalGids...) {
+		if role, reserved := p.roleHolding(id); reserved {
+			return role, true
+		}
+	}
+	return "", false
 }
 
 // roleHolding is the role a reserved identity belongs to, where one does.

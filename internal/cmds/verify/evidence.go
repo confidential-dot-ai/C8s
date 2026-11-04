@@ -167,6 +167,15 @@ type leafTrust struct {
 // certificate without trusting PKI (trust comes from the embedded hardware
 // attestation), and binds REPORTDATA to the certificate key.
 func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*evidence, error) {
+	conn, ev, err := openARMTLS(ctx, addr, serverName, timeout, trust)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return ev, nil
+}
+
+func openARMTLS(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*tls.Conn, *evidence, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
 		// INVARIANT: PKI verification is intentionally skipped — the armTLS
@@ -175,16 +184,21 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, &connectError{err: fmt.Errorf("dial %s: %w", addr, err)}
+		return nil, nil, &connectError{err: fmt.Errorf("dial %s: %w", addr, err)}
 	}
-	defer conn.Close()
 
 	// tls.Dialer.DialContext always returns a *tls.Conn, so this assertion is safe.
 	certs := conn.(*tls.Conn).ConnectionState().PeerCertificates
 	if len(certs) == 0 {
-		return nil, &connectError{err: fmt.Errorf("%s presented no certificate", addr)}
+		conn.Close()
+		return nil, nil, &connectError{err: fmt.Errorf("%s presented no certificate", addr)}
 	}
-	return evidenceFromCert(certs[0], fmt.Sprintf("armTLS serving certificate at %s", addr), trust)
+	ev, err := evidenceFromCert(certs[0], fmt.Sprintf("armTLS serving certificate at %s", addr), trust)
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return conn.(*tls.Conn), ev, nil
 }
 
 // authenticateLeafBody runs the shared certificate-body checks on an

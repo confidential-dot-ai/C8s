@@ -10,6 +10,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // attestCredentialRelease requests a fresh report over the verified armTLS
@@ -26,7 +27,7 @@ func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL s
 	if err != nil {
 		return fmt.Errorf("operator key: %w", err)
 	}
-	body, err := json.Marshal(credrelease.AttestRequest{Nonce: nonce})
+	body, err := json.Marshal(types.NonceRequest{Nonce: nonce})
 	if err != nil {
 		return err
 	}

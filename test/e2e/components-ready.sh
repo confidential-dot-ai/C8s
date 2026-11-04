@@ -17,7 +17,7 @@ router_ns=c8s-router
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
   : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
-  workloads=(deployment/c8s-operator deployment/c8s-cds)
+  workloads=(deployment/c8s-operator)
   # The authenticated credential listener can become available before RKE2
   # has applied the complete AddOn. Require every core workload to exist.
   kubectl -n "$ns" wait --for=create "${workloads[@]}" --timeout=8m
@@ -26,8 +26,8 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
     kubectl -n "$ns" rollout status "$workload" --timeout=8m
   done
   kubectl -n "$router_ns" rollout status deployment/c8s-router --timeout=8m
-  # Public policies are host-staged, not stored in Kubernetes. CDS and the
-  # router's cds-attest read theirs from the read-only node file. The router's
+  # Public policies are host-staged, not stored in Kubernetes. The router's
+  # cds-attest reads its CDS pin from the read-only node file. The router's
   # credential clients take the node's CDS endpoint and pins from the mount the
   # enforcer adds at admission, so the spec must set neither. The external
   # armTLS request below verifies the actual endpoint against the signed policy.
@@ -49,8 +49,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
         any((.spec.template.spec | .containers + (.initContainers // []))[];
           .name == $container and
           all((.args // [])[];
-            test("^--(cds-url|image-policy-file|image-policy-json|cds-measurements|cds-rtmrs)(=|$)") | not)));
-    policy("c8s-cds"; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
+            test("^--(cds-url|image-policy-file|image-policy-json)(=|$)") | not)));
     policy("c8s-router"; "cds-attest"; "--image-policy-file=/run/c8s-node/cds.json") and
     nodepins("c8s-router"; "c8s-cert") and
     nodepins("c8s-router"; "allowlist-proxy") and
@@ -106,12 +105,12 @@ fi
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   ready=0
   for _ in $(seq 1 60); do
-    if c8s allowlist list --url "$C8S_ALLOWLIST_URL" --image-policy-file "$C8S_MEASUREMENTS_CONFIG" >/dev/null 2>&1; then
+    if probe=$(c8s allowlist list --url "$C8S_ALLOWLIST_URL" --image-policy-file "$C8S_MEASUREMENTS_CONFIG" 2>&1 >/dev/null); then
       ready=1; break
     fi
     sleep 5
   done
-  [ "$ready" = 1 ] || fail "measured CDS/front-door services did not become ready under the server policy"
+  [ "$ready" = 1 ] || fail "measured CDS/front-door services did not become ready under the server policy; last probe: ${probe:-no output}"
 fi
 
 echo "PASS: all $total c8s Kubernetes components Running"

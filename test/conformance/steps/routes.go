@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,7 +68,8 @@ func registerRoutes(sc *godog.ScenarioContext) {
 	sc.Step(`^the router has applied a route manifest routing path "([^"]*)" on host "([^"]*)" to the CDS under trust anchors that did not issue its certificate$`, routerAppliedUnrelatedCA)
 	sc.Step(`^a client requests path "([^"]*)" on host "([^"]*)" through the router$`, func(ctx context.Context, path, host string) error {
 		w := getWorld(ctx)
-		return w.routerGet(path, "Host: "+w.routeHost(host))
+		w.router.lastHost = w.routeHost(host)
+		return w.routerGet(path, "Host: "+w.router.lastHost)
 	})
 	sc.Step(`^a client reads the allowlist through the built-in allowlist route on host "([^"]*)"$`, func(ctx context.Context, host string) error {
 		w := getWorld(ctx)
@@ -77,8 +79,48 @@ func registerRoutes(sc *godog.ScenarioContext) {
 		return getWorld(ctx).routerAnswered(http.StatusNotFound, "no route")
 	})
 	sc.Step(`^the router answers that the backend is unavailable$`, func(ctx context.Context) error {
-		return getWorld(ctx).routerAnswered(http.StatusBadGateway, "backend unavailable")
+		return getWorld(ctx).routerRefusedTheBackend()
 	})
+}
+
+// routerRefusedTheBackend asserts the router refused the relay with a 502, and
+// — where its log is reachable — that the refusal was the one the scenario
+// means (a workload-name mismatch, or a backend certificate the route's trust
+// anchors did not issue), not a router that could not verify the leaf at all. A
+// mesh-verification failure is the same "backend unavailable" on the wire
+// (routing/proxy.go, backendFailure's default), so a router stranded on a stale
+// mesh CA would pass a body-only check; this fails it. The two intended
+// refusals log their own reasons and pass.
+func (w *world) routerRefusedTheBackend() error {
+	if err := w.routerAnswered(http.StatusBadGateway, "backend unavailable"); err != nil {
+		return err
+	}
+	out, err := w.be.call("router_logs")
+	if errors.Is(err, godog.ErrSkip) {
+		return nil // the backend keeps no router log to read
+	}
+	if err != nil {
+		return err
+	}
+	if w.router.lastHost == "" {
+		return errors.New("no routed request was recorded to match the router log against")
+	}
+	// The last backend-request failure the router logged for this host, whose
+	// DNS name carries the scenario namespace, so no other scenario's line
+	// matches. The router writes host=<app host> on the relay attempt.
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "backend request failed") && strings.Contains(l, "host="+w.router.lastHost) {
+			line = l
+		}
+	}
+	if line == "" {
+		return fmt.Errorf("the router logged no backend-request failure for host %q", w.router.lastHost)
+	}
+	if strings.Contains(line, "mesh peer chain") {
+		return fmt.Errorf("the router refused the relay for a mesh-verification failure, not the scenario's reason:\n%s", line)
+	}
+	return nil
 }
 
 // routeHost is the DNS name a logical host stands for, under the scenario's
@@ -200,9 +242,8 @@ func closedBackend() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "serverName": "closed.c8s.test", "ca": unrelatedCA()}
 }
 
-// closedWorkload is the same address as a workload backend, for a manifest
-// the router must apply: a router in a member pod rejects any manifest with
-// an address backend (A8).
+// closedWorkload is the same address as a workload backend, for a route a
+// scenario only has to see applied.
 func closedWorkload() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "workload": "conformance-closed"}
 }
@@ -342,11 +383,20 @@ func routerApplied(ctx context.Context, path, host string) error {
 	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedWorkload())})
 }
 
-// routerAppliedUnrelatedCA: the chart's router namespace is not exempt from
-// the mesh, and a router in a member pod applies no manifest with an address
-// backend (A8), so B3 is out of reach.
-func routerAppliedUnrelatedCA(context.Context, string, string) error {
-	return skipf("the router's pod is a mesh member, which applies no manifest with an address backend (A8)")
+// routerAppliedUnrelatedCA routes to the CDS as an address backend whose ca
+// is a CA that issued no certificate, so the dial's verification fails (B3).
+func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
+	w := getWorld(ctx)
+	url, err := w.be.call("cds_pod_url")
+	if err != nil {
+		return err
+	}
+	backend := map[string]any{
+		"address":    strings.TrimPrefix(url, "https://"),
+		"serverName": "cds.c8s.test",
+		"ca":         unrelatedCA(),
+	}
+	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, backend)})
 }
 
 func (w *world) routerAnswered(status int, what string) error {

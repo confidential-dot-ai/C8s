@@ -44,14 +44,14 @@ func TestValueArgsToTreeNestsDottedKeys(t *testing.T) {
 
 func TestValueArgsToTreeBuildsListFromIndexedKeys(t *testing.T) {
 	got, err := valueArgsToTree([]string{
-		"--set-string", "cds.measurements[0]=aa",
-		"--set-string", "cds.measurements[1]=bb",
+		"--set-string", "cds.dnsSanPatterns[0]=aa",
+		"--set-string", "cds.dnsSanPatterns[1]=bb",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := map[string]any{
-		"cds": map[string]any{"measurements": []any{"aa", "bb"}},
+		"cds": map[string]any{"dnsSanPatterns": []any{"aa", "bb"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v (indexed keys must nest as a list, not a scalar key)", got, want)
@@ -97,10 +97,9 @@ func TestValueArgsToTreeNestsListsOfMaps(t *testing.T) {
 }
 
 func TestValueArgsToTreeCoercesSetTypes(t *testing.T) {
-	// --set typing mirrors helm strvals: null/bool/int are coerced, the rest
-	// stay strings. --set-string never coerces.
+	// --set typing mirrors helm strvals: bool/int are coerced, the rest stay
+	// strings. --set-string never coerces.
 	got, err := valueArgsToTree([]string{
-		"--set", "cds.node.selector=null",
 		"--set", "attestationApi.teeDevices.sevGuest=true",
 		"--set", "attestationApi.teeDevices.tpm=false",
 		"--set", "webhook.getCert.runAsUser=65532",
@@ -109,10 +108,6 @@ func TestValueArgsToTreeCoercesSetTypes(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	cds := got["cds"].(map[string]any)["node"].(map[string]any)
-	if cds["selector"] != nil {
-		t.Errorf("selector: got %#v, want nil (real null)", cds["selector"])
 	}
 	tee := got["attestationApi"].(map[string]any)["teeDevices"].(map[string]any)
 	if tee["sevGuest"] != true {
@@ -142,25 +137,6 @@ func TestValueArgsToTreeRejectsScalarMapConflict(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected a conflict error, got nil")
-	}
-}
-
-// Descending into a key previously cleared with `=null` must create the map,
-// not mis-report the nil as a "scalar conflict". A real scalar still conflicts
-// (covered above). Terminal writes keep helm's last-wins semantics — this only
-// fixes the intermediate-nil descend. (Latent today: no builder emits such a
-// pair, but the nil-as-scalar error would be a sharp edge if one ever did.)
-func TestValueArgsToTreeDescendsThroughNull(t *testing.T) {
-	got, err := valueArgsToTree([]string{
-		"--set", "a=null",
-		"--set-string", "a.b=v",
-	})
-	if err != nil {
-		t.Fatalf("descend through null should not error, got: %v", err)
-	}
-	want := map[string]any{"a": map[string]any{"b": "v"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %#v, want %#v", got, want)
 	}
 }
 
@@ -323,7 +299,6 @@ func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 	path, err := writeComputedValues([]string{
 		"--set-string", "image.repository=ghcr.io/x/c8s-operator",
 		"--set", "attestationApi.teeDevices.tpm=true",
-		"--set", "cds.node.selector=null",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -343,11 +318,6 @@ func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 	}
 	if got["attestationApi"].(map[string]any)["teeDevices"].(map[string]any)["tpm"] != true {
 		t.Errorf("tpm should be bool true: %#v", got["attestationApi"])
-	}
-	// null clears the key (real YAML null, not the string "null").
-	cds := got["cds"].(map[string]any)["node"].(map[string]any)
-	if v, ok := cds["selector"]; !ok || v != nil {
-		t.Errorf("selector should be present and null, got %#v (present=%v)", v, ok)
 	}
 }
 
@@ -386,24 +356,24 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	}
 
 	prev := struct {
-		crds, singleNode, resolveDigests          bool
+		crds, resolveDigests                      bool
 		secret, cvm, plat, upstream, operatorKeys string
-		workloadRefs, measurements                []string
-	}{installCRDs, installSingleNode, installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), slices.Clone(installMeasurements)}
+		workloadRefs                              []string
+		cdsAddress, cdsPin                        string
+	}{installCRDs, installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), installCDSAddress, installCDSPin}
 	defer func() {
-		installCRDs, installSingleNode, installResolveDigests = prev.crds, prev.singleNode, prev.resolveDigests
+		installCRDs, installResolveDigests = prev.crds, prev.resolveDigests
 		installImagePullSecret, installCvmMode = prev.secret, prev.cvm
 		installHardwarePlatform = prev.plat
 		installUpstream = prev.upstream
 		installOperatorKeys = prev.operatorKeys
 		installWorkloadRefs = prev.workloadRefs
-		installMeasurements = prev.measurements
+		installCDSAddress, installCDSPin = prev.cdsAddress, prev.cdsPin
 	}()
 	// Drive every value-producing toggle. --install-crds=false exercises the
 	// non-default CRD path; --resolve-digests=false keeps crane off PATH (the
 	// digest-arg shape is covered separately via buildDigestArgs below).
-	// --measurements exercises the indexed key[i]= form in a second pass below.
-	installCRDs, installSingleNode, installResolveDigests = false, true, false
+	installCRDs, installResolveDigests = false, false
 	installImagePullSecret, installCvmMode = "regcred", "bare-metal"
 	installHardwarePlatform = "sev-snp"
 	installOperatorKeys = writeTestOperatorKeys(t)
@@ -448,22 +418,27 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		t.Fatalf("cds.operatorKeys = %q, want the PEM content of %s", keys, installOperatorKeys)
 	}
 
-	// Second pass: bare-metal mode with --measurements exercises the indexed key[i]=
-	// form. Its args must also stay within the
-	// grammar and round-trip to a list.
-	installCvmMode = "bare-metal"
-	installMeasurements = []string{strings.Repeat("ab", 48)}
-	mArgs, err := appendCvmModeInstallArgs(nil, installCvmMode, installHardwarePlatform)
+	// Second pass: the CDS this cluster trusts. Its args must also stay within
+	// the grammar and round-trip, the pin as the document's content.
+	cdsArgs, err := cdsInstallArgs("10.9.9.9:8443", cdsPinFile(t, []string{"app"}, "192.0.2.0/24"))
 	if err != nil {
-		t.Fatalf("appendCvmModeInstallArgs (bare-metal + measurements): %v", err)
+		t.Fatalf("cdsInstallArgs: %v", err)
 	}
-	for i := 0; i < len(mArgs); i += 2 {
-		if kv := mArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
-			t.Errorf("measurement arg %q is outside the grammar", kv)
+	for i := 0; i < len(cdsArgs); i += 2 {
+		if kv := cdsArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
+			t.Errorf("CDS arg %q is outside the grammar", kv)
 		}
 	}
-	if _, err := valueArgsToTree(mArgs); err != nil {
-		t.Fatalf("measurement args failed to parse: %v", err)
+	cdsTree, err := valueArgsToTree(cdsArgs)
+	if err != nil {
+		t.Fatalf("CDS args failed to parse: %v", err)
+	}
+	cds, _ := cdsTree["cds"].(map[string]any)
+	if cds["address"] != "10.9.9.9:8443" {
+		t.Errorf("cds.address = %#v, want the named endpoint", cds["address"])
+	}
+	if pin, _ := cds["measurementsConfig"].(string); !strings.Contains(pin, `"launch_file"`) {
+		t.Errorf("cds.measurementsConfig = %q, want the pin document's content", pin)
 	}
 }
 
@@ -506,12 +481,10 @@ func TestCoerceTypedVsString(t *testing.T) {
 		typed bool
 		want  any
 	}{
-		{"null", true, nil},
 		{"true", true, true},
 		{"false", true, false},
 		{"42", true, int64(42)},
 		{"main", true, "main"},  // non-numeric/non-bool stays string
-		{"null", false, "null"}, // --set-string never coerces
 		{"true", false, "true"}, // --set-string never coerces
 		{"sha256:abc", false, "sha256:abc"},
 	}

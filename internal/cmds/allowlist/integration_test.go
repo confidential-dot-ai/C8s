@@ -47,6 +47,20 @@ type fakeCDS struct {
 	al       pkgallowlist.Allowlist
 	version  int
 	verifier operatorauth.Verifier
+	// beforeReplace, when set, runs on every write once it is authorized and
+	// before it is applied: a write racing it.
+	beforeReplace func()
+	// afterReplace, when set, runs on every write once it is applied and
+	// before it is answered: a write landing on top of it.
+	afterReplace func()
+	// lost503 answers this many applied writes 503, as a CDS behind a front
+	// door that lost the reply does.
+	lost503 int
+	// lost500 answers this many applied writes 500, which the client does not
+	// send again: a write whose answer was lost.
+	lost500 int
+	// fail500 answers this many writes 500 without applying them.
+	fail500 int
 }
 
 func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
@@ -64,8 +78,6 @@ func (f *fakeCDS) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /allowlist", f.handleList)
 	mux.HandleFunc("PUT /allowlist", f.handleReplace)
-	mux.HandleFunc("PUT /allowlist/workloads/{name}", f.handlePutWorkload)
-	mux.HandleFunc("DELETE /allowlist/workloads/{name}", f.handleDeleteWorkload)
 	return mux
 }
 
@@ -102,47 +114,48 @@ func (f *fakeCDS) handleReplace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	if f.beforeReplace != nil {
+		f.beforeReplace()
+	}
 	f.mu.Lock()
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" && ifMatch != `"`+strconv.Itoa(f.version)+`"` {
+		f.mu.Unlock()
+		http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+		return
+	}
+	if f.fail500 > 0 {
+		f.fail500--
+		f.mu.Unlock()
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	f.al = *parsed
 	if f.al.Workloads == nil {
 		f.al.Workloads = map[string]pkgallowlist.Workload{}
 	}
 	f.version++
+	status := http.StatusNoContent
+	switch {
+	case f.lost503 > 0:
+		f.lost503--
+		status = http.StatusServiceUnavailable
+	case f.lost500 > 0:
+		f.lost500--
+		status = http.StatusInternalServerError
+	}
 	f.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (f *fakeCDS) handlePutWorkload(w http.ResponseWriter, r *http.Request) {
-	body, ok := f.authorize(w, r)
-	if !ok {
-		return
+	if f.afterReplace != nil {
+		f.afterReplace()
 	}
-	wl, err := pkgallowlist.ParseWorkloadJSON(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+	switch status {
+	case http.StatusServiceUnavailable:
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, "the allowlist API is not serving", status)
+	case http.StatusInternalServerError:
+		http.Error(w, "internal error", status)
+	default:
+		w.WriteHeader(status)
 	}
-	f.mu.Lock()
-	f.al.Workloads[r.PathValue("name")] = *wl
-	f.version++
-	f.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (f *fakeCDS) handleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
-	if _, ok := f.authorize(w, r); !ok {
-		return
-	}
-	name := r.PathValue("name")
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.al.Workloads[name]; !ok {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	delete(f.al.Workloads, name)
-	f.version++
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (f *fakeCDS) count() int {
@@ -156,6 +169,20 @@ func (f *fakeCDS) workload(name string) (pkgallowlist.Workload, bool) {
 	defer f.mu.Unlock()
 	wl, ok := f.al.Workloads[name]
 	return wl, ok
+}
+
+// put writes an entry as another operator's write would: a new version.
+func (f *fakeCDS) put(name string, w pkgallowlist.Workload) {
+	f.mu.Lock()
+	f.al.Workloads[name] = w
+	f.version++
+	f.mu.Unlock()
+}
+
+func (f *fakeCDS) currentVersion() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.version
 }
 
 func (f *fakeCDS) seedWorkload(name string, w pkgallowlist.Workload) {
@@ -211,7 +238,7 @@ func TestUploadRejectedWhenKeyNotPinned(t *testing.T) {
 
 // TestWorkloadApplyGetRoundTrip drives the real CLI through the fake CDS +
 // verifier: apply a workload entry, then read it back via 'workload get'
-// and from the store. PutWorkload's body binding is the fragile path.
+// and from the store. The write's body binding is the fragile path.
 func TestWorkloadApplyGetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
@@ -254,28 +281,6 @@ func TestWorkloadApplyGetRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(out, digA) || !strings.Contains(out, "/app/server") {
 		t.Fatalf("get output missing expected content:\n%s", out)
-	}
-}
-
-// TestWorkloadDeleteRoundTrip proves delete removes an entry and 404s for an
-// absent one.
-func TestWorkloadDeleteRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-
-	cds.seedWorkload("api", pkgallowlist.Workload{
-		Containers: []pkgallowlist.Container{{Digest: mustDigest(t, digA)}},
-	})
-
-	if _, _, err := runCmd("delete", "api", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
-		t.Fatalf("delete failed: %v", err)
-	}
-	if _, ok := cds.workload("api"); ok {
-		t.Fatal("workload 'api' still present after delete")
-	}
-	if _, _, err := runCmd("delete", "missing", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err == nil {
-		t.Fatal("expected delete of an absent workload to fail (404)")
 	}
 }
 

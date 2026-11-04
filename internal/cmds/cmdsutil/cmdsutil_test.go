@@ -1,7 +1,6 @@
 package cmdsutil
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -202,21 +201,6 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 		}
 		if err != nil && !contains(err.Error(), "--attestation-api-url") {
 			t.Errorf("error %q should mention flag name", err.Error())
-		}
-	}
-}
-
-func TestWarnIfCDSUnpinned(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	for _, count := range []int{0, 1, 2} {
-		logs.Reset()
-		WarnIfCDSUnpinned(count, "unpinned development configuration")
-		warned := strings.Contains(logs.String(), "unpinned development configuration")
-		if warned != (count == 0) {
-			t.Errorf("measurement count %d: warning=%t", count, warned)
 		}
 	}
 }

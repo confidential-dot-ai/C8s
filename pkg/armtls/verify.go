@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,8 @@ import (
 type VerifyPolicy struct {
 	// Policy is the evidence policy the attestation-api enforces: image pins,
 	// launch-measurement reference values, TDX runtime registers, the SEV-SNP
-	// TCB floor and the debug rule. Leave ExpectedReportData unset — the
+	// TCB floor and the debug rule. It must carry a launch measurement or an
+	// image pin ([ErrUnpinned]). Leave ExpectedReportData unset — the
 	// verifying paths derive it from the certificate key and refuse a value
 	// that disagrees.
 	Policy remote.Policy
@@ -31,6 +33,10 @@ type VerifyPolicy struct {
 	// a pre-shared nonce for additional freshness guarantees. If nil, no nonce
 	// check is performed (TLS 1.3 already provides replay protection).
 	Nonce []byte
+
+	// ExtensionOID is the OID the evidence extension is carried under; unset
+	// means [OIDARMTLSAttestation].
+	ExtensionOID asn1.ObjectIdentifier
 
 	// AttestationApiURL is the attestation-api whose /verify endpoint performs
 	// all evidence verification: hardware signature chain, REPORTDATA key
@@ -63,6 +69,10 @@ type VerifyResult struct {
 	// PlatformInfo contains platform-specific metadata from the
 	// attestation-api response. Only set on the SNP path.
 	PlatformInfo []byte
+	// Verified is the attestation-api's response, which carries the platform
+	// it verified and the claims it read. A caller holding it can enforce a
+	// later policy against the same verdict without a second round-trip.
+	Verified remote.VerifyResponse
 }
 
 // VerifyAttestation verifies a raw attestation report against a public key by
@@ -74,9 +84,14 @@ type VerifyResult struct {
 //     minimum-TCB policy.
 //  2. The launch measurement it returns is checked against policy.Policy here,
 //     by the same enforcement every attestation-go caller gets.
+//
+// A policy that names no guest fails with [ErrUnpinned] before any request.
 func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
+	}
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
 	}
 	if err := policy.requireAttestationApi(); err != nil {
 		return nil, err
@@ -100,9 +115,14 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 // rewritten under a genuine extension. Doing it before the evidence
 // round-trip also keeps a bad certificate from consuming an attestation-api
 // call.
+//
+// A policy that names no guest fails with [ErrUnpinned].
 func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
+	}
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
 	}
 
 	// Split out so a window failure keeps its own sentinel, which callers
@@ -118,7 +138,7 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		return nil, fmt.Errorf("armtls: peer certificate body: %w", err)
 	}
 
-	att, err := ExtractAttestation(cert)
+	att, err := agarmtls.ExtractAttestation(cert, policy.extensionOID())
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +165,13 @@ func requireSelfIssued(cert *x509.Certificate, now time.Time) error {
 		return fmt.Errorf("not self-issued: its body is %s", body)
 	}
 	return nil
+}
+
+func (p *VerifyPolicy) extensionOID() asn1.ObjectIdentifier {
+	if len(p.ExtensionOID) == 0 {
+		return OIDARMTLSAttestation
+	}
+	return p.ExtensionOID
 }
 
 // requireAttestationApi enforces the attestation-api URL every evidence path
@@ -211,7 +238,11 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 		return nil, mapVerifyError(att.Family, err)
 	}
 
-	result := &VerifyResult{TEEType: att.Family, ReportData: expectedReportData}
+	result := &VerifyResult{
+		TEEType:    att.Family,
+		ReportData: expectedReportData,
+		Verified:   resp,
+	}
 	if att.Family == TEETypeSEVSNP && len(resp.Result.Claims.PlatformData) > 0 {
 		// The claims map came out of json.Unmarshal, so re-marshaling it
 		// cannot fail.
@@ -233,7 +264,10 @@ func mapVerifyError(family TEEType, err error) error {
 		return ErrSignatureInvalid
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed):
+	case errors.Is(err, remote.ErrMeasurementNotAllowed),
+		errors.Is(err, remote.ErrRegistersNotAllowed),
+		errors.Is(err, remote.ErrAnchorNotAllowed),
+		errors.Is(err, remote.ErrLaunchFileNotAllowed):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)

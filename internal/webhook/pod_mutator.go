@@ -121,7 +121,8 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 const (
 	// CertVolumeName is the injected memory-backed credential volume.
 	CertVolumeName = "c8s-certs"
-	// CertDir is where every container of an injected pod mounts it.
+	// CertDir is where the injected containers mount it; no other container
+	// may (rejectCredentialMounts).
 	CertDir  = workloadclaims.MemberCertDir
 	certFile = "tls.crt"
 	keyFile  = "tls.key"
@@ -920,7 +921,7 @@ func meshContainer(cfg Config, probes []string) corev1.Container {
 		},
 		// The pod's probe targets, which vary per pod: a node's measured
 		// policy pins the endpoint's arguments and mounts for every member
-		// pod alike (node-guest-image/c8s/image-policy.yaml.in).
+		// pod alike (images/node-guest/c8s/image-policy.yaml.in).
 		Env: meshEnv(probes),
 		VolumeMounts: []corev1.VolumeMount{
 			{

@@ -124,6 +124,8 @@ func pluginPulls(ctx context.Context, node string) error {
 	return w.awaitApplied()
 }
 
+// cdsVolatile skips where a CDS restart keeps the allowlist and its version
+// (allowlist S4).
 func cdsVolatile(ctx context.Context) error {
 	answer, err := getWorld(ctx).be.call("cds_volatile")
 	if err != nil {

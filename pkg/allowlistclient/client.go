@@ -10,13 +10,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,56 +140,106 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new
-// version.
-func (c Client) ReplaceAll(ctx context.Context, al *allowlist.Allowlist, auth Authorizer) error {
+// version. A non-empty version makes the write conditional: CDS refuses it
+// with a 412 *operatorauth.StatusError unless the allowlist is still at that
+// version (the N of the ETag W/"N" the read it was built from carried), so
+// the write never overwrites a write made since.
+func (c Client) ReplaceAll(ctx context.Context, al *allowlist.Allowlist, version string, auth Authorizer) error {
 	data, err := al.Canonical()
 	if err != nil {
 		return err
 	}
-	return c.mutate(ctx, http.MethodPut, "/allowlist", data, auth)
-}
-
-// PutWorkload creates or replaces one named workload entry.
-func (c Client) PutWorkload(ctx context.Context, name string, w allowlist.Workload, auth Authorizer) error {
-	data, err := json.Marshal(w)
-	if err != nil {
-		return err
+	ifMatch := ""
+	if version != "" {
+		// The version names exactly one stored document, so it is a strong
+		// validator, as If-Match's strong comparison requires.
+		ifMatch = `"` + version + `"`
 	}
-	return c.mutate(ctx, http.MethodPut, "/allowlist/workloads/"+url.PathEscape(name), data, auth)
+	return c.mutate(ctx, http.MethodPut, "/allowlist", data, ifMatch, auth)
 }
 
-// DeleteWorkload removes one named workload entry. Returns a 404
-// *operatorauth.StatusError if
-// it is absent.
-func (c Client) DeleteWorkload(ctx context.Context, name string, auth Authorizer) error {
-	return c.mutate(ctx, http.MethodDelete, "/allowlist/workloads/"+url.PathEscape(name), nil, auth)
-}
+// A write answered 429 (rate limited) or 503 (nothing is serving the API) is
+// sent again, up to maxWriteAttempts times in all. It waits the response's
+// Retry-After, capped at maxRetryWait, or without one firstRetryWait doubling
+// per attempt.
+const (
+	maxWriteAttempts = 6
+	maxRetryWait     = 30 * time.Second
+	firstRetryWait   = 500 * time.Millisecond
+)
 
-// mutate sends a body-bound, authorized write. auth is called with the exact
-// method, path, and bytes sent, so the token's bindings match what CDS receives.
-func (c Client) mutate(ctx context.Context, method, path string, body []byte, auth Authorizer) error {
+// mutate sends a body-bound, authorized write, sending it again while the
+// refusal only says "not now". Each attempt carries a token of its own: CDS
+// spends a token once. Any other refusal is final.
+func (c Client) mutate(ctx context.Context, method, path string, body []byte, ifMatch string, auth Authorizer) error {
 	if auth == nil {
 		return fmt.Errorf("allowlistclient: nil Authorizer")
 	}
+	for attempt := 1; ; attempt++ {
+		retryAfter, err := c.send(ctx, method, path, body, ifMatch, auth)
+		if err == nil {
+			return nil
+		}
+		if !saysNotNow(err) {
+			return err
+		}
+		if attempt == maxWriteAttempts {
+			return fmt.Errorf("%w (gave up after %d attempts)", err, attempt)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w; stopped waiting to retry: %w", err, ctx.Err())
+		case <-time.After(retryWait(retryAfter, attempt)):
+		}
+	}
+}
+
+// saysNotNow reports whether a refusal only means "not now": the write was
+// rate limited, or nothing was serving the API.
+func saysNotNow(err error) bool {
+	var refusal *operatorauth.StatusError
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	return refusal.Status == http.StatusTooManyRequests || refusal.Status == http.StatusServiceUnavailable
+}
+
+// send makes one attempt of a write. auth is called with the exact method,
+// path, and bytes sent, so the token's bindings match what CDS receives. A
+// refusal comes back as a *operatorauth.StatusError with the answer's
+// Retry-After.
+func (c Client) send(ctx context.Context, method, path string, body []byte, ifMatch string, auth Authorizer) (string, error) {
 	req, err := operatorauth.NewRequest(ctx, method, c.baseURL+path, body, auth)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return operatorauth.ResponseError(resp)
+		return resp.Header.Get("Retry-After"), operatorauth.ResponseError(resp)
 	}
 	io.Copy(io.Discard, resp.Body)
-	return nil
+	return "", nil
+}
+
+// retryWait is how long to wait before attempt+1: the Retry-After seconds
+// when the server sent them, else firstRetryWait doubled per attempt made.
+func retryWait(retryAfter string, attempt int) time.Duration {
+	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds >= 0 {
+		return min(time.Duration(seconds)*time.Second, maxRetryWait)
+	}
+	return min(firstRetryWait<<(attempt-1), maxRetryWait)
 }
 
 // VersionFromETag extracts a non-empty N from a weak ETag of the form W/"N",

@@ -11,7 +11,7 @@ pod — the router — holds one endpoint shape with it.
 
 The node's measured base allowlist grants the mesh role to that argv, those
 mounts and that reserved UID alone
-(`node-guest-image/c8s/image-policy.yaml.in`), so the credential paths are
+(`images/node-guest/c8s/image-policy.yaml.in`), so the credential paths are
 fixed: `c8s.certDir`, `c8s.certFile`, `c8s.keyFile` and `c8s.caFile` in [_helpers.tpl](../../templates/_helpers.tpl) are what both
 the endpoint and the pod's get-cert containers use. A pod reading or publishing
 elsewhere takes no role, and the enforcer refuses it.

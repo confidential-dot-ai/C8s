@@ -61,7 +61,11 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
+	for _, name := range []string{
+		"peers.json",
+		"operator-pubkey",
+		"config.json",
+	} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -98,10 +102,6 @@ func stageVerified(cfg Config, v *Verified) error {
 	if err != nil {
 		return fmt.Errorf("format node peer policy: %w", err)
 	}
-	cds, err := refvalues.Format(v.cdsPins)
-	if err != nil {
-		return fmt.Errorf("format server policy: %w", err)
-	}
 	encoded, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode staged config: %w", err)
@@ -112,7 +112,6 @@ func stageVerified(cfg Config, v *Verified) error {
 	}
 	outputs := []outputFile{
 		{Dir + "/peers.json", peers},
-		{Dir + "/cds.json", cds},
 		{Dir + "/operator-pubkey", v.operatorPub},
 		{Dir + "/config.json", append(encoded, '\n')},
 		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
@@ -121,9 +120,6 @@ func stageVerified(cfg Config, v *Verified) error {
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.
 		outputs = append(outputs, outputFile{nodePasswordPath, []byte(doc.RKE2.NodePassword + "\n")})
-	}
-	if doc.Workloads != "" {
-		outputs = append(outputs, outputFile{Dir + "/workloads.json", []byte(doc.Workloads)})
 	}
 	if len(doc.RegistryMirrors) > 0 {
 		registries, err := yaml.Marshal(registriesFile(doc))

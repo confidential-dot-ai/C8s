@@ -183,8 +183,19 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 		t.Fatal(err)
 	}
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
-	cfg.WorkloadClaims.CDSNodePort = 30808
-	if err := bindCredentialRole(cfg); err != nil {
+	// Launch staging writes both halves into the measured config: where this
+	// cluster's CDS serves, and the role its clients hold (nodeservices).
+	cfg.cdsAddress = "cds.example.org:8443"
+	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
+		Name: CredentialRole,
+		UID:  workloadclaims.CredentialsUID,
+		Port: 8443,
+	})
+	// The router's host binds are exempted by the chart seed boot merges into
+	// this base, which pins each launch (cmd/c8s TestNodeImageRender); this
+	// test drives the mount and role checks on the template alone.
+	cfg.Policy.Sandbox = SandboxOff
+	if err := cfg.Mesh.validate(); err != nil {
 		t.Fatal(err)
 	}
 	p := newTestPlugin(cfg)
@@ -240,7 +251,6 @@ func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
 		"--set-string", "router.nginx.image.digest="+routerImageDigest,
-		"--set-string", "cds.image.digest="+pushDigestA,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)

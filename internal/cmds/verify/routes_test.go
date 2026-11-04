@@ -26,6 +26,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -440,7 +441,7 @@ func TestSavedBundleRouteFlags(t *testing.T) {
 		{name: "expected report data in attest-pq mode", cfg: config{mode: "attest-pq", fromFile: bundle, routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data in attest-pq mode without a route check", cfg: config{mode: "attest-pq", fromFile: bundle, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data against a live router", cfg: config{url: "https://router.invalid", mode: "attest-lb", routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-lb"},
-		{name: "operator keys with kind cds", cfg: config{url: "https://router.invalid", kind: "cds", mode: "attest-pq", operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind cds"},
+		{name: "operator keys with kind cds", cfg: config{url: "https://router.invalid", kind: "cds", mode: "attest-pq", measurementsConfig: testutil.CDSPinFile(t), operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind cds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer

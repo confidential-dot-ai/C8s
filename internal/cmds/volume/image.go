@@ -58,6 +58,8 @@ type BuildConfig struct {
 	WorkDir string
 	// Run executes the build tools; nil uses execRunner.
 	Run Runner
+	// Jobs is how many goroutines encrypt; zero uses EncryptAt's default.
+	Jobs int
 }
 
 // Build packages Source into an erofs image, formats a dm-verity tree over it,
@@ -145,6 +147,8 @@ type MutableBuildConfig struct {
 	WorkDir string
 	// Run executes the build tools; nil uses execRunner.
 	Run Runner
+	// Jobs is as in BuildConfig.
+	Jobs int
 }
 
 // BuildMutable builds a writable ext4 image of Size bytes — preloaded from
@@ -187,7 +191,7 @@ func BuildMutable(ctx context.Context, cfg MutableBuildConfig) (uint64, error) {
 	}
 
 	b := &mutableImage{source: cfg.Source, rootOwner: rootOwner, size: size, inodes: inodes}
-	if err := buildImage(ctx, BuildConfig{Out: cfg.Out, Key: cfg.Key, WorkDir: cfg.WorkDir, Run: cfg.Run}, b); err != nil {
+	if err := buildImage(ctx, BuildConfig{Out: cfg.Out, Key: cfg.Key, WorkDir: cfg.WorkDir, Run: cfg.Run, Jobs: cfg.Jobs}, b); err != nil {
 		return 0, err
 	}
 	return size, nil
@@ -378,7 +382,7 @@ func buildImage(ctx context.Context, cfg BuildConfig, builder imageBuilder) erro
 		defer f.Close()
 		readers = append(readers, f)
 	}
-	return Encrypt(out, io.MultiReader(readers...), cfg.Key)
+	return EncryptAt(ctx, out, io.MultiReader(readers...), cfg.Key, cfg.Jobs)
 }
 
 func checkSource(source string) (os.FileInfo, error) {

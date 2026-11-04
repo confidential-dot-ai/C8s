@@ -23,9 +23,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// Required image-label substrings for deployments with a chart-managed attestation API.
+// Required image-label substrings for deployments with a chart-managed
+// attestation API. CDS is not among them: it runs outside the cluster, so no
+// entry of the cluster's allowlist admits it.
 var defaultRequiredComponents = []string{
-	"cds",
 	"armtls-mesh",
 	"nri-image-policy",
 	"attestation-api",

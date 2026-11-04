@@ -20,7 +20,7 @@ func TestMeshCARenewalKeepsLeavesChaining(t *testing.T) {
 	}
 	before := mesh.Current()
 	csr, _ := mustCSR(t, "leaf", nil, nil, nil)
-	leafPEM, _, err := before.CA.SignCSR(issuer.SignCSRParams{
+	leafPEM, _, _, err := before.CA.SignCSR(issuer.SignCSRParams{
 		CSR: csr,
 		TTL: time.Hour,
 	})

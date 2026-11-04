@@ -14,7 +14,7 @@ validate() {
   [[ ${GITHUB_RUN_ATTEMPT:-} =~ ^[1-9][0-9]*$ ]] || fail 'invalid expected workflow attempt'
   jq -e --arg source "$source_sha" --arg run "$run_id" --arg attempt "$GITHUB_RUN_ATTEMPT" '
     .schema == 1 and .source_sha == $source and .run_id == $run and
-    .build_attempt == $attempt and .launch_config_version == "c8s-launch/v1" and
+    .build_attempt == $attempt and .launch_config_version == "c8s-launch/v2" and
     .c8s_ref == $source[0:7] and .variant == "rke2-tdx" and
     (.image | type == "string" and test("^ghcr[.]io/confidential-dot-ai/node-guest-base@sha256:[0-9a-f]{64}$")) and
     (.artifact | type == "string" and test("^ghcr[.]io/confidential-dot-ai/node-guest-base@sha256:[0-9a-f]{64}$")) and
@@ -42,6 +42,47 @@ owned_root() {
     .metadata.labels["ci.confidential.ai/run-id"] == $run and
     .metadata.annotations["ci.confidential.ai/repo"] == $repo
   ' <<<"$object" >/dev/null
+}
+
+# host_pressure prints the launcher host's load and I/O pressure as the runner
+# pod sees them (procfs is not namespaced), with its root filesystem use: an
+# import that crawls on a quiet registry is usually a busy or full host.
+host_pressure() {
+  local load io disk
+  load=$(cut -d ' ' -f1-3 /proc/loadavg 2>/dev/null || echo '?')
+  io=$(awk '/^some/ { for (i = 1; i <= NF; i++) if ($i ~ /^avg60=/) { sub(/^avg60=/, "", $i); print $i } }' /proc/pressure/io 2>/dev/null || true)
+  disk=$(df -hP / 2>/dev/null | awk 'NR == 2 { print $5 " of " $2 }' || true)
+  echo "load ${load} cpus=$(nproc 2>/dev/null || echo '?') io-pressure=${io:-n/a} root-disk=${disk:-n/a}"
+}
+
+# import_status NAMESPACE PVC [full] prints one line on the CDI import into
+# PVC: its phase, the importer pod with its restarts and container state, and
+# the scratch claim CDI fills first. With full, the PVC's events and the
+# importer's last log lines follow. Reads only, for either lane's root; a read
+# the runner may not make is reported, never fatal.
+import_status() {
+  local ns=$1 pvc=$2 full=${3:-} object phase pod importer summary scratch
+  [[ $ns == confai-images && $pvc =~ ^c8s-(root-[0-9a-f]{12}|tdx-[0-9]+-[0-9]+-root)$ ]] || fail 'unexpected import scope'
+  object=$(timeout 30 kubectl -n "$ns" get pvc "$pvc" -o json 2>/dev/null) || object='{}'
+  phase=$(jq -r '.metadata.annotations["cdi.kubevirt.io/storage.pod.phase"] // "Pending"' <<<"$object")
+  pod=$(jq -r --arg d "importer-$pvc" '.metadata.annotations["cdi.kubevirt.io/storage.import.importPodName"] // $d' <<<"$object")
+  if importer=$(timeout 30 kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null); then
+    summary=$(jq -r '"\(.metadata.name) \(.status.phase // "unknown") restarts=\([.status.containerStatuses[]?.restartCount] | add // 0)"
+      + ([.status.containerStatuses[]? | .state | to_entries[] | select(.value.reason != null) | " \(.key)=\(.value.reason)"] | join(""))' <<<"$importer")
+  else
+    summary='importer absent'
+  fi
+  if scratch=$(timeout 30 kubectl -n "$ns" get pvc "$pvc-scratch" -o json 2>/dev/null); then
+    scratch="scratch $(jq -r '.status.phase // "unknown"' <<<"$scratch")"
+  else
+    scratch='scratch absent'
+  fi
+  echo "tdx-image-acceptance: $pvc import $phase; $summary; $scratch; host $(host_pressure)"
+  [[ $full == full ]] || return 0
+  timeout 30 kubectl -n "$ns" describe pvc "$pvc" 2>/dev/null | sed -n '/^Events:/,$p' | tail -15 || true
+  if [[ $summary != 'importer absent' ]]; then
+    timeout 30 kubectl -n "$ns" logs "$pod" --tail=20 2>/dev/null || echo 'importer logs: not readable'
+  fi
 }
 
 case ${1:-} in
@@ -112,6 +153,7 @@ case ${1:-} in
     timeout_seconds=${6:-1200}
     [[ $timeout_seconds =~ ^[1-9][0-9]{0,3}$ && $timeout_seconds -le 1200 ]] || fail 'timeout must be 1..1200 seconds'
     deadline=$((SECONDS + timeout_seconds))
+    reported=-60
     while (( SECONDS < deadline )); do
       remaining=$((deadline - SECONDS))
       request_timeout=$((remaining < 30 ? remaining : 30))
@@ -120,14 +162,24 @@ case ${1:-} in
       phase=$(jq -r '.metadata.annotations["cdi.kubevirt.io/storage.pod.phase"] // "Pending"' <<<"$object")
       case $phase in
         Succeeded) exit 0 ;;
-        Failed) fail 'CDI root disk import failed' ;;
+        Failed) import_status "$3" "$2-root" full >&2; fail 'CDI root disk import failed' ;;
       esac
+      # Once a minute, so a slow import leaves its pace in the log.
+      if (( SECONDS - reported >= 60 )); then
+        import_status "$3" "$2-root" >&2
+        reported=$SECONDS
+      fi
       remaining=$((deadline - SECONDS))
       ((remaining > 0)) || break
       sleep_seconds=$((remaining < 10 ? remaining : 10))
       sleep "$sleep_seconds"
     done
+    import_status "$3" "$2-root" full >&2
     fail 'CDI root disk import timed out'
+    ;;
+  import-status)
+    [[ $# == 3 || $# == 4 ]] || fail 'usage: import-status NAMESPACE PVC [full]'
+    import_status "$2" "$3" "${4:-}"
     ;;
   cleanup|cleanup-binder)
     [[ $# == 5 ]] || fail 'usage: cleanup VM NAMESPACE RUN_ID REPOSITORY'
@@ -169,5 +221,5 @@ case ${1:-} in
       fi
     done < <(jq -c '.items[]' <<<"$roots")
     ;;
-  *) fail 'expected validate, pvc, binder, start-import, wait, cleanup, cleanup-binder or reap' ;;
+  *) fail 'expected validate, pvc, binder, start-import, wait, import-status, cleanup, cleanup-binder or reap' ;;
 esac

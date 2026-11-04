@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -165,14 +164,14 @@ func TestMissingComponents(t *testing.T) {
 		t.Fatalf("expected no missing components, got %v", got)
 	}
 
-	partial := map[string]string{digA: "registry/c8s/cds@" + digA}
+	partial := map[string]string{digA: "registry/c8s/armtls-mesh@" + digA}
 	got := missingComponents(partial, defaultRequiredComponents)
 	if len(got) != len(defaultRequiredComponents)-1 {
-		t.Fatalf("expected all but cds missing, got %v", got)
+		t.Fatalf("expected all but armtls-mesh missing, got %v", got)
 	}
 	for _, c := range got {
-		if c == "cds" {
-			t.Fatal("cds should not be reported missing")
+		if c == "armtls-mesh" {
+			t.Fatal("armtls-mesh should not be reported missing")
 		}
 	}
 }
@@ -348,52 +347,21 @@ func stubVerify(context.Context, string, json.RawMessage, localverify.Params) (*
 	return &teetypes.VerificationResult{}, nil
 }
 
-// captureStderr runs fn with os.Stderr redirected to a pipe and returns what
-// was written.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stderr
-	os.Stderr = w
-	fn()
-	os.Stderr = old
-	w.Close()
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
-func TestClientWarnsOnlyWithoutMeasurements(t *testing.T) {
-	const warning = "no --measurements set"
+func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 	base := options{Options: cdsconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
 
-	t.Run("unpinned warns", func(t *testing.T) {
+	t.Run("unpinned refused", func(t *testing.T) {
 		o := base
-		out := captureStderr(t, func() {
-			if _, err := o.client(context.Background()); err != nil {
-				t.Errorf("client: %v", err)
-			}
-		})
-		if !strings.Contains(out, warning) {
-			t.Fatalf("stderr = %q, want the unpinned-measurements warning", out)
+		if _, err := o.client(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
+			t.Fatalf("client() = %v, want the unpinned-endpoint refusal", err)
 		}
 	})
 
-	t.Run("pinned does not warn", func(t *testing.T) {
+	t.Run("pinned by the CDS document", func(t *testing.T) {
 		o := base
-		o.Measurements = []string{strings.Repeat("ab", 48)}
-		out := captureStderr(t, func() {
-			if _, err := o.client(context.Background()); err != nil {
-				t.Errorf("client: %v", err)
-			}
-		})
-		if strings.Contains(out, warning) {
-			t.Fatalf("stderr = %q, warned despite pinned measurements", out)
+		o.MeasurementsConfig = testutil.CDSPinFile(t)
+		if _, err := o.client(context.Background()); err != nil {
+			t.Fatalf("client: %v", err)
 		}
 	})
 }
@@ -476,7 +444,7 @@ allowlist").`
 
 	wantFlags := map[string]string{
 		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; empty trusts any attested build (UNSAFE)",
+		"measurements": "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)
