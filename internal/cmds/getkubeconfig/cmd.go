@@ -32,8 +32,9 @@ func NewCmd() *cobra.Command {
 			"cred-release's certificate and may lag a new policy until it is\n" +
 			"reissued); on SEV-SNP the pinned per-SMP launch digest plus the\n" +
 			"operator-key HOSTDATA binding. It then exchanges a CSR for a\n" +
-			"short-lived kube client cert over the cred-release endpoint and writes\n" +
-			"a kubeconfig. Fresh attestation uses the authenticated armTLS release\n" +
+			"kube client cert over the cred-release endpoint, valid for its\n" +
+			"--cert-ttl, or --log-cert-ttl for a log-reader (both default 7 days),\n" +
+			"and writes a kubeconfig. Fresh attestation uses the authenticated armTLS release\n" +
 			"endpoint; the guest raw attester can remain on loopback. Verification\n" +
 			"runs in-process (attestation-go).",
 		RunE: func(cmd *cobra.Command, _ []string) error {

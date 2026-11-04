@@ -34,8 +34,8 @@
 {{- /*
   Hardware-TEE mutual exclusion. A single cluster picks one CPU TEE at install
   time (--hardware-platform sev-snp or tdx). teeDevices.sevGuest and
-  teeDevices.tdxGuest select which /dev/{sev,tdx}-guest node is mounted on the
-  attestation-api DaemonSet.
+  teeDevices.tdxGuest select what the attestation-api DaemonSet mounts:
+  /dev/sev-guest, or ConfigFS TSM at /sys/kernel/config for TDX.
   Install CLI's --hardware-platform flag makes them mutually exclusive by
   construction; this guard catches raw -f overrides that bypass the CLI.
   aks (tpm) is orthogonal: it's the vTPM path and does not interact with these

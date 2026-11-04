@@ -32,25 +32,6 @@ import (
 
 var errTestResolve = errors.New("simulated resolve failure")
 
-func TestOperatorKeysPreflight(t *testing.T) {
-	// Keys provided → no gate, no warning.
-	if warn, err := operatorKeysPreflight("operator.pub", nil, false); err != nil || warn != "" {
-		t.Fatalf("keys provided: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-	// Default path, no keys, no force → hard error (must acknowledge).
-	if _, err := operatorKeysPreflight("", nil, false); err == nil {
-		t.Fatal("no keys + no force: expected an error requiring --operator-keys or --force")
-	}
-	// Default path, no keys, --force → allowed, but warns.
-	if warn, err := operatorKeysPreflight("", nil, true); err != nil || warn == "" {
-		t.Fatalf("no keys + force: want warn and no error, got warn=%q err=%v", warn, err)
-	}
-	// -f supplied → operator owns cds.operatorKeys in their values file; no gate.
-	if warn, err := operatorKeysPreflight("", []string{"custom.yaml"}, false); err != nil || warn != "" {
-		t.Fatalf("-f supplied: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-}
-
 func TestCDSPinPreflight(t *testing.T) {
 	dir := t.TempDir()
 	file := func(name, body string) string {

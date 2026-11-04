@@ -432,9 +432,8 @@ c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
 The install flag supplies the router's trusted route-signing keys; it does not
-change CDS's operator keys. `c8s install` requires `--force` when neither
-`--operator-keys` nor a values file is supplied. This CLI guard does not determine
-CDS write authorization. Supply the private key to the CLI by flag
+change CDS's operator keys. Without it the router uses the keys the pinned
+CDS serves. Supply the private key to the CLI by flag
 (`--operator-key`) or environment (`C8S_OPERATOR_KEY`). Write tokens are
 short-lived and bound to the request body, so a captured token cannot be
 replayed against a different payload. The private key remains on the operator
