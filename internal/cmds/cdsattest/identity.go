@@ -96,21 +96,15 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
-	servedUntil := leaf.NotAfter
-	if issuer.NotAfter.Before(servedUntil) {
-		servedUntil = issuer.NotAfter
-	}
 	// X509KeyPair never parsed the extra blocks, so one that does not parse
 	// keeps loading the identity: it only cannot shorten servedUntil.
+	chain := []*x509.Certificate{issuer}
 	for _, der := range pair.Certificate[1:] {
-		cert, err := x509.ParseCertificate(der)
-		if err != nil {
-			continue
-		}
-		if cert.NotAfter.Before(servedUntil) {
-			servedUntil = cert.NotAfter
+		if cert, err := x509.ParseCertificate(der); err == nil {
+			chain = append(chain, cert)
 		}
 	}
+	servedUntil := chainExpiry(leaf, chain...)
 
 	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Raw})...)
@@ -165,6 +159,18 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER,
 		return nil, nil, err
 	}
 	return transcriptHash, proof, nil
+}
+
+// chainExpiry is when a chain served with leaf stops validating: the
+// earliest NotAfter across leaf and rest.
+func chainExpiry(leaf *x509.Certificate, rest ...*x509.Certificate) time.Time {
+	expires := leaf.NotAfter
+	for _, cert := range rest {
+		if cert.NotAfter.Before(expires) {
+			expires = cert.NotAfter
+		}
+	}
+	return expires
 }
 
 // checkACMEServingLeaf admits a serving leaf read from --serving-cert-file,

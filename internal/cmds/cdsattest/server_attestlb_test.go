@@ -182,21 +182,8 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
 		return path
 	}
-	// A valid leaf served with an expired intermediate.
-	expiredChain := func(t *testing.T, _ testMeshIdentity) string {
-		path, _ := writeTestServingLeaf(t)
-		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: intermediate}); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
 	appendBlock := func(t *testing.T, path string, der []byte) string {
+		t.Helper()
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -206,6 +193,12 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		return path
+	}
+	// A valid leaf served with an expired intermediate.
+	expiredChain := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeaf(t)
+		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return appendBlock(t, path, intermediate)
 	}
 	// tls.crt carries an intermediate that has expired.
 	meshExpiredChain := func(t *testing.T, identity testMeshIdentity) string {
@@ -239,6 +232,10 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
 		{name: "cds expired chain", mode: types.FrontDoorModeCDS, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "cds ignores a malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain},
+		{name: "acme ignores the mesh chain", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
+			meshExpiredChain(t, identity)
+			return otherLeaf(t, identity)
+		}},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},

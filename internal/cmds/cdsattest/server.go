@@ -776,17 +776,18 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 			return der, true
 		}
 	}
-	// Warn, not Error: these failures repeat on every request until renewal
-	// recovers, and a missing cert.pem is normal before the first ACME order
-	// completes. Renewal monitoring alerts on them.
+	// Warn, not Error, on every refusal below: they repeat on every request
+	// until renewal recovers, and renewal monitoring alerts on them.
 	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
-	if now := time.Now(); now.After(leaf.expires) {
-		s.log.Warn("attest-lb serving leaf rejected", "error", "mesh identity served with an expired chain", "chain_expires", leaf.expires)
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
-			"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
-		return nil, false
-	}
-	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
+	if s.cfg.FrontDoorMode != types.FrontDoorModeACME {
+		if time.Now().After(leaf.expires) {
+			s.log.Warn("attest-lb serving leaf rejected", "error", "mesh identity served with an expired chain", "chain_expires", leaf.expires)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+			return nil, false
+		}
+	} else {
+		// A missing cert.pem is normal before the first ACME order completes.
 		cert, served, err := s.servingLeaf()
 		if err != nil {
 			s.log.Warn("attest-lb binding unavailable", "error", err)
@@ -874,7 +875,7 @@ func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if err != nil {
 		return nil, servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
 	}
-	leaf := servedLeaf{der: cert.Raw, expires: cert.NotAfter}
+	var chain []*x509.Certificate
 	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
 		if block.Type != "CERTIFICATE" {
 			continue
@@ -883,11 +884,9 @@ func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 		if err != nil {
 			return nil, servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
 		}
-		if issuer.NotAfter.Before(leaf.expires) {
-			leaf.expires = issuer.NotAfter
-		}
+		chain = append(chain, issuer)
 	}
-	return cert, leaf, nil
+	return cert, servedLeaf{der: cert.Raw, expires: chainExpiry(cert, chain...)}, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer
