@@ -733,7 +733,7 @@ allowlist:
                 BOOTSTRAP: {exact: "true"}
                 CHART: {exact: ""}
                 CHART_NAMESPACE: {exact: "kube-system"}
-                CONFIG_HASH: {exact: "782319E7FE222AA2112A65AC8178D28B78EA2BEAA2CF319EDF8B74C9C5F5E39"}
+                CONFIG_HASH: {exact: "8DA0232A8AA379BDB1581F5C33332588CF4C8E422CEBD744A636E90E9EADC91"}
                 EXPECTED_RELEASE_REVISION: {exact: "0"}
                 FAILURE_POLICY: {exact: "reinstall"}
                 FORCE_CONFLICTS: {exact: "true"}
