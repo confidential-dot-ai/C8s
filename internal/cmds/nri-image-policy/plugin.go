@@ -153,17 +153,17 @@ func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []st
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
 }
 
-// declaresNodeRoot reports whether the base or applied allowlist has a
-// nodeRootFile rule for digest.
-func (s *policyStore) declaresNodeRoot(digest string) bool {
+// nodeRootBinds returns the mounts a nodeRootFile rule of the base or applied
+// allowlist names for digest (allowlist.Index.NodeRootBinds).
+func (s *policyStore) nodeRootBinds(digest string, mounts []allowlist.ObservedMount) []allowlist.ObservedMount {
 	if s == nil {
-		return false
+		return nil
 	}
-	if s.base.DeclaresNodeRoot(digest) {
-		return true
+	binds := s.base.NodeRootBinds(digest, mounts)
+	if snap := s.current(); snap != nil {
+		binds = append(binds, snap.index.NodeRootBinds(digest, mounts)...)
 	}
-	snap := s.current()
-	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+	return binds
 }
 
 // needsVariableEvidence reports whether the base or applied allowlist has a
@@ -742,7 +742,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 			}
 		}
 		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
-		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
+		if missing := nodeRootMissing(p.policy.nodeRootBinds(digest, check.Mounts)); missing != "" {
 			attrs = append(attrs, "node_root_unavailable", missing)
 		}
 		log.Warn("image not admitted by allowlist", attrs...)
