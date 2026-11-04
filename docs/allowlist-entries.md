@@ -28,7 +28,8 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
           "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}}
       }],
       "secrets": {"policy": "allow", "read": ["/tenant-a/**"]},
-      "egress": [{"cidr": "203.0.113.7/32", "port": 443}]
+      "egress": [{"cidr": "203.0.113.7/32", "port": 443}],
+      "hostPorts": [{"protocol": "TCP", "hostPort": 9443, "containerPort": 8000}]
     }
   }
 }
@@ -148,6 +149,18 @@ not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
 egress pins its launch as a grant does, and a node refuses one that overlaps a
 cluster range, its own address, the resolver, or CDS.
+
+## `hostPorts`
+
+The ports a pod this entry claims publishes on the node's own address. A
+mapping has exactly the members `protocol` (`TCP`, `UDP`, or `SCTP`, spelled as
+a pod spec spells it), `hostPort`, and `containerPort`, both between 1 and
+65535. A protocol and host port pair is listed once; the same host port on two
+protocols is two mappings. The node's own service ports are refused: 1019 (the
+workload inventory), 2379 and 2380 (etcd), 6443 (the Kubernetes API), 8443
+(credential release), 9345 (the agent join endpoint), and 10250 (the kubelet).
+An entry with host ports pins every container's launch: `command`, `args` and
+`mounts` not `any`, and `env` constrained.
 
 ## Matching
 

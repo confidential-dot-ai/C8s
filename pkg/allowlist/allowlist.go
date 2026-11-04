@@ -4,8 +4,9 @@
 // The allowlist is a map of named workload entries. Each entry pins an
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
-// entry as a whole carries a secret-store grant and its declared exits. An image that may run however
-// it is invoked is an entry whose container policy is any. Policy is always looked
+// entry as a whole carries a secret-store grant, its declared exits and the
+// host ports its pods publish. An image that may run however it is invoked is
+// an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
 // chosen by the untrusted host while the digest is bound to the bytes that run.
@@ -69,6 +70,9 @@ type Workload struct {
 	// Egress are the exits a pod this entry matches may reach outside the
 	// mesh. Like a secrets grant it belongs to the whole entry.
 	Egress EgressList `json:"egress,omitempty" yaml:"egress,omitempty"`
+	// HostPorts are the ports a pod this entry matches publishes on the node's
+	// own address; like a secrets grant they belong to the whole entry.
+	HostPorts HostPortList `json:"hostPorts,omitempty" yaml:"hostPorts,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
@@ -100,22 +104,45 @@ type EgressList []Egress
 
 // UnmarshalJSON never fails: what does not decode is the empty exit above.
 func (l *EgressList) UnmarshalJSON(data []byte) error {
-	*l = EgressList{{}}
+	*l = strictMembers[Egress](data)
+	return nil
+}
+
+// strictMembers decodes a list whole, or into the one zero member its
+// normalization refuses when any member carries an unknown field.
+func strictMembers[T any](data []byte) []T {
+	var zero T
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err != nil {
-		return nil
+		return []T{zero}
 	}
-	list := make(EgressList, 0, len(items))
+	list := make([]T, 0, len(items))
 	for _, item := range items {
 		dec := json.NewDecoder(bytes.NewReader(item))
 		dec.DisallowUnknownFields()
-		var e Egress
-		if err := dec.Decode(&e); err != nil {
-			return nil
+		var member T
+		if err := dec.Decode(&member); err != nil {
+			return []T{zero}
 		}
-		list = append(list, e)
+		list = append(list, member)
 	}
-	*l = list
+	return list
+}
+
+// HostPort is one published port, spelled as a pod spec spells it.
+type HostPort struct {
+	Protocol      string `json:"protocol" yaml:"protocol"`
+	HostPort      int    `json:"hostPort" yaml:"hostPort"`
+	ContainerPort int    `json:"containerPort" yaml:"containerPort"`
+}
+
+// HostPortList decodes each mapping strictly; an undecodable value becomes the
+// empty mapping normalizeHostPorts refuses.
+type HostPortList []HostPort
+
+// UnmarshalJSON never fails: what does not decode is the empty mapping above.
+func (l *HostPortList) UnmarshalJSON(data []byte) error {
+	*l = strictMembers[HostPort](data)
 	return nil
 }
 
@@ -332,14 +359,21 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := w.PinnedForEgress(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
 	}
+	if err := normalizeHostPorts(&w.HostPorts); err != nil {
+		return nil, fmt.Errorf("entry hostPorts: %w", err)
+	}
+	if err := w.pinnedForHostPorts(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
 }
 
 var (
-	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
+	errGrantUnpinnedArgv       = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+	errGrantUnpinnedMounts     = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
+	errHostPortsUnpinnedLaunch = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -422,6 +456,19 @@ func (w Workload) PinnedForEgress() error {
 	}
 	if err := w.PinnedForGrant(); err != nil {
 		return fmt.Errorf("declared egress needs the launch pinned as a secrets grant does: %w", err)
+	}
+	return nil
+}
+
+// pinnedForHostPorts refuses declared host ports unless every container pins its launch.
+func (w Workload) pinnedForHostPorts() error {
+	if len(w.HostPorts) == 0 {
+		return nil
+	}
+	for _, c := range w.containers() {
+		if !c.LaunchPinned() {
+			return errHostPortsUnpinnedLaunch
+		}
 	}
 	return nil
 }
@@ -557,6 +604,22 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := w.PinnedForEgress(); strict && err != nil {
 			return fmt.Errorf("workload %q: %w", name, err)
 		}
+		if err := normalizeHostPorts(&w.HostPorts); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q hostPorts: %w", name, err)
+			}
+			slog.Warn("allowlist: dropping a served workload entry's host ports this consumer cannot validate",
+				"name", name, "error", err)
+			w.HostPorts = nil
+		}
+		if err := w.pinnedForHostPorts(); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
+			slog.Warn("allowlist: dropping a served workload entry's host ports no pinned launch publishes",
+				"name", name, "error", err)
+			w.HostPorts = nil
+		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
@@ -639,6 +702,69 @@ func normalizeEgress(exits *EgressList) error {
 		}
 	}
 	return nil
+}
+
+var hostPortProtocols = []string{
+	"SCTP",
+	"TCP",
+	"UDP",
+}
+
+// nodeServicePorts are the node's own service ports, which no pod publishes.
+var nodeServicePorts = []int{
+	1019,  // workload inventory (pkg/workloadclaims DigestsPort)
+	2379,  // etcd client
+	2380,  // etcd peer
+	6443,  // Kubernetes API
+	8443,  // credential release
+	9345,  // agent join
+	10250, // kubelet
+}
+
+// publishedPort is the pair an entry may list once.
+type publishedPort struct {
+	Protocol string
+	HostPort int
+}
+
+// normalizeHostPorts validates an entry's published ports and sorts them. An
+// empty list becomes nil, so an entry publishing none carries no "hostPorts" key.
+func normalizeHostPorts(ports *HostPortList) error {
+	list := *ports
+	if len(list) == 0 {
+		*ports = nil
+		return nil
+	}
+	if len(list) == 1 && list[0] == (HostPort{}) {
+		return fmt.Errorf(`hostPorts is not a list of {protocol, hostPort, containerPort} mappings`)
+	}
+	listed := make(map[publishedPort]bool, len(list))
+	for _, p := range list {
+		pair := publishedPort{Protocol: p.Protocol, HostPort: p.HostPort}
+		switch {
+		case !slices.Contains(hostPortProtocols, p.Protocol):
+			return fmt.Errorf("protocol %q is not TCP, UDP or SCTP", p.Protocol)
+		case p.HostPort < 1 || p.HostPort > 65535:
+			return fmt.Errorf("host port %d is not between 1 and 65535", p.HostPort)
+		case p.ContainerPort < 1 || p.ContainerPort > 65535:
+			return fmt.Errorf("container port %d is not between 1 and 65535", p.ContainerPort)
+		case slices.Contains(nodeServicePorts, p.HostPort):
+			return fmt.Errorf("host port %d is one the node answers on its own address", p.HostPort)
+		case listed[pair]:
+			return fmt.Errorf("%s host port %d is declared twice", p.Protocol, p.HostPort)
+		}
+		listed[pair] = true
+	}
+	slices.SortFunc(list, compareHostPorts)
+	return nil
+}
+
+// compareHostPorts orders the canonical form.
+func compareHostPorts(a, b HostPort) int {
+	if c := a.HostPort - b.HostPort; c != 0 {
+		return c
+	}
+	return strings.Compare(a.Protocol, b.Protocol)
 }
 
 func normalizeContainers(workload, field string, cs []Container) error {
