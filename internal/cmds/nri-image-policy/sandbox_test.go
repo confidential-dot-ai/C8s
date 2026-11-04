@@ -832,9 +832,9 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	}
 }
 
-// The served entry granting the privilege is withdrawn the moment the tag is
-// resolved a second time: every grant after admission must judge the digest
-// and snapshot admission judged.
+// The served entry granting the privilege is withdrawn while admission
+// resolves the tag, after the check took its snapshot: every grant must judge
+// the digest and snapshot admission judged.
 func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 	const source, imageRef = "/usr/bin/nvidia-smi", "registry/repo:tag"
 	base := anyAllowlist(map[string]string{pushDigestB: "tool"})
@@ -894,9 +894,7 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 			p.containerd = &fakeContainerd{
 				resolve: func(context.Context, string) (string, error) {
 					resolves++
-					if resolves > 1 {
-						store.apply(&allowlist.Allowlist{Schema: allowlist.Schema}, 2)
-					}
+					store.apply(&allowlist.Allowlist{Schema: allowlist.Schema}, 2)
 					return pushDigestB, nil
 				},
 				network: func(context.Context, string, ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
