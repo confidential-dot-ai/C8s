@@ -15,6 +15,16 @@
 # digests); each roll is its own PR, opened by .github/scripts/pin-watch-pr.sh
 # as one GitHub-verified commit, one open PR at a time.
 #
+# A second step watches the chart's third-party image digests
+# (kube-state-metrics, the router's nginx, the containerd-prep busybox: the
+# digests in internal/helmchart/c8s/values.yaml whose Resolve line names a
+# tag, .github/scripts/chart-image-pins.sh) and opens its own PR when a tag
+# names a newer manifest than the pinned digest, as docker.io tags do when
+# their base is rebuilt. Each digest is seeded into the allowlist floor, so a
+# human owns that merge too, and aligns entrypoint/imageEnv when the image's
+# config moved (the PR body says whether it did). The tag itself never moves
+# here: a version bump is a hand edit of the Resolve line.
+#
 # Authentication prefers a short-lived, repository-scoped GitHub App token.
 # Checkout, push, and gh use one credential; an unconfigured App falls back to
 # GITHUB_TOKEN, while invalid configured credentials fail before checkout.
@@ -51,6 +61,7 @@ jobs:
           # Persist the same token used by gh so App-created PR updates also
           # trigger CI automatically; github.token remains the fallback.
           token: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
+      - uses: ./.github/actions/setup-crane
       - name: Bump stale pins and open the PR
         env:
           GH_TOKEN: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
@@ -97,3 +108,46 @@ jobs:
             --allow .github/build-pins.json --allow "$values" \
             --title "build(${DOMAIN}): pin-watch bump — confos ${confos_tag}, attestation-rs ${attest_tag}" \
             --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`, image \`${attest_digest:0:19}…\`, also written to the chart's \`attestationApi\` \`pinnedDigest\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
+      - name: Bump rebuilt chart images and open the PR
+        env:
+          GH_TOKEN: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          # The previous step's PR lives on its branch; its staged files are
+          # not this PR's.
+          git reset -q --hard
+          values=internal/helmchart/c8s/values.yaml
+          config() {
+            crane config --platform linux/amd64 "$1" |
+              jq -S '{Entrypoint: .config.Entrypoint, Cmd: .config.Cmd, Env: .config.Env}'
+          }
+          resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")
+          moved=() names=()
+          while read -r repo tag digest current; do
+            [ "$current" != "$digest" ] || continue
+            bash .github/scripts/chart-image-pins.sh set "$repo:$tag" "$current" "$values"
+            names+=("${repo##*/}")
+            if [ "$(config "$repo@$digest")" = "$(config "$repo@$current")" ]; then
+              moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`; the image config (entrypoint, cmd, env) is unchanged.")
+            else
+              moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`; **the image config moved**: align the block's \`entrypoint\` and \`imageEnv\` with \`crane config --platform linux/amd64 $repo@$current\` before merging.")
+            fi
+          done <<<"$resolved"
+          if [ "${#moved[@]}" -eq 0 ]; then
+            echo "every chart image tag names its pinned digest" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git add -- "$values"
+          joined=$(printf '%s, ' "${names[@]}")
+          body=$(printf '%s\n' \
+            "Automated bump of the chart's third-party image digests in \`$values\`: the tag each digest was resolved from now names a newer manifest." \
+            "" \
+            "${moved[@]}" \
+            "" \
+            "Each digest is seeded into the allowlist floor, so this changes what every node admits; review before merging. \`c8s install --resolve-digests\` refuses an nginx image whose config differs from the chart's \`imageEnv\`; kube-state-metrics has no such check, so compare its config by hand.")
+          bash .github/scripts/pin-watch-pr.sh \
+            --branch "pin-watch/chart-images-$(git write-tree | cut -c1-12)" \
+            --prefix pin-watch/chart-images- \
+            --allow "$values" \
+            --title "build(chart): pin-watch bump — ${joined%, } rebuilt" \
+            --body "$body"
