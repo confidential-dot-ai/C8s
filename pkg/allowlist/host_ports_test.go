@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -159,5 +160,92 @@ func TestHostPortsAcceptAPinnedLaunchWithHostMounts(t *testing.T) {
 	}
 	if len(w.HostPorts) != 2 {
 		t.Fatalf("hostPorts = %v, want both mappings kept", w.HostPorts)
+	}
+}
+
+// grantingEntry is one pinned declaration publishing the mappings its pod maps.
+func grantingEntry(t *testing.T, argv []string, mappings ...HostPort) Workload {
+	t.Helper()
+	return Workload{
+		Containers: []Container{{
+			Digest:  dig(t, hostPortsDigest),
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: argv},
+			Args:    ArgvPolicy{Policy: PolicyDeny},
+			Mounts:  MountPolicy{Policy: PolicyDeny},
+			Env:     EnvPolicy{Policy: PolicyDeny},
+		}},
+		HostPorts: mappings,
+	}
+}
+
+// One entry must declare every mapping and admit the launch.
+func TestGrantsHostPorts(t *testing.T) {
+	https := HostPort{Protocol: "TCP", HostPort: 443, ContainerPort: 8443}
+	http := HostPort{Protocol: "TCP", HostPort: 80, ContainerPort: 8080}
+	argv := []string{"/nginx"}
+	index := func(entries ...Workload) *Index {
+		workloads := map[string]Workload{}
+		for n, w := range entries {
+			workloads["w"+strconv.Itoa(n)] = w
+		}
+		return (&Allowlist{Workloads: workloads}).BuildIndex()
+	}
+	open := grantingEntry(t, argv)
+	open.Containers[0].Command = ArgvPolicy{Policy: PolicyAny}
+	for _, tc := range []struct {
+		name     string
+		index    *Index
+		mappings []HostPort
+		want     bool
+	}{
+		{"the entry declares the mapping", index(grantingEntry(t, argv, https)), []HostPort{https}, true},
+		{"the entry declares both mappings", index(grantingEntry(t, argv, https, http)), []HostPort{https, http}, true},
+		{"the entry declares one of two", index(grantingEntry(t, argv, https)), []HostPort{https, http}, false},
+		{"another container port", index(grantingEntry(t, argv, https)), []HostPort{{Protocol: "TCP", HostPort: 443, ContainerPort: 9000}}, false},
+		{"another protocol", index(grantingEntry(t, argv, https)), []HostPort{{Protocol: "UDP", HostPort: 443, ContainerPort: 8443}}, false},
+		{"the entry refuses the argv", index(grantingEntry(t, []string{"/other"}, https)), []HostPort{https}, false},
+		{"another entry admits the launch", index(grantingEntry(t, []string{"/other"}, https), open), []HostPort{https}, false},
+		{"no entry declares it", index(open), []HostPort{https}, false},
+		{"no mapping to grant", index(grantingEntry(t, argv, https)), nil, false},
+		{"no allowlist", nil, []HostPort{https}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := ObserveEnv(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := RunningContainer{Digest: hostPortsDigest, Argv: argv, Mounts: []ObservedMount{}, Env: env}
+			if got := tc.index.GrantsHostPorts(r, tc.mappings); got != tc.want {
+				t.Fatalf("GrantsHostPorts(%s) = %t, want %t", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// A sandbox is held to what some entry declares; no launch is known yet.
+func TestDeclaresHostPorts(t *testing.T) {
+	https := HostPort{Protocol: "TCP", HostPort: 443, ContainerPort: 8443}
+	argv := []string{"/nginx"}
+	for _, tc := range []struct {
+		name     string
+		entries  []Workload
+		mappings []HostPort
+		want     bool
+	}{
+		{"an entry declares it", []Workload{grantingEntry(t, argv, https)}, []HostPort{https}, true},
+		{"an entry declares another host port", []Workload{grantingEntry(t, argv, https)}, []HostPort{{Protocol: "TCP", HostPort: 8080, ContainerPort: 8080}}, false},
+		{"no mapping to declare", []Workload{grantingEntry(t, argv, https)}, nil, false},
+		{"no entry declares any", nil, []HostPort{https}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workloads := map[string]Workload{}
+			for n, w := range tc.entries {
+				workloads["w"+strconv.Itoa(n)] = w
+			}
+			index := (&Allowlist{Workloads: workloads}).BuildIndex()
+			if got := index.DeclaresHostPorts(tc.mappings); got != tc.want {
+				t.Fatalf("DeclaresHostPorts(%s) = %t, want %t", tc.name, got, tc.want)
+			}
+		})
 	}
 }

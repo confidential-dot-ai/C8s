@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -112,6 +113,32 @@ func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.O
 	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
+// declaresHostPorts reports whether an entry of the base or the applied
+// allowlist declares every mapping (allowlist.Index.DeclaresHostPorts).
+func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.DeclaresHostPorts(mappings) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.DeclaresHostPorts(mappings)
+}
+
+// grantsHostPorts reports whether the base or the applied allowlist hands r
+// every mapping (allowlist.Index.GrantsHostPorts).
+func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.GrantsHostPorts(r, mappings) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
+}
+
 // declaresNodeRoot reports whether the base or applied allowlist has a
 // nodeRootFile rule for digest.
 func (s *policyStore) declaresNodeRoot(digest string) bool {
@@ -169,6 +196,7 @@ func (s *policyStore) rolledBack(version uint64) bool {
 type containerdOps interface {
 	Resolve(ctx context.Context, imageRef string) (string, error)
 	StopContainer(ctx context.Context, containerID string) error
+	SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
 }
 
 // plugin implements the NRI plugin interface for image policy enforcement.
@@ -375,11 +403,15 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	return nil
 }
 
-// RunPodSandbox records a started pod sandbox for the inventory's sandbox set
-// and installs the pod's packet protection, before any container of that pod
-// is created. A failed install refuses the sandbox, so the gate is what
-// refuses its containers (docs/armtls.md).
+// RunPodSandbox refuses a sandbox holding host ports no allowlist entry
+// declares (hostports.go), records it for the inventory's sandbox set and
+// installs the pod's packet protection, before any container of that pod is
+// created. A failed install refuses the sandbox, so the gate is what refuses
+// its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	if err := p.admitSandboxHostPorts(ctx, p.cfg, pod); err != nil {
+		return err
+	}
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
 	}
@@ -743,7 +775,8 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 //
 // A sandbox denial is never downgraded by exemptNamespace: the snapshot says
 // which digests ran in the namespace, and host privilege is a property of the
-// pod spec, not of the image. Only the measured node TCB excuses it.
+// pod spec, not of the image. Only the measured node TCB excuses it, and it
+// excuses no host port (hostports.go).
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
@@ -755,6 +788,9 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	}
 	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); v == verdictDeny {
 		return v, r
+	}
+	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); refusal != "" {
+		return verdictDeny, refusal
 	}
 	return verdict, reason
 }
