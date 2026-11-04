@@ -547,17 +547,19 @@ func applyChainAnchorPolicy(oc *Outcome, cfg config, ev *evidence) {
 // that a refusal asserts no passed check.
 func applyFinalNotes(oc *Outcome, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) {
 	if oc.Error != "" {
+		// A value never appears without the note qualifying it.
 		if oc.SandboxIDNote != sandboxIDUnverifiedNote {
-			oc.SandboxIDNote = ""
+			oc.SandboxID, oc.SandboxIDNote = "", ""
 		}
 		if oc.WorkloadNote != workloadUnverifiedNote {
-			oc.WorkloadNote = ""
+			oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest, oc.WorkloadNote = "", "", "", ""
 		}
 		if oc.OperatorKeysNote == operatorKeysMatchedNote {
-			oc.OperatorKeysNote = ""
+			oc.OperatorKeys, oc.OperatorKeysNote = nil, ""
 		}
 		oc.ChainAnchor = ""
 		oc.Binding = strings.TrimSuffix(oc.Binding, frontDoorAttestedNote)
+		oc.Warnings = slices.DeleteFunc(oc.Warnings, func(w string) bool { return w == frontDoorScopeWarning })
 		return
 	}
 	if ev.route != nil {

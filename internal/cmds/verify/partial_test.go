@@ -536,7 +536,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 	_, allowlistDigest := testHeldAllowlist(t)
 	matched := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: allowlistDigest}
 	workloadLeaf, workloadCA := caSignedWorkloadLeaf(t, matched)
-	pubPEM, _ := operatorPubPEM(t)
+	pubPEM, fingerprint := operatorPubPEM(t)
 	keysPath := filepath.Join(t.TempDir(), "op.pub")
 	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
 		t.Fatal(err)
@@ -554,8 +554,9 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 		opKeys  operatorKeysReport
 		refuse  func(*config)
 		field   string
-		success string // in the field on the passing verdict, never on the refused one
-		keep    string // in the field on both verdicts
+		success string   // in the field on the passing verdict, never on the refused one
+		keep    string   // in the field on both verdicts
+		values  []string // keys the field qualifies: on a refusal, present only with keep
 	}{
 		{
 			name:    "sandbox ID verified against --mesh-ca",
@@ -564,6 +565,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse:  historyFails,
 			field:   "sandbox_id_note",
 			success: "verified: the leaf chains",
+			values:  []string{"sandbox_id"},
 		},
 		{
 			name:    "sandbox ID pin, later check in the same policy",
@@ -573,6 +575,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse:  func(cfg *config) { cfg.operatorKeys = keysPath },
 			field:   "sandbox_id_note",
 			success: "matches --sandbox-id",
+			values:  []string{"sandbox_id"},
 		},
 		{
 			name:   "unverified sandbox ID",
@@ -580,6 +583,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse: historyFails,
 			field:  "sandbox_id_note",
 			keep:   "not verified",
+			values: []string{"sandbox_id"},
 		},
 		{
 			name:   "unverified workload",
@@ -587,6 +591,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse: historyFails,
 			field:  "workload_note",
 			keep:   "not verified",
+			values: []string{"workload", "workload_allowlist_version", "workload_allowlist_digest"},
 		},
 		{
 			name:    "workload CA-vouched",
@@ -595,6 +600,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse:  historyFails,
 			field:   "workload_note",
 			success: "ca-vouched",
+			values:  []string{"workload", "workload_allowlist_version", "workload_allowlist_digest"},
 		},
 		{
 			name:    "workload pin satisfied",
@@ -603,14 +609,16 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			refuse:  historyFails,
 			field:   "workload_note",
 			success: "workload_verified",
+			values:  []string{"workload", "workload_allowlist_version", "workload_allowlist_digest"},
 		},
 		{
 			name:    "operator keys matched",
 			cfg:     config{operatorKeys: keysPath},
-			opKeys:  operatorKeysReport{digest: keysDigest},
+			opKeys:  operatorKeysReport{fingerprints: []string{fingerprint}, digest: keysDigest},
 			refuse:  historyFails,
 			field:   "operator_keys_note",
 			success: "matched",
+			values:  []string{"operator_keys"},
 		},
 		{
 			name:    "chain anchor pinned",
@@ -650,7 +658,12 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 				if tc.ev != nil {
 					tc.ev(ev)
 				}
-				plan := mustPlan(t, tc.cfg)
+				// --trust-operator needs an anchored image policy, which the
+				// SNP fixture cannot satisfy, so the plan is built without it;
+				// checkPolicyHistory reads the flag from cfg.
+				planCfg := cfg
+				planCfg.trustOperator = false
+				plan := mustPlan(t, planCfg)
 				cfg.output = "json"
 				var out, errOut bytes.Buffer
 				code := verifyEvidence(context.Background(), cfg, plan, ev, nil, tc.opKeys, measurementsReport{}, &out, &errOut)
@@ -678,6 +691,17 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			}
 			if !strings.Contains(got, tc.keep) {
 				t.Errorf("refused verdict: %s = %q, want the factual %q kept", tc.field, got, tc.keep)
+			}
+			for _, key := range tc.values {
+				if _, ok := passed[key]; !ok {
+					t.Errorf("passing verdict carries no %s", key)
+				}
+				if _, ok := refused[key]; ok != (tc.keep != "") {
+					t.Errorf("refused verdict: %s present = %v with %s = %q", key, ok, tc.field, got)
+				}
+			}
+			if warnings, _ := json.Marshal(refused["warnings"]); strings.Contains(string(warnings), "attested front door was observed") {
+				t.Errorf("refused verdict keeps the front-door scope warning: %s", warnings)
 			}
 		})
 	}
