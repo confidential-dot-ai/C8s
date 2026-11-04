@@ -12,7 +12,8 @@
 # pin-hygiene holds equal to the manifest.
 #
 # The one measurement domain today is node-image (node rootfs / RTMR + SNP
-# digests); each roll is its own PR.
+# digests); each roll is its own PR, opened by .github/scripts/pin-watch-pr.sh
+# as one GitHub-verified commit, one open PR at a time.
 #
 # Authentication prefers a short-lived, repository-scoped GitHub App token.
 # Checkout, push, and gh use one credential; an unconfigured App falls back to
@@ -85,98 +86,14 @@ jobs:
           echo "$out"
           grep -q '^no-drift$' <<<"$out" && exit 0
           # The host DaemonSet's copy of the digest moves with the manifest (a
-          # no-op when only confos moved). Both files are staged; the commit
-          # below carries whatever changed, and nothing else may have.
+          # no-op when only confos moved). Both files are staged; the PR
+          # carries whatever changed, and nothing else may have.
           values=internal/helmchart/c8s/values.yaml
           bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
           git add -- .github/build-pins.json "$values"
-          mapfile -t files < <(git diff --cached --name-only)
-          if git status --porcelain --untracked-files=all | grep -qv '^M  '; then
-            echo "::error::pin updater changed an unexpected path"
-            git status --porcelain --untracked-files=all
-            exit 1
-          fi
-          branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
-          title="build(${DOMAIN}): pin-watch bump — confos ${confos_tag}, attestation-rs ${attest_tag}"
-          open_pr=$(
-            gh pr list --state open --limit 100 \
-              --json headRefName,isCrossRepository,number |
-              jq -r --arg prefix "pin-watch/${DOMAIN}-" \
-                '[.[] | select(.isCrossRepository == false and (.headRefName | startswith($prefix)))][0].number // empty'
-          )
-          if [ -n "$open_pr" ]; then
-            echo "pin-watch PR #$open_pr is already open; leaving its review branch untouched" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          desired_tree=$(git write-tree)
-          base_oid=$(git rev-parse HEAD)
-          base_tree=$(git rev-parse 'HEAD^{tree}')
-
-          remote_oid=
-          remote_tree=
-          if remote_ref=$(git ls-remote --exit-code --heads origin "refs/heads/$branch"); then
-            remote_oid=${remote_ref%%[[:space:]]*}
-            git fetch --no-tags origin \
-              "+refs/heads/$branch:refs/remotes/origin/$branch"
-            remote_tree=$(git rev-parse "${remote_oid}^{tree}")
-          else
-            remote_status=$?
-            [ "$remote_status" -eq 2 ] || exit "$remote_status"
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/heads/$branch" -f sha="$base_oid" >/dev/null
-            remote_oid=$base_oid
-            remote_tree=$base_tree
-          fi
-
-          if [ "$remote_tree" = "$desired_tree" ]; then
-            new_oid=$remote_oid
-          else
-            if [ "$remote_tree" != "$base_tree" ]; then
-              # A branch left behind by a pin-watch PR closed without merging
-              # differs from main only in the manifest and the chart digest;
-              # anything else on it is someone's work and stays put.
-              if git diff-tree -r --name-only "$base_tree" "$remote_tree" | grep -qvxF -e .github/build-pins.json -e "$values"; then
-                echo "::error::candidate branch $branch carries changes beyond .github/build-pins.json and $values; refusing to overwrite it (delete the branch to let pin-watch recreate it)"
-                exit 1
-              fi
-              echo "resetting stale pin-watch branch $branch to $base_oid" >> "$GITHUB_STEP_SUMMARY"
-              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/$branch" \
-                -f sha="$base_oid" -F force=true >/dev/null
-              remote_oid=$base_oid
-            fi
-            mutation=$(cat <<'GRAPHQL'
-          mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $headline: String!, $additions: [FileAddition!]!) {
-            createCommitOnBranch(input: {
-              branch: {repositoryNameWithOwner: $repository, branchName: $branch}
-              expectedHeadOid: $expected
-              message: {headline: $headline}
-              fileChanges: {additions: $additions}
-            }) {
-              commit { oid }
-            }
-          }
-          GRAPHQL
-            )
-            additions=$(for f in "${files[@]}"; do
-              jq -n --arg path "$f" --arg contents "$(base64 -w0 "$f")" '{path: $path, contents: $contents}'
-            done | jq -s .)
-            commit_json=$(jq -n \
-              --arg query "$mutation" \
-              --arg repository "$GITHUB_REPOSITORY" \
-              --arg branch "$branch" \
-              --arg expected "$remote_oid" \
-              --arg headline "$title" \
-              --argjson additions "$additions" \
-              '{query: $query, variables: {repository: $repository, branch: $branch, expected: $expected, headline: $headline, additions: $additions}}' \
-              | gh api graphql --input -)
-            new_oid=$(jq -er '.data.createCommitOnBranch.commit.oid' <<<"$commit_json")
-          fi
-
-          verified=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${new_oid}" \
-            --jq '.commit.verification.verified')
-          if [ "$verified" != true ]; then
-            echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
-            exit 1
-          fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`, image \`${attest_digest:0:19}…\`, also written to the chart's \`attestationApi\` \`pinnedDigest\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
+          bash .github/scripts/pin-watch-pr.sh \
+            --branch "pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}" \
+            --prefix "pin-watch/${DOMAIN}-" \
+            --allow .github/build-pins.json --allow "$values" \
+            --title "build(${DOMAIN}): pin-watch bump — confos ${confos_tag}, attestation-rs ${attest_tag}" \
+            --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`, image \`${attest_digest:0:19}…\`, also written to the chart's \`attestationApi\` \`pinnedDigest\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
