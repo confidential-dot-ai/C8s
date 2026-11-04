@@ -246,3 +246,47 @@ launch did not bind, one that breaks the rules, or a bad token leaves none.
 `/run/kubernetes` is removed whole. A rerun in the same boot with the same
 document and token writes the same bytes; under a running kubelet it
 restarts the static pods.
+
+### A worker's control plane
+
+The worker image's static pods are the Cilium agent, kube-proxy and CoreDNS,
+pulled by digest at boot. They reach the API server with the kubelet's
+credentials, and Cilium reads its configuration from the image
+(`/usr/lib/c8s/worker/cilium/config.yaml`), not from the API. c8s's operator
+and the Cilium operator run beside the control plane, outside the workers:
+the operator's own pod would wait on a worker for the mesh endpoint its webhook
+injects, and NodeRestriction keeps node credentials from the Cilium operator's
+leader lease.
+
+`c8s worker control-plane render --document worker.yaml --output-dir DIR`,
+given the worker image build's `--hardware-platform`, `--kube-version` and
+image flags, writes `DIR/cluster.yaml`, the objects the cluster holds for its
+workers:
+
+- the chart's, as the worker image's build renders them, with the webhooks at
+  `https://<--webhook-host>:9443` and the operator's grants bound to the user
+  `c8s-operator`; the router, pulled rather than baked, may run on any worker;
+- not the operator's own Deployment, Service, account and NetworkPolicy, the
+  allowlist seed, or the router's nginx ConfigMap, which the image bakes;
+  kube-state-metrics and the host-namespace admission policies are off, and
+  each worker's NRI plugin admits host privilege;
+- the grants the static pods need, bound to every node;
+- the Cilium operator's grants, bound to the user `c8s-cilium-operator`;
+- the `kube-dns` Service, at `kubernetes.clusterDNS`, which sends each lookup
+  to its own node's CoreDNS.
+
+The image flags must be the worker image build's, so the router it renders is
+the launch the image's floor pins. Each API server reaches the operator at
+`--webhook-host`, so a control plane with several replicas runs an operator
+beside each. The control plane the workers join must also accept the bootstrap
+token and issue the kubelet's client certificate, give each node a pod range
+from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), run a cloud
+controller manager that initializes each node (the kubelet runs with an
+external cloud provider, so a node stays tainted until one does), and deploy no
+CNI, kube-proxy or cluster DNS of its own: a worker refuses them. Each boot
+registers the worker as a new node.
+
+Every node credential, which a bootstrap token can mint, holds Cilium's agent
+grants for the whole cluster, so Cilium identities and network policy separate
+nothing a worker relies on: workloads authenticate each other over the attested
+mesh.
