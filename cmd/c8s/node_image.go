@@ -131,52 +131,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	chartDir := cfg.chartDir
-	if chartDir == "" {
-		tmp, err := extractChart()
-		if err != nil {
-			return fmt.Errorf("extract node integration chart: %w", err)
-		}
-		defer os.RemoveAll(tmp)
-		chartDir = filepath.Join(tmp, helmchart.ChartRoot)
-	}
-	args, err := appendCvmModeInstallArgs(nil, "bare-metal", cfg.platform)
+	rendered, err := renderNodeImageChart(ctx, cfg, nil)
 	if err != nil {
 		return err
-	}
-	args = appendDistroInstallArgs(args, "rke2")
-	args = append(args,
-		"--set", "node.baked=true",
-		"--set", "nriImagePolicy.enabled=false",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		// A baked node runs volumed as the host service volumed.service, not
-		// the chart DaemonSet, which the chart refuses on a baked node.
-		"--set", "volumed.enabled=false",
-		"--set", "router.attest.enabled=true",
-		// Always on: the value is part of the measured image, and
-		// c8s verify --operator-keys reads the publication.
-		"--set", "router.routePublication.enabled=true",
-		// A platform add-on whose Service address the measured mesh policy
-		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
-		"--set", "kubeStateMetrics.enabled=true",
-		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
-	)
-	for _, input := range cfg.images() {
-		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
-		if input.repository != "" {
-			args = append(args, "--set-string", input.valuePath+".repository="+input.repository)
-		}
-		if input.digest != "" {
-			args = append(args, "--set-string", input.valuePath+".digest="+input.digest)
-		}
-	}
-	args = append([]string{"template", "c8s", chartDir, "--namespace", nodeImageNamespace, "--kube-version", cfg.kubeVersion, "--include-crds"}, args...)
-	helm := exec.CommandContext(ctx, "helm", args...)
-	var stderr bytes.Buffer
-	helm.Stderr = &stderr
-	rendered, err := helm.Output()
-	if err != nil {
-		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
 	artifacts, err := collectNodeImageArtifacts(rendered, cfg.componentDigests())
 	if err != nil {
@@ -205,6 +162,61 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		}
 	}
 	return nil
+}
+
+// renderNodeImageChart renders the bundled chart, or cfg.chartDir, in the
+// measured node image's shape, with extra Helm arguments after its own so they
+// win.
+func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra []string) ([]byte, error) {
+	chartDir := cfg.chartDir
+	if chartDir == "" {
+		tmp, err := extractChart()
+		if err != nil {
+			return nil, fmt.Errorf("extract node integration chart: %w", err)
+		}
+		defer os.RemoveAll(tmp)
+		chartDir = filepath.Join(tmp, helmchart.ChartRoot)
+	}
+	args, err := appendCvmModeInstallArgs(nil, "bare-metal", cfg.platform)
+	if err != nil {
+		return nil, err
+	}
+	args = appendDistroInstallArgs(args, "rke2")
+	args = append(args,
+		"--set", "node.baked=true",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		// A baked node runs volumed as the host service volumed.service, not
+		// the chart DaemonSet, which the chart refuses on a baked node.
+		"--set", "volumed.enabled=false",
+		"--set", "router.attest.enabled=true",
+		// Always on: the value is part of the measured image, and
+		// c8s verify --operator-keys reads the publication.
+		"--set", "router.routePublication.enabled=true",
+		// A platform add-on whose Service address the measured mesh policy
+		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
+		"--set", "kubeStateMetrics.enabled=true",
+		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
+	)
+	for _, input := range cfg.images() {
+		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
+		if input.repository != "" {
+			args = append(args, "--set-string", input.valuePath+".repository="+input.repository)
+		}
+		if input.digest != "" {
+			args = append(args, "--set-string", input.valuePath+".digest="+input.digest)
+		}
+	}
+	args = append(args, extra...)
+	args = append([]string{"template", "c8s", chartDir, "--namespace", nodeImageNamespace, "--kube-version", cfg.kubeVersion, "--include-crds"}, args...)
+	helm := exec.CommandContext(ctx, "helm", args...)
+	var stderr bytes.Buffer
+	helm.Stderr = &stderr
+	rendered, err := helm.Output()
+	if err != nil {
+		return nil, fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
+	}
+	return rendered, nil
 }
 
 type nodeImageArtifacts struct {

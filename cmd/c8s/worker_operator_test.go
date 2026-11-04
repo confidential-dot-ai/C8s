@@ -9,7 +9,7 @@ import (
 
 // The images bake this build, so it stages a worker document too.
 func TestOperatorBuildOffersEveryWorkerCommand(t *testing.T) {
-	if got := workerSubcommands(t); !slices.Equal(got, []string{"floor", "new", "stage"}) {
-		t.Fatalf("worker commands = %v, want floor, new and stage", got)
+	if got := workerSubcommands(t); !slices.Equal(got, []string{"control-plane", "floor", "new", "stage"}) {
+		t.Fatalf("worker commands = %v, want control-plane, floor, new and stage", got)
 	}
 }
