@@ -2,25 +2,20 @@ package workloadclaims
 
 import (
 	"net"
-	"sync/atomic"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 )
 
-// cidrSet is the membership check behind CIDRHosts and NodeHosts.
-type cidrSet []*net.IPNet
-
-func (s cidrSet) contains(host string) bool {
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, n := range s {
-		if n.Contains(ip) {
-			return true
+// PodCIDRs is every range a node assigns pod addresses from.
+func PodCIDRs(node *corev1.Node) []string {
+	var ranges []string
+	for _, cidr := range append([]string{node.Spec.PodCIDR}, node.Spec.PodCIDRs...) {
+		if cidr != "" && !slices.Contains(ranges, cidr) {
+			ranges = append(ranges, cidr)
 		}
 	}
-	return false
+	return ranges
 }
 
 // NodeHostCIDRs derives the inventory dial bound from node objects: one host
@@ -35,10 +30,7 @@ func (s cidrSet) contains(host string) bool {
 func NodeHostCIDRs(nodes []*corev1.Node) (hosts []*net.IPNet, excluded []string) {
 	var podRanges []*net.IPNet
 	for _, n := range nodes {
-		for _, c := range append([]string{n.Spec.PodCIDR}, n.Spec.PodCIDRs...) {
-			if c == "" {
-				continue
-			}
+		for _, c := range PodCIDRs(n) {
 			if _, network, err := net.ParseCIDR(c); err == nil {
 				podRanges = append(podRanges, network)
 			}
@@ -78,31 +70,4 @@ func NodeHostCIDRs(nodes []*corev1.Node) (hosts []*net.IPNet, excluded []string)
 		}
 	}
 	return hosts, excluded
-}
-
-// NodeHosts is an InventoryHosts derived from the cluster's node objects and
-// swapped atomically by the caller's informer. Before the first SetNodes it
-// holds nothing, so Contains fails closed.
-type NodeHosts struct {
-	snap atomic.Pointer[cidrSet]
-}
-
-// SetNodes re-derives the bound and swaps it in. It reports the node
-// addresses excluded for sitting inside a pod range, so the caller can log
-// them per change rather than per lookup.
-func (h *NodeHosts) SetNodes(nodes []*corev1.Node) (excluded []string) {
-	hosts, excluded := NodeHostCIDRs(nodes)
-	set := cidrSet(hosts)
-	h.snap.Store(&set)
-	return excluded
-}
-
-func (h *NodeHosts) Contains(host string) bool {
-	snap := h.snap.Load()
-	return snap != nil && snap.contains(host)
-}
-
-func (h *NodeHosts) Empty() bool {
-	snap := h.snap.Load()
-	return snap == nil || len(*snap) == 0
 }

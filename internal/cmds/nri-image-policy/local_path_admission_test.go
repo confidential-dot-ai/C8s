@@ -1,73 +1,40 @@
 package nriimagepolicy
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 )
 
-func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
+func TestRemovedLocalPathContainersDenied(t *testing.T) {
 	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var provisionerImage string
-	for _, workload := range cfg.Allowlist.Base.Workloads {
-		for _, container := range workload.Containers {
-			if strings.HasPrefix(container.Image, "rancher/local-path-provisioner:") {
-				provisionerImage = container.Image
-			}
-		}
+	if slices.Contains(cfg.Mesh.ExemptNamespaces, "local-path-storage") {
+		t.Error("removed addon namespace retains mesh exemption")
 	}
-	if provisionerImage == "" {
-		t.Fatal("measured base has no local-path provisioner")
-	}
-	helperArgv := []string{"/bin/sh", "/script/setup"}
-	cfg.Allowlist.Base.Workloads["local-path-helper-test"] = workloadAllowlist(t, pushDigestA, pushDigestB, helperArgv).Workloads["w"]
-
+	// Exercise image admission independently of the mesh identity gate.
+	cfg.Mesh = nil
 	for _, tc := range []struct {
-		name    string
-		image   string
-		argv    []string
-		wantErr bool
+		name, image string
+		argv        []string
 	}{
-		{
-			name:    "unapproved image",
-			image:   "registry/repo@" + pushDigestC,
-			argv:    helperArgv,
-			wantErr: true,
-		},
-		{
-			name:  "measured provisioner",
-			image: provisionerImage,
-			argv:  []string{"local-path-provisioner", "--debug", "start", "--config", "/etc/config/config.json"},
-		},
-		{
-			name:  "exact helper launch",
-			image: "registry/repo@" + pushDigestB,
-			argv:  helperArgv,
-		},
-		{
-			name:    "changed helper launch",
-			image:   "registry/repo@" + pushDigestB,
-			argv:    []string{"/bin/sh", "-c", "id"},
-			wantErr: true,
-		},
+		{"setup", "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d", []string{"/bin/sh", "/script/setup", "-p", "/"}},
+		{"teardown", "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d", []string{"/bin/sh", "/script/teardown", "-p", "/"}},
+		{"provisioner shell", "rancher/local-path-provisioner@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f", []string{"/bin/sh", "-c", "id"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newTestPlugin(cfg)
-			p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
 			p.SetReady()
 			pod := meshPod("local-path-storage", "helper", testNetNS)
 			ctr := makeCtrWithImageArgs(pod.Id, "helper", tc.image, tc.argv)
 			ctr.User = &api.User{Uid: 0}
-			if p.mesh.hosts(pod) {
-				t.Fatal("local-path-storage is covered by the mesh gate")
-			}
-			_, _, err := createAndStart(p, t.Context(), pod, ctr)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("admission error = %v, want error %v", err, tc.wantErr)
+			ctr.Mounts = []*api.Mount{{Destination: "/script", Source: "/operator-script", Type: "bind"}, {Destination: "/host", Source: "/", Type: "bind"}}
+			if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err == nil || !strings.Contains(err.Error(), "image not in allowlist") {
+				t.Fatal("removed local-path image admitted")
 			}
 		})
 	}

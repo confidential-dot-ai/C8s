@@ -321,11 +321,15 @@ func (w *world) writeEntryWithGrant(name string, g *secretsGrant) error {
 	}
 	copy := *e
 	copy.Secrets = g
-	body, err := json.Marshal(&copy)
+	raw, err := json.Marshal(&copy)
 	if err != nil {
 		return err
 	}
-	return w.operatorWrite(write{method: http.MethodPut, path: w.workloadPath(name), body: body})
+	wr, err := w.documentWrite(w.writtenName(name), raw)
+	if err != nil {
+		return err
+	}
+	return w.operatorWrite(wr)
 }
 
 func operatorWritesDenyingGrant(ctx context.Context, name, p string) error {
@@ -728,15 +732,16 @@ func secretClientConfigured(ctx context.Context, name, logical string) error {
 // argvHelperMode gives the container the argv of a helper the webhook
 // injects, as far as the match looks: the helper binary, then a mode. The
 // probe-file mode waits for a file nothing writes, so the container runs as
-// long as the pod.
+// long as the pod. The container is otherwise the pod's own: it runs as the
+// image's user, since the credentials role is granted only with the mount
+// table the webhook gives the invocation, and a container running as that
+// role's identity without the role is refused.
 func argvHelperMode(ctx context.Context) error {
 	w := getWorld(ctx)
 	if w.lastPod == nil {
 		return errors.New("no container has been described yet")
 	}
-	c := w.lastPod.last()
-	c.command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
-	c.helper = true
+	w.lastPod.last().command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
 	return nil
 }
 
@@ -887,16 +892,28 @@ func stillHoldsLeaf(ctx context.Context, name string) error {
 
 // --- The requester ---
 
-// awaitReady waits once for every container of the pod to be running.
+// awaitReady waits once for the pod's Ready condition, which the injected mesh
+// sidecar's readiness probe gates, so a step that uses the leaf does not race
+// it. It returns the moment a container is denied (a CreateContainerError the
+// runtime retries for the pod's life) rather than sitting out the whole budget
+// on a pod that will never be Ready: a mispinned image the image policy refuses
+// would otherwise cost `observe` on every scenario whose Background deploys it.
 func (w *world) awaitReady(p *pod) error {
 	if p.ready {
 		return nil
 	}
-	if _, err := kubectl(nil, "-n", p.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
-		return fmt.Errorf("%q did not become Ready: %w", p.name, err)
+	for deadline := time.Now().Add(observe); ; {
+		if d := denials(w.statuses(p)); d != "" {
+			return fmt.Errorf("%q did not become Ready; denials: %s", p.name, d)
+		}
+		if _, err := kubectl(nil, "-n", p.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=5s"); err == nil {
+			p.ready = true
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%q did not become Ready within %s", p.name, observe)
+		}
 	}
-	p.ready = true
-	return nil
 }
 
 // certPaths is where a pod carrying a workload ID holds its leaf and key.
@@ -947,8 +964,8 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 }
 
 // cdsVerification is how the pod's certificate container verifies the CDS,
-// as the probe's flags: the webhook's attestation API and pins, with the
-// one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
+// as the probe's flags: the webhook's attestation API and pin document, with
+// the one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
 func (w *world) cdsVerification(p *pod) ([]string, error) {
 	if p.verifyCDS != nil {
 		return p.verifyCDS, nil
@@ -963,11 +980,7 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 	for _, arg := range strings.Split(rest, "\n") {
 		name, value, _ := strings.Cut(arg, "=")
 		switch name {
-		case "--attestation-api-url", "--image-policy-json":
-		case "--cds-measurements":
-			name = "--measurements"
-		case "--cds-rtmrs":
-			name = "--rtmrs"
+		case "--attestation-api-url", "--image-policy-file", "--image-policy-json":
 		default:
 			continue
 		}
@@ -1149,7 +1162,7 @@ func (w *world) spend(p *pod, authorized bool) error {
 		return err
 	}
 	if authorized && a.status != http.StatusOK {
-		return fmt.Errorf("the request meant to spend the challenge was answered %s", a)
+		return w.denied(p, a, fmt.Errorf("the request meant to spend the challenge was answered %s", a))
 	}
 	if !authorized && a.status != http.StatusForbidden {
 		return fmt.Errorf("the request meant to fail authorization was answered %s", a)
@@ -1435,7 +1448,7 @@ func hasGenerated(ctx context.Context, name, logical string) error {
 	}
 	v, ok := a.value()
 	if a.status != http.StatusCreated || !ok {
-		return fmt.Errorf("the generation %q requested at %s was answered %s", name, logical, a)
+		return w.denied(p, a, fmt.Errorf("the generation %q requested at %s was answered %s", name, logical, a))
 	}
 	w.secrets.stored[logical] = v
 	return nil
@@ -1496,7 +1509,31 @@ func receivesStoredValue(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("the scenario stored no value at %s", s.lastPath)
 	}
-	return expectValue(name, s.last, want, "the one stored at "+s.lastPath)
+	p, _ := w.pod(name)
+	return w.denied(p, s.last, expectValue(name, s.last, want, "the one stored at "+s.lastPath))
+}
+
+// denied adds the CDS's account of the release decision to a denial the
+// scenario did not expect, so the record says what the sandbox was running and
+// which entry refused it. A backend that cannot name the sandbox adds nothing.
+func (w *world) denied(p *pod, a *answer, err error) error {
+	if err == nil || a == nil || a.status != http.StatusForbidden {
+		return err
+	}
+	return fmt.Errorf("%w%s", err, w.explanation(p))
+}
+
+// explanation is the CDS's release diagnostic for the pod's sandbox, as a
+// clause to append to a failure, or empty.
+func (w *world) explanation(p *pod) string {
+	if p == nil {
+		return ""
+	}
+	out, err := w.be.call("secrets_explain", p.namespace, p.name)
+	if err != nil || out == "" {
+		return ""
+	}
+	return "; the CDS explains: " + out
 }
 
 // expectValue checks the pod's answer carried want, described as source.
@@ -1517,7 +1554,8 @@ func receivesAValue(ctx context.Context, name string) error {
 		return err
 	}
 	if _, has := s.last.value(); !s.last.ok() || !has {
-		return fmt.Errorf("%q was answered %s, no value", name, s.last)
+		p, _ := getWorld(ctx).pod(name)
+		return getWorld(ctx).denied(p, s.last, fmt.Errorf("%q was answered %s, no value", name, s.last))
 	}
 	return nil
 }
@@ -1673,7 +1711,8 @@ func receivesHeldValue(ctx context.Context, name, other, logical string) error {
 	if err != nil {
 		return err
 	}
-	return expectValue(name, s.last, held, fmt.Sprintf("the one %q holds for %s", other, logical))
+	p, _ := w.pod(name)
+	return w.denied(p, s.last, expectValue(name, s.last, held, fmt.Sprintf("the one %q holds for %s", other, logical)))
 }
 
 func sameAnswerAs(ctx context.Context, name, logical string) error {
@@ -1747,7 +1786,7 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 	}
 	if !ok {
 		log, _ := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", "c8s-secret")
-		return fmt.Errorf("%q has no file for %s after %s; its secret client logged: %s", name, logical, observe, tail(log, 5))
+		return fmt.Errorf("%q has no file for %s after %s; its secret client logged: %s%s", name, logical, observe, tail(log, 5), w.explanation(p))
 	}
 	w.secretState(p).files[logical] = content
 	w.secrets.file = &clientFile{p: p, logical: logical, content: content}

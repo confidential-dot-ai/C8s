@@ -6,7 +6,7 @@ tenant pod (internal/webhook/pod_mutator.go "meshContainer"): the endpoint that
 carries the pod's captured TCP over armTLS with the credentials get-cert
 publishes. A chart-rendered member pod gets the same container, because the
 measured base grants the mesh role to that argv and that mount alone
-(node-guest-image/c8s/image-policy.yaml.in).
+(images/node-guest/c8s/image-policy.yaml.in).
 
 Native sidecar, first in the pod's initContainers: the enforcer gates the rest
 of the pod on this container's start. Caller nindents into initContainers.

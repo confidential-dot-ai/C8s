@@ -22,10 +22,14 @@ var (
 
 	// ErrPolicyViolation indicates that the verified claims do not satisfy a
 	// [VerifyPolicy] pin: launch measurement, TDX registers, image anchor,
-	// vTPM PCR, init-data hash, a TCB floor set for a family that has none,
-	// or a sandbox or workload pin. Debug and TCB-floor verdicts are the
+	// launch file, vTPM PCR, init-data hash, a TCB floor set for a family that
+	// has none, or a sandbox or workload pin. Debug and TCB-floor verdicts are the
 	// attestation-api's; its refusal surfaces as [ErrInvalidReport].
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
+
+	// ErrUnpinned indicates an evidence-path policy that names no guest: it
+	// carries no launch measurement and no image pin.
+	ErrUnpinned = errors.New("armtls: no launch measurement or image pin names the peer's guest")
 
 	// ErrCertValidity indicates the certificate is outside its validity
 	// window: expired, or NotBefore further in the future than the shared

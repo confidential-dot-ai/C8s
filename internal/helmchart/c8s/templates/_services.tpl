@@ -111,12 +111,18 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 {{- end -}}
 
-{{- define "c8s.nriCDSURL" -}}
-{{- if .Values.nriImagePolicy.cds.url -}}
-{{ .Values.nriImagePolicy.cds.url }}
-{{- else -}}
-{{ printf "https://127.0.0.1:%d" (int .Values.cds.service.nodePort) }}
+{{/* c8s.cdsFromValues is non-empty where this release's values name the CDS
+     its clients trust — cds.address and cds.measurementsConfig — which is
+     every install but a baked node, whose signed launch file carries both. */}}
+{{- define "c8s.cdsFromValues" -}}
+{{- if not .Values.node.baked -}}true{{- end -}}
 {{- end -}}
+
+{{/* c8s.nodeReadsCDSAddress is non-empty where the chart hands the node the
+     CDS address: a plugin the node image bakes takes it from its own launch
+     staging, so only the installer that writes a boot config carries it. */}}
+{{- define "c8s.nodeReadsCDSAddress" -}}
+{{- if and (not .Values.node.baked) (not .Values.nriImagePolicy.baked) -}}true{{- end -}}
 {{- end -}}
 
 {{/* The fixed namespace whose pods serve the router's own ports, as the
@@ -124,10 +130,6 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
      namespace, whose pods the mesh policy exempts. */}}
 {{- define "c8s.routerMeshNamespace" -}}
 c8s-router
-{{- end -}}
-
-{{- define "c8s.cdsURL" -}}
-https://{{ include "c8s.cdsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.cds.port }}
 {{- end -}}
 
 {{- define "c8s.attestationApiConfig" -}}

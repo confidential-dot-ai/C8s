@@ -596,8 +596,8 @@ func TestDryRunRequiresPinnedEndpoint(t *testing.T) {
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append(args, "--dry-run", "--operator-keys", pubFile, "--url", "https://127.0.0.1:1"))
-		if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned CDS") {
-			t.Errorf("%s --dry-run without --measurements: error = %v", args[0], err)
+		if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
+			t.Errorf("%s --dry-run without a pin: error = %v", args[0], err)
 		}
 	}
 }

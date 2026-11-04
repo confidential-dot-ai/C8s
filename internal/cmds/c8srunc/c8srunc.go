@@ -49,7 +49,7 @@ const DenyMessage = "c8s-runc: exec is denied on this node: the image is built i
 // (locked) posture, so an unflagged build is never the permissive one.
 //
 // realRunc is RKE2's, because the wrapper ships only in the RKE2 node image
-// (node-guest-image/c8s/mkosi.sync). The chart installs no wrapper on kubeadm
+// (images/node-guest/c8s/mkosi.sync). The chart installs no wrapper on kubeadm
 // or hosted clusters; an image built on another distribution sets this path
 // at build time.
 var (

@@ -203,7 +203,7 @@ type harness struct {
 	leaf       *x509.Certificate
 	challenges *fakeChallenges
 	inv        *fakeInventory
-	store      *MemoryStore
+	store      *Handle
 }
 
 func newHarness(t *testing.T) *harness {
@@ -254,7 +254,7 @@ func newHarness(t *testing.T) *harness {
 		},
 	}
 	challenges := &fakeChallenges{used: map[string]bool{}}
-	store := NewMemoryStore(16, 15, 64)
+	store := NewMemoryStore(16, 15, 64).Local()
 	return &harness{
 		h: Handler{
 			Store:          store,
@@ -269,7 +269,7 @@ func newHarness(t *testing.T) *harness {
 }
 
 // setStore swaps in a store bounded for the test at hand.
-func (hn *harness) setStore(t *testing.T, s *MemoryStore) {
+func (hn *harness) setStore(t *testing.T, s *Handle) {
 	t.Helper()
 	hn.store, hn.h.Store = s, s
 }
@@ -822,7 +822,7 @@ func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
 // so a workload that floods its quota does not spend another workload's.
 func TestFloodingWorkloadDoesNotRefuseAnother(t *testing.T) {
 	hn := newHarness(t)
-	hn.setStore(t, NewMemoryStore(16, 2, 64))
+	hn.setStore(t, NewMemoryStore(16, 2, 64).Local())
 	bulkLeaf := hn.declareBulkEntry(t)
 
 	created, refused := 0, 0
@@ -851,7 +851,7 @@ func TestFloodingWorkloadDoesNotRefuseAnother(t *testing.T) {
 // IDs buys no room.
 func TestQuotaIsPerWorkloadNotPerSandbox(t *testing.T) {
 	hn := newHarness(t)
-	hn.setStore(t, NewMemoryStore(16, 1, 64))
+	hn.setStore(t, NewMemoryStore(16, 1, 64).Local())
 	sibling, _ := leafFor(t, testSandbox2)
 
 	if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != http.StatusCreated {
@@ -872,7 +872,7 @@ func TestQuotaIsPerWorkloadNotPerSandbox(t *testing.T) {
 // carries the code and nothing else.
 func TestCeilingRefusesAWorkloadUnderItsQuota(t *testing.T) {
 	hn := newHarness(t)
-	hn.setStore(t, NewMemoryStore(7, 3, 64))
+	hn.setStore(t, NewMemoryStore(7, 3, 64).Local())
 	var log bytes.Buffer
 	hn.h.Logger = slog.New(slog.NewJSONHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -916,7 +916,7 @@ func TestCeilingRefusesAWorkloadUnderItsQuota(t *testing.T) {
 // census belongs to the ceiling, so this refusal does not carry one.
 func TestQuotaRefusalNamesTheQuota(t *testing.T) {
 	hn := newHarness(t)
-	hn.setStore(t, NewMemoryStore(16, 1, 64))
+	hn.setStore(t, NewMemoryStore(16, 1, 64).Local())
 	var log bytes.Buffer
 	hn.h.Logger = slog.New(slog.NewJSONHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug}))
 

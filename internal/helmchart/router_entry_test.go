@@ -564,39 +564,6 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 	}
 }
 
-// CDS reads the journal from the runtime directory it mounts for the
-// attestation-api socket.
-func TestChartCDSMeasuredPoliciesFile(t *testing.T) {
-	const dir = "/run/custom-nri"
-	for _, tc := range []struct {
-		name     string
-		args     []string
-		wantFlag bool
-	}{
-		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
-		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
-		{name: "baked", args: bakedArgs, wantFlag: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-			flag := "--measured-policies-file=" + dir + "/measured-policies"
-			if got := slices.Contains(cds.Args, flag); got != tc.wantFlag {
-				t.Fatalf("cds carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, cds.Args)
-			}
-			mounted := slices.ContainsFunc(cds.VolumeMounts, func(m corev1.VolumeMount) bool {
-				return m.MountPath == dir && m.ReadOnly
-			})
-			if tc.wantFlag && !mounted {
-				t.Errorf("cds reads the journal without mounting %s read-only: %+v", dir, cds.VolumeMounts)
-			}
-		})
-	}
-}
-
 // The chart's default runtime directory is where the node's binaries look for
 // the journal, so the two never drift apart.
 func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
@@ -607,5 +574,75 @@ func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	if flag := "--measured-policies-file=" + armtls.NodeJournal; !slices.Contains(attest.Args, flag) {
 		t.Fatalf("cds-attest args lack %s: %v", flag, attest.Args)
+	}
+}
+
+// publishedHostPorts are a rendered pod's host ports, as an entry declares them.
+func publishedHostPorts(pod corev1.PodSpec) []pkgallowlist.HostPort {
+	var out []pkgallowlist.HostPort
+	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
+		for _, p := range c.Ports {
+			if p.HostPort == 0 {
+				continue
+			}
+			protocol := string(p.Protocol)
+			if protocol == "" {
+				protocol = string(corev1.ProtocolTCP)
+			}
+			out = append(out, pkgallowlist.HostPort{Protocol: protocol, HostPort: int(p.HostPort), ContainerPort: int(p.ContainerPort)})
+		}
+	}
+	slices.SortFunc(out, func(a, b pkgallowlist.HostPort) int {
+		return int(a.HostPort) - int(b.HostPort)
+	})
+	return out
+}
+
+// The seeded router entry declares exactly the host ports the rendered pod
+// publishes, and hands them to every container the node matches an entry against.
+func TestChartRouterEntryDeclaresItsHostPorts(t *testing.T) {
+	t.Parallel()
+	https := pkgallowlist.HostPort{Protocol: "TCP", HostPort: 443, ContainerPort: 8443}
+	http := pkgallowlist.HostPort{Protocol: "TCP", HostPort: 80, ContainerPort: 8080}
+	custom := pkgallowlist.HostPort{Protocol: "TCP", HostPort: 9443, ContainerPort: 8443}
+	noHostPort := []string{"--set", "router.hostPort.enabled=false", "--set", "router.service.type=LoadBalancer"}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []pkgallowlist.HostPort
+	}{
+		{name: "the front door's ports", args: bakedArgs, want: []pkgallowlist.HostPort{http, https}},
+		{
+			name: "a custom host port",
+			args: slices.Concat(bakedArgs, []string{"--set", "router.hostPort.https=9443"}),
+			want: []pkgallowlist.HostPort{http, custom},
+		},
+		{name: "no host port", args: slices.Concat(bakedArgs, noHostPort)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			seed := renderedSeed(t, out)
+			entry := seed.Workloads[routerEntryName(t, seed)]
+			declared := []pkgallowlist.HostPort(entry.HostPorts)
+			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+			if published := publishedHostPorts(pod); !slices.Equal(declared, published) {
+				t.Fatalf("entry declares %+v, the rendered pod publishes %+v", declared, published)
+			}
+			if !slices.Equal(declared, tc.want) {
+				t.Fatalf("entry declares %+v, want %+v", declared, tc.want)
+			}
+			if len(declared) == 0 {
+				return
+			}
+			index := seed.BuildIndex()
+			for _, launch := range secrets.WorkloadContainers(running(t, seed, pod)) {
+				if !index.GrantsHostPorts(launch, declared) {
+					t.Errorf("the entry hands %+v to no declaration admitting %q", declared, launch.Argv)
+				}
+			}
+		})
 	}
 }

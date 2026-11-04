@@ -24,16 +24,20 @@ func TestHTTPClientRouterFrontDoor(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "allowlist", verifier: testutil.ApproveAll()},
-		{name: "direct CDS", directCDS: true, verifier: testutil.ApproveAll(), wantErr: "https://<node>:30808"},
-		{name: "direct CDS pinned to CDS", directCDS: true, verifier: reject, wantErr: "https://<node>:30808"},
+		{name: "direct CDS", directCDS: true, verifier: testutil.ApproveAll(), wantErr: "--cds-address"},
+		{name: "direct CDS pinned to CDS", directCDS: true, verifier: reject, wantErr: "--cds-address"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{
-				URL:          router.URL,
-				Measurements: []string{testutil.TestMeasurement},
-				Timeout:      5 * time.Second,
-				Verifier:     tc.verifier,
-				DirectCDS:    tc.directCDS,
+				URL:       router.URL,
+				Timeout:   5 * time.Second,
+				Verifier:  tc.verifier,
+				DirectCDS: tc.directCDS,
+			}
+			if tc.directCDS {
+				o.MeasurementsConfig = testutil.CDSPinFile(t)
+			} else {
+				o.Measurements = []string{testutil.TestMeasurement}
 			}
 			hc, err := o.HTTPClient(context.Background())
 			if tc.wantErr == "" {

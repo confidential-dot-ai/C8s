@@ -87,7 +87,7 @@ func (r dataRule) validate() error {
 	if err := r.emptyDirRule.validate(); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(r.Destination, DataMountPrefix) {
+	if !r.Node && !strings.HasPrefix(r.Destination, DataMountPrefix) {
 		return fmt.Errorf("data destination %q must be below %s", r.Destination, DataMountPrefix)
 	}
 	return nil

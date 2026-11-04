@@ -95,6 +95,11 @@ const (
 // itself, and keeps its own policy flag.
 const CDSPinsPath = "/run/c8s/cds-pins.json"
 
+// RouterCDSPinsPath is where the router's route-manifest poller reads the same
+// policy. The router runs on the upstream identity, so the credential
+// clients' path would hand it their trust root.
+const RouterCDSPinsPath = "/run/c8s/router-cds-pins.json"
+
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier
@@ -655,6 +660,10 @@ func inventoryDo(ctx context.Context, endpoint, method, route string, body io.Re
 // Callers proceed without a sandbox ID.
 var ErrSandboxUnsupported = errors.New("workloadclaims: inventory does not serve the sandbox route")
 
+// ErrSandboxRefused reports that the inventory refused the caller an assertion
+// (403): its sandbox is refused, or the caller exited.
+var ErrSandboxRefused = errors.New("workloadclaims: inventory refused the caller")
+
 // FetchSandboxToken asks the inventory at endpoint for a signed sandbox token
 // bound to requesterPub (the caller's CSR key) and nonce (the CDS challenge for
 // this issuance, which CDS re-checks for freshness). A 404 maps to
@@ -679,6 +688,9 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("%w: %s", ErrSandboxRefused, strings.TrimSpace(string(errBody)))
+		}
 		return nil, fmt.Errorf("workloadclaims: inventory returned %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 	var out SignedSandboxToken

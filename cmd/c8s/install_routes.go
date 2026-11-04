@@ -8,25 +8,18 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	cliroutes "github.com/confidential-dot-ai/c8s/internal/cmds/routes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -122,21 +115,19 @@ func (u upstreamRoutes) apply(m *pkgroutes.Manifest, now time.Time) ([]byte, err
 	return manifest, nil
 }
 
-// cdsTarget names the chart-managed CDS Service install reaches through a
-// port-forward.
-type cdsTarget struct {
-	namespace string
-	service   string
-	port      int
-}
-
-func installCDSTarget(values map[string]any) (cdsTarget, error) {
-	raw, _ := valueAtPath(values, "cds.port")
-	port, err := strconv.Atoi(fmt.Sprint(raw))
-	if err != nil {
-		return cdsTarget{}, fmt.Errorf("cds.port %v is not a port", raw)
+// installCDSURL is the CDS this release names, as its clients dial it: the
+// <host>:<port> it serves on outside the cluster, which the install reaches
+// directly.
+func installCDSURL(values map[string]any) (string, error) {
+	raw, _ := valueAtPath(values, "cds.address")
+	address, ok := raw.(string)
+	if !ok || address == "" {
+		return "", fmt.Errorf("cds.address names no CDS, so the route manifest has nowhere to go")
 	}
-	return cdsTarget{namespace: installNamespace, service: helmName(installRelease + "-cds"), port: port}, nil
+	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
+		return "", fmt.Errorf("cds.address %w", err)
+	}
+	return cmdsutil.CDSURL(address), nil
 }
 
 // installOperatorKeyPath is --operator-key, else the environment variable
@@ -148,46 +139,19 @@ func installOperatorKeyPath() string {
 	return os.Getenv(cdsconn.EnvOperatorKey)
 }
 
-// installCDSConn is how install reaches CDS: pinned with --measurements and
-// --rtmrs, or --image-policy-file, as the chart pins it.
-func installCDSConn(url string) (*cdsconn.Options, error) {
-	registers, err := refvalues.ParseRegisterPins(installRegisters)
-	if err != nil {
-		return nil, fmt.Errorf("--rtmrs: %w", err)
+// installCDSConn is how install reaches CDS: under the pin document the chart
+// holds it to.
+func installCDSConn(url string) *cdsconn.Options {
+	pin := ""
+	if installCDS != nil {
+		pin = installCDS.path
 	}
-	o := &cdsconn.Options{
+	return &cdsconn.Options{
 		URL:                url,
-		Measurements:       installMeasurements,
-		MeasurementsConfig: installMeasurementsConfig,
+		MeasurementsConfig: pin,
 		OperatorKey:        installOperatorKeyPath(),
 		Timeout:            15 * time.Second,
 	}
-	if len(registers) > 0 {
-		o.Verifier = registerPinVerifier{PinVerifier: cdsconn.LocalVerifier{}, registers: registers}
-	}
-	return o, nil
-}
-
-// registerPinVerifier holds TDX evidence to the --rtmrs pins, which the flat
-// --measurements pin in cdsconn does not carry. Other evidence ignores them,
-// as the chart's verifiers do.
-type registerPinVerifier struct {
-	cdsconn.PinVerifier
-	registers map[int][]byte
-}
-
-func (v registerPinVerifier) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
-	result, err := v.PinVerifier.Verify(ctx, platform, evidence, params)
-	if err != nil || !teetypes.NormalizePlatform(platform).HasRegisters() {
-		return result, err
-	}
-	if result == nil {
-		return nil, errors.New("endpoint verifier returned no result")
-	}
-	if err := remote.EnforceRTMRs(remote.VerifyResponse{Result: *result}, v.registers); err != nil {
-		return nil, fmt.Errorf("CDS endpoint identity: %w", err)
-	}
-	return result, nil
 }
 
 // maxManifestAge is the largest maxAgeSeconds a manifest may carry (D4).
@@ -216,10 +180,7 @@ func preflightUpstreamRoutes() error {
 	if installOperatorKeyPath() == "" {
 		return nil
 	}
-	o, err := installCDSConn("https://cds")
-	if err != nil {
-		return err
-	}
+	o := installCDSConn("https://cds")
 	signer, err := o.Signer()
 	if err != nil {
 		return err
@@ -274,15 +235,15 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 // key is available. Without one, or when storing fails, it writes them to
 // --routes-out and prints how to store them. The router answers 503 until a
 // manifest is stored.
-func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry) error {
+func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry) error {
 	if installOperatorKeyPath() == "" {
-		return writeUpstreamRoutes(w, u, cds, entries, nil, nil)
+		return writeUpstreamRoutes(w, u, cdsURL, entries, nil, nil)
 	}
-	manifest, err := storeUpstreamRoutes(ctx, w, u, cds, entries)
+	manifest, err := storeUpstreamRoutes(ctx, w, u, cdsURL, entries)
 	if err == nil {
 		return nil
 	}
-	if werr := writeUpstreamRoutes(w, u, cds, entries, manifest, err); werr != nil {
+	if werr := writeUpstreamRoutes(w, u, cdsURL, entries, manifest, err); werr != nil {
 		return fmt.Errorf("store the route manifest: %w; %w", err, werr)
 	}
 	return fmt.Errorf("store the route manifest: %w; after fixing the cause, add the route as printed above, or re-run install", err)
@@ -299,19 +260,11 @@ type revisionError struct{ error }
 
 func (e revisionError) Unwrap() error { return e.error }
 
-// storeUpstreamRoutes reaches CDS through a port-forward, checks that it
-// names the adopted pod after its entry, and stores the routes. It returns
-// the manifest it built, if it got that far.
-func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry) ([]byte, error) {
-	url, stop, err := portForward(ctx, cds)
-	if err != nil {
-		return nil, err
-	}
-	defer stop()
-	o, err := installCDSConn(url)
-	if err != nil {
-		return nil, err
-	}
+// storeUpstreamRoutes dials the CDS, checks that it names the adopted pod
+// after its entry, and stores the routes. It returns the manifest it built,
+// if it got that far.
+func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url string, entries map[string]adoptedEntry) ([]byte, error) {
+	o := installCDSConn(url)
 	hc, err := o.HTTPClient(ctx)
 	if err != nil {
 		return nil, err
@@ -485,7 +438,7 @@ func writeRoutesOut(manifest []byte) error {
 // only when install attempted no PUT (manifest is nil) and cause does not
 // show that CDS stores a manifest, since putting drops the stored routes. A
 // cause that refuses the revision drops --revision from the add commands.
-func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry, manifest []byte, cause error) error {
+func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry, manifest []byte, cause error) error {
 	var status *operatorauth.StatusError
 	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict && !cliroutes.SpentToken(cause)
 	offerPut := manifest == nil && !errors.As(cause, new(storedManifestError))
@@ -500,10 +453,9 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries m
 		return err
 	}
 	operatorKey, operatorKeys := cmp.Or(installOperatorKeyPath(), "<operator-key.pem>"), cmp.Or(installOperatorKeys, "<operator-pub.pem>")
-	conn := "--url https://127.0.0.1:8443 " + installPinFlags() + " --operator-key " + operatorKey
+	conn := "--url " + cdsURL + " " + installPinFlags() + " --operator-key " + operatorKey
 	// Printed before the write, so a refused --routes-out still shows them.
 	fmt.Fprintf(w, "+ the router answers 503 until CDS stores a route manifest. Add the route with:\n")
-	fmt.Fprintf(w, "    kubectl -n %s port-forward svc/%s 8443:%d &\n", cds.namespace, cds.service, cds.port)
 	for i, host := range u.hosts {
 		revision := ""
 		if installRoutesRevision != 0 && !badRevision {
@@ -522,21 +474,16 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries m
 	if _, ok := entries[u.workload]; ok {
 		fmt.Fprintf(w, "  The router reaches the backend only if CDS names its pod %s. A persistent CDS keeps\n", u.workload)
 		fmt.Fprintf(w, "  stored entries over this install's: check that %s is the only entry admitting the pod's images:\n", u.workload)
-		fmt.Fprintf(w, "    c8s allowlist list --url https://127.0.0.1:8443 %s\n", installPinFlags())
+		fmt.Fprintf(w, "    c8s allowlist list --url %s %s\n", cdsURL, installPinFlags())
 	}
 	return nil
 }
 
 func installPinFlags() string {
-	switch {
-	case installMeasurementsConfig != "":
-		return "--image-policy-file " + installMeasurementsConfig
-	case len(installRegisters) > 0:
-		return "--image-policy-file <policy pinning --measurements and --rtmrs>"
-	case len(installMeasurements) > 0:
-		return "--measurements " + strings.Join(installMeasurements, ",")
+	if installCDS == nil {
+		return "--image-policy-file <the CDS pin document>"
 	}
-	return "--measurements <CDS launch measurement>"
+	return "--image-policy-file " + installCDS.path
 }
 
 func (u upstreamRoutes) describe() string {
@@ -546,47 +493,4 @@ func (u upstreamRoutes) describe() string {
 func manifestDigest(manifest []byte) string {
 	d := pkgroutes.Digest(manifest)
 	return hex.EncodeToString(d[:])
-}
-
-// portForward opens `kubectl port-forward` to the CDS Service on a free
-// loopback port and returns its URL once it accepts connections. stop ends
-// the forward.
-func portForward(ctx context.Context, cds cdsTarget) (url string, stop func(), err error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", nil, err
-	}
-	local := l.Addr().String()
-	_, port, _ := net.SplitHostPort(local)
-	_ = l.Close() // freed for kubectl; a race for it fails the dial below
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "kubectl", "-n", cds.namespace, "port-forward", "svc/"+cds.service, fmt.Sprintf("%s:%d", port, cds.port))
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return "", nil, fmt.Errorf("kubectl port-forward: %w", err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	stop = func() {
-		_ = cmd.Process.Kill()
-		<-exited
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		conn, err := net.DialTimeout("tcp", local, time.Second)
-		if err == nil {
-			_ = conn.Close()
-			return "https://" + local, stop, nil
-		}
-		select {
-		case err := <-exited:
-			exited <- err
-			return "", nil, fmt.Errorf("kubectl port-forward to svc/%s exited: %v: %s", cds.service, err, strings.TrimSpace(stderr.String()))
-		case <-time.After(200 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			stop()
-			return "", nil, fmt.Errorf("kubectl port-forward to svc/%s did not accept connections within 30s", cds.service)
-		}
-	}
 }

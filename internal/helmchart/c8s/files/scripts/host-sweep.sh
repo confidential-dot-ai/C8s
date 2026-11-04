@@ -154,6 +154,8 @@ if [ "$baked_node" = "0" ]; then
     done
   fi
   rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
+  rm -f "/host${NRI_CONFIG_DIR}/cds-address"
+  rm -f "/host${NRI_CONFIG_DIR}/cds.json"
   case "$NRI_RUNTIME_DIR" in
     */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
     *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;

@@ -21,7 +21,6 @@ var systemExcludedNamespaces = []string{
 	"kube-system",
 	"kube-public",
 	"kube-node-lease",
-	"local-path-storage",
 }
 
 // reinjectSweep deletes pods that opted in to C8s injection

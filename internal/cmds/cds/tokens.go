@@ -11,23 +11,35 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// earliestIssue is the earliest issue time a token may carry. A spent-token
+// record that began at the zero time holds every token this CDS ever spent, so
+// no token is refused for its age.
+func earliestIssue(floor time.Time, clockSkew time.Duration) time.Time {
+	if floor.IsZero() {
+		return time.Time{}
+	}
+	return floor.Add(clockSkew)
+}
+
 // singleUse lets each operator token authorize one request. CDS serves the token
 // of a whole-document write as that document's signature, so without this
 // anyone who fetched it could replay the write until it expires. A non-zero
-// started refuses tokens that could have been spent before CDS started, since
-// a store that does not persist forgets them. authorize returns the verified
-// token's iat and accepts one up to clockSkew in the future, so the cutoff is
-// started plus clockSkew.
-func singleUse(authorize func(*http.Request, []byte) (time.Time, error), store *allowlist.Store, started time.Time, clockSkew time.Duration) allowlist.WriteAuthorizer {
-	var notBefore time.Time
-	if !started.IsZero() {
-		notBefore = started.Add(clockSkew)
-	}
+// floor refuses tokens that could have been spent before the spent-token
+// record this CDS holds began: a store that does not persist forgets them, and
+// a cluster that starts again forgets the ones its last life spent. It is read
+// per request, because a cluster that starts again moves it.
+func singleUse(
+	authorize func(*http.Request, []byte) (time.Time, error),
+	store *allowlist.Handle,
+	floor func() time.Time,
+	clockSkew time.Duration,
+) allowlist.WriteAuthorizer {
 	return func(r *http.Request, body []byte) error {
 		iat, err := authorize(r, body)
 		if err != nil {
 			return err
 		}
+		notBefore := earliestIssue(floor(), clockSkew)
 		if !notBefore.IsZero() && iat.Before(notBefore) {
 			return fmt.Errorf("%w: issued at %s, before %s", operatorauth.ErrTokenBeforeStart, iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
 		}

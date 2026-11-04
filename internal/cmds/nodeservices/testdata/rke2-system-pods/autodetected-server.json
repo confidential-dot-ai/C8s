@@ -1,0 +1,3926 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "cilium-cd7sk",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [
+          {
+            "name": "install-portmap-cni-plugin",
+            "image": "rancher/hardened-cni-plugins:v1.9.1-build20260717",
+            "command": null,
+            "args": null,
+            "env": [
+              {
+                "name": "SKIP_CNI_BINARIES",
+                "value": "bandwidth,bridge,dhcp,firewall,flannel,host-device,host-local,ipvlan,loopback,macvlan,ptp,sbr,static,tuning,vlan,vrf"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/host/opt/cni/bin",
+                "name": "cni-path"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "config",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "cilium-dbg",
+              "build-config"
+            ],
+            "args": null,
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "mount-cgroup",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "bash",
+              "-ec",
+              "cp /usr/bin/cilium-mount /hostbin/cilium-mount;\nnsenter --cgroup=/hostproc/1/ns/cgroup --mount=/hostproc/1/ns/mnt \"${BIN_PATH}/cilium-mount\" $CGROUP_ROOT;\nrm /hostbin/cilium-mount\n"
+            ],
+            "args": null,
+            "env": [
+              {
+                "name": "CGROUP_ROOT",
+                "value": "/run/cilium/cgroupv2"
+              },
+              {
+                "name": "BIN_PATH",
+                "value": "/opt/cni/bin"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/hostproc",
+                "name": "hostproc"
+              },
+              {
+                "mountPath": "/hostbin",
+                "name": "cni-path"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "apply-sysctl-overwrites",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "bash",
+              "-ec",
+              "cp /usr/bin/cilium-sysctlfix /hostbin/cilium-sysctlfix;\nnsenter --mount=/hostproc/1/ns/mnt \"${BIN_PATH}/cilium-sysctlfix\";\nrm /hostbin/cilium-sysctlfix\n"
+            ],
+            "args": null,
+            "env": [
+              {
+                "name": "BIN_PATH",
+                "value": "/opt/cni/bin"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/hostproc",
+                "name": "hostproc"
+              },
+              {
+                "mountPath": "/hostbin",
+                "name": "cni-path"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "mount-bpf-fs",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "/bin/bash",
+              "-c",
+              "--"
+            ],
+            "args": [
+              "mount | grep \"/sys/fs/bpf type bpf\" || mount -t bpf bpf /sys/fs/bpf"
+            ],
+            "env": null,
+            "volumeMounts": [
+              {
+                "mountPath": "/sys/fs/bpf",
+                "mountPropagation": "Bidirectional",
+                "name": "bpf-maps"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "clean-cilium-state",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "/init-container.sh"
+            ],
+            "args": null,
+            "env": [
+              {
+                "name": "CILIUM_ALL_STATE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "clean-cilium-state",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_BPF_STATE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "clean-cilium-bpf-state",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              },
+              {
+                "name": "WRITE_CNI_CONF_WHEN_READY",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "write-cni-conf-when-ready",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/sys/fs/bpf",
+                "name": "bpf-maps"
+              },
+              {
+                "mountPath": "/run/cilium/cgroupv2",
+                "mountPropagation": "HostToContainer",
+                "name": "cilium-cgroup"
+              },
+              {
+                "mountPath": "/var/run/cilium",
+                "name": "cilium-run"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          },
+          {
+            "name": "install-cni-binaries",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "/install-plugin.sh"
+            ],
+            "args": null,
+            "env": null,
+            "volumeMounts": [
+              {
+                "mountPath": "/host/opt/cni/bin",
+                "name": "cni-path"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "containers": [
+          {
+            "name": "cilium-agent",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "command": [
+              "cilium-agent"
+            ],
+            "args": [
+              "--config-dir=/tmp/cilium/config-map"
+            ],
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_CLUSTERMESH_CONFIG",
+                "value": "/var/lib/cilium/clustermesh/"
+              },
+              {
+                "name": "GOMEMLIMIT",
+                "valueFrom": {
+                  "resourceFieldRef": {
+                    "divisor": "1",
+                    "resource": "limits.memory"
+                  }
+                }
+              },
+              {
+                "name": "KUBE_CLIENT_BACKOFF_BASE",
+                "value": "1"
+              },
+              {
+                "name": "KUBE_CLIENT_BACKOFF_DURATION",
+                "value": "120"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/host/proc/sys/net",
+                "name": "host-proc-sys-net"
+              },
+              {
+                "mountPath": "/host/proc/sys/kernel",
+                "name": "host-proc-sys-kernel"
+              },
+              {
+                "mountPath": "/sys/fs/bpf",
+                "mountPropagation": "HostToContainer",
+                "name": "bpf-maps"
+              },
+              {
+                "mountPath": "/var/run/cilium",
+                "name": "cilium-run"
+              },
+              {
+                "mountPath": "/var/run/cilium/netns",
+                "mountPropagation": "HostToContainer",
+                "name": "cilium-netns"
+              },
+              {
+                "mountPath": "/host/etc/cni/net.d",
+                "name": "etc-cni-netd"
+              },
+              {
+                "mountPath": "/var/lib/cilium/clustermesh",
+                "name": "clustermesh-secrets",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/lib/modules",
+                "name": "lib-modules",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/run/xtables.lock",
+                "name": "xtables-lock"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-lzct7",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {},
+            "name": "tmp"
+          },
+          {
+            "hostPath": {
+              "path": "/var/run/cilium",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "cilium-run"
+          },
+          {
+            "hostPath": {
+              "path": "/var/run/netns",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "cilium-netns"
+          },
+          {
+            "hostPath": {
+              "path": "/sys/fs/bpf",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "bpf-maps"
+          },
+          {
+            "hostPath": {
+              "path": "/proc",
+              "type": "Directory"
+            },
+            "name": "hostproc"
+          },
+          {
+            "hostPath": {
+              "path": "/run/cilium/cgroupv2",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "cilium-cgroup"
+          },
+          {
+            "hostPath": {
+              "path": "/opt/cni/bin",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "cni-path"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/cni/net.d",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "etc-cni-netd"
+          },
+          {
+            "hostPath": {
+              "path": "/lib/modules",
+              "type": ""
+            },
+            "name": "lib-modules"
+          },
+          {
+            "hostPath": {
+              "path": "/run/xtables.lock",
+              "type": "FileOrCreate"
+            },
+            "name": "xtables-lock"
+          },
+          {
+            "name": "clustermesh-secrets",
+            "projected": {
+              "defaultMode": 256,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "cilium-clustermesh",
+                    "optional": true
+                  }
+                },
+                {
+                  "secret": {
+                    "items": [
+                      {
+                        "key": "tls.key",
+                        "path": "common-etcd-client.key"
+                      },
+                      {
+                        "key": "tls.crt",
+                        "path": "common-etcd-client.crt"
+                      },
+                      {
+                        "key": "ca.crt",
+                        "path": "common-etcd-client-ca.crt"
+                      }
+                    ],
+                    "name": "clustermesh-apiserver-remote-cert",
+                    "optional": true
+                  }
+                },
+                {
+                  "secret": {
+                    "items": [
+                      {
+                        "key": "tls.key",
+                        "path": "local-etcd-client.key"
+                      },
+                      {
+                        "key": "tls.crt",
+                        "path": "local-etcd-client.crt"
+                      },
+                      {
+                        "key": "ca.crt",
+                        "path": "local-etcd-client-ca.crt"
+                      }
+                    ],
+                    "name": "clustermesh-apiserver-local-cert",
+                    "optional": true
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "hostPath": {
+              "path": "/proc/sys/net",
+              "type": "Directory"
+            },
+            "name": "host-proc-sys-net"
+          },
+          {
+            "hostPath": {
+              "path": "/proc/sys/kernel",
+              "type": "Directory"
+            },
+            "name": "host-proc-sys-kernel"
+          },
+          {
+            "name": "kube-api-access-lzct7",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "install-portmap-cni-plugin",
+            "imageID": "docker.io/rancher/hardened-cni-plugins@sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8"
+          },
+          {
+            "name": "config",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "mount-cgroup",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "apply-sysctl-overwrites",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "mount-bpf-fs",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "clean-cilium-state",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "install-cni-binaries",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          },
+          {
+            "name": "cilium-agent",
+            "imageID": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "cilium-operator-5f464f7f67-d75jn",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": null,
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "cilium-operator",
+            "image": "rancher/mirrored-cilium-operator-generic:v1.19.6",
+            "command": [
+              "cilium-operator-generic"
+            ],
+            "args": [
+              "--config-dir=/tmp/cilium/config-map",
+              "--debug=$(CILIUM_DEBUG)"
+            ],
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_DEBUG",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "debug",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp/cilium/config-map",
+                "name": "cilium-config-path",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-zlp97",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "cilium-config"
+            },
+            "name": "cilium-config-path"
+          },
+          {
+            "name": "kube-api-access-zlp97",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": []
+      }
+    },
+    {
+      "metadata": {
+        "name": "cilium-operator-5f464f7f67-p7h62",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "cilium-operator",
+            "image": "rancher/mirrored-cilium-operator-generic:v1.19.6",
+            "command": [
+              "cilium-operator-generic"
+            ],
+            "args": [
+              "--config-dir=/tmp/cilium/config-map",
+              "--debug=$(CILIUM_DEBUG)"
+            ],
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_DEBUG",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "debug",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp/cilium/config-map",
+                "name": "cilium-config-path",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-6fjwg",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "cilium-config"
+            },
+            "name": "cilium-config-path"
+          },
+          {
+            "name": "kube-api-access-6fjwg",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "cilium-operator",
+            "imageID": "docker.io/rancher/mirrored-cilium-operator-generic@sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "cloud-controller-manager-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "cloud-controller-manager",
+            "image": "index.docker.io/rancher/rke2-cloud-provider:v1.36.4-0.20260817193921-a2fc9574e060-build20260820",
+            "command": [
+              "cloud-controller-manager"
+            ],
+            "args": [
+              "--allocate-node-cidrs=true",
+              "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig",
+              "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig",
+              "--bind-address=127.0.0.1",
+              "--cloud-config=/var/lib/rancher/rke2/server/etc/cloud-config.yaml",
+              "--cloud-provider=rke2",
+              "--cluster-cidr=10.52.0.0/16",
+              "--configure-cloud-routes=false",
+              "--controllers=*,-route,-service",
+              "--kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig",
+              "--leader-elect-resource-name=rke2-cloud-controller-manager",
+              "--node-status-update-frequency=1m0s",
+              "--profiling=false"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "5c27a0180866eb9551e0257f7a2cf3aa84c274917f88efae83f03425fbb820c1"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/ssl/certs",
+                "name": "dir0"
+              },
+              {
+                "mountPath": "/etc/ca-certificates",
+                "name": "dir1"
+              },
+              {
+                "mountPath": "/usr/local/share/ca-certificates",
+                "name": "dir2"
+              },
+              {
+                "mountPath": "/usr/share/ca-certificates",
+                "name": "dir3"
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/etc/cloud-config.yaml",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.crt",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.key",
+                "name": "file3",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+                "name": "file4",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/etc/ssl/certs",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir0"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir1"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/local/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir2"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/etc/cloud-config.yaml",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.crt",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.key",
+              "type": "File"
+            },
+            "name": "file3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file4"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "cloud-controller-manager",
+            "imageID": "docker.io/rancher/rke2-cloud-provider@sha256:95a33533d97b10502be19e4f3e60e7ce9c30f4879084709af96259a01253f044"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "etcd-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "etcd",
+            "image": "index.docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819",
+            "command": [
+              "etcd"
+            ],
+            "args": [
+              "--config-file=/var/lib/rancher/rke2/server/db/etcd/config"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "94c09d009ee2f6898a31dd3634632afbf419dd376294190f50308d3f1a42fc13"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/db/etcd",
+                "name": "dir0"
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/server-client.crt",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/server-client.key",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.crt",
+                "name": "file3",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.key",
+                "name": "file4",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.crt",
+                "name": "file5",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/db/etcd/config",
+                "name": "file6",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/db/etcd",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/server-client.crt",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/server-client.key",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.crt",
+              "type": "File"
+            },
+            "name": "file3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.key",
+              "type": "File"
+            },
+            "name": "file4"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.crt",
+              "type": "File"
+            },
+            "name": "file5"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/db/etcd/config",
+              "type": "File"
+            },
+            "name": "file6"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "etcd",
+            "imageID": "docker.io/rancher/hardened-etcd@sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-cilium-pjxhq",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-cilium"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "KUBERNETES_SERVICE_HOST",
+                "value": "127.0.0.1"
+              },
+              {
+                "name": "KUBERNETES_SERVICE_PORT",
+                "value": "6443"
+              },
+              {
+                "name": "BOOTSTRAP",
+                "value": "true"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "reinstall"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "782319E7FE222AA2112A65AC8178D28B78EA2BEAA2CF319EDF8B74C9C5F5E39"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-fmlp9",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "items": [
+                      {
+                        "key": "HelmChartConfigValuesContent",
+                        "path": "values-1-000-HelmChartConfig-ValuesContent.yaml"
+                      }
+                    ],
+                    "name": "chart-values-rke2-cilium"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-cilium"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-fmlp9",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-coredns-kl4rr",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-coredns"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "KUBERNETES_SERVICE_HOST",
+                "value": "127.0.0.1"
+              },
+              {
+                "name": "KUBERNETES_SERVICE_PORT",
+                "value": "6443"
+              },
+              {
+                "name": "BOOTSTRAP",
+                "value": "true"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "C2022DA3D93681905C56DE7FB8659EB0AA8923CAA7CED6BC9530E4CC02C48A1"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-svjtt",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-coredns"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-coredns"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-svjtt",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-metrics-server-fdntb",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-metrics-server"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "EA24CE135607F6A32B2A9C1FE28D07DC3013FA29B1BE51EB656592FDFA90E3D"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-gjjrr",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-metrics-server"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-metrics-server"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-gjjrr",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-runtimeclasses-nglkz",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--take-ownership",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-runtimeclasses"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "6237DDEDD29BF0937081C4CFCCBE1CE2BF25FB745C12DEFDD1757F3E49B6490"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-vbj8k",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-runtimeclasses"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-runtimeclasses"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-vbj8k",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-snapshot-controller-7fd9s",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-snapshot-controller"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "ED4DBD8A0712DA96275DF8DE2AFB4A5CD028710551FCF8FF78C692F5F1B9868"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-dpxps",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-snapshot-controller"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-snapshot-controller"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-dpxps",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-snapshot-controller-crd-dcdsz",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-snapshot-controller-crd"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "77D6CC475829A6654E604B17D3F28813F70A8AEF3CA7A9B31C75756F35C9822"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-vb2tz",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-snapshot-controller-crd"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-snapshot-controller-crd"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-vb2tz",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "helm-install-rke2-traefik-crd-vdfcr",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "helm",
+            "image": "rancher/klipper-helm:v0.13.3-build20260820",
+            "command": null,
+            "args": [
+              "install",
+              "--set-string",
+              "global.clusterCIDR=10.52.0.0/16",
+              "--set-string",
+              "global.clusterCIDRv4=10.52.0.0/16",
+              "--set-string",
+              "global.clusterDNS=10.53.0.10",
+              "--set-string",
+              "global.clusterDomain=cluster.local",
+              "--set",
+              "global.prime.enabled=false",
+              "--set-string",
+              "global.rke2DataDir=/var/lib/rancher/rke2",
+              "--set-string",
+              "global.serviceCIDR=10.53.0.0/16",
+              "--set-string",
+              "global.systemDefaultIngressClass=traefik"
+            ],
+            "env": [
+              {
+                "name": "NAME",
+                "value": "rke2-traefik-crd"
+              },
+              {
+                "name": "VERSION"
+              },
+              {
+                "name": "REPO"
+              },
+              {
+                "name": "HELM_DRIVER",
+                "value": "secret"
+              },
+              {
+                "name": "CHART_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "CHART"
+              },
+              {
+                "name": "HELM_VERSION"
+              },
+              {
+                "name": "TARGET_NAMESPACE",
+                "value": "kube-system"
+              },
+              {
+                "name": "AUTH_PASS_CREDENTIALS",
+                "value": "false"
+              },
+              {
+                "name": "INSECURE_SKIP_TLS_VERIFY",
+                "value": "false"
+              },
+              {
+                "name": "PLAIN_HTTP",
+                "value": "false"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              },
+              {
+                "name": "FAILURE_POLICY",
+                "value": "retry"
+              },
+              {
+                "name": "SERVER_SIDE",
+                "value": "auto"
+              },
+              {
+                "name": "FORCE_CONFLICTS",
+                "value": "true"
+              },
+              {
+                "name": "EXPECTED_RELEASE_REVISION",
+                "value": "0"
+              },
+              {
+                "name": "CONFIG_HASH",
+                "value": "4BDA485FCF9B9E569115B51B3709E58DCB468142E6B7B3B792E2BCF9F031D1A"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/home/klipper-helm/.helm",
+                "name": "klipper-helm"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.cache",
+                "name": "klipper-cache"
+              },
+              {
+                "mountPath": "/home/klipper-helm/.config",
+                "name": "klipper-config"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/config",
+                "name": "values"
+              },
+              {
+                "mountPath": "/chart",
+                "name": "content"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-d528k",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-helm"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-cache"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "klipper-config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "name": "values",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "secret": {
+                    "name": "chart-values-rke2-traefik-crd"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "chart-content-rke2-traefik-crd"
+            },
+            "name": "content"
+          },
+          {
+            "name": "kube-api-access-d528k",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "helm",
+            "imageID": "docker.io/rancher/klipper-helm@sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "kube-apiserver-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "kube-apiserver",
+            "image": "index.docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
+            "command": [
+              "kube-apiserver"
+            ],
+            "args": [
+              "--admission-control-config-file=/etc/rancher/rke2/psa-config.yaml",
+              "--audit-policy-file=/etc/rancher/rke2/audit-policy.yaml",
+              "--audit-log-maxage=30",
+              "--audit-log-maxbackup=10",
+              "--audit-log-maxsize=100",
+              "--service-account-extend-token-expiration=false",
+              "--advertise-address=192.168.122.191",
+              "--allow-privileged=true",
+              "--anonymous-auth=false",
+              "--api-audiences=https://kubernetes.default.svc.cluster.local,rke2",
+              "--audit-log-maxage=30",
+              "--audit-log-maxbackup=10",
+              "--audit-log-maxsize=100",
+              "--audit-log-path=/var/log/kube-audit/audit.log",
+              "--audit-policy-file=/etc/rancher/rke2/audit-policy.yaml",
+              "--authorization-mode=Node,RBAC",
+              "--bind-address=0.0.0.0",
+              "--cert-dir=/var/lib/rancher/rke2/server/tls/temporary-certs",
+              "--client-ca-file=/var/lib/rancher/rke2/server/tls/client-ca.crt",
+              "--egress-selector-config-file=/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml",
+              "--enable-admission-plugins=NodeRestriction",
+              "--enable-aggregator-routing=true",
+              "--enable-bootstrap-token-auth=true",
+              "--encryption-provider-config=/var/lib/rancher/rke2/server/cred/encryption-config.json",
+              "--encryption-provider-config-automatic-reload=true",
+              "--etcd-cafile=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt",
+              "--etcd-certfile=/var/lib/rancher/rke2/server/tls/etcd/client.crt",
+              "--etcd-keyfile=/var/lib/rancher/rke2/server/tls/etcd/client.key",
+              "--etcd-servers=https://127.0.0.1:2379",
+              "--kubelet-certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "--kubelet-client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt",
+              "--kubelet-client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key",
+              "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
+              "--profiling=false",
+              "--proxy-client-cert-file=/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt",
+              "--proxy-client-key-file=/var/lib/rancher/rke2/server/tls/client-auth-proxy.key",
+              "--requestheader-allowed-names=system:auth-proxy",
+              "--requestheader-client-ca-file=/var/lib/rancher/rke2/server/tls/request-header-ca.crt",
+              "--requestheader-extra-headers-prefix=X-Remote-Extra-",
+              "--requestheader-group-headers=X-Remote-Group",
+              "--requestheader-username-headers=X-Remote-User",
+              "--secure-port=6443",
+              "--service-account-issuer=https://kubernetes.default.svc.cluster.local",
+              "--service-account-key-file=/var/lib/rancher/rke2/server/tls/service.key",
+              "--service-account-signing-key-file=/var/lib/rancher/rke2/server/tls/service.current.key",
+              "--service-cluster-ip-range=10.53.0.0/16",
+              "--service-node-port-range=30000-32767",
+              "--storage-backend=etcd3",
+              "--tls-cert-file=/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt",
+              "--tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+              "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "b26282bef2fabd2d05152ee575790eb5715ac7441d8004b79e03f8e8810e7f5b"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/ssl/certs",
+                "name": "dir0"
+              },
+              {
+                "mountPath": "/etc/ca-certificates",
+                "name": "dir1"
+              },
+              {
+                "mountPath": "/usr/local/share/ca-certificates",
+                "name": "dir2"
+              },
+              {
+                "mountPath": "/usr/share/ca-certificates",
+                "name": "dir3"
+              },
+              {
+                "mountPath": "/var/log/kube-audit",
+                "name": "dir4"
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server",
+                "name": "dir5"
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/db/etcd/name",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/rancher/rke2/audit-policy.yaml",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/rancher/rke2/psa-config.yaml",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml",
+                "name": "file3",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt",
+                "name": "file4",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-auth-proxy.key",
+                "name": "file5",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-ca.crt",
+                "name": "file6",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt",
+                "name": "file7",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key",
+                "name": "file8",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/client.crt",
+                "name": "file9",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/client.key",
+                "name": "file10",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt",
+                "name": "file11",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/request-header-ca.crt",
+                "name": "file12",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+                "name": "file13",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/service.current.key",
+                "name": "file14",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/service.key",
+                "name": "file15",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt",
+                "name": "file16",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key",
+                "name": "file17",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/etc/ssl/certs",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir0"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir1"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/local/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir2"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/log/kube-audit",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir4"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir5"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/db/etcd/name",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/rancher/rke2/audit-policy.yaml",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/rancher/rke2/psa-config.yaml",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml",
+              "type": "File"
+            },
+            "name": "file3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt",
+              "type": "File"
+            },
+            "name": "file4"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-auth-proxy.key",
+              "type": "File"
+            },
+            "name": "file5"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-ca.crt",
+              "type": "File"
+            },
+            "name": "file6"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt",
+              "type": "File"
+            },
+            "name": "file7"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key",
+              "type": "File"
+            },
+            "name": "file8"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/client.crt",
+              "type": "File"
+            },
+            "name": "file9"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/client.key",
+              "type": "File"
+            },
+            "name": "file10"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file11"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/request-header-ca.crt",
+              "type": "File"
+            },
+            "name": "file12"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file13"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/service.current.key",
+              "type": "File"
+            },
+            "name": "file14"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/service.key",
+              "type": "File"
+            },
+            "name": "file15"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt",
+              "type": "File"
+            },
+            "name": "file16"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key",
+              "type": "File"
+            },
+            "name": "file17"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "kube-apiserver",
+            "imageID": "docker.io/rancher/hardened-kubernetes@sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "kube-controller-manager-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "kube-controller-manager",
+            "image": "index.docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
+            "command": [
+              "kube-controller-manager"
+            ],
+            "args": [
+              "--permit-port-sharing=true",
+              "--flex-volume-plugin-dir=/var/lib/kubelet/volumeplugins",
+              "--terminated-pod-gc-threshold=1000",
+              "--allocate-node-cidrs=true",
+              "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig",
+              "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig",
+              "--bind-address=127.0.0.1",
+              "--cluster-cidr=10.52.0.0/16",
+              "--cluster-signing-kube-apiserver-client-cert-file=/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt",
+              "--cluster-signing-kube-apiserver-client-key-file=/var/lib/rancher/rke2/server/tls/client-ca.key",
+              "--cluster-signing-kubelet-client-cert-file=/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt",
+              "--cluster-signing-kubelet-client-key-file=/var/lib/rancher/rke2/server/tls/client-ca.key",
+              "--cluster-signing-kubelet-serving-cert-file=/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt",
+              "--cluster-signing-kubelet-serving-key-file=/var/lib/rancher/rke2/server/tls/server-ca.key",
+              "--cluster-signing-legacy-unknown-cert-file=/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt",
+              "--cluster-signing-legacy-unknown-key-file=/var/lib/rancher/rke2/server/tls/server-ca.key",
+              "--configure-cloud-routes=false",
+              "--controllers=*,tokencleaner,-service,-route,-cloud-node-lifecycle",
+              "--kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig",
+              "--profiling=false",
+              "--root-ca-file=/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "--secure-port=10257",
+              "--service-account-private-key-file=/var/lib/rancher/rke2/server/tls/service.current.key",
+              "--service-cluster-ip-range=10.53.0.0/16",
+              "--tls-cert-file=/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt",
+              "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key",
+              "--use-service-account-credentials=true"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "ab5939c99baa67b2d85a0219a2d6e7aedb4b2bdbb80c0694e1c26ddca2d20990"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/ssl/certs",
+                "name": "dir0"
+              },
+              {
+                "mountPath": "/etc/ca-certificates",
+                "name": "dir1"
+              },
+              {
+                "mountPath": "/usr/local/share/ca-certificates",
+                "name": "dir2"
+              },
+              {
+                "mountPath": "/usr/share/ca-certificates",
+                "name": "dir3"
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/db/etcd/name",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/cred/controller.kubeconfig",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-ca.key",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt",
+                "name": "file3",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-controller.crt",
+                "name": "file4",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-controller.key",
+                "name": "file5",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt",
+                "name": "file6",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key",
+                "name": "file7",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+                "name": "file8",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.key",
+                "name": "file9",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt",
+                "name": "file10",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/service.current.key",
+                "name": "file11",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/etc/ssl/certs",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir0"
+          },
+          {
+            "hostPath": {
+              "path": "/etc/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir1"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/local/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir2"
+          },
+          {
+            "hostPath": {
+              "path": "/usr/share/ca-certificates",
+              "type": "DirectoryOrCreate"
+            },
+            "name": "dir3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/db/etcd/name",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/cred/controller.kubeconfig",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-ca.key",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt",
+              "type": "File"
+            },
+            "name": "file3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-controller.crt",
+              "type": "File"
+            },
+            "name": "file4"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-controller.key",
+              "type": "File"
+            },
+            "name": "file5"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt",
+              "type": "File"
+            },
+            "name": "file6"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key",
+              "type": "File"
+            },
+            "name": "file7"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file8"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.key",
+              "type": "File"
+            },
+            "name": "file9"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt",
+              "type": "File"
+            },
+            "name": "file10"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/service.current.key",
+              "type": "File"
+            },
+            "name": "file11"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "kube-controller-manager",
+            "imageID": "docker.io/rancher/hardened-kubernetes@sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "kube-proxy-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "kube-proxy",
+            "image": "index.docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
+            "command": [
+              "kube-proxy"
+            ],
+            "args": [
+              "--cluster-cidr=10.52.0.0/16",
+              "--conntrack-max-per-core=0",
+              "--conntrack-tcp-timeout-close-wait=0s",
+              "--conntrack-tcp-timeout-established=0s",
+              "--healthz-bind-address=127.0.0.1",
+              "--hostname-override=floorpins-server",
+              "--iptables-localhost-nodeports=false",
+              "--kubeconfig=/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig",
+              "--proxy-mode=iptables"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "f5f4ddc59ff0d7c0cc5a0a0c5941dbcbcef296cf1b1407d54891a8a59385e544"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/rancher/rke2/agent/client-kube-proxy.crt",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/agent/client-kube-proxy.key",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/agent/server-ca.crt",
+                "name": "file3",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/agent/client-kube-proxy.crt",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/agent/client-kube-proxy.key",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/agent/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file3"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "kube-proxy",
+            "imageID": "docker.io/rancher/hardened-kubernetes@sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "kube-scheduler-floorpins-server",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "kube-scheduler",
+            "image": "index.docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
+            "command": [
+              "kube-scheduler"
+            ],
+            "args": [
+              "--permit-port-sharing=true",
+              "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig",
+              "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig",
+              "--bind-address=127.0.0.1",
+              "--kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig",
+              "--profiling=false",
+              "--secure-port=10259",
+              "--tls-cert-file=/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt",
+              "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key"
+            ],
+            "env": [
+              {
+                "name": "FILE_HASH",
+                "value": "74e8d9d2dfa72e43bef1335602c680afa9f828e5091ab20220c0212161b21f2f"
+              },
+              {
+                "name": "NO_PROXY",
+                "value": ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/db/etcd/name",
+                "name": "file0",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig",
+                "name": "file1",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-scheduler.crt",
+                "name": "file2",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/client-scheduler.key",
+                "name": "file3",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt",
+                "name": "file4",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key",
+                "name": "file5",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+                "name": "file6",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/db/etcd/name",
+              "type": "File"
+            },
+            "name": "file0"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig",
+              "type": "File"
+            },
+            "name": "file1"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-scheduler.crt",
+              "type": "File"
+            },
+            "name": "file2"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/client-scheduler.key",
+              "type": "File"
+            },
+            "name": "file3"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt",
+              "type": "File"
+            },
+            "name": "file4"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key",
+              "type": "File"
+            },
+            "name": "file5"
+          },
+          {
+            "hostPath": {
+              "path": "/var/lib/rancher/rke2/server/tls/server-ca.crt",
+              "type": "File"
+            },
+            "name": "file6"
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "kube-scheduler",
+            "imageID": "docker.io/rancher/hardened-kubernetes@sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "rke2-coredns-rke2-coredns-6b85489767-cvm6x",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "coredns",
+            "image": "rancher/hardened-coredns:v1.14.7-build20260819",
+            "command": null,
+            "args": [
+              "-conf",
+              "/etc/coredns/Corefile"
+            ],
+            "env": null,
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/coredns",
+                "name": "config-volume"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-qq9pr",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "items": [
+                {
+                  "key": "Corefile",
+                  "path": "Corefile"
+                }
+              ],
+              "name": "rke2-coredns-rke2-coredns"
+            },
+            "name": "config-volume"
+          },
+          {
+            "name": "kube-api-access-qq9pr",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "coredns",
+            "imageID": "docker.io/rancher/hardened-coredns@sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "rke2-coredns-rke2-coredns-autoscaler-8fcd75dfd-zgdfl",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "autoscaler",
+            "image": "rancher/hardened-cluster-autoscaler:v1.10.3-build20260819",
+            "command": [
+              "/cluster-proportional-autoscaler",
+              "--namespace=kube-system",
+              "--configmap=rke2-coredns-rke2-coredns-autoscaler",
+              "--target=Deployment/rke2-coredns-rke2-coredns",
+              "--logtostderr=true",
+              "--v=2"
+            ],
+            "args": null,
+            "env": null,
+            "volumeMounts": [
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-nztkw",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "kube-api-access-nztkw",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "autoscaler",
+            "imageID": "docker.io/rancher/hardened-cluster-autoscaler@sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "rke2-metrics-server-9d9d8b8f-fvwpr",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "metrics-server",
+            "image": "rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
+            "command": null,
+            "args": [
+              "--secure-port=10250",
+              "--cert-dir=/tmp",
+              "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
+              "--kubelet-use-node-status-port",
+              "--metric-resolution=15s"
+            ],
+            "env": null,
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-62wfw",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {},
+            "name": "tmp"
+          },
+          {
+            "name": "kube-api-access-62wfw",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "metrics-server",
+            "imageID": "docker.io/rancher/hardened-k8s-metrics-server@sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "rke2-snapshot-controller-5d85999559-2qmbt",
+        "namespace": "kube-system"
+      },
+      "spec": {
+        "nodeName": "floorpins-server",
+        "initContainers": [],
+        "containers": [
+          {
+            "name": "rke2-snapshot-controller",
+            "image": "rancher/hardened-snapshot-controller:v8.6.0-build20260819",
+            "command": null,
+            "args": [
+              "--feature-gates=CSIVolumeGroupSnapshot=true",
+              "--http-endpoint=:8080",
+              "--leader-election=true",
+              "--leader-election-namespace=$(NAMESPACE)"
+            ],
+            "env": [
+              {
+                "name": "NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              }
+            ],
+            "volumeMounts": [
+              {
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "name": "kube-api-access-vlv5m",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "kube-api-access-vlv5m",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "expirationSeconds": 3607,
+                    "path": "token"
+                  }
+                },
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "name": "kube-root-ca.crt"
+                  }
+                },
+                {
+                  "downwardAPI": {
+                    "items": [
+                      {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        },
+                        "path": "namespace"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "containerStatuses": [
+          {
+            "name": "rke2-snapshot-controller",
+            "imageID": "docker.io/rancher/hardened-snapshot-controller@sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -76,7 +76,7 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pins, err := cfg.ParsePins()
+	pins, err := cfg.ParsePins(ctx)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func closeWith(ctx context.Context, daemon *http.Client, base string) error {
 // openAll fetches and opens every requested volume in one pass. The daemon is
 // idempotent for a repeated identical request, so a pass that fails partway is
 // safe to run again.
-func openAll(ctx context.Context, cfg config, pins armtls.Pins) error {
+func openAll(ctx context.Context, cfg config, pins armtls.PinSource) error {
 	client, pub, err := sidecar.NewClient(cfg.Config, pins)
 	if err != nil {
 		return err

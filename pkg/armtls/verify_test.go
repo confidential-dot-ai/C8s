@@ -5,15 +5,17 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
 // Both evidence paths require an attestation-api: there is no in-process verifier,
 // so without one they must fail rather than accept unverified evidence.
 func TestVerifyRequiresAttestationApi(t *testing.T) {
-	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, &VerifyPolicy{}, nil); err == nil {
+	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, pinnedPolicy(""), nil); err == nil {
 		t.Fatal("VerifyAttestation ran with no attestation-api URL")
 	} else if !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("err = %v, want ErrInvalidReport", err)
@@ -50,6 +52,20 @@ func certWithSandboxID(t *testing.T, id string) (*x509.Certificate, error) {
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}, nil
 }
 
+// A guest image is its launch digest plus the registers its platform measures
+// into, which is one table every pin path reads.
+func TestImageRegistersIdentifyAGuestImage(t *testing.T) {
+	if registers, identified := ImageRegisters(teetypes.FamilyTDX); !identified || !slices.Equal(registers, []int{1, 2}) {
+		t.Fatalf("TDX registers = %v (identified %v), want RTMR[1] and RTMR[2]", registers, identified)
+	}
+	if registers, identified := ImageRegisters(teetypes.FamilySNP); !identified || len(registers) != 0 {
+		t.Fatalf("SEV-SNP registers = %v (identified %v), want none", registers, identified)
+	}
+	if _, identified := ImageRegisters(teetypes.FamilyUnknown); identified {
+		t.Fatal("a family with no verification rules identifies a guest image")
+	}
+}
+
 // An evidence refusal is terminal; other statuses and transport failures
 // must not carry a terminal sentinel.
 func TestMapVerifyError(t *testing.T) {
@@ -64,6 +80,7 @@ func TestMapVerifyError(t *testing.T) {
 		{"measurement not allowed", remote.ErrMeasurementNotAllowed, ErrPolicyViolation},
 		{"registers not allowed", remote.ErrRegistersNotAllowed, ErrPolicyViolation},
 		{"anchor not allowed", remote.ErrAnchorNotAllowed, ErrPolicyViolation},
+		{"launch file not allowed", remote.ErrLaunchFileNotAllowed, ErrPolicyViolation},
 		{"min TCB not allowed", remote.ErrMinTcbNotAllowed, ErrPolicyViolation},
 		{"PCR not allowed", remote.ErrPCRNotAllowed, ErrPolicyViolation},
 		{"init data mismatch", remote.ErrInitDataMismatch, ErrPolicyViolation},
@@ -106,7 +123,7 @@ func TestMapVerifyError(t *testing.T) {
 }
 
 func isRemoteSentinel(err error) bool {
-	for _, s := range []error{remote.ErrSignatureInvalid, remote.ErrReportDataMismatch, remote.ErrMeasurementNotAllowed, remote.ErrRegistersNotAllowed, remote.ErrAnchorNotAllowed, remote.ErrInvalidLaunchDigest,
+	for _, s := range []error{remote.ErrSignatureInvalid, remote.ErrReportDataMismatch, remote.ErrMeasurementNotAllowed, remote.ErrRegistersNotAllowed, remote.ErrAnchorNotAllowed, remote.ErrLaunchFileNotAllowed, remote.ErrInvalidLaunchDigest,
 		remote.ErrMinTcbNotAllowed, remote.ErrPCRNotAllowed, remote.ErrInitDataMismatch, remote.ErrPlatformMismatch, remote.ErrUnsupportedPlatform} {
 		if errors.Is(err, s) {
 			return true
