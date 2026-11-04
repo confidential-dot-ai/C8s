@@ -13,6 +13,7 @@ on:
       - ".github/scripts/confos-mkosi-pin.sh"
       - ".github/scripts/ghcr-digest.sh"
       - ".github/scripts/chart-attestation-api-digest.sh"
+      - ".github/scripts/chart-image-pins.sh"
       - "internal/helmchart/c8s/values.yaml"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
@@ -27,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-crane
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -94,6 +96,22 @@ jobs:
           else
             echo "::error file=$values::could not read the chart's pinnedDigest"; fail=1
           fi
+          # The chart's third-party images (kube-state-metrics, the router's
+          # nginx, the containerd-prep busybox) are digest-pinned into the
+          # seeded allowlist; the Resolve line above each digest names the tag
+          # it came from. A tag upstream has rebuilt since is a notice, not a
+          # failure: the pinned bytes are still served, and pin-watch proposes
+          # that bump. An unannotated digest, or a digest or tag the registry
+          # no longer serves, fails (the script names it). crane digest is a
+          # HEAD request, outside docker.io's anonymous pull quota.
+          if ! resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values"); then
+            echo "::error file=$values::a third-party image digest is unannotated, or it or its tag is no longer served (chart-image-pins.sh resolve, above)"; fail=1
+          fi
+          while read -r repo tag digest current; do
+            [ -n "$repo" ] && [ "$current" != "$digest" ] || continue
+            echo "::notice file=$values::$repo:$tag now names $current, not the pinned $digest; pin-watch proposes the bump"
+            echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
+          done <<<"$resolved"
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
             echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1

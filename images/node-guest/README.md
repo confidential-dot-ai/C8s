@@ -611,6 +611,19 @@ ways) and fails when either names another build, so the host and the guests
 verify with the same attestation-api release. pin-watch resolves the digest of
 a new attestation-rs release and writes the manifest and the chart together.
 
+The chart's three third-party images (kube-state-metrics, the router's nginx,
+the containerd-prep busybox) are digest-pinned in
+`internal/helmchart/c8s/values.yaml` and seeded into the allowlist floor. The
+line above each digest names the tag it was resolved from
+(`# Resolve REPOSITORY:TAG to bump this digest.`), which
+`.github/scripts/chart-image-pins.sh list` reads and `set` rewrites.
+pin-hygiene fails a digest without that line or one the registry no longer
+serves, and notices a tag upstream has rebuilt since; pin-watch's second step
+(`confos-pin-watch.yml`, weekly) proposes that rebuild as its own PR, never a
+version change. A version bump
+is a hand edit of the Resolve line, then `set` with the new tag's digest, then
+the block's `entrypoint` and `imageEnv` aligned with the image's config.
+
 The confos and attestation-rs pins are release commits: each `*_ref` SHA is
 what the builds check out, and the `*_tag` beside it is the release that
 names it (`vMAJOR.MINOR.PATCH`). The SHA stays the build input because a tag

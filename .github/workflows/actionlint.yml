@@ -30,6 +30,9 @@ jobs:
       - name: Test the chart attestation-api digest copy
         run: bash .github/scripts/tests/test-chart-attestation-api-digest.sh
 
+      - name: Test the chart's third-party image pins
+        run: bash .github/scripts/tests/test-chart-image-pins.sh
+
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
 
@@ -93,6 +96,8 @@ jobs:
             .github/scripts/tests/test-confos-mkosi-pin.sh \
             .github/scripts/tests/test-ghcr-digest.sh \
             .github/scripts/tests/test-chart-attestation-api-digest.sh \
+            .github/scripts/chart-image-pins.sh \
+            .github/scripts/tests/test-chart-image-pins.sh \
             .github/scripts/tests/test-repro-gate-changes.sh \
             .github/scripts/pin-watch-pr.sh \
             .github/scripts/tests/test-pin-watch-pr.sh \
