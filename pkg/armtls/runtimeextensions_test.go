@@ -258,6 +258,33 @@ func TestJournalLogsMissingOnce(t *testing.T) {
 	}
 }
 
+// An empty journal is checked for existence once, not on every issuance: a
+// journal removed after that first check is not reported missing.
+func TestJournalStatsEmptyOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	j := NewJournal(path)
+	if got := j.Policies(); got != nil {
+		t.Fatalf("Policies() = %v, want nil", got)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := j.Policies(); got != nil {
+		t.Fatalf("Policies() = %v, want nil", got)
+	}
+	if strings.Contains(logs.String(), "no measured-policy journal") {
+		t.Errorf("an empty journal was checked for existence again:\n%s", logs.String())
+	}
+}
+
 // distinctJournal is a journal of n distinct digests.
 func distinctJournal(n int) string {
 	var b strings.Builder
