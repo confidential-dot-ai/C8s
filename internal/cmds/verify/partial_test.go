@@ -525,15 +525,160 @@ func TestRunDiscoveryPublicTLSModeVerdicts(t *testing.T) {
 	})
 }
 
-// A route note describes a passing check, so a verdict the history check
-// fails carries none.
-func TestVerifyEvidenceHistoryFailureDropsRouteNote(t *testing.T) {
-	ev := genoaFileEvidence(t)
-	ev.route = &boundRoute{digest: []byte{1}, note: "route note"}
-	cfg := config{output: "json", trustOperator: true}
-	var out, errOut bytes.Buffer
-	code := verifyEvidence(context.Background(), cfg, &verifyPlan{policy: &armtls.VerifyPolicy{}}, ev, nil, operatorKeysReport{}, measurementsReport{}, &out, &errOut)
-	if code != exitFailed || !strings.Contains(out.String(), "policy_history_absent") || strings.Contains(out.String(), "route_note") {
-		t.Errorf("exit = %d, output:\n%s\nwant exit %d with policy_history_absent and no route_note", code, out.String(), exitFailed)
+// Each note is written when its own check passes, and a later policy can
+// still fail the verdict: the refused JSON verdict must then carry no note
+// asserting a passed check, while a note saying what was not checked stays.
+// --trust-operator against evidence with no measured history fails last, in
+// checkPolicyHistory.
+func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
+	const id = "8d9f6c2b1a0e"
+	sandboxLeaf, sandboxCA := caSignedLeaf(t, id, serverAuthOnly)
+	_, allowlistDigest := testHeldAllowlist(t)
+	matched := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: allowlistDigest}
+	workloadLeaf, workloadCA := caSignedWorkloadLeaf(t, matched)
+	pubPEM, _ := operatorPubPEM(t)
+	keysPath := filepath.Join(t.TempDir(), "op.pub")
+	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keysDigest, err := expectedOperatorKeysDigest(config{operatorKeys: keysPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyFails := func(cfg *config) { cfg.trustOperator = true }
+
+	for _, tc := range []struct {
+		name    string
+		cfg     config
+		ev      func(*evidence)
+		opKeys  operatorKeysReport
+		refuse  func(*config)
+		field   string
+		success string // in the field on the passing verdict, never on the refused one
+		keep    string // in the field on both verdicts
+	}{
+		{
+			name:    "sandbox ID verified against --mesh-ca",
+			cfg:     config{meshCA: sandboxCA, sandboxID: id},
+			ev:      func(ev *evidence) { ev.leaf, ev.sandboxID = sandboxLeaf, id },
+			refuse:  historyFails,
+			field:   "sandbox_id_note",
+			success: "verified: the leaf chains",
+		},
+		{
+			name:    "sandbox ID pin, later check in the same policy",
+			cfg:     config{meshCA: sandboxCA, sandboxID: id},
+			ev:      func(ev *evidence) { ev.leaf, ev.sandboxID = sandboxLeaf, id },
+			opKeys:  operatorKeysReport{note: "kind is not cds"},
+			refuse:  func(cfg *config) { cfg.operatorKeys = keysPath },
+			field:   "sandbox_id_note",
+			success: "matches --sandbox-id",
+		},
+		{
+			name:   "unverified sandbox ID",
+			ev:     func(ev *evidence) { ev.leaf, ev.sandboxID = sandboxLeaf, id },
+			refuse: historyFails,
+			field:  "sandbox_id_note",
+			keep:   "not verified",
+		},
+		{
+			name:   "unverified workload",
+			ev:     func(ev *evidence) { ev.leaf, ev.workload = workloadLeaf, matched },
+			refuse: historyFails,
+			field:  "workload_note",
+			keep:   "not verified",
+		},
+		{
+			name:    "workload CA-vouched",
+			cfg:     config{meshCA: workloadCA},
+			ev:      func(ev *evidence) { ev.leaf, ev.workload = workloadLeaf, matched },
+			refuse:  historyFails,
+			field:   "workload_note",
+			success: "ca-vouched",
+		},
+		{
+			name:    "workload pin satisfied",
+			cfg:     config{meshCA: workloadCA, workload: "api"},
+			ev:      func(ev *evidence) { ev.leaf, ev.workload = workloadLeaf, matched },
+			refuse:  historyFails,
+			field:   "workload_note",
+			success: "workload_verified",
+		},
+		{
+			name:    "operator keys matched",
+			cfg:     config{operatorKeys: keysPath},
+			opKeys:  operatorKeysReport{digest: keysDigest},
+			refuse:  historyFails,
+			field:   "operator_keys_note",
+			success: "matched",
+		},
+		{
+			name:    "chain anchor pinned",
+			cfg:     config{meshCA: sandboxCA},
+			ev:      func(ev *evidence) { ev.leaf, ev.leafChainDerived = sandboxLeaf, true },
+			refuse:  historyFails,
+			field:   "chain_anchor",
+			success: "verified against the pinned --mesh-ca",
+		},
+		{
+			name:    "attested front door",
+			ev:      func(ev *evidence) { ev.frontDoor = frontDoorAttested },
+			refuse:  historyFails,
+			field:   "binding",
+			success: frontDoorAttestedNote,
+			keep:    "REPORTDATA",
+		},
+		{
+			name:    "route digest",
+			ev:      func(ev *evidence) { ev.route = &boundRoute{digest: []byte{1}, note: "pinned: matches --route-digest"} },
+			refuse:  historyFails,
+			field:   "route_note",
+			success: "pinned",
+		},
+		{
+			name:    "init-data pinned",
+			cfg:     config{initDataHex: genoaInitDataPin},
+			refuse:  historyFails,
+			field:   "init_data_note",
+			success: "verified",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(cfg config) (int, map[string]any) {
+				t.Helper()
+				ev := genoaFileEvidence(t)
+				if tc.ev != nil {
+					tc.ev(ev)
+				}
+				plan := mustPlan(t, tc.cfg)
+				cfg.output = "json"
+				var out, errOut bytes.Buffer
+				code := verifyEvidence(context.Background(), cfg, plan, ev, nil, tc.opKeys, measurementsReport{}, &out, &errOut)
+				var parsed map[string]any
+				if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+					t.Fatalf("json render: %v\n%s%s", err, out.String(), errOut.String())
+				}
+				return code, parsed
+			}
+
+			code, passed := run(tc.cfg)
+			if got, _ := passed[tc.field].(string); code == exitFailed || !strings.Contains(got, tc.success) || !strings.Contains(got, tc.keep) {
+				t.Fatalf("passing verdict: exit %d, %s = %q, want %q and %q in it (error: %v)", code, tc.field, got, tc.success, tc.keep, passed["error"])
+			}
+
+			cfg := tc.cfg
+			tc.refuse(&cfg)
+			code, refused := run(cfg)
+			if code != exitFailed || refused["verified"] != false {
+				t.Fatalf("refused verdict: exit %d, verified %v, want exit %d and false", code, refused["verified"], exitFailed)
+			}
+			got, _ := refused[tc.field].(string)
+			if tc.success != "" && strings.Contains(got, tc.success) {
+				t.Errorf("refused verdict (%v): %s = %q asserts a passed check", refused["error"], tc.field, got)
+			}
+			if !strings.Contains(got, tc.keep) {
+				t.Errorf("refused verdict: %s = %q, want the factual %q kept", tc.field, got, tc.keep)
+			}
+		})
 	}
 }
