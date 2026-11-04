@@ -27,6 +27,9 @@ type meshIdentity struct {
 	// servedUntil is the earliest NotAfter across the served tls.crt chain
 	// and the issuing CA: when nginx's chain stops validating.
 	servedUntil time.Time
+	// chainErr is why a block of tls.crt after the leaf did not parse. Only a
+	// cds front door serves that chain, so only attest-lb there acts on it.
+	chainErr error
 }
 
 // loadMeshIdentity reads all three files for every attestation request so a
@@ -96,13 +99,15 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
-	// nginx refuses a chain with a block it cannot parse, so a front door
-	// serving this tls.crt is not up: fail closed, as servingLeaf does.
+	// X509KeyPair never parsed the extra blocks, and only a cds front door
+	// serves them: a block that does not parse is recorded, not fatal here.
 	chain := []*x509.Certificate{issuer}
+	var chainErr error
 	for _, der := range pair.Certificate[1:] {
 		cert, err := x509.ParseCertificate(der)
 		if err != nil {
-			return nil, fmt.Errorf("parse mesh identity chain: %w", err)
+			chainErr = fmt.Errorf("parse mesh identity chain: %w", err)
+			continue
 		}
 		chain = append(chain, cert)
 	}
@@ -110,7 +115,7 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 
 	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Raw})...)
-	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle, servedUntil: servedUntil}, nil
+	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle, servedUntil: servedUntil, chainErr: chainErr}, nil
 }
 
 // checkValidity delegates to the repo-wide validity window

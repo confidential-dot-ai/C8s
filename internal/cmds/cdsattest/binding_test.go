@@ -331,6 +331,7 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 		caNotAfter   time.Time
 		intermediate time.Time // NotAfter of an intermediate in tls.crt; zero for none
 	}{
+		{name: "cds leaf expires first", caNotAfter: now.Add(3 * time.Hour)},
 		{name: "cds CA expires first", caNotAfter: now.Add(10 * time.Minute)},
 		{name: "cds intermediate expires first", caNotAfter: now.Add(time.Hour), intermediate: now.Add(10 * time.Minute)},
 	} {
@@ -360,6 +361,9 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 			}, ca, &leafKey.PublicKey, caKey)
 			certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 			want := ca.NotAfter
+			if leaf.NotAfter.Before(want) {
+				want = leaf.NotAfter
+			}
 			if !tc.intermediate.IsZero() {
 				intermediate := mint(t, &x509.Certificate{
 					SerialNumber: big.NewInt(3),

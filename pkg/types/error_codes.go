@@ -34,8 +34,9 @@ const (
 	// that loads but cannot be bound: an acme leaf outside its validity
 	// window, or a leaf served with a chain that has expired (tls.crt for
 	// cds, --serving-cert-file for acme). An unreadable or unparsable serving
-	// file, and in cds mode a mesh leaf or CA outside its validity window,
-	// get ErrorCodeBindingUnavailable.
+	// file, and in cds mode a mesh leaf or CA outside its validity window or
+	// a tls.crt chain block nginx cannot load, get
+	// ErrorCodeBindingUnavailable.
 	ErrorCodeServingLeafRejected = "serving_leaf_rejected"
 	// ErrorCodeSecretHolderQuota: the caller is at --secrets-max-paths-per-workload.
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"

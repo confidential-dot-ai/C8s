@@ -237,6 +237,10 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 			meshExpiredChain(t, identity)
 			return otherLeaf(t, identity)
 		}},
+		{name: "acme ignores a malformed mesh chain block", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
+			meshGarbageChain(t, identity)
+			return otherLeaf(t, identity)
+		}},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},
@@ -620,5 +624,30 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 				t.Fatalf("body = %q, want an unusable-credential reason", body)
 			}
 		})
+	}
+}
+
+// A malformed block after the leaf in tls.crt only matters to a cds front
+// door's attest-lb: the mesh identity still loads, so attest-pq and /readyz
+// keep working in every mode.
+func TestMeshIdentityLoadsWithMalformedChainBlock(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	f, err := os.OpenFile(identity.certFile, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a certificate")}); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	got, err := loadMeshIdentity(identity.certFile, identity.keyFile, identity.caFile)
+	if err != nil {
+		t.Fatalf("loadMeshIdentity = %v, want the identity with chainErr set", err)
+	}
+	if got.chainErr == nil {
+		t.Fatal("chainErr = nil, want the parse error")
+	}
+	if !got.leaf.NotAfter.Equal(got.servedUntil) && !got.ca.NotAfter.Equal(got.servedUntil) {
+		t.Fatalf("servedUntil = %v, want the leaf's or CA's NotAfter", got.servedUntil)
 	}
 }

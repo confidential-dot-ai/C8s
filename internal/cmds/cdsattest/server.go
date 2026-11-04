@@ -780,10 +780,18 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 	// until renewal recovers, and renewal monitoring alerts on them.
 	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
 	if s.cfg.FrontDoorMode != types.FrontDoorModeACME {
+		// nginx refuses a chain with a block it cannot parse, so this front
+		// door is not serving tls.crt.
+		if identity.chainErr != nil {
+			s.log.Warn("attest-lb binding unavailable", "error", identity.chainErr)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
+				"the serving certificate is unavailable; attest-lb cannot bind this connection")
+			return nil, false
+		}
 		if time.Now().After(leaf.expires) {
 			s.log.Warn("attest-lb serving leaf rejected", "error", "mesh identity served with an expired chain", "chain_expires", leaf.expires)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
-				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+				"the served certificate chain has expired; attest-lb cannot bind this connection")
 			return nil, false
 		}
 	} else {
@@ -798,7 +806,7 @@ func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identit
 		if err := checkACMEServingLeaf(cert, served.expires); err != nil {
 			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_before", cert.NotBefore, "not_after", cert.NotAfter, "chain_expires", served.expires)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
-				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+				"the serving certificate or its chain is outside its validity window; attest-lb cannot bind this connection")
 			return nil, false
 		}
 		leaf = served
