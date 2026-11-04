@@ -4,9 +4,9 @@ A mesh peer the conformance step definitions drive. A static binary on
 `PATH` in the suite's `mesh-dialer` image
 ([`images/mesh-dialer`](../../images/mesh-dialer/Dockerfile)), it runs in a
 pod that idles on `sleep 3600`, through `kubectl exec` or the backend's
-agent: it dials a c8s armTLS mesh inbound proxy over TLS 1.3
-presenting the client certificate the scenario chose, names a destination
-pod, sends one HTTP GET and prints a JSON report.
+agent: it dials a c8s armTLS mesh inbound proxy, or with `--mesh` a member
+pod's application address, over TLS 1.3 presenting the client certificate
+the scenario chose, sends one HTTP GET and prints a JSON report.
 
 The scenarios test the inbound proxy's verification of *its peer*, so the
 tool **never verifies the server's certificate**. It is not a client anyone
@@ -17,6 +17,8 @@ can: expired, not yet valid, not self-issued, or altered after signing.
 
 ```
 armtls-dial [flags] <node-ip:port> <dest-ip:port>
+armtls-dial --mesh [flags] <pod-ip:port>
+  --mesh                      dial a pod's application address as a mesh peer: offer ALPN c8s-mesh/1, send no destination header
   --cert FILE --key FILE      present this PEM chain and key (a CDS-issued leaf written by get-cert)
   --self-signed               mint a P-256 key and a self-signed attested TLS certificate
   --attestation-url URL       the attestation API --self-signed gets evidence from: http(s)://host:port, or unix:///path/to.sock
@@ -29,6 +31,12 @@ armtls-dial [flags] <node-ip:port> <dest-ip:port>
   --write-key FILE            with --write-cert: write the minted key here as PEM
   --timeout DUR               dial, handshake and read timeout (default 10s)
 ```
+
+`--mesh` takes one positional argument. The member pod's packet rules
+redirect the connection to its mesh endpoint, which reads the original
+destination from the redirect, so no header is written; the endpoint refuses
+a peer that does not negotiate `c8s-mesh/1`, so the tool offers it.
+Without `--mesh` no ALPN is offered and the header comes first.
 
 Exactly one of `--cert/--key` or `--self-signed` is required; `--self-signed`
 needs `--attestation-url` and `--platform`; those two and the three flags
@@ -53,7 +61,7 @@ One JSON object on stdout:
 `tls` is true once the TLS handshake returned without error; a connection
 refused, a timeout or a handshake the server fails leave it false. After the
 TLS handshake the tool writes the proxy's destination header
-`<dest-ip:port>\n`, then `GET / HTTP/1.0` with `Connection: close`, and reads
+`<dest-ip:port>\n` (not with `--mesh`), then `GET / HTTP/1.0` with `Connection: close`, and reads
 until EOF or the timeout. In TLS 1.3 the client finishes first, so a proxy
 that rejects the client certificate alerts on the client's first read, after
 the handshake returned: `bytes` is therefore 0 whenever an alert or EOF

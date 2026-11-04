@@ -1,8 +1,8 @@
 // armtls-dial is a mesh peer the conformance steps drive: it dials a c8s
-// armTLS mesh inbound proxy over TLS 1.3 presenting a chosen client
-// certificate, names a destination pod, sends one HTTP GET and prints a JSON
-// report of what came back. It exercises the proxy's verification of its
-// peer, so it never verifies the server's certificate. See README.md.
+// armTLS mesh inbound proxy, or with --mesh a pod's mesh endpoint, over TLS
+// 1.3 presenting a chosen client certificate, sends one HTTP GET and prints a
+// JSON report of what came back. It exercises the endpoint's verification of
+// its peer, so it never verifies the server's certificate. See README.md.
 package main
 
 import (
@@ -19,17 +19,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 const (
 	exitUsage = 2
 	usageText = `usage: armtls-dial [flags] <node-ip:port> <dest-ip:port>
+       armtls-dial --mesh [flags] <pod-ip:port>
        armtls-dial --self-signed [flags] --write-cert FILE --write-key FILE
 
 Dials the armTLS mesh inbound proxy at <node-ip:port>, presents a client
 certificate, names <dest-ip:port> as the destination pod, sends GET / and
-prints one JSON report on stdout. Exactly one of --cert/--key or
+prints one JSON report on stdout. With --mesh it dials a pod's
+application address instead, negotiating the mesh ALPN and sending no
+destination header: the pod's mesh endpoint the connection is redirected to
+reads the destination from the redirect. Exactly one of --cert/--key or
 --self-signed is required. With --write-cert/--write-key the minted
 certificate and key are written as PEM instead, for a later dial with
 --cert/--key, and nothing is dialed.
@@ -69,6 +74,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		writeCert      = fs.String("write-cert", "", "write the minted certificate here as PEM and exit without dialing (with --write-key)")
 		writeKey       = fs.String("write-key", "", "write the minted key here as PEM (with --write-cert)")
 		timeout        = fs.Duration("timeout", 10*time.Second, "dial, handshake and read timeout")
+		mesh           = fs.Bool("mesh", false, "dial <pod-ip:port> as a mesh peer: negotiate the mesh ALPN and send no destination header")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -88,7 +94,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if writing && fs.NArg() != 0 {
 		return usage("--write-cert dials nothing: no <node-ip:port> <dest-ip:port>")
 	}
-	if !writing && fs.NArg() != 2 {
+	if !writing && *mesh && fs.NArg() != 1 {
+		return usage("--mesh expects <pod-ip:port>")
+	}
+	if !writing && !*mesh && fs.NArg() != 2 {
 		return usage("expected <node-ip:port> <dest-ip:port>")
 	}
 	if *timeout <= 0 {
@@ -149,7 +158,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	r := dial(ctx, fs.Arg(0), fs.Arg(1), cert, *timeout)
+	target := dialTarget{addr: fs.Arg(0), dest: fs.Arg(1)}
+	if *mesh {
+		target = dialTarget{addr: fs.Arg(0), nextProtos: []string{armtls.MeshALPN}}
+	}
+	r := dial(ctx, target, cert, *timeout)
 	out, err := json.Marshal(r)
 	if err != nil {
 		fmt.Fprintf(stderr, "armtls-dial: encode report: %v\n", err)

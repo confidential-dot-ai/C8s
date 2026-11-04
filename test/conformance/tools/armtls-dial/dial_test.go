@@ -84,7 +84,7 @@ func TestDialRejectedCertificate(t *testing.T) {
 		func([][]byte, [][]*x509.Certificate) error { return errors.New("armtls: peer attestation failed") },
 		func(net.Conn) { t.Error("handler ran after a rejected certificate") })
 
-	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	r := dial(context.Background(), dialTarget{addr: addr, dest: "10.0.0.2:80"}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
 	if !r.TLS || r.Bytes != 0 || r.Status != 0 || r.Body != "" {
 		t.Fatalf("report = %+v, want tls true and nothing received", r)
 	}
@@ -111,7 +111,7 @@ func TestDialAccepted(t *testing.T) {
 		conn.Write([]byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello"))
 	})
 
-	r := dial(context.Background(), addr, dest, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	r := dial(context.Background(), dialTarget{addr: addr, dest: dest}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
 	if r.Error != "" || r.Status != 200 || r.Body != "hello" || r.Bytes == 0 {
 		t.Fatalf("report = %+v", r)
 	}
@@ -119,7 +119,7 @@ func TestDialAccepted(t *testing.T) {
 
 func TestDialClosedWithoutBytes(t *testing.T) {
 	addr := serve(t, nil, func(net.Conn) {})
-	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	r := dial(context.Background(), dialTarget{addr: addr, dest: "10.0.0.2:80"}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
 	if !r.TLS || r.Bytes != 0 || r.Error != "EOF" {
 		t.Fatalf("report = %+v, want tls true and EOF before any byte", r)
 	}
@@ -130,7 +130,7 @@ func TestDialNonHTTPReply(t *testing.T) {
 		bufio.NewReader(conn).ReadString('\n')
 		conn.Write(bytes.Repeat([]byte("x"), 2*maxBody))
 	})
-	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	r := dial(context.Background(), dialTarget{addr: addr, dest: "10.0.0.2:80"}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
 	if r.Status != 0 || r.Bytes != 2*maxBody || len(r.Body) != maxBody {
 		t.Fatalf("report = %+v (body %d bytes)", r, len(r.Body))
 	}
@@ -143,7 +143,7 @@ func TestDialUnreachable(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	ln.Close()
-	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), time.Second)
+	r := dial(context.Background(), dialTarget{addr: addr, dest: "10.0.0.2:80"}, testCert(t, certOptions{notAfter: time.Hour}), time.Second)
 	if r.TLS || r.Bytes != 0 || r.Error == "" {
 		t.Fatalf("report = %+v", r)
 	}
@@ -225,5 +225,89 @@ func TestRunReport(t *testing.T) {
 	}
 	if r.Bytes != 0 || !strings.Contains(r.Error, "bad certificate") {
 		t.Fatalf("report = %+v", r)
+	}
+}
+
+// serveMesh runs a TLS 1.3 listener configured as a pod's mesh endpoint is
+// (armtls.NewMeshServerTLSConfig): the mesh ALPN, required, and any client
+// certificate. firstLine receives the first line the handler read.
+func serveMesh(t *testing.T, firstLine chan<- string) string {
+	t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{testCert(t, certOptions{notAfter: time.Hour})},
+		ClientAuth:   tls.RequireAnyClientCert,
+		NextProtos:   []string{armtls.MeshALPN},
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if cs.NegotiatedProtocol != armtls.MeshALPN {
+				return errors.New("no mesh ALPN")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if err := conn.(*tls.Conn).Handshake(); err != nil {
+					return
+				}
+				line, _ := bufio.NewReader(conn).ReadString('\n')
+				firstLine <- line
+				conn.Write([]byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello"))
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestDialMeshNegotiatesALPNWithoutHeader(t *testing.T) {
+	first := make(chan string, 1)
+	addr := serveMesh(t, first)
+	r := dial(context.Background(), dialTarget{addr: addr, nextProtos: []string{armtls.MeshALPN}}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	if !r.TLS || r.Status != 200 || r.Body != "hello" {
+		t.Fatalf("report = %+v", r)
+	}
+	if got := <-first; got != "GET / HTTP/1.0\r\n" {
+		t.Fatalf("server's first line = %q, want the request line and no destination header", got)
+	}
+}
+
+func TestDialMeshALPNRequired(t *testing.T) {
+	addr := serveMesh(t, make(chan string, 1))
+	r := dial(context.Background(), dialTarget{addr: addr}, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
+	if r.Status != 0 || r.Error == "" {
+		t.Fatalf("report = %+v, want a refusal without the mesh ALPN", r)
+	}
+}
+
+func TestRunMeshUsage(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
+	if err := writePEM(testCert(t, certOptions{notAfter: time.Hour}), certFile, keyFile); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--mesh", "--cert", certFile, "--key", keyFile, "127.0.0.1:1", "10.0.0.2:80"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("--mesh with two positionals = %d, want usage error", code)
+	}
+	first := make(chan string, 1)
+	addr := serveMesh(t, first)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--mesh", "--cert", certFile, "--key", keyFile, addr}, &stdout, &stderr); code != 0 {
+		t.Fatalf("--mesh with one positional = %d, stderr %q", code, stderr.String())
+	}
+	var r report
+	if err := json.Unmarshal(stdout.Bytes(), &r); err != nil || r.Status != 200 {
+		t.Fatalf("report %q: %v", stdout.String(), err)
 	}
 }
