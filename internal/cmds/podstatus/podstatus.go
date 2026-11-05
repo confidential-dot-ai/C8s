@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/json"
@@ -28,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -74,7 +76,8 @@ type Measurements struct {
 
 // Handler serves the pod-status routes.
 type Handler struct {
-	UID string
+	UID        string
+	assignment *assignmentService
 	// Pods returns the kubelet's /pods body.
 	Pods func(ctx context.Context) ([]byte, error)
 	// Journal is the RTMR[3] journal file.
@@ -97,6 +100,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodPost) {
 			h.serveEvidence(w, r)
 		}
+	case AssignNoncePath:
+		if allow(w, r, http.MethodGet) {
+			if h.assignment == nil {
+				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
+			} else {
+				h.assignment.serveNonce(w, r)
+			}
+		}
+	case AssignPath:
+		if allow(w, r, http.MethodPost) {
+			if h.assignment == nil {
+				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
+			} else {
+				h.assignment.serveAssign(w, r)
+			}
+		}
 	default:
 		http.NotFound(w, r)
 	}
@@ -113,6 +132,9 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
 	uid := h.UID
+	if h.assignment != nil {
+		uid = h.assignment.assignedUID()
+	}
 	pods, err := h.Pods(r.Context())
 	if err != nil {
 		http.Error(w, "kubelet unavailable", http.StatusServiceUnavailable)
@@ -226,9 +248,38 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	api := attestclient.NewClient("")
 	pods := kubeletPods(cfg.KubeletURL, cfg.KubeletCert)
+	var store *fileAssignmentStore
+	if doc.Pod == nil {
+		store, err = openAssignmentStore()
+		if err != nil {
+			return fmt.Errorf("open assignment state: %w", err)
+		}
+		defer store.Close()
+	}
+	runtime := guestAssignmentRuntime{journal: cfg.JournalPath, pods: pods}
+	boundKey := func(ctx context.Context) (*ecdsa.PublicKey, error) {
+		pub, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
+		if err != nil {
+			return nil, err
+		}
+		return assignmentPublicKey(pub)
+	}
+	assignment, err := newAssignmentService(ctx, doc, store, boundKey,
+		func(d *launchconfig.Document) (nodeservices.PodRuntime, error) {
+			return nodeservices.RenderAssignedPodRuntime("", d)
+		},
+		runtime.available, runtime.apply)
+	if err != nil {
+		return fmt.Errorf("recover Pod assignment: %w", err)
+	}
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); assignment.run(ctx) }()
+	// Stop the installer before releasing the assignment store's lifetime lock.
+	defer func() { cancel(); <-workerDone }()
 	h := Handler{
-		Pods:    pods,
-		Journal: cfg.JournalPath,
+		assignment: assignment,
+		Pods:       pods,
+		Journal:    cfg.JournalPath,
 		Evidence: func(ctx context.Context, reportData []byte) ([]byte, error) {
 			resp, err := api.GenerateEvidenceContext(ctx, cfg.AttestationAPIURL, reportData)
 			if err != nil {
