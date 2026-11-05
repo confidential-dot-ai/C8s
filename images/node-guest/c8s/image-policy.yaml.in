@@ -962,8 +962,8 @@ allowlist:
       # GPU nodes, from the baked server/manifests/nvidia-device-plugin.yaml.
       nvidia-device-plugin:
         containers:
-          - digest: "sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
-            image: "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
+          - digest: "sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075"
+            image: "nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075"
             command: {policy: exact, argv: ["nvidia-device-plugin"]}
             args: {policy: deny}
             mounts:
