@@ -70,7 +70,16 @@ type podClaimsWire struct {
 }
 
 func podWire(p PodClaims) podClaimsWire {
-	w := podClaimsWire{Version: p.Version, BootID: p.BootID, AssignedPodUID: p.AssignedPodUID, AssignedWorkloadID: p.AssignedWorkloadID, RuntimePodUID: p.RuntimePodUID, SandboxID: p.SandboxID, Revision: p.Revision, RuntimeExtensions: p.RuntimeExtensions}
+	w := podClaimsWire{
+		Version:            p.Version,
+		BootID:             p.BootID,
+		AssignedPodUID:     p.AssignedPodUID,
+		AssignedWorkloadID: p.AssignedWorkloadID,
+		RuntimePodUID:      p.RuntimePodUID,
+		SandboxID:          p.SandboxID,
+		Revision:           p.Revision,
+		RuntimeExtensions:  p.RuntimeExtensions,
+	}
 	for _, c := range p.Containers {
 		mounts := make([]podMountWire, len(c.Mounts))
 		for i, m := range c.Mounts {
@@ -199,7 +208,8 @@ func (p PodClaims) validate() error {
 		if admissions[c.Key()] {
 			return fmt.Errorf("duplicate Pod admission")
 		}
-		admissions[c.Key()], observed[c.Digest] = true, true
+		admissions[c.Key()] = true
+		observed[c.Digest] = true
 	}
 	if !maps.Equal(measured, observed) {
 		return fmt.Errorf("pod observations disagree with complete measurement journal")
