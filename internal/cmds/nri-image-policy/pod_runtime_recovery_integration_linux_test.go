@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,6 +43,10 @@ import (
 
 const recoveryRuntimeDir = "/validation/recovery"
 const recoveryRuntimeSocket = "/run/pod-recovery-runtime/containerd.sock"
+
+// recoveryNRISocket is where the owned containerd serves NRI
+// (recovery-containerd.toml in test/integration/pod-runtime/inside.sh).
+const recoveryNRISocket = "/var/run/nri/nri.sock"
 
 // This lane uses the complete production plugin in a separate process. Only
 // hardware measurement and CDS transport/issuance are fixtures. No callback,
@@ -406,10 +411,30 @@ func waitRecoveryRuntime(t *testing.T, ctx context.Context) {
 	for {
 		cmd := exec.CommandContext(ctx, "/validation/runtime/ctr", "--address", recoveryRuntimeSocket, "version")
 		if cmd.Run() == nil {
+			waitRecoveryNRI(t)
 			return
 		}
 		if time.Now().After(until) {
 			t.Fatal("owned recovery containerd did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitRecoveryNRI waits for the NRI socket: a restarted containerd serves its
+// API before the CRI plugin has recovered the live sandboxes and registered
+// NRI, and a plugin that connects in between exits.
+func waitRecoveryNRI(t *testing.T) {
+	t.Helper()
+	until := time.Now().Add(8 * time.Second)
+	for {
+		conn, err := net.Dial("unix", recoveryNRISocket)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatalf("owned recovery containerd did not serve NRI: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
