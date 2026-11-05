@@ -20,6 +20,7 @@ type scaleRuntime struct {
 	ColdProcessReadyMS   float64           `json:"cold_process_ready_ms"`
 	RestartedActor       *objectwal.Stats  `json:"restarted_actor,omitempty"`
 	SameCAAfterRestart   bool              `json:"same_ca_after_restart"`
+	AtomicOperatorWrites bool              `json:"atomic_operator_writes"`
 }
 
 func (c *cluster) actorStats(r *replica) objectwal.Stats {
@@ -38,6 +39,7 @@ func (c *cluster) actorStats(r *replica) objectwal.Stats {
 func (c *cluster) scaleRuntime() *scaleRuntime {
 	r := &scaleRuntime{}
 	if c.objectWAL != nil {
+		r.AtomicOperatorWrites = c.objectWAL.config.AtomicOperatorWrites
 		for _, replica := range c.replicas {
 			s := c.actorStats(replica)
 			r.Replicas = append(r.Replicas, s)

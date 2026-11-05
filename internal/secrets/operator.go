@@ -67,34 +67,43 @@ func (h OperatorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path, err := requestPath(r)
+	cmd, status, err := PrepareOperatorWrite(r.URL.EscapedPath(), body)
 	if err != nil {
-		http.Error(w, "invalid secret path", http.StatusBadRequest)
+		http.Error(w, err.Error(), status)
 		return
 	}
+	if cmd.Op == OpPut {
+		h.replace(w, r, cmd.Path, cmd.Value)
+		return
+	}
+	h.create(w, r, cmd.Path, cmd.Value)
+}
 
+// PrepareOperatorWrite is shared by the ordinary HTTP handler and the atomic
+// log command. Validation is pure; even a refusal still spends a valid token.
+func PrepareOperatorWrite(escapedPath string, body []byte) (Command, int, error) {
+	path, err := OperatorPath(escapedPath)
+	if err != nil {
+		return Command{}, http.StatusBadRequest, errors.New("invalid secret path")
+	}
 	var req PutRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return Command{}, http.StatusUnprocessableEntity, err
 	}
 	value, err := base64.StdEncoding.DecodeString(req.Value)
 	if err != nil {
-		http.Error(w, "value is not base64", http.StatusUnprocessableEntity)
-		return
+		return Command{}, http.StatusUnprocessableEntity, errors.New("value is not base64")
 	}
 	if len(value) == 0 {
-		http.Error(w, "value is empty", http.StatusUnprocessableEntity)
-		return
+		return Command{}, http.StatusUnprocessableEntity, errors.New("value is empty")
 	}
-
+	cmd := Command{Op: OpPutIfAbsent, Path: path, Value: value, Origin: OperatorHolder().origin}
 	if req.Overwrite {
-		h.replace(w, r, path, value)
-		return
+		cmd.Op = OpPut
 	}
-	h.create(w, r, path, value)
+	return cmd, 0, nil
 }
 
 // create refuses a path that already holds something, naming what put it there

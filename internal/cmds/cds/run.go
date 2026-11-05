@@ -229,6 +229,18 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 	}
+	if ha := cfg.measured.HA; ha != nil && ha.ObjectWALPilot != nil && ha.ObjectWALPilot.AtomicOperatorWrites {
+		cluster, ok := back.(*clusterCDS)
+		if !ok {
+			return errors.New("atomic operator writes require the object WAL pilot")
+		}
+		committer, ok := cluster.node.(atomicOperatorCommitter)
+		if !ok {
+			return errors.New("backend does not support atomic operator writes")
+		}
+		deps.AtomicOperatorWrite = atomicOperatorHandler{commit: committer, verifier: verifier,
+			floor: back.TokenFloor, skew: time.Duration(cfg.jwtClockSkew) * time.Second}
+	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 

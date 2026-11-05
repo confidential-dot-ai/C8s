@@ -26,11 +26,14 @@ type ObjectWALPilot struct {
 	KeySHA256         string `yaml:"keySHA256,omitempty"`
 	RecoveryAuthority string `yaml:"recoveryAuthority,omitempty"`
 	DirectWriters     bool   `yaml:"directWriters,omitempty"`
-	BatchMaxEntries   int    `yaml:"batchMaxEntries,omitempty"`
-	BatchMaxBytes     int    `yaml:"batchMaxBytes,omitempty"`
-	BatchDelayMS      int    `yaml:"batchDelayMS,omitempty"`
-	QueueMaxRequests  int    `yaml:"queueMaxRequests,omitempty"`
-	QueueMaxBytes     int64  `yaml:"queueMaxBytes,omitempty"`
+	// AtomicOperatorWrites uses one committed request for token consumption and
+	// its mutation. All CDS and recovery readers must understand this format.
+	AtomicOperatorWrites bool  `yaml:"atomicOperatorWrites,omitempty"`
+	BatchMaxEntries      int   `yaml:"batchMaxEntries,omitempty"`
+	BatchMaxBytes        int   `yaml:"batchMaxBytes,omitempty"`
+	BatchDelayMS         int   `yaml:"batchDelayMS,omitempty"`
+	QueueMaxRequests     int   `yaml:"queueMaxRequests,omitempty"`
+	QueueMaxBytes        int64 `yaml:"queueMaxBytes,omitempty"`
 }
 
 func (p ObjectWALPilot) WALOptions() objectwal.Options {

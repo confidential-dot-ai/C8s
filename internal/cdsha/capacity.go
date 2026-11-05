@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 )
@@ -88,7 +89,7 @@ func (f *FSM) admit(b bounds, e Entry, entryBytes int64) error {
 		slog.Warn("cds-ha: the size of this replica's state cannot be read, so the admission cap judges no write", "error", err)
 		return nil
 	}
-	if e.Kind == KindSecret {
+	if e.Kind == KindSecret || (e.Kind == KindOperator && e.Operator != nil && strings.HasPrefix(e.Operator.Path, "/secrets/")) {
 		return overCap("the snapshot header", header+entryBytes, admitted(b.header))
 	}
 	return overCap("the allowlist store", image+entryBytes, admitted(b.image))
@@ -134,6 +135,8 @@ func cappedWrite(e Entry) bool {
 		return e.Allowlist != nil && cappedAllowlistOp(e.Allowlist.Op)
 	case KindSecret:
 		return e.Secret != nil
+	case KindOperator:
+		return e.Operator != nil
 	}
 	return false
 }

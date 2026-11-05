@@ -247,6 +247,9 @@ func TestStorageScaleComparison(t *testing.T) {
 					}
 					applyScaleCounters(&r.transactionalResult, before[i], readScaleCounters(c))
 					r.Runtime = c.scaleRuntime()
+					if fixtures[i] != nil && fixtures[i].config.AtomicOperatorWrites && r.Succeeded == perCluster && r.Commands != uint64(perCluster) {
+						t.Errorf("atomic operator cluster committed %d commands for %d requests", r.Commands, perCluster)
+					}
 				}
 				stage = "recovery-and-revocation"
 				for i, c := range clusters {

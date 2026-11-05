@@ -76,6 +76,7 @@ func newObjectFixture(t *testing.T) *objectFixture {
 	key := bytes.Repeat([]byte{7}, 32)
 	hash := sha256.Sum256(key)
 	f.config = cdsconfig.ObjectWALPilot{Bucket: "pilot", Region: "us-east-2", Prefix: "integration", Endpoint: server.URL, PathStyle: true, KeySHA256: hex.EncodeToString(hash[:])}
+	f.config.AtomicOperatorWrites = atomicOperatorWritesEnabled()
 	var err error
 	f.provision, err = json.Marshal(cdsobject.Provision{Key: key, Credentials: objectwal.Credentials{AccessKeyID: "synthetic", SecretAccessKey: "test-only"}})
 	if err != nil {

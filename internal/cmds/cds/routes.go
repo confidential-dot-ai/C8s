@@ -20,21 +20,22 @@ import (
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
-	AttestHandler     AttestHandler
-	AllowlistHandler  allowlist.Handler
-	Routes            routeHandler
-	ReadyFn           attestation.ReadinessFunc
-	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
-	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
-	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
-	NodeImages        armtls.PinSource            // the node images /attest admits by and /measurements publishes
-	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
-	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
-	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
-	SecretsHandler    *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
-	SecretsChallenges attestation.Challenges
-	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
-	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	AttestHandler       AttestHandler
+	AllowlistHandler    allowlist.Handler
+	Routes              routeHandler
+	ReadyFn             attestation.ReadinessFunc
+	MeshCA              meshCA                      // the CA served at /ca, which signs every leaf
+	ClusterRoutes       map[string]http.HandlerFunc // a replica's cluster routes, by method and path
+	OperatorKeysPEM     []byte                      // pinned operator public keys; empty = /operator-keys 404s
+	NodeImages          armtls.PinSource            // the node images /attest admits by and /measurements publishes
+	RateLimiter         *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
+	ChallengeLimiter    *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
+	MaxRequestSize      int64                       // applied to write endpoints; must be > 0
+	SecretsHandler      *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
+	SecretsChallenges   attestation.Challenges
+	SecretsOperator     *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
+	SecretsExplain      *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	AtomicOperatorWrite http.Handler             // nil retains the existing two-command path
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -82,11 +83,11 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/allowlist/history", deps.AllowlistHandler.HandleHistory)
 	r.Get("/allowlist/objects/sha256/{hex}", deps.AllowlistHandler.HandleObject)
 	r.Get("/allowlist/objects/sha256/{hex}/signature", deps.AllowlistHandler.HandleSignature)
-	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
+	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(deps.operatorWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll))))
 
 	// The route manifest is written like the allowlist (W1) and read like it.
 	r.Get(routes.Path, deps.Routes.handleGet)
-	r.Method(http.MethodPut, routes.Path, deps.allowlistWrite(http.HandlerFunc(deps.Routes.handlePut)))
+	r.Method(http.MethodPut, routes.Path, deps.allowlistWrite(deps.operatorWrite(http.HandlerFunc(deps.Routes.handlePut))))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
@@ -98,7 +99,7 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secrets.ChallengeRoute, deps.perSandbox(attestation.HandleAuthenticate(deps.SecretsChallenges)))
 		r.Method(http.MethodGet, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
-		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
+		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.operatorWrite(deps.SecretsOperator)))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
@@ -112,6 +113,13 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/measurements", handleMeasurements(deps.NodeImages))
 
 	return r
+}
+
+func (deps dependencies) operatorWrite(ordinary http.Handler) http.Handler {
+	if deps.AtomicOperatorWrite != nil {
+		return deps.AtomicOperatorWrite
+	}
+	return ordinary
 }
 
 // allowlistWriteBodyCap bounds an allowlist mutation body. A workload document

@@ -289,7 +289,11 @@ const censusHolders = 5
 // decoded path depending on whether the URL contained escapes, so deriving from
 // one source and rejecting "%" removes that difference.
 func requestPath(r *http.Request) (string, error) {
-	raw := r.URL.EscapedPath()
+	return OperatorPath(r.URL.EscapedPath())
+}
+
+// OperatorPath checks the exact escaped request path without repairing it.
+func OperatorPath(raw string) (string, error) {
 	rest, ok := strings.CutPrefix(raw, "/secrets")
 	if !ok {
 		return "", fmt.Errorf("path %q is not under /secrets", raw)

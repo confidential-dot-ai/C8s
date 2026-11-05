@@ -490,6 +490,22 @@ func (n *Node) propose(e cdsha.Entry) (cdsha.Result, error) {
 	return res, nil
 }
 
+// WriteOperator submits one authenticated request to the same bounded actor
+// as every other mutation. No handler can acknowledge a separate token spend.
+func (n *Node) WriteOperator(c cdsha.OperatorCommand) (cdsha.OperatorResult, error) {
+	if !n.cfg.Storage.AtomicOperatorWrites {
+		return cdsha.OperatorResult{}, errors.New("object WAL: atomic operator writes are not enabled")
+	}
+	r, err := n.propose(cdsha.Entry{Kind: cdsha.KindOperator, Operator: &c})
+	if err != nil {
+		return cdsha.OperatorResult{}, err
+	}
+	if r.Operator == nil {
+		return cdsha.OperatorResult{}, errors.New("object WAL: operator command produced no result")
+	}
+	return *r.Operator, nil
+}
+
 type machine struct{ fsm *cdsha.FSM }
 
 func (m machine) Apply(index uint64, data []byte) (any, error) {

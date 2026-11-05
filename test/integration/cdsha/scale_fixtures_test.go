@@ -41,6 +41,7 @@ func scaleObjectFixtures(t *testing.T, count int) []*objectFixture {
 		}
 		h := sha256.Sum256(key)
 		f.config = cdsconfig.ObjectWALPilot{Bucket: "pilot", Region: "us-east-2", Prefix: fmt.Sprintf("scale-%d", i), PathStyle: true, KeySHA256: hex.EncodeToString(h[:])}
+		f.config.AtomicOperatorWrites = atomicOperatorWritesEnabled()
 		f.provision = jsonBody(t, cdsobject.Provision{Key: key, Credentials: objectwal.Credentials{AccessKeyID: "synthetic", SecretAccessKey: "test-only"}})
 		fixtures[i], byPrefix[f.config.Prefix] = f, f
 	}

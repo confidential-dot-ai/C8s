@@ -254,6 +254,9 @@ func TestTransactionalComparison(t *testing.T) {
 								}
 							}
 							r.Runtime = c.scaleRuntime()
+							if f != nil && f.config.AtomicOperatorWrites && r.Succeeded == n && r.Commands != uint64(n) {
+								t.Errorf("atomic operator load committed %d commands for %d requests", r.Commands, n)
+							}
 							stage = "recovery"
 							// Latency settings stay active for convergence, replay and failover.
 							c.waitServing(time.Minute)

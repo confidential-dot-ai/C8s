@@ -82,6 +82,9 @@ func (r Result) refusal() error {
 	return r.Err(sentinels)
 }
 
+// Refusal preserves the store's error identity across a committed result.
+func (r Result) Refusal() error { return r.refusal() }
+
 // sentinels carries a refusal across the cluster's log, so a caller matches
 // the same error at every replica as in a single CDS.
 var sentinels = map[string]error{

@@ -28,7 +28,7 @@ func TestObjectWALMeasuredConfigRoundTrip(t *testing.T) {
 	d := testDocumentFor(t, op, anchor)
 	d.HA = HA{Replicas: []string{"10.0.0.8"}, Voters: 3, ObjectWALPilot: &ObjectWALPilot{
 		Bucket: "isolated-pilot", Region: "us-east-2", Prefix: "cds/trial-1", KeySHA256: strings.Repeat("ab", 32), MetadataEndpoint: "https://metadata.example",
-		DirectWriters: true, BatchMaxEntries: 32, BatchMaxBytes: 1 << 20, BatchDelayMS: 5, QueueMaxRequests: 128, QueueMaxBytes: 8 << 20}}
+		DirectWriters: true, AtomicOperatorWrites: true, BatchMaxEntries: 32, BatchMaxBytes: 1 << 20, BatchDelayMS: 5, QueueMaxRequests: 128, QueueMaxBytes: 8 << 20}}
 	data, err := Format(d)
 	if err != nil {
 		t.Fatal(err)

@@ -78,7 +78,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	// the operator's mistake, not a write.
 	version, matchable := requiredVersion(r.Header.Get("If-Match"))
 	if !matchable {
-		http.Error(w, `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`, http.StatusPreconditionFailed)
+		http.Error(w, InvalidOperatorVersion, http.StatusPreconditionFailed)
 		return
 	}
 
@@ -87,13 +87,17 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	al, err := pkgallowlist.ParseJSON(body)
+	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer {
+		token = ""
+	}
+	cmd, err := PrepareOperatorReplace(body, version, token)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
-	write := OperatorWrite{Version: version, Signature: operatorSignature(r, al, body)}
+	al, write := cmd.Allowlist, cmd.Write
 	if write.Signature == "" {
 		slog.Warn("allowlist write stores no operator signature: its body is not the document's canonical bytes",
 			"remote", r.RemoteAddr)
@@ -130,15 +134,24 @@ func requiredVersion(ifMatch string) (version string, matchable bool) {
 	return version, true
 }
 
-// operatorSignature is the write token of a body that is the document's
-// canonical bytes: the operator's signature over what verifiers fetch
-// (docs/allowlist-and-capabilities.md). Any other body signs nothing.
-func operatorSignature(r *http.Request, al *pkgallowlist.Allowlist, body []byte) string {
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || !isCanonicalDocument(al, body) {
-		return ""
+// InvalidOperatorVersion is the pre-authorization refusal for an impossible
+// If-Match. The atomic pilot and the ordinary handler share this contract.
+const InvalidOperatorVersion = `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`
+
+func OperatorVersion(ifMatch string) (string, bool) { return requiredVersion(ifMatch) }
+
+// PrepareOperatorReplace parses a full-document write without changing state.
+// A signature is retained only for the exact canonical document, as on GET.
+func PrepareOperatorReplace(body []byte, version, token string) (Command, error) {
+	al, err := pkgallowlist.ParseJSON(body)
+	if err != nil {
+		return Command{}, err
 	}
-	return token
+	write := OperatorWrite{Version: version}
+	if isCanonicalDocument(al, body) {
+		write.Signature = token
+	}
+	return Command{Op: OpReplaceAll, Allowlist: al, Write: write}, nil
 }
 
 // isCanonicalDocument reports whether body is exactly al's canonical bytes,

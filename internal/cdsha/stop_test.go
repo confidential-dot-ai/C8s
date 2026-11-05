@@ -19,6 +19,14 @@ import (
 // answer its peers share: the replica stops serving and exits to rejoin with
 // the cluster's state.
 func TestAnEntryThisReplicasOwnStoreRefusedStopsItLocally(t *testing.T) {
+	for _, kind := range []EntryKind{KindAllowlist, KindOperator} {
+		t.Run(string(kind), func(t *testing.T) {
+			testLocalStoreFault(t, kind)
+		})
+	}
+}
+
+func testLocalStoreFault(t *testing.T, kind EntryKind) {
 	path := filepath.Join(t.TempDir(), "allowlist.db")
 	al, err := allowlist.OpenStore(path)
 	if err != nil {
@@ -42,18 +50,26 @@ func TestAnEntryThisReplicasOwnStoreRefusedStopsItLocally(t *testing.T) {
 	if _, err := holder.Exec("BEGIN EXCLUSIVE"); err != nil {
 		t.Fatal(err)
 	}
-	res := r.apply(Entry{
+	entry := Entry{
 		Kind: KindAllowlist,
 		Allowlist: &allowlist.Command{
 			Op:   allowlist.OpStartJournal,
 			AtMS: time.Now().UnixMilli(),
 		},
-	})
+	}
+	if kind == KindOperator {
+		cmd := signedOperator(t, r)
+		entry = Entry{Kind: KindOperator, Operator: &cmd}
+	}
+	res := r.apply(entry)
 	if res.Stop == nil {
 		t.Fatalf("a write to a database this replica cannot reach answered %+v", res)
 	}
 	if !r.StuckLocal() {
 		t.Fatalf("stuck %q, want a fault of this replica's own", r.Stuck())
+	}
+	if r.secrets.Len() != 0 {
+		t.Fatal("a token-store failure still applied the secret mutation")
 	}
 }
 

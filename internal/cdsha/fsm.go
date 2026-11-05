@@ -44,6 +44,8 @@ const (
 	KindFormat  EntryKind = "format"
 	// KindCheckpoint asks every replica to record the digest of its state.
 	KindCheckpoint EntryKind = "checkpoint"
+	// KindOperator commits a signed operator request and its token spend together.
+	KindOperator EntryKind = "operator"
 )
 
 // Entry is one log entry. Exactly one payload is set, the one its kind names.
@@ -61,6 +63,7 @@ type Entry struct {
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
 	Doubt     *cdsdecree.Signed      `json:"recover_doubt,omitempty"`
 	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
+	Operator  *OperatorCommand       `json:"operator,omitempty"`
 }
 
 // Result is what applying one entry produced: the answer of the store command
@@ -71,6 +74,7 @@ type Result struct {
 	Secret    *secrets.Result     `json:"secret,omitempty"`
 	Binding   *sandboxledger.Held `json:"binding,omitempty"`
 	Decree    *DecreeResult       `json:"decree,omitempty"`
+	Operator  *OperatorResult     `json:"operator,omitempty"`
 	// Stop is why this replica could not apply the entry and stopped
 	// following the log.
 	Stop error `json:"-"`
@@ -199,6 +203,8 @@ func (f *FSM) apply(e Entry) Result {
 		return Result{Stop: f.stop(err)}
 	}
 	switch {
+	case e.Kind == KindOperator && e.Operator != nil:
+		return f.applyOperator(*e.Operator)
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
 		res := f.allowlist.Apply(*e.Allowlist)
 		return Result{Allowlist: &res}
