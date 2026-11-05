@@ -148,3 +148,38 @@ recovery, but production readiness requires completed recovery checks, a
 qualified durable authority, native custody image upgrades, and testing across
 real failure domains. The metadata fixture is one SQLite process and provides
 no evidence of metadata-service HA.
+
+## Related qualification gates
+
+The ordered work also produced two hardware results and an upgrade regression:
+
+- [Cross-host SNP recovery](https://github.com/confidential-dot-ai/C8s/blob/pilot/cds-cross-host-recovery/docs/cds-cross-host-recovery.md)
+  recovered the same CA, spent-token state, secrets and revocation after losing
+  every CDS process and excluding the original recovery host. A second enrolled
+  chip and its encrypted recovery copy survived. The three CDS processes shared
+  one guest; this was not a three-host availability test or a physical host
+  power-off test.
+- [Approved CDS image transitions](https://github.com/confidential-dot-ai/C8s/blob/pilot/cds-storage-image-transitions/docs/cds-storage-image-transitions.md)
+  passed with real CDS processes and software attestation/custody fixtures,
+  including interrupted upgrades and total process loss. Fresh grants to
+  retired images were denied. Native custody-image upgrades remain unqualified.
+- [Native TDX qualification](https://github.com/confidential-dot-ai/C8s/blob/pilot/cds-tdx-recovery-qualification/docs/cds-tdx-recovery-qualification.md)
+  verified two nonce-bound hardware quotes against independently built image
+  and launch measurements, and rejected an old quote. The deployed module's
+  successful feature query did not advertise native sealing. This qualifies
+  attestation on that host/module, not TDX durable key recovery; the probe
+  requested and released no secret key.
+
+Owned Kubernetes rehearsal resources were deleted with UID-scoped cleanup and
+independent absence checks: 45 resource paths across the two SNP attempts,
+seven TDX resource paths, and two empty TDX pod selectors. Shared production
+configuration was unchanged. Raw native TDX evidence remains local; only its
+sanitized result summary is published.
+
+The useful engineering advance is recoverable CDS identity with replaceable
+compute and encrypted durable state. Its production trust contract still
+requires a fresh, linearizable storage authority and release-policy control
+outside the infrastructure operator's control. Full rollback of all durable
+history is outside that contract. The [bounded replay correction](https://github.com/confidential-dot-ai/C8s/blob/pilot/cds-wal-replay-progress/docs/cds-wal-replay-progress.md)
+records the follow-up regressions separately; it does not change the original
+baseline's results or remove the remaining hardware and HA qualification gates.
