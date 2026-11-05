@@ -147,7 +147,9 @@ type sandboxObservation struct {
 	// Sysctls is the container's own sysctl settings.
 	Sysctls []string
 	// Seccomp is the spec's seccomp default action, or "none" when the
-	// container runs unfiltered. Observed, not judged — see the doc.
+	// container runs unfiltered. Judged in the pod role only (violations): a
+	// node's own pods may run unfiltered under the node TCB, a pod CVM's
+	// kubelet applies the runtime default and the floor refuses an opt-out.
 	Seccomp string
 }
 
@@ -211,8 +213,9 @@ func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mou
 }
 
 // violations names every way the observation leaves the sandbox. An empty
-// result is the only admission.
-func (o sandboxObservation) violations() []string {
+// result is the only admission. podRole adds the pod CVM floor: a container
+// whose seccomp profile does not deny by default.
+func (o sandboxObservation) violations(podRole bool) []string {
 	var out []string
 	for _, ns := range sandboxNamespaces {
 		if !slices.Contains(o.PodNamespaces, ns) {
@@ -243,8 +246,16 @@ func (o sandboxObservation) violations() []string {
 	if len(o.Sysctls) > 0 {
 		out = append(out, "container sysctl")
 	}
+	if podRole && !slices.Contains(denyingSeccompActions, o.Seccomp) {
+		out = append(out, "unfiltered seccomp")
+	}
 	return out
 }
+
+// denyingSeccompActions are the default actions under which a syscall the
+// profile does not list fails. Any other default, including a missing
+// profile, lets every syscall through and is unfiltered.
+var denyingSeccompActions = []string{"SCMP_ACT_ERRNO", "SCMP_ACT_KILL", "SCMP_ACT_KILL_PROCESS", "SCMP_ACT_KILL_THREAD", "SCMP_ACT_TRAP"}
 
 // logAttrs renders the observation as slog key/value pairs.
 func (o sandboxObservation) logAttrs() []any {
