@@ -2,8 +2,8 @@ github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1x
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/confidential-dot-ai/attestation-go v0.8.3 h1:r9WcgdZU6KWul8L0MDZF62fCFzWAQNYFfudEEOeYrjo=
 github.com/confidential-dot-ai/attestation-go v0.8.3/go.mod h1:7luQNoTMU2oBLpE80es/Vctg+Nx8sMCeX9SYW/cZfQM=
-github.com/confidential-dot-ai/c8s v0.80.7 h1:FaxWxRVMAR9iGvo+1FOXo0HHFAGsi+wFBVfz9djIqPs=
-github.com/confidential-dot-ai/c8s v0.80.7/go.mod h1:pcxQVjAsF6d2Ya1V0yiyGybKmYj6iu8l9RUB8onroGI=
+github.com/confidential-dot-ai/c8s v0.87.0 h1:wFTndv7fLX2sgulesxJFRZFzvpireQIhQAzijxP/wzY=
+github.com/confidential-dot-ai/c8s v0.87.0/go.mod h1:zyhGLZNIJ9LQw40In++k3o3mr/7TbgUCmyj/hT/mdBA=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/cucumber/gherkin/go/v42 v42.0.0 h1:Ulh3E2awUUSSja+wonP/IOQ+ycmiZwZbgmzqk5H8JNI=
 github.com/cucumber/gherkin/go/v42 v42.0.0/go.mod h1:CsaumaO2dR9XvBc6ZyiGLMhWCKtTRDxgoxqJigSjSSg=
