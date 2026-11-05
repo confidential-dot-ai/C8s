@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "source_commit": "872f6cddf82a98a7f4b121a6d54411825e9bd60d",
+  "source_tree": "773a175340c60f1612fb057784f15397cdc621b5",
+  "backend": "transactional-current-state",
+  "native_cds_platform": "snp",
+  "custody_platform": "snp",
+  "cross_host_recovery_passed": true,
+  "independently_verified_physical_chips": 2,
+  "independently_verified_guest_instances": 7,
+  "cds_processes_per_cds_guest": 3,
+  "maximum_simultaneous_owned_vms": 2,
+  "vcpu_per_vm": 2,
+  "memory_gib_per_vm": 4,
+  "all_source_cds_and_custody_guests_destroyed": true,
+  "original_host_excluded_from_recovery": true,
+  "attestation_chains_and_revocation_checked": true,
+  "same_ca_before_and_after_total_guest_loss": true,
+  "recovery_checks": {
+    "attested_custodian_delegation": true,
+    "authority_reads_current_records": true,
+    "old_leaf_and_secret_positive_control": true,
+    "real_snp_attestation": true,
+    "revocation_preserved_all_replicas": true,
+    "same_ca_all_replicas": true,
+    "state_key_and_ca_never_exported_as_plaintext": true,
+    "unexpired_replay_rejected_all_replicas": true
+  },
+  "cleanup": {
+    "uid_scoped": true,
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 36,
+    "owned_resources_remaining": 0,
+    "unexpected_cluster_regression_observed": false,
+    "external_explicit_vm_deletions_observed": 3
+  },
+  "local_validation": {
+    "metadata_relay_and_custody_race_tests_passed": true,
+    "python_runner_checks_passed": 33,
+    "real_metadata_pipe_cold_reopen_and_stale_cas_passed": true
+  },
+  "limits": [
+    "One surviving enrolled SNP chip and its sealed copy are required.",
+    "Three CDS processes share one guest; this does not qualify three-host availability.",
+    "The metadata fixture is unreplicated FULL-synchronous SQLite.",
+    "Whole-database rollback or a dishonest metadata provider is outside the freshness contract.",
+    "The object fixture does not measure cloud-provider latency.",
+    "Custody image upgrades, retirement, membership and production migration are not qualified."
+  ],
+  "full_acceptance_passed": false,
+  "operator_exclusion_qualified": false,
+  "production_ready": false,
+  "publication": "Explicit selected summary only; no raw quotes, collateral, launch bytes, measurements, identities or private runner data."
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "attempt": 1,
+  "image_source_commit": "87c4aff8d5aedf9d71eceb30dcc9567dc9b7c939",
+  "runner_source_commit": "87c4aff8d5aedf9d71eceb30dcc9567dc9b7c939",
+  "backend": "transactional-current-state",
+  "intended_cds_platform": "tdx",
+  "custody_enrollment_passed": true,
+  "failure_stage": "TDX image population",
+  "failure": "Kubernetes GET of the owned backing PersistentVolume returned HTTP 500. The read retry policy covered 502/503/504 but omitted 500.",
+  "tdx_cds_booted": false,
+  "native_tdx_current_state_recovery_passed": false,
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 14,
+    "owned_resources_remaining": 0
+  },
+  "remediation": "Include HTTP 500 in the existing three-attempt retry for unchanged GET requests. Preserve no-retry behavior for authorization errors and mutations; keep exact resource UID checks.",
+  "production_ready": false,
+  "publication": "Explicit selected summary only; no raw quotes, collateral, launch bytes, measurements, identities or private runner data."
+}

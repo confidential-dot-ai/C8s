@@ -43,22 +43,29 @@ class FakeKube:
 class ReadRetryTests(unittest.TestCase):
     @patch.object(module.time, "sleep")
     def test_transient_read_keeps_original_request_and_expected_status(self, sleep):
-        client, events = Mock(), Mock()
-        client.call.side_effect = [RuntimeError("GET /owned returned HTTP 502"),
-                                   RuntimeError("GET /owned returned HTTP 504"), (404, None)]
-        retry = module.RetryReads(client, events)
-        self.assertEqual((404, None), retry.call("GET", "/owned", expected=(200, 404)))
-        self.assertEqual(3, client.call.call_count)
-        for call in client.call.call_args_list:
-            self.assertEqual((("GET", "/owned"), {"expected": (200, 404)}), call)
-        self.assertEqual(2, events.call_count)
-        self.assertEqual([((1,),), ((2,),)], sleep.call_args_list)
+        for code in (500, 502, 503, 504):
+            with self.subTest(code=code):
+                sleep.reset_mock()
+                client, events = Mock(), Mock()
+                client.call.side_effect = [RuntimeError(f"GET /owned returned HTTP {code}"),
+                                           RuntimeError("GET /owned returned HTTP 504"), (404, None)]
+                retry = module.RetryReads(client, events)
+                self.assertEqual((404, None), retry.call("GET", "/owned", expected=(200, 404)))
+                self.assertEqual(3, client.call.call_count)
+                for call in client.call.call_args_list:
+                    self.assertEqual((("GET", "/owned"), {"expected": (200, 404)}), call)
+                self.assertEqual(2, events.call_count)
+                self.assertEqual([((1,),), ((2,),)], sleep.call_args_list)
 
     @patch.object(module.time, "sleep")
     def test_retries_are_bounded_and_mutations_or_other_failures_never_retry(self, sleep):
         for method, message, count in (("GET", "GET /owned returned HTTP 503", 3),
+                ("GET", "GET /owned returned HTTP 500", 3),
+                ("POST", "POST /owned returned HTTP 500", 1),
                 ("POST", "POST /owned returned HTTP 502", 1),
+                ("DELETE", "DELETE /owned returned HTTP 500", 1),
                 ("DELETE", "DELETE /owned returned HTTP 504", 1),
+                ("GET", "GET /owned returned HTTP 401", 1),
                 ("GET", "GET /owned returned HTTP 403", 1),
                 ("GET", "invalid response", 1)):
             with self.subTest(method=method, message=message):

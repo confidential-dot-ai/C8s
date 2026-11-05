@@ -95,7 +95,7 @@ def check_probe_network_policy(item, run):
 
 
 class RetryReads:
-    """Retry only transient gateway failures of an unchanged GET request.
+    """Retry only transient server failures of an unchanged GET request.
 
     Writes retain the existing UID reconciliation path. A retry is never
     evidence of success, and authentication or validation failures stop at once.
@@ -109,7 +109,7 @@ class RetryReads:
                 return self.client.call(method, path, *args, **kwargs)
             except Exception as error:
                 transient = method == "GET" and str(error) in {
-                    f"GET {path.split('?')[0]} returned HTTP {code}" for code in (502, 503, 504)}
+                    f"GET {path.split('?')[0]} returned HTTP {code}" for code in (500, 502, 503, 504)}
                 if not transient or attempt == 2:
                     raise
                 self.event("api-read-retry", path=path.split('?')[0],
