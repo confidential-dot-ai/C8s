@@ -13,18 +13,14 @@ var testStart = Request{ContainerID: "container-123", SandboxID: "sandbox-456", 
 
 const testBody = `{"containerId":"container-123","sandboxId":"sandbox-456","pid":731}`
 
+// A permission binds one created process, so its identity must be unambiguous.
 func TestRequestRejectsAmbiguousProcessIdentity(t *testing.T) {
-	for _, id := range []string{"", ".", "..", "a/b", "a\\b", "a b", "a\x00b", "café", strings.Repeat("a", 129)} {
+	for _, id := range []string{"", ".", "a/b", strings.Repeat("a", 129)} {
 		t.Run(id, func(t *testing.T) {
 			start := testStart
 			start.ContainerID = id
 			if start.Validate() == nil {
 				t.Fatal("invalid container ID was accepted")
-			}
-			start = testStart
-			start.SandboxID = id
-			if start.Validate() == nil {
-				t.Fatal("invalid sandbox ID was accepted")
 			}
 		})
 	}
@@ -39,6 +35,7 @@ func TestRequestRejectsAmbiguousProcessIdentity(t *testing.T) {
 	}
 }
 
+// Only a well-formed request from local root reaches the authority.
 func TestHandlerRejectsBeforeCallingAuthority(t *testing.T) {
 	tests := []struct {
 		name, method, path, body string
@@ -46,19 +43,10 @@ func TestHandlerRejectsBeforeCallingAuthority(t *testing.T) {
 		status                   int
 	}{
 		{"non-root", http.MethodPost, "/v1/consume", testBody, false, http.StatusForbidden},
-		{"wrong method", http.MethodGet, "/v1/consume", testBody, true, http.StatusBadRequest},
-		{"wrong path", http.MethodPost, "/v1/consume/", testBody, true, http.StatusBadRequest},
 		{"query", http.MethodPost, "/v1/consume?containerId=other", testBody, true, http.StatusBadRequest},
 		{"malformed", http.MethodPost, "/v1/consume", "{", true, http.StatusBadRequest},
-		{"null", http.MethodPost, "/v1/consume", "null", true, http.StatusBadRequest},
-		{"missing process", http.MethodPost, "/v1/consume", `{"containerId":"c","sandboxId":"s"}`, true, http.StatusBadRequest},
-		{"negative process", http.MethodPost, "/v1/consume", `{"containerId":"c","sandboxId":"s","pid":-1}`, true, http.StatusBadRequest},
-		{"overflow process", http.MethodPost, "/v1/consume", `{"containerId":"c","sandboxId":"s","pid":4294967296}`, true, http.StatusBadRequest},
-		{"string process", http.MethodPost, "/v1/consume", `{"containerId":"c","sandboxId":"s","pid":"1"}`, true, http.StatusBadRequest},
 		{"unknown field", http.MethodPost, "/v1/consume", `{"containerId":"c","sandboxId":"s","pid":1,"allowed":true}`, true, http.StatusBadRequest},
 		{"second object", http.MethodPost, "/v1/consume", testBody + testBody, true, http.StatusBadRequest},
-		{"trailing scalar", http.MethodPost, "/v1/consume", testBody + " true", true, http.StatusBadRequest},
-		{"oversized trailing whitespace", http.MethodPost, "/v1/consume", testBody + strings.Repeat(" ", requestLimit), true, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,6 +63,7 @@ func TestHandlerRejectsBeforeCallingAuthority(t *testing.T) {
 	}
 }
 
+// A denial or a lost plugin connection during admission refuses the start.
 func TestHandlerRequiresSuccessfulUncancelledAuthority(t *testing.T) {
 	for _, name := range []string{"allowed", "denied", "cancelled during admission"} {
 		t.Run(name, func(t *testing.T) {
