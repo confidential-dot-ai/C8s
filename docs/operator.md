@@ -34,10 +34,10 @@ Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
 name the CDS this cluster trusts and the guest it runs in, and the chart
 refuses to render without them. The address is `<host>:<port>`: a DNS name
 this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
-that authorize allowlist and route writes; without them CDS refuses every
-write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
-prompts — no `--operator-keys`, and a fail-closed policy that would deny the
-platform's own pods. A measured node image boots the same chart, rendered at
+the router verifies route manifests under; without it the router uses the keys
+the pinned CDS serves. CDS takes its own write keys from
+`c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
+policy that would deny the platform's own pods. A measured node image boots the same chart, rendered at
 build time and configured from the signed launch file; `c8s install` refuses a
 cluster
 labelled `confidential.ai/baked=true`.

@@ -33,6 +33,7 @@ func lockedWrapper(rec *recorder, stderr *bytes.Buffer) Wrapper {
 	return Wrapper{
 		Mode:     ModeLocked,
 		RealRunc: "/opt/c8s/runc",
+		CopyDir:  os.TempDir(),
 		Floor:    testFloor(),
 		Exec:     rec.exec,
 		Env:      []string{"PATH=/usr/bin"},
@@ -190,7 +191,7 @@ func TestDenialWritesRuncLog(t *testing.T) {
 			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 				t.Fatalf("runc log %q is not a JSON entry: %v", data, err)
 			}
-			if entry.Level != "error" || entry.Msg != DenyMessage {
+			if entry.Level != "error" || !strings.HasPrefix(entry.Msg, DenyMessage) {
 				t.Errorf("runc log entry = %+v, want level error and msg %q", entry, DenyMessage)
 			}
 		})

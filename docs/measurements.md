@@ -62,8 +62,9 @@ extend(d) = SHA-384( register ‖ SHA-384("sha256:<hex>") )
 Policies are measured only on TDX and only where the node plugin has
 `measure_policies` on: the chart value `nriImagePolicy.measurePolicies`, which
 the chart refuses unless it also deploys the node's attestation-api, so not on
-the lane that bakes it. The measurer seeds its journal from the staged launch
-key, so a node without one applies no pulled allowlist while the setting is on
+the lane that bakes it, or on every worker, whose image turns it on. The
+measurer seeds its journal from the staged launch key, a worker's document on a
+worker, so a node without one applies no pulled allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
 Each policy digest is SHA-256 of the exact allowlist bytes served by CDS, the
@@ -140,6 +141,7 @@ node with `--image-manifest`.
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
 | `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
+| `launch_file_digest` | Optional, schema 2 only: the digest of the configuration file the guest was launched with, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.

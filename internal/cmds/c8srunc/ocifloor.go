@@ -184,11 +184,15 @@ func requireNotAttachable(spec *specs.Spec, stdin *os.File) error {
 }
 
 // floorApplies reports a container the floor covers: a pod container — not the
-// sandbox the runtime creates for the pod itself — in a namespace trusted
-// policy does not exempt. A bundle that names no namespace is covered: the
-// floor follows what the node measured, not what a bundle leaves out.
+// sandbox the runtime creates for the pod itself, nor a static pod's, which is
+// never a member — in a namespace trusted policy does not exempt. A bundle
+// that names no namespace is covered: the floor follows what the node
+// measured, not what a bundle leaves out.
+//
+// The kubelet's static pod mark reaches a bundle only where the node's
+// containerd config passes it through (pod_annotations), as a worker's does.
 func floorApplies(spec *specs.Spec, containerID string, floor nriimagepolicy.MeshFloor) bool {
-	if isPodSandbox(spec, containerID) {
+	if isPodSandbox(spec, containerID) || nriimagepolicy.StaticPodAnnotations(spec.Annotations) {
 		return false
 	}
 	return !slices.Contains(floor.ExemptNamespaces, spec.Annotations[annotationSandboxNamespace])
@@ -345,19 +349,26 @@ func readBundle(args []string) (*specs.Spec, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	spec, err := readSpec(dir)
+	return spec, containerID, err
+}
+
+// readSpec reads the OCI configuration in bundle directory dir, with a
+// relative root path resolved against it.
+func readSpec(dir string) (*specs.Spec, error) {
 	path := filepath.Join(dir, "config.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the OCI configuration: %w", err)
+		return nil, fmt.Errorf("read the OCI configuration: %w", err)
 	}
 	var spec specs.Spec
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if spec.Root != nil && !filepath.IsAbs(spec.Root.Path) {
 		spec.Root.Path = filepath.Join(dir, spec.Root.Path)
 	}
-	return &spec, containerID, nil
+	return &spec, nil
 }
 
 // bundleAndID finds the two things the floor needs: the --bundle option's

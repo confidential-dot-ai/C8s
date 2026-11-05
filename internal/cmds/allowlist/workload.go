@@ -1,7 +1,6 @@
 package allowlist
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 )
@@ -168,7 +168,7 @@ func newEditCmd(o *options) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "~ %s\n", name)
 			printEntryDiff(cmd.OutOrStdout(), diffEntry(orig, *edited))
 
-			if !confirm(cmd, fmt.Sprintf("apply changes to %q?", name)) {
+			if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), fmt.Sprintf("apply changes to %q?", name)) {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 				return nil
 			}
@@ -594,11 +594,4 @@ func sanitizeFileName(name string) string {
 
 func isSafeFileNameRune(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
-}
-
-func confirm(cmd *cobra.Command, prompt string) bool {
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", prompt)
-	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	return line == "y" || line == "yes"
 }

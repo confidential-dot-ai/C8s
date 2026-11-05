@@ -99,15 +99,19 @@ A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
 
 On a measured node image no interface starts a new process in a running
 container or hands one host privilege — for any principal, including the holder
-of the operator credential C8s releases.
+of the operator credential C8s releases. The exception is an exact command the
+measured base allowlist grants a container: anyone who reaches the runtime can
+start that command, and only that one. The release image grants one pair,
+RKE2's `/livez` and `/readyz` checks in kube-apiserver.
 
 Two independent layers close it: the API server denies `pods/exec`,
 `pods/attach`, `pods/portforward`, and `pods/ephemeralcontainers`, and the
 measured `c8s-runc` wrapper denies the `exec` verb under the runtime, where a
-CRI call, an exec probe, or a lifecycle hook lands. The release node image
-carries both; a development build (`C8S_DEV=1`) carries neither and has its own
-measurement, so exec posture is what a verifier pins. `gke` and `aks` keep the
-ordinary exec path
+CRI call, an exec probe, or a lifecycle hook lands, letting through only
+granted commands ([node-exec-mode.md](node-exec-mode.md#granted-execs)). The
+release node image carries both; a development build (`C8S_DEV=1`) carries
+neither and has its own measurement, so exec posture is what a verifier pins.
+`gke` and `aks` keep the ordinary exec path
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
 - **Privilege floor**: the `no_new_privs`, namespace, and privileged-mark limits

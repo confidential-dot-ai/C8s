@@ -23,10 +23,15 @@ import (
 const capabilityRule = "capability"
 
 // capabilityRefusal is why a container may not hold the capabilities its stored
-// OCI spec gives it, "" when it may. A pod in a namespace trusted policy exempts
-// keeps what the runtime gave it; the caller downgrades a denial under audit mode.
+// OCI spec gives it, "" when it may. A pod in a namespace trusted policy
+// exempts keeps what the runtime gave it, and so does a worker's static pod
+// whose launch a base entry pins, as nodeTCBExempt excuses it; the caller
+// downgrades a denial under audit mode.
 func (p *plugin) capabilityRefusal(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef, digest string, snap *policySnapshot, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) string {
 	if p.mesh.policy.exempts(pod.GetNamespace()) {
+		return ""
+	}
+	if cfg.Worker && staticPod(pod) && p.policy.baseAdmitsPinned(p.admittedLaunch(ctx, ctr, imageRef, digest, env, mounts)) {
 		return ""
 	}
 	subject := containerSubject(capabilityRule, pod, ctr, imageRef)

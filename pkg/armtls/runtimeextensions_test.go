@@ -101,46 +101,71 @@ func TestWithRuntimeExtensions(t *testing.T) {
 // tdxClaims are the claims of a TDX node launched for anchor that extended
 // RTMR[3] with extended.
 func tdxClaims(mrtd, anchor []byte, extended ...string) teetypes.Claims {
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(anchor), extended)
+	return tdxClaimsSeeded(mrtd, runtimemeasure.Seed(anchor), extended...)
+}
+
+// tdxClaimsSeeded are the claims of a TDX node whose launch binding seeded
+// RTMR[3] with seed, and which then extended it with extended.
+func tdxClaimsSeeded(mrtd []byte, seed [runtimemeasure.Size]byte, extended ...string) teetypes.Claims {
+	reg := runtimemeasure.FromDigestsSeeded(seed, extended)
 	return teetypes.Claims{
 		LaunchDigest: hex.EncodeToString(mrtd),
 		PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
 	}
 }
 
+// A worker's pin names its launch file by digest, and its NRI plugin extends
+// RTMR[3] as a node's does, so both pin forms replay the same lists.
 func TestEnforceImagesRuntimeExtensions(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
 	mrtd := bytes.Repeat([]byte{0x42}, sha512.Size384)
-	anchor := []byte("operator key")
-	pins := []remote.ImagePin{{Name: "node", Digest: mrtd, Anchor: anchor}}
+	anchor, other := []byte("operator key"), []byte("other key")
+	digest, otherDigest := sha512.Sum384(anchor), sha512.Sum384(other)
 	tooMany := make([]string, 257)
 	for i := range tooMany {
 		tooMany[i] = p
 	}
-	for _, tc := range []struct {
-		name    string
-		claims  teetypes.Claims
-		claimed []string
-		wantErr bool
+	for _, launch := range []struct {
+		pin         remote.ImagePin
+		seed, other [runtimemeasure.Size]byte
 	}{
-		{name: "bare seed, no list", claims: tdxClaims(mrtd, anchor)},
-		{name: "bare seed, list ahead of the quote", claims: tdxClaims(mrtd, anchor), claimed: []string{p}},
-		{name: "replaying prefix", claims: tdxClaims(mrtd, anchor, p), claimed: []string{p, q}},
-		{name: "whole list", claims: tdxClaims(mrtd, anchor, p, q), claimed: []string{p, q}},
-		{name: "extended, no list", claims: tdxClaims(mrtd, anchor, p), wantErr: true},
-		{name: "list does not replay", claims: tdxClaims(mrtd, anchor, q), claimed: []string{p}, wantErr: true},
-		{name: "wrong anchor", claims: tdxClaims(mrtd, []byte("other key"), p), claimed: []string{p}, wantErr: true},
-		{name: "list too long", claims: tdxClaims(mrtd, anchor), claimed: tooMany, wantErr: true},
+		{
+			pin:   remote.ImagePin{Name: "anchor", Digest: mrtd, Anchor: anchor},
+			seed:  runtimemeasure.Seed(anchor),
+			other: runtimemeasure.Seed(other),
+		},
+		{
+			pin:   remote.ImagePin{Name: "launch file digest", Digest: mrtd, LaunchFileDigest: digest[:]},
+			seed:  runtimemeasure.Extend(runtimemeasure.Zero, digest),
+			other: runtimemeasure.Extend(runtimemeasure.Zero, otherDigest),
+		},
 	} {
-		resp := remote.VerifyResponse{Result: teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: tc.claims}}
-		err := EnforceImages(resp, pins, teetypes.PlatformTDX, tc.claimed)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: EnforceImages = %v, want error %v", tc.name, err, tc.wantErr)
+		pins := []remote.ImagePin{launch.pin}
+		for _, tc := range []struct {
+			name    string
+			claims  teetypes.Claims
+			claimed []string
+			wantErr bool
+		}{
+			{name: "bare seed, no list", claims: tdxClaimsSeeded(mrtd, launch.seed)},
+			{name: "bare seed, list ahead of the quote", claims: tdxClaimsSeeded(mrtd, launch.seed), claimed: []string{p}},
+			{name: "replaying prefix", claims: tdxClaimsSeeded(mrtd, launch.seed, p), claimed: []string{p, q}},
+			{name: "whole list", claims: tdxClaimsSeeded(mrtd, launch.seed, p, q), claimed: []string{p, q}},
+			{name: "extended, no list", claims: tdxClaimsSeeded(mrtd, launch.seed, p), wantErr: true},
+			{name: "list does not replay", claims: tdxClaimsSeeded(mrtd, launch.seed, q), claimed: []string{p}, wantErr: true},
+			{name: "launched for another file", claims: tdxClaimsSeeded(mrtd, launch.other, p), claimed: []string{p}, wantErr: true},
+			{name: "list too long", claims: tdxClaimsSeeded(mrtd, launch.seed), claimed: tooMany, wantErr: true},
+		} {
+			resp := remote.VerifyResponse{Result: teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: tc.claims}}
+			err := EnforceImages(resp, pins, teetypes.PlatformTDX, tc.claimed)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%s pin, %s: EnforceImages = %v, want error %v", launch.pin.Name, tc.name, err, tc.wantErr)
+			}
 		}
-	}
-	if pins[0].AcceptExtension != nil {
-		t.Error("EnforceImages set AcceptExtension on the caller's pin")
+		if pins[0].AcceptExtension != nil {
+			t.Errorf("EnforceImages set AcceptExtension on the caller's %s pin", launch.pin.Name)
+		}
 	}
 }
 
@@ -255,6 +280,33 @@ func TestJournalLogsMissingOnce(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), path) {
 		t.Errorf("log does not name %s:\n%s", path, logs.String())
+	}
+}
+
+// An empty journal is checked for existence once, not on every issuance: a
+// journal removed after that first check is not reported missing.
+func TestJournalStatsEmptyOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	j := NewJournal(path)
+	if got := j.Policies(); got != nil {
+		t.Fatalf("Policies() = %v, want nil", got)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := j.Policies(); got != nil {
+		t.Fatalf("Policies() = %v, want nil", got)
+	}
+	if strings.Contains(logs.String(), "no measured-policy journal") {
+		t.Errorf("an empty journal was checked for existence again:\n%s", logs.String())
 	}
 }
 

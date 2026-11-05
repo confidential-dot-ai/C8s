@@ -23,7 +23,8 @@ A pod admitted by the served allowlist must name its image by digest
 image the runtime starts, so a tag reference is refused with `image must be
 referenced by digest`. Only the base allowlist keeps tags, for the images the
 node image carries, and so do pods in mesh-exempt platform namespaces, which
-never receive workload traffic.
+never receive workload traffic. A worker keeps no tags: its registry is its
+control plane's.
 
 ## The model
 
@@ -176,7 +177,8 @@ the sandbox policy mode; a container containerd no longer has decides nothing
 about one already running. A pod in a namespace the measured mesh policy
 exempts keeps the capabilities the runtime gave it, as it does under the
 runtime wrapper's floor
-([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)), and so does a
+worker's static pod whose launch a base entry pins.
 
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
@@ -208,6 +210,27 @@ cases, and nothing more:
 - any other pod only under an entry that pins the launch: command, args and
   mounts not `any`, and the environment constrained.
 
+A worker ([launch-configuration.md](launch-configuration.md#worker-documents))
+answers to a control plane outside its TEE. That control plane writes every
+API pod's spec and can read the values in the static pods' launches, so a
+worker's measured config (`worker: true`) narrows both cases:
+
+- a static pod is exempt only under an entry that pins its launch;
+- no other pod is exempt. An API pod holds the host binds, host ports and
+  capabilities an entry declares for its launch, as the router does, and no
+  other host privilege. A static pod's entry, which the worker's floor marks
+  `staticPod: true`, grants no host bind, host port or capability, and a
+  boot config whose static-pod entry declares host ports or capabilities is
+  refused.
+
+A worker's config also names no mesh-exempt namespace, so the mesh protects
+every API pod with its own network namespace wherever the control plane puts
+it; a static pod is the node's own and is never a member, on any node. It
+names no mesh exits, since a member's connections to one leave the mesh in
+the clear for endpoints the control plane chooses, and no credential
+attestation port: its credential clients verify through the node's
+attestation socket.
+
 An open entry admits its image, and the pod is sandboxed like any other, the
 host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
 operator run with the host network, so their entries pin every launch the
@@ -234,6 +257,9 @@ argv and the exact mount table that invocation is given, so a pod's own
 container running the same invocation with mounts of its choosing holds no role
 ([secrets.md](secrets.md)). What this policy cannot see, the runtime wrapper
 reads from the container's bundle ([node-exec-mode.md](node-exec-mode.md)).
+A base entry may also list `execs`, the exact commands the wrapper lets
+through into a running container of its bytes, YAML-only for the same reason
+([node-exec-mode.md](node-exec-mode.md#granted-execs)).
 
 ## Writing policy
 
@@ -248,9 +274,10 @@ a replay with 409).
 
 `PUT /allowlist` is the one write: it carries the whole document, and the token
 that authorized it is that document's signature ([below](#allowlist-history)).
-It takes `If-Match: "N"`, the strong tag of version N, the N of the ETag
-`W/"N"` that `GET /allowlist` serves: CDS replaces the document only while the
-version is still N and answers 412 otherwise, leaving the allowlist unchanged.
+It takes `If-Match: "N"`, the strong tag of version N, the version that
+`GET /allowlist` serves in `X-C8s-Allowlist-Version`: CDS replaces the document
+only while the version is still N and answers 412 otherwise, leaving the
+allowlist unchanged.
 A write without `If-Match` replaces the document unconditionally.
 
 `c8s allowlist add`, `apply`, `edit` and `delete` read the live document, make
@@ -262,9 +289,12 @@ since its file is the whole document: run it again to see the new diff.
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
-default) and refreshes when the version — the ETag counter — changes. The
-document swaps wholesale, gated by that monotone version: a consumer applies a
-pull only if its version is not below the last applied.
+default) and refreshes when the document changes: CDS tags it with its digest,
+`"sha256:<hex>"`, and sends its version in `X-C8s-Allowlist-Version`, and the
+response carries `Cache-Control: no-store`. The document swaps wholesale, gated
+by that monotone version: a consumer applies a pull only if its version is not
+below the last applied, and a 304 raises the last applied version to the one
+it names.
 
 This matters because policy can tighten: narrow `args`, revoke a grant, remove
 an entry. A merge would let a host that withholds an update keep the laxer
@@ -349,7 +379,9 @@ it, so a verifier can replay what the node enforced since boot: proof of what it
 enforced, not that it was acceptable. A document the node fails to measure is
 not applied. How the register is seeded, journalled, and replayed is
 [measurements.md](measurements.md#policy-history). Set
-`nriImagePolicy.measurePolicies: true` to turn measuring on.
+`nriImagePolicy.measurePolicies: true` to turn measuring on. A worker always
+measures: its image's policy turns it on, and `c8s worker stage` refuses one
+that does not.
 
 It is off by default because checks that expect the bare seed reject a node
 that measures: armTLS verifiers built before runtime extensions, a pin on one

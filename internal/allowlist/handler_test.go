@@ -4,7 +4,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -30,7 +32,8 @@ const (
 	digestMissing = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 )
 
-// openInMemory opens an empty allowlist whose writes apply to its own store.
+// openInMemory opens an empty allowlist whose writes apply to its own store,
+// its history started as CDS starts it before serving.
 func openInMemory(t *testing.T) *allowlist.Handle {
 	t.Helper()
 	store, err := allowlist.OpenInMemory()
@@ -38,7 +41,11 @@ func openInMemory(t *testing.T) *allowlist.Handle {
 		t.Fatalf("open in-memory store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return store.Local()
+	handle := store.Local()
+	if err := handle.StartJournal(); err != nil {
+		t.Fatalf("start journal: %v", err)
+	}
+	return handle
 }
 
 // testOperatorCredential generates an operator key pair: a Signer for minting
@@ -101,7 +108,7 @@ func allowlistTestRouter(wh allowlist.Handler, ready attestation.ReadinessFunc) 
 	return r
 }
 
-// getServed fetches the served document and the ETag it was served with.
+// getServed fetches the served document and the version it was served at.
 func getServed(t *testing.T, srvURL string) (*pkgallowlist.Allowlist, string) {
 	t.Helper()
 	resp, err := http.Get(srvURL + "/allowlist")
@@ -120,7 +127,7 @@ func getServed(t *testing.T, srvURL string) (*pkgallowlist.Allowlist, string) {
 	if err != nil {
 		t.Fatalf("parse served allowlist: %v; body=%s", err, body)
 	}
-	return al, resp.Header.Get("ETag")
+	return al, resp.Header.Get(pkgallowlist.VersionHeader)
 }
 
 // getAllowlist fetches and parses the served document.
@@ -130,20 +137,20 @@ func getAllowlist(t *testing.T, srvURL string) *pkgallowlist.Allowlist {
 	return al
 }
 
-// servedETag reads the ETag of the served document, the version a reader sees.
-func servedETag(t *testing.T, srvURL string) string {
+// servedVersion reads the version of the served document.
+func servedVersion(t *testing.T, srvURL string) string {
 	t.Helper()
-	_, etag := getServed(t, srvURL)
-	return etag
+	_, version := getServed(t, srvURL)
+	return version
 }
 
-// wantUnchanged asserts the served document still carries etag. Every write
-// that changes the document bumps its version, so an equal ETag means the
-// refusal changed nothing.
-func wantUnchanged(t *testing.T, srvURL, etag string) {
+// wantUnchanged asserts the served document is still at version. Every write
+// CDS stores bumps the version, so an equal version means the refusal changed
+// nothing.
+func wantUnchanged(t *testing.T, srvURL, version string) {
 	t.Helper()
-	if got := servedETag(t, srvURL); got != etag {
-		t.Fatalf("a refused write changed the version: ETag %q, was %q", got, etag)
+	if got := servedVersion(t, srvURL); got != version {
+		t.Fatalf("a refused write changed the version: %q, was %q", got, version)
 	}
 }
 
@@ -151,7 +158,7 @@ func wantUnchanged(t *testing.T, srvURL, etag string) {
 // the served document is as it was before.
 func refusedWrite(t *testing.T, srvURL string, req *http.Request) {
 	t.Helper()
-	etag := servedETag(t, srvURL)
+	version := servedVersion(t, srvURL)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -160,7 +167,7 @@ func refusedWrite(t *testing.T, srvURL string, req *http.Request) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want 401", resp.StatusCode)
 	}
-	wantUnchanged(t, srvURL, etag)
+	wantUnchanged(t, srvURL, version)
 }
 
 func TestReadyzReturnsUnavailableInitially(t *testing.T) {
@@ -261,8 +268,8 @@ func TestAllowlistReplaceIfMatch(t *testing.T) {
 	seedEntry(t, store, "web", digestA)
 	_, version, _ := store.LoadAll()
 
-	// Refused preconditions: an older version, the weak ETag GET serves
-	// (strong comparison never matches a weak tag), an unquoted value.
+	// Refused preconditions: an older version, the version's weak tag (strong
+	// comparison never matches a weak tag), an unquoted value.
 	for _, ifMatch := range []string{`"1"`, `W/"` + version + `"`, version, `"` + version + `0"`, "*"} {
 		if code := putAllowlistIfMatch(t, h, oneEntryDocument("new", digestMissing), ifMatch); code != http.StatusPreconditionFailed {
 			t.Fatalf("If-Match %s: got %d, want 412", ifMatch, code)
@@ -550,77 +557,130 @@ func TestReplaceRejectsInvalidEntryName(t *testing.T) {
 	}
 }
 
-func TestAllowlistListEmitsETag(t *testing.T) {
-	app, _, _ := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
+// list answers GET /allowlist with the given If-None-Match ("" sends none).
+func list(h allowlist.Handler, ifNoneMatch string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/allowlist", nil)
+	if ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	h.HandleList(rec, req)
+	return rec
+}
 
-	resp, err := http.Get(srv.URL + "/allowlist")
+// servedTag is the ETag of the document h serves.
+func servedTag(t *testing.T, h allowlist.Handler) string {
+	t.Helper()
+	rec := list(h, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /allowlist: status %d", rec.Code)
+	}
+	return rec.Header().Get("ETag")
+}
+
+// The document is tagged with the SHA-256 of the bytes served, carries its
+// store version beside it, and is not to be kept by any cache.
+func TestAllowlistListTagsTheServedBytes(t *testing.T) {
+	store := openInMemory(t)
+	seedEntry(t, store, "web", digestA)
+
+	rec := list(allowlist.Handler{Allowlist: store}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	sum := sha256.Sum256(rec.Body.Bytes())
+	if got, want := rec.Header().Get("ETag"), `"sha256:`+hex.EncodeToString(sum[:])+`"`; got != want {
+		t.Fatalf("ETag = %s, want %s", got, want)
+	}
+	_, version, err := store.LoadAll()
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	if got := rec.Header().Get(pkgallowlist.VersionHeader); got != version {
+		t.Fatalf("%s = %q, want %q", pkgallowlist.VersionHeader, got, version)
 	}
-	if got := resp.Header.Get("ETag"); got != `W/"1"` {
-		t.Fatalf("ETag = %q, want W/\"1\"", got)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 }
 
-func TestAllowlistListMatchingIfNoneMatchReturns304(t *testing.T) {
-	app, _, _ := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
+// A poller holding the served document gets a 304 under its tag, with the
+// version, after every kind of write, including one that moves the version but
+// not the bytes.
+func TestAllowlistListAnswers304ToTheServedTag(t *testing.T) {
+	store := openInMemory(t)
+	h := allowlist.Handler{Allowlist: store}
+	wantNotModified := func(after, tag string) {
+		t.Helper()
+		rec := list(h, tag)
+		if rec.Code != http.StatusNotModified || rec.Body.Len() != 0 {
+			t.Fatalf("after %s: status %d with %d body bytes, want 304 and none", after, rec.Code, rec.Body.Len())
+		}
+		if got := rec.Header().Get("ETag"); got != tag {
+			t.Fatalf("after %s: 304 ETag = %s, want %s", after, got, tag)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("after %s: 304 Cache-Control = %q, want no-store", after, got)
+		}
+		_, version, err := store.LoadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.Header().Get(pkgallowlist.VersionHeader); got != version {
+			t.Fatalf("after %s: 304 %s = %q, want %q", after, pkgallowlist.VersionHeader, got, version)
+		}
+	}
 
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
+	wantNotModified("starting", servedTag(t, h))
+	seedEntry(t, store, "web", digestA)
+	tag := servedTag(t, h)
+	wantNotModified("a replace", tag)
+	seedEntry(t, store, "web", digestA)
+	wantNotModified("a replace by the same bytes", tag)
+	d, err := types.ParseDigest(digestMissing)
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		t.Fatal(err)
 	}
-	req.Header.Set("If-None-Match", `W/"1"`)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"db": {Containers: []pkgallowlist.Container{{Digest: d}}}}); err != nil {
+		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNotModified {
-		t.Fatalf("status = %d, want 304", resp.StatusCode)
-	}
-	if got := resp.Header.Get("ETag"); got != `W/"1"` {
-		t.Fatalf("ETag = %q, want W/\"1\"", got)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if len(body) != 0 {
-		t.Fatalf("304 body should be empty, got %d bytes", len(body))
-	}
+	wantNotModified("a seed", servedTag(t, h))
 }
 
-func TestAllowlistListStaleIfNoneMatchReturns200WithNewETag(t *testing.T) {
-	app, _, signer := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
+// Any tag but the served document's gets the served document: another
+// store's at the same version (a cluster cut over to), an earlier document of
+// the same store, and the weak version tag earlier releases served.
+func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
+	previous, current := openInMemory(t), openInMemory(t)
+	seedEntry(t, previous, "inference-worker-1", digestA)
+	seedEntry(t, current, "web", digestMissing)
+	_, previousVersion, _ := previous.LoadAll()
+	_, version, _ := current.LoadAll()
+	if previousVersion != version {
+		t.Fatalf("the stores are at versions %s and %s; the case needs one version", previousVersion, version)
+	}
+	h := allowlist.Handler{Allowlist: current}
+	wantServed := func(tag, webDigest string) {
+		t.Helper()
+		rec := list(h, tag)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("If-None-Match %s: status %d, want 200", tag, rec.Code)
+		}
+		al, err := pkgallowlist.ParseJSON(rec.Body.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := al.Workloads["web"].Containers[0].Digest.String(); got != webDigest {
+			t.Fatalf("If-None-Match %s: served web at %s, want %s", tag, got, webDigest)
+		}
+	}
 
-	writeEntry(t, srv.URL, signer, "web", digestA)
-
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("If-None-Match", `W/"1"`)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("ETag"); got != `W/"2"` {
-		t.Fatalf("ETag = %q, want W/\"2\"", got)
-	}
+	wantServed(servedTag(t, allowlist.Handler{Allowlist: previous}), digestMissing)
+	earlier := servedTag(t, h)
+	seedEntry(t, current, "web", digestA)
+	wantServed(earlier, digestA)
+	_, version, _ = current.LoadAll()
+	wantServed(`W/"`+version+`"`, digestA)
 }
 
 // TestAllowlistWritesRejectedWithoutAuthorizer pins the fail-closed default:

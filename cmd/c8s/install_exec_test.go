@@ -777,11 +777,6 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	// volumed stays off without --volumes.
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/volumed")
 
-	// --force without operator keys must say what it is giving up.
-	if !strings.Contains(stderr, "allowlist writes DISABLED") {
-		t.Errorf("stderr missing the operator-keys warning:\n%s", stderr)
-	}
-
 	// The computed values helm received, decoded and pinned.
 	tree := readYAMLTree(t, s.computed)
 	if got := treeAt(t, tree, "attestationApi", "cvmMode"); got != "bare-metal" {

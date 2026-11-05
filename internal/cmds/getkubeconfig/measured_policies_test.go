@@ -1,9 +1,11 @@
 package getkubeconfig
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +195,51 @@ func TestRunAttestURLSharesReleaseWait(t *testing.T) {
 	// The pre-dial spends the whole wait, so the release step gets none.
 	if want := []time.Duration{cfg.ReleaseWait, 0}; !slices.Equal(waits, want) {
 		t.Errorf("cred-release retry budgets = %v, want %v", waits, want)
+	}
+}
+
+// A failed pre-dial is reported once: in the gate's error when the gate
+// fails, else in the release step's.
+func TestRunReportsFailedPreDialOnce(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name       string
+		measured   []string
+		attestDown bool
+		wantErr    string
+	}{
+		{name: "gate lacks the list", measured: []string{p}, wantErr: "attestation gate"},
+		{name: "gate fails for another reason", attestDown: true, wantErr: "attestation gate"},
+		{name: "gate passes", wantErr: "credential release"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			orig := slog.Default()
+			t.Cleanup(func() { slog.SetDefault(orig) })
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+			attestURL := newAttestStub(t).URL() + "/attest"
+			if tc.attestDown {
+				attestURL = failingAttest(t, http.StatusBadGateway).URL + "/attest"
+			}
+			env := newTestEnv(t, attestURL, http.StatusOK, goodRelease)
+			res := verifiedResultFor(env.operatorPubPEM)
+			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.operatorPubPEM), tc.measured)
+			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
+			stubVerify(t, res, nil)
+			release := newAttestedTLSServerWithExtensions(t, teetypes.PlatformTDX, nil, http.NotFoundHandler())
+			cfg := env.config()
+			cfg.ReleaseBaseURL = release.URL
+			release.Close()
+
+			err := Run(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Run = %v, want error containing %q", err, tc.wantErr)
+			}
+			if got := strings.Count(logs.String()+err.Error(), "connection refused"); got != 1 {
+				t.Errorf("refused dial reported %d times, want 1:\nerror: %v\nlogs: %s", got, err, logs.String())
+			}
+		})
 	}
 }
 

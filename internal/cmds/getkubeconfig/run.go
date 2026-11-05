@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -68,9 +67,12 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	// Signed requests must always pass through the armTLS verifier. An HTTP
 	// URL would bypass TLS entirely, even with VerifyConnection installed.
-	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
-	if err != nil || releaseURL.Scheme != "https" || releaseURL.Host == "" || releaseURL.User != nil || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
-		return fmt.Errorf("--release-url must be an absolute HTTPS URL without userinfo, query or fragment")
+	releaseURL, err := parseHTTPSURL("--release-url", cfg.ReleaseBaseURL)
+	if err != nil {
+		return err
+	}
+	if _, err := parseHTTPSURL("--apiserver-url", cfg.APIServerURL); err != nil {
+		return err
 	}
 	cfg.ReleaseBaseURL = strings.TrimRight(cfg.ReleaseBaseURL, "/")
 	role, err := credrelease.ParseRole(cfg.Role)
@@ -105,19 +107,21 @@ func Run(ctx context.Context, cfg Config) error {
 		if exp.MeasuresPolicies() {
 			// The report comes from elsewhere: record cred-release's list
 			// first. The dial and step 3 share one wait for cred-release.
+			// A failed dial is reported once: in the gate's error when the
+			// gate fails, else by step 3, which dials again.
 			releaseDeadline = time.Now().Add(cfg.ReleaseWait)
 			dialErr = dialRelease(ctx, cfg, releaseURL, exp)
-			if dialErr != nil {
-				slog.Warn("record cred-release measured policies", "error", dialErr)
-			}
 		}
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
 		cancel()
 		switch {
-		case !errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
-		case dialErr != nil:
+		case err == nil:
+		case dialErr != nil && errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
 			err = fmt.Errorf("%w (no list: the dial to cred-release failed: %v)", err, dialErr)
+		case dialErr != nil:
+			err = fmt.Errorf("%w (the cred-release dial also failed: %v)", err, dialErr)
+		case !errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
 		default:
 			err = fmt.Errorf("%w (the list from cred-release's certificate may predate the node's latest policy: retry after cred-release reissues its certificate, or omit --attest-url)", err)
 		}
@@ -159,12 +163,25 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 4. Assemble + write the kubeconfig.
-	kc := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	kc, err := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	if err != nil {
+		return fmt.Errorf("build kubeconfig: %w", err)
+	}
 	if err := os.WriteFile(cfg.OutPath, kc, 0o600); err != nil {
 		return fmt.Errorf("write kubeconfig: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (context %q, role %s) — attested: image tuple + operator-key chain verified\n", cfg.OutPath, cfg.ContextName, role)
 	return nil
+}
+
+// parseHTTPSURL parses raw as an absolute HTTPS URL with a host and no
+// userinfo, query or fragment. flag names the source in the error.
+func parseHTTPSURL(flag, raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s must be an absolute HTTPS URL without userinfo, query or fragment", flag)
+	}
+	return u, nil
 }
 
 // publicKeyPEMFromPrivate derives the PKIX PEM public key from an ECDSA

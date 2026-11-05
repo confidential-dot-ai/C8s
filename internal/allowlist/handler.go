@@ -34,32 +34,21 @@ type Handler struct {
 // against a different payload). Production wires operatorauth.Verifier.Authorize.
 type WriteAuthorizer func(r *http.Request, body []byte) error
 
-// HandleList handles GET /allowlist: the full allowlist document as canonical
-// JSON. Emits a weak ETag from the store version; a matching If-None-Match
-// returns 304.
+// HandleList handles GET /allowlist: the document the store serves, tagged
+// with its digest and carrying its version. An If-None-Match naming exactly
+// that tag returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
-	// Every enforcer polls this route on its refresh interval and is current
-	// almost every time, so settle the 304 on the single-row version read
-	// rather than loading every entry under the writers' lock.
-	if match := r.Header.Get("If-None-Match"); match != "" {
-		if version, err := h.Allowlist.Version(); err == nil && match == `W/"`+version+`"` {
-			w.Header().Set("ETag", match)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-	}
-
-	doc, version, err := h.Allowlist.LoadAll()
+	w.Header().Set("Cache-Control", "no-store")
+	body, version, err := h.Allowlist.Served()
 	if err != nil {
 		readFailed(w, err)
 		return
 	}
-
-	w.Header().Set("ETag", `W/"`+version+`"`)
-
-	body, err := doc.Canonical()
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	tag := pkgallowlist.EntityTag(objectDigest(body))
+	w.Header().Set("ETag", tag)
+	w.Header().Set(pkgallowlist.VersionHeader, version)
+	if r.Header.Get("If-None-Match") == tag {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -70,7 +59,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 // it in atomically. CDS assigns the new version.
 //
 // If-Match makes the swap conditional on the version: the strong tag "N"
-// matches version N, the N of the ETag W/"N" that GET serves. A refused
+// matches version N, the version GET serves in its VersionHeader. A refused
 // precondition is 412 and changes nothing. No If-Match, or "*", swaps
 // unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +67,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	// the operator's mistake, not a write.
 	version, matchable := requiredVersion(r.Header.Get("If-Match"))
 	if !matchable {
-		http.Error(w, `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`, http.StatusPreconditionFailed)
+		http.Error(w, `If-Match takes the strong tag "N" of version N, which GET /allowlist names in `+pkgallowlist.VersionHeader, http.StatusPreconditionFailed)
 		return
 	}
 

@@ -43,11 +43,11 @@ func ImageRegisters(family teetypes.Family) ([]int, bool) {
 	return registers, identified
 }
 
-// EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every anchored
-// pin accepting any runtime extension that replays. It does not judge which
-// digests the peer measured: that is an external verifier's job (c8s verify
-// --pin-policy, --trust-operator), and docs/armtls.md says why it is a
-// non-goal here. claimed is the peer's list, nil for none, and is refused
+// EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every Anchor or
+// LaunchFileDigest pin accepting any runtime extension that replays. It does
+// not judge which digests the peer measured: that is an external verifier's
+// job (c8s verify --pin-policy, --trust-operator), and docs/armtls.md says why
+// it is a non-goal here. claimed is the peer's list, nil for none, and is refused
 // beyond [MaxRuntimeExtensions] entries since each costs a hash.
 func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, claimed []string) error {
 	if len(claimed) > MaxRuntimeExtensions {
@@ -56,12 +56,13 @@ func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platfor
 	return remote.EnforceImagesWithRuntimeLog(resp, acceptReplayed(images), platform, claimed)
 }
 
-// acceptReplayed returns a copy of images whose anchored pins without an
-// AcceptExtension hook accept every extension.
+// acceptReplayed returns a copy of images whose Anchor and LaunchFileDigest
+// pins without an AcceptExtension hook accept every extension.
 func acceptReplayed(images []remote.ImagePin) []remote.ImagePin {
 	out := slices.Clone(images)
 	for i := range out {
-		if out[i].Anchor != nil && out[i].AcceptExtension == nil {
+		replays := out[i].Anchor != nil || out[i].LaunchFileDigest != nil
+		if replays && out[i].AcceptExtension == nil {
 			out[i].AcceptExtension = func(string) error { return nil }
 		}
 	}

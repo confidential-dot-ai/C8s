@@ -48,7 +48,7 @@ func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 // Implemented by operatorauth.Signer.
 type Authorizer = operatorauth.Authorizer
 
-// List returns the current allowlist and its version (the ETag counter).
+// List returns the current allowlist and its version.
 func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) {
 	served, notModified, err := c.fetch(ctx, "", nil)
 	if err != nil {
@@ -58,7 +58,7 @@ func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) 
 		// Unreachable without an If-None-Match, but treat as an empty response.
 		return nil, "", fmt.Errorf("unexpected 304 without If-None-Match")
 	}
-	return served.Allowlist, VersionFromETag(served.ETag), nil
+	return served.Allowlist, served.Version, nil
 }
 
 // Fetch issues GET /allowlist with If-None-Match. notModified is true on a 304
@@ -73,13 +73,18 @@ func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 type Served struct {
 	Allowlist *allowlist.Allowlist
 	ETag      string
+	// Version is the store version CDS served the document at, the one
+	// nodes refuse to go below; "" when the response named none.
+	Version string
 	// Digest is "sha256:<hex>" of the exact bytes served. CDS serves
 	// Allowlist.Canonical, so this is the policy digest it stamps into
 	// workload certificates and nodes measure into RTMR[3].
 	Digest string
 }
 
-// FetchServed is Fetch that also returns the digest of the served bytes.
+// FetchServed is Fetch that also returns the digest of the served bytes and
+// the version. On a 304 only the version is set: the one CDS now serves the
+// document the request named at.
 func (c Client) FetchServed(ctx context.Context, ifNoneMatch string) (Served, bool, error) {
 	return c.fetch(ctx, ifNoneMatch, nil)
 }
@@ -95,7 +100,7 @@ func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 	if notModified {
 		return nil, "", fmt.Errorf("unexpected 304 without If-None-Match")
 	}
-	return body, VersionFromETag(served.ETag), nil
+	return body, served.Version, nil
 }
 
 func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Served, bool, error) {
@@ -115,7 +120,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 
 	if resp.StatusCode == http.StatusNotModified {
 		io.Copy(io.Discard, resp.Body)
-		return Served{}, true, nil
+		return Served{Version: servedVersion(resp.Header)}, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return Served{}, false, operatorauth.ResponseError(resp)
@@ -136,14 +141,19 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		*raw = body
 	}
 	sum := sha256.Sum256(body)
-	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:])}, false, nil
+	return Served{
+		Allowlist: al,
+		ETag:      resp.Header.Get("ETag"),
+		Version:   servedVersion(resp.Header),
+		Digest:    "sha256:" + hex.EncodeToString(sum[:]),
+	}, false, nil
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new
 // version. A non-empty version makes the write conditional: CDS refuses it
 // with a 412 *operatorauth.StatusError unless the allowlist is still at that
-// version (the N of the ETag W/"N" the read it was built from carried), so
-// the write never overwrites a write made since.
+// version (the Version of the read it was built from), so the write never
+// overwrites a write made since.
 func (c Client) ReplaceAll(ctx context.Context, al *allowlist.Allowlist, version string, auth Authorizer) error {
 	data, err := al.Canonical()
 	if err != nil {
@@ -242,26 +252,27 @@ func retryWait(retryAfter string, attempt int) time.Duration {
 	return min(firstRetryWait<<(attempt-1), maxRetryWait)
 }
 
-// VersionFromETag extracts a non-empty N from a weak ETag of the form W/"N",
-// or "" for anything else. A strong ETag yields "" by design: CDS only emits
-// W/"N". Exported because enforcers polling the allowlist track the same
-// counter for epoch anti-rollback.
-func VersionFromETag(etag string) string {
-	v, _ := weakVersion(etag)
-	return v
+// servedVersion is the version a GET /allowlist response names in its
+// VersionHeader, or in the ETag of a CDS released before that header.
+func servedVersion(h http.Header) string {
+	if version := h.Get(allowlist.VersionHeader); version != "" {
+		return version
+	}
+	return versionOfEarlierCDS(h.Get("ETag"))
 }
 
-// weakVersion returns N from a weak ETag W/"N" with a non-empty N.
-func weakVersion(etag string) (string, bool) {
+// versionOfEarlierCDS is the version a CDS released before VersionHeader
+// names as the N of its ETag W/"N", or "" for any other ETag.
+func versionOfEarlierCDS(etag string) string {
 	v, ok := strings.CutPrefix(etag, `W/"`)
 	if !ok {
-		return "", false
+		return ""
 	}
 	v, ok = strings.CutSuffix(v, `"`)
-	if !ok || v == "" {
-		return "", false
+	if !ok {
+		return ""
 	}
-	return v, true
+	return v
 }
 
 // maxAllowlistResponseBytes caps CDS response bodies. Generous for a realistic

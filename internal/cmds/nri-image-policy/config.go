@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,9 @@ type config struct {
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
+	// Worker marks a worker, whose Kubernetes control plane runs outside
+	// its TEE; only the worker image's measured config sets it.
+	Worker bool `yaml:"worker"`
 
 	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
 	// from what names it (cdsaddress.go). "" when nothing does.
@@ -258,6 +262,11 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
+	return completeConfig(data)
+}
+
+// completeConfig parses data and completes its runtime role bindings.
+func completeConfig(data []byte) (*config, error) {
 	cfg, err := parseConfig(data)
 	if err != nil {
 		return nil, err
@@ -274,6 +283,29 @@ func loadConfig(path string) (*config, error) {
 		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
 	}
 	return cfg, nil
+}
+
+// CheckWorkerConfig loads data as the plugin loads its configuration file,
+// refusing any key the plugin does not read, and requires worker: true, so a
+// misspelt key is an error rather than a server's rules, and policy
+// measurement.
+func CheckWorkerConfig(data []byte) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&config{}); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	cfg, err := completeConfig(data)
+	if err != nil {
+		return err
+	}
+	if !cfg.Worker {
+		return errors.New("config does not set worker: true")
+	}
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return errors.New("worker requires allowlist.pull.measure_policies: its evidence records each served allowlist it applies")
+	}
+	return nil
 }
 
 // parseConfig validates static configuration for the plugin and
@@ -485,7 +517,42 @@ func (c *config) Validate() error {
 	if err := c.validateMesh(); err != nil {
 		return err
 	}
+	if err := c.validateWorker(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+// validateWorker requires a worker to enforce its policy and to exempt no
+// namespace.
+func (c *config) validateWorker() error {
+	if !c.Worker {
+		return nil
+	}
+	if !c.enforcesWorkerPolicy() {
+		return fmt.Errorf("worker requires allowlist.node_tcb, allowlist.base, policy.mode %q, policy.sandbox %q and policy.deny_missing_annotation", ModeFailClosed, SandboxEnforce)
+	}
+	if len(c.Mesh.ExemptNamespaces) > 0 {
+		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	if len(c.Mesh.Exits) > 0 {
+		return fmt.Errorf("worker requires no mesh.exits, got %v: a member's connections to them leave the mesh in the clear, for endpoints the control plane chooses", c.Mesh.Exits)
+	}
+	if c.Mesh.CredentialAttestationPort != 0 {
+		return errors.New("worker requires no mesh.credential_attestation_port: its credential clients verify through the node's attestation socket")
+	}
+	return nil
+}
+
+// enforcesWorkerPolicy reports whether c's base allowlist is the node's TCB
+// and its policy fails closed, enforces sandbox checks and denies containers
+// without an image annotation.
+func (c *config) enforcesWorkerPolicy() bool {
+	return c.Allowlist.NodeTCB &&
+		c.Allowlist.Base != nil &&
+		c.Policy.Mode == ModeFailClosed &&
+		c.Policy.Sandbox == SandboxEnforce &&
+		c.Policy.DenyMissingAnnotation
 }
 
 // validateMesh requires a mesh policy this node can enforce.

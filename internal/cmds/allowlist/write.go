@@ -226,7 +226,7 @@ func (e *unconfirmedError) Unwrap() error { return e.cause }
 func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist, version string, signer allowlistclient.Authorizer) error {
 	if version == "" {
 		// Without a version the write would be unconditional.
-		return errors.New(`CDS served the allowlist without a version (ETag W/"N"), so the write cannot be made conditional on it`)
+		return errors.New(`CDS served the allowlist without a version, so the write cannot be made conditional on it`)
 	}
 	err := c.ReplaceAll(ctx, doc, version, signer)
 	if err == nil {

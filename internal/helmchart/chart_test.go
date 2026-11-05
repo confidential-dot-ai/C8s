@@ -773,7 +773,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
 	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
-	// HTTP (a locked node image denies every runc exec), against
+	// HTTP (a locked node image denies every runc exec it was not granted), against
 	// the proxy's own health listener: the API's loopback bind is not
 	// kubelet-dialable, and this is the evidence path's only liveness signal.
 	for name, probe := range map[string]*corev1.Probe{"readiness": proxy.ReadinessProbe, "liveness": proxy.LivenessProbe} {
@@ -1469,7 +1469,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 }
 
-// The locked node image's measured runtime wrapper denies every runc exec,
+// The locked node image's measured runtime wrapper denies every runc exec it was not granted,
 // and CRI routes exec probes and lifecycle exec hooks through exactly that
 // call (internal/cmds/c8srunc). A C8s-owned exec probe would therefore never
 // pass on such a node — the component would sit in CrashLoop or never go

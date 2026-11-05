@@ -1050,3 +1050,22 @@ func TestMeshProbesEnvRoundTrip(t *testing.T) {
 		t.Fatalf("SplitMeshProbePaths(\"\") = %v, want no paths", got)
 	}
 }
+
+func TestSplitList(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{name: "empty", value: "", want: nil},
+		{name: "blank items", value: " ,\n ,", want: nil},
+		{name: "trimmed items", value: " DB=/api/db , ,HF=/api/hf ", want: []string{"DB=/api/db", "HF=/api/hf"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SplitList(tt.value); !slices.Equal(got, tt.want) {
+				t.Errorf("SplitList(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}

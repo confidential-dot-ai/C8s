@@ -1,7 +1,8 @@
 # Node exec mode
 
 The measured node image starts no new process inside a container that is already
-running, for any principal.
+running, for any principal, other than the commands its measured policy grants
+([below](#granted-execs)).
 
 Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in).
 
@@ -34,8 +35,9 @@ probe, a lifecycle exec hook, a direct call to containerd — and they, like the
 proxy paths, end in the same `runc exec`. So the node image puts a measured
 wrapper, `c8s-runc`, in front of runc and points containerd's runc handler at
 it. A release node image is built in locked exec mode: the wrapper denies the
-`exec` verb outright and never reaches the real runtime; every other verb is
-handed to the real runc unchanged, by absolute path, and a `restore` is denied
+`exec` verb without reaching the real runtime, except for granted
+commands ([below](#granted-execs)); every other verb is handed to the real
+runc unchanged, by absolute path, and a `restore` is denied
 in every build, because what it starts lives in a checkpoint no bundle
 describes. A denial is written to the log file runc was told to use, so the pod
 event names it instead of an empty runtime error.
@@ -71,10 +73,16 @@ container the measured mesh policy covers holds more than the floor:
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create. The floor is independent of the exec posture above, and leaves the
-exempt namespaces and the pod's own sandbox container as the measured policy
-found them. Attachability is refused for every container the wrapper creates — a
-terminal, and a create carrying the container's standard input — so an attach
-session has no way in even there.
+exempt namespaces, the pod's own sandbox container and a static pod as the
+measured policy found them. Attachability is refused for every container the
+wrapper creates — a terminal, and a create carrying the container's standard
+input — so an attach session has no way in even there.
+
+A static pod is known by the kubelet's `kubernetes.io/config.source: file`,
+which reaches the bundle only where the node's containerd passes it through
+(`pod_annotations`), as a worker's does. Before the create, the node's
+admission plugin refuses any NRI plugin's edit of that annotation and, on a
+worker, a static pod whose launch no base entry pins.
 
 ## What this means for debugging a workload
 
@@ -82,40 +90,56 @@ Logs are the interface: `kubectl logs` works for every kubeconfig holder, and
 `c8s get-kubeconfig --role log-reader` exists for readers who need nothing else
 ([operator.md](operator.md)).
 
-An exec probe or a lifecycle exec hook cannot pass on such a node, so C8s
-renders none. A component that needs a health signal serves it: an HTTP, TCP or
-gRPC probe against a port it already listens on, or a small in-process endpoint
-when it otherwise listens only on a Unix socket, and it handles SIGTERM instead
-of carrying a `preStop` hook.
+An exec probe or a lifecycle exec hook cannot pass on such a node,
+granted commands aside, so C8s renders none. A component that needs a
+health signal serves it: an HTTP, TCP or gRPC probe against a port it already
+listens on, or a small in-process endpoint when it otherwise listens only on a
+Unix socket, and it handles SIGTERM instead of carrying a `preStop` hook.
 
-## RKE2's kube-apiserver
+## Granted execs
 
-On the locked image, RKE2's kube-apiserver static pod never reports Ready. The
-RKE2 release `images/node-guest/c8s/mkosi.sync` pins gives that pod exec
-startup, liveness and readiness probes (`kubectl get --raw=/livez` and
-`--raw=/readyz`); etcd, kube-scheduler, kube-controller-manager and kube-proxy
-have HTTP probes and report Ready.
+A container entry in the measured base allowlist may list `execs`: the exact
+commands the wrapper lets through into a running container of those bytes. The
+field is YAML-only, like `role`, so only a measured boot config grants one and
+no served document can ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
+An entry grants them only when it pins the command, the args and the mounts,
+and never in a pod the mesh gates cover: no new process starts in a member pod.
 
-Each startup probe ends in `c8s-runc`'s denial, which reaches the kubelet as a
-runtime error rather than a failed command. The kubelet discards an errored
-probe result instead of counting it as a failure, so:
+The node image uses it once. The RKE2 release `images/node-guest/c8s/mkosi.sync`
+pins gives kube-apiserver's static pod exec startup, liveness and readiness
+probes (`kubectl get --raw=/livez` and `--raw=/readyz`, authenticated with the
+API server's own client certificate), and offers no HTTP form of them; etcd,
+kube-scheduler, kube-controller-manager and kube-proxy have HTTP probes. The
+image's kube-apiserver entry lists those two commands. An RKE2 pin bump that
+changes them turns the probes back into denials, never into a wider grant.
 
-- the pod shows `0/1 Running` with no restarts, and the API serves: RKE2 and
-  C8s check the API itself, never this pod's readiness;
-- the startup probe errors every five minutes for the node's life
-  (`kube-apiserver-startup-period-seconds=300` in the image's RKE2 config), each
-  time adding an `Unhealthy` warning
-  (`Startup probe errored … c8s-runc: exec is denied on this node`) and a line
-  to the container's runtime log in memory, which grows by about 40 KB a day
-  until the container is removed;
-- the liveness and readiness probes never run, because the startup probe never
-  succeeds. The kubelet still restarts kube-apiserver when its process exits,
-  but nothing restarts one that keeps running and stops answering.
+The bundle the wrapper reads names a container's image, not the digest
+admission matched, so the admission plugin records what it granted: when it
+starts a container whose launch the base grants execs, it writes the container
+ID and the commands to `/run/nri-image-policy-exec`, a directory only the
+plugin writes, and removes the record with the container. `c8s-runc` lets an
+`exec` reach the real runtime only when:
 
-Check the API's health with `kubectl get --raw='/readyz?verbose'`, which any
-released kubeconfig may call, the log-reader one included. A server node whose
-API stops answering has to be rebooted, which starts a new cluster: no RKE2
-state survives a reboot ([operator.md](operator.md#bounded-operator)).
+- it comes in the form containerd's shim sends: `--process`, with only
+  `--detach` and `--pid-file` beside it, and the container ID last;
+- the plugin recorded a grant for that container, and the command is exactly
+  one it names;
+- the process is the container's own process from its bundle, with only the
+  command replaced and no terminal, which is what containerd builds for an
+  exec probe.
+
+The wrapper hands the real runtime a private copy of the process it checked,
+not the caller's file. Whoever triggers such an exec can run only a granted
+command; for kube-apiserver that is a fixed GET of `/livez` or `/readyz` in a
+pinned image, whose output says nothing that `kubectl get --raw='/readyz?verbose'`
+does not.
+
+A denial names its reason after the locked-mode message, in the pod event and
+the runtime log. A denied probe reaches the kubelet as a runtime error, which it
+discards rather than counting as a failure, so a probe command the wrapper does
+not recognise leaves the pod un-Ready without restarting it.
+
+Every other exec is still denied.
 
 Container creation is not what this closes: whoever can create a pod can put any
 command in its initial process, which the allowlist restricts

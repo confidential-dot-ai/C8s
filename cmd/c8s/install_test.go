@@ -32,25 +32,6 @@ import (
 
 var errTestResolve = errors.New("simulated resolve failure")
 
-func TestOperatorKeysPreflight(t *testing.T) {
-	// Keys provided → no gate, no warning.
-	if warn, err := operatorKeysPreflight("operator.pub", nil, false); err != nil || warn != "" {
-		t.Fatalf("keys provided: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-	// Default path, no keys, no force → hard error (must acknowledge).
-	if _, err := operatorKeysPreflight("", nil, false); err == nil {
-		t.Fatal("no keys + no force: expected an error requiring --operator-keys or --force")
-	}
-	// Default path, no keys, --force → allowed, but warns.
-	if warn, err := operatorKeysPreflight("", nil, true); err != nil || warn == "" {
-		t.Fatalf("no keys + force: want warn and no error, got warn=%q err=%v", warn, err)
-	}
-	// -f supplied → operator owns cds.operatorKeys in their values file; no gate.
-	if warn, err := operatorKeysPreflight("", []string{"custom.yaml"}, false); err != nil || warn != "" {
-		t.Fatalf("-f supplied: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-}
-
 func TestCDSPinPreflight(t *testing.T) {
 	dir := t.TempDir()
 	file := func(name, body string) string {
@@ -1257,7 +1238,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 
 	// Two orthogonal axes:
 	//  --cvm-mode: bare-metal (node-as-CVM) / gke (managed) / aks (vTPM)
-	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (/dev/tdx-guest)
+	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (ConfigFS TSM)
 	// node+gke all take either hardware-platform; aks always emits the vTPM
 	// device and rides the Azure vTPM HCL report for both SNP (az-snp) and TDX
 	// (az-tdx).
@@ -1269,7 +1250,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tdxGuest=" + tdxGuest,
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
-		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
+		// Any TDX shape — native (ConfigFS TSM) or Azure vTPM (az-tdx) —
 		// propagates the CPU TEE to CDS, which names its armTLS platform, or
 		// CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {

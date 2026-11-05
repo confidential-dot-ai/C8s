@@ -131,6 +131,7 @@ type Journal struct {
 	mu       sync.Mutex
 	reported string // the last read error logged
 	absent   bool   // the missing journal was logged
+	present  bool   // the journal was seen to exist; on its tmpfs it stays until reboot
 }
 
 // NewJournal returns the journal at path, or nil when path is empty.
@@ -160,8 +161,11 @@ func (j *Journal) Policies() []string {
 	defer j.mu.Unlock()
 	if err == nil {
 		j.reported = ""
-		if list == nil && !j.absent {
-			if _, statErr := os.Stat(j.path); errors.Is(statErr, fs.ErrNotExist) {
+		if list == nil && !j.absent && !j.present {
+			// ReadRuntimeExtensions reads a missing journal as an empty one.
+			_, statErr := os.Stat(j.path)
+			j.present = statErr == nil
+			if errors.Is(statErr, fs.ErrNotExist) {
 				j.absent = true
 				slog.Info("armtls: no measured-policy journal; evidence lists no measured policies until it appears", "path", j.path)
 			}

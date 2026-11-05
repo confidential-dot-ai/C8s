@@ -91,7 +91,7 @@ func (f *fakeCDS) handleList(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("ETag", `W/"`+strconv.Itoa(version)+`"`)
+	w.Header().Set(pkgallowlist.VersionHeader, strconv.Itoa(version))
 	w.Write(body)
 }
 

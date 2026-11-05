@@ -64,6 +64,25 @@ func objectDigest(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// Served returns the canonical bytes of the document the store serves now and
+// the version it serves them at: the head of the history, which publishTx
+// keeps current in every change and startJournal sets before CDS serves.
+func (s *Store) Served() (body []byte, version string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.db.QueryRow(`SELECT o.body, v.version
+		FROM journal_event e JOIN journal_object o ON o.digest = e.digest, allowlist_version v
+		ORDER BY e.position DESC LIMIT 1`).Scan(&body, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", errors.New("the allowlist history has no entry: it has not been started")
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("read the served allowlist: %w", err)
+	}
+	return body, version, nil
+}
+
 // startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls

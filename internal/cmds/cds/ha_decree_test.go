@@ -2,6 +2,7 @@ package cds
 
 import (
 	"context"
+	"crypto/sha512"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
@@ -352,20 +355,40 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	if decree.ResumeVersion != 12 || decree.IssuedAtMS == 0 {
 		t.Fatalf("decree resumes above %d, issued at %d", decree.ResumeVersion, decree.IssuedAtMS)
 	}
+	// The configuration's nodes bind no launch, as a dev configuration's may.
 	nodes, err := decree.NodePins.Images()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodes.Family != teetypes.FamilyTDX || len(nodes.Images) != 1 {
+	if nodes.Family != teetypes.FamilyTDX || len(nodes.Images) != 1 || slices.ContainsFunc(nodes.Images, cdsdecree.EntryBindsLaunch) {
 		t.Fatalf("the decree certifies %+v, want the configuration's nodes", nodes)
 	}
+}
+
+// boundNodes is a node pin document with every entry bound to the launch file
+// its nodes boot.
+func boundNodes(t *testing.T, document string) []byte {
+	t.Helper()
+	nodes, err := refvalues.Parse([]byte(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launched := sha512.Sum384([]byte("schemaVersion: c8s-worker/v1\n"))
+	for i := range nodes.Images {
+		nodes.Images[i].LaunchFileDigest = launched[:]
+	}
+	bound, err := refvalues.Format(nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bound
 }
 
 func TestNodeImagesDecreeCarriesTheWholeSet(t *testing.T) {
 	c := newOperatorCluster(t)
 	o := c.options(t)
 	upgrading := filepath.Join(t.TempDir(), "nodes.json")
-	writeTestFile(t, upgrading, []byte(upgradingNodesDocument))
+	writeTestFile(t, upgrading, boundNodes(t, upgradingNodesDocument))
 	serving := c.replicaServing(t, nil)
 
 	if err := signing(t, func(cmd *cobra.Command) error {
@@ -408,6 +431,26 @@ func TestNodeImagesDecreeRefusesAFileThatPinsNothing(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a decree certifying no node image was signed")
+	}
+	if _, statErr := os.Stat(o.out); statErr == nil {
+		t.Fatal("the refused decree was written anyway")
+	}
+}
+
+func TestNodeImagesDecreeRefusesAnEntryBindingNoLaunch(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	unbound := filepath.Join(t.TempDir(), "nodes.json")
+	writeTestFile(t, unbound, []byte(upgradingNodesDocument))
+
+	err := signing(t, func(cmd *cobra.Command) error {
+		return nodeImagesOptions{
+			decreeOptions: o,
+			nodes:         unbound,
+		}.run(cmd)
+	})
+	if err == nil || !strings.Contains(err.Error(), "binds no launch") {
+		t.Fatalf("got %v, want the entry binding no launch refused", err)
 	}
 	if _, statErr := os.Stat(o.out); statErr == nil {
 		t.Fatal("the refused decree was written anyway")

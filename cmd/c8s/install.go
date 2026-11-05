@@ -218,22 +218,6 @@ func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string
 	return entrypoint, imageEnv, nil
 }
 
-// operatorKeysPreflight enforces that installing without pinned operator keys is
-// a deliberate choice. On the default path — no --operator-keys and no -f values
-// file that could carry cds.operatorKeys — it requires --force, because the
-// resulting CDS has allowlist writes disabled and stores no route manifest, so
-// nobody could change allowlist entries and the router routes nothing. When keys are supplied, or the operator
-// is managing values via -f, it is a no-op.
-func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool) (warn string, err error) {
-	if operatorKeys != "" || len(valuesFiles) > 0 {
-		return "", nil
-	}
-	if !force {
-		return "", fmt.Errorf("no operator keys provided: allowlist writes will be DISABLED — nobody can add/remove/upload allowlist entries via `c8s allowlist`. Re-run with --operator-keys <file> to enable writes, or --force to install with writes disabled anyway")
-	}
-	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work, and CDS stores no route manifest, so the router answers 503 to every application request, until you set cds.operatorKeys and reinstall", nil
-}
-
 // cdsPreflight refuses an install that names no CDS: no --cds-address and
 // --cds-pin, and no -f values file setting cds.address, cds.measurementsConfig
 // or node.baked=true (a baked node takes the address and the pin from its
@@ -933,7 +917,8 @@ var installCmd = &cobra.Command{
   - the ConfidentialWorkload CRD
   - the mutating admission webhook configuration
   - the attestation-api DaemonSet (per-node /attest + /verify)
-  - the CDS trust root (attestation, mesh CA, leaf signing)
+  - cds.address and cds.measurementsConfig, pointing the cluster at the external
+    CDS named by --cds-address and --cds-pin
   - the pod-validating webhook configuration
   - the nri-image-policy and router components
 
@@ -978,11 +963,12 @@ through the c8s webhook and the operator provisions the c8s-<id> headless Servic
 With --resolve-digests, install also writes one
 nriImagePolicy.bootstrapAllowlist.workloads entry per adopted workload, named
 after its cw id and listing every image of its pod template under any command
-and args, with mounts limited to the injected cert volume and the template's
-memory-backed emptyDirs, so image admission (the host NRI plugin) allows the
-rollout and CDS stamps the cw id on the workload's certificate. A template
-mounting anything else, or a subPath of those, gets an entry admitting any
-mounts and a warning: CDS still names the pod, so a route written to it later
+and args, with mounts limited to the template's memory-backed emptyDirs (the
+webhook refuses a workload container that mounts the cert volume), so image
+admission (the host NRI plugin) allows the rollout and CDS stamps the cw id on
+the workload's certificate. A template mounting anything else or a subPath, or
+requesting c8s secrets or volumes, gets an entry admitting any mounts and a
+warning: CDS still names the pod, so a route written to it later
 trusts those mounts. For the --upstream workload install refuses instead;
 write its entry with 'c8s allowlist'. Install refuses an adoption whose pod another entry of the
 seed also describes, since CDS would then name it nothing.
@@ -1049,11 +1035,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			}
 		} else if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err != nil {
 			return err
-		}
-		if warn, err := operatorKeysPreflight(installOperatorKeys, installValues, installForce); err != nil {
-			return err
-		} else if warn != "" {
-			fmt.Fprintln(os.Stderr, "warning: "+warn)
 		}
 		if _, err := exec.LookPath("helm"); err != nil {
 			return fmt.Errorf("helm CLI not found on PATH: %w", err)
@@ -1424,9 +1405,9 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // level — all modes render privileged: true, since a hostPath device mount alone
 // does not grant device-cgroup access):
 //
-//	node, gke      → native /dev/sev-guest (SEV-SNP) by default, or
-//	                 /dev/tdx-guest (Intel TDX) if --hardware-platform tdx
-//	aks            → vTPM /dev/tpm0
+//	bare-metal, gke → native /dev/sev-guest (--hardware-platform sev-snp) or
+//	                  ConfigFS TSM (--hardware-platform tdx)
+//	aks             → vTPM /dev/tpm0
 //
 // bare-metal and gke are distinct deployment targets that happen to share the
 // native-TEE-device wiring (they are NOT aliases):
@@ -1447,12 +1428,11 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // hostPath CharDevice check.
 //
 // `--cvm-mode` (deployment shape) and `--hardware-platform` (CPU TEE) are
-// ORTHOGONAL axes. pod/node/gke pair with either SEV-SNP
-// (--hardware-platform sev-snp, default) or Intel TDX (--hardware-platform
-// tdx). aks uses the Azure vTPM path regardless of the CPU TEE type: the node's
+// ORTHOGONAL axes, both required. bare-metal and gke pair with either SEV-SNP
+// (--hardware-platform sev-snp) or Intel TDX (--hardware-platform tdx). aks uses the Azure vTPM path regardless of the CPU TEE type: the node's
 // vTPM HCL report wraps an SNP report on an SEV-SNP CVM (az-snp) or a TD quote
 // on an Intel TDX CVM (az-tdx). Both are supported; --hardware-platform tdx on
-// aks selects the az-tdx shape (no /dev/tdx-guest needed — the TD quote comes
+// aks selects the az-tdx shape (no TDX guest device needed — the TD quote comes
 // from the vTPM), and the mesh/CDS armTLS platform is set to tdx accordingly.
 //
 // Mixed-hardware inside a single cluster (some SNP hosts, some TDX hosts) is
@@ -1482,8 +1462,8 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	//        wraps either an SNP report (az-snp) or a TD quote (az-tdx). AKS
 	//        exposes no /dev/sev-guest or /dev/tdx_guest to the guest, so the
 	//        vTPM is the only evidence source for both SNP and TDX aks nodes.
-	//   node/gke + --hardware-platform sev-snp: native /dev/sev-guest
-	//   node/gke + --hardware-platform tdx:     native /dev/tdx-guest
+	//   bare-metal/gke + --hardware-platform sev-snp: native /dev/sev-guest
+	//   bare-metal/gke + --hardware-platform tdx:     ConfigFS TSM (/sys/kernel/config)
 	sevGuest, tdxGuest, tpm := "false", "false", "false"
 	switch {
 	case cvmMode == "aks":
@@ -2444,28 +2424,28 @@ func init() {
 	installCmd.Flags().BoolVar(&installWait, "wait", true, "wait for the release to become ready (helm --wait)")
 	installCmd.Flags().BoolVar(&installCRDs, "install-crds", true, "install chart CRDs (false passes helm --skip-crds)")
 	installCmd.Flags().Int64Var(&installCertFSGroup, "webhook-cert-fs-group", 65532, "fsGroup for injected certificate volume")
-	installCmd.Flags().DurationVar(&installGetCertRenewInterval, "webhook-get-cert-renew-interval", 6*time.Hour, "renewal interval for injected workload certificates")
+	installCmd.Flags().DurationVar(&installGetCertRenewInterval, "webhook-get-cert-renew-interval", 2*time.Hour, "renewal interval for injected workload certificates; sets webhook.getCert.renewInterval only when passed (the chart default is also 2h). Keep it below the 6h named-leaf TTL; get-cert also renews off the leaf's own expiry")
 	installCmd.Flags().Int64Var(&installGetCertRunAsUser, "webhook-get-cert-run-as-user", 65532, "runAsUser for injected get-cert containers")
 	installCmd.Flags().Int64Var(&installGetCertRunAsGroup, "webhook-get-cert-run-as-group", 65532, "runAsGroup for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installGetCertRunAsNonRoot, "webhook-get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
-	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+cdsconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --measurements and --rtmrs, or --image-policy-file. Without it the manifest goes to --routes-out. Requires --upstream")
+	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+cdsconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --cds-pin. Without it the manifest goes to --routes-out. Requires --upstream")
 	installCmd.Flags().StringVar(&installRoutesOut, "routes-out", "routes.json", "file the --upstream route manifest is written to when no --operator-key signs it, or when install cannot store it on CDS")
 	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one CDS stores; default the later of the stored revision plus one and the current Unix time. After a CDS reset, pass one above the highest revision any router applied")
 	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")
 	installCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM: our own TDX/SNP nodes are themselves confidential VMs, pods run as ordinary processes, attestation-api + nri baked into the node image), gke (GKE managed confidential VMs), or aks (vTPM /dev/tpm0). bare-metal/gke/aks are node-as-CVM shapes: the node is one trust domain, so they are single-tenant")
-	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
+	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, quotes through ConfigFS TSM at /sys/kernel/config). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
-	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address: the VM `c8s cds config new` wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose port is the only one their packet rules admit outside the cluster")
+	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address: the VM 'c8s cds config new' wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose port is the only one their packet rules admit outside the cluster")
 	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
-	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input `c8s cds config new --allowlist-seed` takes before the CDS this install then names exists")
+	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input 'c8s cds config new --allowlist-seed' takes before the CDS this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
-	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes and route manifests; sets cds.operatorKeys, which also pins the router's keys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
-	installCmd.Flags().BoolVar(&installForce, "force", false, "proceed past guarded prompts — currently: install without --operator-keys (allowlist writes disabled), and a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
+	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; sets cds.operatorKeys. Without it the router uses the keys the pinned CDS serves. CDS's own write keys come from 'c8s cds config new --operator-keys'")
+	installCmd.Flags().BoolVar(&installForce, "force", false, "install despite a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)
 }
 

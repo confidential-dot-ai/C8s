@@ -32,7 +32,7 @@ func servingAllowlistCDS(t *testing.T, al *pkgallowlist.Allowlist) (url string, 
 		mu.Unlock()
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"3"`)
+			w.Header().Set(pkgallowlist.VersionHeader, "3")
 			_, _ = w.Write(body)
 			return
 		}
