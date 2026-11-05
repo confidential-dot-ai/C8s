@@ -63,8 +63,25 @@ The affected Go race checks and vet pass, as do 31 native-runner checks includin
 rejection of original-host recovery placement before any resource creation.
 The runner retries only transient HTTP 502/503/504 GET failures, at most three
 attempts; it preserves write reconciliation and never retries authorization errors.
-The cross-host hardware result is pending; full acceptance, operator-exclusion
-qualification and production readiness remain false.
+The [native cross-host run passed](../test/pilot/cds-sealed-recovery/results/2026-11-05-snp-cross-host.json)
+on 2026-11-05. Seven distinct signed guest identities spanned two SNP chips.
+After both source VMIs were confirmed absent, replacements on the surviving
+chip recovered CA fingerprint
+`e246f2adb46a43c9a0c7e9413d1af1420b020c59bb1bcf60b08f5c81171aeb45`.
+All three CDS processes rejected the still-valid spent token, preserved the
+acknowledged revocation, and passed the original-leaf/original-secret positive
+control after a new authorization. The original host was excluded by the
+runner; no physical host was shut down or changed.
+
+UID-scoped cleanup completed. A separate read-only audit found all 45 recorded
+resource paths from both attempts absent, including backing PVs and VMIs. The
+first attempt stopped before enrollment on a Rancher GET 502. Seven unrelated
+owner VM deletions were recorded during the successful attempt; no unexpected
+health regression was detected. This is not a fleet-wide availability result.
+
+The image was built locally from `76a8a92c`; the successful runner was frozen at
+`43e736b4`. Later commits publish documentation only. Full acceptance,
+operator-exclusion qualification and production readiness remain false.
 
 After the cross-host proof, the next increments are approved image transitions
 and TDX qualification, followed by the matched three-backend workload comparison.

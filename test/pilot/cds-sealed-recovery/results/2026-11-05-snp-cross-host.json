@@ -1,0 +1,320 @@
+{
+  "verified_at": "2026-11-05T08:32:24.550427+00:00",
+  "cross_host_cds_recovery_passed": true,
+  "full_acceptance_passed": false,
+  "production_ready": false,
+  "operator_exclusion_qualified": false,
+  "ci_used": false,
+  "shared_production_rollout": false,
+  "physical_host_shutdown_performed": false,
+  "scope": "Same-image recovery using a surviving independently enrolled SNP chip, with the original host excluded; three real CDS processes share one guest and storage is a trusted conditional-object fixture.",
+  "image_source_commit": "76a8a92c8c4e4c9801b2cf0c8c5e8e14f9bdaaec",
+  "runner_commit": "43e736b4b25450975cc968f2b6e2a2ee1880be4f",
+  "runner_hashes": {
+    "run.py": "60b47ff2864ede64812ca9e9e6b0e9f62156883de5b638fa7e0481f4c98a18d6",
+    "integrated.py": "f259176490f99b207ad515627b9d62544ec39cf10b0cadb98cb48c3df1b9ee33"
+  },
+  "measurement": "b3a30023222b711b02528a0d35f31edaa668c5d45e68a593c0bd3fca8d826ca84efe0a52f583427a0afd56ba7b18479e",
+  "artifact_hashes": {
+    "disk.raw": "7ad30fc6451f33c54abf0893b0bf1aa38161c45b95675a540886ff3e116fc569",
+    "guest-smp2.igvm": "e8616d60255677023e6cc6067dc0139634413639e732321ef17c9d58aafcb701",
+    "uki.efi": "3a94e0e156bb7ab062608d09a0d960b1a22fb3258553154480f0174fa35ba411",
+    "OVMF.fd": "53c3bdc6654708a7b23f5db36c0548de4975322e5838e90bd258e082394bf8c0"
+  },
+  "tool_hashes": {
+    "verifier": "a7ac27e5579fb22b2e38c37fe45e66c34cacdef35ba5be44ab1188c20df510da",
+    "renderer": "676432c76f0cbe1d1ef2e2ab2032efcf57df3e38d7b1ef145829f404517a5f0c",
+    "runner": "f259176490f99b207ad515627b9d62544ec39cf10b0cadb98cb48c3df1b9ee33"
+  },
+  "build": {
+    "source_commit": "76a8a92c8c4e4c9801b2cf0c8c5e8e14f9bdaaec",
+    "source_tree": "03c84cb149282170beb94a0484ba22f83b2e9204",
+    "builder_commit": "133aeae5e006ee11a72b2a7200a9fb173a1c85ef",
+    "manifest_sha256": "bd82988978ee5807543a8dc108cf5d21c9a7bad2a98a43b6f80e4566bf83476c"
+  },
+  "build_inspection": {
+    "public_runtime_modes_verified": {
+      "/etc/systemd/network/80-dhcp.network": "0644",
+      "/etc/systemd/system/cds-snp-acceptance.service": "0644",
+      "/etc/systemd/system/cds-snp-acceptance-expiry.service": "0644",
+      "/etc/systemd/system/cds-snp-acceptance-expiry.timer": "0644",
+      "/etc/systemd/journald.conf.d/50-cds-snp-acceptance-console.conf": "0644",
+      "/etc": "0755",
+      "/etc/systemd": "0755",
+      "/etc/systemd/network": "0755",
+      "/usr": "0755",
+      "/usr/lib": "0755",
+      "/usr/lib/systemd": "0755"
+    },
+    "serial_driver_verified": true,
+    "serial_sysrq_disabled": true,
+    "networkd_enabled": true,
+    "host_visible_boot_diagnostics": true,
+    "artifact_hashes_verified": true,
+    "gpt_crc_verified": true,
+    "erofs_checked": true,
+    "acceptance_binary_sha256": "aab5c86f03878c0e949aed5ddc67a111034ab8f85e2fe730f2e8f78343482625",
+    "cds_binary_sha256": "42d773b75df75bf30d38b0ddda61bbedc199195b28be55a1c8c4f5634bf258b6",
+    "measured_kernel_sha256": "bd22510c1c083effce81c838aae74739298e3dd4ae6683d2a8ab6208dc2a0216",
+    "root_hash": "a49c331732accc4118e116f74277609133f3b8036df06e46bdcf93c2fdc0d034",
+    "snp_measurement": "b3a30023222b711b02528a0d35f31edaa668c5d45e68a593c0bd3fca8d826ca84efe0a52f583427a0afd56ba7b18479e",
+    "root_login_locked": true,
+    "cloud_init_disabled": true,
+    "services_masked": [
+      "getty@.service",
+      "serial-getty@.service",
+      "console-getty.service",
+      "rescue.service",
+      "emergency.service",
+      "ssh.service",
+      "sshd.service",
+      "qemu-guest-agent.service"
+    ],
+    "probe_enabled": true,
+    "expiry_timer_enabled": true,
+    "inventory_netlink_enabled": true
+  },
+  "phases": {
+    "enroll": {
+      "guest_report_id_sha256": "79a8527fe1615c722c26739ac4af8a89e0a1abaa8b6d472f5345705290cbdcc8",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "02f8a032deee46495e346a4fa4e15e3de398f3d2a7bea3f3ea6f61ac5233ac9b",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "04f2a8856df1917e29d14c91c37dd7684912e65f15e81d2f32c4a61ed5f0bf97",
+      "checks": {}
+    },
+    "copy-custodian": {
+      "guest_report_id_sha256": "95e11f3c4e9efc65eb072aa920475e8ebc2615953b347261ddb1c630f0422c85",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "02f8a032deee46495e346a4fa4e15e3de398f3d2a7bea3f3ea6f61ac5233ac9b",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "0f73229f88556bea46741381eb3d630b3d6e95d7a5dec0f5b640232992ea784b",
+      "checks": {}
+    },
+    "copy": {
+      "guest_report_id_sha256": "0b4470fff268fda2b84c62906aa234a7c26f1a6c8ec3246f69f0d8f9653cfe79",
+      "chip_id_sha256": "2fdfabc5563c30fa2c0c56d0eb9f83436ca6a206d2ff6cf43ccc16e846683a05",
+      "launch_sha256": "e93862a57ec8228288451fb89895678f2b684203fba98a1c68a1069c8e3c3df3",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "3f9e43d54293283c265dcd5baef6e83d145a01fd02a34f09fb80803e9b14757b",
+      "checks": {}
+    },
+    "seed-custodian": {
+      "guest_report_id_sha256": "f0390a382e32f00579bb876fa53666b59bee4402a587b0a30afd6b40cdbf98f8",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "02f8a032deee46495e346a4fa4e15e3de398f3d2a7bea3f3ea6f61ac5233ac9b",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "78746dc3c297f67266bb4504bcb562493669b6d1d3830eee76a49224bd2e81ef",
+      "checks": {}
+    },
+    "seed": {
+      "guest_report_id_sha256": "9199c6ba0c942ef6337bda8ea47bd0b902728ff62512cd1ecdf5cafd867af4c9",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "e93862a57ec8228288451fb89895678f2b684203fba98a1c68a1069c8e3c3df3",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "ac96b36874bc18ce80b97f34ca03cdb11f23a11a67d6d88150f12fd36349f99e",
+      "checks": {
+        "attested_custodian_delegation": true,
+        "authority_reads_current_wal_policy": true,
+        "authorized_read_before_loss": true,
+        "ca_fingerprint": "e246f2adb46a43c9a0c7e9413d1af1420b020c59bb1bcf60b08f5c81171aeb45",
+        "real_snp_attestation": true,
+        "replay_expires": "2026-11-05T08:31:17.893875245Z",
+        "replay_rejected_before_loss": true,
+        "replicas": 3,
+        "revocation_acknowledged_before_loss": true,
+        "wal_key_and_ca_never_exported_as_plaintext": true
+      }
+    },
+    "recover-custodian": {
+      "guest_report_id_sha256": "ec1d0f6c4baa531c9035e57aa17226634d3996674cee8f1b65d59b240bc755c1",
+      "chip_id_sha256": "2fdfabc5563c30fa2c0c56d0eb9f83436ca6a206d2ff6cf43ccc16e846683a05",
+      "launch_sha256": "e93862a57ec8228288451fb89895678f2b684203fba98a1c68a1069c8e3c3df3",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "002651e3ccb3e8a6de654ccec2a5a05c6a75d43c0ab08323f5d73151bdf93ab7",
+      "checks": {}
+    },
+    "recover": {
+      "guest_report_id_sha256": "424b556b3c269b27026441b2005e8b302d07235109f67d916ae1d761567219db",
+      "chip_id_sha256": "2fdfabc5563c30fa2c0c56d0eb9f83436ca6a206d2ff6cf43ccc16e846683a05",
+      "launch_sha256": "e93862a57ec8228288451fb89895678f2b684203fba98a1c68a1069c8e3c3df3",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "d09a5766ccd3b355f04db4d24c062f10204da6768d334bbf2ec6ae6a4f440c79",
+      "checks": {
+        "attested_custodian_delegation": true,
+        "authority_reads_current_wal_policy": true,
+        "ca_fingerprint": "e246f2adb46a43c9a0c7e9413d1af1420b020c59bb1bcf60b08f5c81171aeb45",
+        "old_leaf_and_secret_positive_control": true,
+        "real_snp_attestation": true,
+        "replay_expires": "2026-11-05T08:31:17.893875245Z",
+        "replicas": 3,
+        "revocation_preserved_all_replicas": true,
+        "same_ca_all_replicas": true,
+        "unexpired_replay_rejected_all_replicas": true,
+        "wal_key_and_ca_never_exported_as_plaintext": true
+      }
+    }
+  },
+  "custody_copy_sha256": "823e63a0ca9729734dc638cdfebc53854cd856e953f79a8f1f7e675ecdf090be",
+  "vm_boots": [
+    {
+      "time": "2026-11-05T08:02:24.607348+00:00",
+      "event": "vm-ready",
+      "phase": "enroll",
+      "vmi_uid": "e5835663-6c02-406c-b900-b4e2a674e242",
+      "vm_uid": "04634788-b53a-4286-94d1-353df478f4f3",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T08:15:51.828456+00:00",
+      "event": "vm-ready",
+      "phase": "copy-source",
+      "vmi_uid": "84698401-7075-46b4-8bbd-1e70e36d8bc6",
+      "vm_uid": "b4483e13-b03b-4504-b806-56af01b4664e",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T08:15:52.047280+00:00",
+      "event": "vm-ready",
+      "phase": "copy-destination",
+      "vmi_uid": "2f5bd12f-6b43-42bd-a028-7133a4451387",
+      "vm_uid": "482fb78d-d7f4-4428-910f-daec680c94a8",
+      "node": "ns1028766"
+    },
+    {
+      "time": "2026-11-05T08:25:25.126264+00:00",
+      "event": "vm-ready",
+      "phase": "seed-custodian",
+      "vmi_uid": "0d6ae78d-1372-4811-ba44-008c84f36410",
+      "vm_uid": "09bc617b-1001-4fcb-8363-b2f9e9633a40",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T08:25:25.390900+00:00",
+      "event": "vm-ready",
+      "phase": "seed-cds",
+      "vmi_uid": "500c3239-c297-4127-a1d6-ac39219dcb4b",
+      "vm_uid": "5a90f596-47d8-4d0f-b7ac-d3d7bd8b09b7",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T08:27:42.192224+00:00",
+      "event": "vm-ready",
+      "phase": "recover-custodian",
+      "vmi_uid": "d47a1185-124c-4690-9257-ea67b94aa3ec",
+      "vm_uid": "e1e62024-6bcb-47ed-ae72-f1aa691a1b45",
+      "node": "ns1028766"
+    },
+    {
+      "time": "2026-11-05T08:27:45.643058+00:00",
+      "event": "vm-ready",
+      "phase": "recover-cds",
+      "vmi_uid": "a2c239a2-b89b-48a9-864a-8c0861791523",
+      "vm_uid": "00e54381-7092-4431-a094-1281be1179fe",
+      "node": "ns1028766"
+    }
+  ],
+  "memory_loss": [
+    {
+      "time": "2026-11-05T08:27:09.359696+00:00",
+      "event": "all-cds-and-custodian-memory-destroyed",
+      "phase": "seed",
+      "cds_vmi_uid": "500c3239-c297-4127-a1d6-ac39219dcb4b",
+      "custodian_vmi_uid": "0d6ae78d-1372-4811-ba44-008c84f36410"
+    },
+    {
+      "time": "2026-11-05T08:29:46.989283+00:00",
+      "event": "all-cds-and-custodian-memory-destroyed",
+      "phase": "recover",
+      "cds_vmi_uid": "a2c239a2-b89b-48a9-864a-8c0861791523",
+      "custodian_vmi_uid": "d47a1185-124c-4690-9257-ea67b94aa3ec"
+    }
+  ],
+  "host_exclusion": [
+    {
+      "time": "2026-11-05T08:27:11.753786+00:00",
+      "event": "original-host-excluded-from-recovery",
+      "node": "ns1032181"
+    }
+  ],
+  "storage_operations": [
+    {
+      "time": "2026-11-05T08:03:01.183994+00:00",
+      "event": "external-storage",
+      "phase": "enroll",
+      "reads": 0,
+      "writes": 0,
+      "conflicts": 0
+    },
+    {
+      "time": "2026-11-05T08:16:51.219900+00:00",
+      "event": "external-storage",
+      "phase": "copy",
+      "reads": 0,
+      "writes": 0,
+      "conflicts": 0
+    },
+    {
+      "time": "2026-11-05T08:26:52.182490+00:00",
+      "event": "external-storage",
+      "phase": "seed",
+      "reads": 248,
+      "writes": 26,
+      "conflicts": 0
+    },
+    {
+      "time": "2026-11-05T08:29:24.263810+00:00",
+      "event": "external-storage",
+      "phase": "recover",
+      "reads": 294,
+      "writes": 18,
+      "conflicts": 0
+    }
+  ],
+  "environment_observations": {
+    "external_vm_deletions_observed": 7,
+    "unexpected_regression_detected": false,
+    "fleet_unchanged_claim": false
+  },
+  "cleanup": {
+    "runs": [
+      "01",
+      "02"
+    ],
+    "resource_paths_checked": 45,
+    "verified_at": "2026-11-05T08:31:12.970733+00:00",
+    "all_absent": true,
+    "remaining": [],
+    "audit_sha256": {
+      "01": "05ce372a55f7f0dbbc275115556bf3f953f8abc21d5c324f13900e7d3ca711a3",
+      "02": "f69403ab4d4a820cc9cb01093fe6abfac724468e0b48c41edfd4feb4abf63537"
+    }
+  },
+  "prior_attempt": {
+    "stage": "before enrollment",
+    "failure": "Rancher GET returned HTTP 502",
+    "cleaned_up": true,
+    "result_not_counted_as_pass": true
+  },
+  "local_checks": {
+    "runner_checks_passed": 31,
+    "affected_go_race_and_vet_passed": true,
+    "existing_current_release_policy_race_passed": true,
+    "runner_log_sha256": "230fc9be0f579a0bdb9b2f3e092f1b9513fec40445b375a341f4e39c08571a74"
+  },
+  "not_qualified": [
+    "three-host serving availability",
+    "loss of every enrolled physical custody anchor",
+    "custody membership changes and image retirement",
+    "TDX hardware custody",
+    "operator rollback of the freshness store",
+    "production capacity and latency"
+  ]
+}
