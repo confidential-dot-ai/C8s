@@ -155,3 +155,17 @@ func installPodRole(t *testing.T, root string, assigned *launchconfig.AssignedPo
 		t.Fatal(err)
 	}
 }
+
+// Exercise the prepared policy through the production startup path and an NRI
+// runtime connection, including admission before CDS becomes available.
+func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
+	root, doc := podRoleInputs(t)
+	if err := nodeservices.PrepareNode(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nriimagepolicy.AssertPodBootstrap(t, cfg, root, []byte(doc.PodOperatorPublicKey), podImageDigest)
+}
