@@ -392,6 +392,9 @@ func TestVerifyCertEmbeddedAzureNegativePaths(t *testing.T) {
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
 			t.Fatalf("got %v, want a 422 *remote.APIError", err)
 		}
+		if !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("got %v, want ErrInvalidReport", err)
+		}
 	})
 
 	// Defense in depth: a self-contradicting 200 must still be refused. The
