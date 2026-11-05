@@ -35,12 +35,22 @@ func write(opts options) error {
 	if err != nil {
 		return err
 	}
+	var podImagePolicy []byte
+	if opts.podImagePolicy != "" {
+		if podImagePolicy, err = readInput("pod-image-policy-file", opts.podImagePolicy); err != nil {
+			return err
+		}
+		if len(podImagePolicy) == 0 {
+			return fmt.Errorf("--pod-image-policy-file must contain a nonempty Pod image policy")
+		}
+	}
 	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.clusterID,
 		OperatorKeys:    operatorKeys,
 		ComponentSeed:   components,
 		TenantWorkloads: tenant,
 		Nodes:           nodes,
+		PodImagePolicy:  podImagePolicy,
 		NodeCIDRs:       opts.nodeCIDRs,
 		ClusterCIDRs:    append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...),
 		LeafDNSNames:    opts.leafDNSNames,
