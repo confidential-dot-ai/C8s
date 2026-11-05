@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,16 +38,123 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// podRecoveryCase restarts the configured plugin after a bootstrap that
+// started the mesh endpoint, a removed job and an application container.
+// mutate changes the retained state or the runtime inventory between the
+// stop and the restart; a refused case must then end startup without
+// resuming issuance, while an accepted case must restore the issuance
+// identity unchanged (GB8, OB5, CC2, CC3).
+type podRecoveryCase struct {
+	// unconsumed leaves the application's start grant unconsumed before the
+	// restart.
+	unconsumed bool
+	// bindIssuer publishes an issuer binding before the restart (CC2).
+	bindIssuer bool
+	// version is the served policy version the plugin registers under.
+	version uint64
+	// afterSandbox runs once the sandbox exists, before the endpoint starts.
+	afterSandbox func(f *podRecoveryFixture)
+	// live replaces the publication that normally precedes the stop.
+	live func(f *podRecoveryFixture)
+	// mutate runs after the stop and before the restart.
+	mutate func(f *podRecoveryFixture)
+	// refused names the expected synchronization refusal; "" with refused
+	// true accepts any refusal.
+	refused bool
+	refusal string
+	// recovered continues an accepted restart.
+	recovered func(f *podRecoveryFixture)
+}
+
+func podRecoveryCases() map[string]podRecoveryCase {
+	return map[string]podRecoveryCase{
+		"completed":                {},
+		"creation-refusal-restart": {afterSandbox: (*podRecoveryFixture).restartAfterCreationRefusal},
+		"unconsumed-start": {unconsumed: true, recovered: func(f *podRecoveryFixture) {
+			f.must(f.runner.nri.StartContainer(f.ctx, &api.StartContainerRequest{Pod: f.pod, Container: f.app}))
+			if err := podstart.Consume(f.ctx, f.startSocket, f.consumed); err != nil {
+				f.t.Fatalf("fresh final admission could not authorize the same created task: %v", err)
+			}
+			if err := podstart.Consume(f.ctx, f.startSocket, f.consumed); err == nil {
+				f.t.Fatal("fresh final admission was consumed twice")
+			}
+		}},
+		"removed-while-disconnected": {mutate: func(f *podRecoveryFixture) {
+			f.killProcess(f.app.Id)
+			f.editLive(func() { delete(f.live.containers, f.app.Id) })
+		}},
+		"stopped-while-disconnected": {mutate: func(f *podRecoveryFixture) {
+			f.killProcess(f.app.Id)
+			f.editLive(func() { f.live.containers[f.app.Id].State = api.ContainerState_CONTAINER_STOPPED })
+		}},
+		"changed-issuer": {bindIssuer: true, refused: true, mutate: func(f *podRecoveryFixture) {
+			f.must(os.WriteFile(f.issuerPath, []byte(strings.Repeat("b", 64)+"\n"), 0644))
+		}},
+		"missing-broker-marker": {refused: true, mutate: func(f *podRecoveryFixture) {
+			f.must(os.Remove(filepath.Join(f.cfg.WorkloadClaims.SocketDir, podBrokerMarker)))
+		}},
+		"changed-network": {refused: true, mutate: func(f *podRecoveryFixture) {
+			other := sandboxProcess(f.t)
+			f.editLive(func() {
+				for _, ns := range f.live.pod.Linux.Namespaces {
+					if ns.Type == "network" {
+						ns.Path = sandboxNetNSPath(other)
+					}
+				}
+			})
+		}},
+		"changed-rules": {refused: true, mutate: func(f *podRecoveryFixture) { changePodRecoveryRules(f.t, f.pod.Pid) }},
+		"changed-selected-image": {refused: true, mutate: func(f *podRecoveryFixture) {
+			f.selected.Store(f.app.Id, extractDigest(f.mesh.Annotations[annotationImageName]))
+		}},
+		"changed-launch": {refused: true, mutate: func(f *podRecoveryFixture) {
+			f.editLive(func() { f.live.containers[f.app.Id].Args = []string{"/app/workload", "unrecorded"} })
+		}},
+		"missing-state":   {refused: true, mutate: func(f *podRecoveryFixture) { f.must(os.Remove(f.statePath())) }},
+		"malformed-state": {refused: true, mutate: func(f *podRecoveryFixture) { f.must(os.WriteFile(f.statePath(), []byte(`{"incomplete":`), 0600)) }},
+		"pending-state":   {refused: true, mutate: func(f *podRecoveryFixture) { f.must(os.WriteFile(f.pendingPath(), []byte("interrupted"), 0600)) }},
+		"missing-journal": {refused: true, mutate: func(f *podRecoveryFixture) { f.must(os.Remove(journalPath(f.cfg))) }},
+		"unknown-container": {refused: true, mutate: func(f *podRecoveryFixture) {
+			unexpected := proto.Clone(f.app).(*api.Container)
+			unexpected.Id = "unrecorded-runtime-container"
+			f.editLive(func() { f.live.containers[unexpected.Id] = unexpected })
+		}},
+		"changed-sandbox":           {refused: true, mutate: func(f *podRecoveryFixture) { f.editLive(func() { f.live.pod.Uid = "replaced-runtime-pod" }) }},
+		"changed-process":           {refused: true, mutate: func(f *podRecoveryFixture) { f.editLive(func() { f.live.containers[f.app.Id].Pid = f.pod.Pid }) }},
+		"changed-credential-volume": {refused: true, mutate: func(f *podRecoveryFixture) { f.must(os.Chmod(f.credentialSource, 0755)) }},
+		"missing-full-history": {refused: true, mutate: func(f *podRecoveryFixture) {
+			f.editState(func(state *podRecoveryState) { state.Histories = map[string]json.RawMessage{} })
+		}},
+		"missing-removed-authorization": {refused: true, mutate: func(f *podRecoveryFixture) {
+			f.editState(func(state *podRecoveryState) { delete(state.Processes, f.removed.Id) })
+		}},
+		"missing-runtime-sandbox": {refused: true, refusal: "requires the original sandbox", mutate: func(f *podRecoveryFixture) {
+			f.editLive(func() { f.live.pod = nil })
+		}},
+		"unknown-container-state": {refused: true, refusal: "container state is unknown", mutate: func(f *podRecoveryFixture) {
+			f.editLive(func() { f.live.containers[f.app.Id].State = api.ContainerState_CONTAINER_UNKNOWN })
+		}},
+		"duplicate-runtime-entry": {refused: true, refusal: "runtime repeated a container", mutate: func(f *podRecoveryFixture) {
+			f.editLive(func() { f.live.duplicate = true })
+		}},
+		"live-issuer-change":           {unconsumed: true, refused: true, refusal: "interrupted transition", live: (*podRecoveryFixture).changeIssuerAfterPublication},
+		"live-protection-loss":         {unconsumed: true, recovered: (*podRecoveryFixture).loseProtectionAfterRecovery},
+		"live-credential-replacement":  {unconsumed: true, recovered: (*podRecoveryFixture).loseCredentialCustodyAfterRecovery},
+		"policy-replay-after-recovery": {version: 2, recovered: (*podRecoveryFixture).replayPolicyAfterRecovery},
+	}
+}
+
 // These tests run the production configured plugin over NRI RPCs, real kernel
 // namespaces and protected RAM state. Containerd metadata, the register and CDS
 // issuance are explicit fixtures; actual task execution belongs to the separate
 // pod_runtime_integration lane.
 func assertPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, digest string) {
 	t.Helper()
-	for _, scenario := range []string{"completed", "empty-registration-restart", "protected-sandbox-restart", "creation-refusal-restart", "unconsumed-start", "issuer-preserved", "removed-while-disconnected", "stopped-while-disconnected", "missing-issuer", "changed-issuer", "missing-broker-marker", "changed-network", "changed-rules", "changed-selected-image", "changed-launch", "changed-mesh-uid", "missing-state", "malformed-state", "pending-state", "missing-journal", "unknown-container", "changed-sandbox", "changed-process", "changed-assignment", "public-state", "changed-credential-volume", "missing-full-history", "missing-removed-authorization", "live-checkpoint-failure", "live-issuer-change", "credential-worker-failure", "live-protection-loss", "policy-replay-after-recovery", "policy-capability-change", "missing-runtime-sandbox", "missing-policy-document", "unknown-container-state", "changed-measured-order", "duplicate-runtime-entry", "live-credential-permissions", "live-credential-replacement"} {
-		t.Run("recovery-"+scenario, func(t *testing.T) {
+	cases := podRecoveryCases()
+	for _, name := range slices.Sorted(maps.Keys(cases)) {
+		t.Run("recovery-"+name, func(t *testing.T) {
 			local := *cfg
-			runPodRecovery(t, &local, root, podKey, digest, scenario)
+			runPodRecovery(t, &local, root, podKey, digest, cases[name])
 		})
 	}
 }
@@ -116,14 +225,46 @@ func (r *podRecoveryRunner) stop(t *testing.T) {
 	r.stopped = true
 }
 
-func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, digest, scenario string) {
+type podRecoveryFixture struct {
+	t                *testing.T
+	ctx              context.Context
+	cfg              *config
+	dir              string
+	startSocket      string
+	credentialSource string
+	issuerPath       string
+	pod              *api.PodSandbox
+	live             *podRecoveryRuntime
+	selected         sync.Map
+	processes        map[string]*exec.Cmd
+	reg              *fakeRegister
+	brokers          chan getcert.GuestConfig
+	brokerStopped    chan struct{}
+	available        atomic.Bool
+	servedMu         sync.RWMutex
+	served           []byte
+	servedETag       string
+	servedRequests   atomic.Uint64
+	expectedVersion  uint64
+	cds              *httptest.Server
+	healthClient     *http.Client
+	runner           *podRecoveryRunner
+	mesh, app        *api.Container
+	removed          *api.Container
+	consumed         podstart.Request
+	initialBroker    getcert.GuestConfig
+	recoveredBroker  getcert.GuestConfig
+	before, after    workloadclaims.PodClaims
+}
+
+func newPodRecoveryFixture(t *testing.T, cfg *config, root string, podKey []byte, version uint64) *podRecoveryFixture {
 	t.Helper()
-	liveCredentialLoss := scenario == "live-credential-permissions" || scenario == "live-credential-replacement"
 	dir, err := os.MkdirTemp("", "pod-recover-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	f := &podRecoveryFixture{t: t, cfg: cfg, dir: dir, processes: map[string]*exec.Cmd{}, expectedVersion: version}
 	cfg.WorkloadClaims.SocketDir = filepath.Join(dir, "journal")
 	cfg.Policy.BootMarkerPath = filepath.Join(dir, "registered")
 	cfg.Containerd.Socket = filepath.Join(dir, "containerd.sock")
@@ -131,14 +272,16 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = filepath.Join(root, cfg.Allowlist.Pull.CDSMeasurementsConfig)
 	cfg.Allowlist.Pull.Timeout = time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
-	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
-	startSocket := filepath.Join(dir, "start.sock")
+	f.pod, f.credentialSource = preparePodBootstrapRuntime(t, cfg, dir)
+	// The fake issuer writes only its public binding under the production
+	// publication fence. Certificate issuance itself is tested in getcert.
+	f.issuerPath = filepath.Join(f.credentialSource, "issuer")
+	f.startSocket = filepath.Join(dir, "start.sock")
 	originalListen := listenPodStarts
-	listenPodStarts = func() (net.Listener, error) { return podstart.Listen(startSocket) }
+	listenPodStarts = func() (net.Listener, error) { return podstart.Listen(f.startSocket) }
 	t.Cleanup(func() { listenPodStarts = originalListen })
 
-	live := &podRecoveryRuntime{containers: map[string]*api.Container{}}
-	var selected sync.Map
+	f.live = &podRecoveryRuntime{containers: map[string]*api.Container{}}
 	// Synthetic runtime IDs have no containerd cgroup; birth and liveness are real.
 	originalIdentity := podProcessIdentity
 	podProcessIdentity = func(pid uint32, _ string) (uint64, error) { return readPodProcessBirth(pid) }
@@ -149,801 +292,587 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 			return nil, errors.New("unexpected recovery containerd connection")
 		}
 		return &fakeContainerd{verify: func(ctx context.Context, id, sandbox, pin string) error {
-			actual, exists := selected.Load(id)
-			if !exists || actual != pin || sandbox != pod.Id {
+			actual, exists := f.selected.Load(id)
+			if !exists || actual != pin || sandbox != f.pod.Id {
 				return errors.New("recovery selected-image mismatch")
 			}
 			return ctx.Err()
 		}}, nil
 	}
 	t.Cleanup(func() { newContainerdResolver = originalResolver })
-	reg := &fakeRegister{value: runtimemeasure.Seed(podKey)}
+	f.reg = &fakeRegister{value: runtimemeasure.Seed(podKey)}
 	originalKey, originalRegister, originalRetries := readOperatorKey, openRegister, allowlistApiMaxRetries
 	readOperatorKey = func() ([]byte, error) { return podKey, nil }
-	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) { return reg, nil }
+	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) { return f.reg, nil }
 	allowlistApiMaxRetries = 1
 	t.Cleanup(func() {
 		readOperatorKey, openRegister, allowlistApiMaxRetries = originalKey, originalRegister, originalRetries
 	})
-	brokers := make(chan getcert.GuestConfig, 4)
-	brokerStopped := make(chan struct{}, 4)
-	workerFailure := make(chan error)
+	f.brokers = make(chan getcert.GuestConfig, 4)
+	f.brokerStopped = make(chan struct{}, 4)
 	originalCredentials := runGuestCredentials
 	runGuestCredentials = func(ctx context.Context, guest getcert.GuestConfig) error {
 		select {
-		case brokers <- guest:
+		case f.brokers <- guest:
 		case <-ctx.Done():
 			return nil
 		}
-		select {
-		case err := <-workerFailure:
-			return err
-		case <-ctx.Done():
-			brokerStopped <- struct{}{}
-			return nil
-		}
+		<-ctx.Done()
+		f.brokerStopped <- struct{}{}
+		return nil
 	}
 	t.Cleanup(func() { runGuestCredentials = originalCredentials })
-	var available atomic.Bool
-	available.Store(true)
-	served := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "served"}))
-	narrowed := []byte(nil)
-	if scenario == "policy-capability-change" {
-		policy := anyAllowlist(map[string]string{digest: "executed-app"})
-		for name, workload := range policy.Workloads {
-			workload.Secrets = &allowlist.SecretsPolicy{Policy: allowlist.PolicyAllow, Read: []string{"/runtime/**"}}
-			policy.Workloads[name] = workload
-		}
-		served = canonicalBody(t, policy)
-		for name, workload := range policy.Workloads {
-			workload.Secrets = &allowlist.SecretsPolicy{Policy: allowlist.PolicyAllow, Read: []string{"/runtime/public/**"}}
-			policy.Workloads[name] = workload
-		}
-		narrowed = canonicalBody(t, policy)
-		for _, body := range [][]byte{served, narrowed} {
-			if _, err := allowlist.ParseServedJSON(body); err != nil {
-				t.Fatalf("invalid policy capability fixture: %v", err)
-			}
-		}
+	f.available.Store(true)
+	f.served = canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "served"}))
+	f.servedETag = `W/"1"`
+	if version == 2 {
+		f.servedETag = `W/"2"`
 	}
-	var servedMu sync.RWMutex
-	servedETag := `W/"1"`
-	expectedVersion := uint64(1)
-	if scenario == "policy-replay-after-recovery" {
-		servedETag, expectedVersion = `W/"2"`, 2
-	}
-	var servedRequests atomic.Uint64
-	cds := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if !available.Load() {
+	f.cds = testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !f.available.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		servedMu.RLock()
-		defer servedMu.RUnlock()
+		f.servedMu.RLock()
+		defer f.servedMu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", servedETag)
-		_, _ = w.Write(served)
-		servedRequests.Add(1)
+		w.Header().Set("ETag", f.servedETag)
+		_, _ = w.Write(f.served)
+		f.servedRequests.Add(1)
 	}))
-	defer cds.Close()
+	t.Cleanup(f.cds.Close)
 	// Both the fresh worker and recovered worker use the authenticated server
 	// whose independent SNP launch file is pinned by the prepared policy.
-	cfg.Allowlist.Pull.URL = cds.URL
-	cfg.cdsAddress, err = cmdsutil.CDSURLAddress(cds.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg.Allowlist.Pull.URL = f.cds.URL
+	cfg.cdsAddress, err = cmdsutil.CDSURLAddress(f.cds.URL)
+	f.must(err)
 	verifier := mockapi.New(t)
 	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
 	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
 	verdict.Claims.InitData = binding[:]
 	verifier.SetVerdict(verdict)
 	cfg.Allowlist.Pull.AttestationApiURL = verifier.URL()
-	healthClient := unixHealthClient(filepath.Join(dir, "health.sock"))
-	defer healthClient.CloseIdleConnections()
+	f.healthClient = unixHealthClient(filepath.Join(dir, "health.sock"))
+	t.Cleanup(f.healthClient.CloseIdleConnections)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	start := func() *podRecoveryRunner {
-		registered := make(chan struct{})
-		syncResult := make(chan error, 1)
-		nri := startPodNRIRuntimeObserved(t, dir, registered, func(err error) {
-			if err == nil {
-				return
-			}
-			select {
-			case syncResult <- err:
-			default:
-			}
-		}, live.snapshot)
-		child, stop := context.WithCancel(ctx)
-		r := &podRecoveryRunner{cancel: stop, done: make(chan error, 1), syncResult: syncResult, registered: registered, nri: nri, healthPath: filepath.Join(dir, "health.sock")}
-		go func() {
-			r.done <- runConfigured(child, cfg, discardLogger(), healthServerConfig{readTimeout: time.Second, writeTimeout: time.Second})
-		}()
-		t.Cleanup(func() { r.stop(t) })
-		return r
-	}
-	waitReady := func(r *podRecoveryRunner) {
-		t.Helper()
-		until := time.After(5 * time.Second)
-		tick := time.NewTicker(10 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			response, err := healthClient.Get("http://unix/healthz")
-			if err == nil {
-				var state healthResponse
-				decodeErr := json.NewDecoder(response.Body).Decode(&state)
-				_ = response.Body.Close()
-				if decodeErr == nil && response.StatusCode == http.StatusOK && state.PodRegistered && state.PodUID == cfg.Pod.UID && state.AllowlistVersion == expectedVersion {
-					select {
-					case <-r.registered:
-						return
-					default:
-					}
+	t.Cleanup(cancel)
+	f.ctx = ctx
+	return f
+}
+
+func (f *podRecoveryFixture) start() *podRecoveryRunner {
+	t := f.t
+	registered := make(chan struct{})
+	syncResult := make(chan error, 1)
+	nri := startPodNRIRuntimeObserved(t, f.dir, registered, func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case syncResult <- err:
+		default:
+		}
+	}, f.live.snapshot)
+	child, stop := context.WithCancel(f.ctx)
+	r := &podRecoveryRunner{cancel: stop, done: make(chan error, 1), syncResult: syncResult, registered: registered, nri: nri, healthPath: filepath.Join(f.dir, "health.sock")}
+	go func() {
+		r.done <- runConfigured(child, f.cfg, discardLogger(), healthServerConfig{readTimeout: time.Second, writeTimeout: time.Second})
+	}()
+	t.Cleanup(func() { r.stop(t) })
+	f.runner = r
+	return r
+}
+
+func (f *podRecoveryFixture) restart() {
+	f.runner.stop(f.t)
+	f.start()
+}
+
+func (f *podRecoveryFixture) waitReady() {
+	t := f.t
+	t.Helper()
+	r := f.runner
+	until := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		response, err := f.healthClient.Get("http://unix/healthz")
+		if err == nil {
+			var state healthResponse
+			decodeErr := json.NewDecoder(response.Body).Decode(&state)
+			_ = response.Body.Close()
+			if decodeErr == nil && response.StatusCode == http.StatusOK && state.PodRegistered && state.PodUID == f.cfg.Pod.UID && state.AllowlistVersion == f.expectedVersion {
+				select {
+				case <-r.registered:
+					return
+				default:
 				}
 			}
-			select {
-			case err := <-r.done:
-				r.stopped = true
-				r.cancel()
-				r.nri.Stop()
-				t.Fatalf("production plugin exited before registration: %v", err)
-			case <-until:
-				t.Fatal("production plugin did not recover registered policy readiness")
-			case <-tick.C:
-			}
 		}
-	}
-	broker := func() getcert.GuestConfig {
-		t.Helper()
-		select {
-		case b := <-brokers:
-			if b.CDSURL != cds.URL || b.HTTPClient == nil {
-				t.Fatal("recovered broker lost the authenticated resolved CDS client")
-			}
-			return b
-		case <-ctx.Done():
-			t.Fatal("production broker did not start")
-			return getcert.GuestConfig{}
-		}
-	}
-	waitRefused := func(r *podRecoveryRunner, want string) {
-		t.Helper()
 		select {
 		case err := <-r.done:
 			r.stopped = true
-			r.nri.Stop()
 			r.cancel()
-			if err == nil {
-				t.Fatal("untrustworthy history ended startup without a refusal")
-			}
-			if want != "" && !strings.Contains(err.Error(), want) {
-				// Synchronize returns the detailed refusal to the runtime; the
-				// plugin itself can observe only the resulting connection close.
-				select {
-				case syncErr := <-r.syncResult:
-					if syncErr == nil || !strings.Contains(syncErr.Error(), want) {
-						t.Fatalf("synchronization refusal = %v, want %q (startup: %v)", syncErr, want, err)
-					}
-					if _, fenceErr := os.Stat(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile)); fenceErr != nil {
-						t.Fatalf("failed synchronization lost its durable interruption fence: %v", fenceErr)
-					}
-				case <-time.After(time.Second):
-					t.Fatalf("startup refused without expected synchronization error %q: %v", want, err)
+			r.nri.Stop()
+			t.Fatalf("production plugin exited before registration: %v", err)
+		case <-until:
+			t.Fatal("production plugin did not recover registered policy readiness")
+		case <-tick.C:
+		}
+	}
+}
+
+func (f *podRecoveryFixture) broker() getcert.GuestConfig {
+	f.t.Helper()
+	select {
+	case b := <-f.brokers:
+		if b.CDSURL != f.cds.URL || b.HTTPClient == nil {
+			f.t.Fatal("recovered broker lost the authenticated resolved CDS client")
+		}
+		return b
+	case <-f.ctx.Done():
+		f.t.Fatal("production broker did not start")
+		return getcert.GuestConfig{}
+	}
+}
+
+func (f *podRecoveryFixture) waitRefused(want string) {
+	t := f.t
+	t.Helper()
+	r := f.runner
+	select {
+	case err := <-r.done:
+		r.stopped = true
+		r.nri.Stop()
+		r.cancel()
+		if err == nil {
+			t.Fatal("untrustworthy history ended startup without a refusal")
+		}
+		if want != "" && !strings.Contains(err.Error(), want) {
+			// Synchronize returns the detailed refusal to the runtime; the
+			// plugin itself can observe only the resulting connection close.
+			select {
+			case syncErr := <-r.syncResult:
+				if syncErr == nil || !strings.Contains(syncErr.Error(), want) {
+					t.Fatalf("synchronization refusal = %v, want %q (startup: %v)", syncErr, want, err)
 				}
+				if _, fenceErr := os.Stat(filepath.Join(f.cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile)); fenceErr != nil {
+					t.Fatalf("failed synchronization lost its durable interruption fence: %v", fenceErr)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("startup refused without expected synchronization error %q: %v", want, err)
 			}
-		case <-brokers:
-			t.Fatal("untrustworthy history resumed credential issuance")
-		case <-time.After(5 * time.Second):
-			t.Fatal("untrustworthy recovery did not refuse startup promptly")
 		}
-		select {
-		case <-brokers:
-			t.Fatal("refused startup also resumed credential issuance")
-		default:
+	case <-f.brokers:
+		t.Fatal("untrustworthy history resumed credential issuance")
+	case <-time.After(5 * time.Second):
+		t.Fatal("untrustworthy recovery did not refuse startup promptly")
+	}
+	select {
+	case <-f.brokers:
+		t.Fatal("refused startup also resumed credential issuance")
+	default:
+	}
+}
+
+func (f *podRecoveryFixture) startContainer(ctr *api.Container, consume bool) podstart.Request {
+	t := f.t
+	t.Helper()
+	// The synthetic runtime supplies genuine distinct process birth identities;
+	// actual containerd-selected task PIDs are covered by the runtime lane.
+	process := exec.Command("sleep", "600")
+	f.must(process.Start())
+	f.processes[ctr.Id] = process
+	t.Cleanup(func() {
+		if process.ProcessState == nil {
+			_ = process.Process.Kill()
+			_ = process.Wait()
 		}
-	}
-	runner := start()
-	waitReady(runner)
-	if scenario == "empty-registration-restart" {
-		runner.stop(t)
-		runner = start()
-		waitReady(runner)
-	}
-	live.mu.Lock()
-	live.pod = proto.Clone(pod).(*api.PodSandbox)
-	live.mu.Unlock()
-	if err := runner.nri.RunPodSandbox(ctx, &api.RunPodSandboxRequest{Pod: pod}); err != nil {
+	})
+	ctr.Pid = uint32(process.Process.Pid)
+	ctr.State = api.ContainerState_CONTAINER_CREATED
+	f.selected.Store(ctr.Id, extractDigest(ctr.Annotations[annotationImageName]))
+	if _, err := f.runner.nri.CreateContainer(f.ctx, &api.CreateContainerRequest{Pod: f.pod, Container: ctr}); err != nil {
 		t.Fatal(err)
 	}
-	if scenario == "protected-sandbox-restart" {
-		runner.stop(t)
-		runner = start()
-		waitReady(runner)
+	f.live.mu.Lock()
+	f.live.containers[ctr.Id] = proto.Clone(ctr).(*api.Container)
+	f.live.mu.Unlock()
+	f.must(f.runner.nri.StartContainer(f.ctx, &api.StartContainerRequest{Pod: f.pod, Container: ctr}))
+	request := podstart.Request{ContainerID: ctr.Id, SandboxID: f.pod.Id, PID: ctr.Pid}
+	if consume {
+		f.must(podstart.Consume(f.ctx, f.startSocket, request))
+		ctr.State = api.ContainerState_CONTAINER_RUNNING
 	}
-	processes := map[string]*exec.Cmd{}
-	startContainer := func(ctr *api.Container, consume bool) podstart.Request {
-		t.Helper()
-		// The synthetic runtime supplies genuine distinct process birth identities;
-		// actual containerd-selected task PIDs are covered by the runtime lane.
-		process := exec.Command("sleep", "600")
-		if err := process.Start(); err != nil {
-			t.Fatal(err)
-		}
-		processes[ctr.Id] = process
-		t.Cleanup(func() {
-			if process.ProcessState == nil {
-				_ = process.Process.Kill()
-				_ = process.Wait()
-			}
-		})
-		ctr.Pid = uint32(process.Process.Pid)
-		ctr.State = api.ContainerState_CONTAINER_CREATED
-		selected.Store(ctr.Id, extractDigest(ctr.Annotations[annotationImageName]))
-		if _, err := runner.nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr}); err != nil {
-			t.Fatal(err)
-		}
-		live.mu.Lock()
-		live.containers[ctr.Id] = proto.Clone(ctr).(*api.Container)
-		live.mu.Unlock()
-		if err := runner.nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
-			t.Fatal(err)
-		}
-		request := podstart.Request{ContainerID: ctr.Id, SandboxID: pod.Id, PID: ctr.Pid}
-		if consume {
-			if err := podstart.Consume(ctx, startSocket, request); err != nil {
-				t.Fatal(err)
-			}
-			ctr.State = api.ContainerState_CONTAINER_RUNNING
-		}
-		live.mu.Lock()
-		live.containers[ctr.Id] = proto.Clone(ctr).(*api.Container)
-		live.mu.Unlock()
-		return request
+	f.live.mu.Lock()
+	f.live.containers[ctr.Id] = proto.Clone(ctr).(*api.Container)
+	f.live.mu.Unlock()
+	return request
+}
+
+func (f *podRecoveryFixture) must(err error) {
+	f.t.Helper()
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	var mesh *api.Container
+}
+
+func (f *podRecoveryFixture) editLive(edit func()) {
+	f.live.mu.Lock()
+	defer f.live.mu.Unlock()
+	edit()
+}
+
+// killProcess leaves a container whose process has exited.
+func (f *podRecoveryFixture) killProcess(id string) {
+	f.t.Helper()
+	f.must(f.processes[id].Process.Kill())
+	var exited *exec.ExitError
+	if err := f.processes[id].Wait(); err != nil && !errors.As(err, &exited) {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *podRecoveryFixture) statePath() string {
+	return filepath.Join(f.cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile)
+}
+
+func (f *podRecoveryFixture) pendingPath() string {
+	return filepath.Join(f.cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile)
+}
+
+func (f *podRecoveryFixture) readState() podRecoveryState {
+	f.t.Helper()
+	raw, err := os.ReadFile(f.statePath())
+	f.must(err)
+	var state podRecoveryState
+	f.must(json.Unmarshal(raw, &state))
+	return state
+}
+
+func (f *podRecoveryFixture) editState(edit func(*podRecoveryState)) {
+	f.t.Helper()
+	state := f.readState()
+	edit(&state)
+	raw, err := json.Marshal(state)
+	f.must(err)
+	f.must(os.WriteFile(f.statePath(), raw, 0600))
+}
+
+func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, digest string, tc podRecoveryCase) {
+	t.Helper()
+	if tc.version == 0 {
+		tc.version = 1
+	}
+	f := newPodRecoveryFixture(t, cfg, root, podKey, tc.version)
+	ctx := f.ctx
+	f.start()
+	f.waitReady()
+	f.live.mu.Lock()
+	f.live.pod = proto.Clone(f.pod).(*api.PodSandbox)
+	f.live.mu.Unlock()
+	f.must(f.runner.nri.RunPodSandbox(ctx, &api.RunPodSandboxRequest{Pod: f.pod}))
 	for _, workload := range cfg.Allowlist.Base.Workloads {
 		for _, entry := range workload.Containers {
 			if entry.Role != meshRole {
 				continue
 			}
-			mesh = podBootstrapContainer(pod, "recovery-mesh", workloadclaims.MeshContainerName, entry.Digest.String())
-			mesh.Args = slices.Concat(entry.Command.Argv, entry.Args.Argv)
-			mesh.User = &api.User{Uid: workloadclaims.MeshUID, Gid: workloadclaims.MeshUID}
-			mesh.Mounts = append(mesh.Mounts, readOnlyBind(credentialSource, podmesh.CertDir))
+			f.mesh = podBootstrapContainer(f.pod, "recovery-mesh", workloadclaims.MeshContainerName, entry.Digest.String())
+			f.mesh.Args = slices.Concat(entry.Command.Argv, entry.Args.Argv)
+			f.mesh.User = &api.User{Uid: workloadclaims.MeshUID, Gid: workloadclaims.MeshUID}
+			f.mesh.Mounts = append(f.mesh.Mounts, readOnlyBind(f.credentialSource, podmesh.CertDir))
 		}
 	}
-	if mesh == nil {
+	if f.mesh == nil {
 		t.Fatal("prepared policy lacks mesh endpoint")
 	}
-	if scenario == "creation-refusal-restart" {
-		refused := proto.Clone(mesh).(*api.Container)
-		refused.Args = []string{"unapproved-mesh-command"}
-		if _, err := runner.nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: refused}); err == nil {
-			t.Fatal("unapproved creation was accepted")
-		}
-		runner.stop(t)
-		runner = start()
-		waitReady(runner)
-		retained, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var state podRecoveryState
-		if err := json.Unmarshal(retained, &state); err != nil {
-			t.Fatal(err)
-		}
-		if state.Denials[pod.Id].Creations[mesh.Name] == "" {
-			t.Fatal("restart erased the unresolved named creation refusal")
-		}
+	if tc.afterSandbox != nil {
+		tc.afterSandbox(f)
 	}
-	startContainer(mesh, true)
-	initialBroker := broker()
-	removed := podBootstrapContainer(pod, "removed-job", "unknown", digest)
-	removed.Args = []string{"/app/workload", "completed-init"}
-	startContainer(removed, true)
-	if err := processes[removed.Id].Process.Kill(); err != nil {
+	f.startContainer(f.mesh, true)
+	f.initialBroker = f.broker()
+	f.removed = podBootstrapContainer(f.pod, "removed-job", "unknown", digest)
+	f.removed.Args = []string{"/app/workload", "completed-init"}
+	f.startContainer(f.removed, true)
+	f.killProcess(f.removed.Id)
+	f.removed.State = api.ContainerState_CONTAINER_STOPPED
+	if _, err := f.runner.nri.StopContainer(ctx, &api.StopContainerRequest{Pod: f.pod, Container: f.removed}); err != nil {
 		t.Fatal(err)
 	}
-	if err := processes[removed.Id].Wait(); err != nil {
-		var exited *exec.ExitError
-		if !errors.As(err, &exited) {
-			t.Fatal(err)
-		}
-	}
-	removed.State = api.ContainerState_CONTAINER_STOPPED
-	if _, err := runner.nri.StopContainer(ctx, &api.StopContainerRequest{Pod: pod, Container: removed}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.nri.RemoveContainer(ctx, &api.RemoveContainerRequest{Pod: pod, Container: removed}); err != nil {
-		t.Fatal(err)
-	}
-	live.mu.Lock()
-	delete(live.containers, removed.Id)
-	live.mu.Unlock()
-	app := podBootstrapContainer(pod, "running-app", "app", digest)
-	app.Args = []string{"/app/workload", "live-app"}
-	consumed := startContainer(app, !liveCredentialLoss && !slices.Contains([]string{"unconsumed-start", "live-checkpoint-failure", "live-issuer-change", "credential-worker-failure", "live-protection-loss"}, scenario))
-	before, err := initialBroker.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.must(f.runner.nri.RemoveContainer(ctx, &api.RemoveContainerRequest{Pod: f.pod, Container: f.removed}))
+	f.live.mu.Lock()
+	delete(f.live.containers, f.removed.Id)
+	f.live.mu.Unlock()
+	f.app = podBootstrapContainer(f.pod, "running-app", "app", digest)
+	f.app.Args = []string{"/app/workload", "live-app"}
+	f.consumed = f.startContainer(f.app, !tc.unconsumed)
+	before, err := f.initialBroker.Snapshot(ctx)
+	f.must(err)
+	f.before = before
 	beforeWire, err := before.Canonical()
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.must(err)
 	if len(before.Containers) != 3 || len(before.RuntimeExtensions) != 2 {
 		t.Fatalf("fixture did not retain two distinct admissions for one image: %+v", before)
 	}
-	if scenario == "policy-capability-change" {
-		// Hold the old issuance snapshot while the next served policy narrows the
-		// running image's secret grant. Every container remains admitted by base.
-		servedMu.Lock()
-		served, servedETag = narrowed, `W/"2"`
-		servedMu.Unlock()
-		until := time.Now().Add(5 * time.Second)
-		for {
-			response, err := healthClient.Get("http://unix/healthz")
-			if err == nil {
-				var state healthResponse
-				decode := json.NewDecoder(response.Body).Decode(&state)
-				_ = response.Body.Close()
-				if decode == nil && state.AllowlistVersion == 2 {
-					break
-				}
-			}
-			if time.Now().After(until) {
-				t.Fatal("narrowed policy was not applied")
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		published := false
-		if err := initialBroker.Commit(before, func() error { published = true; return nil }); err == nil || published {
-			t.Fatal("stale issuance response published after capability narrowing")
-		}
-		current, err := initialBroker.Snapshot(ctx)
-		if err != nil || current.Revision <= before.Revision {
-			t.Fatalf("still-admitted Pod lost current issuance or policy revision: %+v %v", current, err)
-		}
-		if err := initialBroker.Commit(current, func() error { return nil }); err != nil {
-			t.Fatalf("current admitted snapshot could not commit: %v", err)
-		}
-		runner.stop(t)
-		return
-	}
-	// The fake issuer writes only its public binding under the production
-	// publication fence. Certificate issuance itself is tested in getcert.
-	issuerPath := filepath.Join(credentialSource, "issuer")
-	bound := slices.Contains([]string{"issuer-preserved", "missing-issuer", "changed-issuer"}, scenario)
-	if scenario == "live-checkpoint-failure" || scenario == "live-issuer-change" {
-		replacement := strings.Repeat("z", 64) + "\n"
-		if scenario == "live-issuer-change" {
-			if err := initialBroker.Commit(before, func() error {
-				return os.WriteFile(issuerPath, []byte(strings.Repeat("a", 64)+"\n"), 0644)
-			}); err != nil {
-				t.Fatal(err)
-			}
-			replacement = strings.Repeat("b", 64) + "\n"
-		}
-		if err := os.WriteFile(issuerPath, []byte(replacement), 0644); err != nil {
-			t.Fatal(err)
-		}
-		_, snapshotErr := initialBroker.Snapshot(ctx)
-		if snapshotErr == nil {
-			t.Fatal("failed checkpoint returned usable attestation claims")
-		}
-		if scenario == "live-issuer-change" && !strings.Contains(snapshotErr.Error(), "issuer binding changed after publication") {
-			t.Fatalf("valid issuer replacement did not violate retained identity: %v", snapshotErr)
-		}
-		if _, err := os.Stat(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile)); err != nil {
-			t.Fatalf("failed checkpoint lost its durable transition fence: %v", err)
-		}
-		if err := podstart.Consume(ctx, startSocket, consumed); err == nil {
-			t.Fatal("failed checkpoint retained an unconsumed execution grant")
-		}
-		select {
-		case <-brokerStopped:
-		case <-time.After(time.Second):
-			t.Fatal("failed checkpoint retained broker authority")
-		}
-	} else if err := initialBroker.Commit(before, func() error {
-		if bound {
-			return os.WriteFile(issuerPath, []byte(strings.Repeat("a", 64)+"\n"), 0644)
+	if tc.live != nil {
+		tc.live(f)
+	} else if err := f.initialBroker.Commit(before, func() error {
+		if tc.bindIssuer {
+			return os.WriteFile(f.issuerPath, []byte(strings.Repeat("a", 64)+"\n"), 0644)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runner.stop(t)
+	f.runner.stop(t)
 	journalBefore, err := os.ReadFile(journalPath(cfg))
-	if err != nil {
-		t.Fatal(err)
+	f.must(err)
+	registerBefore := f.reg.value
+	f.available.Store(false) // Recovery must retain the last authoritative policy.
+	if tc.mutate != nil {
+		tc.mutate(f)
 	}
-	registerBefore := reg.value
-	available.Store(false) // Recovery must retain the last authoritative policy.
-	switch scenario {
-	case "missing-issuer":
-		if err := os.Remove(issuerPath); err != nil {
-			t.Fatal(err)
-		}
-	case "changed-issuer":
-		if err := os.WriteFile(issuerPath, []byte(strings.Repeat("b", 64)+"\n"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	case "missing-broker-marker":
-		if err := os.Remove(filepath.Join(cfg.WorkloadClaims.SocketDir, podBrokerMarker)); err != nil {
-			t.Fatal(err)
-		}
-	case "changed-network":
-		other := sandboxProcess(t)
-		live.mu.Lock()
-		for _, ns := range live.pod.Linux.Namespaces {
-			if ns.Type == "network" {
-				ns.Path = sandboxNetNSPath(other)
-			}
-		}
-		live.mu.Unlock()
-	case "changed-rules":
-		changePodRecoveryRules(t, pod.Pid)
-	case "changed-selected-image":
-		selected.Store(app.Id, extractDigest(mesh.Annotations[annotationImageName]))
-	case "changed-launch":
-		live.mu.Lock()
-		live.containers[app.Id].Args = []string{"/app/workload", "unrecorded"}
-		live.mu.Unlock()
-	case "changed-mesh-uid":
-		live.mu.Lock()
-		live.containers[mesh.Id].User.Uid = 0
-		live.mu.Unlock()
-	case "removed-while-disconnected", "stopped-while-disconnected":
-		if err := processes[app.Id].Process.Kill(); err != nil {
-			t.Fatal(err)
-		}
-		if err := processes[app.Id].Wait(); err != nil {
-			var exited *exec.ExitError
-			if !errors.As(err, &exited) {
-				t.Fatal(err)
-			}
-		}
-		live.mu.Lock()
-		if scenario == "removed-while-disconnected" {
-			delete(live.containers, app.Id)
-		} else {
-			live.containers[app.Id].State = api.ContainerState_CONTAINER_STOPPED
-		}
-		live.mu.Unlock()
-	case "changed-assignment":
-		assigned := *cfg.Pod
-		assigned.UID = "different-signed-assignment"
-		cfg.Pod = &assigned
-	case "public-state":
-		if err := os.Chmod(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile), 0644); err != nil {
-			t.Fatal(err)
-		}
-	case "changed-credential-volume":
-		if err := os.Chmod(credentialSource, 0755); err != nil {
-			t.Fatal(err)
-		}
-	case "missing-full-history", "missing-removed-authorization", "missing-policy-document", "changed-measured-order":
-		path := filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var state podRecoveryState
-		if err := json.Unmarshal(raw, &state); err != nil {
-			t.Fatal(err)
-		}
-		switch scenario {
-		case "missing-full-history":
-			state.Histories = map[string]json.RawMessage{}
-		case "missing-removed-authorization":
-			delete(state.Processes, removed.Id)
-		case "missing-policy-document":
-			state.Policy.Document = nil
-		case "changed-measured-order":
-			slices.Reverse(state.Digests)
-		}
-		raw, err = json.Marshal(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, raw, 0600); err != nil {
-			t.Fatal(err)
-		}
-	case "missing-state":
-		if err := os.Remove(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile)); err != nil {
-			t.Fatal(err)
-		}
-	case "malformed-state":
-		if err := os.WriteFile(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile), []byte(`{"incomplete":`), 0600); err != nil {
-			t.Fatal(err)
-		}
-	case "pending-state":
-		if err := os.WriteFile(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile), []byte("interrupted"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	case "missing-journal":
-		if err := os.Remove(journalPath(cfg)); err != nil {
-			t.Fatal(err)
-		}
-	case "unknown-container":
-		unexpected := proto.Clone(app).(*api.Container)
-		unexpected.Id = "unrecorded-runtime-container"
-		live.mu.Lock()
-		live.containers[unexpected.Id] = unexpected
-		live.mu.Unlock()
-	case "changed-process":
-		live.mu.Lock()
-		live.containers[app.Id].Pid = pod.Pid
-		live.mu.Unlock()
-	case "changed-sandbox":
-		live.mu.Lock()
-		live.pod.Uid = "replaced-runtime-pod"
-		live.mu.Unlock()
-	case "missing-runtime-sandbox":
-		live.mu.Lock()
-		live.pod = nil
-		live.mu.Unlock()
-	case "unknown-container-state":
-		live.mu.Lock()
-		live.containers[app.Id].State = api.ContainerState_CONTAINER_UNKNOWN
-		live.mu.Unlock()
-	case "duplicate-runtime-entry":
-		live.mu.Lock()
-		live.duplicate = true
-		live.mu.Unlock()
-	}
-	runner = start()
-	if !liveCredentialLoss && !slices.Contains([]string{"completed", "empty-registration-restart", "protected-sandbox-restart", "creation-refusal-restart", "unconsumed-start", "issuer-preserved", "removed-while-disconnected", "stopped-while-disconnected", "credential-worker-failure", "live-protection-loss", "policy-replay-after-recovery"}, scenario) {
-		want := ""
-		switch scenario {
-		case "live-checkpoint-failure", "live-issuer-change":
-			want = "interrupted transition"
-		case "missing-runtime-sandbox":
-			want = "requires the original sandbox"
-		case "missing-policy-document":
-			want = "policy checkpoint lost its document"
-		case "unknown-container-state":
-			want = "container state is unknown"
-		case "changed-measured-order":
-			want = "journal differs from retained history"
-		case "duplicate-runtime-entry":
-			want = "runtime repeated a container"
-		}
-		waitRefused(runner, want)
-		if err := podstart.Consume(ctx, startSocket, consumed); err == nil {
+	f.start()
+	if tc.refused {
+		f.waitRefused(tc.refusal)
+		if err := podstart.Consume(ctx, f.startSocket, f.consumed); err == nil {
 			t.Fatal("failed recovery restored an old start permission")
 		}
 		return
 	}
-	waitReady(runner)
-	recoveredBroker := broker()
-	after, err := recoveredBroker.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Revision < before.Revision || recoveredBroker.InstanceID != initialBroker.InstanceID {
+	f.waitReady()
+	f.recoveredBroker = f.broker()
+	after, err := f.recoveredBroker.Snapshot(ctx)
+	f.must(err)
+	f.after = after
+	if after.Revision < before.Revision || f.recoveredBroker.InstanceID != f.initialBroker.InstanceID {
 		t.Fatal("recovery rewound admission revision or changed credential identity")
 	}
 	normalized := after
 	normalized.Revision = before.Revision
 	afterWire, err := normalized.Canonical()
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.must(err)
 	if !bytes.Equal(beforeWire, afterWire) {
 		t.Fatal("recovery lost removed admission observations or changed assignment/boot identity")
 	}
-	if err := podstart.Consume(ctx, startSocket, consumed); err == nil {
+	if err := podstart.Consume(ctx, f.startSocket, f.consumed); err == nil {
 		t.Fatal("completed restart restored a consumed start permission")
 	}
-	if err := recoveredBroker.Commit(after, func() error { return nil }); err != nil {
+	if err := f.recoveredBroker.Commit(after, func() error { return nil }); err != nil {
 		t.Fatalf("restored complete snapshot could not commit: %v", err)
 	}
 	journalAfter, err := os.ReadFile(journalPath(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(journalBefore, journalAfter) || registerBefore != reg.value {
+	f.must(err)
+	if !bytes.Equal(journalBefore, journalAfter) || registerBefore != f.reg.value {
 		t.Fatal("restart remeasured or rewrote executed workload history")
 	}
-	if scenario == "credential-worker-failure" || scenario == "live-protection-loss" || liveCredentialLoss {
-		// A fresh admission after recovery leaves an unconsumed grant.
-		if err := runner.nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: app}); err != nil {
-			t.Fatal(err)
-		}
-		reason := errors.New("recovered credential worker lost issuer authority")
-		if scenario == "credential-worker-failure" {
-			// Inject outside every admission/publication transaction.
-			select {
-			case workerFailure <- reason:
-			case <-ctx.Done():
-				t.Fatal("recovered credential worker did not accept its failure")
-			}
-		} else {
-			// The first broker already joined during restart; its stop receipt
-			// must not satisfy the recovered worker's cancellation check.
-			select {
-			case <-brokerStopped:
-			default:
-				t.Fatal("original credential worker did not report shutdown")
-			}
-			var stillChanged func()
-			if liveCredentialLoss {
-				stillChanged = changePodRecoveryCredentials(t, credentialSource, scenario == "live-credential-replacement")
-			} else {
-				stillChanged = changePodRecoveryRules(t, pod.Pid)
-			}
-			_, reason = recoveredBroker.Snapshot(ctx)
-			if reason == nil {
-				t.Fatal("live custody loss retained snapshot authority")
-			}
-			if liveCredentialLoss {
-				want := "credential root lost its protected ownership"
-				if scenario == "live-credential-replacement" {
-					want = "retained Pod credential volume was replaced"
-				}
-				if !strings.Contains(reason.Error(), want) {
-					t.Fatalf("credential custody loss refused for an unrelated reason: %v", reason)
-				}
-			}
-			stillChanged()
-			select {
-			case <-brokerStopped:
-			case <-time.After(time.Second):
-				t.Fatal("lost custody retained the credential worker")
-			}
-		}
-		pendingPath := filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile)
-		if liveCredentialLoss {
-			// Custody loss also prevents committing a complete checkpoint. The
-			// durable interruption fence must survive every later refusal.
-			if _, err := os.Stat(pendingPath); err != nil {
-				t.Fatalf("credential custody loss did not retain its fence: %v", err)
-			}
-		} else {
-			checkpointPath := filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile)
-			until := time.Now().Add(5 * time.Second)
-			for {
-				raw, err := os.ReadFile(checkpointPath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var retained podRecoveryState
-				if err := json.Unmarshal(raw, &retained); err != nil {
-					t.Fatal(err)
-				}
-				if retained.Terminal == reason.Error() {
-					_, fenceErr := os.Stat(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryPendingFile))
-					if errors.Is(fenceErr, os.ErrNotExist) {
-						break
-					}
-					if fenceErr != nil {
-						t.Fatal(fenceErr)
-					}
-				}
-				if time.Now().After(until) {
-					t.Fatal("authority failure did not durably end the recovered identity")
-				}
-				time.Sleep(time.Millisecond)
-			}
-			// For the asynchronous worker error, this first Snapshot must not be
-			// what establishes the terminal checkpoint.
-			if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("authority failure left an incomplete terminal checkpoint: %v", err)
-			}
-		}
-		if _, err := recoveredBroker.Snapshot(ctx); err == nil || (!liveCredentialLoss && err.Error() != reason.Error()) {
-			t.Fatalf("ended identity retained snapshot authority: %v", err)
-		}
-		published := false
-		if err := recoveredBroker.Commit(after, func() error { published = true; return nil }); err == nil || published {
-			t.Fatal("ended identity retained credential publication authority")
-		}
-		if err := podstart.Consume(ctx, startSocket, consumed); err == nil {
-			t.Fatal("ended identity retained a fresh unconsumed grant")
-		}
-		want := "pod identity previously ended"
-		if liveCredentialLoss {
-			if _, err := os.Stat(pendingPath); err != nil {
-				t.Fatalf("credential refusal cleared its interruption fence: %v", err)
-			}
-			want = "interrupted transition"
-		}
-		runner.stop(t)
-		runner = start()
-		waitRefused(runner, want)
-		return
-	}
-	if scenario == "policy-replay-after-recovery" {
-		retainedPolicy, err := allowlist.ParseServedJSON(served)
-		if err != nil {
-			t.Fatal(err)
-		}
-		retainedBody := canonicalBody(t, retainedPolicy)
-		changedBody := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "replacement"}))
-		changedPolicy, err := allowlist.ParseServedJSON(changedBody)
-		if err != nil {
-			t.Fatal(err)
-		}
-		changedEffectiveBody := canonicalBody(t, changedPolicy)
-		for _, etag := range []string{`W/"1"`, `W/"2"`} {
-			servedMu.Lock()
-			served, servedETag = changedBody, etag
-			requestsBefore := servedRequests.Load()
-			servedMu.Unlock()
-			available.Store(true)
-			until := time.Now().Add(5 * time.Second)
-			// Pulls are serialized. The following request proves the previous
-			// response reached policy application, rather than merely delivery.
-			for servedRequests.Load() < requestsBefore+2 {
-				if time.Now().After(until) {
-					t.Fatalf("recovered policy did not process replay %s", etag)
-				}
-				time.Sleep(time.Millisecond)
-			}
-			current, err := recoveredBroker.Snapshot(ctx)
-			if err != nil || current.Revision != after.Revision {
-				t.Fatalf("refused replay changed issuance revision: %+v %v", current, err)
-			}
-			raw, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var retained podRecoveryState
-			if err := json.Unmarshal(raw, &retained); err != nil {
-				t.Fatal(err)
-			}
-			if retained.Policy.Version != 2 || !bytes.Equal(retained.Policy.Document, retainedBody) {
-				t.Fatalf("replay %s replaced the retained policy", etag)
-			}
-			if err := recoveredBroker.Commit(after, func() error { return nil }); err != nil {
-				t.Fatalf("refused replay invalidated current issuance: %v", err)
-			}
-		}
-		servedMu.Lock()
-		servedETag = `W/"3"`
-		servedMu.Unlock()
-		expectedVersion = 3
-		waitReady(runner)
-		current, err := recoveredBroker.Snapshot(ctx)
-		if err != nil || current.Revision <= after.Revision {
-			t.Fatalf("newer policy did not advance recovered issuance: %+v %v", current, err)
-		}
-		published := false
-		if err := recoveredBroker.Commit(after, func() error { published = true; return nil }); err == nil || published {
-			t.Fatal("newer policy retained stale issuance authority")
-		}
-		if err := recoveredBroker.Commit(current, func() error { return nil }); err != nil {
-			t.Fatalf("newer policy could not authorize current issuance: %v", err)
-		}
-		raw, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var retained podRecoveryState
-		if err := json.Unmarshal(raw, &retained); err != nil {
-			t.Fatal(err)
-		}
-		if retained.Policy.Version != 3 || !bytes.Equal(retained.Policy.Document, changedEffectiveBody) {
-			t.Fatal("accepted next version did not persist its effective policy")
+	if tc.recovered != nil {
+		tc.recovered(f)
+		if f.runner.stopped {
+			return
 		}
 	}
-	if scenario == "unconsumed-start" {
-		if err := runner.nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: app}); err != nil {
-			t.Fatal(err)
-		}
-		if err := podstart.Consume(ctx, startSocket, consumed); err != nil {
-			t.Fatalf("fresh final admission could not authorize the same created task: %v", err)
-		}
-		if err := podstart.Consume(ctx, startSocket, consumed); err == nil {
-			t.Fatal("fresh final admission was consumed twice")
-		}
-	}
-	runner.stop(t)
-	if _, err := initialBroker.Snapshot(ctx); err == nil {
+	f.runner.stop(t)
+	if _, err := f.initialBroker.Snapshot(ctx); err == nil {
 		t.Fatal("stopped broker retained issuance authority")
+	}
+}
+
+// A restart before any execution keeps the unresolved named creation refusal
+// that the broker must keep refusing snapshots for (OB5).
+func (f *podRecoveryFixture) restartAfterCreationRefusal() {
+	t := f.t
+	t.Helper()
+	refused := proto.Clone(f.mesh).(*api.Container)
+	refused.Args = []string{"unapproved-mesh-command"}
+	if _, err := f.runner.nri.CreateContainer(f.ctx, &api.CreateContainerRequest{Pod: f.pod, Container: refused}); err == nil {
+		t.Fatal("unapproved creation was accepted")
+	}
+	f.restart()
+	f.waitReady()
+	if f.readState().Denials[f.pod.Id].Creations[f.mesh.Name] == "" {
+		t.Fatal("restart erased the unresolved named creation refusal")
+	}
+}
+
+// A valid issuer that differs from the recorded one fails the checkpoint; the
+// failed checkpoint leaves its fence, ends issuance and revokes the unconsumed
+// grant (CC2, ML1).
+func (f *podRecoveryFixture) changeIssuerAfterPublication() {
+	t := f.t
+	t.Helper()
+	if err := f.initialBroker.Commit(f.before, func() error {
+		return os.WriteFile(f.issuerPath, []byte(strings.Repeat("a", 64)+"\n"), 0644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.must(os.WriteFile(f.issuerPath, []byte(strings.Repeat("b", 64)+"\n"), 0644))
+	_, snapshotErr := f.initialBroker.Snapshot(f.ctx)
+	if snapshotErr == nil {
+		t.Fatal("failed checkpoint returned usable attestation claims")
+	}
+	if !strings.Contains(snapshotErr.Error(), "issuer binding changed after publication") {
+		t.Fatalf("valid issuer replacement did not violate retained identity: %v", snapshotErr)
+	}
+	if _, err := os.Stat(f.pendingPath()); err != nil {
+		t.Fatalf("failed checkpoint lost its durable transition fence: %v", err)
+	}
+	if err := podstart.Consume(f.ctx, f.startSocket, f.consumed); err == nil {
+		t.Fatal("failed checkpoint retained an unconsumed execution grant")
+	}
+	select {
+	case <-f.brokerStopped:
+	case <-time.After(time.Second):
+		t.Fatal("failed checkpoint retained broker authority")
+	}
+}
+
+// A fresh admission after recovery leaves an unconsumed grant; the custody
+// loss injected by lose must then end the recovered identity, revoke that
+// grant and refuse every later snapshot, publication and restart (IN3, CC1,
+// CC3, OB5).
+func (f *podRecoveryFixture) loseCustodyAfterRecovery(lose func() (stillChanged func(), fence bool, want string)) {
+	t := f.t
+	t.Helper()
+	f.must(f.runner.nri.StartContainer(f.ctx, &api.StartContainerRequest{Pod: f.pod, Container: f.app}))
+	// The first broker already joined during restart; its stop receipt must
+	// not satisfy the recovered worker's cancellation check.
+	select {
+	case <-f.brokerStopped:
+	default:
+		t.Fatal("original credential worker did not report shutdown")
+	}
+	stillChanged, fence, want := lose()
+	_, reason := f.recoveredBroker.Snapshot(f.ctx)
+	if reason == nil {
+		t.Fatal("live custody loss retained snapshot authority")
+	}
+	if want != "" && !strings.Contains(reason.Error(), want) {
+		t.Fatalf("credential custody loss refused for an unrelated reason: %v", reason)
+	}
+	stillChanged()
+	select {
+	case <-f.brokerStopped:
+	case <-time.After(time.Second):
+		t.Fatal("lost custody retained the credential worker")
+	}
+	if fence {
+		// Custody loss also prevents committing a complete checkpoint. The
+		// durable interruption fence must survive every later refusal.
+		if _, err := os.Stat(f.pendingPath()); err != nil {
+			t.Fatalf("credential custody loss did not retain its fence: %v", err)
+		}
+	} else {
+		until := time.Now().Add(5 * time.Second)
+		for {
+			if f.readState().Terminal == reason.Error() {
+				_, fenceErr := os.Stat(f.pendingPath())
+				if errors.Is(fenceErr, os.ErrNotExist) {
+					break
+				}
+				if fenceErr != nil {
+					t.Fatal(fenceErr)
+				}
+			}
+			if time.Now().After(until) {
+				t.Fatal("authority failure did not durably end the recovered identity")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if _, err := os.Stat(f.pendingPath()); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("authority failure left an incomplete terminal checkpoint: %v", err)
+		}
+	}
+	if _, err := f.recoveredBroker.Snapshot(f.ctx); err == nil || (!fence && err.Error() != reason.Error()) {
+		t.Fatalf("ended identity retained snapshot authority: %v", err)
+	}
+	published := false
+	if err := f.recoveredBroker.Commit(f.after, func() error { published = true; return nil }); err == nil || published {
+		t.Fatal("ended identity retained credential publication authority")
+	}
+	if err := podstart.Consume(f.ctx, f.startSocket, f.consumed); err == nil {
+		t.Fatal("ended identity retained a fresh unconsumed grant")
+	}
+	refusal := "pod identity previously ended"
+	if fence {
+		if _, err := os.Stat(f.pendingPath()); err != nil {
+			t.Fatalf("credential refusal cleared its interruption fence: %v", err)
+		}
+		refusal = "interrupted transition"
+	}
+	f.restart()
+	f.waitRefused(refusal)
+}
+
+func (f *podRecoveryFixture) loseProtectionAfterRecovery() {
+	f.loseCustodyAfterRecovery(func() (func(), bool, string) {
+		return changePodRecoveryRules(f.t, f.pod.Pid), false, ""
+	})
+}
+
+func (f *podRecoveryFixture) loseCredentialCustodyAfterRecovery() {
+	f.loseCustodyAfterRecovery(func() (func(), bool, string) {
+		return changePodRecoveryCredentials(f.t, f.credentialSource), true, "retained Pod credential volume was replaced"
+	})
+}
+
+// Replays of the retained version and of an older one change neither the
+// retained policy nor the issuance revision; the next version advances both
+// and stales the earlier response (GB8, CC2).
+func (f *podRecoveryFixture) replayPolicyAfterRecovery() {
+	t := f.t
+	t.Helper()
+	retainedPolicy, err := allowlist.ParseServedJSON(f.served)
+	f.must(err)
+	retainedBody := canonicalBody(t, retainedPolicy)
+	changedBody := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "replacement"}))
+	changedPolicy, err := allowlist.ParseServedJSON(changedBody)
+	f.must(err)
+	changedEffectiveBody := canonicalBody(t, changedPolicy)
+	for _, etag := range []string{`W/"1"`, `W/"2"`} {
+		f.servedMu.Lock()
+		f.served, f.servedETag = changedBody, etag
+		requestsBefore := f.servedRequests.Load()
+		f.servedMu.Unlock()
+		f.available.Store(true)
+		until := time.Now().Add(5 * time.Second)
+		// Pulls are serialized. The following request proves the previous
+		// response reached policy application, rather than merely delivery.
+		for f.servedRequests.Load() < requestsBefore+2 {
+			if time.Now().After(until) {
+				t.Fatalf("recovered policy did not process replay %s", etag)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		current, err := f.recoveredBroker.Snapshot(f.ctx)
+		if err != nil || current.Revision != f.after.Revision {
+			t.Fatalf("refused replay changed issuance revision: %+v %v", current, err)
+		}
+		if retained := f.readState(); retained.Policy.Version != 2 || !bytes.Equal(retained.Policy.Document, retainedBody) {
+			t.Fatalf("replay %s replaced the retained policy", etag)
+		}
+		if err := f.recoveredBroker.Commit(f.after, func() error { return nil }); err != nil {
+			t.Fatalf("refused replay invalidated current issuance: %v", err)
+		}
+	}
+	f.servedMu.Lock()
+	f.servedETag = `W/"3"`
+	f.servedMu.Unlock()
+	f.expectedVersion = 3
+	f.waitReady()
+	current, err := f.recoveredBroker.Snapshot(f.ctx)
+	if err != nil || current.Revision <= f.after.Revision {
+		t.Fatalf("newer policy did not advance recovered issuance: %+v %v", current, err)
+	}
+	published := false
+	if err := f.recoveredBroker.Commit(f.after, func() error { published = true; return nil }); err == nil || published {
+		t.Fatal("newer policy retained stale issuance authority")
+	}
+	if err := f.recoveredBroker.Commit(current, func() error { return nil }); err != nil {
+		t.Fatalf("newer policy could not authorize current issuance: %v", err)
+	}
+	if retained := f.readState(); retained.Policy.Version != 3 || !bytes.Equal(retained.Policy.Document, changedEffectiveBody) {
+		t.Fatal("accepted next version did not persist its effective policy")
 	}
 }
 
@@ -976,36 +905,33 @@ func changePodRecoveryRules(t *testing.T, pid uint32) func() {
 	}
 }
 
-// Both faults affect only the fixture's owned credential tmpfs. A substituted
-// volume has valid custody permissions so inode identity, not chmod, rejects it.
-func changePodRecoveryCredentials(t *testing.T, source string, replace bool) func() {
+// The substitution affects only the fixture's owned credential tmpfs. The
+// substituted volume has valid custody permissions so inode identity, not
+// chmod, rejects it.
+func changePodRecoveryCredentials(t *testing.T, source string) func() {
 	t.Helper()
 	original, err := os.Stat(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := os.FileMode(0755)
-	if replace {
-		mountPodTestRAM(t, source)
-		if err := os.Chown(source, 0, int(workloadclaims.MeshUID)); err != nil {
-			t.Fatal(err)
-		}
-		mode = 0750
+	mountPodTestRAM(t, source)
+	if err := os.Chown(source, 0, int(workloadclaims.MeshUID)); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.Chmod(source, mode); err != nil {
+	if err := os.Chmod(source, 0750); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := os.Stat(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replace && os.SameFile(original, changed) {
+	if os.SameFile(original, changed) {
 		t.Fatal("credential substitution did not change directory identity")
 	}
 	return func() {
 		t.Helper()
 		current, err := os.Stat(source)
-		if err != nil || current.Mode().Perm() != mode || !os.SameFile(changed, current) {
+		if err != nil || current.Mode().Perm() != 0750 || !os.SameFile(changed, current) {
 			t.Fatalf("credential verification repaired or replaced lost custody: %v", err)
 		}
 	}

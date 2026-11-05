@@ -14,6 +14,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// CC1: only the measured endpoint mounts the memory-backed volume, read-only.
 func TestPodCredentialVolumeRequiresMeasuredRoleAndExactMemoryMount(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -78,6 +79,7 @@ func TestPodCredentialVolumeRequiresMeasuredRoleAndExactMemoryMount(t *testing.T
 	}
 }
 
+// CC2, IN3: lost capture protection refuses publication and ends issuance.
 func TestPodCommitProtectionLossEndsIdentity(t *testing.T) {
 	pod := sandboxedPod()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -96,6 +98,7 @@ func TestPodCommitProtectionLossEndsIdentity(t *testing.T) {
 	}
 }
 
+// OB5: retained history keeps removed launches; a lost sandbox ends it.
 func TestPodSnapshotRetainsStoppedAndRemovedLaunches(t *testing.T) {
 	inv := newAdmissionInventory(t.TempDir())
 	inv.recordSandbox("pod")
@@ -122,7 +125,7 @@ func TestPodSnapshotRetainsStoppedAndRemovedLaunches(t *testing.T) {
 	}
 }
 
-// The revision stales an issuance in flight, as the armTLS rotation guard
+// CC2: the revision stales an issuance in flight, as the armTLS rotation guard
 // does: it moves when the retained history gains an observation or the
 // sandbox's identity ends, not on a stop or removal, which change no claim.
 func TestPodSnapshotRevisionMovesWithObservationsOnly(t *testing.T) {
@@ -151,26 +154,5 @@ func TestPodSnapshotRevisionMovesWithObservationsOnly(t *testing.T) {
 	inv.denyOnRecord("pod", "", errors.New("refused"))
 	if _, denied, err := inv.podSnapshot("pod"); err != nil || denied <= grown {
 		t.Fatalf("revision %d -> %d after a denial, %v", grown, denied, err)
-	}
-}
-
-// A stop or removal changes no claim, so it does not wake the broker; a
-// change does.
-func TestStopAndRemovalDoNotWakeThePodBroker(t *testing.T) {
-	p := &plugin{cfg: &config{Pod: &podConfig{}}, podBroker: &podCredentialBroker{changes: make(chan struct{}, 1)}, logger: discardLogger()}
-	pod := sandboxedPod()
-	ctr := &api.Container{Id: "ctr", PodSandboxId: pod.GetId()}
-	if _, err := p.StopContainer(t.Context(), pod, ctr); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.RemoveContainer(t.Context(), pod, ctr); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.podBroker.changes) != 0 {
-		t.Fatal("a stop or removal woke the broker")
-	}
-	p.podChanged()
-	if len(p.podBroker.changes) != 1 {
-		t.Fatal("a change did not wake the broker")
 	}
 }

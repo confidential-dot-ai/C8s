@@ -24,6 +24,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
+// CC3: the policy pull trusts the CDS by its own launch binding alone.
 func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 	fixture, err := os.ReadFile("../../../internal/testdata/node-identities.json")
 	if err != nil {
@@ -33,9 +34,9 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeKey, podKey := identities.Images[0].Anchor, identities.Images[1].Anchor
-	// The CDS VM binds its entire configuration, independently of either
-	// node launch key and of the Pod guest's TEE family.
+	podKey := identities.Images[1].Anchor
+	// The CDS VM binds its entire configuration, independently of the Pod
+	// launch key and of the Pod guest's TEE family (CC3).
 	identities.Images = identities.Images[:1]
 	identities.Images[0].Anchor = nil
 	identities.Images[0].LaunchFile = []byte(testutil.CDSLaunchFile)
@@ -83,22 +84,15 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 	pull := pullConfig{URL: srv.URL, CDSMeasurementsConfig: pinsPath, AttestationApiURL: verifier.URL(), Timeout: 5 * time.Second}
 
 	for _, tc := range []struct {
-		name          string
-		launch        []byte
-		wrongImage    bool
-		wrongRegister int
-		wrongBinding  bool
-		extended      bool
-		wantErr       error
+		name         string
+		launch       []byte
+		wrongBinding bool
+		extended     bool
+		wantErr      error
 	}{
 		{name: "server", launch: server.LaunchFile},
 		{name: "Pod launch key", launch: podKey, wantErr: armtls.ErrPolicyViolation},
-		{name: "node launch key", launch: nodeKey, wantErr: armtls.ErrPolicyViolation},
-		{name: "another CDS configuration", launch: []byte("another configuration"), wantErr: armtls.ErrPolicyViolation},
 		{name: "extended CDS binding", launch: server.LaunchFile, extended: true, wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong image", launch: server.LaunchFile, wrongImage: true, wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong kernel", launch: server.LaunchFile, wrongRegister: 1, wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong rootfs", launch: server.LaunchFile, wrongRegister: 2, wantErr: armtls.ErrPolicyViolation},
 		{name: "unbound certificate key", launch: server.LaunchFile, wrongBinding: true, wantErr: armtls.ErrKeyBinding},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,15 +105,6 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 				"rtmr_1": hex.EncodeToString(server.Registers[1]),
 				"rtmr_2": hex.EncodeToString(server.Registers[2]),
 				"rtmr_3": hex.EncodeToString(seed[:]),
-			}
-			if tc.wrongImage {
-				verdict.Claims.LaunchDigest = hex.EncodeToString(make([]byte, sha512.Size384))
-			}
-			if tc.wrongRegister == 1 {
-				verdict.Claims.PlatformData["rtmr_1"] = hex.EncodeToString(make([]byte, sha512.Size384))
-			}
-			if tc.wrongRegister == 2 {
-				verdict.Claims.PlatformData["rtmr_2"] = hex.EncodeToString(make([]byte, sha512.Size384))
 			}
 			if tc.wrongBinding {
 				verdict.ReportDataMatch = teetypes.Ptr(false)

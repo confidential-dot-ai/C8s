@@ -17,6 +17,7 @@ import (
 	"time"
 )
 
+// ML1, OB5: an exited or foreign process cannot claim a recorded container.
 func TestPodRecoveryProcessProofRefusesWrongContainerAndExitedPID(t *testing.T) {
 	requireNetNS(t)
 	child := exec.Command("sleep", "60")
@@ -80,7 +81,7 @@ func TestPodRecoveryProcessProofRefusesWrongContainerAndExitedPID(t *testing.T) 
 	}
 }
 
-// Use real kernel membership, including a nested scope named after another
+// OB5: use real kernel membership, including a nested scope named after another
 // container. The nested name must not replace the original runtime identity.
 func TestPodRecoveryProcessProofRetainsOutermostCgroupIdentity(t *testing.T) {
 	requireNetNS(t)

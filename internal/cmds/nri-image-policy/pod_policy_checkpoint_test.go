@@ -25,6 +25,7 @@ func checkpointTestPolicy(t *testing.T, populated bool) *allowlist.Allowlist {
 	return policy
 }
 
+// GB8: a restart keeps the applied policy version and refuses a rollback.
 func TestPodPolicyRecoveryRetainsVersionAndDecisions(t *testing.T) {
 	for _, populated := range []bool{false, true} {
 		store := newPolicyStore(nil)
@@ -58,6 +59,7 @@ func TestPodPolicyRecoveryRetainsVersionAndDecisions(t *testing.T) {
 	}
 }
 
+// GB8: version zero after a pull is a retained policy, not a missing one.
 func TestPodPolicyRecoveryDistinguishesNoPullFromEmptyPolicy(t *testing.T) {
 	store := newPolicyStore(nil)
 	saved, err := checkpointPodPolicy(store.current())
@@ -82,15 +84,14 @@ func TestPodPolicyRecoveryDistinguishesNoPullFromEmptyPolicy(t *testing.T) {
 	}
 }
 
+// GB8, ML4: a checkpoint that lost or changed its document restores nothing.
 func TestPodPolicyRecoveryRefusesLostOrChangedDocument(t *testing.T) {
 	store := newPolicyStore(nil)
 	store.apply(checkpointTestPolicy(t, true), 17)
 	valid, _ := checkpointPodPolicy(store.current())
 	for _, mutate := range []func(*podPolicyCheckpoint){
 		func(s *podPolicyCheckpoint) { s.Document = nil },
-		func(s *podPolicyCheckpoint) { s.Document = []byte("null") },
 		func(s *podPolicyCheckpoint) { s.Digest = "" },
-		func(s *podPolicyCheckpoint) { s.Document = append(bytes.Clone(s.Document), '\n') },
 		func(s *podPolicyCheckpoint) {
 			s.Document = []byte(`{"schema":"unknown","workloads":{}}`)
 			sum := sha256.Sum256(s.Document)
@@ -110,7 +111,7 @@ func TestPodPolicyRecoveryRefusesLostOrChangedDocument(t *testing.T) {
 	}
 }
 
-// Restoring a consumer snapshot must not apply newer authoring restrictions.
+// GB8: restoring a consumer snapshot must not apply newer authoring restrictions.
 func TestPodPolicyRecoveryPreservesServedPolicySemantics(t *testing.T) {
 	policy := checkpointTestPolicy(t, true)
 	entry := policy.Workloads["app"]

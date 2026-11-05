@@ -34,7 +34,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// assertPodBootstrap receives nodeservices.Prepare's validated output. Only
+// MM2, ML1, CC1, OB5: assertPodBootstrap receives nodeservices.Prepare's validated output. Only
 // paths and the policy transport are rebased: armTLS authentication is tested
 // separately, while this test controls outages and exercises real NRI RPCs.
 func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest string) {

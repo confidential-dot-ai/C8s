@@ -54,6 +54,7 @@ func podStartRequest(pod *api.PodSandbox, ctr *api.Container) podstart.Request {
 	return podstart.Request{ContainerID: ctr.Id, SandboxID: pod.Id, PID: ctr.Pid}
 }
 
+// ML1: a single-use permission issued only after measurement.
 func TestPodRuntimeStartRequiresFinalAdmissionExactlyOnce(t *testing.T) {
 	for _, ready := range []bool{false, true} {
 		t.Run(map[bool]string{false: "initializing", true: "ready"}[ready], func(t *testing.T) {
@@ -91,6 +92,7 @@ func TestPodRuntimeStartRequiresFinalAdmissionExactlyOnce(t *testing.T) {
 	}
 }
 
+// ML1: a denial, failed measurement or lost authority prevents the start.
 func TestPodStartFailuresIssueNoPermission(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -125,6 +127,7 @@ func TestPodStartFailuresIssueNoPermission(t *testing.T) {
 	}
 }
 
+// ML1: the permission is bound to that container.
 func TestPodPermissionRequiresSameCreatedProcess(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
@@ -145,6 +148,7 @@ func TestPodPermissionRequiresSameCreatedProcess(t *testing.T) {
 	}
 }
 
+// ML1: the permission lapses if unused and a lost connection revokes it.
 func TestPodPermissionInvalidatedBeforeRuntimeStart(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -185,6 +189,7 @@ func TestPodPermissionInvalidatedBeforeRuntimeStart(t *testing.T) {
 	}
 }
 
+// ML1: a restart of the same container needs its own permission.
 func TestPodRetryReplacesPreviousPermissionForSameName(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
@@ -203,6 +208,7 @@ func TestPodRetryReplacesPreviousPermissionForSameName(t *testing.T) {
 	}
 }
 
+// ML1: a failed restart leaves no permission behind.
 func TestPodFailedRetryRevokesEarlierPermission(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
@@ -219,6 +225,7 @@ func TestPodFailedRetryRevokesEarlierPermission(t *testing.T) {
 	}
 }
 
+// ML1: a plugin timeout prevents the start.
 func TestPodCancelledCallbackCannotGrantLate(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -251,6 +258,7 @@ func (l failedPodStartListener) Accept() (net.Conn, error) { return nil, l.err }
 func (failedPodStartListener) Close() error                { return nil }
 func (failedPodStartListener) Addr() net.Addr              { return &net.UnixAddr{Name: "failed", Net: "unix"} }
 
+// ML1: a disconnected plugin revokes every permission.
 func TestPodStartServerFailureEndsRuntimeAuthority(t *testing.T) {
 	p, _, _, _ := podStartFixture(t, true)
 	p.stub = &fakeStub{}

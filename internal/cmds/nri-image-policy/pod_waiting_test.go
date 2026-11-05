@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 )
 
+// AS9: the waiting floor admits no sandbox or container.
 func TestWaitingPodDeniesEveryAdmissionHook(t *testing.T) {
 	for _, name := range []string{"pause", "app", "c8s-mesh"} {
 		p := newTestPlugin(&config{Pod: &podConfig{Waiting: true}})
@@ -37,6 +38,7 @@ type emptyRestartMeasurer struct{ digests []string }
 func (m emptyRestartMeasurer) MeasureOnce(string) (bool, error) { return false, nil }
 func (m emptyRestartMeasurer) Digests() []string                { return m.digests }
 
+// GB8, AS9: a same-boot restart keeps the waiting registration.
 func TestGenericWaitingRegistrationSurvivesRestartBeforeCDSReadiness(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "registered")
 	for attempt := range 2 {
@@ -70,6 +72,7 @@ func TestGenericWaitingRegistrationSurvivesRestartBeforeCDSReadiness(t *testing.
 	}
 }
 
+// GB8: only an empty generic assignment may restart as one.
 func TestGenericRestartRequiresEveryEmptyAssignmentPrerequisite(t *testing.T) {
 	for _, condition := range []string{"allowed", "static", "waiting", "uid", "journal-unavailable", "history", "sandbox", "container", "manifest", "symlink"} {
 		t.Run(condition, func(t *testing.T) {

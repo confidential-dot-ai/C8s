@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// An empty but terminal guest must never look like a fresh generic assignment
+// OB5, GB8: an empty but terminal guest must never look like a fresh generic assignment
 // after a failed fence. Renaming the old checkpoint preserves a durable refusal
 // even when allocating a new marker has already failed.
 func TestPodRecoveryTerminalFenceFailureRetainsRefusalBeforeExecution(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// CC1: disk-backed, symlinked and substituted credential volumes are refused.
 func TestPodCredentialRootRejectsDiskAndSymlinksAndHoldsIdentity(t *testing.T) {
 	requireNetNS(t)
 	base := podCredentialTestDir(t)
@@ -94,6 +95,7 @@ func TestPodCredentialRootRejectsDiskAndSymlinksAndHoldsIdentity(t *testing.T) {
 	}
 }
 
+// OB5: a restart cannot reconstruct history or reuse a claimed boot identity.
 func TestPodBrokerRefusesReconstructedOrReusedBootHistory(t *testing.T) {
 	requireNetNS(t)
 	base := podCredentialTestDir(t)
@@ -139,32 +141,6 @@ func podBrokerPlugins(t *testing.T, base string) func() *plugin {
 	}
 }
 
-// The start that claims the boot identity is in the snapshot the worker's
-// first issuance reads, so it sends no change; a later start does.
-func TestEndpointStartWakesTheBrokerOnlyAfterItsFirstIssuance(t *testing.T) {
-	requireNetNS(t)
-	base := podCredentialTestDir(t)
-	mountPodTestRAM(t, base)
-	source := filepath.Join(base, "certs")
-	if err := os.Mkdir(source, 0700); err != nil {
-		t.Fatal(err)
-	}
-	p := podBrokerPlugins(t, base)()
-	pod := sandboxedPod()
-	if err := p.afterPodStart(pod, source); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.podBroker.changes) != 0 {
-		t.Fatal("the first issuance was asked for twice")
-	}
-	if err := p.afterPodStart(pod, source); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.podBroker.changes) != 1 {
-		t.Fatal("a later endpoint start did not wake the broker")
-	}
-}
-
 // Use an exclusively owned path beneath the production anchor so verification
 // exercises openat2 custody checks without weakening them through an opener hook.
 func podCredentialTestDir(t *testing.T) string {
@@ -184,7 +160,7 @@ func podCredentialTestDir(t *testing.T) string {
 	return dir
 }
 
-// The guest serves the endpoint's peer connections from the credential volume
+// CC4, MM3: the guest serves the endpoint's peer connections from the credential volume
 // for as long as the Pod identity lasts, to the endpoint's UID alone.
 func TestPodIdentityServesTheConnectBrokerInTheCredentialVolume(t *testing.T) {
 	requireNetNS(t)

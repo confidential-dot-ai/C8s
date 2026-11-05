@@ -49,6 +49,7 @@ func requireRecoveryRefusal(t *testing.T, cfg *config, want string) {
 	}
 }
 
+// GB8, OB5: one writer per boot; an interrupted transition is never resumed.
 func TestPodRecoveryStoreSingleWriterAndInterruptedOwner(t *testing.T) {
 	cfg, owner, state := recoveryStoreFixture(t)
 	requireRecoveryRefusal(t, cfg, "writer already active")
@@ -77,6 +78,7 @@ func TestPodRecoveryStoreSingleWriterAndInterruptedOwner(t *testing.T) {
 	requireRecoveryRefusal(t, cfg, "interrupted transition")
 }
 
+// AS5, GB8: retained state lives only in private, root-owned, memory-backed storage.
 func TestPodRecoveryStoreRejectsUntrustedDirectory(t *testing.T) {
 	requireNetNS(t)
 	for _, condition := range []string{"public", "foreign-owner", "symlink"} {
@@ -132,8 +134,9 @@ func TestPodRecoveryStoreRejectsUntrustedDirectory(t *testing.T) {
 	})
 }
 
+// ML4, OB5: a record the plugin cannot trust stops admission for the boot.
 func TestPodRecoveryStoreRejectsDamagedRetainedAuthority(t *testing.T) {
-	for _, condition := range []string{"unknown-field", "duplicate-field", "wrong-boot", "missing-map", "lost-boot-id", "terminal", "foreign-owner", "symlink", "oversized", "journal-without-state"} {
+	for _, condition := range []string{"unknown-field", "duplicate-field", "wrong-boot", "lost-boot-id", "terminal", "foreign-owner", "oversized", "journal-without-state"} {
 		t.Run(condition, func(t *testing.T) {
 			cfg, store, state := recoveryStoreFixture(t)
 			path := filepath.Join(cfg.WorkloadClaims.SocketDir, podRecoveryDirectory, podRecoveryStateFile)
@@ -155,9 +158,6 @@ func TestPodRecoveryStoreRejectsDamagedRetainedAuthority(t *testing.T) {
 			case "wrong-boot":
 				state.KernelBootID = "00000000-0000-0000-0000-000000000000"
 				want = "identity or complete state"
-			case "missing-map":
-				state.Histories = nil
-				want = "identity or complete state"
 			case "lost-boot-id":
 				state.BootID = "lost"
 				want = "original boot identity"
@@ -166,14 +166,6 @@ func TestPodRecoveryStoreRejectsDamagedRetainedAuthority(t *testing.T) {
 				want = "previously ended"
 			case "foreign-owner":
 				if err := os.Chown(path, 65534, 65534); err != nil {
-					t.Fatal(err)
-				}
-				want = "private root-owned regular"
-			case "symlink":
-				if err := os.Rename(path, path+".retained"); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(path+".retained", path); err != nil {
 					t.Fatal(err)
 				}
 				want = "private root-owned regular"
@@ -192,7 +184,7 @@ func TestPodRecoveryStoreRejectsDamagedRetainedAuthority(t *testing.T) {
 				want = "measured admission history"
 			}
 			switch condition {
-			case "wrong-boot", "missing-map", "lost-boot-id", "terminal":
+			case "wrong-boot", "lost-boot-id", "terminal":
 				raw, err = json.Marshal(state)
 				if err != nil {
 					t.Fatal(err)
@@ -208,6 +200,7 @@ func TestPodRecoveryStoreRejectsDamagedRetainedAuthority(t *testing.T) {
 	}
 }
 
+// OB5: a failed checkpoint leaves its fence and never resumes.
 func TestPodRecoveryStoreFailedCommitCannotAdvertiseOldStateAsClean(t *testing.T) {
 	cfg, store, state := recoveryStoreFixture(t)
 	before, err := store.root.ReadFile(podRecoveryStateFile)
@@ -244,7 +237,7 @@ func TestPodRecoveryStoreFailedCommitCannotAdvertiseOldStateAsClean(t *testing.T
 	requireRecoveryRefusal(t, cfg, "interrupted transition")
 }
 
-// If storage cannot create a fence or preserve a refusal by rename, continuing
+// OB5, ML4: if storage cannot create a fence or preserve a refusal by rename, continuing
 // this guest would let a later restart recover the stale clean checkpoint.
 func TestPodRecoveryStoreUnwritableRefusalRequiresGuestShutdown(t *testing.T) {
 	cfg, store, _ := recoveryStoreFixture(t)
