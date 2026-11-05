@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -198,27 +197,16 @@ func (c *cloudClient) do(ctx context.Context, method, path, key string, in, out 
 		return fmt.Errorf("cloud request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8*maxFile+1))
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
-	}
-	if len(data) > 8*maxFile {
-		return errors.New("cloud response exceeds limit")
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errCloudNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Error details may contain launch input. Only the bounded error code
-		// reaches controller logs; retries stay with the work queue.
-		var p struct {
-			Code string `json:"code"`
-		}
-		_ = json.Unmarshal(data, &p)
-		if len(p.Code) > 80 || strings.ContainsAny(p.Code, " \r\n\t") {
-			p.Code = "unknown"
-		}
-		return fmt.Errorf("cloud returned HTTP %d (%s)", resp.StatusCode, p.Code)
+		// Error details may contain launch input; only the status reaches logs.
+		return fmt.Errorf("cloud returned HTTP %d", resp.StatusCode)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {

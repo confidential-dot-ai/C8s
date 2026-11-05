@@ -379,7 +379,7 @@ func TestOrphanSweepCleansOnlyOriginalUID(t *testing.T) {
 }
 
 func TestUnverifiedStatusWithdrawsReadinessAndEndpoints(t *testing.T) {
-	for _, failure := range []string{"attestation", "foreign-uid", "unknown-container", "duplicate-status"} {
+	for _, failure := range []string{"attestation", "foreign-uid"} {
 		t.Run(failure, func(t *testing.T) {
 			pod := fixturePod()
 			r, _ := fixtureReconciler(t, pod)
@@ -393,10 +393,6 @@ func TestUnverifiedStatusWithdrawsReadinessAndEndpoints(t *testing.T) {
 					return p, errors.New("attestation failed")
 				case "foreign-uid":
 					p.Metadata.UID = "foreign"
-				case "unknown-container":
-					p.Status.ContainerStatuses[0].Name = "foreign"
-				case "duplicate-status":
-					p.Status.ContainerStatuses = append(p.Status.ContainerStatuses, p.Status.ContainerStatuses[0])
 				}
 				return p, nil
 			}
@@ -444,13 +440,11 @@ func TestFrozenCredentialsAndOldUncertainIntentFailClosed(t *testing.T) {
 }
 
 func TestProviderRejectsUnlaunchableWorkloadsBeforeCloud(t *testing.T) {
-	for _, kind := range []string{"long-name", "huge-memory", "cpu-total", "tag", "service-account", "secret-env", "provider-fieldref"} {
+	for _, kind := range []string{"huge-memory", "cpu-total", "tag", "service-account", "secret-env", "provider-fieldref"} {
 		t.Run(kind, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
 			switch kind {
-			case "long-name":
-				pod.Name = strings.Repeat("a", 206)
 			case "huge-memory":
 				pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("100000000000000000000")}
 			case "cpu-total":

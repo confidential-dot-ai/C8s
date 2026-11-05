@@ -35,9 +35,6 @@ func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
 		return req, err
 	}
 	name := identityKey(c.ProviderID, string(pod.UID))
-	if len(pod.Name)+1+len(name) > 253 {
-		return req, errors.New("pod name is too long for the guest's static Pod name")
-	}
 	doc := c.document(name)
 	doc.Workloads = c.workloads
 	doc.Pod = &launchconfig.PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: c.MeshPeers}
@@ -68,6 +65,9 @@ func (c *Config) signedRequest(doc launchconfig.Document, ports []uint16) (creat
 	if err != nil {
 		return createRequest{}, err
 	}
+	// The cloud refuses a larger document for good. Refuse it here, before
+	// any record exists, or the pod would be held forever behind a create
+	// that can never succeed.
 	if len(data) > 64<<10 {
 		return createRequest{}, errors.New("signed launch document exceeds the Cloud 64 KiB limit")
 	}

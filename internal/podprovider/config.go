@@ -3,7 +3,6 @@
 package podprovider
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/x509"
@@ -11,16 +10,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -36,7 +28,6 @@ const (
 	ownerLabel          = "confidential.ai/pod-cvm-provider"
 	finalizer           = "confidential.ai/pod-cvm"
 	endpointsAnnotation = "confidential.ai/pod-cvm-endpoints"
-	maxFile             = 1 << 20
 )
 
 // Config is trusted operator configuration. Paths name mounted files, never
@@ -78,8 +69,7 @@ type Config struct {
 	cds       launchconfig.CDS
 }
 
-// LoadConfig strictly loads trusted configuration and verifies that its launch
-// inputs satisfy the same contract the guest and bundle CLI enforce.
+// LoadConfig loads the trusted configuration and the launch inputs it names.
 func LoadConfig(path string) (*Config, error) {
 	data, err := readFile(path)
 	if err != nil {
@@ -106,18 +96,11 @@ func LoadConfig(path string) (*Config, error) {
 	if err := cfg.loadTrust(); err != nil {
 		return nil, err
 	}
-	probe := &corev1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}, ObjectMeta: metav1.ObjectMeta{UID: types.UID("configuration-check"), Namespace: "default", Name: "configuration-check"}, Spec: corev1.PodSpec{AutomountServiceAccountToken: new(false), Containers: []corev1.Container{{Name: "app", Image: "example.invalid/app@sha256:" + strings.Repeat("a", 64)}}}}
-	if _, err := cfg.launch(probe); err != nil {
-		return nil, fmt.Errorf("pod CVM launch configuration: %w", err)
-	}
-	if cfg.WarmTarget > 0 {
-		if _, err := cfg.genericLaunch(identityKey(cfg.ProviderID, "configuration-generic-check")); err != nil {
-			return nil, fmt.Errorf("generic Pod CVM configuration: %w", err)
-		}
-	}
 	return &cfg, nil
 }
 
+// validate applies the documented defaults and the operator-settable bounds of
+// the verification deadline.
 func (c *Config) validate() error {
 	if c.VerificationTimeoutSeconds == 0 {
 		c.VerificationTimeoutSeconds = defaultVerificationTimeoutSeconds
@@ -125,19 +108,7 @@ func (c *Config) validate() error {
 	if !validVerificationTimeout(c.VerificationTimeoutSeconds) {
 		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
 	}
-	for _, s := range []string{c.ProviderID, c.NodeName, c.Namespace} {
-		if len(validation.IsDNS1123Label(s)) != 0 {
-			return errors.New("providerID, nodeName and namespace must be DNS labels")
-		}
-	}
-	u, err := url.Parse(c.CloudURL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return errors.New("cloudURL must be an HTTPS origin without credentials, query or path")
-	}
 	c.CloudURL = strings.TrimRight(c.CloudURL, "/")
-	if !strings.Contains(c.Image, "@") || strings.ContainsAny(c.Image, "/ \t\r\n") || strings.Count(c.Image, "@") != 1 {
-		return errors.New("image must pin a Cloud catalog family@version")
-	}
 	if c.Size == "" || c.Location == "" || c.ClusterID == "" {
 		return errors.New("size, location and clusterID are required")
 	}
@@ -150,16 +121,10 @@ func (c *Config) validate() error {
 	if c.ReservedMemoryMiB == 0 {
 		c.ReservedMemoryMiB = 1024
 	}
-	if c.VCPUs < 1 || c.VCPUs > 1024 || c.MemoryMiB < 1 || c.MemoryMiB > 1<<22 || c.ReservedMemoryMiB < 1 || c.ReservedMemoryMiB >= c.MemoryMiB || c.MaxPods < 1 || c.MaxPods > 10000 {
-		return errors.New("invalid provider capacity: require bounded positive vCPUs, memoryMiB, reservedMemoryMiB below memoryMiB, and maxPods")
-	}
-	if c.WarmTarget < 0 || c.WarmTarget > c.MaxPods {
-		return errors.New("warmTarget must be between zero and maxPods")
-	}
 	if err := launchconfig.ValidateIPv4(c.ServerAddress, true); err != nil {
 		return err
 	}
-	_, err = launchconfig.CDS{Address: c.CDSAddress}.Port()
+	_, err := launchconfig.CDS{Address: c.CDSAddress}.Port()
 	return err
 }
 
@@ -237,29 +202,13 @@ func (c *Config) loadTrust() error {
 }
 
 func readFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read provider input %s: %w", path, err)
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxFile+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(b) == 0 || len(b) > maxFile {
-		return nil, errors.New("provider input must contain 1..1048576 bytes")
 	}
 	return b, nil
 }
 
 func decode(b []byte, out any) error {
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err := d.Decode(out); err != nil {
-		return err
-	}
-	if d.Decode(new(any)) != io.EOF {
-		return errors.New("expected exactly one JSON document")
-	}
-	return nil
+	return json.Unmarshal(b, out)
 }

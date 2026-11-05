@@ -1,7 +1,6 @@
 package podprovider
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,19 +14,13 @@ import (
 )
 
 func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
-	for _, kind := range []string{"http", "url-credentials", "url-query", "invalid-key", "wrong-curve", "invalid-server", "unbound-cds-policy", "oversized-cds-policy", "trailing-data", "unknown-field", "oversized-config"} {
+	for _, kind := range []string{"invalid-key", "wrong-curve", "unbound-cds-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := fixtureConfig(t)
 			path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
 			target := ""
 			var data []byte
 			switch kind {
-			case "http":
-				cfg.CloudURL = "http://cloud.example"
-			case "url-credentials":
-				cfg.CloudURL = "https://user:password@cloud.example"
-			case "url-query":
-				cfg.CloudURL = "https://cloud.example?token=secret"
 			case "invalid-key":
 				target = cfg.LaunchKeyFile
 				data = []byte("not a key")
@@ -42,13 +35,8 @@ func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
 				}
 				target = cfg.LaunchKeyFile
 				data = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-			case "invalid-server":
-				target = cfg.ServerPublicKeyFile
-				data = []byte("not a public key")
 			case "unbound-cds-policy":
 				target, data = cfg.CDSImagePolicyFile, providerCDSPolicy(t, nil)
-			case "oversized-cds-policy":
-				target, data = cfg.CDSImagePolicyFile, []byte(strings.Repeat("a", maxFile+1))
 			}
 			if target != "" {
 				if err := os.WriteFile(target, data, 0o600); err != nil {
@@ -58,14 +46,6 @@ func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
 			body, err := json.Marshal(cfg)
 			if err != nil {
 				t.Fatal(err)
-			}
-			switch kind {
-			case "trailing-data":
-				body = append(body, []byte(" {}")...)
-			case "unknown-field":
-				body = []byte(`{"unexpected":true}`)
-			case "oversized-config":
-				body = bytes.Repeat([]byte("a"), maxFile+1)
 			}
 			if err := os.WriteFile(path, body, 0o600); err != nil {
 				t.Fatal(err)
@@ -88,14 +68,6 @@ func TestConfigurationBoundsAndDefaults(t *testing.T) {
 		}
 		if seconds == 0 && cfg.VerificationTimeoutSeconds != 600 {
 			t.Fatal("missing default")
-		}
-	}
-	for _, target := range []int64{-1, 0, 1, 10, 11} {
-		cfg := fixtureConfig(t)
-		cfg.WarmTarget = target
-		err := cfg.validate()
-		if (err == nil) != (target >= 0 && target <= cfg.MaxPods) {
-			t.Fatalf("warmTarget %d: %v", target, err)
 		}
 	}
 	base := fixtureConfig(t)

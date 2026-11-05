@@ -187,50 +187,63 @@ func (r *Reconciler) maintainPools(ctx context.Context) error {
 		}
 		return r.inspectIdle(ctx, p, secret)
 	}
-	if len(pools) == 0 {
-		return nil
-	}
-	// Process one allocation per sweep. Network calls under the reconciliation
-	// mutex must not grow with warmTarget and starve Pod verification deadlines.
-	// The cursor is only a fairness hint; all cleanup/claim authority is durable.
-	chosen := int(r.poolCursor) % len(pools)
-	r.poolCursor = int64(chosen + 1)
-	p, secret := pools[chosen].record, pools[chosen].secret
-	rec, podSecret, err := r.poolPod(ctx, p, secret)
-	if err != nil {
-		return err
-	}
-	if rec != nil && p.Claim == nil {
-		if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
-			return err
+	// Every slot is inspected on every sweep. Claimed slots are retained and
+	// count against the pod budget until destruction is confirmed; a claimed
+	// slot whose Pod is gone is destroyed. Unclaimed slots are kept up to the
+	// warm target and the capacity remaining under the budget, and drained
+	// when incompatible or in excess. An unclaimed slot already draining
+	// occupies the budget for reservation but not for the drain threshold,
+	// or every sweep until its deletion confirms would drain one more.
+	retained := direct
+	var unclaimed []poolState
+	var errs []error
+	for _, state := range pools {
+		p, secret := state.record, state.secret
+		rec, podSecret, err := r.poolPod(ctx, p, secret)
+		if err != nil {
+			errs = append(errs, err)
+			retained++
+			continue
 		}
-	}
-	if p.Claim != nil {
-		if rec != nil && !rec.Deleted {
-			return nil
+		if rec != nil && p.Claim == nil {
+			if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
+				errs = append(errs, err)
+				retained++
+				continue
+			}
+		}
+		if p.Claim == nil && !p.DeleteRequested && !p.Deleted {
+			unclaimed = append(unclaimed, state)
+			continue
+		}
+		if p.Claim != nil {
+			retained++
+			if rec != nil && !rec.Deleted {
+				continue
+			}
 		}
 		done, err := r.removePool(ctx, p, secret)
 		if err == nil && done {
 			err = r.discard(ctx, secret)
 		}
-		return err
+		errs = append(errs, err)
 	}
-	var earlier int64
-	for _, state := range pools[:chosen] {
-		other := state.record
-		if other.Claim == nil && !other.DeleteRequested && !other.Deleted && r.compatiblePool(other) {
-			earlier++
+	var kept int64
+	for _, state := range unclaimed {
+		p, secret := state.record, state.secret
+		if !r.compatiblePool(p) || kept >= r.cfg.WarmTarget || retained+kept >= r.cfg.MaxPods {
+			retained++
+			done, err := r.removePool(ctx, p, secret)
+			if err == nil && done {
+				err = r.discard(ctx, secret)
+			}
+			errs = append(errs, err)
+			continue
 		}
+		kept++
+		errs = append(errs, r.inspectIdle(ctx, p, secret))
 	}
-	drain := p.DeleteRequested || p.Deleted || !r.compatiblePool(p) || earlier >= r.cfg.WarmTarget || total > r.cfg.MaxPods
-	if drain {
-		done, err := r.removePool(ctx, p, secret)
-		if err == nil && done {
-			err = r.discard(ctx, secret)
-		}
-		return err
-	}
-	return r.inspectIdle(ctx, p, secret)
+	return errors.Join(errs...)
 }
 
 // inspectIdle verifies an unclaimed slot like an assignment target. The

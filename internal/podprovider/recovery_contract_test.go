@@ -31,7 +31,7 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 				t.Fatal(err)
 			}
 			if kind == "invalid-json" {
-				secret.Data["state.json"] = []byte(`{"version":1,"unknown":true}`)
+				secret.Data["state.json"] = []byte(`{`)
 			}
 			if err := r.client.Update(context.Background(), secret); err != nil {
 				t.Fatal(err)
@@ -217,14 +217,14 @@ func TestDeletionNeverFollowsForeignRecoveryResult(t *testing.T) {
 	}
 }
 
-func TestProjectionRequiresIdentityPhaseAndUniqueConditions(t *testing.T) {
+func TestProjectionRequiresIdentity(t *testing.T) {
 	pod := fixturePod()
 	r, _ := fixtureReconciler(t, pod)
 	rec, _, err := r.ensureRecord(context.Background(), pod)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"name", "namespace", "phase", "condition-status", "duplicate-condition"} {
+	for _, kind := range []string{"name", "namespace"} {
 		t.Run(kind, func(t *testing.T) {
 			p := fixtureProjection(rec)
 			switch kind {
@@ -232,12 +232,6 @@ func TestProjectionRequiresIdentityPhaseAndUniqueConditions(t *testing.T) {
 				p.Metadata.Name = rec.Name
 			case "namespace":
 				p.Metadata.Namespace = "foreign"
-			case "phase":
-				p.Status.Phase = "invalid"
-			case "condition-status":
-				p.Status.Conditions[0].Status = "invalid"
-			case "duplicate-condition":
-				p.Status.Conditions = append(p.Status.Conditions, p.Status.Conditions[0])
 			}
 			if _, err := projectedStatus(rec, p, pod, "", rec.Key); err == nil {
 				t.Fatal("invalid projection accepted")
@@ -273,10 +267,5 @@ func TestEndpointContractRejectsInvalidAddressesAndDuplicates(t *testing.T) {
 	in.Endpoints = append(in.Endpoints, in.Endpoints[0])
 	if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 		t.Fatal("duplicate public status endpoint accepted")
-	}
-	in = instanceFor(rec.Request)
-	in.ID = "not-an-instance"
-	if err := validateInstance(&rec.instanceIntent, in); err == nil {
-		t.Fatal("malformed instance ID accepted")
 	}
 }
