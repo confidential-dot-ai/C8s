@@ -16,8 +16,9 @@ import (
 )
 
 // The chart's baked router pins its launch and reads only files worker stage
-// publishes, so a worker image's floor builds from it, and its entry declares
-// the HTTPS and HTTP host ports its Deployment maps.
+// publishes, so a worker image's floor builds from it and the image's static
+// pod templates, and the router's entry declares the HTTPS and HTTP host ports
+// its Deployment maps.
 func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not installed")
@@ -52,7 +53,20 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		}
 		return data
 	}
-	floor, err := worker.Floor([]byte(nodeFloor), read("allowlist-seed.json"), nil)
+	templateDir := filepath.Join("..", "..", "images", "node-guest", "worker", "mkosi.extra", "usr", "lib", "c8s", "worker", "static-pods")
+	entries, err := os.ReadDir(templateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates := map[string][]byte{}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(templateDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		templates[entry.Name()] = data
+	}
+	floor, err := worker.Floor([]byte(nodeFloor), read("allowlist-seed.json"), templates)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +77,11 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	}
 	if err := yamlv3.Unmarshal(floor, &doc); err != nil {
 		t.Fatal(err)
+	}
+	for _, pod := range []string{"cilium"} {
+		if !doc.Allowlist.Base.Workloads[pod].StaticPod {
+			t.Errorf("the floor holds no static-pod entry for the image's %s", pod)
+		}
 	}
 	publishing := map[string]allowlist.HostPortList{}
 	for name, w := range doc.Allowlist.Base.Workloads {

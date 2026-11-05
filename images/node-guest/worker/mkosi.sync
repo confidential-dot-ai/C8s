@@ -8,8 +8,9 @@
 #   2. the multi-command c8s binary images/node-guest/build pre-stages at
 #      usr/local/bin/c8s, also as the NRI plugin and c8s-runc.
 #   3. the router's nginx files and the worker's NRI floor, rendered from the
-#      chart in that binary and the node profile's floor, which the build
-#      pre-stages at mkosi.local/node-floor.yaml.in.
+#      chart in that binary, the node profile's floor, which the build
+#      pre-stages at mkosi.local/node-floor.yaml.in, and this profile's static
+#      pod templates.
 #
 # The RKE2 and Helm pins equal the c8s profile's (profile_test.go).
 set -euo pipefail
@@ -26,6 +27,9 @@ HELM_LINUX_AMD64_SHA256="a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c
 RKE2_VERSION="v1.36.4+rke2r1"
 RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
 RUNTIME_BINARIES=(containerd containerd-shim-runc-v2 kubelet runc)
+# The CNI plugins release at RKE2's version; the worker's Cilium chains portmap.
+CNI_PLUGINS_VERSION="v1.9.1"
+CNI_PLUGINS_LINUX_AMD64_SHA256="b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303"
 
 input() { cat "$SYNC_INPUTS/$1" 2>/dev/null || true; }
 fail() { echo "worker sync: FATAL $*" >&2; exit 1; }
@@ -113,8 +117,8 @@ sed \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
     "$NODE_FLOOR" > "$TMP/node-floor.yaml"
 ! grep -o '@[A-Z_]*@' "$TMP/node-floor.yaml" || fail "the node floor names a placeholder this sync does not fill"
-TEMPLATES="$STAGE_DIR/usr/lib/c8s/worker/static-pods"
-mkdir -p "$TEMPLATES"
+TEMPLATES="$SRCDIR/mkosi.profiles/worker/mkosi.extra/usr/lib/c8s/worker/static-pods"
+[ -d "$TEMPLATES" ] || fail "no static pod templates at $TEMPLATES"
 "$C8S" worker floor \
     --node-floor "$TMP/node-floor.yaml" \
     --render-dir "$RENDER" \
@@ -124,4 +128,8 @@ printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8
 install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/router-nginx" "$RENDER"/router-nginx/*
 # The initrd overlays only directories the image bakes (usr/lib/confai/state.d).
 mkdir -p "$STAGE_DIR/etc/cni/net.d" "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/nri/conf.d"
+CNI_PLUGINS="$CACHE_DIR/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz"
+fetch "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz" \
+    "$CNI_PLUGINS" "$CNI_PLUGINS_LINUX_AMD64_SHA256"
+tar -xzf "$CNI_PLUGINS" -C "$STAGE_DIR/opt/cni/bin" ./portmap
 echo "worker sync: staged the RKE2 ${RKE2_VERSION} runtime and the worker floor for c8s ${C8S_REF}"
