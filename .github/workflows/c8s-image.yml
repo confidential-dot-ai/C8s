@@ -1,6 +1,7 @@
 # Build + publish the C8s confidential node image (TDX-measured RKE2 + NRI +
 # attestation-api + NVIDIA stack in the verity rootfs). confos is the build
-# tree (pinned CONFOS_REF); callers select the baked commit and publish policy.
+# tree (pinned CONFOS_REF); callers select the baked commit with --ref and the
+# publish policy; a manual c8s_ref confirms that commit and scopes the tags to it.
 # Output: ghcr.io/confidential-dot-ai/node-guest-base, one image per TEE:
 # tags :rke2-{tdx,snp}[-cdi] / :rke2-{tdx,snp}[-cdi]-<sha>. Stable releases
 # also receive :rke2-{tdx,snp}[-cdi]-vX.Y.Z in c8s-image-publish.yml. The
@@ -71,10 +72,10 @@ concurrency:
   # The inputs are part of the identity, not decoration. A workflow_dispatch has
   # no workflow_run event, so the commit term falls through to github.sha —
   # main's head — which is the SAME value for every dispatch between two pushes.
-  # Without the inputs, two c8s_ref rebuilds, or a dev and a non-dev build, share
+  # Without the inputs, two c8s_ref builds, or a dev and a non-dev build, share
   # a group and queue behind each other (cancel-in-progress is false) despite
   # producing different images. Nothing about them needs serializing: a c8s_ref
-  # rebuild pushes only :<variant>[-cdi]-<ref>, which is distinct per ref, and
+  # build pushes only :<variant>[-cdi]-<ref>, which is distinct per ref, and
   # dev builds carry their own -dev tags. They are empty on the workflow_run
   # path, so the auto path groups exactly as before.
   group: >-
@@ -114,6 +115,22 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           path: c8s
           sparse-checkout: .github
+
+      - name: Require matching manual image sources
+        if: github.event_name == 'workflow_dispatch' && inputs.gate != true
+        env:
+          PROFILE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$PROFILE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$C8S_REF_INPUT" ] &&
+             { [[ ! "$C8S_REF_INPUT" =~ ^[0-9a-f]{7}$ ]] ||
+               [[ "$PROFILE_SHA" != "$C8S_REF_INPUT"* ]]; }; then
+            echo "::error::c8s_ref must be the 7-character short SHA of the dispatched image-profile commit ($PROFILE_SHA): docker.yml publishes the component images under that tag only."
+            echo "::error::Dispatch with --ref <source-branch-or-tag> and its matching published c8s_ref for commit-scoped image tags."
+            exit 1
+          fi
 
       - name: Load measured-build pins
         id: pins
@@ -557,8 +574,9 @@ jobs:
           set -euo pipefail
           # Short SHA matches docker.yml's component tags. The build script
           # hands C8S_REF to mkosi.sync via confos --sync-input (can't cross
-          # mkosi's sudo sandbox as an env var). The c8s_ref input overrides
-          # it to rebuild a published release. Definition lives in this repo:
+          # mkosi's sudo sandbox as an env var). A manual c8s_ref is that same
+          # short SHA (the guard above checks it) and makes the build commit-scoped:
+          # only the :<variant>[-cdi]-<ref> tags move. Definition lives in this repo:
           # the script stages ../c8s/images/node-guest/c8s via --profile-dir.
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # The build script requires an explicit platform (no default). The
@@ -699,7 +717,7 @@ jobs:
             exit 0
           fi
 
-          # A c8s_ref rebuild compares against that release's own tag, not the
+          # A c8s_ref build compares against its own commit-scoped tag, not the
           # floating one it never repoints.
           tag="${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}"
           new=$(cat "output/${VARIANT}/roothash" 2>/dev/null || echo new)
@@ -729,7 +747,7 @@ jobs:
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          # A c8s_ref rebuild repoints only that release's suffixed tags; the
+          # A c8s_ref build repoints only its own commit-scoped tags; the
           # floating tags keep tracking main builds, and only move when the
           # rootfs changed. A beta build never moves them.
           CDI_TAGS="${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
@@ -811,8 +829,11 @@ jobs:
         env:
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
+          profile_sha=$(git -C c8s rev-parse HEAD)
           {
             echo "### ${VARIANT} confidential node image"
+            echo "- image profile source: \`$profile_sha\`"
+            echo "- components ref: \`${C8S_REF_INPUT:-${profile_sha:0:7}}\`"
             echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- confos ref: \`${CONFOS_REF}\`"
@@ -978,18 +999,27 @@ jobs:
         working-directory: confidential-os-builder
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
+          ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
+          # Only automatic main publication advances the shared CDS aliases.
+          # Manual and beta builds retain their exact commit-scoped tags.
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$HEAD_BRANCH" = main ] && [ -z "$C8S_REF_INPUT" ]; then
+            CDI_TAGS="${VARIANT}-cdi,$CDI_TAGS"
+            ORAS_TAGS="${VARIANT},$ORAS_TAGS"
+          fi
           # CDI first, oras artifact last, as the node image publishes: a
           # partial failure re-publishes everything on the next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
+            --tag "$CDI_TAGS"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "${VARIANT},${VARIANT}-${SHORT_SHA}"
+            --tag "$ORAS_TAGS"
 
       - name: Summary
         env:
