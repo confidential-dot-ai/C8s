@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"math"
 	"time"
 )
 
@@ -50,23 +49,6 @@ func (r ForwardRequest) valid() bool {
 		return false
 	}
 	return (record{Index: uint64(len(r.Entries)), Entries: r.Entries}).valid()
-}
-
-func (l *logState) claim(ctx context.Context) error {
-	if l.head.Revision == math.MaxUint64 || l.head.Writer.Epoch == math.MaxUint64 {
-		return l.stop(ErrCorrupt)
-	}
-	next := l.head
-	next.Version = 2
-	next.Revision++
-	next.Writer = Owner{ID: l.options.Writer.ID, Address: l.options.Writer.Address, Epoch: l.head.Writer.Epoch + 1}
-	etag, err := l.publish(ctx, next)
-	if err != nil {
-		return err
-	}
-	l.head, l.etag = next, etag
-	l.stats.Takeovers++
-	return nil
 }
 
 // acceptForwarded batches messages from other replicas. Duplicates are checked

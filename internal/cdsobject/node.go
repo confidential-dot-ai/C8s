@@ -460,6 +460,26 @@ func (n *Node) propose(e cdsha.Entry) (cdsha.Result, error) {
 	defer clear(body)
 	ctx, cancel := context.WithTimeout(n.ctx, operationTimeout)
 	defer cancel()
+	// A recovered replica already holds the measured seed and journal. These
+	// two startup commands can finish as reads when they would change nothing.
+	// The actor's fresh barrier comes first; a stale local copy can never skip
+	// a required write. Changed seeds still use the ordinary committed path.
+	if e.Kind == cdsha.KindAllowlist && e.Allowlist != nil &&
+		(e.Allowlist.Op == allowlist.OpSeed || e.Allowlist.Op == allowlist.OpStartJournal) {
+		if err := wal.Sync(ctx); err != nil {
+			return cdsha.Result{}, err
+		}
+		noOp, err := n.cfg.Allowlist.BootstrapNoOp(*e.Allowlist)
+		if err != nil {
+			return cdsha.Result{}, err
+		}
+		if noOp {
+			if err := ctx.Err(); err != nil {
+				return cdsha.Result{}, err
+			}
+			return cdsha.Result{Allowlist: &allowlist.Result{}}, nil
+		}
+	}
 	answer, err := wal.Append(ctx, body)
 	if err != nil {
 		return cdsha.Result{}, err

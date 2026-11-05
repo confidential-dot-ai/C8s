@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,91 @@ import (
 func preferredLog(t *testing.T, s Store, id string, forward func(context.Context, Owner, ForwardRequest) error) (*Log, *counter) {
 	t.Helper()
 	return actorLog(t, s, Options{Writer: &WriterConfig{ID: id, Address: id, Forward: forward, ForwardTimeout: time.Second}})
+}
+
+func TestRecreatedWriterDoesNotForwardToItsOwnAddress(t *testing.T) {
+	s := newStore()
+	var forwarded atomic.Int32
+	open := func(id string) *Log {
+		l, _ := actorLog(t, s, Options{
+			OperationTimeout: time.Second,
+			Writer: &WriterConfig{ID: id, Address: "same-address", ForwardTimeout: time.Second,
+				Forward: func(ctx context.Context, _ Owner, _ ForwardRequest) error {
+					forwarded.Add(1)
+					<-ctx.Done() // A self-forward waits on this same actor.
+					return ctx.Err()
+				}},
+		})
+		return l
+	}
+	old := open("old-process")
+	if _, err := old.Append(t.Context(), []byte("before-loss")); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	replacement := open("new-process")
+	if answer, err := replacement.Append(t.Context(), []byte("after-loss")); err != nil || answer != 2 {
+		t.Fatalf("replacement result=%v err=%v", answer, err)
+	}
+	owner := replacement.Stats().Writer
+	if forwarded.Load() != 0 || owner.ID != "new-process" || owner.Epoch != 2 {
+		t.Fatalf("self forwarding=%d owner=%+v", forwarded.Load(), owner)
+	}
+}
+
+func TestTakeoverPublishesOwnershipAndCommandInTheSameCAS(t *testing.T) {
+	s := newStore()
+	unreachable := func(context.Context, Owner, ForwardRequest) error {
+		return errors.New("previous process gone")
+	}
+	old, _ := preferredLog(t, s, "old", unreachable)
+	if _, err := old.Append(t.Context(), []byte("seed")); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	replacement, _ := preferredLog(t, s, "replacement", unreachable)
+	observer, _ := actorLog(t, s, Options{})
+	entered, release := make(chan struct{}), make(chan struct{}, 1)
+	defer close(release)
+	var paused atomic.Bool
+	var lostReceipt atomic.Bool
+	s.put = func(ctx context.Context, key string, data []byte, etag string) (string, error) {
+		if strings.Contains(key, "/wal/") && paused.CompareAndSwap(false, true) {
+			close(entered)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-release:
+			}
+		}
+		written, err := s.write(ctx, key, data, etag)
+		if err == nil && key == "pilot/head" && lostReceipt.CompareAndSwap(false, true) {
+			return "", errors.New("takeover committed but its receipt was lost")
+		}
+		return written, err
+	}
+	done := make(chan response, 1)
+	go func() {
+		value, err := replacement.Append(t.Context(), []byte("recovered-write"))
+		done <- response{value, err}
+	}()
+	<-entered
+	if err := observer.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := observer.Stats(); got.Writer.ID != "old" || got.Applied != 1 {
+		t.Fatalf("ownership advanced before its command: %+v", got)
+	}
+	release <- struct{}{}
+	if got := <-done; got.err != nil || got.value != 2 {
+		t.Fatalf("takeover result=%v err=%v", got.value, got.err)
+	}
+	if err := observer.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := observer.Stats(); got.Writer.ID != "replacement" || got.Writer.Epoch != 2 || got.Applied != 2 || got.Revision != 2 {
+		t.Fatalf("ownership and command did not commit together: %+v", got)
+	}
 }
 
 func TestPreferredWriterCollectsRemoteCommandsWithoutCompetingUploads(t *testing.T) {

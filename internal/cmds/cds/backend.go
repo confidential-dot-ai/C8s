@@ -43,6 +43,8 @@ type backend interface {
 	// Gate refuses every other route while this CDS may not answer.
 	Gate(next http.Handler) http.Handler
 	KeepMeshCA(ctx context.Context, peers *armtls.CertManager)
+	// StopJoining releases the temporary listener once the full server is ready.
+	StopJoining()
 	// Stop runs before the stores close.
 	Stop()
 }
@@ -231,4 +233,5 @@ func (s *singleton) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) {
 	renewMeshCAWhenDue(ctx, s.mesh, caRenewalCheckInterval, peers)
 }
 
-func (s *singleton) Stop() {}
+func (s *singleton) StopJoining() {}
+func (s *singleton) Stop()        {}

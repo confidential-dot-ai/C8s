@@ -72,18 +72,18 @@ It does not establish resistance to an operator presenting a complete old
 history to a cold recovery authority.
 
 The runner's concurrency correction passes 27 local checks, including four
-simultaneous create-if-absent writes with exactly one durable winner. A separate
-local diagnostic added 300 ms to every storage operation. Initial startup
-succeeded, but some replacement CDS processes exceeded their existing five-second
-deadline while committing bootstrap policy. Both preferred-writer and direct-writer
-modes exhibited the failure. This remains an availability limit; the hardware
-acceptance run retains the original CDS deadlines and preferred-writer configuration.
+simultaneous create-if-absent writes with exactly one durable winner. A local
+diagnostic adding 300 ms to every storage operation exposed replacement startup
+timeouts in both preferred-writer and direct-writer modes. The preferred-writer
+regression now passes with the corrections below and the original five-second
+operation deadline. This is a correctness regression, not a production latency
+or capacity qualification; direct-writer latency was not requalified.
 
 Native run 05 completed all three CDS startups with the concurrent relay, then
 stopped at the workload fixture's interface enumeration: the image's address-family
 sandbox excluded route netlink. The acceptance image now allows `AF_NETLINK` for
 that local query. It adds no guest egress rule, executable-input route, or shared
-host setting. The measured image must be rebuilt and re-enrolled for this change.
+host setting. The corrected image was rebuilt and re-enrolled for native run 06.
 
 Native run 06 passed the full seed phase and destroyed both VMs. Replacement
 custody also passed, and all three CDS processes replayed the original CA.
@@ -93,6 +93,23 @@ current CA, stopping on process cancellation or backend exit. It never creates
 a replacement identity or bypasses the freshness gate. The operation deadlines
 and replay/revocation assertions remain unchanged. Focused race tests exercise
 the transient gap, reuse of the recovered key, cancellation and backend exit.
+
+Native run 07 again passed seed, custody reconstruction and replay of the original
+CA, but one replacement timed out committing bootstrap workloads. The joining
+listener now stays available through bootstrap and TLS preparation, so other
+replicas can still reach its attested forwarding endpoint. A replacement never
+forwards to its own address while its actor is executing the originating request.
+Writer takeover publishes its new generation and first command in the same head
+CAS, removing a separate ownership-only update and preventing claim-only churn.
+Tests retain fencing and reconcile a lost takeover receipt without a duplicate.
+
+An unchanged bootstrap seed or journal now completes after a fresh WAL read
+barrier and a read-only check of the local policy store. Missing entries, generated
+entry retirement and journal publication still use the normal committed path.
+Journal integrity is still verified; no arbitrary mutation or token consumption
+uses this shortcut. The check shares the existing seed-retirement rules and the
+existing per-store lock; the WAL actor retains ownership of ordering and bounded
+admission. There is no new shared lock, retry protocol or storage format.
 
 ## Acceptance assertions
 

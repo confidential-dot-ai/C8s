@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -55,6 +56,10 @@ func awaitAdmission(t *testing.T, l *Log, count int64) {
 }
 
 func TestGroupCommitAcknowledgesIndividualResultsAfterOneCASPerBatch(t *testing.T) {
+	synctest.Test(t, testGroupCommitAcknowledgesIndividualResultsAfterOneCASPerBatch)
+}
+
+func testGroupCommitAcknowledgesIndividualResultsAfterOneCASPerBatch(t *testing.T) {
 	base := newStore()
 	s := &gatedStore{Store: base, entered: make(chan struct{}), release: make(chan struct{})}
 	l, c := actorLog(t, s, Options{BatchEntries: 8})
@@ -67,6 +72,10 @@ func TestGroupCommitAcknowledgesIndividualResultsAfterOneCASPerBatch(t *testing.
 		go func() { value, err := l.Append(t.Context(), []byte(fmt.Sprint(i))); results <- response{value, err} }()
 	}
 	awaitAdmission(t, l, count+1)
+	// Admission precedes copying/enqueueing. Wait until every producer is
+	// blocked on its reply; fake time keeps scheduling pauses from expiring
+	// the batch timer while this fully queued workload is drained.
+	synctest.Wait()
 	// No enqueue, upload or partial batch is an acknowledgment.
 	select {
 	case <-results:

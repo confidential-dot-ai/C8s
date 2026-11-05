@@ -72,6 +72,8 @@ type clusterCDS struct {
 	// that loop is gone, whether it was stopped or it failed.
 	stopNode func()
 	ended    <-chan struct{}
+	// The startup goroutine owns this listener until handoff or shutdown.
+	stopJoining func()
 }
 
 // newReplica makes this process one replica of its cluster's CDS. It answers
@@ -226,12 +228,13 @@ func (r *clusterCDS) join(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	defer stopAnswering()
+	r.stopJoining = stopAnswering
 	slog.Info("cds-ha: this replica waits to join its cluster",
 		"cluster_id", cfg.measured.ClusterID,
 		"member", r.node.Status().ID,
 	)
 	if err := r.awaitServing(ctx); err != nil {
+		r.StopJoining()
 		return err
 	}
 	slog.Info("cds-ha: this replica serves its cluster", "status", r.node.Status())
@@ -323,7 +326,15 @@ func (r *clusterCDS) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) 
 }
 
 func (r *clusterCDS) Stop() {
+	r.StopJoining()
 	r.stopNode()
+}
+
+func (r *clusterCDS) StopJoining() {
+	if r.stopJoining != nil {
+		r.stopJoining()
+		r.stopJoining = nil
+	}
 }
 
 type clusterCA struct {

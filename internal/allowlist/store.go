@@ -323,6 +323,24 @@ func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at tim
 // retireReplacedTx deletes every stored entry seed replaces and returns how
 // many it deleted.
 func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
+	stored, err := loadWorkloads(tx)
+	if err != nil {
+		return 0, err
+	}
+	retired := replacedBySeed(stored, seed)
+	for _, name := range retired {
+		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
+			return 0, err
+		}
+		slog.Info("allowlist seed retired a replaced entry", "workload", name)
+	}
+	return len(retired), nil
+}
+
+func replacedBySeed(stored, seed map[string]pkgallowlist.Workload) []string {
 	seedKeys, overrideKeys := map[string]bool{}, map[string]bool{}
 	for name := range seed {
 		if key := GeneratedKey(name); key != "" {
@@ -332,11 +350,7 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 			overrideKeys[key] = true
 		}
 	}
-	stored, err := loadWorkloads(tx)
-	if err != nil {
-		return 0, err
-	}
-	var retired int
+	var retired []string
 	for name, w := range stored {
 		// An override takes its name from the <image>-<12 hex> entry releases
 		// before per-shape names generated, which the store may still hold.
@@ -346,16 +360,9 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 		if !retiredBySeed(name, w, seedKeys, overrideKeys) {
 			continue
 		}
-		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
-			return 0, err
-		}
-		if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
-			return 0, err
-		}
-		slog.Info("allowlist seed retired a replaced entry", "workload", name)
-		retired++
+		retired = append(retired, name)
 	}
-	return retired, nil
+	return retired
 }
 
 func sameWorkload(a, b pkgallowlist.Workload) bool {

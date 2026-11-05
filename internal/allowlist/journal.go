@@ -79,6 +79,16 @@ func (s *Store) startJournal(at time.Time) error {
 	}
 	defer tx.Rollback()
 
+	if err := verifyJournalTx(tx); err != nil {
+		return err
+	}
+	if _, err := publishTx(tx, at); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func verifyJournalTx(tx *sql.Tx) error {
 	rows, err := tx.Query(`SELECT e.position, e.digest, o.body FROM journal_event e
 		LEFT JOIN journal_object o ON o.digest = e.digest ORDER BY e.position`)
 	if err != nil {
@@ -99,13 +109,7 @@ func (s *Store) startJournal(at time.Time) error {
 			return fmt.Errorf("allowlist history position %d: object does not hash to %s", position, digest)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if _, err := publishTx(tx, at); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return rows.Err()
 }
 
 // publishTx appends a history entry, timed at, for the document tx leaves in

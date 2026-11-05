@@ -177,12 +177,17 @@ func (l *logState) appendBatchIfCurrent(ctx context.Context, entries []entry, li
 			}
 			return nil, context.Canceled
 		}
+		var takeover *Owner
 		if writer := l.options.Writer; expected == nil && writer != nil && l.head.Writer.ID != writer.ID {
 			owner := l.head.Writer
 			if required != nil {
 				return nil, ErrNotWriter
 			}
-			if owner.ID != "" && (failedOwner == nil || *failedOwner != owner) {
+			// A replacement at the previous writer's address cannot forward
+			// to itself: its actor would wait for work queued to that same
+			// actor. Claim the new generation by CAS instead. The address is
+			// only a routing hint; the head CAS still fences every writer.
+			if owner.ID != "" && owner.Address != writer.Address && (failedOwner == nil || *failedOwner != owner) {
 				forwardCtx, cancel := context.WithTimeout(ctx, writer.ForwardTimeout)
 				l.stats.Forwarded++
 				err := writer.Forward(forwardCtx, owner, ForwardRequest{Owner: owner, After: l.applied.Index, Entries: entries})
@@ -200,20 +205,14 @@ func (l *logState) appendBatchIfCurrent(ctx context.Context, entries []entry, li
 				}
 				continue
 			}
-			if err := l.claim(ctx); err != nil {
-				if errors.Is(err, ErrConflict) {
-					l.stats.Conflicts++
-				} else {
-					l.stats.Ambiguous++
-				}
-				if err := retryDelay(ctx); err != nil {
-					if uncertain {
-						return nil, fmt.Errorf("%w: %w", ErrInDoubt, err)
-					}
-					return nil, err
-				}
+			if owner.Epoch == math.MaxUint64 {
+				return nil, l.stop(ErrCorrupt)
 			}
-			continue
+			// Publish ownership together with this batch. A separate claim
+			// lets overlapping replacements repeatedly steal ownership without
+			// committing any work. Every successful takeover now advances the
+			// application history, under the same CAS fencing condition.
+			takeover = &Owner{ID: writer.ID, Address: writer.Address, Epoch: owner.Epoch + 1}
 		}
 		if l.head.Revision == math.MaxUint64 || l.applied.Index > math.MaxUint64-uint64(len(entries)) {
 			return nil, l.stop(errors.New("object WAL: sequence exhausted"))
@@ -232,6 +231,9 @@ func (l *logState) appendBatchIfCurrent(ctx context.Context, entries []entry, li
 		}
 		next := l.head
 		next.Version, next.Revision, next.Tail = 2, l.head.Revision+1, written
+		if takeover != nil {
+			next.Writer = *takeover
+		}
 		etag, err := l.publish(ctx, next)
 		if err != nil {
 			if errors.Is(err, ErrConflict) {
@@ -252,6 +254,9 @@ func (l *logState) appendBatchIfCurrent(ctx context.Context, entries []entry, li
 		// The object store has committed. Apply exactly these bytes; subsequent
 		// writers may already have published newer records, which Sync will read.
 		l.head, l.etag = next, etag
+		if takeover != nil {
+			l.stats.Takeovers++
+		}
 		answers, err = l.apply(written, r)
 		if err == nil {
 			l.committedBatch(len(entries))

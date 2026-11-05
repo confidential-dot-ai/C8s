@@ -261,6 +261,9 @@ func run(cfg config) error {
 	go back.KeepMeshCA(ctx, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
+	// Bootstrap writes need the attested forwarding endpoint too. Keep the
+	// joining listener available until the full router and TLS are prepared.
+	back.StopJoining()
 	if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 		return err
 	}
