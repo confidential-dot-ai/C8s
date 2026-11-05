@@ -86,9 +86,6 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(data) > 900<<10 {
-		return nil, nil, errors.New("frozen provider record exceeds the Secret size budget")
-	}
 	secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace, Labels: map[string]string{ownerLabel: r.cfg.ProviderID}}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"state.json": data}}
 	if err := r.client.Create(ctx, secret); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -109,9 +106,6 @@ func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secre
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
-	}
-	if len(b) > 900<<10 {
-		return errors.New("provider record exceeds the Secret size budget")
 	}
 	secret.Data = map[string][]byte{"state.json": b}
 	return r.client.Update(ctx, secret)

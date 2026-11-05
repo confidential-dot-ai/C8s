@@ -157,6 +157,36 @@ func TestWarmCleanupCompletesHalfPublishedClaim(t *testing.T) {
 	}
 }
 
+func TestWarmReducedBudgetDrainsOnlyTheExcess(t *testing.T) {
+	r, cloud, _, _ := poolFixture(t)
+	r.cfg.WarmTarget, r.cfg.MaxPods = 3, 3
+	cloud.holdDeletion = true
+	for range 3 {
+		if err := r.maintainPools(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.cfg.MaxPods = 2
+	for range 2 {
+		if err := r.maintainPools(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pools, _, err := r.allocations(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draining := 0
+	for _, state := range pools {
+		if state.record.DeleteRequested {
+			draining++
+		}
+	}
+	if len(pools) != 3 || draining != 1 || cloud.creates != 3 {
+		t.Fatalf("reduced budget drained %d of %d slots across two sweeps", draining, len(pools))
+	}
+}
+
 func TestWarmReplacedClaimRecordRetiresItsGuest(t *testing.T) {
 	r, cloud, _, pod := poolFixture(t)
 	runToAssigned(t, r, pod)

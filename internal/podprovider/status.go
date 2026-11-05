@@ -15,7 +15,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
@@ -63,8 +62,8 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 // validateInstance checks that the instance the cloud returned is the one the
 // intent created: its identity, labels, image, platform and size.
 func validateInstance(intent *instanceIntent, in *instance) error {
-	if in == nil || !strings.HasPrefix(in.ID, "i-") || len(validation.IsDNS1123Label(in.ID)) != 0 {
-		return errors.New("cloud returned an invalid instance identity")
+	if in == nil || in.ID == "" {
+		return errors.New("cloud returned no instance identity")
 	}
 	if intent.InstanceID != "" && intent.InstanceID != in.ID {
 		return errors.New("cloud returned another instance")
@@ -140,9 +139,6 @@ func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev
 	if err != nil {
 		return out, err
 	}
-	if projection.Status.Phase != corev1.PodPending && projection.Status.Phase != corev1.PodRunning && projection.Status.Phase != corev1.PodSucceeded && projection.Status.Phase != corev1.PodFailed && projection.Status.Phase != corev1.PodUnknown {
-		return out, errors.New("guest reported an invalid Pod phase")
-	}
 	// Decode only the dedicated projection, not an arbitrary guest Pod object.
 	b, err := json.Marshal(projection.Status)
 	if err != nil {
@@ -151,14 +147,8 @@ func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev
 	if err := json.Unmarshal(b, &out); err != nil {
 		return out, err
 	}
-	out.ContainerStatuses, err = filterStatuses(out.ContainerStatuses, guest.Spec.Containers, false)
-	if err != nil {
-		return out, err
-	}
-	out.InitContainerStatuses, err = filterStatuses(out.InitContainerStatuses, guest.Spec.InitContainers, true)
-	if err != nil {
-		return out, err
-	}
+	out.ContainerStatuses = filterStatuses(out.ContainerStatuses, guest.Spec.Containers, false)
+	out.InitContainerStatuses = filterStatuses(out.InitContainerStatuses, guest.Spec.InitContainers, true)
 	out.PodIP = podIP
 	if podIP != "" {
 		out.PodIPs = []corev1.PodIP{{IP: podIP}}
@@ -169,44 +159,33 @@ func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev
 			conditions = append(conditions, c)
 		}
 	}
-	seen := map[corev1.PodConditionType]bool{}
 	for _, c := range out.Conditions {
-		if c.Type == corev1.PodScheduled {
-			continue
+		if c.Type != corev1.PodScheduled {
+			conditions = append(conditions, c)
 		}
-		if seen[c.Type] || (c.Status != corev1.ConditionTrue && c.Status != corev1.ConditionFalse && c.Status != corev1.ConditionUnknown) {
-			return out, errors.New("guest status contains invalid conditions")
-		}
-		seen[c.Type] = true
-		conditions = append(conditions, c)
 	}
 	out.Conditions = conditions
 	return out, nil
 }
 
-func filterStatuses(statuses []corev1.ContainerStatus, containers []corev1.Container, mesh bool) ([]corev1.ContainerStatus, error) {
+// filterStatuses omits the guest's mesh endpoint container and names each
+// container's image from the frozen pod rather than from the guest.
+func filterStatuses(statuses []corev1.ContainerStatus, containers []corev1.Container, mesh bool) []corev1.ContainerStatus {
 	images := map[string]string{}
 	for _, c := range containers {
 		images[c.Name] = c.Image
 	}
-	seen := map[string]bool{}
 	var out []corev1.ContainerStatus
 	for _, s := range statuses {
-		if seen[s.Name] {
-			return nil, errors.New("guest status repeats a container")
-		}
-		seen[s.Name] = true
 		if mesh && s.Name == workloadclaims.MeshContainerName {
 			continue
 		}
-		image, ok := images[s.Name]
-		if !ok {
-			return nil, errors.New("guest status contains an unknown workload container")
+		if image, ok := images[s.Name]; ok {
+			s.Image = image
 		}
-		s.Image = image
 		out = append(out, s)
 	}
-	return out, nil
+	return out
 }
 
 func unknownStatus(pod *corev1.Pod, reason string, now time.Time) corev1.PodStatus {

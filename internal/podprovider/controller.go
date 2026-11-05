@@ -29,7 +29,6 @@ type Reconciler struct {
 	cloud      cloudAPI
 	guest      guestReader
 	assignment assignmentVerifier
-	poolCursor int64
 	now        func() time.Time
 	ownsNode   func(context.Context) error
 	mu         sync.Mutex

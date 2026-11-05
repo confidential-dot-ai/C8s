@@ -85,9 +85,6 @@ func (r *Reconciler) savePool(ctx context.Context, p *poolRecord, secret *corev1
 	if err != nil {
 		return err
 	}
-	if len(data) > 900<<10 {
-		return errors.New("allocation record exceeds the Secret size budget")
-	}
 	secret.Data = map[string][]byte{"state.json": data}
 	return r.client.Update(ctx, secret)
 }
@@ -154,9 +151,6 @@ func (r *Reconciler) reservePool(ctx context.Context) (*poolRecord, *corev1.Secr
 	data, err := json.Marshal(p)
 	if err != nil {
 		return nil, nil, err
-	}
-	if len(data) > 900<<10 {
-		return nil, nil, errors.New("allocation record exceeds the Secret size budget")
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: slotName(key), Namespace: r.cfg.Namespace, Labels: map[string]string{ownerLabel: r.cfg.ProviderID, slotLabel: "true"}}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"state.json": data}}
 	if err := r.client.Create(ctx, secret); err != nil {

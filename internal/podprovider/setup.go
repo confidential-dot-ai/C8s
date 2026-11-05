@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
@@ -70,21 +69,17 @@ type virtualNode struct {
 func (*virtualNode) NeedLeaderElection() bool { return true }
 
 func (n *virtualNode) Start(ctx context.Context) error {
-	delay := time.Second
 	for {
 		err := n.run(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
 		ctrl.LoggerFrom(ctx).Error(err, "Pod CVM virtual node unavailable")
-		timer := time.NewTimer(wait.Jitter(delay, 0.2))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(pollInterval):
 		}
-		delay = min(delay*2, time.Minute)
 	}
 }
 
@@ -185,9 +180,9 @@ func (*virtualNode) NotifyNodeStatus(context.Context, func(*corev1.Node)) {}
 
 func nodeObject(cfg *Config) *corev1.Node {
 	capacity := corev1.ResourceList{corev1.ResourceCPU: *resource.NewQuantity(cfg.VCPUs*cfg.MaxPods, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity((cfg.MemoryMiB-cfg.ReservedMemoryMiB)*(1<<20)*cfg.MaxPods, resource.BinarySI), corev1.ResourcePods: *resource.NewQuantity(cfg.MaxPods, resource.DecimalSI)}
-	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName, Labels: map[string]string{Annotation: "true", ownerLabel: cfg.ProviderID, corev1.LabelOSStable: "linux", corev1.LabelArchStable: "amd64", corev1.LabelHostname: cfg.NodeName}},
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName, Labels: map[string]string{Annotation: "true", ownerLabel: cfg.ProviderID}},
 		Spec:   corev1.NodeSpec{ProviderID: "podcvm://" + cfg.ProviderID, Taints: []corev1.Taint{{Key: Annotation, Value: "true", Effect: corev1.TaintEffectNoSchedule}}},
-		Status: corev1.NodeStatus{Capacity: capacity, Allocatable: capacity.DeepCopy(), Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "ProviderReady", LastTransitionTime: metav1.Now()}}, NodeInfo: corev1.NodeSystemInfo{OperatingSystem: "linux", Architecture: "amd64", KubeletVersion: "v1.37.1-podcvm"}},
+		Status: corev1.NodeStatus{Capacity: capacity, Allocatable: capacity.DeepCopy(), Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "ProviderReady", LastTransitionTime: metav1.Now()}}},
 	}
 }
 
@@ -209,44 +204,21 @@ func ensureOwnedNode(ctx context.Context, api coreclient.NodeInterface, want *co
 	if current.Labels[ownerLabel] != want.Labels[ownerLabel] || current.Spec.ProviderID != want.Spec.ProviderID {
 		return errors.New("refusing to adopt an existing node owned by another provider")
 	}
-	if current.Labels == nil {
-		current.Labels = map[string]string{}
-	}
-	for k, v := range want.Labels {
-		current.Labels[k] = v
-	}
-	tainted := false
-	for i, t := range current.Spec.Taints {
-		if t.Key == Annotation && t.Effect == corev1.TaintEffectNoSchedule {
-			current.Spec.Taints[i].Value = "true"
-			tainted = true
-		}
-	}
-	if !tainted {
-		current.Spec.Taints = append(current.Spec.Taints, want.Spec.Taints[0])
-	}
-	_, err = api.Update(ctx, current, metav1.UpdateOptions{})
-	return err
+	return nil
 }
 
 type orphanWorker struct{ reconciler *Reconciler }
 
 func (*orphanWorker) NeedLeaderElection() bool { return true }
 func (w *orphanWorker) Start(ctx context.Context) error {
-	delay := pollInterval
 	for {
 		if err := w.reconciler.sweep(ctx); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "Pod CVM orphan recovery failed")
-			delay = min(2*delay, 5*time.Minute)
-		} else {
-			delay = pollInterval
 		}
-		timer := time.NewTimer(wait.Jitter(delay, 0.2))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(pollInterval):
 		}
 	}
 }
