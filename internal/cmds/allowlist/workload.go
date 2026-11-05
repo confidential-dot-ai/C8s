@@ -85,7 +85,7 @@ applied.`,
 			}
 			live := read.document
 
-			findings := lintOffline(&pkgallowlist.Allowlist{Schema: live.Schema, Workloads: entries})
+			findings := lintOffline(&pkgallowlist.Allowlist{Schema: pkgallowlist.SchemaForWorkloads(entries), Workloads: entries})
 			// The ambiguity check is the one finding that cannot be made from
 			// the file alone: the entry it collides with is usually one already
 			// served. Only pairs that span both are added here, since a
@@ -229,7 +229,7 @@ func collisionsWithLive(entries map[string]pkgallowlist.Workload, live *pkgallow
 	merged := make(map[string]pkgallowlist.Workload, len(live.Workloads)+len(entries))
 	maps.Copy(merged, live.Workloads)
 	maps.Copy(merged, entries)
-	groups, err := indistinguishableGroups(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: merged})
+	groups, err := indistinguishableGroups(&pkgallowlist.Allowlist{Schema: pkgallowlist.SchemaForWorkloads(merged), Workloads: merged})
 	if err != nil {
 		return []finding{errorf("workload entries could not be compared with the served allowlist: %v", err)}
 	}
@@ -247,7 +247,7 @@ func collisionsWithLive(entries map[string]pkgallowlist.Workload, live *pkgallow
 			out = append(out, ambiguousGroupFinding(names))
 		}
 	}
-	for _, pair := range shadowPairs(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: merged}) {
+	for _, pair := range shadowPairs(&pkgallowlist.Allowlist{Schema: pkgallowlist.SchemaForWorkloads(merged), Workloads: merged}) {
 		_, wideApplied := entries[pair[0]]
 		_, narrowApplied := entries[pair[1]]
 		if wideApplied != narrowApplied {
@@ -402,7 +402,11 @@ func documentWith(read allowlistRead, entries map[string]pkgallowlist.Workload) 
 	merged := make(map[string]pkgallowlist.Workload, len(read.document.Workloads)+len(entries))
 	maps.Copy(merged, read.document.Workloads)
 	maps.Copy(merged, entries)
-	return &pkgallowlist.Allowlist{Schema: read.document.Schema, Workloads: merged}
+	schema := read.document.Schema
+	if pkgallowlist.SchemaForWorkloads(merged) == pkgallowlist.ProcessNamespaceSchema {
+		schema = pkgallowlist.ProcessNamespaceSchema
+	}
+	return &pkgallowlist.Allowlist{Schema: schema, Workloads: merged}
 }
 
 // documentWithout is the document read without the named entries.
@@ -474,7 +478,7 @@ func parseWorkloadEntries(data []byte) (map[string]pkgallowlist.Workload, error)
 		return al.Workloads, nil
 	}
 
-	const prefix = `{"schema":"` + pkgallowlist.Schema + `","workloads":`
+	const prefix = `{"schema":"` + pkgallowlist.ProcessNamespaceSchema + `","workloads":`
 	wrapped := make([]byte, 0, len(prefix)+len(data)+1)
 	wrapped = append(wrapped, prefix...)
 	wrapped = append(wrapped, data...)
@@ -516,7 +520,8 @@ func applyEditedEntry(cmd *cobra.Command, o *options, c allowlistclient.Client, 
 // keepEditForRetry saves an edit that was not written as an allowlist
 // document holding only that entry, which `apply` writes as is.
 func keepEditForRetry(stderr io.Writer, name string, edited pkgallowlist.Workload) {
-	doc := pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{name: edited}}
+	entries := map[string]pkgallowlist.Workload{name: edited}
+	doc := pkgallowlist.Allowlist{Schema: pkgallowlist.SchemaForWorkloads(entries), Workloads: entries}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "your edit could not be saved: %v\n", err)

@@ -37,23 +37,33 @@ type record struct {
 // outside every role. A container counts as running from Record until Exited.
 // Nil mounts means unavailable evidence; a non-nil empty slice means no mounts.
 func (h *History) Record(id, digest, role string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
+	h.RecordLaunch(id, role, allowlist.RunningContainer{Digest: digest, Argv: argv, Env: env, Mounts: mounts})
+}
+
+// RecordLaunch retains the observed namespace policy with the complete launch.
+func (h *History) RecordLaunch(
+	id string,
+	role string,
+	launch allowlist.RunningContainer,
+) {
 	if h.byKey == nil {
 		h.byKey = map[string]*record{}
 		h.unresolved = map[string]struct{}{}
 		h.running = map[string]string{}
 	}
 	h.Exited(id)
-	if digest == "" {
+	if launch.Digest == "" {
 		h.unresolved[id] = struct{}{}
 		return
 	}
 	delete(h.unresolved, id)
 	c := workloadclaims.SandboxContainer{
-		Digest: digest,
-		Role:   role,
-		Argv:   slices.Clone(argv),
-		Env:    env.Clone(),
-		Mounts: slices.Clone(mounts),
+		Digest:                 launch.Digest,
+		Role:                   role,
+		Argv:                   slices.Clone(launch.Argv),
+		Env:                    launch.Env.Clone(),
+		Mounts:                 slices.Clone(launch.Mounts),
+		ProcessNamespacePolicy: launch.ProcessNamespacePolicy,
 	}
 	slices.SortFunc(c.Mounts, compareObservedMounts)
 	evidence := c.Env.Clone()

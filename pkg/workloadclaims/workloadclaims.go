@@ -393,8 +393,8 @@ type SandboxTokenRequest struct {
 //
 // Digests is the deduplicated digest set cert issuance gates on. Containers
 // carries each distinct admission, deduplicated by SandboxContainer.Key
-// (digest, argv, env, mounts), so a consumer can hold a sandbox
-// to every launch configuration it actually ran.
+// (digest, argv, env, mounts, process namespace policy), so a consumer can
+// hold a sandbox to every launch configuration it actually ran.
 //
 // Digests is [] (never null) for a known sandbox with no containers. Containers
 // is absent on an inventory that predates it, which consumers must treat as
@@ -420,6 +420,10 @@ type SandboxContainer struct {
 	// Argv is the effective OCI process.args — the merged image-config and
 	// pod-spec command, which is what the argv policy is written against.
 	Argv []string `json:"argv,omitempty"`
+
+	// ProcessNamespacePolicy identifies the signed workload that authorizes
+	// this application group; empty means a private PID namespace.
+	ProcessNamespacePolicy string `json:"processNamespacePolicy,omitempty"`
 }
 
 // SandboxResolver is the surface an inventory implements — nri-image-policy on

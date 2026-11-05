@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Key identifies a (digest, argv, env, mounts) admission in the
+// Key identifies a launch and its process namespace policy in the
 // cumulative inventory. Host source commitments and access modes are included in identity.
 // The framing must be injective: a collision erases historical evidence and can
 // allow a sandbox to match a workload it did not actually run.
@@ -33,6 +33,7 @@ func (c SandboxContainer) Key() string {
 		}
 		key.WriteByte(']')
 	}
+	fmt.Fprintf(&key, " processNamespacePolicy=%q", c.ProcessNamespacePolicy)
 	return key.String()
 }
 

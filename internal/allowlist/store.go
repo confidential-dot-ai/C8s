@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS route_manifest (
 );
 `
 
+const documentSchemaSQL = `
+CREATE TABLE IF NOT EXISTS allowlist_document (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	schema TEXT NOT NULL
+);
+INSERT OR IGNORE INTO allowlist_document (id, schema) VALUES (1, 'c8s.allowlist/v1');
+`
+
 // OpenStore opens (or creates) a SQLite-backed allowlist store at the given path.
 func OpenStore(path string) (*Store, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -165,15 +173,55 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 		version = "1"
 	}
 
-	workloads, err := loadWorkloads(s.db)
+	document, err := loadDocument(s.db)
 	if err != nil {
 		return nil, "", err
 	}
 
-	return &pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: workloads,
-	}, version, nil
+	return document, version, nil
+}
+
+// loadDocument preserves the schema covered by the operator's signature.
+func loadDocument(q interface {
+	querier
+	QueryRow(string, ...any) *sql.Row
+}) (*pkgallowlist.Allowlist, error) {
+	workloads, err := loadWorkloads(q)
+	if err != nil {
+		return nil, err
+	}
+	var schema string
+	var tables int
+	if err := q.QueryRow("SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'allowlist_document'").Scan(&tables); err != nil {
+		return nil, err
+	}
+	if tables == 0 {
+		// Older stores and snapshots contain only v1 documents.
+		return &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}, nil
+	}
+	if err := q.QueryRow("SELECT schema FROM allowlist_document WHERE id = 1").Scan(&schema); err != nil {
+		return nil, err
+	}
+	return &pkgallowlist.Allowlist{Schema: schema, Workloads: workloads}, nil
+}
+
+// setDocumentSchemaTx changes metadata only as part of a replicated write.
+func setDocumentSchemaTx(
+	tx *sql.Tx,
+	schema string,
+) error {
+	var tables int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'allowlist_document'").Scan(&tables); err != nil {
+		return err
+	}
+	if tables == 0 && schema == pkgallowlist.Schema {
+		return nil
+	}
+	if _, err := tx.Exec(documentSchemaSQL); err != nil {
+		return err
+	}
+	_, err := tx.Exec("UPDATE allowlist_document SET schema = ? WHERE id = 1", schema)
+	return err
 }
 
 // querier is *sql.DB or *sql.Tx. Inside a transaction reads must go through
@@ -336,6 +384,11 @@ func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at tim
 		return 0, 0, err
 	}
 	if added+retired > 0 {
+		if pkgallowlist.SchemaForWorkloads(workloads) == pkgallowlist.ProcessNamespaceSchema {
+			if err := setDocumentSchemaTx(tx, pkgallowlist.ProcessNamespaceSchema); err != nil {
+				return 0, 0, err
+			}
+		}
 		if err := bumpVersionTx(tx); err != nil {
 			return 0, 0, err
 		}
@@ -507,6 +560,9 @@ func requireVersionTx(tx *sql.Tx, version string) error {
 // replaceContentsTx clears every entry and reloads them from al, without
 // touching the version. Callers set the version (bump or restore).
 func replaceContentsTx(tx *sql.Tx, al *pkgallowlist.Allowlist) error {
+	if err := setDocumentSchemaTx(tx, al.Schema); err != nil {
+		return err
+	}
 	for _, stmt := range []string{
 		"DELETE FROM workload_entry",
 		"DELETE FROM workload_entry_digest",

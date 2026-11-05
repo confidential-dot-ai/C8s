@@ -52,11 +52,12 @@ func (p *plugin) bindExits(ctx context.Context, pod *api.PodSandbox, ctr *api.Co
 // the exit decision match a served allowlist against.
 func (p *plugin) sandboxContainer(launch allowlist.RunningContainer) workloadclaims.SandboxContainer {
 	return workloadclaims.SandboxContainer{
-		Digest: launch.Digest,
-		Argv:   launch.Argv,
-		Env:    launch.Env,
-		Mounts: launch.Mounts,
-		Role:   p.roleOf(launch),
+		Digest:                 launch.Digest,
+		Argv:                   launch.Argv,
+		Env:                    launch.Env,
+		Mounts:                 launch.Mounts,
+		ProcessNamespacePolicy: launch.ProcessNamespacePolicy,
+		Role:                   p.roleOf(launch),
 	}
 }
 
