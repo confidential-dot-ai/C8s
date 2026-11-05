@@ -286,8 +286,22 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "tls-san")); err != nil || string(got) != doc.TLSSAN+"\n" {
 		t.Errorf("tls-san = %q, %v; want the document's tlsSAN", got, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, nodeservices.PublicDir, "peers.json")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("published peers.json, a server's or an agent's output: %v", err)
+	var published []string
+	public := filepath.Join(root, nodeservices.PublicDir)
+	if err := filepath.WalkDir(public, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			published = append(published, strings.TrimPrefix(path, public+"/"))
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	names, err := stagedPublicNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := slices.Sorted(slices.Values(published)), slices.Sorted(slices.Values(names)); !slices.Equal(got, want) {
+		t.Errorf("published %v, want the files stagedPublicNames lists, %v", got, want)
 	}
 }
 

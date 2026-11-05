@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -115,4 +116,46 @@ func (d draft) render() ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+// NewFloorCmd returns `worker floor`, run when a worker image is built.
+func NewFloorCmd() *cobra.Command {
+	var nodeFloor, renderDir, out string
+	cmd := &cobra.Command{
+		Use:   "floor",
+		Short: "Build a worker image's NRI floor",
+		Long: `Build a worker image's NRI floor from the node image's floor, its digests
+filled in, and the allowlist seed 'c8s node-image render' wrote to --render-dir.
+The floor keeps the node floor's settings and the entries whose every container
+holds a platform role, adds the chart's router entry, and leaves the mesh's
+resolver and cluster ranges to worker stage. It refuses a node floor key it does
+not know, and a router entry that leaves its launch open, takes a mount the
+control plane fills, or names a file under /run/c8s-node that worker stage does
+not publish.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			node, err := os.ReadFile(nodeFloor)
+			if err != nil {
+				return err
+			}
+			seed, err := os.ReadFile(filepath.Join(renderDir, "allowlist-seed.json"))
+			if err != nil {
+				return err
+			}
+			floor, err := Floor(node, seed)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(out, floor, 0o644)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&nodeFloor, "node-floor", "", "the node image's NRI floor, its digests filled in")
+	f.StringVar(&renderDir, "render-dir", "", "the --output-dir of 'c8s node-image render'")
+	f.StringVar(&out, "out", "", "file to write the worker's floor to")
+	for _, name := range []string{"node-floor", "render-dir", "out"} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	return cmd
 }

@@ -79,7 +79,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err != nil {
 		return err
 	}
-	outputs := map[string][]byte{cdsOutput: cds}
+	outputs := map[string][]byte{CDSOutput: cds}
 	for name, data := range in.Outputs {
 		if err := refuseReservedOutput(name); err != nil {
 			return err
@@ -127,7 +127,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 		return err
 	}
 	pull["url"] = cmdsutil.CDSURL(in.CDS.Address)
-	pull["cds_measurements_config"] = PublicDir + "/" + cdsOutput
+	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
 	pull["cds_pin_floor"] = in.CDS.PinFloor
 	mesh, declared := floor["mesh"]
 	if !declared {
@@ -195,7 +195,7 @@ func Clear(rootDir string) error {
 // refuseReservedOutput refuses a caller's output that is Prepare's own CDS
 // pin, or one Prepare does not clear.
 func refuseReservedOutput(name string) error {
-	if name == cdsOutput {
+	if name == CDSOutput {
 		return fmt.Errorf("output %q is the CDS pin Prepare writes", name)
 	}
 	if !slices.Contains(publicOutputNames, name) {
@@ -441,10 +441,10 @@ var serverOutputNames = []string{
 
 // publicOutputNames are every file Prepare may publish under PublicDir. It
 // removes each one it does not publish, so a demoted node keeps none.
-var publicOutputNames = append([]string{cdsOutput, "peers.json"}, serverOutputNames...)
+var publicOutputNames = append([]string{CDSOutput, "peers.json"}, serverOutputNames...)
 
-// cdsOutput is the CDS pin Prepare publishes.
-const cdsOutput = "cds.json"
+// CDSOutput is the CDS pin Prepare publishes under PublicDir.
+const CDSOutput = "cds.json"
 
 // RouterTLSSnippetDir is where the node image installs tls-cds.conf and
 // tls-acme.conf and the baked router mounts them; router/tls.conf includes the

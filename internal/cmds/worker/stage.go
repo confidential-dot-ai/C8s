@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -178,6 +180,12 @@ func checkFloor(rootDir string) error {
 	return nil
 }
 
+// The files the router reads beside its settings, as on a server.
+const (
+	operatorKeysOutput = "operator-pubkey"
+	tlsSANOutput       = "tls-san"
+)
+
 // routerOutputs are the files the router reads under /run/c8s-node, as on a
 // server: its settings, the operator keys it verifies routes under and its
 // front-door name.
@@ -190,9 +198,18 @@ func routerOutputs(doc *Document) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	outputs["operator-pubkey"] = keys
-	outputs["tls-san"] = []byte(doc.TLSSAN + "\n")
+	outputs[operatorKeysOutput] = keys
+	outputs[tlsSANOutput] = []byte(doc.TLSSAN + "\n")
 	return outputs, nil
+}
+
+// stagedPublicNames are the files stage publishes under /run/c8s-node.
+func stagedPublicNames() ([]string, error) {
+	router, err := nodeservices.RouterOutputs(nil)
+	if err != nil {
+		return nil, err
+	}
+	return append(slices.Collect(maps.Keys(router)), nodeservices.CDSOutput, operatorKeysOutput, tlsSANOutput), nil
 }
 
 func readDocument(path string) ([]byte, error) {
