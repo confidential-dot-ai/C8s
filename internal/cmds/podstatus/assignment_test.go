@@ -227,8 +227,8 @@ func TestAssignmentStorageFailureCanRetryButRestartForgetsNonce(t *testing.T) {
 	if rec := postAssignment(s, peer, data); rec.Code != http.StatusOK {
 		t.Fatal("uncommitted storage failure consumed the nonce")
 	}
-	if rec := postAssignment(s, peer, data); rec.Code != http.StatusConflict {
-		t.Fatal("replay was accepted")
+	if rec := postAssignment(s, peer, data); rec.Code != http.StatusConflict || heldUID(t, rec) != s.assignedUID() {
+		t.Fatal("replay was accepted or the conflict did not name the held Pod")
 	}
 }
 
@@ -270,8 +270,8 @@ func TestAssignmentRoutesAndStaticLaunchConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := postAssignment(static, peer, data); rec.Code != http.StatusConflict {
-		t.Fatal("static launch accepted assignment")
+	if rec := postAssignment(static, peer, data); rec.Code != http.StatusConflict || heldUID(t, rec) != "static" {
+		t.Fatal("static launch accepted assignment or did not name its Pod")
 	}
 	for _, path := range []string{AssignNoncePath, AssignPath} {
 		if rec := serve(Handler{assignment: s}, http.MethodDelete, path); rec.Code != http.StatusMethodNotAllowed {
@@ -281,4 +281,16 @@ func TestAssignmentRoutesAndStaticLaunchConflict(t *testing.T) {
 	if rec := serve(Handler{assignment: s}, http.MethodGet, "/v1/assign/other"); rec.Code != http.StatusNotFound {
 		t.Fatal("unknown assignment route")
 	}
+}
+
+// heldUID decodes the UID a 409 names.
+func heldUID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		UID string `json:"uid"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conflict body %q: %v", rec.Body.String(), err)
+	}
+	return body.UID
 }
