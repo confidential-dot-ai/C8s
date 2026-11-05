@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # mkosi sync hook for the worker profile. Stages into mkosi.local/mkosi.extra:
 #
-#   1. kubelet, containerd, containerd-shim-runc-v2 and runc from the pinned
-#      RKE2 release's rke2-runtime image -> usr/lib/c8s/worker/bin/, and
-#      var/lib/rancher/rke2/bin linked to it, where c8s-runc execs runc. No
-#      rke2, kubectl, ctr or crictl.
+#   1. the pinned upstream kubelet, containerd, containerd-shim-runc-v2 and
+#      runc -> usr/lib/c8s/worker/bin/, where c8s-runc execs runc. Nothing
+#      else: no ctr, crictl or kubectl.
 #   2. the multi-command c8s binary, also as the NRI plugin and c8s-runc:
 #      either the one images/node-guest/build pre-stages at usr/local/bin/c8s,
 #      or the one nri-image-policy:<c8s-ref> carries.
@@ -28,16 +27,22 @@ trap 'rm -rf "$TMP"' EXIT
 
 HELM_VERSION="v3.14.4"
 HELM_LINUX_AMD64_SHA256="a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259"
-RKE2_VERSION="v1.36.4+rke2r1"
-RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
+# The runtime, each from its own upstream release. Bump a version with the
+# sha256 the release publishes beside the artifact; the kubelet's is the
+# .sha256 file next to the binary, containerd's and runc's the .sha256sum.
+KUBERNETES_VERSION="v1.36.4"
+KUBELET_LINUX_AMD64_SHA256="cf2562db46c48ab84cc3791540778ee7fb1a0a008529adbb434723dd02ed8b4b"
+CONTAINERD_VERSION="2.3.4"
+CONTAINERD_STATIC_LINUX_AMD64_SHA256="1d0eccd52471ab75e8d4645b538f73dc635f905cd2be776366eb1036a0089595"
+RUNC_VERSION="v1.4.3"
+RUNC_LINUX_AMD64_SHA256="f6ae8efc0fa40079e1475e97cbe9d1bd3f106a28d6af78a11d9f1bd565515e60"
 RUNTIME_BINARIES=(containerd containerd-shim-runc-v2 kubelet runc)
-# Where the runtime lands, the link c8s-runc execs it through, and the wrapper
-# the image's containerd drop-in names. profile_test.go compares these values
-# against the baked configuration and the wrapper's compiled path.
+# Where the runtime lands, and the wrapper the image's containerd drop-in
+# names. profile_test.go compares these values against the baked
+# configuration and the wrapper's compiled path.
 RUNTIME_BIN_DIR="/usr/lib/c8s/worker/bin"
-RKE2_BIN_LINK="/var/lib/rancher/rke2/bin"
 RUNC_WRAPPER="/usr/local/bin/c8s-runc"
-# The CNI plugins release at RKE2's version; the worker's Cilium chains portmap.
+# The portmap plugin the worker's Cilium chains.
 CNI_PLUGINS_VERSION="v1.9.1"
 CNI_PLUGINS_LINUX_AMD64_SHA256="b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303"
 
@@ -230,22 +235,28 @@ if [ "$C8S_SOURCE" = plugin ]; then
     stage_c8s_binary "$NRI_REPO" "$NRI_DIGEST"
 fi
 
-# --- 1. Runtime binaries from the rke2-runtime image's one layer ----------
-CORE="$CACHE_DIR/rke2-images-core-${RKE2_VERSION//+/-}.tar.zst"
-fetch "https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}/rke2-images-core.linux-amd64.tar.zst" \
-    "$CORE" "$RKE2_IMAGES_CORE_SHA256"
-zstd -dc "$CORE" | tar -x -C "$TMP" manifest.json
-LAYER=$(jq -er --arg tag "rancher/rke2-runtime:${RKE2_VERSION//+/-}" \
-    '[.[] | select(.RepoTags | index($tag)) | .Layers] | if length == 1 and (.[0] | length) == 1 then .[0][0] else error("want one one-layer \($tag)") end' \
-    "$TMP/manifest.json")
-zstd -dc "$CORE" | tar -x -C "$TMP" "$LAYER"
-mkdir -p "$TMP/runtime"
-tar -x -C "$TMP/runtime" -f "$TMP/$LAYER" "${RUNTIME_BINARIES[@]/#/bin/}"
-for bin in "${RUNTIME_BINARIES[@]}"; do
-    install -D -m 0755 "$TMP/runtime/bin/$bin" "$STAGE_DIR$RUNTIME_BIN_DIR/$bin"
-done
-mkdir -p "$STAGE_DIR${RKE2_BIN_LINK%/*}"
-ln -sfn "$RUNTIME_BIN_DIR" "$STAGE_DIR$RKE2_BIN_LINK"
+# --- 1. The pinned upstream runtime ---------------------------------------
+KUBELET="$CACHE_DIR/kubelet-$KUBERNETES_VERSION"
+fetch "https://dl.k8s.io/$KUBERNETES_VERSION/bin/linux/amd64/kubelet" \
+    "$KUBELET" "$KUBELET_LINUX_AMD64_SHA256"
+install -D -m 0755 "$KUBELET" "$STAGE_DIR$RUNTIME_BIN_DIR/kubelet"
+
+CONTAINERD="$CACHE_DIR/containerd-static-$CONTAINERD_VERSION-linux-amd64.tar.gz"
+fetch "https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-static-$CONTAINERD_VERSION-linux-amd64.tar.gz" \
+    "$CONTAINERD" "$CONTAINERD_STATIC_LINUX_AMD64_SHA256"
+# The release also carries ctr and containerd-stress, which the image leaves out.
+tar -xzf "$CONTAINERD" -C "$TMP" bin/containerd bin/containerd-shim-runc-v2
+install -D -m 0755 -t "$STAGE_DIR$RUNTIME_BIN_DIR" \
+    "$TMP/bin/containerd" "$TMP/bin/containerd-shim-runc-v2"
+
+RUNC="$CACHE_DIR/runc-$RUNC_VERSION.amd64"
+fetch "https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/runc.amd64" \
+    "$RUNC" "$RUNC_LINUX_AMD64_SHA256"
+install -D -m 0755 "$RUNC" "$STAGE_DIR$RUNTIME_BIN_DIR/runc"
+
+mapfile -t STAGED_BINARIES < <(cd "$STAGE_DIR$RUNTIME_BIN_DIR" && printf '%s\n' * | sort)
+[ "${STAGED_BINARIES[*]}" = "${RUNTIME_BINARIES[*]}" ] \
+    || fail "the worker's binary dir holds ${STAGED_BINARIES[*]}, want ${RUNTIME_BINARIES[*]}"
 
 # --- 2. The plugin and the runtime wrapper --------------------------------
 [ -x "$C8S" ] || fail "no executable c8s binary at usr/local/bin/c8s"
@@ -259,7 +270,7 @@ tar -xzf "$HELM" -C "$TMP" linux-amd64/helm
 RENDER="$TMP/render"
 PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
     --hardware-platform "$LABEL_PLATFORM" \
-    --kube-version "${RKE2_VERSION%%+*}" \
+    --kube-version "$KUBERNETES_VERSION" \
     --image-repository "$OPERATOR_REPO" \
     --image-digest "$OPERATOR_DIGEST" \
     --armtls-mesh-image-repository "$MESH_REPO" \
@@ -292,4 +303,4 @@ CNI_PLUGINS="$CACHE_DIR/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz"
 fetch "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz" \
     "$CNI_PLUGINS" "$CNI_PLUGINS_LINUX_AMD64_SHA256"
 tar -xzf "$CNI_PLUGINS" -C "$STAGE_DIR/opt/cni/bin" ./portmap
-echo "worker sync: staged the RKE2 ${RKE2_VERSION} runtime and the worker floor for c8s ${C8S_REF}"
+echo "worker sync: staged kubelet ${KUBERNETES_VERSION}, containerd ${CONTAINERD_VERSION}, runc ${RUNC_VERSION} and the worker floor for c8s ${C8S_REF}"

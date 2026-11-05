@@ -1,6 +1,6 @@
 #!/bin/bash
-# Mount a pre-populated, read-only weights disk at /var/lib/models before rke2
-# starts, so large model weights (an HF cache of hundreds of GiB) survive a CVM
+# Mount a pre-populated, read-only weights disk at /var/lib/models before
+# containerd starts, so large model weights (an HF cache of hundreds of GiB) survive a CVM
 # relaunch instead of re-downloading. Run by models-disk.service.
 #
 # Unlike containerd-data-disk.sh this disk is NOT encrypted and NOT mkfs'd: it
@@ -13,7 +13,7 @@
 # to its own store. No tmpfs fallback — a cold cache is acceptable, wasting guest
 # RAM on it is not.
 #
-# Ordered Before rke2 so the mount exists when pods start. Read-only, nodev,
+# Ordered Before containerd so the mount exists when pods start. Read-only, nodev,
 # nosuid, noexec: the guest never writes it, and nothing on a host-writable
 # disk may execute in the guest — workloads read weights, not binaries.
 set -u

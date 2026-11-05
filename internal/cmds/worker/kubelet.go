@@ -35,7 +35,7 @@ const (
 )
 
 const (
-	containerdEndpoint = "unix:///run/k3s/containerd/containerd.sock"
+	containerdEndpoint = "unix:///run/containerd/containerd.sock"
 	// resolvConf lists systemd-resolved's upstream servers, which pods reach.
 	resolvConf = "/run/systemd/resolve/resolv.conf"
 	// clusterDomain is the domain the baked CoreDNS serves.

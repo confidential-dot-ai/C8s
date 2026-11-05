@@ -1,5 +1,4 @@
-# kube-proxy with RKE2 v1.36.4's flags, from registry.k8s.io: RKE2's own image
-# also carries the control plane's binaries.
+# kube-proxy at the worker's Kubernetes version, from registry.k8s.io.
 apiVersion: v1
 kind: Pod
 metadata:

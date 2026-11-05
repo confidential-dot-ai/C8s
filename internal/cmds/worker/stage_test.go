@@ -103,7 +103,7 @@ spec:
       args: ["--node=${NODE_NAME}"]
   containers:
     - name: kube-proxy
-      image: docker.io/rancher/hardened-kubernetes@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      image: registry.k8s.io/kube-proxy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       command: [kube-proxy]
       args:
         - --cluster-cidr=${POD_CIDR}

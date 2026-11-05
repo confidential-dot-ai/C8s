@@ -7,7 +7,7 @@
 # intended sequence: a GPU becomes usable for CUDA only after a verifier
 # accepted its SPDM evidence. confos's nvidia-cc-ready never fails and sets
 # Ready unconditionally, so the unit running this script is RequiredBy it
-# (and by rke2), and the unit's FailureAction powers the VM off.
+# (and by containerd), and the unit's FailureAction powers the VM off.
 #
 # Attestation goes through the node's own baked attestation-api: POST
 # /attest with a fresh nonce and nvidia_gpu=true, then POST /verify on the

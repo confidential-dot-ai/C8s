@@ -91,7 +91,7 @@ refuses "a drop-in leaving the unconfined restriction on" apparmor-sysctl \
 refuses "a boot gate that stops asserting the key" apparmor-sysctl \
     sed -i "s|/proc/sys/${KEY//.//}|/proc/sys/kernel/other|" "$(baked usr/local/bin/apparmor-enforce.sh)"
 refuses "a later sysctl.d file setting the key again" apparmor-sysctl-order \
-    sed -i "\$a$KEY = 1" "$(baked etc/sysctl.d/90-rke2.conf)"
+    sed -i "\$a$KEY = 1" "$(baked etc/sysctl.d/90-kubernetes-node.conf)"
 
 refuses "a second runtime in the image" baked-program \
     install -D -m 0755 /dev/null "$WORKER/mkosi.extra/usr/local/bin/crun"

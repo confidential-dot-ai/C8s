@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
@@ -174,5 +175,24 @@ func TestKubeDNSSelectsTheWorkersCoreDNS(t *testing.T) {
 		if pod.Labels[k] != v {
 			t.Fatalf("kube-dns selects %v, which the CoreDNS static pod's labels %v do not carry", service.Spec.Selector, pod.Labels)
 		}
+	}
+}
+
+// The kubelet dials the socket the worker image's containerd binds.
+func TestKubeletDialsTheImagesContainerd(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(imageTree, "etc/containerd/config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Plugins map[string]struct {
+			Address string `toml:"address"`
+		} `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if want := "unix://" + config.Plugins["io.containerd.server.v1.grpc"].Address; containerdEndpoint != want {
+		t.Errorf("the kubelet's runtime endpoint is %s, and the image's containerd binds %s", containerdEndpoint, want)
 	}
 }

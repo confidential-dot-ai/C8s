@@ -66,7 +66,7 @@ func newNodeImageCmd() *cobra.Command {
 	}
 	f := render.Flags()
 	f.StringVar(&cfg.platform, "hardware-platform", "", "CPU TEE: tdx or sev-snp (required)")
-	f.StringVar(&cfg.kubeVersion, "kube-version", "", "Kubernetes semantic version from the baked RKE2 release (required)")
+	f.StringVar(&cfg.kubeVersion, "kube-version", "", "Kubernetes semantic version of the baked kubelet, e.g. v1.36.4 (required)")
 	f.StringVar(&cfg.imageDigest, "image-digest", "", "digest of the operator/get-cert container image (sha256:..., required)")
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
