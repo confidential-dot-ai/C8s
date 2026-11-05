@@ -150,16 +150,3 @@ a write, and CDS checked its time claims then, so do not reject a publication on
 manifest either: `notBefore` gates when the router applies it, and freshness is
 the router's own state since its last successful fetch, which a client cannot
 see. Admission of the attested handshake is the freshness check.
-
-## HTTP diagnostics
-
-The router's Nginx access log uses a fixed JSON record. It includes server
-time, HTTP status, response bytes, total request bytes, elapsed time and
-connection counters. It omits request paths, query strings, headers, peer
-addresses and request or response bodies. Counts can describe request size
-without storing its text.
-
-Native Nginx error text is discarded because it can include request data.
-Use the reviewed access fields and the separate C8s component logs for
-diagnosis. This format reduces diagnostic detail to keep request text out of
-the router logs.
