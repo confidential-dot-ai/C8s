@@ -143,7 +143,15 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.uid != "" {
-		http.Error(w, "Pod already assigned", http.StatusConflict)
+		// Naming the held Pod lets a provider replaying its own assignment tell
+		// that guest from one holding another Pod. The UID is not secret: the
+		// public status route serves it too.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(struct {
+			UID string `json:"uid"`
+		}{s.uid})
 		return
 	}
 	req, err := podassign.Decode(data)
