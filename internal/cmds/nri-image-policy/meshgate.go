@@ -70,6 +70,7 @@ type protectedPod struct {
 	workloadCreated bool
 	kubeNamespace   string
 	roleLaunches    []roleLaunch
+	pidPolicy       string
 	// exitEntry is the allowlist entry whose exits the pod was granted, and
 	// exits those exits: fixed for the pod's life once granted.
 	exitEntry string
@@ -111,7 +112,9 @@ type fileID struct {
 // role, the bytes and arguments that role was read from, and the adjustments
 // that could move its packets.
 type gatedContainer struct {
-	role string
+	role      string
+	pidPolicy string
+	pidPath   string
 	// mountsPinned reports that the declaration granting the role pins the
 	// mount set too, which the router's namespace requires of every
 	// container (requireRoleOnlyPod).
@@ -297,7 +300,28 @@ func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Contain
 	if err := policy.requireRoleIdentity(ctr, launch.role); err != nil {
 		return err
 	}
-	return requirePrivatePIDNamespace(ctr)
+	if launch.pidPolicy == "" {
+		return requirePrivatePIDNamespace(ctr)
+	}
+	if launch.role != "" || launch.pidPolicy == invalidPIDPolicy || launch.pidPath == "" {
+		return errors.New("a platform or unproved container cannot join the application PID namespace")
+	}
+	if s.pidPolicy != "" && s.pidPolicy != launch.pidPolicy {
+		return errors.New("the application PID namespace is bound to another signed workload policy")
+	}
+	count := 0
+	for _, ns := range ctr.GetLinux().GetNamespaces() {
+		if ns.GetType() == pidNamespace {
+			count++
+			if ns.GetPath() != launch.pidPath {
+				return errors.New("the application PID namespace differs from its proved namespace")
+			}
+		}
+	}
+	if count != 1 {
+		return errors.New("the application must declare exactly one PID namespace")
+	}
+	return nil
 }
 
 // requireSandboxNetwork requires a running container's network namespace to be
@@ -349,6 +373,9 @@ func (g *meshGate) noteLaunched(sandboxID string, launch gatedContainer) {
 
 // recordLaunch records a container of the sandbox for the order rules.
 func (s *protectedPod) recordLaunch(launch gatedContainer) {
+	if launch.pidPolicy != "" {
+		s.pidPolicy = launch.pidPolicy
+	}
 	if launch.role == "" {
 		s.workloadCreated = true
 		return
@@ -553,6 +580,9 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 			return podNamespace{}, "", err
 		}
 	}
+	if launch.pidPolicy != "" {
+		state.pidPolicy = launch.pidPolicy
+	}
 	return state.netns, state.kubeNamespace, nil
 }
 
@@ -687,7 +717,15 @@ func requirePrivatePIDNamespace(ctr *api.Container) error {
 // ruleset behind: another namespace carries other rules, and a host network
 // device reaches past every rule in this one.
 func (c gatedContainer) requireNoNetworkChange() error {
-	if len(c.namespaces) > 0 || len(c.netDevices) > 0 {
+	pidEdits := 0
+	for _, ns := range c.namespaces {
+		if ns.GetType() != pidNamespace || c.pidPolicy == "" || c.pidPolicy == invalidPIDPolicy ||
+			c.pidPath == "" || ns.GetPath() != c.pidPath {
+			return errors.New("an adjustment re-points the container's namespaces outside the proved application PID namespace")
+		}
+		pidEdits++
+	}
+	if pidEdits > 1 || len(c.netDevices) > 0 {
 		return errors.New("an adjustment re-points the container's namespaces or moves a host network device in")
 	}
 	return nil

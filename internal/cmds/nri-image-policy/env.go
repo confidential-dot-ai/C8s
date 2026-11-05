@@ -95,6 +95,7 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 		return nil
 	}
 	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
+	pidPolicy, pidPath := p.pidGateEvidence(pod, ctr, launch)
 	adjusted := req.GetAdjust().GetLinux()
 	// The role, and the mount set a declaration pins, are read from the mounts
 	// the pod itself asks for: a credential client of any pod also carries the
@@ -109,6 +110,8 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 		argv:         launch.Argv,
 		namespaces:   adjusted.GetNamespaces(),
 		netDevices:   adjusted.GetNetDevices(),
+		pidPolicy:    pidPolicy,
+		pidPath:      pidPath,
 	})
 }
 
@@ -120,6 +123,7 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.Container, *allowlist.EnvObservation) {
 	ctr := proto.Clone(req.GetContainer()).(*api.Container)
 	adjust := req.GetAdjust()
+	applyPIDNamespaceAdjustment(ctr, adjust)
 	if len(adjust.GetArgs()) > 0 {
 		ctr.Args = slices.Clone(adjust.GetArgs())
 	}

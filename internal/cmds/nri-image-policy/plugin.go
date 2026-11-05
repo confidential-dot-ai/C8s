@@ -290,7 +290,8 @@ type plugin struct {
 	// capGrants records the capabilities the allowlists declare for each
 	// container admission clears, for the runtime wrapper
 	// (capabilitygrants.go).
-	capGrants *capabilityGrants
+	capGrants   *capabilityGrants
+	pidGrantDir string
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -352,6 +353,9 @@ func newPlugin(
 	// before any thread of it can attach to a pod's (meshgate.go).
 	if _, err := enforcerNetworkNamespace(); err != nil {
 		return nil, fmt.Errorf("read the enforcer's own network namespace: %w", err)
+	}
+	if err := InitializePIDNamespaceProof(); err != nil {
+		return nil, fmt.Errorf("read the node PID namespace: %w", err)
 	}
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
 	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
@@ -474,6 +478,11 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	p.running.remove(ctr.GetId())
 	p.execGrants.remove(ctr.GetId())
 	p.capGrants.remove(ctr.GetId())
+	if validContainerID(ctr.GetId()) {
+		if err := RemovePIDNamespaceGrant(p.pidGrantDirectory(), ctr.GetId()); err != nil {
+			return err
+		}
+	}
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -505,6 +514,9 @@ func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) erro
 		p.inventory.removeSandbox(pod.GetId())
 	}
 	p.mesh.forget(pod.GetId())
+	if validContainerID(pod.GetId()) {
+		return RemovePIDNamespace(p.pidGrantDirectory(), pod.GetId())
+	}
 	return nil
 }
 
@@ -595,10 +607,11 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	env := containerEnv(ctr)
 	launch := allowlist.RunningContainer{
-		Digest: digest,
-		Argv:   ctr.GetArgs(),
-		Env:    env,
-		Mounts: mounts,
+		Digest:                 digest,
+		Argv:                   ctr.GetArgs(),
+		Env:                    env,
+		Mounts:                 mounts,
+		ProcessNamespacePolicy: p.processNamespacePolicy(ctr),
 	}
 	if p.execGrants != nil {
 		if err := p.execGrants.note(ctr.GetId(), p.execsOf(pod, launch)); err != nil {
@@ -609,7 +622,7 @@ func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest st
 		return
 	}
 	role := p.roleOf(launch)
-	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
+	p.inventory.recordLaunch(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), role, launch)
 }
 
 func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
@@ -687,8 +700,9 @@ type imageCheck struct {
 	Env       *allowlist.EnvObservation
 	// EnvErr says why Env is unavailable, when the OCI environment itself is
 	// the cause. It names at most a variable, never a value.
-	EnvErr error
-	Mounts []allowlist.ObservedMount
+	EnvErr                 error
+	ProcessNamespacePolicy string
+	Mounts                 []allowlist.ObservedMount
 }
 
 type launchPhase uint8
@@ -779,7 +793,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
-	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
+	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts, ProcessNamespacePolicy: check.ProcessNamespacePolicy}
 	baseAdmitted := p.policy.baseAdmits(rc, phase)
 
 	// A tag is resolved here, at hook time, while the runtime builds the
@@ -903,14 +917,15 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *a
 	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, pod.GetLabels())
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
 		verdict, reason = p.checkImagePhase(ctx, cfg, imageCheck{
-			Namespace: namespace,
-			PodName:   podName,
-			Container: ctrName,
-			ImageRef:  imageRef,
-			Argv:      ctr.GetArgs(),
-			Env:       env,
-			EnvErr:    envError(ctr, env),
-			Mounts:    mounts,
+			Namespace:              namespace,
+			PodName:                podName,
+			Container:              ctrName,
+			ImageRef:               imageRef,
+			Argv:                   ctr.GetArgs(),
+			Env:                    env,
+			EnvErr:                 envError(ctr, env),
+			Mounts:                 mounts,
+			ProcessNamespacePolicy: p.processNamespacePolicy(ctr),
 		}, phase)
 	}
 	return p.exemptNamespace(ctx, cfg, pod, ctr, imageRef, verdict, reason)
@@ -992,7 +1007,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 	digest := ""
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
 		digest = p.resolveDigest(ctx, imageRef)
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
+		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts, ProcessNamespacePolicy: p.processNamespacePolicy(ctr)}
 		obs.HostBinds = hostBinds(pod, ctr, own, mounts, declaredBindGrant{policy: p.policy, launch: rc}, cdi)
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""
@@ -1002,7 +1017,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		if digest == "" {
 			digest = p.resolveDigest(ctx, imageRef)
 		}
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
+		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts, ProcessNamespacePolicy: p.processNamespacePolicy(ctr)}
 		if p.nodeTCBExempt(cfg, pod, rc) {
 			return verdictAllow, ""
 		}
@@ -1260,6 +1275,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		}
 		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
 		role := p.roleOf(launch)
+		pidPolicy, pidPath := p.pidGateEvidence(pod, ctr, launch)
 		// Liveness is the running set, not the registration snapshot: a container
 		// that started in the deferral window is not CONTAINER_RUNNING in the
 		// snapshot but is on the running set, and its mesh endpoint opened the
@@ -1272,6 +1288,8 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 				mountsPinned: p.bindsRoleMounts(launch, role),
 				digest:       launch.Digest,
 				argv:         launch.Argv,
+				pidPolicy:    pidPolicy,
+				pidPath:      pidPath,
 			},
 			running: running,
 		})
@@ -1486,7 +1504,11 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	if err != nil && p.cfg.Policy.Mode != ModeAudit {
 		return nil, nil, err
 	}
-	return adjustment, nil, nil
+	if err != nil {
+		return adjustment, nil, nil
+	}
+	adjustment, err = p.shareApplicationNamespace(ctx, pod, ctr, adjustment)
+	return adjustment, nil, err
 }
 
 // StartContainer tracks the container as running ahead of its admission, so a
@@ -1508,6 +1530,9 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	cfg := p.cfg
 	imageRef := ctr.GetAnnotations()[annotationImageName]
+	if err := p.requireApplicationPIDPolicy(ctx, pod, ctr); err != nil {
+		return p.denyContainer(pod.GetId(), err)
+	}
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
 			return err
@@ -1587,10 +1612,11 @@ func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string)
 // observedLaunch is the container as a role lookup reads it.
 func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) allowlist.RunningContainer {
 	return allowlist.RunningContainer{
-		Digest: p.resolveDigest(ctx, imageRef),
-		Argv:   ctr.GetArgs(),
-		Env:    env,
-		Mounts: mounts,
+		Digest:                 p.resolveDigest(ctx, imageRef),
+		Argv:                   ctr.GetArgs(),
+		Env:                    env,
+		Mounts:                 mounts,
+		ProcessNamespacePolicy: p.processNamespacePolicy(ctr),
 	}
 }
 
