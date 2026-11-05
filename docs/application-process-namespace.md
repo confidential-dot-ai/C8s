@@ -4,11 +4,12 @@ Selected application containers can share one Linux PID namespace in a pod.
 C8s support containers and applications without this permission keep private
 PID namespaces. Keep Kubernetes `shareProcessNamespace` false or unset.
 
-This is a draft design. The shared group also contains the Kubernetes sandbox
-pause process. It has no C8s credential mounts. This does not meet a rule that
-excludes every runtime support process from the group. That stricter design
-would need an application container as PID 1 and a different restart lifecycle.
-The namespace-holder decision must be settled before this feature is merged.
+The shared group also contains the Kubernetes sandbox pause process. It keeps
+the namespace alive across worker restarts and has no C8s credential mounts.
+The isolation boundary separates this application group from C8s support
+containers and the node. C8s does not provide process isolation between group
+members. The applications can manage their processes within the signed workload
+policy and the existing capability and exec rules.
 
 This feature requires a C8s node image, CDS, and CLI that support
 `c8s.allowlist/v2`. Pin the required component measurements before you enable
