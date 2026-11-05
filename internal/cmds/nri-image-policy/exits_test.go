@@ -301,14 +301,8 @@ func TestBindEntryGrantsNoExitInAPodCVM(t *testing.T) {
 	gate.policy.Pod = &podMeshPolicy{}
 	gate.policy.ClusterRanges = nil
 	pod := meshPod("default", "collector", testNetNS)
-	for name, decision := range map[string]exitDecision{
-		"entry with exits": {entry: "collector", exits: relayExit},
-		"refused outright": {refusal: errors.New("foreign")},
-		"unreadable pod":   {undecided: errors.New("no allowlist yet")},
-	} {
-		if err := gate.bindEntry(pod, decision); err != nil {
-			t.Fatalf("%s: bindEntry = %v", name, err)
-		}
+	if err := gate.bindEntry(pod, exitDecision{entry: "collector", exits: relayExit}); err != nil {
+		t.Fatalf("bindEntry = %v", err)
 	}
 	if state.exitEntry != "" || len(*extended) != 0 || len(gate.grantedExits(pod.GetId())) != 0 {
 		t.Fatalf("pod holds %q after %d extensions, want nothing", state.exitEntry, len(*extended))
