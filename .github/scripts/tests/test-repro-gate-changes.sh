@@ -65,8 +65,8 @@ expect_result false
 # Beside the image sources but never baked: tests, lint tools, docs.
 reset_case
 set_paths images/node-guest/tests/immutable-root-test.sh \
-  images/node-guest/c8s/containerdcheck/main.go \
-  images/node-guest/c8s/systemfloor/main_test.go \
+  images/node-guest/tools/containerdcheck/main.go \
+  images/node-guest/tools/systemfloor/main_test.go \
   images/node-guest/README.md
 expect_result false
 

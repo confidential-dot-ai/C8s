@@ -249,7 +249,7 @@ jobs:
         run: |
           set -euo pipefail
           manifests=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
-          go run ./images/node-guest/c8s/systemfloor \
+          go run ./images/node-guest/tools/systemfloor \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
@@ -271,10 +271,10 @@ jobs:
         run: |
           set -euo pipefail
           dir=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
-          go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir"
+          go run ./images/node-guest/tools/containerdcheck -config-dir "$dir"
           # The same check must fail when RKE2's runtime auto-detection finds
           # another runtime on the node's PATH.
-          if go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir" \
+          if go run ./images/node-guest/tools/containerdcheck -config-dir "$dir" \
                -extra-runtime crun=/usr/bin/crun 2>/dev/null; then
             echo "::error::containerdcheck accepted an unwrapped auto-detected runtime"
             exit 1
