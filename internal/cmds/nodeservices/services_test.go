@@ -477,6 +477,7 @@ func stagedMeshPolicy(t *testing.T, root string) stagedMesh {
 
 type stagedMesh struct {
 	ExemptNamespaces []string      `yaml:"exempt_namespaces"`
+	Exits            []string      `yaml:"exits"`
 	Capture          stagedCapture `yaml:"capture"`
 	Roles            []stagedRole  `yaml:"roles"`
 }
