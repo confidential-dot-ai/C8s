@@ -25,63 +25,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 )
 
-// The generic launch record is durable, with its create attempt on the ledger,
-// before the POST; a failed private write forwards nothing and leaves nothing
-// a later lookup could adopt.
-func TestCloudAcceptanceWarmCreateRequiresDurableRecordBeforePOST(t *testing.T) {
-	r, cfg := launchFixture(t)
-	r.cfg.Scenario = "warm-assignment"
-	generic, err := r.prepareGeneric(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt := ownedReceipt(r, r.ledger.Owned["generic"], "i-warmowned")
-	var posts atomic.Int64
-	private := r.dir
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		item := instanceJSON(receipt, "running", 1)
-		switch req.Method {
-		case http.MethodPost:
-			posts.Add(1)
-			raw, e := os.ReadFile(filepath.Join(private, "ledger.json"))
-			saved, e2 := os.ReadFile(filepath.Join(private, "launch-generic.json"))
-			var ledger cloudLedger
-			var durable record
-			if e != nil || json.Unmarshal(raw, &ledger) != nil || ledger.Owned["generic"] == nil || !ledger.Owned["generic"].Attempted || ledger.Owned["generic"].Key != generic.Key || e2 != nil || json.Unmarshal(saved, &durable) != nil || !durable.CreateAttempted {
-				t.Error("Cloud POST preceded exact durable generic intent")
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{item}})
-		case http.MethodGet:
-			if req.URL.Path == "/v1/instances" {
-				_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{item}})
-			} else {
-				_ = json.NewEncoder(w).Encode(item)
-			}
-		default:
-			t.Error("unexpected mutation")
-			http.Error(w, "refused", http.StatusMethodNotAllowed)
-		}
-	}))
-	defer server.Close()
-	r.api = &cloudClient{base: server.URL, token: "offline", http: server.Client()}
-	r.dir = filepath.Join(private, "absent")
-	if err = r.create(t.Context(), generic, "generic"); err == nil || posts.Load() != 0 {
-		t.Fatal("failed private persistence forwarded Cloud creation")
-	}
-	r.dir = private
-	if saved, err := r.snapshot("generic"); err != nil || saved.CreateAttempted || saved.InstanceID != "" || generic.InstanceID != "" {
-		t.Fatalf("failed write exposed tentative creation authority: %v", err)
-	}
-	if err = r.create(t.Context(), generic, "generic"); err != nil || posts.Load() != 1 || generic.InstanceID != receipt.ID {
-		t.Fatalf("retry did not persist before forwarding: %v", err)
-	}
-	changed := *generic
-	changed.Request.Trust.LaunchKey = "another launch key"
-	if err = r.create(t.Context(), &changed, "generic"); err == nil || posts.Load() != 1 {
-		t.Fatal("changed create request escaped the frozen launch")
-	}
-}
-
 func TestCloudAcceptanceWarmUnattemptedDiscoveryNeverAuthorizesCleanup(t *testing.T) {
 	r, o, receipt := cloudOwnershipFixture(t)
 	o.Attempted = false

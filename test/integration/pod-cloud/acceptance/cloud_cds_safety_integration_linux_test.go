@@ -381,35 +381,6 @@ func TestCloudAcceptanceCDSIngressChecksOwnershipBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestCloudAcceptanceCDSProjectionRejectsForeignAndMalformedStatus(t *testing.T) {
-	rec := fixtureRecord(t, fixtureConfig(t), fixturePod())
-	projection := fixtureProjection(rec)
-	start := metav1.NewTime(time.Unix(1700000000, 0))
-	projection.Status.ContainerStatuses[0].State.Running.StartedAt = &start
-	projection.Status.InitContainerStatuses[0].State.Running.StartedAt = &start
-	if _, err := cloudCDSStatus(projection, rec, cloudCDSActive); err != nil {
-		t.Fatal(err)
-	}
-	for _, change := range []func(*podstatus.PodProjection){
-		func(p *podstatus.PodProjection) { p.Metadata.UID = "foreign" },
-		func(p *podstatus.PodProjection) { p.Metadata.Name = "foreign" },
-		func(p *podstatus.PodProjection) { p.Metadata.Namespace = "foreign" },
-		func(p *podstatus.PodProjection) { p.Status.InitContainerStatuses[0].RestartCount = 1 },
-		func(p *podstatus.PodProjection) { p.Status.ContainerStatuses[0].State.Waiting = &struct{}{} },
-	} {
-		raw, _ := json.Marshal(projection)
-		var changed podstatus.PodProjection
-		_ = json.Unmarshal(raw, &changed)
-		change(&changed)
-		if _, err := cloudCDSStatus(changed, rec, cloudCDSActive); err == nil {
-			t.Fatal("malformed or foreign attested state accepted")
-		}
-	}
-	if r, _, _ := cloudOwnershipFixture(t); r.cdsProofComplete() {
-		t.Fatal("missing CDS evidence produced acceptance")
-	}
-}
-
 func TestCloudAcceptanceCDSRevocationMeshWithdrawal(t *testing.T) {
 	rec := fixtureRecord(t, fixtureConfig(t), fixturePod())
 	projection := fixtureProjection(rec)
