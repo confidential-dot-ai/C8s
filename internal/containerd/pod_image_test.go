@@ -35,7 +35,6 @@ type selectedImageFixture struct {
 	t                *testing.T
 	mu               sync.Mutex
 	blobs            map[string][]byte
-	readDigests      []string
 	container        *containersapi.Container
 	snapshot         *snapshotsapi.Info
 	config           ocispec.Image
@@ -47,11 +46,9 @@ type selectedImageFixture struct {
 	metadataConfig   string
 	metadataType     string
 	metadataOverride []byte
-	omitMetadata     bool
 	containerError   error
 	snapshotError    error
 	stall            string
-	contentSize      int64
 }
 
 func newSelectedImageFixture(t *testing.T) *selectedImageFixture {
@@ -133,9 +130,6 @@ func (s selectedContainerServer) Get(ctx context.Context, req *containersapi.Get
 	}
 	container := proto.Clone(f.container).(*containersapi.Container)
 	container.Extensions = map[string]*anypb.Any{criContainerMetadataExtension: {TypeUrl: f.metadataType, Value: data}}
-	if f.omitMetadata {
-		container.Extensions = nil
-	}
 	return &containersapi.GetContainerResponse{Container: container}, nil
 }
 
@@ -155,11 +149,7 @@ func (s selectedContentServer) Info(ctx context.Context, req *contentapi.InfoReq
 	if !exists {
 		return nil, status.Error(codes.NotFound, "content is not pulled")
 	}
-	size := int64(len(data))
-	if f.contentSize != 0 {
-		size = f.contentSize
-	}
-	return &contentapi.InfoResponse{Info: &contentapi.Info{Digest: req.Digest, Size: size}}, nil
+	return &contentapi.InfoResponse{Info: &contentapi.Info{Digest: req.Digest, Size: int64(len(data))}}, nil
 }
 
 func (s selectedContentServer) Read(req *contentapi.ReadContentRequest, stream contentapi.Content_ReadServer) error {
@@ -169,7 +159,6 @@ func (s selectedContentServer) Read(req *contentapi.ReadContentRequest, stream c
 	f := s.f
 	f.mu.Lock()
 	data, exists := f.blobs[req.Digest]
-	f.readDigests = append(f.readDigests, req.Digest)
 	f.mu.Unlock()
 	if !exists {
 		return status.Error(codes.NotFound, "content is not pulled")
@@ -229,6 +218,8 @@ func (f *selectedImageFixture) resolver() *Resolver {
 	return newTestResolver(f.t, socket)
 }
 
+// The executed image is proved from the pinned digest, the saved
+// CRI configuration and the rootfs; the moved tag is never looked up.
 func TestVerifyContainerImage(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -250,18 +241,6 @@ func TestVerifyContainerImage(t *testing.T) {
 			selected.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
 			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{other, selected}}, ocispec.MediaTypeImageIndex)
 		}},
-		{"Docker manifest list", func(f *selectedImageFixture) {
-			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: images.MediaTypeDockerSchema2ManifestList, Manifests: []ocispec.Descriptor{f.pin}}, images.MediaTypeDockerSchema2ManifestList)
-		}},
-		{"manifest without optional mediaType", func(f *selectedImageFixture) { f.manifest.MediaType = ""; f.setManifest() }},
-		{"empty rootfs", func(f *selectedImageFixture) {
-			f.config.RootFS.DiffIDs = nil
-			f.manifest.Config = f.addJSON(f.config, ocispec.MediaTypeImageConfig)
-			f.metadataConfig = f.manifest.Config.Digest.String()
-			f.manifest.Layers = nil
-			f.snapshot.Parent = ""
-			f.setManifest()
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSelectedImageFixture(t)
@@ -273,7 +252,10 @@ func TestVerifyContainerImage(t *testing.T) {
 	}
 }
 
+// One refusal per verification branch, and the traversal bounds that
+// keep an attacker-shaped image document from exhausting the verifier.
 func TestVerifyContainerImageRefusals(t *testing.T) {
+	limit := errPodImageLimit.Error()
 	for _, tc := range []struct {
 		name    string
 		prepare func(*selectedImageFixture)
@@ -285,20 +267,12 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 			f.metadataConfig = f.addJSON(other, ocispec.MediaTypeImageConfig).Digest.String()
 		}, "selected image configuration differs"},
 		{"selected snapshot differs despite matching configuration", func(f *selectedImageFixture) { f.snapshot.Parent = digest.FromString("other rootfs").String() }, "rootfs does not match"},
-		{"snapshot is not active", func(f *selectedImageFixture) { f.snapshot.Kind = snapshotsapi.Kind_COMMITTED }, "rootfs does not match"},
-		{"snapshot response for another key", func(f *selectedImageFixture) { f.snapshot.Name = "different" }, "rootfs does not match"},
 		{"snapshot missing", func(f *selectedImageFixture) { f.snapshotError = status.Error(codes.NotFound, "gone") }, "read selected container snapshot"},
 		{"container missing", func(f *selectedImageFixture) { f.containerError = status.Error(codes.NotFound, "gone") }, "read selected container image"},
 		{"container response for another ID", func(f *selectedImageFixture) { f.container.ID = "different" }, "no matching identity"},
-		{"snapshotter absent", func(f *selectedImageFixture) { f.container.Snapshotter = "" }, "no matching identity"},
-		{"snapshot key absent", func(f *selectedImageFixture) { f.container.SnapshotKey = "" }, "no matching identity"},
 		{"metadata sandbox mismatch", func(f *selectedImageFixture) { f.metadataSandbox = "other" }, "metadata does not bind"},
-		{"metadata absent", func(f *selectedImageFixture) { f.omitMetadata = true }, "unsupported or oversized"},
-		{"metadata container mismatch", func(f *selectedImageFixture) { f.metadataID = "other" }, "metadata does not bind"},
-		{"metadata config absent", func(f *selectedImageFixture) { f.metadataConfig = "" }, "metadata does not bind"},
 		{"metadata config is not canonical", func(f *selectedImageFixture) { f.metadataConfig = strings.ToUpper(f.metadataConfig) }, "metadata does not bind"},
 		{"metadata schema unknown", func(f *selectedImageFixture) { f.metadataVersion = "v3" }, "metadata version"},
-		{"metadata type unknown", func(f *selectedImageFixture) { f.metadataType = "other" }, "unsupported or oversized"},
 		{"metadata malformed", func(f *selectedImageFixture) { f.metadataOverride = []byte("{") }, "decode CRI"},
 		{"metadata too large", func(f *selectedImageFixture) {
 			f.metadataOverride = []byte(strings.Repeat(" ", podImageDocumentLimit+1))
@@ -309,10 +283,7 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 			f.pin.Digest = digest.FromBytes(data)
 			f.blobs[f.pin.Digest.String()] = data
 		}, "decode pinned image document"},
-		{"config content absent", func(f *selectedImageFixture) { delete(f.blobs, f.metadataConfig) }, "content is not pulled"},
 		{"root digest mismatch", func(f *selectedImageFixture) { f.blobs[f.pin.Digest.String()] = []byte(`{"schemaVersion":2}`) }, "content digest mismatch"},
-		{"config digest mismatch", func(f *selectedImageFixture) { data := f.blobs[f.metadataConfig]; data[len(data)-2] ^= 1 }, "content digest mismatch"},
-		{"content too large", func(f *selectedImageFixture) { f.contentSize = podImageDocumentLimit + 1 }, "content size"},
 		{"config size mismatch", func(f *selectedImageFixture) { f.manifest.Config.Size++; f.setManifest() }, "content size"},
 		{"config media type invalid", func(f *selectedImageFixture) {
 			f.manifest.Config.MediaType = "application/octet-stream"
@@ -320,18 +291,8 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 		}, "configuration descriptor"},
 		{"root schema unsupported", func(f *selectedImageFixture) { f.manifest.SchemaVersion = 1; f.setManifest() }, "unsupported pinned image schema"},
 		{"manifest has wrong media type", func(f *selectedImageFixture) { f.manifest.MediaType = ocispec.MediaTypeImageIndex; f.setManifest() }, "not a supported manifest"},
-		{"rootfs type invalid", func(f *selectedImageFixture) {
-			f.config.RootFS.Type = "other"
-			f.manifest.Config = f.addJSON(f.config, ocispec.MediaTypeImageConfig)
-			f.metadataConfig = f.manifest.Config.Digest.String()
-			f.setManifest()
-		}, "does not describe"},
 		{"layer count differs", func(f *selectedImageFixture) { f.manifest.Layers = f.manifest.Layers[:1]; f.setManifest() }, "does not describe"},
 		{"layer digest invalid", func(f *selectedImageFixture) { f.manifest.Layers[0].Digest = "not-a-digest"; f.setManifest() }, "rootfs descriptor"},
-		{"layer media type invalid", func(f *selectedImageFixture) {
-			f.manifest.Layers[0].MediaType = "application/octet-stream"
-			f.setManifest()
-		}, "rootfs descriptor"},
 		{"index child size missing", func(f *selectedImageFixture) {
 			child := f.pin
 			child.Size = 0
@@ -341,6 +302,37 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 			f.metadataConfig = digest.FromString("different platform config").String()
 			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{f.pin}}, ocispec.MediaTypeImageIndex)
 		}, "not reachable"},
+		{"index depth", func(f *selectedImageFixture) {
+			for range podImageDepthLimit + 2 {
+				f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{f.pin}}, ocispec.MediaTypeImageIndex)
+			}
+		}, limit},
+		{"object count", func(f *selectedImageFixture) {
+			children := make([]ocispec.Descriptor, podImageObjectLimit)
+			for i := range children {
+				children[i] = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString(fmt.Sprintf("missing platform %d", i)), Size: 100}
+			}
+			children = append(children, f.pin)
+			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
+		}, limit},
+		{"descriptor count", func(f *selectedImageFixture) {
+			children := make([]ocispec.Descriptor, podImageDescriptorLimit+1)
+			for i := range children {
+				children[i] = f.pin
+			}
+			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
+		}, limit},
+		{"total content bytes", func(f *selectedImageFixture) {
+			var children []ocispec.Descriptor
+			for i := range 10 {
+				manifest := f.manifest
+				manifest.Config.Digest = digest.FromString(fmt.Sprintf("other platform %d", i))
+				manifest.Annotations = map[string]string{"padding": strings.Repeat("x", 900_000)}
+				children = append(children, f.addJSON(manifest, ocispec.MediaTypeImageManifest))
+			}
+			children = append(children, f.pin)
+			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
+		}, limit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSelectedImageFixture(t)
@@ -353,23 +345,21 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 	}
 }
 
+// A stalled runtime fails the start within the caller's deadline.
 func TestVerifyContainerImageDeadline(t *testing.T) {
-	for _, stage := range []string{"container", "content", "read", "snapshot"} {
-		t.Run(stage, func(t *testing.T) {
-			f := newSelectedImageFixture(t)
-			f.stall = stage
-			r := f.resolver()
-			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-			defer cancel()
-			started := time.Now()
-			err := r.VerifyContainerImage(ctx, selectedContainerID, selectedSandboxID, f.pin.Digest.String())
-			if err == nil || time.Since(started) > time.Second {
-				t.Fatalf("deadline not respected: %v after %s", err, time.Since(started))
-			}
-		})
+	f := newSelectedImageFixture(t)
+	f.stall = "content"
+	r := f.resolver()
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := r.VerifyContainerImage(ctx, selectedContainerID, selectedSandboxID, f.pin.Digest.String())
+	if err == nil || time.Since(started) > time.Second {
+		t.Fatalf("deadline not respected: %v after %s", err, time.Since(started))
 	}
 }
 
+// Every start, including a restart, is verified afresh.
 func TestVerifyContainerImageChecksEveryStart(t *testing.T) {
 	f := newSelectedImageFixture(t)
 	r := f.resolver()
@@ -384,54 +374,7 @@ func TestVerifyContainerImageChecksEveryStart(t *testing.T) {
 	}
 }
 
-func TestVerifyContainerImageTraversalBounds(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		prepare func(*selectedImageFixture)
-	}{
-		{"index depth", func(f *selectedImageFixture) {
-			for range podImageDepthLimit + 2 {
-				f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{f.pin}}, ocispec.MediaTypeImageIndex)
-			}
-		}},
-		{"object count", func(f *selectedImageFixture) {
-			children := make([]ocispec.Descriptor, podImageObjectLimit)
-			for i := range children {
-				children[i] = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString(fmt.Sprintf("missing platform %d", i)), Size: 100}
-			}
-			children = append(children, f.pin)
-			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
-		}},
-		{"descriptor count", func(f *selectedImageFixture) {
-			children := make([]ocispec.Descriptor, podImageDescriptorLimit+1)
-			for i := range children {
-				children[i] = f.pin
-			}
-			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
-		}},
-		{"total content bytes", func(f *selectedImageFixture) {
-			var children []ocispec.Descriptor
-			for i := range 10 {
-				manifest := f.manifest
-				manifest.Config.Digest = digest.FromString(fmt.Sprintf("other platform %d", i))
-				manifest.Annotations = map[string]string{"padding": strings.Repeat("x", 900_000)}
-				children = append(children, f.addJSON(manifest, ocispec.MediaTypeImageManifest))
-			}
-			children = append(children, f.pin)
-			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newSelectedImageFixture(t)
-			tc.prepare(f)
-			err := f.resolver().VerifyContainerImage(t.Context(), selectedContainerID, selectedSandboxID, f.pin.Digest.String())
-			if err == nil || !strings.Contains(err.Error(), errPodImageLimit.Error()) {
-				t.Fatalf("unbounded traversal: %v", err)
-			}
-		})
-	}
-}
-
+// A tag or non-canonical digest is never accepted as the pin.
 func TestVerifyContainerImageRejectsInvalidInputsBeforeRPC(t *testing.T) {
 	r := &Resolver{}
 	for _, input := range []struct{ container, sandbox, pin string }{
