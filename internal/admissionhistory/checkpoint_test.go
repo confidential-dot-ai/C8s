@@ -182,12 +182,25 @@ func TestCheckpointRefusesOversizedHistoryAndUnboundedEvidence(t *testing.T) {
 	})
 	t.Run("variable evidence budget", func(t *testing.T) {
 		var h History
+		state := historyCheckpoint{Version: 1, Unresolved: []string{}}
 		fit := allowlist.MaxSandboxVariableEvidenceBytes / observeAtLimits(t, "x").VariableEvidenceBytes()
 		for i := range fit + 1 {
 			id := fmt.Sprint(i)
-			h.Record(id, "sha256:a", "", []string{"run", id}, observeAtLimits(t, id))
+			argv := []string{"run", id}
+			h.Record(id, "sha256:a", "", argv, observeAtLimits(t, id))
+			state.Sequence++
+			state.Records = append(state.Records, checkpointRecord{
+				Container: checkpointContainer{Env: observeAtLimits(t, id), Digest: "sha256:a", Argv: argv}, Sequence: state.Sequence, Running: []string{id},
+			})
 		}
-		raw, err := h.Checkpoint()
+		// Record admits evidence past the budget; only a Bound history is
+		// checkpointed, so the unbounded one is refused before it is retained.
+		if raw, err := h.Checkpoint(); err == nil || raw != nil || !strings.Contains(err.Error(), "evidence budget") {
+			t.Fatalf("unbounded evidence produced usable state or the wrong refusal: %v", err)
+		}
+		// Syntactically valid stored records above the budget must also be
+		// refused on restore, before they can become retained authority.
+		raw, err := json.Marshal(state)
 		if err != nil {
 			t.Fatal(err)
 		}
