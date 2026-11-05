@@ -20,6 +20,7 @@ import (
 
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The CRI annotations containerd writes into every container's OCI spec
@@ -45,20 +46,43 @@ var kernelFSTypes = []string{
 // with privileges the pod's protection cannot survive. Attachability is
 // refused for every container the wrapper creates, whether or not the floor
 // covers it.
-func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor, grantDir string) error {
+func requireFloor(
+	spec *specs.Spec,
+	containerID string,
+	stdin *os.File,
+	floor nriimagepolicy.MeshFloor,
+	grantDir string,
+) error {
+	return requireFloorWithPIDGrant(spec, containerID, stdin, floor, grantDir, nriimagepolicy.PIDNamespaceGrantDir)
+}
+
+func requireFloorWithPIDGrant(
+	spec *specs.Spec,
+	containerID string,
+	stdin *os.File,
+	floor nriimagepolicy.MeshFloor,
+	grantDir string,
+	pidGrantDir string,
+) error {
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
 	}
 	if !floorApplies(spec, containerID, floor) {
 		return nil
 	}
-	if err := floorChecks(spec, floor, grantDir, containerID); err != nil {
+	if err := floorChecks(spec, floor, grantDir, pidGrantDir, containerID); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil
 }
 
-func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor, grantDir, containerID string) error {
+func floorChecks(
+	spec *specs.Spec,
+	floor nriimagepolicy.MeshFloor,
+	grantDir string,
+	pidGrantDir string,
+	containerID string,
+) error {
 	if spec.Process == nil || spec.Linux == nil {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
@@ -76,7 +100,7 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor, grantDir, con
 	if err := requireUnprivileged(spec); err != nil {
 		return err
 	}
-	if err := requireOwnNamespaces(spec.Linux); err != nil {
+	if err := requireNamespaces(spec, containerID, pidGrantDir, role); err != nil {
 		return err
 	}
 	if err := requireUnreservedIdentity(user, floor, role); err != nil {
@@ -323,9 +347,14 @@ func writable(options []string) bool {
 	return !readOnly
 }
 
-// requireOwnNamespaces requires the container's ids to be the node's own and
-// its PID namespace to be its own: neither the node's nor a shared one.
-func requireOwnNamespaces(linux *specs.Linux) error {
+// A shared namespace needs a node-owned grant; platform roles remain private.
+func requireNamespaces(
+	spec *specs.Spec,
+	containerID string,
+	grantDir string,
+	role string,
+) error {
+	linux := spec.Linux
 	mapped := len(linux.UIDMappings) > 0 || len(linux.GIDMappings) > 0
 	if mapped || hasNamespace(linux, specs.UserNamespace) {
 		return errors.New("the container maps ids into a user namespace of its own")
@@ -333,8 +362,23 @@ func requireOwnNamespaces(linux *specs.Linux) error {
 	if !hasNamespace(linux, specs.PIDNamespace) {
 		return errors.New("the container has no PID namespace entry, so it runs in the node's")
 	}
+	count := 0
+	for _, ns := range linux.Namespaces {
+		if ns.Type == specs.PIDNamespace {
+			count++
+		}
+	}
+	if count != 1 {
+		return errors.New("the container has duplicate PID namespace entries")
+	}
 	if shared := joinedNamespace(linux, specs.PIDNamespace); shared != "" {
-		return fmt.Errorf("the container joins the PID namespace at %s", shared)
+		if role != "" || workloadclaims.IsInjectedContainerName(spec.Annotations[annotationContainerName]) {
+			return errors.New("a support container joins a shared PID namespace")
+		}
+		if err := nriimagepolicy.CheckPIDNamespaceGrant(grantDir, containerID,
+			spec.Annotations[annotationSandboxID], spec.Annotations[annotationSandboxUID], shared); err != nil {
+			return fmt.Errorf("the container joins the PID namespace at %s: %w", shared, err)
+		}
 	}
 	return nil
 }
