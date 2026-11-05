@@ -88,9 +88,12 @@ func run(cfg config) error {
 	defer back.Stop()
 	allowlistWrites := back.Allowlist()
 	mesh := back.MeshCA()
-	issuing, holdsCA := mesh.Current()
-	if !holdsCA {
-		return errors.New("this CDS serves no mesh CA, so it could issue nothing")
+	// Joining observed readiness, but it is not a lease on future reads. Cold
+	// replay can finish near the end of a freshness window; wait for the next
+	// usable observation instead of exiting with an already-restored CA.
+	issuing, err := back.AwaitMeshCA(ctx)
+	if err != nil {
+		return fmt.Errorf("wait for current mesh CA: %w", err)
 	}
 	slog.Info("serving under a mesh CA",
 		"key_id", caKeyID(issuing.CA.Cert),

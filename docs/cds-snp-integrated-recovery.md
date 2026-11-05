@@ -9,8 +9,8 @@ measured image and physical chip.
 
 This is an isolated correctness experiment. It does not qualify a production
 rollout, three independent failure domains, image retirement, firmware changes,
-or recovery after losing every enrolled physical chip. The original Raft and
-storage pilots are unchanged.
+or recovery after losing every enrolled physical chip. Raft remains the default;
+the changes stay on the pilot branch.
 
 ## Custody and enrollment
 
@@ -84,6 +84,15 @@ stopped at the workload fixture's interface enumeration: the image's address-fam
 sandbox excluded route netlink. The acceptance image now allows `AF_NETLINK` for
 that local query. It adds no guest egress rule, executable-input route, or shared
 host setting. The measured image must be rebuilt and re-enrolled for this change.
+
+Native run 06 passed the full seed phase and destroyed both VMs. Replacement
+custody also passed, and all three CDS processes replayed the original CA.
+One process then exited when its freshness window expired between the joining
+readiness observation and startup's CA lookup. Startup now waits for a usable
+current CA, stopping on process cancellation or backend exit. It never creates
+a replacement identity or bypasses the freshness gate. The operation deadlines
+and replay/revocation assertions remain unchanged. Focused race tests exercise
+the transient gap, reuse of the recovered key, cancellation and backend exit.
 
 ## Acceptance assertions
 

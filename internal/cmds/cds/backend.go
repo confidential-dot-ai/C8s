@@ -6,6 +6,7 @@ package cds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,9 @@ type backend interface {
 	Bindings() *sandboxledger.Handle
 	// MeshCA signs every leaf this CDS issues and is published at /ca.
 	MeshCA() meshCA
+	// AwaitMeshCA waits through transient loss of serving freshness at startup.
+	// Every later use still checks MeshCA.Current and the request's read barrier.
+	AwaitMeshCA(context.Context) (issuer.CurrentCA, error)
 	// NodeImages are the node images this CDS certifies: the set its measured
 	// configuration names, or the set its cluster's log carries.
 	NodeImages() armtls.PinSource
@@ -47,6 +51,38 @@ type backend interface {
 // issue, so a caller reads the second answer before the first.
 type meshCA interface {
 	Current() (issuer.CurrentCA, bool)
+}
+
+func awaitMeshCA(ctx context.Context, mesh meshCA, stopped <-chan struct{}) (issuer.CurrentCA, error) {
+	asking := time.NewTicker(joinPoll)
+	defer asking.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return issuer.CurrentCA{}, ctx.Err()
+		case <-stopped:
+			return issuer.CurrentCA{}, errors.New("CDS backend stopped while waiting for its mesh CA")
+		default:
+		}
+		if current, ok := mesh.Current(); ok {
+			return current, nil
+		}
+		select {
+		case <-ctx.Done():
+			return issuer.CurrentCA{}, ctx.Err()
+		case <-stopped:
+			return issuer.CurrentCA{}, errors.New("CDS backend stopped while waiting for its mesh CA")
+		case <-asking.C:
+		}
+	}
+}
+
+func (s *singleton) AwaitMeshCA(ctx context.Context) (issuer.CurrentCA, error) {
+	return awaitMeshCA(ctx, s.MeshCA(), nil)
+}
+
+func (r *clusterCDS) AwaitMeshCA(ctx context.Context) (issuer.CurrentCA, error) {
+	return awaitMeshCA(ctx, r.MeshCA(), r.ended)
 }
 
 // ownCA is the mesh CA a singleton mints at its start.
