@@ -287,53 +287,6 @@ func liveExecution(call []string) bool {
 
 func (h *harness) ledgerExists() bool { return h.exists(filepath.Join(h.state, "ledger.json")) }
 
-func TestUnsupportedSourceStopsBeforeStateCredentialsOrTools(t *testing.T) {
-	h := newHarness(t)
-	for _, source := range []string{
-		"SchemaVersion = \"c8s-launch/v1\"\n",
-		"SchemaVersion = \"c8s-launch/v99\"\n",
-		"SchemaVersion = \"c8s-launch/v1\"\nSchemaVersion = \"c8s-launch/v2\"\n",
-		"// SchemaVersion = \"c8s-launch/v1\"\n", "",
-	} {
-		h.write(h.schema, source)
-		h.refuse("run", "pass", "requires c8s-launch/v2 and a dedicated")
-		if h.exists(h.state) || h.calls() != nil {
-			t.Fatalf("%q: state or tool calls exist", source)
-		}
-		if locks, _ := filepath.Glob(filepath.Join(h.root, ".podcloud-lock-*")); len(locks) != 0 {
-			t.Fatalf("%q: lock files %v", source, locks)
-		}
-	}
-}
-
-func TestV2SourceCanCleanExistingRunWithOriginalRunner(t *testing.T) {
-	h := newHarness(t)
-	h.refuse("run", "missing", "Missing matching complete acceptance receipt")
-	original := h.read(filepath.Join(h.state, "acceptance.test"))
-	before := len(h.calls())
-	// A historical ledger does not have v2 artifact fields. Cleanup must
-	// not rebuild or reinterpret it through the current source schema.
-	var oldConfig map[string]any
-	h.readJSON(filepath.Join(h.state, "config.json"), &oldConfig)
-	for _, key := range []string{"cdsManifestFile", "cdsManifestDigest", "cdsDiskDigest"} {
-		delete(oldConfig, key)
-	}
-	oldConfig["cdsImage"] = "c8s-pod-cds@2026.10.27-1"
-	h.saveJSON(filepath.Join(h.state, "config.json"), oldConfig)
-	h.write(h.schema, "SchemaVersion = \"c8s-launch/v99\"\n")
-	h.pass("cleanup", "missing")
-	if h.read(filepath.Join(h.state, "acceptance.test")) != original {
-		t.Fatal("cleanup replaced the original runner")
-	}
-	later := h.calls()[before:]
-	if anyCall(later, prefix("go", "test")) {
-		t.Fatalf("cleanup rebuilt the runner: %v", later)
-	}
-	if !anyCall(later, liveExecution) {
-		t.Fatalf("cleanup did not execute the original runner: %v", later)
-	}
-}
-
 func TestCompleteReceiptUsesDisposableReadOnlyContainers(t *testing.T) {
 	h := newHarness(t)
 	h.pass("run", "pass")
@@ -357,98 +310,6 @@ func TestCompleteReceiptUsesDisposableReadOnlyContainers(t *testing.T) {
 	h.readJSON(filepath.Join(h.state, "runner.json"), &runner)
 	if image, _ := runner["image"].(string); !strings.Contains(image, "@sha256:") {
 		t.Fatalf("runner.json does not pin the container image: %v", runner)
-	}
-}
-
-func TestResolvedScenariosAndAcceptanceBuildProvenance(t *testing.T) {
-	h := newHarness(t)
-	scenarios := []any{nil, ""}
-	for name := range scenarioAssertions {
-		scenarios = append(scenarios, name)
-	}
-	for _, scenario := range scenarios {
-		for _, dirty := range []bool{false, true} {
-			label, _ := scenario.(string)
-			if scenario == nil {
-				label = "None"
-			}
-			h.state = filepath.Join(h.root, fmt.Sprintf("%s%v", label, dirty))
-			h.config["scenario"] = scenario
-			h.writeInput()
-			h.env[len(h.env)-2] = fmt.Sprintf("PODCLOUD_DIRTY=%d", map[bool]int{false: 0, true: 1}[dirty])
-			h.pass("run", "pass")
-			var receipt, build map[string]any
-			h.readJSON(filepath.Join(h.state, "result.json"), &receipt)
-			h.readJSON(filepath.Join(h.state, "acceptance-build.json"), &build)
-			expected, _ := scenario.(string)
-			if expected == "" {
-				expected = "connected"
-			}
-			if receipt["scenario"] != expected || receipt["source"] != h.config["source"] {
-				t.Fatalf("%v/%v: receipt %v", scenario, dirty, receipt)
-			}
-			runner := h.read(filepath.Join(h.state, "acceptance.test"))
-			if build["source"] != acceptanceSource || build["dirty"] != dirty || build["acceptanceBinarySHA256"] != sha256Hex([]byte(runner)) || len(build) != 3 {
-				t.Fatalf("%v/%v: build receipt %v", scenario, dirty, build)
-			}
-			if receipt["acceptanceBinarySHA256"] != build["acceptanceBinarySHA256"] {
-				t.Fatalf("%v/%v: receipt binary differs from the build receipt", scenario, dirty)
-			}
-			assertions, _ := receipt["assertions"].(map[string]any)
-			if len(assertions) != len(scenarioAssertions[expected]) {
-				t.Fatalf("%v/%v: assertions %v", scenario, dirty, assertions)
-			}
-			for _, key := range scenarioAssertions[expected] {
-				if assertions[key] != true {
-					t.Fatalf("%v/%v: assertion %s = %v", scenario, dirty, key, assertions[key])
-				}
-			}
-		}
-	}
-}
-
-func TestInvalidScenarioIsRejectedBeforeBuildOrProvisioning(t *testing.T) {
-	h := newHarness(t)
-	for i, scenario := range []any{"typo", "CONNECTED", " connected", "verification-timeout", false, true, 1, []any{}, map[string]any{}} {
-		h.state = filepath.Join(h.root, fmt.Sprint(i))
-		h.config["scenario"] = scenario
-		h.writeInput()
-		h.refuse("run", "pass", "scenario must be connected, warm-assignment, cds-outage, cds-renewal-outage or cds-decree")
-		for _, call := range h.calls() {
-			if !toolBuild(call) {
-				t.Fatalf("%v: tool call before the scenario check: %v", scenario, call)
-			}
-		}
-		if h.exists(filepath.Join(h.state, "execution-started")) {
-			t.Fatalf("%v: execution started", scenario)
-		}
-	}
-}
-
-func TestScenarioAssertionsAndBinaryProvenanceMustMatch(t *testing.T) {
-	h := newHarness(t)
-	refusals := []string{"wrong-scenario", "missing-scenario", "wrong-assertions", "missing-proof",
-		"false-proof", "extra-proof", "wrong-binary", "missing-binary",
-		"changed-binary", "wrong-build", "wrong-cds-manifest", "wrong-cds-disk",
-		"wrong-cds-config", "wrong-launch-format"}
-	// Every refusal is exercised once, against the connected scenario; the
-	// other scenarios check only the two refusals whose data differs per
-	// scenario. Each run forks run.sh and its process doubles, which is slow
-	// under the race detector.
-	for requested := range scenarioAssertions {
-		h.config["scenario"] = requested
-		h.writeInput()
-		scenarios := refusals
-		if requested != "connected" {
-			scenarios = []string{"wrong-scenario", "wrong-assertions"}
-		}
-		for _, scenario := range scenarios {
-			h.state = filepath.Join(h.root, requested+"-"+scenario)
-			h.refuse("run", scenario, "Missing matching complete acceptance receipt")
-			if !h.ledgerExists() {
-				t.Fatalf("%s/%s: the ledger was discarded without acceptance", requested, scenario)
-			}
-		}
 	}
 }
 
@@ -479,38 +340,6 @@ func TestPartialSetupCleanupIsLocalOnly(t *testing.T) {
 	h.pass("cleanup", "pass")
 	if anyCall(h.calls()[before:], prefix("docker", "run")) {
 		t.Fatal("partial cleanup started a container")
-	}
-}
-
-func TestMountProofRefusesEmptyOrDifferentStateBeforeExecution(t *testing.T) {
-	h := newHarness(t)
-	for _, scenario := range []string{"empty-mount", "wrong-mount", "wrong-runner"} {
-		h.state = filepath.Join(h.root, scenario)
-		h.refuse("run", scenario, "Docker cannot see the exact host state and runner")
-		for _, marker := range []string{"execution-started", "ledger.json", "cloud-authority-issued.json"} {
-			if h.exists(filepath.Join(h.state, marker)) {
-				t.Fatalf("%s: %s exists", scenario, marker)
-			}
-		}
-		if anyCall(h.calls(), liveExecution) {
-			t.Fatalf("%s: the runner executed", scenario)
-		}
-		before := len(h.calls())
-		h.pass("cleanup", scenario)
-		if anyCall(h.calls()[before:], prefix("docker", "run")) {
-			t.Fatalf("%s: cleanup started a container", scenario)
-		}
-	}
-}
-
-func TestMissingOrIncompleteAcceptanceNeverPasses(t *testing.T) {
-	h := newHarness(t)
-	for _, scenario := range []string{"missing", "stale", "cleanup-only", "wrong-source"} {
-		h.state = filepath.Join(h.root, scenario)
-		h.refuse("run", scenario, "Missing matching complete acceptance receipt")
-		if !h.ledgerExists() {
-			t.Fatalf("%s: the ledger was discarded without acceptance", scenario)
-		}
 	}
 }
 

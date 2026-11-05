@@ -109,8 +109,8 @@ fi
 
 if [[ "$mode" == run ]]; then
     scenario="$(jq -er 'if .scenario == null or .scenario == "" then "connected" else .scenario end |
-        select(. == "connected" or . == "warm-assignment" or . == "cds-outage" or . == "cds-renewal-outage" or . == "cds-decree")' "$input")" || {
-        echo 'scenario must be connected, warm-assignment, cds-outage, cds-renewal-outage or cds-decree' >&2; exit 1;
+        select(. == "connected" or . == "warm-assignment" or . == "cds-outage" or . == "cds-renewal-outage")' "$input")" || {
+        echo 'scenario must be connected, warm-assignment, cds-outage or cds-renewal-outage' >&2; exit 1;
     }
     command -v go >/dev/null || { echo 'go is required to build the live harness' >&2; exit 1; }
     for entry in tokenFile manifestFile cdsManifestFile cliFile probeFile; do
@@ -198,8 +198,6 @@ if [[ "$mode" == run ]]; then
         ["attestedReadiness","authenticatedPolicyUpdate","cdsAccessControl","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","ownedDeletion","revocationEnforced","servedPolicyRetained"]
       elif $scenario == "cds-renewal-outage" then
         ["attestedReadiness","authenticatedPolicyUpdate","cdsAccessControl","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","ownedDeletion","renewalAfterOutage","revocationEnforced","servedPolicyRetained","taskContinuity"]
-      elif $scenario == "cds-decree" then
-        ["attestedReadiness","cdsAccessControl","certificateIdentity","cleanup","exactDigests","genesisApplied","localGenericTrustPreserved","ownedDeletion","pinDecreeApplied","policyRefusals","staticPinFloor","taskContinuity","unjoinedRefusal"]
       elif $scenario == "warm-assignment" then
         ["assignmentBeforePOST","attestedReadiness","cdsAccessControl","certificateIdentity","cleanup","conflictingAssignmentRejected","exactDigests","genericIdle","ownedDeletion"]
       else

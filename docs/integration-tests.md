@@ -301,20 +301,6 @@ before owned deletion and confirmed cleanup. This proves renewal after temporary
 unavailability, not leaf expiry, guest service restart, CDS process restart or
 multi-replica HA.
 
-Set `"scenario": "cds-decree"` for one CDS replica and one static Pod. The pinned
-CDS image and paired CLI must support HA configuration and decree APIs. Before
-Genesis, attested `/readyz` and `/ca` must refuse with HTTP 503. The paired CLI
-signs Genesis with `--alone`; attested status, decree history, pin policy and CA
-observations must show it applied at version 1. A signed pin decree for the same
-real image must reach version 2. The exported applied decree supplies the Pod's
-cold-boot image set and pin floor, checked against its actual signed launch and
-authenticated readiness/digests. Pod-key, server-key, wrong-cluster,
-wrong-launch-binding and stale-base decrees must receive their exact
-authenticated refusals and leave the applied history, pins, CA, CDS member/VM/boot
-and Pod assignment/tasks/leaf unchanged. This lane does not prove multi-replica
-failover, image roll, rejection of an actual old image, CDS restart or Pod
-service restart.
-
 These scenarios compile the current checkout's harness. Its commit, dirty status
 and executable hash are recorded in `acceptance-build.json`; the result's hash
 must match the executable that ran. The input `source` identifies the paired
