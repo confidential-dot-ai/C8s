@@ -257,6 +257,15 @@ an available Kubernetes API, and termination may take longer during a Cloud
 outage. Waiting retries are scheduled within 10 seconds, shortened to the
 remaining budget; individual Cloud and guest calls are capped by that budget.
 
+Each time the published status reason changes, the provider records one Event on
+the Pod with that reason: `Normal` while a launch advances (`InstanceStarting`,
+`EndpointsPending`, `AllocationPending`, `AssignmentPending`), `Normal`
+`PodCVMVerified` when verified status first replaces a waiting reason, and
+`Warning` for refusals, outages and endings such as `LaunchRefused`,
+`CloudUnavailable`, `GuestVerificationTimedOut`, `GuestRebooted` and
+`InstanceEnded`. Polls that keep the same reason record nothing. `kubectl
+describe pod` shows them.
+
 Application ingress comes from declared TCP `containerPort` values. The provider
 also exposes the guest status port, 8443. Neither is a host readiness port:
 application HTTP probes run inside the guest through its mesh endpoint. Cloud

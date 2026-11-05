@@ -40,7 +40,7 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 		return err
 	}
 	api := newCloudClient(cfg)
-	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now}
+	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now, recorder: mgr.GetEventRecorder("c8s-pod-cvm-provider")}
 	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm").For(&corev1.Pod{}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			pod, ok := obj.(*corev1.Pod)
