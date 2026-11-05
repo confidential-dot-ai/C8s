@@ -15,6 +15,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/google/go-sev-guest/abi"
@@ -87,20 +91,33 @@ type deviceResult struct {
 // Hardware owns the one firmware device behind a bounded mailbox. There is no
 // file-key option, runtime code upload, shell, or remotely callable derivation.
 type Hardware struct {
-	jobs       chan deviceJob
-	done       chan struct{}
-	cancel     context.CancelFunc
-	Launch     []byte
-	ReportInfo *sevsnp.Report
+	jobs         chan deviceJob
+	done         chan struct{}
+	cancel       context.CancelFunc
+	Launch       []byte
+	ReportInfo   *sevsnp.Report
+	TDXRecipient runtimemeasure.ImageIdentity
 }
 
 func OpenHardware(ctx context.Context, launch []byte) (*Hardware, error) {
+	const recipientManifest = "/usr/share/cds-acceptance/tdx-recipient-manifest.json"
+	var recipient runtimemeasure.ImageIdentity
+	if _, err := os.Stat(recipientManifest); err == nil {
+		var err error
+		recipient, err = runtimemeasure.LoadImageManifestFor(recipientManifest, teetypes.FamilyTDX)
+		if err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	d := &client.LinuxDevice{}
 	if err := d.Open("/dev/sev-guest"); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	h := &Hardware{jobs: make(chan deviceJob, 8), done: make(chan struct{}), cancel: cancel, Launch: bytes.Clone(launch)}
+	h.TDXRecipient = recipient
 	go func() {
 		defer close(h.done)
 		defer d.Close()

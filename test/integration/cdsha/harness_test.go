@@ -134,6 +134,10 @@ func processReadLease() time.Duration {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CDSHA_TDX_ACCEPTANCE") == "1" {
+		runTDXTestMain(m)
+		return
+	}
 	if os.Getenv("CDSHA_SNP_ACCEPTANCE") == "1" {
 		runSNPTestMain(m)
 		return
@@ -453,7 +457,7 @@ func (c *cluster) start(i int) *replica {
 // this CDS image and the launch file of this cluster's replicas.
 func (c *cluster) attestationAPI(name, measurement string) string {
 	c.t.Helper()
-	if snpHardware != nil {
+	if nativeAcceptance() {
 		return "http://127.0.0.1:9090"
 	}
 	port := freePort(c.t)
@@ -577,6 +581,16 @@ func tail(path string) string {
 // the cluster's pin document names, bound to the launch file they boot.
 func (c *cluster) attestedClient(measurement string, alsoAccepted ...string) *http.Client {
 	c.t.Helper()
+	if tdxHardware != nil {
+		if len(alsoAccepted) != 0 || measurement != tdxMeasurement() {
+			c.t.Fatal("native TDX fixture requires the complete measured tuple")
+		}
+		client, err := armtls.NewVerifyingHTTPClient(armtls.Pins{Images: tdxImagePins(c)}, c.attestationAPI("the operator", measurement))
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		return client
+	}
 	var pins armtls.Pins
 	for i, accepted := range append([]string{measurement}, alsoAccepted...) {
 		digest, err := hex.DecodeString(accepted)
@@ -608,7 +622,7 @@ func (c *cluster) genesis(r *replica) {
 func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion uint64) {
 	c.t.Helper()
 	reported := c.awaitStatus(r)
-	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(c.measurement(), string(c.config))))
+	pins, err := cdsdecree.NewPinDocument([]byte(c.cdsPinDocument()))
 	if err != nil {
 		c.t.Fatal(err)
 	}

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${ACCEPTANCE_BUILD_DIR:?dedicated output directory required}"
+"$IMAGE_DIR/../cds-snp-acceptance/build"
+mv "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/cds-snp-acceptance" "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/cds-tdx-acceptance"
+sha256sum "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/"* "$ACCEPTANCE_BUILD_DIR/verify" > "$ACCEPTANCE_BUILD_DIR/binaries.sha256"

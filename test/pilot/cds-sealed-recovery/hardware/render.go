@@ -24,6 +24,7 @@ import (
 
 func main() {
 	run := flag.String("run", "", "cds-snp- followed by 12 random hex characters")
+	platform := flag.String("platform", "snp", "snp or tdx")
 	node := flag.String("node", "", "approved SNP compute worker")
 	uid := flag.String("node-uid", "", "independently observed Node UID")
 	launch := flag.String("launch-file", "", "fixed public probe launch bytes")
@@ -32,7 +33,8 @@ func main() {
 	flag.Parse()
 	deadline, err := time.Parse(time.RFC3339, *expires)
 	if err != nil || time.Until(deadline) < 5*time.Minute || time.Until(deadline) > 90*time.Minute ||
-		!regexp.MustCompile(`^cds-snp-[0-9a-f]{12}$`).MatchString(*run) || len(validation.IsDNS1123Subdomain(*node)) != 0 || *node == "" ||
+		(*platform != "snp" && *platform != "tdx") ||
+		!regexp.MustCompile(`^cds-`+*platform+`-[0-9a-f]{12}$`).MatchString(*run) || len(validation.IsDNS1123Subdomain(*node)) != 0 || *node == "" ||
 		!regexp.MustCompile(`^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`).MatchString(*uid) ||
 		!regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`).MatchString(*tools) || flag.NArg() != 0 {
 		panic("explicit owned run, node/UID, pinned tools and bounded cleanup deadline required")
@@ -64,11 +66,19 @@ func main() {
 		Image: confai.ImageRef{RootdiskPVC: root, IGVMPVC: boot}, CPUCores: 2, MemoryGi: 4,
 		NoCloudInit: true, OperatorKeyPub: data, OperatorKeyFormat: confai.OperatorKeyFormatLaunchFile,
 		ServiceType: confai.ServiceTypeClusterIP, Ports: []confai.Port{{Name: "probe", Port: 6443}}, ExactServicePorts: true, Labels: labels}
+	if *platform == "tdx" {
+		spec.Platform = confai.PlatformTDX
+		spec.Image.IGVMPVC = ""
+		spec.NoVSOCK = true
+	}
 	objects, err := confai.Build(spec)
 	if err != nil {
 		panic(err)
 	}
-	items := []any{claim(root, "8Gi"), claim(boot, "1Gi")}
+	items := []any{claim(root, "8Gi")}
+	if *platform == "snp" {
+		items = append(items, claim(boot, "1Gi"))
+	}
 	for _, obj := range objects {
 		switch value := obj.(type) {
 		case *kubevirtv1.VirtualMachine:
@@ -120,6 +130,10 @@ func main() {
 		}},
 		Volumes: []corev1.Volume{{Name: "root", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: root}}}, {Name: "boot", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: boot}}}},
 	}}
+	if *platform == "tdx" {
+		population.Spec.Containers[0].VolumeMounts = population.Spec.Containers[0].VolumeMounts[:1]
+		population.Spec.Volumes = population.Spec.Volumes[:1]
+	}
 	items = append(items, population)
 	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"apiVersion": "v1", "kind": "List", "items": items}); err != nil {
 		panic(err)

@@ -19,14 +19,15 @@ import (
 )
 
 type Request struct {
-	Operation   string          `json:"operation"`
-	Nonce       []byte          `json:"nonce"`
-	Measurement string          `json:"measurement"`
-	Parameters  Parameters      `json:"parameters"`
-	Collateral  Collateral      `json:"collateral,omitempty"`
-	OperatorKey []byte          `json:"operator_key,omitempty"`
-	Custody     *CustodyRequest `json:"custody,omitempty"`
-	Copy        *CustodyCopy    `json:"copy,omitempty"`
+	Operation       string          `json:"operation"`
+	Nonce           []byte          `json:"nonce"`
+	Measurement     string          `json:"measurement"`
+	Parameters      Parameters      `json:"parameters"`
+	Collateral      Collateral      `json:"collateral,omitempty"`
+	IntelCollateral IntelCollateral `json:"intel_collateral,omitempty"`
+	OperatorKey     []byte          `json:"operator_key,omitempty"`
+	Custody         *CustodyRequest `json:"custody,omitempty"`
+	Copy            *CustodyCopy    `json:"copy,omitempty"`
 }
 type Result struct {
 	Operation  string              `json:"operation"`
@@ -69,14 +70,104 @@ func decodeHTTP(w http.ResponseWriter, r *http.Request, v any, limit int64) erro
 // storage relay stays available while that phase runs. No remote path accepts
 // executable code, file paths, process arguments, or plaintext custody keys.
 func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) error {
+	valid := func(q Request) bool {
+		return (q.Operation == "enroll" || q.Operation == "delegate" || q.Operation == "copy" || q.Operation == "seed" || q.Operation == "recover") && (q.Copy == nil || q.Operation == "delegate")
+	}
+	return servePhases(ctx, h, false, valid, func(q Request, relay *Relay) Result {
+		var out Result
+		p := q.Parameters
+		if q.Operation == "enroll" {
+			p = Parameters{h.ReportInfo.GuestSvn, h.ReportInfo.CommittedTcb}
+		}
+		var identity *DerivationIdentity
+		var identityErr error
+		if q.Operation == "delegate" && q.Copy != nil {
+			identity, identityErr = h.CopyIdentity(ctx, *q.Copy)
+		} else if q.Operation == "enroll" || q.Operation == "delegate" {
+			identity, identityErr = h.PublicIdentity(ctx, p)
+		}
+		if q.Operation == "enroll" {
+			launch, p, err := h.Enroll(ctx)
+			out = Result{Operation: q.Operation, Passed: err == nil, Launch: launch, Parameters: p}
+			if err != nil {
+				out.Error = err.Error()
+			}
+		} else if q.Operation == "delegate" {
+			var grant *CustodyGrant
+			var err error
+			if q.Custody != nil && q.Custody.Family == "tdx" {
+				grant, err = h.DelegateTDX(ctx, p, q.Copy, q.Custody, q.IntelCollateral)
+			} else if q.Copy != nil {
+				grant, err = h.DelegateCopy(ctx, *q.Copy, q.Custody, q.Collateral)
+			} else {
+				grant, err = h.Delegate(ctx, p, q.Custody, q.Collateral)
+			}
+			out = Result{Operation: q.Operation, Passed: err == nil, Custody: grant, Parameters: p}
+			if err != nil {
+				out.Error = err.Error()
+			}
+		} else if q.Operation == "copy" {
+			copy, identityValue, err := h.EnrollCopy(ctx, relay)
+			identity = identityValue
+			out = Result{Operation: q.Operation, Passed: err == nil, Copy: copy}
+			if err != nil {
+				out.Error = err.Error()
+			} else {
+				out.Parameters = copy.Parameters
+			}
+		} else {
+			out = run(q, relay)
+		}
+		out.Derivation = identity
+		if identityErr != nil {
+			out.Passed = false
+			out.Error = "public derivation identity unavailable: " + identityErr.Error()
+		}
+		return out
+	})
+}
+
+// ServeTDX exposes only CDS acceptance phases. Enrollment and durable custody
+// remain exclusively in the SNP custodian, with no key upload or software root.
+func ServeTDX(ctx context.Context, h *TDXHardware, run func(Request, *Relay) Result) error {
+	return servePhases(ctx, h, true, func(q Request) bool {
+		return (q.Operation == "seed" || q.Operation == "recover") && q.Copy == nil && q.Custody == nil
+	}, run)
+}
+
+type phaseReporter interface {
+	Report(context.Context, [64]byte) ([]byte, error)
+	CheckMeasurement(string) error
+}
+
+func servePhases(ctx context.Context, h phaseReporter, inspect bool, valid func(Request) bool, run func(Request, *Relay) Result) error {
 	relay := NewRelay(ctx)
 	var started atomic.Bool
 	var result atomic.Pointer[Reply]
 	gate := make(chan struct{}, 40)
 	mux := http.NewServeMux()
+	if inspect {
+		// Obtain fresh public Intel collateral before the single CDS phase.
+		// This endpoint can only quote a bounded nonce and the fixed launch;
+		// it cannot enroll, derive, upload, or release any key material.
+		mux.HandleFunc("POST /v1/inspect", func(w http.ResponseWriter, r *http.Request) {
+			var q Request
+			if decodeHTTP(w, r, &q, 4096) != nil || q.Operation != "inspect" || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || len(q.OperatorKey) != 0 || len(q.Collateral) != 0 || len(q.IntelCollateral) != 0 || q.Copy != nil || q.Custody != nil || q.Parameters != (Parameters{}) {
+				http.Error(w, "bounded public inspection required", 400)
+				return
+			}
+			out := Result{Operation: "inspect", Passed: true}
+			report, err := h.Report(r.Context(), Binding(q, out))
+			if err != nil {
+				http.Error(w, "hardware quote unavailable", 503)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(Reply{Result: out, Report: report})
+		})
+	}
 	mux.HandleFunc("POST /v1/start", func(w http.ResponseWriter, r *http.Request) {
 		var q Request
-		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || (q.Operation != "enroll" && q.Operation != "delegate" && q.Operation != "copy" && q.Operation != "seed" && q.Operation != "recover") || (q.Copy != nil && q.Operation != "delegate") {
+		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || !valid(q) {
 			http.Error(w, "invalid bounded phase request", 400)
 			return
 		}
@@ -85,53 +176,7 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 			return
 		}
 		go func() {
-			var out Result
-			p := q.Parameters
-			if q.Operation == "enroll" {
-				p = Parameters{h.ReportInfo.GuestSvn, h.ReportInfo.CommittedTcb}
-			}
-			var identity *DerivationIdentity
-			var identityErr error
-			if q.Operation == "delegate" && q.Copy != nil {
-				identity, identityErr = h.CopyIdentity(ctx, *q.Copy)
-			} else if q.Operation == "enroll" || q.Operation == "delegate" {
-				identity, identityErr = h.PublicIdentity(ctx, p)
-			}
-			if q.Operation == "enroll" {
-				launch, p, err := h.Enroll(ctx)
-				out = Result{Operation: q.Operation, Passed: err == nil, Launch: launch, Parameters: p}
-				if err != nil {
-					out.Error = err.Error()
-				}
-			} else if q.Operation == "delegate" {
-				var grant *CustodyGrant
-				var err error
-				if q.Copy != nil {
-					grant, err = h.DelegateCopy(ctx, *q.Copy, q.Custody, q.Collateral)
-				} else {
-					grant, err = h.Delegate(ctx, p, q.Custody, q.Collateral)
-				}
-				out = Result{Operation: q.Operation, Passed: err == nil, Custody: grant, Parameters: p}
-				if err != nil {
-					out.Error = err.Error()
-				}
-			} else if q.Operation == "copy" {
-				copy, identityValue, err := h.EnrollCopy(ctx, relay)
-				identity = identityValue
-				out = Result{Operation: q.Operation, Passed: err == nil, Copy: copy}
-				if err != nil {
-					out.Error = err.Error()
-				} else {
-					out.Parameters = copy.Parameters
-				}
-			} else {
-				out = run(q, relay)
-			}
-			out.Derivation = identity
-			if identityErr != nil {
-				out.Passed = false
-				out.Error = "public derivation identity unavailable: " + identityErr.Error()
-			}
+			out := run(q, relay)
 			raw, err := h.Report(ctx, Binding(q, out))
 			if err != nil {
 				out.Passed = false

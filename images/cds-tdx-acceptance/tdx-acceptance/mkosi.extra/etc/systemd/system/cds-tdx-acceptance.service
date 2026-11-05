@@ -1,0 +1,34 @@
+[Unit]
+Description=Disposable CDS integrated TDX recovery acceptance
+ConditionPathExists=/run/confai/operator-pubkey
+After=network-online.target sys-kernel-config.mount
+Wants=network-online.target sys-kernel-config.mount
+
+[Service]
+Environment=CDSHA_TDX_ACCEPTANCE=1
+ExecStart=/usr/local/bin/cds-tdx-acceptance -test.run=^TestTDXIntegratedRecovery$ -test.v
+RuntimeDirectory=cds-acceptance
+Restart=no
+RestartSec=5
+TimeoutStopSec=30
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ReadWritePaths=/sys/kernel/config/tsm/report
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+# The workload fixture enumerates local interfaces through route netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+DevicePolicy=closed
+DeviceAllow=/dev/tdx_guest rw
+TasksMax=256
+MemoryMax=3G
+
+[Install]
+WantedBy=multi-user.target

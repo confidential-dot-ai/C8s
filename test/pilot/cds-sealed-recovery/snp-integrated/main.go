@@ -19,9 +19,15 @@ func main() {
 	col := flag.String("collateral", "", "new public collateral path")
 	custody := flag.Bool("custody-request", false, "verify a public attested custody recipient")
 	measurement := flag.String("measurement", "", "independently pinned custody recipient image")
+	platform := flag.String("platform", "snp", "explicit native evidence platform")
+	manifest := flag.String("manifest", "", "independently built TDX recipient manifest")
 	flag.Parse()
 	var err error
-	if *custody {
+	if *platform == "tdx" {
+		err = runTDX(*qpath, *rpath, *lpath, *out, *col, *manifest, *custody)
+	} else if *platform != "snp" {
+		err = fmt.Errorf("unsupported evidence platform")
+	} else if *custody {
 		err = runCustody(*qpath, *lpath, *out, *col, *measurement)
 	} else {
 		err = run(*qpath, *rpath, *lpath, *out, *col)

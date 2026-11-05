@@ -1,0 +1,2 @@
+enable cds-tdx-acceptance.service
+enable cds-tdx-acceptance-expiry.timer

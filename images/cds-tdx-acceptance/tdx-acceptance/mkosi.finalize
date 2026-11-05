@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+# No host-controlled console, rescue shell, SSH or guest-agent command runner.
+# These masks are baked into the measured verity root.
+for unit in getty@.service serial-getty@.service console-getty.service rescue.service emergency.service ssh.service sshd.service qemu-guest-agent.service; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+test -x "$BUILDROOT/usr/local/bin/cds-tdx-acceptance"
+test -f "$BUILDROOT/etc/cloud/cloud-init.disabled"
+# Git records executable bits, not read permissions. A private checkout may
+# provide 0600 files; networkd drops privileges before reading this public
+# DHCP configuration. Set explicit modes for these public image inputs only.
+chmod 0644 "$BUILDROOT/etc/systemd/network/80-dhcp.network" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-acceptance.service" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-acceptance-expiry.service" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-acceptance-expiry.timer" \
+    "$BUILDROOT/etc/systemd/journald.conf.d/50-cds-tdx-acceptance-console.conf"

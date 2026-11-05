@@ -21,6 +21,7 @@ import (
 // SNP guest. It does not carry the raw hardware root or introduce a production
 // release API. The existing WALAuthority still approves every CDS key grant.
 type CustodyRequest struct {
+	Family    string `json:"family,omitempty"`
 	Nonce     []byte `json:"nonce"`
 	PublicKey []byte `json:"public_key"`
 	Report    []byte `json:"report"`
@@ -70,11 +71,16 @@ func newCustodyRecipient() (*CustodyRecipient, error) {
 }
 
 func NewCustodyRecipient(ctx context.Context, h *Hardware) (*CustodyRecipient, CustodyRequest, error) {
+	return custodyRecipient(ctx, "", h.Report)
+}
+
+func custodyRecipient(ctx context.Context, family string, report func(context.Context, [64]byte) ([]byte, error)) (*CustodyRecipient, CustodyRequest, error) {
 	r, err := newCustodyRecipient()
 	if err != nil {
 		return nil, CustodyRequest{}, err
 	}
-	r.request.Report, err = h.Report(ctx, custodyBinding(r.request))
+	r.request.Family = family
+	r.request.Report, err = report(ctx, custodyBinding(r.request))
 	return r, r.request, err
 }
 
@@ -119,7 +125,7 @@ func sealCustody(q CustodyRequest, signer ed25519.PrivateKey, wrap []byte) (*Cus
 }
 
 func checkCustodyRequest(q *CustodyRequest) error {
-	if q == nil || len(q.Nonce) != overenc.SessionIDBytes || len(q.PublicKey) != overenc.XWingEKBytes || len(q.Report) != abi.ReportSize {
+	if q == nil || q.Family != "" || len(q.Nonce) != overenc.SessionIDBytes || len(q.PublicKey) != overenc.XWingEKBytes || len(q.Report) != abi.ReportSize {
 		return errors.New("bounded attested custody recipient required")
 	}
 	return nil

@@ -45,6 +45,9 @@ var snpRelay *snpaccept.Relay
 var snpChecks map[string]any
 
 func (c *cluster) measurement() string {
+	if tdxHardware != nil {
+		return tdxMeasurement()
+	}
 	if snpHardware != nil {
 		return snpHardware.Measurement()
 	}
@@ -130,7 +133,7 @@ func snpStore(t *testing.T, f *objectFixture) *objectwal.S3 {
 
 func snpCluster(t *testing.T) (*cluster, *objectwal.S3) {
 	t.Helper()
-	config, err := cdsconfig.Parse(snpHardware.Launch)
+	config, err := cdsconfig.Parse(nativeLaunch())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +157,7 @@ func snpCluster(t *testing.T) (*cluster, *objectwal.S3) {
 	if !authorized {
 		t.Fatal("operator credential does not match measured launch")
 	}
-	c := &cluster{t: t, dir: t.TempDir(), config: bytes.Clone(snpHardware.Launch), configPath: "/run/confai/operator-pubkey", operator: key}
+	c := &cluster{t: t, dir: t.TempDir(), config: bytes.Clone(nativeLaunch()), configPath: "/run/confai/operator-pubkey", operator: key}
 	c.signer = c.operatorSigner()
 	listener, err := net.Listen("tcp", "127.0.0.1:9443")
 	if err != nil {
@@ -214,7 +217,7 @@ func snpProvision(t *testing.T, c *cluster, store *objectwal.S3) []byte {
 		}
 		defer clear(key)
 		c.awaitStatus(c.replicas[0])
-		policy := cdsrecovery.Enrollment{Identity: identity, Pins: []byte(testutil.CDSPinDocument(c.measurement(), string(c.config)))}
+		policy := cdsrecovery.Enrollment{Identity: identity, Pins: []byte(c.cdsPinDocument())}
 		for _, r := range c.replicas {
 			policy.Origins = append(policy.Origins, r.base)
 		}
@@ -248,6 +251,9 @@ func snpProvision(t *testing.T, c *cluster, store *objectwal.S3) []byte {
 	c.provisionObjects(c.replicas[0])
 	if snpRequest.Operation == "seed" {
 		nodes := fmt.Sprintf(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":%q}]}`, c.measurement())
+		if tdxHardware != nil {
+			nodes = c.nativeNodeDocument()
+		}
 		c.genesisCertifying(c.replicas[0], nodes, 0)
 	}
 	for _, r := range c.replicas[1:] {
@@ -258,7 +264,14 @@ func snpProvision(t *testing.T, c *cluster, store *objectwal.S3) []byte {
 }
 
 func snpCustody(ctx context.Context, config cdsconfig.ObjectWALPilot) (ed25519.PrivateKey, []byte, error) {
-	recipient, request, err := snpaccept.NewCustodyRecipient(ctx, snpHardware)
+	var recipient *snpaccept.CustodyRecipient
+	var request snpaccept.CustodyRequest
+	var err error
+	if tdxHardware != nil {
+		recipient, request, err = snpaccept.NewTDXCustodyRecipient(ctx, tdxHardware)
+	} else {
+		recipient, request, err = snpaccept.NewCustodyRecipient(ctx, snpHardware)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,6 +305,10 @@ func TestSNPIntegratedRecovery(t *testing.T) {
 	if snpHardware == nil {
 		t.Skip("only the immutable SNP acceptance image runs this test")
 	}
+	testNativeIntegratedRecovery(t)
+}
+
+func testNativeIntegratedRecovery(t *testing.T) {
 	c, store := snpCluster(t)
 	wrap := snpProvision(t, c, store)
 	listener, host := inventoryListener(t)
@@ -392,7 +409,8 @@ func TestSNPIntegratedRecovery(t *testing.T) {
 	snpChecks["ca_fingerprint"] = before.CA
 	snpChecks["replay_expires"] = before.ReplayExpires.UTC().Format(time.RFC3339Nano)
 	snpChecks["replicas"] = 3
-	snpChecks["real_snp_attestation"] = true
+	snpChecks["real_snp_attestation"] = snpHardware != nil
+	snpChecks["real_tdx_attestation"] = tdxHardware != nil
 	if c.objectWAL.config.DirectState {
 		snpChecks["backend"] = "transactional-current-state"
 		snpChecks["authority_reads_current_records"] = true

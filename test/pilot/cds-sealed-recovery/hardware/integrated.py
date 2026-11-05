@@ -320,13 +320,21 @@ class Integrated(Run):
             if metadata_errors is not None: metadata_errors.close()
             statistics.put(counters)
 
-    def phase(self, vm, phase, launch, parameters, collateral):
-        port = self.tunnel(vm, phase)
+    def phase_request(self, port, vm, phase, parameters, collateral):
         request = {"operation": phase, "nonce": base64.b64encode(secrets.token_bytes(32)).decode(), "measurement": self.state["measurement"], "parameters": parameters}
         if phase != "enroll":
             request["collateral"] = collateral
         if phase in ("seed", "recover"):
             request["operator_key"] = base64.b64encode((self.directory / "operator.pem").read_bytes()).decode()
+        return request
+
+    def verify_phase(self, vm, phase, launch):
+        self.command(phase + "-verify", [self.args.probe, "-request", str(self.directory / (phase + "-request.json")), "-reply", str(self.directory / (phase + "-reply.json")), "-launch", str(launch), "-receipt", str(self.directory / (phase + "-receipt.json")), "-collateral", str(self.directory / (phase + "-collateral.json"))], timeout=60)
+        return json.loads((self.directory / (phase + "-receipt.json")).read_text())
+
+    def phase(self, vm, phase, launch, parameters, collateral):
+        port = self.tunnel(vm, phase)
+        request = self.phase_request(port, vm, phase, parameters, collateral)
         self.atomic(self.directory / (phase + "-request.json"), request)
         stop = threading.Event()
         failures = queue.Queue(maxsize=1)
@@ -368,8 +376,7 @@ class Integrated(Run):
             except queue.Empty:
                 failure = None
             need(failure is None, "external durable store failed: " + str(failure))
-        self.command(phase + "-verify", [self.args.probe, "-request", str(self.directory / (phase + "-request.json")), "-reply", str(self.directory / (phase + "-reply.json")), "-launch", str(launch), "-receipt", str(self.directory / (phase + "-receipt.json")), "-collateral", str(self.directory / (phase + "-collateral.json"))], timeout=60)
-        receipt = json.loads((self.directory / (phase + "-receipt.json")).read_text())
+        receipt = self.verify_phase(vm, phase, launch)
         self.event("cds-phase-passed", phase=phase, checks=receipt["result"].get("checks", {}))
         return receipt
 

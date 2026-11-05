@@ -28,7 +28,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -339,7 +338,7 @@ func startPilotWorkload(c *cluster, listener net.Listener, host string, cdsImage
 	t := c.t
 	t.Helper()
 	w := &pilotWorkload{c: c, apiURL: c.attestationAPI("workload-node", seededNodeImage.mrtd), key: newKey(t)}
-	pins, err := refvalues.ParseRendered([]byte(testutil.CDSPinDocument(c.measurement(), string(c.config))))
+	pins, err := refvalues.ParseRendered([]byte(c.cdsPinDocument()))
 	if len(cdsImages) != 0 {
 		// The rolling-image fixture explicitly trusts the operator's overlap
 		// set for inventory callbacks; the recovery authority independently
@@ -350,7 +349,7 @@ func startPilotWorkload(c *cluster, listener net.Listener, host string, cdsImage
 		t.Fatal(err)
 	}
 	attest := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), w.apiURL)
-	tlsConfig, manager, err := workloadclaims.DigestsServerTLSConfig("sev-snp", attest, w.apiURL, armtls.FixedPins(pins), time.Hour, "")
+	tlsConfig, manager, err := workloadclaims.DigestsServerTLSConfig(c.hardwareFamily(), attest, w.apiURL, armtls.FixedPins(pins), time.Hour, "")
 	if err != nil {
 		t.Fatal(err)
 	}
