@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -63,6 +65,13 @@ type Options struct {
 
 	WebhookServiceName      string
 	WebhookServiceNamespace string
+	// WebhookHost, when set, is the host the API server reaches the webhook at
+	// from outside the cluster: the serving certificate names it and the
+	// webhook server binds it, in place of the Service.
+	WebhookHost string
+	// Kubeconfig names the cluster's kubeconfig file; empty is the in-cluster
+	// service account.
+	Kubeconfig string
 
 	CertFSGroup       int64
 	CertRenewInterval time.Duration
@@ -103,11 +112,11 @@ var podName = func() (string, error) {
 }
 
 // Production wiring hoisted to vars so Run's error paths are testable.
-// getKubeConfig is the in-cluster service-account config only: a kubeconfig
-// from KUBECONFIG or HOME could name an exec credential plugin, code the
-// operator's pinned arguments never named.
+// getKubeConfig is the in-cluster service-account config or the file the
+// operator is given, never one KUBECONFIG or HOME names: that could name an
+// exec credential plugin, code the operator's arguments never named.
 var (
-	getKubeConfig      = rest.InClusterConfig
+	getKubeConfig      = kubeConfig
 	newManager         = ctrl.NewManager
 	newDiscoveryClient = discovery.NewDiscoveryClientForConfig
 )
@@ -122,9 +131,9 @@ func Run(ctx context.Context, opts Options) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 
-	config, err := getKubeConfig()
+	config, err := getKubeConfig(opts.Kubeconfig)
 	if err != nil {
-		return fmt.Errorf("in-cluster config: %w", err)
+		return fmt.Errorf("kube config: %w", err)
 	}
 	// Match ctrl.GetConfigOrDie: QPS 0 means client-go's default 5 QPS
 	// limiter, which the manager, cache and webhook bootstrap would share.
@@ -162,10 +171,18 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
+// kubeConfig loads path, or the in-cluster service account without one.
+func kubeConfig(path string) (*rest.Config, error) {
+	if path == "" {
+		return rest.InClusterConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", path)
+}
+
 // managerOptions is the single source of the manager configuration Run uses;
 // factored out so tests can build a manager with the same cache/label scoping.
 func managerOptions(opts Options) ctrl.Options {
-	return ctrl.Options{
+	options := ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsserver.Options{BindAddress: opts.MetricsAddr},
 		HealthProbeBindAddress:  opts.HealthAddr,
@@ -188,6 +205,10 @@ func managerOptions(opts Options) ctrl.Options {
 			},
 		},
 	}
+	if opts.WebhookHost != "" {
+		options.WebhookServer = crwebhook.NewServer(crwebhook.Options{Host: opts.WebhookHost, CertDir: webhookCertDir})
+	}
+	return options
 }
 
 // setupManager wires all controllers, the webhook, and the startup runnables
@@ -354,18 +375,9 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		return nil
 	}
 
-	svcName := opts.WebhookServiceName
-	svcNS := opts.WebhookServiceNamespace
-	if svcNS == "" {
-		svcNS = opts.LeaderElectionNS
-	}
-	if svcName == "" {
-		return fmt.Errorf("webhook-service-name is required when webhook-config-name is set")
-	}
-
-	hostnames := []string{
-		fmt.Sprintf("%s.%s.svc", svcName, svcNS),
-		fmt.Sprintf("%s.%s.svc.cluster.local", svcName, svcNS),
+	name, hostnames, err := webhookNames(opts)
+	if err != nil {
+		return err
 	}
 
 	// The pod name in the CA's CommonName is its identity in the caBundle:
@@ -376,7 +388,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	if err != nil {
 		return fmt.Errorf("resolve pod name: %w", err)
 	}
-	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook %s", svcName, pod), webhook.WebhookCATTL)
+	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook %s", name, pod), webhook.WebhookCATTL)
 	if err != nil {
 		return fmt.Errorf("mint webhook CA: %w", err)
 	}
@@ -405,7 +417,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	// it after the old pod, so nothing is ever pruned: the bundle keeps one
 	// CA per past pod, bounded by webhook.MaxCABundleCerts (oldest pods
 	// dropped first), rather than reopen the rollout window.
-	if opts.LeaderElection {
+	if prunesSupersededCAs(opts) {
 		pruner := webhookCABundlePruner(mgr.GetWebhookServer().StartedChecker(), c,
 			opts.WebhookConfigName, validatorConfigName(opts.WebhookConfigName), caPEM, 10*time.Second,
 			mgr.GetLogger().WithName("webhook-cabundle-pruner"))
@@ -418,10 +430,47 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	// keeps validating rotated leaves without a re-patch.
 	rotator := webhookCertRotator(ca, hostnames, webhookCertDir, webhook.ServingTLSTTL,
 		mgr.GetLogger().WithName("webhook-cert-rotator"))
-	if err := mgr.Add(manager.RunnableFunc(rotator)); err != nil {
+	if err := mgr.Add(everyReplica(rotator)); err != nil {
 		return fmt.Errorf("add webhook cert rotator: %w", err)
 	}
 	return nil
+}
+
+// everyReplica is a runnable every replica runs, leader or not.
+type everyReplica manager.RunnableFunc
+
+func (r everyReplica) Start(ctx context.Context) error { return r(ctx) }
+
+func (everyReplica) NeedLeaderElection() bool { return false }
+
+// webhookNames are the name the webhook's CA carries and the hosts its serving
+// certificate names: opts.WebhookHost, or else the Service's DNS names.
+func webhookNames(opts Options) (string, []string, error) {
+	if opts.WebhookHost != "" {
+		if opts.WebhookServiceName != "" {
+			return "", nil, fmt.Errorf("webhook-host and webhook-service-name each name the webhook; give one")
+		}
+		return opts.WebhookHost, []string{opts.WebhookHost}, nil
+	}
+	svcName := opts.WebhookServiceName
+	svcNS := opts.WebhookServiceNamespace
+	if svcNS == "" {
+		svcNS = opts.LeaderElectionNS
+	}
+	if svcName == "" {
+		return "", nil, fmt.Errorf("webhook-service-name or webhook-host is required when webhook-config-name is set")
+	}
+	return svcName, []string{
+		fmt.Sprintf("%s.%s.svc", svcName, svcNS),
+		fmt.Sprintf("%s.%s.svc.cluster.local", svcName, svcNS),
+	}, nil
+}
+
+// prunesSupersededCAs reports whether this operator drops the CAs of the pods
+// before it. At a webhook host each control-plane replica's API server calls
+// its own operator, so an older operator may still be serving.
+func prunesSupersededCAs(opts Options) bool {
+	return opts.LeaderElection && opts.WebhookHost == ""
 }
 
 // webhookCABundlePruner waits until this pod's webhook server accepts TLS,
