@@ -88,7 +88,7 @@ func captureOutbound(p Policy) chain {
 	rules = append(rules, exitRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
-	rules = append(rules, serverOutsideRules(p, expr.VerdictReturn)...)
+	rules = append(rules, outsidePortRule(p.Server.Upstream, p.Server.OutsidePort, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
@@ -126,13 +126,12 @@ func filterOutput(p Policy) chain {
 		{"mesh-sockets", withVerdict(slices.Concat(matchSocketUID(p.MeshUID), matchProtocol(unix.IPPROTO_TCP)), expr.VerdictAccept)},
 	})
 	for _, role := range p.Roles {
-		rules = append(rules, roleDestinationRules(role)...)
-		rules = append(rules, outsidePortRules(p, role.UID, role.OutsidePort, expr.VerdictAccept)...)
+		rules = append(rules, roleRules(p, role)...)
 	}
 	rules = append(rules, exitRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictAccept)...)
-	rules = append(rules, serverOutsideRules(p, expr.VerdictAccept)...)
+	rules = append(rules, outsidePortRule(p.Server.Upstream, p.Server.OutsidePort, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
@@ -243,7 +242,7 @@ func serverServiceRules(p Policy, kind expr.VerdictKind) []rule {
 // identity of the pod matches them, so every other container's connection to
 // a member is captured.
 func serverUpstreamRules(p Policy, kind expr.VerdictKind) []rule {
-	if !p.Server.serves() {
+	if p.Server.Upstream == 0 {
 		return nil
 	}
 	rules := make([]rule, 0, len(p.ClusterRanges))
@@ -297,36 +296,44 @@ func roleDestinationRules(role Role) []rule {
 	return rules
 }
 
-// outsidePortRules permit one identity a TCP port on every address outside
-// this cluster, and deny it that port inside: the service it reaches there is
-// named by <host>:<port> and resolved by whoever dials it, so no rule can name
-// its address, and the deny keeps the exception from carrying plaintext to a
-// member pod or a Service.
-func outsidePortRules(p Policy, uid uint32, port uint16, kind expr.VerdictKind) []rule {
+// roleRules permit a role's sockets what trusted policy bound to it: the port
+// it reaches outside this cluster, denied inside it first so that no later
+// rule of the role carries that port to a member, and the destinations the
+// node names for it.
+func roleRules(p Policy, role Role) []rule {
+	rules := insideClusterDenyRules(p, role.UID, role.OutsidePort)
+	rules = append(rules, roleDestinationRules(role)...)
+	return append(rules, outsidePortRule(role.UID, role.OutsidePort, expr.VerdictAccept)...)
+}
+
+// insideClusterDenyRules deny one identity a port inside each cluster range,
+// so the permission that follows cannot carry plaintext to a member pod or a
+// Service. A member is reached through the mesh or not at all.
+func insideClusterDenyRules(p Policy, uid uint32, port uint16) []rule {
 	if port == 0 {
 		return nil
 	}
-	rules := make([]rule, 0, len(p.ClusterRanges)+1)
+	rules := make([]rule, 0, len(p.ClusterRanges))
 	for _, in := range p.ClusterRanges {
 		exprs := slices.Concat(matchSocketUID(uid), matchDestinationRange(in), matchTCPPort(port))
 		name := fmt.Sprintf("role-%d-outside-%d-in-cluster-%s", uid, port, in)
 		rules = append(rules, rule{name, withVerdict(exprs, expr.VerdictDrop)})
 	}
-	exprs := slices.Concat(matchSocketUID(uid), matchTCPPort(port))
-	name := fmt.Sprintf("role-%d-outside-%d", uid, port)
-	return append(rules, rule{name, withVerdict(exprs, kind)})
+	return rules
 }
 
-// serverOutsideRules match the upstream identity's traffic to the port it
-// reaches outside this cluster: where the CDS it fetches the signed route
-// manifest from serves. They follow serverUpstreamRules, which carry that
-// identity's traffic to the cluster itself.
-func serverOutsideRules(p Policy, kind expr.VerdictKind) []rule {
-	if !p.Server.serves() || p.Server.OutsidePort == 0 {
+// outsidePortRule permits one identity a TCP port on every IPv4 address: the
+// service it reaches is named by <host>:<port> and resolved by whoever dials
+// it, so no rule can name its address. The cluster ranges are denied before
+// it, and its family is pinned to theirs. The upstream identity of a server
+// role takes it after the rules that carry its traffic to the cluster, so
+// what it adds is the port outside.
+func outsidePortRule(uid uint32, port uint16, kind expr.VerdictKind) []rule {
+	if port == 0 {
 		return nil
 	}
-	exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchTCPPort(p.Server.OutsidePort))
-	name := fmt.Sprintf("server-upstream-outside-%d", p.Server.OutsidePort)
+	exprs := slices.Concat(matchSocketUID(uid), matchFamily(unix.NFPROTO_IPV4), matchTCPPort(port))
+	name := fmt.Sprintf("role-%d-outside-%d", uid, port)
 	return []rule{{name, withVerdict(exprs, kind)}}
 }
 
@@ -421,6 +428,12 @@ func matchTCPPort(port uint16) []expr.Any {
 
 func matchTCPSourcePort(port uint16) []expr.Any {
 	return slices.Concat(matchProtocol(unix.IPPROTO_TCP), matchTransportSourcePort(port))
+}
+
+// matchFamily pins a rule to one address family, so a rule that names no
+// address cannot match a header of the other.
+func matchFamily(family uint8) []expr.Any {
+	return []expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{family})}
 }
 
 func matchProtocol(proto uint8) []expr.Any {

@@ -75,7 +75,10 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"without cds", Server, func(d *Document) { d.CDS = CDS{} }, "cds.address"},
 		{"cds address without port", Server, func(d *Document) { d.CDS.Address = "cds.example.com" }, "must be <host>:<port>"},
 		{"cds ipv6 address", Server, func(d *Document) { d.CDS.Address = "[2001:db8::1]:8443" }, "must be an IPv4 address"},
-		{"cds address port zero", Server, func(d *Document) { d.CDS.Address = "192.0.2.50:0" }, "no CDS serves on"},
+		{"cds address port zero", Server, func(d *Document) { d.CDS.Address = "192.0.2.50:0" }, "not a number from 1 to 65535"},
+		{"cds address inside the cluster's own range", Server, func(d *Document) {
+			d.CDS.Address = "10.52.9.9:8443"
+		}, "inside this cluster's own range"},
 		{"cds loopback address", Server, func(d *Document) { d.CDS.Address = "127.0.0.1:8443" }, "unicast"},
 		{"cds address with an uppercase name", Server, func(d *Document) { d.CDS.Address = "CDS.example.com:8443" }, "lowercase DNS name"},
 		{"cds measurements malformed", Server, func(d *Document) { d.CDS.Measurements = "{" }, "cds.measurements"},

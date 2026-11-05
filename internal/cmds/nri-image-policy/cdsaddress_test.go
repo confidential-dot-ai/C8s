@@ -68,7 +68,7 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 		t.Fatalf("loadCDSAddress: %v", err)
 	}
 	cfg.cdsAddress = address
-	if err := bindCredentialRole(cfg); err != nil {
+	if err := bindCredentialRole(cfg, address, true); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	role, bound := cfg.credentialRole()
@@ -102,7 +102,7 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	if got := cfg.pullURL(); got != "https://cds.example.org:8443" {
 		t.Fatalf("pull URL = %q, want the endpoint the file names", got)
 	}
-	if err := bindCredentialRole(cfg); err != nil {
+	if err := bindCredentialRole(cfg, address, true); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	role, bound := cfg.credentialRole()
@@ -182,7 +182,7 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 		t.Fatalf("loadCDSAddress: %v", err)
 	}
 	cfg.cdsAddress = address
-	if err := bindCredentialRole(cfg); err != nil {
+	if err := bindCredentialRole(cfg, address, true); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	renderInTempDir(t)

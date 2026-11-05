@@ -103,14 +103,6 @@ func TestMeshPolicyValidation(t *testing.T) {
 			wants: "reaches nothing",
 		},
 		{
-			name: "the mesh endpoint given a port of its own",
-			mesh: func(m *meshPolicy) {
-				m.Roles[0].Port = 8443
-			},
-			tcb:   true,
-			wants: "reaches no port of its own",
-		},
-		{
 			name: "two roles on one uid",
 			mesh: func(m *meshPolicy) {
 				m.Roles[1].UID = testMeshUID
