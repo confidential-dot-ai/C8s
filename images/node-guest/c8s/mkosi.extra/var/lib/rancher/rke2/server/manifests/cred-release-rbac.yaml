@@ -40,6 +40,11 @@ rules:
       - limitranges
       - podtemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  # Read-only, so the operator can grant a namespaced Role that reads Pod
+  # status (RBAC refuses to grant what the granter does not hold).
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "statefulsets", "replicasets", "controllerrevisions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
