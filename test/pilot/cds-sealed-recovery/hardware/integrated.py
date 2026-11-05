@@ -29,6 +29,7 @@ import threading
 import time
 
 from run import Run, NS, VMI, LABEL, need, digest, image_inputs, resource_path, check_probe_network_policy, interrupt_run
+from metadata_process import MetadataProcess
 
 
 class DurableObjects:
@@ -270,8 +271,13 @@ class Integrated(Run):
                 connection.close()
 
         store, trace, workers = None, None, []
+        metadata, metadata_errors = None, None
         try:
             store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
+            if self.state.get("direct_state"):
+                metadata_errors = (self.directory / (phase + "-metadata.stderr")).open("ab")
+                need(digest(self.args.metadata_relay) == self.state["tool_hashes"]["metadata_relay"], "metadata relay changed")
+                metadata = MetadataProcess(self.args.metadata_relay, self.directory / "metadata.sqlite", self.state["prefix"], metadata_errors)
             trace = (self.directory / (phase + "-storage-timings.jsonl")).open("w")
             for _ in range(4):
                 worker = threading.Thread(target=transport, daemon=True)
@@ -286,7 +292,13 @@ class Integrated(Run):
                     continue
                 _, request, answer, received = message
                 started = time.monotonic()
-                response = self.delegate(phase, request, parameters, collateral) if request["method"] == "CUSTODY" else store.answer(request)
+                if request["method"] == "CUSTODY":
+                    response = self.delegate(phase, request, parameters, collateral)
+                elif request["method"] in ("STATE_READ", "STATE_COMMIT"):
+                    need(metadata is not None, "current-state operation requires explicit native pilot")
+                    response = metadata.answer(request)
+                else:
+                    response = store.answer(request)
                 answer.put_nowait((response, (time.monotonic()-started)*1000, (started-received)*1000))
         except Exception as error:
             fail(error)
@@ -302,6 +314,10 @@ class Integrated(Run):
             if store is not None:
                 counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
                 store.close()
+            if metadata is not None:
+                metadata.close()
+                counters.update(metadata_calls=metadata.calls, metadata_conflicts=metadata.conflicts)
+            if metadata_errors is not None: metadata_errors.close()
             statistics.put(counters)
 
     def phase(self, vm, phase, launch, parameters, collateral):
@@ -429,10 +445,16 @@ class Integrated(Run):
         cross_host = getattr(self.args, "cross_host", False)
         need(not cross_host or len(self.args.nodes) == 2 and len(set(self.args.nodes)) == 2,
              "cross-host recovery requires exactly two distinct approved workers")
+        direct_state = getattr(self.args, "direct_state", False)
+        need(not direct_state or getattr(self.args, "metadata_relay", None), "direct state requires a frozen metadata relay")
         measurement, hashes = image_inputs(self.args.image)
         need(not self.state["resources"], "new run directory required")
         self.state.update(artifact_hashes=hashes, measurement=measurement, prefix="integrated-" + secrets.token_hex(12), expected_product_line="Genoa")
         self.state["tool_hashes"] = {"verifier": digest(self.args.probe), "renderer": digest(self.args.renderer), "runner": digest(__file__)}
+        self.state["direct_state"] = direct_state
+        if direct_state:
+            self.state["tool_hashes"]["metadata_relay"] = digest(self.args.metadata_relay)
+            self.state["tool_hashes"]["metadata_process"] = digest(Path(__file__).with_name("metadata_process.py"))
         _, storage = self.kube.call("GET", "/apis/storage.k8s.io/v1/storageclasses/local-path")
         need(storage.get("reclaimPolicy") == "Delete" and storage.get("volumeBindingMode") == "WaitForFirstConsumer", "owned disk cleanup contract unavailable")
         baseline = self.health(capture=True)
@@ -446,6 +468,8 @@ class Integrated(Run):
                   "nodeCIDRs": ["10.0.2.0/24"], "leafDNSNames": ["workload.lane.svc"],
                   "ha": {"replicas": ["127.0.77.1", "127.0.77.2", "127.0.77.3"], "voters": 3,
                          "objectWALPilot": {"bucket": "pilot", "region": "us-east-2", "prefix": self.state["prefix"], "endpoint": "https://127.0.0.1:9443", "pathStyle": True, "recoveryAuthority": base64.b64encode(bytes([1]) * 32).decode()}}}
+        if direct_state:
+            config["ha"]["objectWALPilot"].update(directState=True, atomicOperatorWrites=True, metadataEndpoint="https://127.0.0.1:9443")
         template = self.directory / "enrollment-launch.yaml"
         template.write_text(yaml.safe_dump(config, sort_keys=True))
         for archive, files in (("root.tar.gz", [("disk.raw", "disk.img")]), ("boot.tar.gz", [("guest-smp2.igvm", "guest-smp2.igvm"), ("manifest.json", "manifest.json")])):
@@ -557,6 +581,10 @@ class Integrated(Run):
             need(len({r["launch_sha256"] for r in custody_receipts}) == 1, "custodian launch changed")
         need(len({r["launch_sha256"] for r in receipts}) == 1, "CDS launch changed")
         before, after = [r["result"]["checks"] for r in receipts]
+        if direct_state:
+            need(all(r["result"]["checks"].get("backend") == "transactional-current-state" and
+                     r["result"]["checks"].get("authority_reads_current_records") is True for r in receipts),
+                 "native receipt did not exercise current-state authority")
         need(before["ca_fingerprint"] == after["ca_fingerprint"], "independent CA receipts differ")
         need(all(after.get(k) is True for k in ("same_ca_all_replicas", "unexpired_replay_rejected_all_replicas", "revocation_preserved_all_replicas", "old_leaf_and_secret_positive_control", "attested_custodian_delegation")), "acceptance evidence incomplete")
         self.state["integrated_cds_recovery_passed"] = True
@@ -573,6 +601,8 @@ def main():
         p.add_argument("--" + field)
     p.add_argument("--nodes", nargs="+", default=[])
     p.add_argument("--cross-host", action="store_true", help="enroll a second chip and exclude the original host during recovery")
+    p.add_argument("--direct-state", action="store_true", help="explicit current-state backend with a separate durable metadata process")
+    p.add_argument("--metadata-relay", help="frozen host-only metadata-relay executable; required with --direct-state")
     args = p.parse_args()
     os.umask(0o077)
     Path(args.directory).mkdir(parents=True, exist_ok=True)

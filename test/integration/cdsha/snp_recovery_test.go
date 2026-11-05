@@ -160,14 +160,26 @@ func snpCluster(t *testing.T) (*cluster, *objectwal.S3) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewUnstartedServer(snpRelay)
+	var handler http.Handler = snpRelay
+	if config.HA.ObjectWALPilot.DirectState {
+		if config.HA.ObjectWALPilot.MetadataEndpoint != config.HA.ObjectWALPilot.Endpoint {
+			t.Fatal("native metadata requires the owned loopback relay")
+		}
+		handler = snpRelay.WithMetadata(config.HA.ObjectWALPilot.Prefix)
+	}
+	server := httptest.NewUnstartedServer(handler)
 	server.Listener.Close()
 	server.Listener = listener
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	f := &objectFixture{config: *config.HA.ObjectWALPilot, client: server.Client(), certificate: filepath.Join(c.dir, "storage-ca.pem")}
 	write(t, f.certificate, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
-	f.provision = jsonBody(t, cdsobject.Provision{Credentials: objectwal.Credentials{AccessKeyID: "synthetic", SecretAccessKey: "test-only"}})
+	provision := cdsobject.Provision{Credentials: objectwal.Credentials{AccessKeyID: "synthetic", SecretAccessKey: "test-only"}}
+	if f.config.DirectState {
+		provision.MetadataToken = snpaccept.NativeMetadataToken
+		f.metadata = &metadataFixture{owner: c, endpoint: f.config.MetadataEndpoint, client: server.Client()}
+	}
+	f.provision = jsonBody(t, provision)
 	c.objectWAL = f
 	c.client = c.attestedClient(c.measurement())
 	c.requireFreeAddresses(3)
@@ -381,9 +393,15 @@ func TestSNPIntegratedRecovery(t *testing.T) {
 	snpChecks["replay_expires"] = before.ReplayExpires.UTC().Format(time.RFC3339Nano)
 	snpChecks["replicas"] = 3
 	snpChecks["real_snp_attestation"] = true
-	snpChecks["authority_reads_current_wal_policy"] = true
-	snpChecks["wal_key_and_ca_never_exported_as_plaintext"] = true
-	t.Log("hardware CDS phase passed; only encrypted recovery/client capsules and encrypted WAL persisted externally")
+	if c.objectWAL.config.DirectState {
+		snpChecks["backend"] = "transactional-current-state"
+		snpChecks["authority_reads_current_records"] = true
+	} else {
+		snpChecks["backend"] = "object-wal"
+		snpChecks["authority_reads_current_wal_policy"] = true
+	}
+	snpChecks["state_key_and_ca_never_exported_as_plaintext"] = true
+	t.Log("hardware CDS phase passed; only encrypted recovery/client capsules and encrypted application state persisted externally")
 }
 
 func snpReplay(t *testing.T, c *cluster, before snpClientState, r *replica) (int, []byte) {
