@@ -129,8 +129,9 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 	if err != nil {
 		return nil, err
 	}
-	dialPeer := dialPeerDirectly
+	dialPeer, brokered := dialPeerDirectly, false
 	if socket := c.connectSocket; socket != "" {
+		brokered = true
 		dialPeer = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 			return connectbroker.Dial(ctx, socket, dst)
 		}
@@ -143,6 +144,7 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 		own:         own,
 		origDst:     defaultOrigDstFunc,
 		dialPeer:    dialPeer,
+		brokered:    brokered,
 		logger:      logger,
 		bufPool:     newBufPool(),
 		probes:      probes,
@@ -186,7 +188,10 @@ type podEndpoint struct {
 	origDst     origDstFunc
 	// dialPeer opens the transport to a peer; the armTLS handshake runs on it.
 	// Nil dials directly, as a member pod does.
-	dialPeer    func(context.Context, netip.AddrPort) (net.Conn, error)
+	dialPeer func(context.Context, netip.AddrPort) (net.Conn, error)
+	// brokered is set when the guest's connect broker opens peer connections,
+	// whose provider may translate the peer's port.
+	brokered    bool
 	logger      *slog.Logger
 	bufPool     *bufPool
 	probes      probeTargets
@@ -445,11 +450,20 @@ func (e *podEndpoint) requireDeliverable(dst netip.AddrPort) error {
 	return e.rejectMeshPort(dst)
 }
 
-// requireMeshDestination holds that a captured connection leaves the pod.
-// A provider may translate any remote port to the peer's application port;
-// requireDeliverable still excludes local endpoint control ports.
+// requireMeshDestination holds that a captured connection leaves the pod for a
+// peer's application port. A brokered endpoint checks the address alone: the
+// guest's provider may translate any remote port to the peer's application
+// port, and the peer's requireDeliverable still refuses its own mesh ports. An
+// endpoint dialling peers itself refuses the mesh ports before any handshake,
+// since they answer armTLS and never an application.
 func (e *podEndpoint) requireMeshDestination(dst netip.AddrPort) error {
-	return e.rejectOwnAddress(dst.Addr())
+	if err := e.rejectOwnAddress(dst.Addr()); err != nil {
+		return err
+	}
+	if e.brokered {
+		return nil
+	}
+	return e.rejectMeshPort(dst)
 }
 
 func (e *podEndpoint) rejectOwnAddress(addr netip.Addr) error {
