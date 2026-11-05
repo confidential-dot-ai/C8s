@@ -105,12 +105,17 @@ func writeJSON(w http.ResponseWriter, report any) {
 func haGate(serving func() bool, confirmRead func() error, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedUnjoined(r.URL.Path) {
-			if !serving() {
-				http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
-				return
-			}
+			// A previous operation may have expired the cached readiness
+			// watermark. This request must establish its own fresh read
+			// before that cache can refuse it. Check eligibility afterwards:
+			// synchronization alone does not establish membership or repair
+			// a stopped state machine.
 			if err := confirmRead(); err != nil {
 				http.Error(w, "cds-ha: no current read watermark", http.StatusServiceUnavailable)
+				return
+			}
+			if !serving() {
+				http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
 				return
 			}
 		}

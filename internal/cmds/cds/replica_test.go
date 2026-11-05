@@ -198,6 +198,41 @@ func TestTheGateRefusesUnconfirmedReadsWhileReady(t *testing.T) {
 	}
 }
 
+// Cached readiness can expire while the authority remains reachable. The
+// request's successful confirmation can restore it, but cannot excuse a
+// replica that remains unjoined, retired or stopped after synchronization.
+func TestTheGateChecksServingAfterItsFreshRead(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		before, after bool
+		want          int
+	}{
+		{"expired readiness refreshed", false, true, http.StatusOK},
+		{"still ineligible", false, false, http.StatusServiceUnavailable},
+		{"became ineligible", true, false, http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, confirmed, called := tc.before, false, false
+			gated := haGate(func() bool {
+				if !confirmed {
+					t.Fatal("cached readiness used before the request's fresh read")
+				}
+				return ready
+			}, func() error {
+				confirmed, ready = true, tc.after
+				return nil
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			code := get(t, gated, http.MethodGet, "/secrets/a/secret")
+			if code != tc.want || !confirmed || called != (tc.want == http.StatusOK) {
+				t.Fatalf("HTTP %d, confirmed=%v called=%v", code, confirmed, called)
+			}
+		})
+	}
+}
+
 func TestAReplicaCertifiesTheNodeImagesOfItsCluster(t *testing.T) {
 	cfg, state := replicatedRunConfig(t, attestingAPI(t))
 	if len(cfg.measured.Nodes.Images) == 0 {
