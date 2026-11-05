@@ -274,21 +274,34 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 	return &base, nil
 }
 
-// The measured floor writes a static-pod flag whose value RKE2 takes from
-// this node's launch document as "<flag>=<placeholder>"
-// (images/node-guest/c8s/image-policy.yaml.in).
+// A measured floor pins a static-pod flag as "<flag>=<placeholder>"
+// (images/node-guest/c8s/image-policy.yaml.in); each preparation gives the
+// values of the placeholders its node fills.
 const (
-	nodeNamePlaceholder             = "${NODE_NAME}"
-	nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
+	NodeNamePlaceholder = "${NODE_NAME}"
+	PodCIDRPlaceholder  = "${POD_CIDR}"
 )
 
-// floorPlaceholders are every placeholder a measured floor may name.
-var floorPlaceholders = []string{nodeNamePlaceholder, nodeAdvertiseAddressPlaceholder}
+const nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
 
-// nodeValues are a server's or an agent's placeholder values.
+// floorPlaceholders are every placeholder a measured floor may name.
+var floorPlaceholders = []string{NodeNamePlaceholder, nodeAdvertiseAddressPlaceholder, PodCIDRPlaceholder}
+
+// NamedPlaceholder is the first floor placeholder data names, or "".
+func NamedPlaceholder(data []byte) string {
+	for _, p := range floorPlaceholders {
+		if bytes.Contains(data, []byte(p)) {
+			return p
+		}
+	}
+	return ""
+}
+
+// nodeValues are a server's or an agent's placeholder values, from its launch
+// document. An empty address drops its flag, as RKE2 then passes none.
 func nodeValues(node launchconfig.Node) map[string]string {
 	return map[string]string{
-		nodeNamePlaceholder:             node.Name,
+		NodeNamePlaceholder:             node.Name,
 		nodeAdvertiseAddressPlaceholder: node.AdvertiseAddress(),
 	}
 }
@@ -319,7 +332,7 @@ func fillNodeValues(base *allowlist.Allowlist, values map[string]string) error {
 
 func fillContainer(c *allowlist.Container, values map[string]string) error {
 	for _, policy := range []*allowlist.ArgvPolicy{&c.Command, &c.Args} {
-		argv, err := argvWithNodeValues(policy.Argv, values)
+		argv, err := ArgvWithValues(policy.Argv, values)
 		if err != nil {
 			return err
 		}
@@ -328,12 +341,11 @@ func fillContainer(c *allowlist.Container, values map[string]string) error {
 	return nil
 }
 
-// argvWithNodeValues is argv with each "<flag>=<placeholder>" element given
-// its value, and left out where the value is empty, as RKE2 then passes no
-// such flag. An element that names a placeholder in any other way, or one
-// values gives no value, is an error. Any other "${" is literal: a pinned
-// shell script expands its own variables.
-func argvWithNodeValues(argv []string, values map[string]string) ([]string, error) {
+// ArgvWithValues is argv with each "<flag>=<placeholder>" element given its
+// value, and left out where the value is empty. An element that names a
+// placeholder in any other way, or one values gives no value, is an error.
+// Any other "${" is literal: a pinned shell script expands its own variables.
+func ArgvWithValues(argv []string, values map[string]string) ([]string, error) {
 	filled := make([]string, 0, len(argv))
 	for _, element := range argv {
 		flag, placeholder, isFlag := strings.Cut(element, "=")
