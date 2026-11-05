@@ -214,6 +214,15 @@ func TestNodeImageCredentialReleaseConfiguration(t *testing.T) {
 		t.Error("operator ClusterRole must not aggregate: its rules must be exactly what this file says")
 	}
 	checkGuardedRules(t, "operator", operatorRole.Rules, operatorGuard)
+	var readsPodStatus bool
+	for _, rule := range operatorRole.Rules {
+		if slices.Contains(rule.Resources, "pods/status") && slices.Contains(rule.Verbs, "get") && slices.Contains(rule.APIGroups, "") {
+			readsPodStatus = true
+		}
+	}
+	if !readsPodStatus {
+		t.Error("operator ClusterRole does not grant get on pods/status, so it cannot grant a Role that reads Pod status")
+	}
 
 	// The log-reader AddOn: exactly a ClusterRole and a ClusterRoleBinding
 	// that grants the baked --log-cert-org group that role, and the role
