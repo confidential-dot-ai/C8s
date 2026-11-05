@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -31,6 +32,8 @@ type Config struct {
 	Workloads    *allowlist.Allowlist
 	// Nodes pins the node launch identities CDS admits and serves.
 	Nodes refvalues.ReferenceValues
+	// PodImages authorize quote-bound Pod mesh issuance only, never node callbacks.
+	PodImages []remote.ImagePin
 	// NodeCIDRs bounds the addresses CDS may call a sandbox inventory on.
 	NodeCIDRs workloadclaims.CIDRHosts
 	// DNSSANPatterns are the rules a leaf's DNS SANs are matched against,
@@ -50,6 +53,7 @@ type wire struct {
 	OperatorPublicKeys string   `yaml:"operatorPublicKeys"`
 	Workloads          string   `yaml:"workloads"`
 	Nodes              string   `yaml:"nodes"`
+	PodImagePolicy     string   `yaml:"podImagePolicy,omitempty"`
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
@@ -85,6 +89,14 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nodes: %w", err)
 	}
+	var podImages []remote.ImagePin
+	if w.PodImagePolicy != "" {
+		pods, err := workloadclaims.ParsePodImagePolicy([]byte(w.PodImagePolicy))
+		if err != nil {
+			return nil, fmt.Errorf("podImagePolicy: %w", err)
+		}
+		podImages = pods.Images
+	}
 	subnets, err := parseNodeCIDRs(w.NodeCIDRs)
 	if err != nil {
 		return nil, err
@@ -97,15 +109,20 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{
+	cfg := &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
 		Workloads:      workloads,
 		Nodes:          nodes,
+		PodImages:      podImages,
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
 		HA:             ha,
-	}, nil
+	}
+	if err := cfg.ValidatePodAuthorities(); err != nil {
+		return nil, fmt.Errorf("podImagePolicy: %w", err)
+	}
+	return cfg, nil
 }
 
 // Cluster is what a client takes from the launch file it pins its CDS to.
