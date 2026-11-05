@@ -70,7 +70,7 @@ this renders is the one its floor pins.`,
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml (required)")
-	cmd.AddCommand(render)
+	cmd.AddCommand(render, newWorkerCredentialsCmd())
 	return cmd
 }
 
