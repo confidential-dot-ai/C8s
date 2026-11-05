@@ -57,6 +57,7 @@ jobs:
           # A full major.minor.patch is resolved in-process; anything less is
           # looked up over the network before the linter runs.
           version: v2.14.0
+          args: --build-tags=pod_runtime_integration,pod_cloud_integration
 
   test:
     name: Build & Test
