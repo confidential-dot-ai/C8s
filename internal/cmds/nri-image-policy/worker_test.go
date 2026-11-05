@@ -238,11 +238,15 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 // A pod's traffic leaves it through the mesh or not at all: on a worker, whose
 // config exempts no namespace, the mesh protects every API pod with its own
 // network namespace wherever the control plane puts it. A static pod, such as
-// a worker's CoreDNS, is the node's own on any node.
+// a worker's CoreDNS, is the node's own on any node but a Pod guest, whose kubelet
+// runs the tenant's workload as its static pod.
 func TestMeshGateHostsBySource(t *testing.T) {
 	worker, _ := gateWithPod(meshPod("default", "pod", testNetNS))
 	worker.policy.ExemptNamespaces = nil
 	server, _ := gateWithPod(meshPod("default", "pod", testNetNS))
+	guest, _ := gateWithPod(meshPod("validation", "workload", testNetNS))
+	guest.policy.ExemptNamespaces = nil
+	guest.policy.Pod = &podMeshPolicy{}
 	withSource := func(pod *api.PodSandbox, source string) *api.PodSandbox {
 		pod.Annotations = map[string]string{configSourceAnnotation: source}
 		return pod
@@ -257,6 +261,8 @@ func TestMeshGateHostsBySource(t *testing.T) {
 		{"a worker's pod without a source", worker, meshPod("kube-system", "app", testNetNS), true},
 		{"a worker's static pod", worker, withSource(meshPod("kube-system", "coredns", testNetNS), staticPodSource), false},
 		{"a server's static pod outside the exempt namespaces", server, withSource(meshPod("default", "static", testNetNS), staticPodSource), false},
+		{"a Pod guest's static workload", guest, withSource(meshPod("validation", "workload", testNetNS), staticPodSource), true},
+		{"a Pod guest's API pod", guest, withSource(meshPod("validation", "app", testNetNS), "api"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.gate.hosts(tc.pod); got != tc.hosts {
