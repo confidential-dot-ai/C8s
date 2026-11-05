@@ -46,7 +46,7 @@ mints a certificate with no evidence extension. Those two and the flags
 shaping a minted certificate are refused without `--self-signed`. The
 `--foreign-ca` leaf carries both mesh key usages and a well-formed
 workload-instance extension, so a verifier can refuse it only for its chain.
-`--rewrite-not-after` applies to any source. `--write-cert/--write-key` take no positional arguments:
+`--rewrite-not-after` applies to any source. `--write-cert/--write-key` take no positional arguments and no `--mesh`:
 they mint the certificate while its evidence can still be obtained and leave
 it for a later dial with `--cert/--key`.
 

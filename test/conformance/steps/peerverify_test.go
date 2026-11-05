@@ -62,3 +62,12 @@ func TestPeerFlagsSurviveExemptNamespace(t *testing.T) {
 		t.Fatalf("peerFlags after rename = %q, %v", flags, ok)
 	}
 }
+
+// TestDialCommandQuotesTheAddress: an IPv6 pod address is bracketed, which
+// sh would read as a glob.
+func TestDialCommandQuotesTheAddress(t *testing.T) {
+	cmd := dialCommand([]string{"--foreign-ca"}, "fd00::7", 40080)
+	if want := "armtls-dial --mesh --foreign-ca '[fd00::7]:40080'"; cmd != want {
+		t.Fatalf("dialCommand = %q, want %q", cmd, want)
+	}
+}
