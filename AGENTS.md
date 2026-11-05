@@ -41,8 +41,10 @@ parameter per line, then run `gofmt`.
   from current `main`; preserve unrelated working changes.
 - Follow the [PR workflow](docs/engineering-standards.md#pull-request-shape),
   including its limits on rewriting reviewed history.
-- Make agent commits unsigned with `git -c commit.gpgsign=false commit`; a human
-  signs before merge. Report the signature check separately from code validation.
+- Sign every commit with the configured signing key, including commits that a
+  rebase, cherry-pick or restack rewrites (`git rebase --gpg-sign`). Before
+  pushing, check that `git log --format=%G?` shows `G` for every commit in the
+  range. Report the signature check separately from code validation.
 - Get explicit authorization before posting comments, reviews or messages, merging
   PRs, or closing issues. Addressing feedback authorizes code corrections, not replies.
 - Keep private repository names, links and findings out of public artifacts.
