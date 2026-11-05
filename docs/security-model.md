@@ -146,8 +146,9 @@ separate nodes and volume workloads need single-tenant ones.
 
 - **Break out to the node**: on a measured node admission bounds a container's
   capabilities to the node's default set and what its entry declares, and the
-  privilege floor keeps `no_new_privs` set and refuses user namespaces and the
-  privileged marks; the chart lanes have only the chart's cluster policy
+  privilege floor holds the create to that same bound, keeps
+  `no_new_privs` set and refuses user namespaces and the privileged marks; the
+  chart lanes have only the chart's cluster policy
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege),
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor));
   [No privileged way in](guarantees.md#no-privileged-way-in).

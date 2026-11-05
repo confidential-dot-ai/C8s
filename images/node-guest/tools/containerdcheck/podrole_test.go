@@ -14,7 +14,7 @@ import (
 )
 
 func TestPodRoleKubeletLeavesPacketRulesToNRI(t *testing.T) {
-	data, err := os.ReadFile("../mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml")
+	data, err := os.ReadFile("../../c8s/mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestPodRoleUsesPreparedCNI(t *testing.T) {
 }
 
 // podRoleConfig is the pod role's hand-written containerd config.
-const podRoleConfig = "../mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml"
+const podRoleConfig = "../../c8s/mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml"
 
 // podRoleDifferences lists every key, as a "/"-joined TOML path, on which the
 // pod role's config may differ from RKE2's rendered base template, and why.

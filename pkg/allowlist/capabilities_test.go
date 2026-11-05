@@ -144,6 +144,58 @@ func TestTheDefaultSetIsNotDeclarable(t *testing.T) {
 	}
 }
 
+// The capabilities the runtime wrapper's floor refuses are the four that defeat
+// the pod's packet rules or take a platform role's identity, plus any name
+// neither list holds.
+func TestUndeclarableCapability(t *testing.T) {
+	for _, name := range []string{
+		"NET_ADMIN",
+		"NET_RAW",
+		"SETGID",
+		"SETUID",
+		"SOMETHING_THE_LISTS_DO_NOT_NAME",
+	} {
+		if !UndeclarableCapability(name) {
+			t.Errorf("%s is declarable or held by default", name)
+		}
+	}
+	for _, name := range []string{
+		"CHOWN",
+		"SYS_ADMIN",
+	} {
+		if UndeclarableCapability(name) {
+			t.Errorf("%s is neither held by default nor declarable", name)
+		}
+	}
+}
+
+// The record the runtime wrapper reads is what each declaration admitting a
+// launch declares for it.
+func TestDeclaredCapabilities(t *testing.T) {
+	al, err := ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{` +
+		`"w":` + capabilitiesEntry(`,"capabilities":["SYS_PTRACE"]`) + `,` +
+		`"b":` + capabilitiesEntry(`,"capabilities":["BPF"]`) + `}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := al.BuildIndex()
+	launch := RunningContainer{Digest: capabilityDigest, Argv: []string{"/app"}, Mounts: []ObservedMount{}, Env: env}
+	want := [][]string{{"BPF"}, {"SYS_PTRACE"}}
+	got := index.DeclaredCapabilities(launch)
+	slices.SortFunc(got, slices.Compare)
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("DeclaredCapabilities = %v, want %v", got, want)
+	}
+	launch.Argv = []string{"/other"}
+	if got := index.DeclaredCapabilities(launch); got != nil {
+		t.Fatalf("a launch no declaration admits holds %v", got)
+	}
+}
+
 // One declaration must declare every capability asked for and admit the launch.
 func TestGrantsCapabilities(t *testing.T) {
 	open := fmt.Sprintf(`{"containers":[{"digest":%q,"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`, capabilityDigest)

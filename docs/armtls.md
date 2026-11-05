@@ -80,6 +80,14 @@ kernel, and RTMR[2], holding the command line that carries the dm-verity root
 hash. A measurement covers boot state, so runtime compromise inside a measured
 node is out of scope.
 
+A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
+`ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
+the key was not generated in that TEE) and `ErrPolicyViolation` (a pin not met).
+An attestation-api refusal of the evidence (a 400, 415 or 422 in its JSON
+envelope) maps to `ErrInvalidReport` and is terminal, as does an unset
+attestation-api URL; every other status, a non-JSON body and transport errors
+stay unwrapped, as retryable or as a verifier deployment fault.
+
 ## CDS issuance
 
 CDS is the only component that signs leaves. For a singleton CDS, its mesh CA

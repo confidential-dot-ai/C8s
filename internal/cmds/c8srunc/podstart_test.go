@@ -227,18 +227,18 @@ func TestPodCreateRefusesEveryRuntimeHookBeforeSandboxExemption(t *testing.T) {
 				}
 				floor := testFloor()
 				floor.PodRole = true
-				if err := requireFloor(spec, "ctr", nil, floor); err == nil {
+				if err := requireFloor(spec, "ctr", nil, floor, ""); err == nil {
 					t.Fatal("Pod hook admitted")
 				}
 				floor.PodRole = false
-				if err := requireFloor(spec, "ctr", nil, floor); err != nil {
+				if err := requireFloor(spec, "ctr", nil, floor, ""); err != nil {
 					t.Fatalf("node behavior changed: %v", err)
 				}
 				if err := json.Unmarshal([]byte(`{"`+stage+`":[]}`), &spec.Hooks); err != nil {
 					t.Fatal(err)
 				}
 				floor.PodRole = true
-				if err := requireFloor(spec, "ctr", nil, floor); err != nil {
+				if err := requireFloor(spec, "ctr", nil, floor, ""); err != nil {
 					t.Fatalf("empty hook denied: %v", err)
 				}
 			})

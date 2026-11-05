@@ -12,7 +12,7 @@ const wrapper = "/usr/local/bin/c8s-runc"
 
 // bakedConfigDir is the profile's containerd directory, the one the CI gate
 // checks.
-const bakedConfigDir = "../mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
+const bakedConfigDir = "../../c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
 
 // The image as committed must pass: RKE2's own base template and the baked
 // drop-ins.
@@ -310,7 +310,7 @@ func TestRun(t *testing.T) {
 // The pod role runs containerd from a baked config without RKE2; it must
 // reach the same wrapper through the same drop-ins.
 func TestPodRoleConfigWrapsEveryHandler(t *testing.T) {
-	cfg, err := effectiveConfig(bakedConfigDir, "../mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml", nil)
+	cfg, err := effectiveConfig(bakedConfigDir, "../../c8s/mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

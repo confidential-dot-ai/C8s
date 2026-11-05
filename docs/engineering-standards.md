@@ -1,8 +1,8 @@
 # Engineering Standards
 
-Standards for every Confidential AI repo in the C8s stack, public and private. This
-file is the canonical version. The [skills repo](https://github.com/confidential-dot-ai/skills)
-holds helpers and LLM prompts, not policy.
+This file owns the contribution, code and documentation standards for C8s.
+[AGENTS.md](../AGENTS.md) applies them during agent work, and the
+[review guide](review-guide.md) applies them during review.
 
 The key words MUST, SHOULD, and MAY are used as in RFC 2119.
 
@@ -11,7 +11,7 @@ The key words MUST, SHOULD, and MAY are used as in RFC 2119.
 - `main` is PR-only from the first commit; green build/lint/test to merge; squash
   with Conventional Commit titles.
 - Every repo: README, GitHub metadata, CI on PRs and `main`, pinned toolchain,
-  committed lockfiles, update bot, `CLAUDE.md`.
+  committed lockfiles, update bot, `AGENTS.md`.
 - Every repo has a CLA and requires signed commits, whatever the licence; public
   repos add `LICENCE` (AGPL for services, MIT for libraries), `CONTRIBUTING.md`,
   `SECURITY.md`.
@@ -68,6 +68,33 @@ Rules below apply to both tiers unless marked. Appendix A summarizes what change
   commit message and drives release notes. A title-lint check SHOULD enforce this.
 - Keep feature branches current by rebasing on `main`, not merging `main` in.
 
+### Pull request shape
+
+- One logical change per PR, under 500 added lines. Split larger work into
+  reviewable stacks with `gh stack`, starting with independently understandable
+  types or CLIs where useful. Each PR must pass its relevant checks; integration
+  can follow in a later PR.
+- Open agent-authored PRs as drafts with no reviewers. Until a colleague reviews
+  the draft, keep it to one commit by amending or squashing and pushing with
+  `--force-with-lease`. After human review starts, add commits so the reviewer can
+  inspect the changes; coordinate any necessary history rewrite with them.
+- For stacks, use `gh stack` to restack and submit dependent changes. Check human
+  reviews before rewriting any affected branch.
+- Write for a reviewer who knows the domain. Use domain terms and describe the
+  problem as someone experiences it. Update the description when scope changes.
+- Trivial changes need one or two lines. Simple fixes need a short problem and
+  solution. Substantive changes use `## What`, `## Why`,
+  `## Why is this the best solution?`, and `## Review focus`, in that order.
+  Describe meaningful alternatives briefly. Include validation evidence and
+  coverage limits under Review focus, with fewer than ten single-sentence bullets
+  across the description.
+- Keep private names, links and evidence out of public PRs, commits and docs.
+
+Commit messages have a Conventional Commit title, one or two sentences explaining
+the change's purpose, and fewer than ten single-sentence bullets when needed.
+Keep implementation rationale and rejected alternatives in the commit or PR
+description; code and user documentation describe the resulting behavior.
+
 ## 3. Continuous integration
 
 - Every repo MUST run build, lint, and test via GitHub Actions on side branches / PRs
@@ -87,9 +114,39 @@ Rules below apply to both tiers unless marked. Appendix A summarizes what change
   project, use its established style — don't bring your own.
 - Follow the host language's accepted standards and idioms. Deviations need a good,
   documented reason — a brief note in-code or an entry under `/docs`.
-- Comments explain **why**, not what. A comment SHOULD be shorter than the code it
-  annotates; if it needs paragraphs, it's documentation — move it to a markdown file
-  under `/docs` and leave a one-line pointer.
+- Optimize for a human verifying correctness. Simple code has few concepts,
+  assumptions and surprises; line count alone is not the measure.
+- Keep a function at one level of abstraction. Extract meaningful conditions and
+  steps into named functions, including single-use functions when they aid reading.
+  Names describe domain meaning. Prefer distinct operations to mode arguments.
+- When behavior varies by kind, select the implementation at construction time.
+  Repeated branching on the same kind is a signal to review that boundary. Add
+  interfaces for actual variants, not hypothetical future implementations.
+- Write multi-parameter Go function definitions with one parameter per line and a
+  trailing comma, then run `gofmt`. Short zero- or one-parameter signatures can
+  remain on one line.
+- Comments state non-obvious contracts, invariants or constraints. Delete comments
+  that restate descriptive names, narrate the code or repeat enforced policy.
+  Preserve required API documentation, safety annotations and tool directives.
+- A comment SHOULD be shorter than the code it annotates. Put a necessary longer
+  explanation once in the owning README or doc and leave a one-line pointer.
+  Delete redundant explanations rather than relocating them.
+- For digest pins, one line on how to bump them is sufficient. For config values,
+  name the invariant if needed. Keep test-helper comments to one line.
+
+### Testing
+
+Tests demonstrate behavior and invariants, including relevant failure and boundary
+cases. For a bug fix, add a regression test that fails for the defect when practical.
+Use representative benchmarks for performance claims. Run checks appropriate to the
+change and report the commands, results and remaining coverage limits.
+
+A mocked or ordinary Kubernetes test establishes only the behavior it exercises.
+Confidential-platform claims require evidence from the applicable TEE environment.
+Preserve attestation, authorization and GPU CC gates during testing; record a
+blocked path instead of weakening them to obtain a pass. Use synthetic secret
+fixtures and keep real secrets out of logs and reports. Record exact source commits,
+artifact digests, environment, skipped checks and workarounds for live runs.
 
 ## 5. Documentation
 
@@ -97,6 +154,13 @@ Rules below apply to both tiers unless marked. Appendix A summarizes what change
 - Prefer markdown. Diagrams are ASCII: ASCII travels anywhere text does — terminals,
   code comments, chat, whitepapers — with no renderer required.
 - A PR that changes behavior MUST update the affected docs in the same PR.
+- Identify the reader and keep each page focused on a tutorial, how-to, reference
+  or explanation. Lead with the point; use plain words and one idea per paragraph.
+- Verify commands, flags, paths, defaults and examples against the implementation.
+  State prerequisites first, mark placeholders and record what remains unverified.
+- Use one name per concept and one owning page per topic. Link shared explanations.
+  Describe current behavior; keep change history and implementation rationale in
+  the PR. Edit affected descriptions and remove stale material.
 - Cheap-LLM docs/code parity checks (§10) back this rule up; they are advisory and
   never blocking.
 
@@ -128,7 +192,9 @@ The product is trust in artifacts; our own supply chain has to clear the same ba
 - CI SHOULD authenticate to clouds via OIDC, not long-lived credentials.
 - Release and deploy workflows MUST run with minimal `GITHUB_TOKEN` permissions and
   SHOULD use protected environments, so a compromised PR can't publish.
-- Commit signing: MUST on every repo (contribution provenance for the CLA).
+- Commits MUST have verified signatures before merge. Agent-created drafts may
+  contain unsigned commits; a human signs them before merge. The signature check
+  remains required and reports those drafts as failing until they are signed.
 - TCB components — anything whose hash lands in an attestation measurement (IGVM,
   guest kernels, runtime images) — SHOULD build reproducibly from
   tagged source. For us, binary identity *is* the security claim.
@@ -166,10 +232,12 @@ The product is trust in artifacts; our own supply chain has to clear the same ba
   is never an explanation.
 - Any company code MAY be sent to LLM providers. Secrets MUST NOT be; sent one by
   accident? Rotate it immediately (§7).
-- Every repo SHOULD carry LLM guidance (`CLAUDE.md`) so agents follow local
-  conventions. Shared prompts and helpers live in the skills repo.
-- Non-trivial changes SHOULD get the skills-repo review and security-audit skills run
-  before human review — surface issues while they're cheap.
+- Keep agent instructions in `AGENTS.md`, with `CLAUDE.md` pointing to it. Required
+  guidance must be available within the repository.
+- Non-trivial changes SHOULD receive independent correctness, security and
+  readability review using the [review guide](review-guide.md) before human review.
+- When confirmed human feedback establishes a recurring convention, update its
+  owning rule through the [feedback process](../AGENTS.md#learn-from-review-feedback).
 - Cheap-model CI jobs (docs/code parity and similar) MAY run on a schedule or per PR.
 
 ## 11. Live integration
@@ -213,7 +281,7 @@ Everything else applies equally to both tiers.
 - [ ] CI: build, lint, test on PRs and `main`
 - [ ] Toolchain pinned; `make build` / `make lint` / `make test` work
 - [ ] Lockfiles committed; Renovate/Dependabot enabled
-- [ ] `CLAUDE.md` present
+- [ ] `AGENTS.md` present; `CLAUDE.md` points to it
 - [ ] CLA wired up; signed commits required
 - [ ] At `v0.1.0`: `CODEOWNERS`, ≥ 1 approval required, digest/SHA pinning, vuln
       scanning, signed releases + SBOM + provenance

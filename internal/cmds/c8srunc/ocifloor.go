@@ -45,7 +45,7 @@ var kernelFSTypes = []string{
 // with privileges the pod's protection cannot survive. Attachability is
 // refused for every container the wrapper creates, whether or not the floor
 // covers it.
-func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor, grantDir string) error {
 	if floor.PodRole && spec.Hooks != nil {
 		// Include legacy hook stages: none may execute before Pod admission.
 		hooks, err := json.Marshal(spec.Hooks)
@@ -59,13 +59,13 @@ func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nr
 	if !floorApplies(spec, containerID, floor) {
 		return nil
 	}
-	if err := floorChecks(spec, floor); err != nil {
+	if err := floorChecks(spec, floor, grantDir, containerID); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil
 }
 
-func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
+func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor, grantDir, containerID string) error {
 	if spec.Process == nil || spec.Linux == nil {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
@@ -73,6 +73,9 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 	role := ""
 	if bound, reserved := floor.ReservedIDs[user.UID]; reserved {
 		role = bound.Name
+	}
+	if err := requireFloorCapabilities(spec.Process.Capabilities, role, grantDir, containerID); err != nil {
+		return err
 	}
 	if err := requireNoNewPrivileges(spec.Process); err != nil {
 		return err
@@ -213,6 +216,67 @@ func isPodSandbox(spec *specs.Spec, containerID string) bool {
 	sandboxID := spec.Annotations[annotationSandboxID]
 	return spec.Annotations[annotationContainerType] == containerTypeSandbox &&
 		sandboxID != "" && sandboxID == containerID
+}
+
+// requireFloorCapabilities refuses a capability a container may not hold: one
+// outside the node's default set that admission did not grant it. Every set
+// counts, bounding included: one there is one an exec can still take. The
+// bundle containerd writes names all five sets; one that names none is
+// refused.
+func requireFloorCapabilities(held *specs.LinuxCapabilities, role, grantDir, containerID string) error {
+	if held == nil {
+		return errors.New("the bundle names no capability sets")
+	}
+	names := nriimagepolicy.HeldCapabilities(held)
+	if role != "" {
+		return requireRoleHoldsNone(role, names)
+	}
+	return requireGrantedCapabilities(nriimagepolicy.BeyondDefaultCapabilities(names), grantDir, containerID)
+}
+
+// requireRoleHoldsNone refuses any capability of a container on a platform
+// role, whatever an entry declares for its launch.
+func requireRoleHoldsNone(role string, held []string) error {
+	if len(held) == 0 {
+		return nil
+	}
+	return fmt.Errorf("a container of the %s role holds capabilities %s", role, strings.Join(held, ", "))
+}
+
+// requireGrantedCapabilities refuses a capability beyond the node's default
+// set that no entry may declare, and one no declaration admission recorded for
+// this container declares. Admission records the declarations at the check
+// whose failure fails the create, so a container the plugin's start check
+// never judges holds the default set alone.
+func requireGrantedCapabilities(beyond []string, grantDir, containerID string) error {
+	if len(beyond) == 0 {
+		return nil
+	}
+	for _, name := range beyond {
+		if allowlist.UndeclarableCapability(name) {
+			return fmt.Errorf("the container holds capability %s, which no entry may declare", name)
+		}
+	}
+	granted, err := nriimagepolicy.ReadCapabilityGrant(grantDir, containerID)
+	if err != nil {
+		return fmt.Errorf("the container holds capabilities %s and its capability grant is not one admission wrote: %w", strings.Join(beyond, ", "), err)
+	}
+	for _, declared := range granted {
+		if declaresAll(declared, beyond) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the container holds capabilities %s, which no declaration admission granted it declares", strings.Join(beyond, ", "))
+}
+
+// declaresAll reports one declaration naming every capability in beyond.
+func declaresAll(declared, beyond []string) bool {
+	for _, name := range beyond {
+		if !slices.Contains(declared, name) {
+			return false
+		}
+	}
+	return true
 }
 
 // requireNoNewPrivileges requires the bit that bounds what an execve inside

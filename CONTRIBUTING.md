@@ -52,15 +52,17 @@ rotate it immediately.
 
 ## Signed commits
 
-Every commit must carry a signature GitHub shows as **Verified** — GPG or
-SSH, with the signing key registered on your GitHub account (see [GitHub's
+Before merge, every commit must carry a signature GitHub shows as **Verified** —
+GPG or SSH, with the signing key registered on your GitHub account (see [GitHub's
 commit-signing docs](https://docs.github.com/en/authentication/managing-commit-signature-verification)):
 
 ```sh
 git commit -S    # or once: git config --global commit.gpgsign true
 ```
 
-CI rejects PRs containing commits without a verified signature.
+Agent-created draft PRs may contain unsigned commits while a human prepares to
+sign them. The signature check fails until every commit has a verified signature;
+passing it is required before merge.
 
 ## Contributor License Agreement
 
@@ -106,7 +108,8 @@ for the evidence and its limits.
 - **Discuss large changes first.** Open an issue before starting anything
   substantial so we can agree on the approach — especially changes touching
   attestation flows or trust boundaries.
-- **Keep PRs small and focused.** One logical change per PR.
+- **Keep PRs small and focused.** Follow the
+  [PR shape and description rules](docs/engineering-standards.md#pull-request-shape).
 - **Use conventional commit style** for commits and PR titles:
   `feat(armtls-mesh): ...`, `fix(chart): ...`, `docs: ...`, `test(e2e): ...`.
 - **CI must be green** before requesting review.
@@ -114,6 +117,9 @@ for the evidence and its limits.
   docs under [docs/](docs/).
 - Maintainers review and merge at their discretion; expect requests for
   changes.
+
+Use the [review guide](docs/review-guide.md) to check the change before submission.
+Agents also follow [AGENTS.md](AGENTS.md).
 
 ## Releases
 

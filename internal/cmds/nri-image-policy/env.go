@@ -55,9 +55,21 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
+	p.noteCapabilityGrant(ctx, ctr, env, mounts)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
+}
+
+// noteCapabilityGrant records what the allowlists declare for this launch, for
+// the runtime wrapper to hold the container's create to (capabilitygrants.go).
+// The record belongs to this hook: a validator that does not answer fails the
+// create, and the wrapper reads the record before the start check runs.
+func (p *plugin) noteCapabilityGrant(ctx context.Context, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
+	if err := p.capGrants.note(ctr.GetId(), p.policy.declaredCapabilities(launch)); err != nil {
+		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", ctr.GetId(), "error", err)
+	}
 }
 
 // refuseSourceEdit refuses an NRI edit setting or removing the kubelet's
