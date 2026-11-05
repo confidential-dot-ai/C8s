@@ -143,7 +143,7 @@ func TestWarmCleanupCompletesHalfPublishedClaim(t *testing.T) {
 		t.Fatalf("half-published claim cleanup: %v", err)
 	}
 	pending := onlyPool(t, r).record
-	if pending.Claim == nil || pending.Claim.RecordUID != podSecret.UID || pending.Claim.PodUID != pod.UID || !pending.DeleteRequested || pending.Deleted || cloud.deletes != 1 || guest.sends != 0 {
+	if pending.Claim == nil || pending.Claim.RecordName != podSecret.Name || pending.Claim.PodUID != pod.UID || !pending.DeleteRequested || pending.Deleted || cloud.deletes != 1 || guest.sends != 0 {
 		t.Fatal("cleanup did not preserve exclusive authority over the uncommitted guest")
 	}
 	cloud.byKey[pending.Key].Status = "terminated"
@@ -154,6 +154,28 @@ func TestWarmCleanupCompletesHalfPublishedClaim(t *testing.T) {
 	// Repeated cleanup remains idempotent and never returns the VM to idle.
 	if done, err := r.removePooledInstance(t.Context(), rec, podSecret); !done || err != nil || cloud.deletes != 1 {
 		t.Fatal("completed cleanup repeated Cloud effects")
+	}
+}
+
+func TestWarmReplacedClaimRecordRetiresItsGuest(t *testing.T) {
+	r, cloud, _, pod := poolFixture(t)
+	runToAssigned(t, r, pod)
+	rec := getRecord(t, r, pod)
+	if err := r.discard(t.Context(), mustRecordSecret(t, r, rec.Key)); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _, err := r.ensureRecord(t.Context(), pod)
+	if err != nil || replacement.Pool != nil {
+		t.Fatalf("replacement record was not written fresh: %v", err)
+	}
+	r.cfg.WarmTarget = 0
+	cloud.holdDeletion = true
+	if err := r.maintainPools(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	p := onlyPool(t, r).record
+	if p.Claim == nil || p.Claim.PodUID != pod.UID || !p.DeleteRequested || cloud.deletes != 1 {
+		t.Fatal("slot claimed by a replaced Pod record was not destroyed")
 	}
 }
 

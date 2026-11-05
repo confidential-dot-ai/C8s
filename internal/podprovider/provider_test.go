@@ -484,17 +484,17 @@ func TestDedicatedEndpointsRequireOnePreservedAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := instanceFor(rec.Request)
-	address, apps, ip, err := endpoints(rec, in)
+	address, apps, ip, err := endpoints(rec.Request.Network, in)
 	if err != nil || address != "203.0.113.5:8443" || len(apps) != 1 || ip != "203.0.113.5" {
 		t.Fatalf("dedicated projection: %s %v %s %v", address, apps, ip, err)
 	}
 	in.Endpoints[1].Port++
-	if _, _, _, err := endpoints(rec, in); err == nil {
+	if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 		t.Fatal("translated dedicated app port accepted")
 	}
 	in = instanceFor(rec.Request)
 	in.Compute.MemoryGiB = 1
-	if err := validateInstance(rec, in); err == nil {
+	if err := validateInstance(&rec.instanceIntent, in); err == nil {
 		t.Fatal("undersized Cloud instance accepted")
 	}
 }

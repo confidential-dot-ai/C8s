@@ -38,27 +38,44 @@ func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
 	if len(pod.Name)+1+len(name) > 253 {
 		return req, errors.New("pod name is too long for the guest's static Pod name")
 	}
-	doc := launchconfig.Document{
-		SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image,
-		Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub},
-		PodOperatorPublicKey: c.pub, Workloads: c.workloads, CDS: c.cds,
-		Pod: &launchconfig.PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: c.MeshPeers},
-	}
-	data, sig, err := launchconfig.SignDocument(doc, c.key)
-	if err != nil {
-		return req, err
-	}
-	if len(data) > 64<<10 {
-		return req, errors.New("signed Pod document exceeds the Cloud 64 KiB limit")
-	}
+	doc := c.document(name)
+	doc.Workloads = c.workloads
+	doc.Pod = &launchconfig.PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: c.MeshPeers}
 	ports, err := doc.Pod.IngressPorts()
 	if err != nil {
 		return req, err
+	}
+	return c.signedRequest(doc, ports)
+}
+
+// document is the launch document every pod CVM of this provider boots under:
+// the cluster, image, server and CDS trust the operator configured, signed by
+// the pod launch key. A pod section and allowlist entries are added for a
+// direct launch only.
+func (c *Config) document(name string) launchconfig.Document {
+	return launchconfig.Document{
+		SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image,
+		Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub},
+		PodOperatorPublicKey: c.pub, CDS: c.cds,
+	}
+}
+
+// signedRequest signs the document and builds the create request around it:
+// the status port is always reachable, plus one ingress rule per application
+// port. The instance is labelled with the provider and the allocation identity.
+func (c *Config) signedRequest(doc launchconfig.Document, ports []uint16) (createRequest, error) {
+	data, sig, err := launchconfig.SignDocument(doc, c.key)
+	if err != nil {
+		return createRequest{}, err
+	}
+	if len(data) > 64<<10 {
+		return createRequest{}, errors.New("signed launch document exceeds the Cloud 64 KiB limit")
 	}
 	rules := []ingress{{Name: "pod-status", Port: 8443}}
 	for _, p := range ports {
 		rules = append(rules, ingress{Name: fmt.Sprintf("app-%d", p), Port: int(p)})
 	}
+	name := doc.Node.Name
 	return createRequest{
 		Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1,
 		Labels:  map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")},

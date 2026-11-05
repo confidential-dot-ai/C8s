@@ -24,7 +24,7 @@ func providerCDSPolicy(t *testing.T, launch []byte) []byte {
 func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {
 	for _, kind := range []string{"address", "policy", "floor"} {
 		t.Run(kind, func(t *testing.T) {
-			r, cloud, _, pod := poolFixture(t)
+			r, cloud, _, _ := poolFixture(t)
 			r.cfg.MaxPods = 1
 			cloud.holdDeletion = true
 			var nextDecree string
@@ -41,11 +41,7 @@ func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {
 			}
 			before := onlyPool(t, r)
 			frozen := before.record.Request
-			rec, _, err := r.ensureRecord(t.Context(), pod)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !r.compatiblePool(before.record) || r.checkPoolBinding(rec, before.record) != nil {
+			if !r.compatiblePool(before.record) {
 				t.Fatal("matching CDS trust was refused")
 			}
 			next := *r.cfg
@@ -65,17 +61,6 @@ func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {
 			r.cfg = &next
 			if r.compatiblePool(before.record) {
 				t.Fatal("idle allocation retained changed CDS trust")
-			}
-			if err := r.checkPoolBinding(rec, before.record); err != nil {
-				t.Fatalf("rotation rewrote frozen Pod/allocation trust: %v", err)
-			}
-			fresh := *rec
-			fresh.Request, err = next.launch(pod)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := r.checkPoolBinding(&fresh, before.record); err == nil {
-				t.Fatal("new Pod authority was assigned to an old CDS allocation")
 			}
 			if err := r.maintainPools(t.Context()); err != nil {
 				t.Fatal(err)

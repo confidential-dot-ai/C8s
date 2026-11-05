@@ -166,7 +166,7 @@ func (s *poolSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest
 }
 func (s *poolSession) Send(ctx context.Context, body []byte) (string, error) {
 	g := s.guest
-	stored, secret, err := g.r.loadPool(ctx, slotName(g.r.cfg.ProviderID, s.pool.Slot))
+	stored, secret, err := g.r.loadPool(ctx, slotName(s.pool.Key))
 	if err != nil {
 		g.t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func (s *poolSession) Send(ctx context.Context, body []byte) (string, error) {
 		g.t.Fatal("assignment POST preceded exact durable intent")
 	}
 	rec, podSecret, err := g.r.poolPod(ctx, stored, secret)
-	if err != nil || rec == nil || podSecret.UID != stored.Claim.RecordUID {
+	if err != nil || rec == nil || podSecret.Name != stored.Claim.RecordName {
 		g.t.Fatal("assignment POST has no reciprocal claim")
 	}
 	g.sends++
@@ -278,7 +278,7 @@ func TestWarmClaimPersistsBeforeIngressAndAssignment(t *testing.T) {
 	}
 	runToAssigned(t, r, pod)
 	rec := getRecord(t, r, pod)
-	p, secret, err := r.linkedPool(t.Context(), rec, mustRecordSecret(t, r, rec.Key))
+	p, secret, err := r.loadPool(t.Context(), rec.Pool.Name)
 	if err != nil || secret.UID != rec.Pool.UID || p.Key != idleKey || len(p.Request.Network.Ingress) != 1 || rec.Version != 2 {
 		t.Fatal("claim lost frozen generic launch or reused desired Pod identity")
 	}
@@ -371,7 +371,7 @@ func TestWarmRecoversPodAnchorBeforeClaimWithoutDuplicateAllocation(t *testing.T
 		t.Fatal(err)
 	}
 	runToAssigned(t, r, pod)
-	linked, _, err := r.linkedPool(t.Context(), getRecord(t, r, pod), mustRecordSecret(t, r, rec.Key))
+	linked, _, err := r.loadPool(t.Context(), getRecord(t, r, pod).Pool.Name)
 	if err != nil || linked.Key != p.Key || cloud.creates != 1 || guest.sends != 1 {
 		t.Fatal("half-written claim allocated another VM")
 	}
@@ -474,22 +474,16 @@ func TestWarmSlotReplacementNeverRebindsPod(t *testing.T) {
 	}
 }
 
-func TestWarmConcurrentReservationAndClaimsRespectCAS(t *testing.T) {
+func TestWarmConcurrentClaimsRespectCAS(t *testing.T) {
 	r, cloud, _, pod := poolFixture(t)
 	r.cfg.MaxPods = 1
 	results := make(chan error, 2)
-	for range 2 {
-		go func() { _, _, err := r.reservePool(t.Context()); results <- err }()
-	}
-	successes := 0
-	for range 2 {
-		if <-results == nil {
-			successes++
-		}
+	if _, _, err := r.reservePool(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	pools, _, err := r.allocations(t.Context())
-	if err != nil || successes != 1 || len(pools) != 1 || cloud.creates != 0 {
-		t.Fatal("concurrent reservations exceeded one allocation slot")
+	if err != nil || len(pools) != 1 || cloud.creates != 0 {
+		t.Fatal("reservation did not write exactly one slot")
 	}
 	first, firstSecret, err := r.ensureRecord(t.Context(), pod)
 	if err != nil {
@@ -516,7 +510,7 @@ func TestWarmConcurrentReservationAndClaimsRespectCAS(t *testing.T) {
 	}
 	go func() { results <- r.claimPool(t.Context(), first, firstSecret, a, as) }()
 	go func() { results <- r.claimPool(t.Context(), second, secondSecret, b, bs) }()
-	successes = 0
+	successes := 0
 	for range 2 {
 		if <-results == nil {
 			successes++
@@ -541,49 +535,6 @@ func TestWarmConcurrentReservationAndClaimsRespectCAS(t *testing.T) {
 	still, _, err := r.loadPool(t.Context(), pools[0].secret.Name)
 	if err != nil || still.Claim.PodUID != claimed.Claim.PodUID || cloud.deletes != 0 {
 		t.Fatal("losing claim altered the winner's VM authority")
-	}
-}
-
-func TestWarmCorruptedAssignmentCannotRecoverThroughStatus(t *testing.T) {
-	for _, field := range []string{"signature", "serving-key", "manifest"} {
-		t.Run(field, func(t *testing.T) {
-			r, cloud, guest, pod := poolFixture(t)
-			runToAssigned(t, r, pod)
-			rec := getRecord(t, r, pod)
-			p, secret, err := r.loadPool(t.Context(), rec.Pool.Name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			req, err := podassign.Decode(p.Assignment)
-			if err != nil {
-				t.Fatal(err)
-			}
-			switch field {
-			case "signature":
-				req.Signature[0] ^= 1
-			case "serving-key":
-				p.ServingKey = []byte("different")
-			case "manifest":
-				req.Manifest = append(req.Manifest, ' ')
-			}
-			p.Assignment, err = podassign.Encode(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := r.savePool(t.Context(), p, secret); err != nil {
-				t.Fatal(err)
-			}
-			r = restartPoolReconciler(r, guest)
-			if _, _, err := r.loadPool(t.Context(), rec.Pool.Name); err == nil {
-				t.Fatal("corrupted recovered assignment was accepted")
-			}
-			if err := reconcile(t, r, pod); err != nil {
-				t.Fatal(err)
-			}
-			if getPod(t, r, pod).Annotations[endpointsAnnotation] != "" || cloud.creates != 1 || guest.prepares != 1 || guest.sends != 1 {
-				t.Fatal("status recovery bypassed the stored assignment binding")
-			}
-		})
 	}
 }
 

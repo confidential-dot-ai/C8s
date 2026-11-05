@@ -18,45 +18,25 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-// record is the durable authority for one Pod UID's Cloud side effects. Keep
-// versioned launch fields stable across upgrades: retrying must preserve the
-// original signature, request and account binding. It deliberately has no Pod
-// owner reference, so forced Pod deletion cannot garbage-collect cleanup intent.
+// record is the durable authority for one Pod UID's Cloud side effects. A
+// direct launch owns its instance through the embedded intent; a pooled Pod
+// (Version 2) references the slot that owns it instead. It deliberately has no
+// Pod owner reference, so forced Pod deletion cannot garbage-collect cleanup
+// intent.
 type record struct {
+	instanceIntent
 	Pool                       *poolRef          `json:"pool,omitempty"`
-	PoolCommitted              bool              `json:"poolCommitted,omitempty"`
 	Version                    int               `json:"version"`
-	ProviderID                 string            `json:"providerID"`
-	CloudURL                   string            `json:"cloudURL"`
-	CredentialHash             string            `json:"credentialHash"`
 	UID                        types.UID         `json:"uid"`
 	Namespace                  string            `json:"namespace"`
 	Name                       string            `json:"name"`
-	NodeName                   string            `json:"nodeName"`
-	Key                        string            `json:"key"`
-	Request                    createRequest     `json:"request"`
-	Manifest                   []byte            `json:"manifest"`
-	VCPUs                      int64             `json:"vCPUs"`
-	MemoryMiB                  int64             `json:"memoryMiB"`
-	CreatedAt                  time.Time         `json:"createdAt"`
-	CreateAttempted            bool              `json:"createAttempted,omitempty"`
-	InstanceID                 string            `json:"instanceID,omitempty"`
-	DeleteRequested            bool              `json:"deleteRequested,omitempty"`
-	Deleted                    bool              `json:"deleted,omitempty"`
 	TerminalStatus             *corev1.PodStatus `json:"terminalStatus,omitempty"`
 	VerificationTimeoutSeconds int64             `json:"verificationTimeoutSeconds,omitempty"`
 	VerificationDeadline       *time.Time        `json:"verificationDeadline,omitempty"`
 }
 
 func (r *record) document() (*launchconfig.Document, error) {
-	doc, err := signedDocument(r.Request.Trust)
-	if err != nil {
-		return nil, err
-	}
-	if doc.Role != launchconfig.Pod || doc.Pod == nil || doc.Pod.UID != string(r.UID) || doc.Pod.Name != r.Name || doc.Pod.Namespace != r.Namespace || doc.Node.Name != r.Key || doc.PodOperatorPublicKey != r.Request.Trust.LaunchKey {
-		return nil, errors.New("stored Pod identity differs from its signed launch")
-	}
-	return doc, nil
+	return storedDocument(r.Request.Trust)
 }
 
 func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *corev1.Secret, error) {
@@ -65,30 +45,15 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if err != nil {
 		return nil, nil, err
 	}
-	if secret.Labels[ownerLabel] != r.cfg.ProviderID {
-		return nil, nil, errors.New("refusing a foreign provider record")
-	}
 	var rec record
 	if err := decode(secret.Data["state.json"], &rec); err != nil {
 		return nil, nil, errors.New("provider record is invalid")
 	}
-	if (rec.Version != 1 && rec.Version != 2) || rec.ProviderID != r.cfg.ProviderID || rec.CloudURL != r.cfg.CloudURL || rec.NodeName != r.cfg.NodeName || rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key || rec.CreatedAt.IsZero() || len(rec.Manifest) == 0 {
-		return nil, nil, errors.New("provider record identity or origin differs from this provider")
-	}
-	if rec.Version == 1 && (rec.Pool != nil || rec.PoolCommitted) {
-		return nil, nil, errors.New("static Pod record contains an allocation")
-	}
-	if rec.Version == 2 && (secret.UID == "" || (rec.PoolCommitted && rec.Pool == nil) || rec.CreateAttempted || rec.InstanceID != "" || (rec.Pool != nil && (rec.Pool.Name == "" || rec.Pool.UID == ""))) {
-		return nil, nil, errors.New("pooled Pod record has invalid allocation authority")
+	if rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key {
+		return nil, nil, errors.New("provider record identity differs from its key")
 	}
 	if rec.CredentialHash != credentialHash(r.cfg.token) {
 		return nil, nil, errors.New("cloud credential changed while provider records exist; drain with the original credential before rotating")
-	}
-	if (rec.VerificationTimeoutSeconds != 0 && !validVerificationTimeout(rec.VerificationTimeoutSeconds)) || (rec.VerificationDeadline != nil && (rec.VerificationTimeoutSeconds == 0 || rec.VerificationDeadline.IsZero())) {
-		return nil, nil, errors.New("provider record verification policy is invalid")
-	}
-	if _, err := rec.document(); err != nil {
-		return nil, nil, err
 	}
 	return &rec, secret, nil
 }
@@ -106,7 +71,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if err != nil {
 		return nil, nil, fmt.Errorf("pod cannot be launched: %w", err)
 	}
-	rec = &record{Version: 1, ProviderID: r.cfg.ProviderID, CloudURL: r.cfg.CloudURL, CredentialHash: credentialHash(r.cfg.token), UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, NodeName: r.cfg.NodeName, Key: key, Request: req, Manifest: r.cfg.manifest, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, CreatedAt: r.now()}
+	rec = &record{Version: 1, UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, instanceIntent: r.cfg.intent(key, req, r.now())}
 	pooled, err := r.poolMode(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -132,6 +97,12 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 		return nil, nil, err
 	}
 	return rec, secret, nil
+}
+
+// intent freezes the provider identity, credential and capacity a create
+// request was written under, for a direct launch or a generic slot alike.
+func (c *Config) intent(key string, req createRequest, now time.Time) instanceIntent {
+	return instanceIntent{ProviderID: c.ProviderID, CloudURL: c.CloudURL, CredentialHash: credentialHash(c.token), NodeName: c.NodeName, Key: key, Request: req, Manifest: c.manifest, VCPUs: c.VCPUs, MemoryMiB: c.MemoryMiB, CreatedAt: now}
 }
 
 func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secret) error {

@@ -24,25 +24,33 @@ import (
 
 type guestReader func(context.Context, *record, string) (podstatus.PodProjection, error)
 
+// attestConfig writes the frozen public trust material of one allocation to a
+// private temporary directory, because podstatus.AttestConfig takes paths. The
+// caller removes the directory when the connection is done.
+func attestConfig(address, launchKey string, manifest []byte) (podstatus.AttestConfig, func(), error) {
+	dir, err := os.MkdirTemp("", "c8s-pod-trust-")
+	if err != nil {
+		return podstatus.AttestConfig{}, nil, err
+	}
+	cleanup := func() { os.RemoveAll(dir) }
+	key, man := filepath.Join(dir, "pubkey"), filepath.Join(dir, "manifest.json")
+	if err := errors.Join(os.WriteFile(key, []byte(launchKey), 0o600), os.WriteFile(man, manifest, 0o600)); err != nil {
+		cleanup()
+		return podstatus.AttestConfig{}, nil, err
+	}
+	return podstatus.AttestConfig{Node: address, LaunchKeyPubPath: key, ImageManifestPath: man, Timeout: 15 * time.Second}, cleanup, nil
+}
+
 func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
 	var projection podstatus.PodProjection
-	// AttestConfig's existing API takes paths. Use only frozen public trust
-	// material here, in a private temporary directory, never a tenant path.
-	dir, err := os.MkdirTemp("", "c8s-pod-status-")
+	cfg, cleanup, err := attestConfig(address, rec.Request.Trust.LaunchKey, rec.Manifest)
 	if err != nil {
 		return projection, err
 	}
-	defer os.RemoveAll(dir)
-	key, manifest := filepath.Join(dir, "pubkey"), filepath.Join(dir, "manifest.json")
-	if err := os.WriteFile(key, []byte(rec.Request.Trust.LaunchKey), 0o600); err != nil {
-		return projection, err
-	}
-	if err := os.WriteFile(manifest, rec.Manifest, 0o600); err != nil {
-		return projection, err
-	}
+	defer cleanup()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	data, err := podstatus.Get(ctx, podstatus.AttestConfig{Node: address, LaunchKeyPubPath: key, ImageManifestPath: manifest, Timeout: 15 * time.Second})
+	data, err := podstatus.Get(ctx, cfg)
 	if err != nil {
 		return projection, errors.New("guest status attestation unavailable")
 	}
@@ -52,21 +60,23 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 	return projection, nil
 }
 
-func validateInstance(rec *record, in *instance) error {
+// validateInstance checks that the instance the cloud returned is the one the
+// intent created: its identity, labels, image, platform and size.
+func validateInstance(intent *instanceIntent, in *instance) error {
 	if in == nil || !strings.HasPrefix(in.ID, "i-") || len(validation.IsDNS1123Label(in.ID)) != 0 {
 		return errors.New("cloud returned an invalid instance identity")
 	}
-	if rec.InstanceID != "" && rec.InstanceID != in.ID {
+	if intent.InstanceID != "" && intent.InstanceID != in.ID {
 		return errors.New("cloud returned another instance")
 	}
-	family, version, _ := strings.Cut(rec.Request.Image, "@")
-	if in.Image.Family != family || in.Image.Version != version || in.Tee != rec.Request.Tee {
+	family, version, _ := strings.Cut(intent.Request.Image, "@")
+	if in.Image.Family != family || in.Image.Version != version || in.Tee != intent.Request.Tee {
 		return errors.New("cloud instance differs from the frozen image request")
 	}
-	if in.Compute.VCPUs < rec.VCPUs || in.Compute.MemoryGiB < (rec.MemoryMiB+1023)/1024 {
+	if in.Compute.VCPUs < intent.VCPUs || in.Compute.MemoryGiB < (intent.MemoryMiB+1023)/1024 {
 		return errors.New("cloud instance is smaller than the advertised workload capacity")
 	}
-	for k, v := range rec.Request.Labels {
+	for k, v := range intent.Request.Labels {
 		if in.Labels[k] != v {
 			return errors.New("cloud instance ownership differs from its create intent")
 		}
@@ -74,12 +84,12 @@ func validateInstance(rec *record, in *instance) error {
 	return nil
 }
 
-func endpoints(rec *record, in *instance) (string, []endpoint, string, error) {
-	if err := validateInstance(rec, in); err != nil {
-		return "", nil, "", err
-	}
-	wanted := make(map[string]int, len(rec.Request.Network.Ingress))
-	for _, rule := range rec.Request.Network.Ingress {
+// endpoints resolves the status address, the application endpoints and, under
+// the dedicated address mode, the pod address from the instance's public
+// endpoints, one per rule the network spec wanted.
+func endpoints(network networkSpec, in *instance) (string, []endpoint, string, error) {
+	wanted := make(map[string]int, len(network.Ingress))
+	for _, rule := range network.Ingress {
 		wanted[rule.Name] = rule.Port
 	}
 	seen := map[string]bool{}
@@ -95,7 +105,7 @@ func endpoints(rec *record, in *instance) (string, []endpoint, string, error) {
 			return "", nil, "", errors.New("cloud returned an invalid or duplicate public endpoint")
 		}
 		seen[ep.Name] = true
-		if rec.Request.Network.PublicIP == "dedicated" {
+		if network.PublicIP == "dedicated" {
 			if ep.Port != port || (podIP != "" && podIP != ep.Host) {
 				return "", nil, "", errors.New("dedicated endpoints do not preserve the Pod address and ports")
 			}
@@ -113,18 +123,14 @@ func endpoints(rec *record, in *instance) (string, []endpoint, string, error) {
 	return status, apps, podIP, nil
 }
 
-func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP string) (corev1.PodStatus, error) {
-	return projectedStatusForNode(rec, projection, pod, podIP, "")
-}
-
-func projectedStatusForNode(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP, guestNode string) (corev1.PodStatus, error) {
+// projectedStatus accepts a guest report only for the frozen pod, named as the
+// guest's kubelet reports a static pod on the node the allocation booted as,
+// and projects the guest's fields onto a pod status.
+func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP, guestNode string) (corev1.PodStatus, error) {
 	var out corev1.PodStatus
 	doc, err := rec.document()
 	if err != nil {
 		return out, err
-	}
-	if guestNode == "" {
-		guestNode = doc.Node.Name
 	}
 	meta := projection.Metadata
 	if meta.UID != string(rec.UID) || meta.Namespace != rec.Namespace || meta.Name != rec.Name+"-"+guestNode {
@@ -209,7 +215,6 @@ func unknownStatus(pod *corev1.Pod, reason string, now time.Time) corev1.PodStat
 		out.Phase = corev1.PodPending
 	}
 	out.Reason = reason
-	out.Message = "Waiting for verified Pod CVM status"
 	for _, t := range []corev1.PodConditionType{corev1.PodReady, corev1.ContainersReady} {
 		condition := corev1.PodCondition{Type: t, Status: corev1.ConditionUnknown, Reason: reason, LastTransitionTime: metav1.NewTime(now)}
 		found := false
@@ -239,7 +244,6 @@ func unknownStatus(pod *corev1.Pod, reason string, now time.Time) corev1.PodStat
 func failedStatus(pod *corev1.Pod, reason string, now time.Time) corev1.PodStatus {
 	out := unknownStatus(pod, reason, now)
 	out.Phase = corev1.PodFailed
-	out.Message = "The Pod CVM has ended; a new Pod UID is required for a new launch"
 	for i := range out.Conditions {
 		if out.Conditions[i].Type == corev1.PodReady || out.Conditions[i].Type == corev1.ContainersReady {
 			out.Conditions[i].Status = corev1.ConditionFalse
