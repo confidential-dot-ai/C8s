@@ -20,14 +20,11 @@ type Index struct {
 func (a *Allowlist) BuildIndex() *Index {
 	idx := &Index{byDigest: map[string][]Container{}}
 	for _, w := range a.Workloads {
-		for _, c := range w.InitContainers {
-			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-		}
-		for _, c := range w.Containers {
+		for _, c := range w.processNamespaceContainers() {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
 		}
 		if len(w.HostPorts) > 0 {
-			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
+			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.processNamespaceContainers()})
 		}
 	}
 	return idx
@@ -292,6 +289,10 @@ func (c Container) mismatch(r RunningContainer, final bool) []string {
 	}
 	if !newEnvConstraint(&c.Env).admits(r) {
 		fields = append(fields, "env")
+	}
+	if (c.ShareProcessNamespace && (c.processNamespacePolicy == "" || r.ProcessNamespacePolicy != c.processNamespacePolicy)) ||
+		(!c.ShareProcessNamespace && r.ProcessNamespacePolicy != "") {
+		fields = append(fields, "shareProcessNamespace")
 	}
 	return fields
 }

@@ -9,6 +9,19 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
 
 ## Document shape
 
+`c8s.allowlist/v1` keeps every application in a private PID namespace.
+`c8s.allowlist/v2` also permits `shareProcessNamespace: true` on selected main
+container declarations. Older readers reject v2. A v1 document with a shared
+declaration is invalid.
+
+A shared declaration requires every container in its workload entry to pin
+command, arguments, mounts, and environment. It cannot be an init container,
+platform role, static pod, or a container with exec grants. Unmarked
+containers remain private. The observed group fingerprint must match the
+complete normalized workload policy during admission and workload matching.
+
+This policy field does not permit Kubernetes pod-wide process sharing.
+
 ```json
 {
   "schema": "c8s.allowlist/v1",
