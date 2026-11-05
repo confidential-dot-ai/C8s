@@ -60,7 +60,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 //
 // If-Match makes the swap conditional on the version: the strong tag "N"
 // matches version N, the version GET serves in its VersionHeader. A refused
-// precondition is 412 and changes nothing. No If-Match, or "*", swaps
+// precondition, including "*", is 412 and changes nothing. No If-Match swaps
 // unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	// Before the token is spent: a precondition no version can satisfy is

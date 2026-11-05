@@ -156,8 +156,7 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 		t.Fatalf("initial version: got %q, want %q", version, "1")
 	}
 
-	// Version is the ETag the worker pull carries, so it must move in lockstep
-	// with the counter LoadAll reports after a write.
+	// Version() must agree with LoadAll's version even when called first.
 	putEntry(t, allowlist, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, loadVersion, err := store.LoadAll()
 	if err != nil {
