@@ -126,6 +126,7 @@ type config struct {
 	measurementsConfig string
 	servedPolicyFile   string
 	sandboxID          string
+	assignedWorkloadID string
 	workload           string
 	allowlistFile      string
 	meshCA             string
@@ -246,6 +247,7 @@ responder chose).`,
 	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own — for a cluster launched from a c8s launch-config bundle this is peers.json. It asks for the served-set equality check; --image-policy-file pins the target's own identity. A replicated CDS takes node identities by signed command: take this file from the decree in force (docs/cds-ha.md)")
 	const refusedWithKindCDS = ". Refused with --kind cds: CDS's serving certificate is self-signed"
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.assignedWorkloadID, "assigned-workload-id", "", "expected assigned workload ID (the tenant a pod CVM was assigned to) on the target's leaf; a leaf without one fails. Requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindCDS)
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindCDS)
@@ -730,6 +732,15 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		}
 	}
 
+	if cfg.assignedWorkloadID != "" {
+		if err := armtls.ValidateWorkloadID(cfg.assignedWorkloadID); err != nil {
+			return nil, fmt.Errorf("--assigned-workload-id: %w", err)
+		}
+		if cfg.meshCA == "" {
+			return nil, fmt.Errorf("--assigned-workload-id requires --mesh-ca: the assigned workload ID is vouched by CDS's signature on the leaf, not by the hardware evidence")
+		}
+	}
+
 	// The matched-workload stamp is CA-vouched exactly like the sandbox ID, so
 	// both workload-policy flags demand the chain check that authenticates it.
 	if cfg.workload != "" {
@@ -873,6 +884,9 @@ func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
 	}
 	if cfg.sandboxID != "" {
 		used = append(used, "--sandbox-id")
+	}
+	if cfg.assignedWorkloadID != "" {
+		used = append(used, "--assigned-workload-id")
 	}
 	if cfg.workload != "" {
 		used = append(used, "--workload")
@@ -1282,6 +1296,10 @@ type Outcome struct {
 	SandboxID     string `json:"sandbox_id,omitempty"`
 	SandboxIDNote string `json:"sandbox_id_note,omitempty"`
 
+	// AssignedWorkloadID is the tenant the leaf names, set only when it matched
+	// --assigned-workload-id on a leaf that chains to --mesh-ca.
+	AssignedWorkloadID string `json:"assigned_workload_id,omitempty"`
+
 	// Workload is the allowlist entry the leaf's matched-workload stamp names,
 	// with the allowlist version and policy digest it was decided under.
 	// CA-vouched like the sandbox ID; WorkloadNote carries the §8 verdict
@@ -1375,6 +1393,18 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 			fail("%v", err)
 		} else if oc.SandboxIDNote != "" {
 			oc.SandboxIDNote += ", and the ID matches --sandbox-id"
+		}
+	}
+	if cfg.assignedWorkloadID != "" {
+		if ev.leaf == nil {
+			fail("--assigned-workload-id needs the target's leaf certificate (this evidence source carries none — use a cert, discovery, or attest-pq target)")
+			return
+		}
+		// Reached only after the chain check above, which authenticates the ID.
+		if err := armtls.CheckAssignedWorkloadPin(ev.leaf, cfg.assignedWorkloadID); err != nil {
+			fail("%v", err)
+		} else {
+			oc.AssignedWorkloadID = cfg.assignedWorkloadID
 		}
 	}
 
@@ -1963,6 +1993,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if oc.SandboxID != "" {
 		fmt.Fprintf(out, "  sandbox id:   %s\n", oc.SandboxID)
 		fmt.Fprintf(out, "                %s\n", oc.SandboxIDNote)
+	}
+	if oc.AssignedWorkloadID != "" {
+		fmt.Fprintf(out, "  assigned to:  %s  (matches --assigned-workload-id; the leaf chains to the supplied mesh CA)\n", oc.AssignedWorkloadID)
 	}
 	if oc.Workload != "" {
 		fmt.Fprintf(out, "  workload:     %s  (allowlist version %s, digest %s)\n", oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest)

@@ -20,7 +20,8 @@ metadata:
   name: c8s-node-operator
 rules:
   # Tenant workloads and their plumbing, cluster-wide; confos-operator-scope
-  # denies platform writes except operator deletion of core router Pods.
+  # denies platform writes except operator deletion of core router Pods and
+  # the Pod CVM provider's Secret and operator Pod restart in c8s-system.
   - apiGroups: [""]
     resources:
       - pods

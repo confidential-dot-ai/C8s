@@ -174,4 +174,51 @@ func TestOperatorScopeAPI(t *testing.T) {
 	if err := op.CoreV1().Pods("tenant").Delete(ctx, "ordinary", del); err != nil {
 		t.Fatalf("tenant delete: %v", err)
 	}
+
+	// The Pod CVM provider's configuration and the operator restart that
+	// loads it, and nothing beside them in c8s-system.
+	denied := func(what string, err error) {
+		t.Helper()
+		if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), vap.Name) {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	provider := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pod-cvm-provider"}, Data: map[string][]byte{"config.json": []byte("{}")}}
+	if _, err := op.CoreV1().Secrets("c8s-system").Create(ctx, provider, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("provider Secret create: %v", err)
+	}
+	if _, err := op.CoreV1().Secrets("c8s-system").Patch(ctx, "pod-cvm-provider", types.MergePatchType, []byte(`{"data":{"config.json":"e30K"}}`), metav1.PatchOptions{}); err != nil {
+		t.Fatalf("provider Secret patch: %v", err)
+	}
+	if err := op.CoreV1().Secrets("c8s-system").Delete(ctx, "pod-cvm-provider", del); err != nil {
+		t.Fatalf("provider Secret delete: %v", err)
+	}
+	token := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pod-cvm-provider", Annotations: map[string]string{corev1.ServiceAccountNameKey: "default"}}, Type: corev1.SecretTypeServiceAccountToken}
+	_, err = op.CoreV1().Secrets("c8s-system").Create(ctx, token, metav1.CreateOptions{})
+	denied("provider-named token Secret", err)
+	_, err = op.CoreV1().Secrets("c8s-system").Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other"}}, metav1.CreateOptions{})
+	denied("other c8s-system Secret", err)
+	_, err = op.CoreV1().Secrets("kube-system").Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pod-cvm-provider"}}, metav1.CreateOptions{})
+	denied("provider Secret in kube-system", err)
+	operatorLabels := map[string]string{"app.kubernetes.io/name": "c8s-operator", "app.kubernetes.io/instance": "c8s", "app.kubernetes.io/component": "operator"}
+	operator := pod("c8s-operator-1", "")
+	operator.Labels = operatorLabels
+	if _, err := admin.CoreV1().Pods("c8s-system").Create(ctx, operator, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	create("c8s-system", "other", "")
+	cmd = exec.CommandContext(ctx, filepath.Join(os.Getenv("KUBEBUILDER_ASSETS"), "kubectl"), "--kubeconfig", configPath, "-n", "c8s-system", "delete", "pod",
+		"-l", "app.kubernetes.io/name=c8s-operator,app.kubernetes.io/instance=c8s,app.kubernetes.io/component=operator", "--grace-period=0", "--wait=false")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("operator restart: %v: %s", err, out)
+	}
+	denied("other c8s-system Pod delete", op.CoreV1().Pods("c8s-system").Delete(ctx, "other", del))
+	operatorDeployment := deployment.DeepCopy()
+	operatorDeployment.ResourceVersion = ""
+	operatorDeployment.Name = "c8s-operator"
+	if _, err := admin.AppsV1().Deployments("c8s-system").Create(ctx, operatorDeployment, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = op.AppsV1().Deployments("c8s-system").Patch(ctx, "c8s-operator", types.MergePatchType, []byte(`{"spec":{"replicas":0}}`), metav1.PatchOptions{})
+	denied("operator Deployment patch", err)
 }

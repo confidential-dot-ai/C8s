@@ -430,6 +430,11 @@ func TestFrozenCredentialsAndOldUncertainIntentFailClosed(t *testing.T) {
 	if _, _, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID))); err == nil {
 		t.Fatal("credential change accepted for existing intent")
 	}
+	// A record the provider cannot read is its own state, not a launch refusal.
+	_ = reconcile(t, r, pod)
+	if got := getPod(t, r, pod).Status.Reason; got != "ProviderStateUnavailable" {
+		t.Fatalf("unreadable record reported as %q, want ProviderStateUnavailable", got)
+	}
 	r.cfg.token = "test-provider-token"
 	r.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
 	if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {

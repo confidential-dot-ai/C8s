@@ -104,3 +104,19 @@ func TestValidateWorkloadIDRefusesWhatTheExtensionCannotCarry(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckAssignedWorkloadPin(t *testing.T) {
+	cert := &x509.Certificate{Extensions: []pkix.Extension{mustAssignedWorkloadExt(t, testWorkloadID)}}
+	if err := CheckAssignedWorkloadPin(cert, testWorkloadID); err != nil {
+		t.Fatalf("matching pin: %v", err)
+	}
+	if err := CheckAssignedWorkloadPin(cert, "tenant-b.web"); err == nil {
+		t.Fatal("a pin naming another tenant passed")
+	}
+	if err := CheckAssignedWorkloadPin(&x509.Certificate{}, testWorkloadID); err == nil || !strings.Contains(err.Error(), "carries no") {
+		t.Fatalf("a leaf without the extension: %v, want a refusal", err)
+	}
+	if err := CheckAssignedWorkloadPin(&x509.Certificate{}, ""); err != nil {
+		t.Fatalf("no pin: %v", err)
+	}
+}

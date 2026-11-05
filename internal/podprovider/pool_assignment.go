@@ -167,7 +167,13 @@ func (r *Reconciler) assignPool(ctx context.Context, rec *record, p *poolRecord,
 		return context.DeadlineExceeded
 	}
 	uid, err := target.Send(ctx, p.Assignment)
-	if errors.Is(err, podstatus.ErrAlreadyAssigned) {
+	// A replay reaches a guest that already holds a Pod. Only one that names
+	// this record's Pod holds the assignment this slot sent.
+	var held *podstatus.AlreadyAssignedError
+	if errors.As(err, &held) {
+		if held.HeldUID != string(rec.UID) {
+			return errors.New("guest already holds another Pod")
+		}
 		return nil
 	}
 	if err != nil {
