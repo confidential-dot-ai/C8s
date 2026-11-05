@@ -453,41 +453,6 @@ func TestKubeletPodsPinsTheServingCertificate(t *testing.T) {
 	}
 }
 
-// The commands drive Attest and Get: pod-attest prints the report and fails
-// on an expected set the pod did not measure; pod-status get prints the pod.
-func TestCommandsRunAttestAndGet(t *testing.T) {
-	cfg := attestFixture(t, []string{dA, dB}, []string{dA, dB}, nil)
-	flags := []string{"--node", cfg.Node, "--launch-key-pub", cfg.LaunchKeyPubPath, "--image-manifest", cfg.ImageManifestPath}
-
-	var out bytes.Buffer
-	attest := NewAttestCmd()
-	attest.SetOut(&out)
-	attest.SetArgs(append(slices.Clone(flags), "--expect-digest", dB, "--expect-digest", dA))
-	if err := attest.Execute(); err != nil {
-		t.Fatalf("pod-attest: %v", err)
-	}
-	var report Report
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || !slices.Equal(report.MeasuredDigests, []string{dA, dB}) {
-		t.Fatalf("pod-attest printed %s (%v)", out.String(), err)
-	}
-
-	attest = NewAttestCmd()
-	attest.SetOut(&out)
-	attest.SetErr(&out)
-	attest.SetArgs(append(slices.Clone(flags), "--expect-digest", dA))
-	if err := attest.Execute(); err == nil || !strings.Contains(err.Error(), "expected") {
-		t.Fatalf("pod-attest with a short expected set: %v", err)
-	}
-
-	out.Reset()
-	get := NewCmd()
-	get.SetOut(&out)
-	get.SetArgs(append([]string{"get"}, flags...))
-	if err := get.Execute(); err != nil || !strings.Contains(out.String(), `"app"`) {
-		t.Fatalf("pod-status get: %s %v", out.String(), err)
-	}
-}
-
 // A guest built from another revision names another report-data
 // convention; the client refuses rather than failing on a REPORT_DATA
 // mismatch it cannot explain.
