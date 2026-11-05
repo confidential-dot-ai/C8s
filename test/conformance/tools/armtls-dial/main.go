@@ -92,6 +92,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if writing && (*writeCert == "" || *writeKey == "") {
 		return usage("--write-cert and --write-key go together")
 	}
+	if writing && *mesh {
+		return usage("--write-cert dials nothing, so --mesh does not apply")
+	}
 	if writing && fs.NArg() != 0 {
 		return usage("--write-cert dials nothing: no <node-ip:port> <dest-ip:port>")
 	}
