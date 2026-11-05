@@ -3,15 +3,18 @@ package podstatus
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -25,6 +28,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -85,6 +91,228 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 	}
 }
 
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestGetValidatesInputsBeforeDialing(t *testing.T) {
+	ok := AttestConfig{Node: "10.0.0.5", LaunchKeyPubPath: "pub", ImageManifestPath: "m.json", Timeout: time.Second}
+	tests := []struct {
+		name   string
+		change func(*AttestConfig)
+		want   string
+	}{
+		{"no node", func(c *AttestConfig) { c.Node = "" }, "required"},
+		{"no key", func(c *AttestConfig) { c.LaunchKeyPubPath = "" }, "required"},
+		{"no manifest", func(c *AttestConfig) { c.ImageManifestPath = "" }, "required"},
+		{"zero timeout", func(c *AttestConfig) { c.Timeout = 0 }, "--timeout"},
+		{"url node", func(c *AttestConfig) { c.Node = "https://10.0.0.5/x" }, "host or IP"},
+		{"missing key file", func(c *AttestConfig) {}, "--launch-key-pub"},
+		{"missing manifest file", func(c *AttestConfig) { c.LaunchKeyPubPath = writeFile(t, "pubkey", "k") }, "--image-manifest"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ok
+			tc.change(&cfg)
+			_, err := Get(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestHostPort(t *testing.T) {
+	for in, want := range map[string]string{
+		"10.0.0.5": "10.0.0.5:8443", "10.0.0.5:9443": "10.0.0.5:9443", "pod.local": "pod.local:8443",
+		"::1": "[::1]:8443", "[::1]": "[::1]:8443", "[::1]:9443": "[::1]:9443",
+	} {
+		if got := hostPort(in); got != want {
+			t.Fatalf("hostPort(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestServeRejectsMissingPlatform(t *testing.T) {
+	if err := Serve(context.Background(), ServeConfig{}); err == nil || !strings.Contains(err.Error(), "--platform") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+var (
+	dA = "sha256:" + strings.Repeat("a", 64)
+	dB = "sha256:" + strings.Repeat("b", 64)
+)
+
+// attestFixture serves a guest whose RTMR[3] holds the launch seed extended
+// by registered, and whose journal lists journal.
+// attestFixture serves a fake pod CVM: registered is what its quote's
+// RTMR[3] replays, journal what it lists, relayKey a serving key other than
+// the connection's (a relayed quote), and wrap optional middleware around
+// the guest handler.
+func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.PublicKey, wrap ...func(http.Handler) http.Handler) AttestConfig {
+	t.Helper()
+	dir := t.TempDir()
+	pub := []byte("pod launch key")
+	pubPath := filepath.Join(dir, "pubkey")
+	journalPath := filepath.Join(dir, "journal")
+	if err := os.WriteFile(pubPath, pub, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := writeTDXManifest(t, dir)
+	if err := os.WriteFile(journalPath, []byte(strings.Join(journal, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var quoted []byte // report data the guest's quote carries
+	var servingKey crypto.PublicKey
+	h := Handler{
+		UID: "u1", Journal: journalPath,
+		Pods: func(context.Context) ([]byte, error) { return []byte(pods), nil },
+		Evidence: func(_ context.Context, rd []byte) ([]byte, error) {
+			quoted = append(make([]byte, 64)[:0], rd...)
+			quoted = append(quoted, make([]byte, 64-len(rd))...)
+			return []byte(`{}`), nil
+		},
+	}
+	var guest http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(armtls.WithServingKey(r.Context(), servingKey)))
+	})
+	for _, w := range wrap {
+		guest = w(guest)
+	}
+	srv := httptest.NewUnstartedServer(guest)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	servingKey = srv.Certificate().PublicKey
+	if relayKey != nil {
+		servingKey = relayKey
+	}
+	oldClient, oldVerify := newClient, verifyFresh
+	t.Cleanup(func() { newClient, verifyFresh = oldClient, oldVerify })
+	lastClaimed = nil
+	// Like the armTLS client, this one leaves the certificate check to its own
+	// VerifyConnection; the fixture has none, so the serving-key pin alone decides.
+	newClient = func(exp guestverify.Policy, _ time.Duration) *http.Client {
+		if !exp.MeasuresPolicies() {
+			t.Error("channel policy does not replay the leaf's measured list")
+		}
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test fixture
+	}
+	verifyFresh = func(_, reportData []byte, exp guestverify.Policy) (*teetypes.VerificationResult, error) {
+		lastClaimed = exp.MeasuredPolicies()
+		if !slices.Equal(reportData, quoted) {
+			return nil, errors.New("report data does not match the expected binding")
+		}
+		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pub), registered)
+		res := &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX,
+			Claims: teetypes.Claims{LaunchDigest: "11", PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])}}}
+		// The real gate accepts any prefix of the claimed list and marks a
+		// list no prefix of which replays.
+		if _, err := runtimemeasure.MatchBindingPrefix(res, pub, lastClaimed); err != nil {
+			return nil, fmt.Errorf("%w: %w", err, guestverify.ErrPoliciesDoNotReplay)
+		}
+		return res, nil
+	}
+	return AttestConfig{Node: strings.TrimPrefix(srv.URL, "https://"), LaunchKeyPubPath: pubPath, ImageManifestPath: manifestPath, Timeout: 5 * time.Second}
+}
+
+// lastClaimed is the measured list the fixture's verifier was last asked to
+// replay against the fresh evidence.
+var lastClaimed []string
+
+// writeTDXManifest writes a TDX image manifest with throwaway register pins.
+func writeTDXManifest(t *testing.T, dir string) string {
+	t.Helper()
+	pin := func(b byte) string { return strings.Repeat(string(rune(b)), 96) }
+	path := filepath.Join(dir, "manifest.json")
+	manifest := `{"mrtd":"` + pin('1') + `","rtmr1":"` + pin('2') + `","rtmr2":"` + pin('3') + `"}`
+	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The channel and the fresh evidence share one gate. The channel's policy
+// tracks the leaf's list, so the serving certificate must replay its own
+// list; the evidence is asked to replay exactly the list read on both sides
+// of the quote (PS6), and the register must equal that list in full.
+func TestAttestReplaysCertListAgainstRegister(t *testing.T) {
+	cfg := attestFixture(t, []string{dA, dB}, []string{dA, dB}, nil)
+	report, _, err := Attest(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(lastClaimed, []string{dA, dB}) || !slices.Equal(report.MeasuredDigests, []string{dA, dB}) {
+		t.Fatalf("claimed %v, reported %v; want the list read from the guest", lastClaimed, report.MeasuredDigests)
+	}
+	cfg = attestFixture(t, []string{dA, dB}, []string{dA}, nil)
+	if _, _, err := Attest(context.Background(), cfg); !errors.Is(err, ErrMeasuredHistoryDoesNotReplay) {
+		t.Fatalf("list short of the register: %v", err)
+	}
+	if !slices.Equal(lastClaimed, []string{dA}) {
+		t.Fatalf("claimed %v, want the short list the guest served", lastClaimed)
+	}
+}
+
+func TestAttestBindsMeasuredDigests(t *testing.T) {
+	cfg := attestFixture(t, []string{dA, dB}, []string{dA, dB}, nil)
+	report, _, err := Attest(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(report.MeasuredDigests, []string{dA, dB}) || len(report.RTMR3) != 96 || len(report.LaunchKeySHA256) != 64 {
+		t.Fatalf("report %+v", report)
+	}
+	cfg.ExpectDigests = []string{dB, "busybox@" + dA}
+	if _, _, err := Attest(context.Background(), cfg); err != nil {
+		t.Fatalf("expected set in another order: %v", err)
+	}
+	cfg.ExpectDigests = []string{dA}
+	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("expected set mismatch: %v", err)
+	}
+	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
+		t.Fatalf("get: %s %v", body, err)
+	}
+}
+
+// A list the register has not caught up with fails the full replay but is not
+// final: the guest records before it extends. A register that took an extend
+// the list does not record, in any position, replays no prefix of it and is
+// final.
+func TestAttestRejectsDigestListsTheRegisterDoesNotExplain(t *testing.T) {
+	dC := "sha256:" + strings.Repeat("c", 64)
+	for name, tc := range map[string]struct {
+		journal []string
+		final   bool
+	}{
+		"tampered":  {[]string{dA, dC}, true},
+		"reordered": {[]string{dB, dA}, true},
+		"missing":   {[]string{dA}, true},
+		"extra":     {[]string{dA, dB, dC}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := attestFixture(t, []string{dA, dB}, tc.journal, nil)
+			_, _, err := Attest(context.Background(), cfg)
+			if err == nil {
+				t.Fatal("attested a list the register does not explain")
+			}
+			if got := errors.Is(err, ErrMeasuredHistoryDoesNotReplay); got != tc.final {
+				t.Fatalf("final = %v, want %v: %v", got, tc.final, err)
+			}
+			if !tc.final && !strings.Contains(err.Error(), "do not explain") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
 func TestMeasurementsAndEvidenceRoutes(t *testing.T) {
 	h := Handler{Journal: filepath.Join(t.TempDir(), "absent"),
 		Evidence: func(context.Context, []byte) ([]byte, error) { return []byte(`{"platform":"tdx"}`), nil }}
@@ -98,6 +326,19 @@ func TestMeasurementsAndEvidenceRoutes(t *testing.T) {
 	}
 	if rec := serve(h, http.MethodGet, EvidencePath); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET evidence: %d", rec.Code)
+	}
+}
+
+// A quote taken on another connection (e.g. a host relaying to another pod
+// CVM with the same launch key) binds a different certificate key.
+func TestAttestRejectsEvidenceFromAnotherChannel(t *testing.T) {
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := attestFixture(t, []string{dA}, []string{dA}, &other.PublicKey)
+	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "report data") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -155,6 +396,30 @@ func must(b []byte, err error) []byte {
 	return b
 }
 
+// After the first answer, every connection must present the attested
+// serving key: a host that moves later reads to another pod CVM launched
+// with the same launch key is caught, although that guest's certificate
+// would pass the armTLS checks on its own.
+func TestAttestPinsTheServingKey(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	_, client, err := Attest(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(pods))
+	}))
+	other.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	other.StartTLS()
+	t.Cleanup(other.Close)
+	if _, err := do(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+		t.Fatalf("read from another guest: %v", err)
+	}
+	if _, err := do(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
+		t.Fatalf("read from the attested guest: %v", err)
+	}
+}
+
 // The kubelet's self-signed serving certificate is pinned by its bytes:
 // the certificate kubelet wrote is accepted, any other is refused, and the
 // pin follows the file.
@@ -185,6 +450,118 @@ func TestKubeletPodsPinsTheServingCertificate(t *testing.T) {
 	body, err := read(context.Background())
 	if err != nil || !strings.Contains(string(body), `"app"`) {
 		t.Fatalf("pinned certificate: %s %v", body, err)
+	}
+}
+
+// The commands drive Attest and Get: pod-attest prints the report and fails
+// on an expected set the pod did not measure; pod-status get prints the pod.
+func TestCommandsRunAttestAndGet(t *testing.T) {
+	cfg := attestFixture(t, []string{dA, dB}, []string{dA, dB}, nil)
+	flags := []string{"--node", cfg.Node, "--launch-key-pub", cfg.LaunchKeyPubPath, "--image-manifest", cfg.ImageManifestPath}
+
+	var out bytes.Buffer
+	attest := NewAttestCmd()
+	attest.SetOut(&out)
+	attest.SetArgs(append(slices.Clone(flags), "--expect-digest", dB, "--expect-digest", dA))
+	if err := attest.Execute(); err != nil {
+		t.Fatalf("pod-attest: %v", err)
+	}
+	var report Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || !slices.Equal(report.MeasuredDigests, []string{dA, dB}) {
+		t.Fatalf("pod-attest printed %s (%v)", out.String(), err)
+	}
+
+	attest = NewAttestCmd()
+	attest.SetOut(&out)
+	attest.SetErr(&out)
+	attest.SetArgs(append(slices.Clone(flags), "--expect-digest", dA))
+	if err := attest.Execute(); err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("pod-attest with a short expected set: %v", err)
+	}
+
+	out.Reset()
+	get := NewCmd()
+	get.SetOut(&out)
+	get.SetArgs(append([]string{"get"}, flags...))
+	if err := get.Execute(); err != nil || !strings.Contains(out.String(), `"app"`) {
+		t.Fatalf("pod-status get: %s %v", out.String(), err)
+	}
+}
+
+// A guest built from another revision names another report-data
+// convention; the client refuses rather than failing on a REPORT_DATA
+// mismatch it cannot explain.
+func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(&headerRewriter{ResponseWriter: w, name: BindingHeader, value: "armtls-key-nonce/v0"}, r)
+		})
+	})
+	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `needs "armtls-key-nonce/v1"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+type headerRewriter struct {
+	http.ResponseWriter
+	name, value string
+}
+
+func (h *headerRewriter) WriteHeader(code int) {
+	h.ResponseWriter.Header().Set(h.name, h.value)
+	h.ResponseWriter.WriteHeader(code)
+}
+
+func (h *headerRewriter) Write(b []byte) (int, error) {
+	h.ResponseWriter.Header().Set(h.name, h.value)
+	return h.ResponseWriter.Write(b)
+}
+
+// The measured list must arrive as a 200 with a JSON body.
+func TestAttestRejectsBrokenMeasurements(t *testing.T) {
+	for name, respond := range map[string]func(http.ResponseWriter){
+		"unavailable": func(w http.ResponseWriter) { http.Error(w, "measurements unavailable", http.StatusServiceUnavailable) },
+		"not json":    func(w http.ResponseWriter) { _, _ = w.Write([]byte("digests")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := attestFixture(t, []string{dA}, []string{dA}, nil, func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == MeasurementsPath {
+						respond(w)
+						return
+					}
+					next.ServeHTTP(w, r)
+				})
+			})
+			if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "measurements") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+// The pin needs a TLS transport to hang on and a key it can encode.
+func TestPinServingKeyFailsClosed(t *testing.T) {
+	key := ecdsaCert(t).PrivateKey.(*ecdsa.PrivateKey).Public()
+	if _, err := pinServingKey(&http.Client{Transport: roundTripper(func(*http.Request) (*http.Response, error) { return nil, nil })}, key); err == nil || !strings.Contains(err.Error(), "no TLS transport") {
+		t.Fatalf("non-TLS transport: %v", err)
+	}
+	if _, err := pinServingKey(&http.Client{Transport: &http.Transport{}}, "not a key"); err == nil || !strings.Contains(err.Error(), "pin serving key") {
+		t.Fatalf("unencodable key: %v", err)
+	}
+}
+
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Every attested request must arrive over TLS; a plain answer carries no
+// serving key to bind evidence to.
+func TestDoRequiresTLS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
+	t.Cleanup(srv.Close)
+	if _, err := do(context.Background(), srv.Client(), http.MethodGet, srv.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "did not arrive over TLS") {
+		t.Fatalf("got %v", err)
 	}
 }
 
