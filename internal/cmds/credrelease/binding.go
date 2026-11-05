@@ -40,6 +40,14 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 // boot.
 var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 
+// ErrRegisterDoesNotReplay marks a register that is not the staged key's seed
+// extended with a prefix of the measured list: the key is not the one the
+// launch bound, or the register took an extend the list does not record.
+// Neither mends before a reboot, so a caller that keeps running may treat it
+// as final. Every other failure of LoadMeasuredOperatorKey is a read or
+// attestation error a retry can clear.
+var ErrRegisterDoesNotReplay = errors.New("the register is not the staged key's seed extended with a prefix of the measured list")
+
 // ReadOperatorPubkey reads the operator public key the initrd staged off the
 // opkeydata disk. The bytes are exactly what the initrd hashed into the launch
 // binding, so runtimemeasure can re-derive the same digest. Absence is
@@ -248,8 +256,10 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, jour
 // does at every verifier.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
 	return matchJournalPrefix(journal, func(policies []string) error {
-		_, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies)
-		return err
+		if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
+			return fmt.Errorf("%w: %w", ErrRegisterDoesNotReplay, err)
+		}
+		return nil
 	})
 }
 
