@@ -75,7 +75,7 @@ func (f *recoveryFixture) enroll(c *cluster) {
 	c.awaitStatus(c.replicas[0])
 	f.verifier = c.attestationAPI("recovery-authority", testutil.TestMeasurement)
 	hash := sha256.Sum256(c.config)
-	policy := cdsrecovery.Enrollment{Identity: cdsrecovery.Identity{ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix},
+	policy := cdsrecovery.Enrollment{Identity: cdsrecovery.Identity{ClusterID: c.id(), ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix},
 		Pins: []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config)))}
 	for _, r := range c.replicas {
 		policy.Origins = append(policy.Origins, r.base)
@@ -114,7 +114,7 @@ func (f *recoveryFixture) restore(c *cluster) {
 		c.t.Fatal(err)
 	}
 	hash := sha256.Sum256(c.config)
-	expected := cdsrecovery.Identity{ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix}
+	expected := cdsrecovery.Identity{ClusterID: c.id(), ConfigSHA256: hex.EncodeToString(hash[:]), Prefix: c.objectWAL.config.Prefix}
 	if f.currentPolicy {
 		f.restoreCurrent(c, expected, record)
 		return
@@ -137,7 +137,7 @@ func (f *recoveryFixture) grant(c *cluster, r *replica, key []byte, initialize b
 		c.t.Fatal(err)
 	}
 	g, err := cdsrecovery.Release(c.t.Context(), cdsrecovery.Identity{
-		ClusterID: clusterID, ConfigSHA256: hex.EncodeToString(h[:]), Prefix: c.objectWAL.config.Prefix,
+		ClusterID: c.id(), ConfigSHA256: hex.EncodeToString(h[:]), Prefix: c.objectWAL.config.Prefix,
 	}, cdsrecovery.Target{Origin: r.base, AttestationURL: f.verifier, Images: []remote.ImagePin{{Digest: digest, LaunchFile: c.config}}},
 		cdsrecovery.Material{Key: key, AllowGenesis: initialize}, signer)
 	if err != nil {

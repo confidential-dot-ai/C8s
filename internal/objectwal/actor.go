@@ -108,16 +108,18 @@ type observation struct {
 // Go's channel implementation has its own synchronization: this is an actor
 // design, not a claim of formal lock-free progress during storage IO.
 type Log struct {
-	inbox         chan *request
-	stopping      chan struct{}
-	done          chan struct{}
-	wake          chan struct{}
-	cancel        context.CancelFunc
-	options       Options
-	view          atomic.Pointer[observation]
-	admitted      atomic.Uint64
-	admittedBytes atomic.Int64
-	rejected      atomic.Uint64
+	inbox             chan *request
+	stopping          chan struct{}
+	done              chan struct{}
+	wake              chan struct{}
+	cancel            context.CancelFunc
+	options           Options
+	view              atomic.Pointer[observation]
+	admitted          atomic.Uint64
+	admittedBytes     atomic.Int64
+	peakAdmitted      atomic.Uint64
+	peakAdmittedBytes atomic.Int64
+	rejected          atomic.Uint64
 }
 
 const admissionClosed = uint64(1) << 63
@@ -151,6 +153,7 @@ func (l *Log) Stats() Stats {
 	s := l.view.Load().stats
 	s.Admitted, s.AdmittedBytes, s.Rejected = int64(l.admitted.Load() & ^admissionClosed), l.admittedBytes.Load(), l.rejected.Load()
 	s.AdmissionLimit, s.AdmissionByteLimit = l.options.QueueCapacity, l.options.QueueBytes
+	s.PeakAdmitted, s.PeakAdmittedBytes = l.peakAdmitted.Load(), l.peakAdmittedBytes.Load()
 	return s
 }
 
@@ -233,7 +236,7 @@ func (l *Log) submitRequest(ctx context.Context, kind operation, payload []byte,
 			size += int64(len(e.Payload))
 		}
 	}
-	if !reserve(&l.admittedBytes, size, l.options.QueueBytes) {
+	if !reserve(&l.admittedBytes, &l.peakAdmittedBytes, size, l.options.QueueBytes) {
 		l.releaseSlot()
 		l.rejected.Add(1)
 		return nil, ErrBackpressure
@@ -297,6 +300,13 @@ func (l *Log) admit() error {
 			return ErrBackpressure
 		}
 		if l.admitted.CompareAndSwap(held, held+1) {
+			// Record the successful reservation value, not a later observation
+			// which could miss a concurrent completion. Closed is not a slot.
+			for peak := l.peakAdmitted.Load(); peak < held+1; peak = l.peakAdmitted.Load() {
+				if l.peakAdmitted.CompareAndSwap(peak, held+1) {
+					break
+				}
+			}
 			return nil
 		}
 	}
@@ -310,13 +320,18 @@ func (l *Log) releaseSlot() {
 	}
 }
 
-func reserve(counter *atomic.Int64, amount, limit int64) bool {
+func reserve(counter, highWater *atomic.Int64, amount, limit int64) bool {
 	for {
 		old := counter.Load()
 		if amount > limit-old {
 			return false
 		}
 		if counter.CompareAndSwap(old, old+amount) {
+			for peak := highWater.Load(); peak < old+amount; peak = highWater.Load() {
+				if highWater.CompareAndSwap(peak, old+amount) {
+					break
+				}
+			}
 			return true
 		}
 	}

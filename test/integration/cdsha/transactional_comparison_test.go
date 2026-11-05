@@ -24,25 +24,26 @@ import (
 
 type transactionalResult struct {
 	comparisonResult
-	Workload               string      `json:"workload"`
-	Repeat                 int         `json:"repeat"`
-	MetadataLatencyMS      int         `json:"metadata_added_request_latency_ms"`
-	P95AllMS               float64     `json:"p95_all_outcomes_ms"`
-	ObjectGets             uint64      `json:"object_gets"`
-	ObjectPuts             uint64      `json:"object_puts"`
-	MetadataReads          uint64      `json:"metadata_reads"`
-	MetadataWrites         uint64      `json:"metadata_writes"`
-	MetadataCommits        uint64      `json:"metadata_commits"`
-	MetadataConflicts      uint64      `json:"metadata_conflicts"`
-	ReplayChecks           int         `json:"replay_checks"`
-	SurvivedProcessLoss    bool        `json:"survived_process_loss"`
-	RevocationVerified     bool        `json:"revocation_verified"`
-	RevocationMS           float64     `json:"revocation_ms"`
-	StaleReleaseReads      int         `json:"stale_release_reads"`
-	RevocationContract     string      `json:"revocation_contract"`
-	RecoveryErrors         map[int]int `json:"recovery_errors"`
-	SlowestRecoveryProbeMS float64     `json:"slowest_recovery_probe_ms"`
-	FailoverReadyMS        float64     `json:"failover_ready_ms"`
+	Runtime                *scaleRuntime `json:"runtime,omitempty"`
+	Workload               string        `json:"workload"`
+	Repeat                 int           `json:"repeat"`
+	MetadataLatencyMS      int           `json:"metadata_added_request_latency_ms"`
+	P95AllMS               float64       `json:"p95_all_outcomes_ms"`
+	ObjectGets             uint64        `json:"object_gets"`
+	ObjectPuts             uint64        `json:"object_puts"`
+	MetadataReads          uint64        `json:"metadata_reads"`
+	MetadataWrites         uint64        `json:"metadata_writes"`
+	MetadataCommits        uint64        `json:"metadata_commits"`
+	MetadataConflicts      uint64        `json:"metadata_conflicts"`
+	ReplayChecks           int           `json:"replay_checks"`
+	SurvivedProcessLoss    bool          `json:"survived_process_loss"`
+	RevocationVerified     bool          `json:"revocation_verified"`
+	RevocationMS           float64       `json:"revocation_ms"`
+	StaleReleaseReads      int           `json:"stale_release_reads"`
+	RevocationContract     string        `json:"revocation_contract"`
+	RecoveryErrors         map[int]int   `json:"recovery_errors"`
+	SlowestRecoveryProbeMS float64       `json:"slowest_recovery_probe_ms"`
+	FailoverReadyMS        float64       `json:"failover_ready_ms"`
 }
 
 type comparisonWrite struct {
@@ -138,6 +139,7 @@ func TestTransactionalComparison(t *testing.T) {
 							w.setPolicy(true)
 							c.waitFor("initial workload policy on all replicas", time.Minute, func() bool { return c.allServe("pilot-workload") })
 							w.issue(c.replicas[0], c.replicas[1])
+							originalCA := c.servedCA(c.replicas[0])
 							sentinel := jsonBody(t, secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("load-test-sentinel"))})
 							if code, _ := c.put(c.replicas[0], "/secrets/pilot/comparison-sentinel", sentinel); code != http.StatusCreated {
 								t.Fatalf("sentinel create: HTTP %d", code)
@@ -251,6 +253,7 @@ func TestTransactionalComparison(t *testing.T) {
 									r.MetadataConflicts = after.Conflicts - metaBefore.Conflicts
 								}
 							}
+							r.Runtime = c.scaleRuntime()
 							stage = "recovery"
 							// Latency settings stay active for convergence, replay and failover.
 							c.waitServing(time.Minute)
@@ -296,11 +299,7 @@ func TestTransactionalComparison(t *testing.T) {
 									}
 								}
 							}
-							c.restart(lost)
-							if f != nil {
-								c.provisionObjects(lost)
-							}
-							c.waitServing(time.Minute)
+							c.measureRestart(lost, r.Runtime, originalCA)
 							r.SurvivedProcessLoss = true
 							stage = "release-and-revocation"
 							w.setPolicy(true)

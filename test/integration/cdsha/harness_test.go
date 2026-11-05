@@ -184,6 +184,8 @@ type shape struct {
 // boot and the replica processes.
 type cluster struct {
 	t          *testing.T
+	name       string // Empty preserves the original lane fixture.
+	hostOffset int    // Distinct loopback seats for concurrent independent clusters.
 	dir        string
 	config     []byte
 	configPath string
@@ -305,6 +307,15 @@ func replicaHost(index int) string {
 	return replicaNet + strconv.Itoa(index+1)
 }
 
+func (c *cluster) id() string {
+	if c.name != "" {
+		return c.name
+	}
+	return clusterID
+}
+
+func (c *cluster) replicaHost(index int) string { return replicaHost(index + c.hostOffset) }
+
 // newCluster boots the replicas of a cluster of this shape, decrees the
 // Genesis of the first, and returns once every replica serves.
 func newCluster(t *testing.T, size shape) *cluster {
@@ -317,8 +328,15 @@ func newClusterWithObjects(t *testing.T, size shape, objects *objectFixture) *cl
 }
 
 func newClusterWithNodes(t *testing.T, size shape, objects *objectFixture, nodes string, nodeCIDRs []string) *cluster {
+	return newClusterWithNodesAt(t, size, objects, nodes, nodeCIDRs, "", 0)
+}
+
+func newClusterWithNodesAt(t *testing.T, size shape, objects *objectFixture, nodes string, nodeCIDRs []string, name string, offset int) *cluster {
 	t.Helper()
-	c := &cluster{t: t, dir: t.TempDir(), objectWAL: objects}
+	if offset < 0 || offset+size.replicas > 254 {
+		t.Fatal("invalid loopback cluster allocation")
+	}
+	c := &cluster{t: t, dir: t.TempDir(), objectWAL: objects, name: name, hostOffset: offset}
 	c.requireFreeAddresses(size.replicas)
 	c.operator = newKey(t)
 	c.signer = c.operatorSigner()
@@ -358,7 +376,7 @@ func (c *cluster) requireFreeAddresses(replicas int) {
 	c.t.Helper()
 	for i := range replicas {
 		for _, port := range []int{clientPort, peerPort} {
-			address := net.JoinHostPort(replicaHost(i), strconv.Itoa(port))
+			address := net.JoinHostPort(c.replicaHost(i), strconv.Itoa(port))
 			listener, err := net.Listen("tcp", address)
 			if err != nil {
 				c.t.Fatalf("the harness needs %s free: %v", address, err)
@@ -374,7 +392,7 @@ func (c *cluster) configure(size shape, nodes string, nodeCIDRs []string) {
 	c.t.Helper()
 	addresses := make([]string, 0, size.replicas)
 	for i := range size.replicas {
-		addresses = append(addresses, replicaHost(i))
+		addresses = append(addresses, c.replicaHost(i))
 	}
 	ha := map[string]any{"replicas": addresses, "voters": size.voters}
 	if c.objectWAL != nil {
@@ -382,14 +400,14 @@ func (c *cluster) configure(size shape, nodes string, nodeCIDRs []string) {
 	}
 	document, err := yaml.Marshal(map[string]any{
 		"schemaVersion":      cdsconfig.SchemaVersion,
-		"clusterID":          clusterID,
+		"clusterID":          c.id(),
 		"operatorPublicKeys": string(publicKeyPEM(c.t, &c.operator.PublicKey)),
 		"workloads": `{"schema":"c8s.allowlist/v1","workloads":{"` + seededWorkload +
 			`":{"label":"ghcr.io/x/` + seededWorkload + `:v1","containers":[{"digest":"sha256:` +
 			strings.Repeat("11", 32) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
 		"nodes":        nodes,
 		"nodeCIDRs":    nodeCIDRs,
-		"leafDNSNames": []string{"workload." + clusterID + ".svc"},
+		"leafDNSNames": []string{"workload." + c.id() + ".svc"},
 		"ha":           ha,
 	})
 	if err != nil {
@@ -406,7 +424,7 @@ func (c *cluster) start(i int) *replica {
 	c.t.Helper()
 	r := &replica{
 		index:  i,
-		host:   replicaHost(i),
+		host:   c.replicaHost(i),
 		db:     filepath.Join(c.dir, fmt.Sprintf("allowlist-%d.db", i)),
 		apiURL: c.attestationAPI(fmt.Sprintf("replica-%d", i), testutil.TestMeasurement),
 	}
@@ -460,7 +478,7 @@ func (c *cluster) restart(r *replica) {
 		"--secrets-max-paths", "20000",
 		"--log-level", "debug",
 	}
-	if os.Getenv("CDSHA_TRANSACTIONAL_COMPARE") == "1" {
+	if os.Getenv("CDSHA_TRANSACTIONAL_COMPARE") == "1" || os.Getenv("CDSHA_SCALE_COMPARE") == "1" {
 		// Isolate backend admission/commit costs from the default per-IP
 		// front-door limiter. All comparison arms use the same explicit budget.
 		args = append(args, "--rate-limit", "10000", "--rate-burst", "10000")
@@ -583,7 +601,7 @@ func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion
 		c.t.Fatal(err)
 	}
 	genesis := cdsdecree.Decree{
-		ClusterID:     clusterID,
+		ClusterID:     c.id(),
 		IntentID:      cdsdecree.NewIntentID(),
 		Kind:          cdsdecree.Genesis,
 		ExpiresAt:     time.Now().Add(time.Hour),
@@ -628,7 +646,7 @@ func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
 func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, cdsha.Delivered) {
 	c.t.Helper()
 	decree := cdsdecree.Decree{
-		ClusterID:   clusterID,
+		ClusterID:   c.id(),
 		IntentID:    cdsdecree.NewIntentID(),
 		Kind:        cdsdecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
@@ -643,7 +661,7 @@ func (c *cluster) decreePins(to *replica, version uint64, measurements ...string
 func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Delivered {
 	c.t.Helper()
 	return c.decree(to, cdsdecree.Decree{
-		ClusterID:    clusterID,
+		ClusterID:    c.id(),
 		IntentID:     cdsdecree.NewIntentID(),
 		Kind:         cdsdecree.Admit,
 		ExpiresAt:    time.Now().Add(time.Hour),
@@ -660,7 +678,7 @@ func (c *cluster) decreeNodeImages(to *replica, version uint64, document string)
 		c.t.Fatal(err)
 	}
 	decree := cdsdecree.Decree{
-		ClusterID:   clusterID,
+		ClusterID:   c.id(),
 		IntentID:    cdsdecree.NewIntentID(),
 		Kind:        cdsdecree.SetNodeImages,
 		ExpiresAt:   time.Now().Add(time.Hour),
@@ -721,7 +739,7 @@ func (c *cluster) allAtNodeImagesVersion(version uint64) bool {
 func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.Delivered) {
 	c.t.Helper()
 	decree := cdsdecree.Decree{
-		ClusterID:   clusterID,
+		ClusterID:   c.id(),
 		IntentID:    cdsdecree.NewIntentID(),
 		Kind:        cdsdecree.RotateKey,
 		ExpiresAt:   time.Now().Add(time.Hour),
@@ -831,7 +849,7 @@ func (c *cluster) waitEveryReplicaJoined(within time.Duration) {
 func (c *cluster) decreeVoters(to *replica, version uint64, seats int) (string, cdsha.Delivered) {
 	c.t.Helper()
 	decree := cdsdecree.Decree{
-		ClusterID:   clusterID,
+		ClusterID:   c.id(),
 		IntentID:    cdsdecree.NewIntentID(),
 		Kind:        cdsdecree.SetVoters,
 		ExpiresAt:   time.Now().Add(time.Hour),

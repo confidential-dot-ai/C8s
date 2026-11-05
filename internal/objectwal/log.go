@@ -67,6 +67,8 @@ type Stats struct {
 	LargestBatch       uint64 `json:"largest_batch"`
 	Admitted           int64  `json:"admitted"`
 	AdmittedBytes      int64  `json:"admitted_bytes"`
+	PeakAdmitted       uint64 `json:"peak_admitted"`
+	PeakAdmittedBytes  int64  `json:"peak_admitted_bytes"`
 	AdmissionLimit     int    `json:"admission_limit"`
 	AdmissionByteLimit int64  `json:"admission_byte_limit"`
 	Rejected           uint64 `json:"rejected"`

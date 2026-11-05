@@ -142,7 +142,7 @@ func TestBackpressureIncludesActiveWorkAndCanceledQueueEntries(t *testing.T) {
 	if c.Index != 2 || strings.Join(c.Values, ",") != "aa,cc" {
 		t.Fatalf("canceled request applied: %+v", c)
 	}
-	if stats := l.Stats(); stats.Admitted != 0 || stats.AdmittedBytes != 0 || stats.Rejected != 1 {
+	if stats := l.Stats(); stats.Admitted != 0 || stats.AdmittedBytes != 0 || stats.Rejected != 1 || stats.PeakAdmitted != 3 || stats.PeakAdmittedBytes != 6 {
 		t.Fatalf("bad accounting: %+v", stats)
 	}
 }
