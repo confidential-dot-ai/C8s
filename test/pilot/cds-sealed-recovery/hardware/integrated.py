@@ -212,6 +212,83 @@ class Integrated(Run):
         grant = json.dumps(reply["result"]["custody"]).encode()
         return {"id": request["id"], "status": 200, "data": base64.b64encode(grant).decode()}
 
+    def storage_actor(self, port, phase, parameters, collateral, stop, failures, statistics):
+        # Four connection owners perform network I/O; this actor alone owns the
+        # SQLite connection, CAS order, counters and trace. Every reply waits for
+        # FULL durable commit. All messages and outstanding operations are bounded.
+        mailbox = queue.Queue(maxsize=16)
+
+        def fail(error):
+            if not stop.is_set():
+                try: failures.put_nowait(str(error))
+                except queue.Full: pass
+                stop.set()
+
+        def send(message):
+            while not stop.is_set():
+                try: mailbox.put(message, timeout=0.1); return True
+                except queue.Full: pass
+            return False
+
+        def transport():
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=25)
+            try:
+                while not stop.is_set():
+                    code, request = self.http(port, "GET", "/v1/storage", connection=connection)
+                    if code == 204: continue
+                    need(code == 200, "storage poll failed")
+                    received = time.monotonic()
+                    answer = queue.Queue(maxsize=1)
+                    if not send(("request", request, answer, received)): return
+                    while not stop.is_set():
+                        try: response, commit_ms, queue_ms = answer.get(timeout=0.1); break
+                        except queue.Empty: pass
+                    else: return
+                    started = time.monotonic()
+                    code, _ = self.http(port, "POST", "/v1/storage", response, connection=connection)
+                    need(code in (204, 409), "storage response failed")
+                    send(("completed", {"method": request["method"], "key": request["path"], "commit_ms": commit_ms,
+                        "queue_ms": queue_ms, "reply_ms": (time.monotonic()-started)*1000, "completion_status": code}))
+            except Exception as error:
+                fail(error)
+            finally:
+                connection.close()
+
+        store, trace, workers = None, None, []
+        try:
+            store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
+            trace = (self.directory / (phase + "-storage-timings.jsonl")).open("w")
+            for _ in range(4):
+                worker = threading.Thread(target=transport, daemon=True)
+                workers.append(worker)
+                worker.start()
+            while not stop.is_set():
+                try: message = mailbox.get(timeout=0.1)
+                except queue.Empty: continue
+                if message[0] == "completed":
+                    trace.write(json.dumps(message[1]) + "\n")
+                    trace.flush()
+                    continue
+                _, request, answer, received = message
+                started = time.monotonic()
+                response = self.delegate(phase, request, parameters, collateral) if request["method"] == "CUSTODY" else store.answer(request)
+                answer.put_nowait((response, (time.monotonic()-started)*1000, (started-received)*1000))
+        except Exception as error:
+            fail(error)
+        finally:
+            stop.set()
+            deadline = time.monotonic() + 27
+            for worker in workers: worker.join(timeout=max(0, deadline-time.monotonic()))
+            if any(worker.is_alive() for worker in workers):
+                try: failures.put_nowait("storage transport did not stop")
+                except queue.Full: pass
+            if trace is not None: trace.close()
+            counters = {"reads": 0, "writes": 0, "conflicts": 0}
+            if store is not None:
+                counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
+                store.close()
+            statistics.put(counters)
+
     def phase(self, vm, phase, launch, parameters, collateral):
         port = self.tunnel(vm, phase)
         request = {"operation": phase, "nonce": base64.b64encode(secrets.token_bytes(32)).decode(), "measurement": self.state["measurement"], "parameters": parameters}
@@ -222,38 +299,7 @@ class Integrated(Run):
         failures = queue.Queue(maxsize=1)
         statistics = queue.Queue(maxsize=1)
 
-        def serve_storage():
-            store = None
-            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=25)
-            trace = (self.directory / (phase + "-storage-timings.jsonl")).open("w")
-            try:
-                store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
-                while not stop.is_set():
-                    code, q = self.http(port, "GET", "/v1/storage", connection=connection)
-                    if code == 204:
-                        continue
-                    need(code == 200, "storage poll failed")
-                    started = time.monotonic()
-                    response = self.delegate(phase, q, parameters, collateral) if q["method"] == "CUSTODY" else store.answer(q)
-                    committed = time.monotonic()
-                    code, _ = self.http(port, "POST", "/v1/storage", response, connection=connection)
-                    need(code in (204, 409), "storage response failed")
-                    trace.write(json.dumps({"method": q["method"], "key": q["path"], "commit_ms": (committed-started)*1000,
-                        "reply_ms": (time.monotonic()-committed)*1000, "completion_status": code}) + "\n")
-                    trace.flush()
-            except Exception as error:
-                if not stop.is_set():
-                    failures.put(str(error))
-            finally:
-                connection.close()
-                trace.close()
-                counters = {"reads": 0, "writes": 0, "conflicts": 0}
-                if store is not None:
-                    counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
-                    store.close()
-                statistics.put(counters)
-
-        worker = threading.Thread(target=serve_storage, daemon=True)
+        worker = threading.Thread(target=self.storage_actor, args=(port, phase, parameters, collateral, stop, failures, statistics), daemon=True)
         worker.start()
         status_connection = http.client.HTTPConnection("127.0.0.1", port, timeout=25)
         try:
@@ -281,9 +327,14 @@ class Integrated(Run):
         finally:
             status_connection.close()
             stop.set()
-            worker.join(timeout=27)
+            worker.join(timeout=32)
             need(not worker.is_alive(), "storage worker did not stop")
             self.event("external-storage", phase=phase, **statistics.get_nowait())
+            try:
+                failure = failures.get_nowait()
+            except queue.Empty:
+                failure = None
+            need(failure is None, "external durable store failed: " + str(failure))
         self.command(phase + "-verify", [self.args.probe, "-request", str(self.directory / (phase + "-request.json")), "-reply", str(self.directory / (phase + "-reply.json")), "-launch", str(launch), "-receipt", str(self.directory / (phase + "-receipt.json")), "-collateral", str(self.directory / (phase + "-collateral.json"))], timeout=60)
         receipt = json.loads((self.directory / (phase + "-receipt.json")).read_text())
         self.event("cds-phase-passed", phase=phase, checks=receipt["result"].get("checks", {}))

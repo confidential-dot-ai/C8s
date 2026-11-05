@@ -2,6 +2,7 @@ import base64
 import http.client
 import http.server
 import queue
+import sqlite3
 import threading
 from pathlib import Path
 import tempfile
@@ -107,6 +108,53 @@ class TunnelKeepaliveTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+class StorageActorTests(unittest.TestCase):
+    def test_concurrent_transports_keep_one_durable_cas_winner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stop = threading.Event()
+            requests, replies = queue.Queue(maxsize=4), queue.Queue(maxsize=4)
+            barrier = threading.Barrier(4, timeout=3)
+            class Actor(Integrated):
+                def __init__(self):
+                    self.directory = Path(directory)
+                    self.state = {"prefix": "actor-test"}
+                def http(self, port, method, path, value=None, timeout=25, connection=None):
+                    if method == "POST":
+                        # Every acknowledgment must already survive an independent
+                        # reopen of the DB; network workers never own its writer.
+                        check = sqlite3.connect((self.directory / "objects.sqlite").as_uri() + "?mode=ro", uri=True)
+                        try:
+                            self.assert_persisted(check, value)
+                        finally:
+                            check.close()
+                        replies.put_nowait(value)
+                        return 204, None
+                    if not getattr(connection, "actor_test_ready", False):
+                        connection.actor_test_ready = True
+                        barrier.wait()
+                    try: return 200, requests.get(timeout=0.05)
+                    except queue.Empty: return 204, None
+                def assert_persisted(self, check, value):
+                    got = check.execute("SELECT version FROM objects WHERE path=?", ("/pilot/actor-test/head",)).fetchone()
+                    if got is None: raise AssertionError("reply before durable commit")
+                    if value["status"] == 200 and f'"{got[0]}"' != value["etag"]: raise AssertionError("winner was overwritten")
+            for n in range(4):
+                requests.put({"id": n, "method": "PUT", "path": "/pilot/actor-test/head", "absent": "*", "data": base64.b64encode(bytes([n])).decode()})
+            failures, stats = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+            actor = Actor()
+            worker = threading.Thread(target=actor.storage_actor, args=(0, "test", {}, {}, stop, failures, stats), daemon=True)
+            worker.start()
+            try:
+                results = [replies.get(timeout=5) for _ in range(4)]
+                self.assertEqual(sorted(x["status"] for x in results), [200, 412, 412, 412])
+            finally:
+                stop.set()
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(failures.empty())
+            self.assertEqual(stats.get_nowait(), {"reads": 0, "writes": 1, "conflicts": 3})
 
 
 if __name__ == "__main__": unittest.main()
