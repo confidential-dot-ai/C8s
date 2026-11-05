@@ -80,6 +80,7 @@ type Wrapper struct {
 	// is granted beyond the node's default set
 	// (nriimagepolicy.CapabilityGrantDir).
 	CapGrantDir string
+	PIDGrantDir string
 	// CopyDir is where the checked process of an allowed exec is copied, on a
 	// filesystem every node has writable.
 	CopyDir string
@@ -104,6 +105,7 @@ func New(stderr io.Writer) Wrapper {
 		FloorError:   err,
 		ExecGrantDir: nriimagepolicy.ExecGrantDir,
 		CapGrantDir:  nriimagepolicy.CapabilityGrantDir,
+		PIDGrantDir:  nriimagepolicy.PIDNamespaceGrantDir,
 		CopyDir:      "/run",
 		Stdin:        os.Stdin,
 		Exec:         syscall.Exec,
@@ -169,7 +171,7 @@ func (w Wrapper) checkFloor(args []string) error {
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir)
+	return requireFloorWithPIDGrant(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir, w.PIDGrantDir)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,

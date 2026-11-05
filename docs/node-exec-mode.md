@@ -65,7 +65,9 @@ container the measured mesh policy covers holds more than the floor:
   capabilities;
 - none of the privileged marks: a device cgroup allowing every device, no
   masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`;
-- its own PID namespace, no user namespace or id mapping — the packet rules
+- its own PID namespace, or a proved application-only group under the
+  [signed process namespace policy](application-process-namespace.md), and no
+  user namespace or id mapping — the packet rules
   match the socket's UID in the initial user namespace — and an identity that is
   neither root nor an id reserved for another role;
 - a working directory that is not at or below a data or host mount (a
