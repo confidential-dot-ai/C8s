@@ -136,10 +136,13 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 
 // hosts reports a sandbox the enforcer protects: an API pod's own network
 // namespace, in a namespace trusted policy does not exempt. A static pod is
-// the node's own, whatever its namespace.
+// the node's own, whatever its namespace, except on a Pod guest, whose kubelet
+// runs the tenant's workload as its static pod.
 func (g *meshGate) hosts(pod *api.PodSandbox) bool {
-	return !staticPod(pod) &&
-		!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+	if staticPod(pod) && g.policy.Pod == nil {
+		return false
+	}
+	return !slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
 		podNetworkNamespace(pod) != ""
 }
 
