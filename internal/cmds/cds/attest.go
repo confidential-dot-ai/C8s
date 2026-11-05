@@ -34,9 +34,11 @@ import (
 // AttestHandler serves POST /attest by verifying TEE evidence and signing the
 // requester's CSR in-process.
 //
-// THREAT MODEL: the node image check is the only thing standing between an
+// THREAT MODEL: the image check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. A set that names no node image admits nobody.
+// they choose: the pinned node set for a node, PodImages for a Pod whose
+// claims the quote binds. Each gate is independent of the other and a set
+// that names no image admits nobody.
 type AttestHandler struct {
 	Challenges        attestation.Challenges
 	AttestationClient remote.Client
@@ -127,9 +129,16 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
+	// The route's capBody bounds the body; a body over that bound is a size
+	// error, not malformed JSON.
 	var req types.AttestRequestBody
-	raw, readErr := io.ReadAll(io.LimitReader(r.Body, (2<<20)+1))
-	if readErr != nil || len(raw) > 2<<20 || strictjson.Validate(raw) != nil {
+	raw, readErr := io.ReadAll(r.Body)
+	var tooLarge *http.MaxBytesError
+	if errors.As(readErr, &tooLarge) {
+		attestation.WriteError(w, http.StatusRequestEntityTooLarge, types.ErrorCodeInvalidRequest, "attestation request exceeds the request size limit")
+		return
+	}
+	if readErr != nil || strictjson.Validate(raw) != nil {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return
 	}
@@ -236,7 +245,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
 	if pod != nil {
 		if err := enforcePodImages(verifyResp, h.PodImages, req.Evidence.Platform, pod.RuntimeExtensions); err != nil {
-			slog.Warn("Pod identity does not match policy", "error", err)
+			slog.Warn("Pod identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "Pod identity not allowed")
 			return
 		}
