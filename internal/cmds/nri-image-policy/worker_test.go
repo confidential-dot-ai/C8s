@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -70,7 +69,6 @@ func TestWorkerConfigValidation(t *testing.T) {
 		{"an audited sandbox", func(c *config) { c.Policy.Sandbox = SandboxAudit }, "policy.sandbox"},
 		{"containers without an image annotation", func(c *config) { c.Policy.DenyMissingAnnotation = false }, "deny_missing_annotation"},
 		{"a mesh-exempt namespace", func(c *config) { c.Mesh.ExemptNamespaces = []string{"kube-system"} }, "mesh.exempt_namespaces"},
-		{"a mesh exit", func(c *config) { c.Mesh.Exits = []netip.AddrPort{netip.MustParseAddrPort("10.43.0.11:8080")} }, "mesh.exits"},
 		{"a credential attestation port", func(c *config) { c.Mesh.CredentialAttestationPort = 8400 }, "credential_attestation_port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +101,9 @@ func TestCheckWorkerConfig(t *testing.T) {
 		{"no worker key", strings.Replace(workerDocument, "\nworker: true\n", "\n", 1), "worker: true"},
 		{"a config marked as no worker", strings.Replace(workerDocument, "\nworker: true\n", "\nworker: false\n", 1), "worker: true"},
 		{"a refused worker", strings.Replace(workerDocument, "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", 1), "worker requires no mesh.exempt_namespaces"},
+		// The gate reaches each exit uncaptured, so a config naming one is a
+		// key the plugin does not read, not a destination it honours.
+		{"a mesh exit", strings.Replace(workerDocument, "\nmesh:\n", "\nmesh:\n  exits: [\"10.43.0.11:8080\"]\n", 1), "field exits not found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := CheckWorkerConfig([]byte(tc.config))

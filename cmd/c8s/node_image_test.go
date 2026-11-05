@@ -40,7 +40,6 @@ var (
 	nodeImageTestInitDigest   = "sha256:" + strings.Repeat("c", 64)
 	nodeImageTestMeshDigest   = "sha256:" + strings.Repeat("d", 64)
 	nodeImageTestRouterDigest = "sha256:" + strings.Repeat("e", 64)
-	nodeImageTestKSMDigest    = "sha256:" + strings.Repeat("9", 64)
 	// A digest no bootstrap seed entry names.
 	nodeImageTestUnseededDigest = "sha256:" + strings.Repeat("f", 64)
 )
@@ -170,24 +169,29 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			images := strings.Fields(string(imageList))
-			if len(images) != 4 || !slices.IsSorted(images) {
-				t.Fatalf("image inventory must contain the three sorted core images and kube-state-metrics, got %v", images)
+			// The node preloads the operator, the injected endpoint and the
+			// front door, each at the digest this render names, and nothing
+			// else: the CDS runs on a VM of its own, and every other image a
+			// pod runs is pulled.
+			routerImage, err := os.ReadFile(filepath.Join(out, "router-image.txt"))
+			if err != nil {
+				t.Fatal(err)
 			}
-			// The CDS runs on a VM of its own, so no CDS image is preloaded.
-			if slices.ContainsFunc(images, func(image string) bool { return strings.Contains(image, "/cds@") }) {
-				t.Errorf("image inventory preloads a CDS image: %v", images)
+			// The inventory names every image canonically; the render names
+			// the front door as the chart writes it.
+			frontDoor, err := reference.ParseDockerRef(strings.TrimSpace(string(routerImage)))
+			if err != nil {
+				t.Fatal(err)
 			}
-			for _, image := range []string{
-				"registry.example.com/c8s-operator@" + testDigest,
+			wantImages := []string{
 				"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
-			} {
-				if !slices.Contains(images, image) {
-					t.Errorf("inventory missing overridden image %s", image)
-				}
+				"registry.example.com/c8s-operator@" + testDigest,
+				frontDoor.String(),
 			}
-			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
-				t.Error("inventory lost the router image override")
+			slices.Sort(wantImages)
+			images := strings.Fields(string(imageList))
+			if !slices.Equal(images, wantImages) {
+				t.Fatalf("image inventory = %v, want %v", images, wantImages)
 			}
 			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-router"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
@@ -249,14 +253,27 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 5 {
-				t.Errorf("seed has %d workloads, want the three core images, kube-state-metrics and the router pod", len(allowlist.Workloads))
-			}
+			// One entry per preloaded image, labelled by that image, plus the
+			// router pod's own shape entry: those are the launches CDS admits
+			// before it serves a policy of its own.
 			routerEntry := ""
-			for name := range allowlist.Workloads {
+			var labelled []string
+			for name, workload := range allowlist.Workloads {
 				if strings.HasPrefix(name, "c8s-router-") {
 					routerEntry = name
+					continue
 				}
+				labelled = append(labelled, workload.Label)
+			}
+			wantSeeded := []string{
+				"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+				"registry.example.com/c8s-operator@" + testDigest,
+				strings.TrimSpace(string(routerImage)),
+			}
+			slices.Sort(labelled)
+			slices.Sort(wantSeeded)
+			if !slices.Equal(labelled, wantSeeded) {
+				t.Errorf("seeded images = %v, want the preloaded ones %v", labelled, wantSeeded)
 			}
 			if routerEntry == "" {
 				t.Error("router pod entry missing from the baked seed")
@@ -370,6 +387,30 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 	}
 }
 
+// Nothing the measured render carries depends on the host containerd layout:
+// nriImagePolicy.distro configures the admission plugin's installer, which
+// this render leaves to the image. So the same objects come out whatever the
+// value says.
+func TestNodeImageRenderHoldsNoDistroDependentObject(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not installed")
+	}
+	// The worker image build's render: a node-image render with the digests
+	// that build resolves.
+	cfg := workerRenderConfig()
+	rendered := map[string][]byte{}
+	for _, distro := range []string{"k8s", "rke2"} {
+		out, err := renderNodeImageChart(context.Background(), cfg, []string{"--set-string", "nriImagePolicy.distro=" + distro})
+		if err != nil {
+			t.Fatalf("render with distro %s: %v", distro, err)
+		}
+		rendered[distro] = out
+	}
+	if !bytes.Equal(rendered["k8s"], rendered["rke2"]) {
+		t.Error("the measured render differs between containerd layouts, so it carries an object the host distro configures")
+	}
+}
+
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
 		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
@@ -398,11 +439,6 @@ func TestNodeImageCollectRequiresEachResourceWhereItBelongs(t *testing.T) {
 			"release resource in the router's namespace",
 			"name: c8s-operator\n  namespace: c8s-system", "name: c8s-operator\n  namespace: c8s-router",
 			`Deployment/c8s-operator has namespace "c8s-router", want "c8s-system"`,
-		},
-		{
-			"kube-state-metrics in the release namespace",
-			"name: kube-state-metrics\n  namespace: kube-system", "name: kube-state-metrics\n  namespace: c8s-system",
-			`Deployment/kube-state-metrics has namespace "c8s-system", want "kube-system"`,
 		},
 		{
 			"front door without an image",
@@ -465,19 +501,6 @@ spec:
           image: registry.example.com/operator@CORE_DIGEST
           command: ["/app/c8s"]
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kube-state-metrics
-  namespace: kube-system
-spec:
-  template:
-    spec:
-      containers:
-        - name: kube-state-metrics
-          image: registry.example.com/kube-state-metrics@KSM_DIGEST
-          command: ["/kube-state-metrics"]
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -531,7 +554,7 @@ metadata:
   name: c8s-allowlist-seed
   namespace: c8s-system
 data:
-  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"router":{"containers":[{"digest":"ROUTER_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"ksm":{"containers":[{"digest":"KSM_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
+  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"router":{"containers":[{"digest":"ROUTER_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
 ---
 # An empty trailing document is harmless.
 `
@@ -542,7 +565,6 @@ func nodeImageCollectFixture() string {
 		"INIT_DIGEST", nodeImageTestInitDigest,
 		"MESH_DIGEST", nodeImageTestMeshDigest,
 		"ROUTER_DIGEST", nodeImageTestRouterDigest,
-		"KSM_DIGEST", nodeImageTestKSMDigest,
 	).Replace(nodeImageCollectFixtureTemplate)
 }
 
@@ -616,7 +638,6 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	wantImages := []string{
 		"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
 		"registry.example.com/init@" + nodeImageTestInitDigest,
-		"registry.example.com/kube-state-metrics@" + nodeImageTestKSMDigest,
 		"registry.example.com/nginx@" + nodeImageTestRouterDigest,
 		"registry.example.com/operator@" + testDigest,
 	}
@@ -965,13 +986,11 @@ func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
 	initEntry := map[string]any{"digest": nodeImageTestInitDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	meshEntry := map[string]any{"digest": nodeImageTestMeshDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	routerEntry := map[string]any{"digest": nodeImageTestRouterDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
-	ksmEntry := map[string]any{"digest": nodeImageTestKSMDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	seed, err := json.Marshal(map[string]any{"schema": "c8s.allowlist/v1", "workloads": map[string]any{
 		"core":   map[string]any{"containers": []any{component, operatorEntry}},
 		"init":   map[string]any{"containers": []any{initEntry}},
 		"mesh":   map[string]any{"containers": []any{meshEntry}},
 		"router": map[string]any{"containers": []any{routerEntry}},
-		"ksm":    map[string]any{"containers": []any{ksmEntry}},
 	}})
 	if err != nil {
 		t.Fatal(err)

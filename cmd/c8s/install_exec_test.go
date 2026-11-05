@@ -765,12 +765,12 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	}
 
 	// An unstamped build resolves digests at the fallback tag, and only for
-	// components the bare-metal mode actually renders. nri-image-policy is among
-	// them: the baked installer runs from that image, and its digest is what
-	// derives it into the seed the node's plugin admits it from.
+	// components the bare-metal mode actually renders. The measured image
+	// carries the attestation-api and the admission plugin, so neither image
+	// is resolved here.
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
+	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy")
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
 	// The CDS runs outside the cluster, so the install deploys no CDS image.
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds")
@@ -785,11 +785,8 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	if got := treeAt(t, tree, "attestationApi", "enabled"); got != false {
 		t.Errorf("attestationApi.enabled = %#v, want false (baked into the node image)", got)
 	}
-	// The plugin is baked, but its installer stays on (chart default enabled) —
-	// it is the only path that writes this release's CDS pins into the baked
-	// config, so bare-metal mode flips the installer's shape, not its presence.
-	if got := treeAt(t, tree, "nriImagePolicy", "baked"); got != true {
-		t.Errorf("nriImagePolicy.baked = %#v, want true", got)
+	if got := treeAt(t, tree, "nriImagePolicy", "enabled"); got != false {
+		t.Errorf("nriImagePolicy.enabled = %#v, want false (the measured image carries the plugin)", got)
 	}
 	if got := treeAt(t, tree, "attestationApi", "teeDevices", "sevGuest"); got != true {
 		t.Errorf("teeDevices.sevGuest = %#v, want true", got)
@@ -1268,6 +1265,40 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 		t.Errorf("stderr missing the forced-past warning:\n%s", stderr)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+// The image-policy preflight follows the plugin this release renders, not the
+// cvm mode: a bare-metal install that renders the plugin enforces a policy on
+// the cluster's pods and must read them, and one that leaves admission to the
+// measured image reads nothing.
+func TestPreflightImagePolicyFollowsTheRenderedPlugin(t *testing.T) {
+	const podList = "kubectl get pods --all-namespaces -o json"
+	for _, tc := range []struct {
+		name           string
+		enabled, reads bool
+	}{
+		{"the chart installs the plugin", true, true},
+		{"the measured image carries it", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeBin(t)
+			f.tool(t, "kubectl", `case "$*" in "get pods --all-namespaces -o json") echo '{"items":[]}' ;; esac`)
+			values := map[string]any{
+				"attestationApi": map[string]any{"cvmMode": "bare-metal"},
+				"nriImagePolicy": map[string]any{
+					"enabled": tc.enabled,
+					"policy":  map[string]any{"mode": policyModeFailClosed},
+				},
+			}
+			warn, err := preflightImagePolicy(context.Background(), &bytes.Buffer{}, values, nil, "c8s-system", false)
+			if err != nil || warn != "" {
+				t.Fatalf("preflight = (%q, %v), want no finding for a cluster running no pods", warn, err)
+			}
+			if got := slices.Contains(f.calls(t), podList); got != tc.reads {
+				t.Fatalf("read the cluster's pods = %v, want %v; calls %q", got, tc.reads, f.calls(t))
+			}
+		})
+	}
 }
 
 // audit mode creates the container anyway, so there is nothing to refuse — and

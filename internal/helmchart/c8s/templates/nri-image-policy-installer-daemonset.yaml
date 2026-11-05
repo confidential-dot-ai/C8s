@@ -4,11 +4,6 @@ cluster trusts (cds.address), so operator `c8s allowlist add` writes reach
 admission.
 The name keeps the historical `-worker` suffix to preserve DaemonSet identity
 across upgrade; there is no longer a `-cds` counterpart.
-
-Under nriImagePolicy.baked (node-as-CVM) the node image already carries the
-plugin, its containerd registration and the boot config, so the same DaemonSet
-runs the policy-measurement script instead: it writes this release's switch
-into that config and restarts containerd when it changes.
 */}}
 {{- if .Values.nriImagePolicy.enabled }}
 ---
@@ -64,7 +59,7 @@ spec:
                       {{- toYaml .values | nindent 22 }}
                   {{- end }}
       initContainers:
-        {{- if and (eq .Values.nriImagePolicy.distro "rke2") (not .Values.nriImagePolicy.baked) }}
+        {{- if eq .Values.nriImagePolicy.distro "rke2" }}
         - name: containerd-prep
           image: {{ include "c8s-common.image" .Values.nriImagePolicy.containerdPrep.image }}
           imagePullPolicy: {{ .Values.nriImagePolicy.containerdPrep.image.pullPolicy }}
@@ -98,15 +93,9 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-{{- if .Values.nriImagePolicy.baked }}
-{{ include "nri-image-policy.measurePoliciesScript" (dict "root" .) | replace "$" "$$" | indent 14 }}
-          volumeMounts:
-            {{- include "nri-image-policy.measurePoliciesVolumeMounts" . | nindent 12 }}
-{{- else }}
 {{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
-{{- end }}
           resources:
             {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
       containers:
@@ -146,9 +135,5 @@ spec:
               cpu: 50m
               memory: 64Mi
       volumes:
-        {{- if .Values.nriImagePolicy.baked }}
-        {{- include "nri-image-policy.measurePoliciesVolumes" . | nindent 8 }}
-        {{- else }}
         {{- include "nri-image-policy.hostVolumes" . | nindent 8 }}
-        {{- end }}
 {{- end }}

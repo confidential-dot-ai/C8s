@@ -105,7 +105,6 @@ func renderWorkerCluster(ctx context.Context, cfg nodeImageRenderConfig, host st
 	// Workers pull what the node image bakes; nothing else on the router's
 	// launch differs from the image build's render.
 	extra := []string{
-		"--set", "kubeStateMetrics.enabled=false",
 		"--set", "hostNamespacePolicy.enabled=false",
 	}
 	for _, input := range cfg.images() {
@@ -199,9 +198,8 @@ func workerClusterObjects(rendered []byte, host string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// forWorkerCluster points a webhook configuration at host, rebinds the
-// operator's grants from its service account to operatorUser, and lets the
-// router run on any worker.
+// forWorkerCluster points a webhook configuration at host and rebinds the
+// operator's grants from its service account to operatorUser.
 func forWorkerCluster(object *unstructured.Unstructured, key, host string) error {
 	switch key {
 	case "MutatingWebhookConfiguration//c8s-pod-injector", "ValidatingWebhookConfiguration//c8s-pod-validator":
@@ -231,9 +229,6 @@ func forWorkerCluster(object *unstructured.Unstructured, key, host string) error
 		return unstructured.SetNestedSlice(object.Object, []any{map[string]any{
 			"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": operatorUser,
 		}}, "subjects")
-	case "Deployment/c8s-router/c8s-router":
-		// The baked chart pins the router to an RKE2 server's role label.
-		unstructured.RemoveNestedField(object.Object, "spec", "template", "spec", "nodeSelector")
 	}
 	return nil
 }

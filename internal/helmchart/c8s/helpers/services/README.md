@@ -38,8 +38,8 @@ those sidecars.
 
 With `node.baked=true`, the attester and proxy run as systemd services; the
 router, mesh and operator use the same Kubernetes templates as ordinary installs.
-The router is a singleton workload on the signed server's control-plane node.
-Every client reaches the CDS the signed launch file names.
+The router is a singleton workload. Every client reaches the CDS the node's
+worker document names.
 
 `c8s.nodeConfigVolume` and `c8s.nodeConfigMount` expose only the nonsecret verified
 launch files in `/run/c8s-node`, read-only. The mesh verifies peers with
@@ -54,9 +54,8 @@ Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 ports (`c8s-router`). The chart renders that Namespace under the fixed name the
 enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
 
-`c8s.nodeReadsCDSAddress` is non-empty where the chart hands the node the CDS
-address instead of the node image's launch staging.
-
 The host plugin and the clients it injects reach the CDS by the address the
 installer copies to the node from the `-measurements` ConfigMap, beside the pin
 it holds it to (`cds.address`, `cds.measurementsConfig`).
+`c8s.installerCopiesCDSAddress` is non-empty where that installer renders, and
+gates both the ConfigMap's `cds-address` key and the check of its value.

@@ -4,8 +4,6 @@ package nriimagepolicy
 
 import (
 	"fmt"
-	"net/netip"
-	"slices"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -69,24 +67,10 @@ func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Pol
 		Capture:       ruleset.CapturePorts(p.Capture),
 		MeshUID:       endpoint.UID,
 		ClusterRanges: p.ClusterRanges,
-		Exits:         slices.Concat(p.serviceExits(), rulesetExits(granted)),
+		Exits:         rulesetExits(granted),
 		Server:        p.servedPorts(kubeNamespace),
 		Roles:         p.dialingRoles(),
 	}
-}
-
-// serviceExits are the platform services trusted policy names for every
-// member pod, each one address and port: the baked kube-state-metrics
-// Service, which serves cluster object metadata in plain HTTP.
-func (p meshPolicy) serviceExits() []ruleset.Exit {
-	exits := make([]ruleset.Exit, 0, len(p.Exits))
-	for _, exit := range p.Exits {
-		exits = append(exits, ruleset.Exit{
-			Range: netip.PrefixFrom(exit.Addr(), exit.Addr().BitLen()),
-			Port:  exit.Port(),
-		})
-	}
-	return exits
 }
 
 // servedPorts is the server role the ruleset of a pod of the router's

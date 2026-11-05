@@ -1279,13 +1279,12 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 				"--set-string", "router.attest.generation=",
 			)
 		}
-		// node: the node image bakes attestation-api + nri-image-policy, so the
-		// attestation-api copy is skipped and the NRI installer switches to its
-		// baked form — the only path that reaches the baked plugin's CDS pins.
+		// bare-metal: the measured image carries attestation-api and
+		// nri-image-policy, so the chart renders neither.
 		if mode == "bare-metal" {
 			out = append(out,
 				"--set", "attestationApi.enabled=false",
-				"--set", "nriImagePolicy.baked=true",
+				"--set", "nriImagePolicy.enabled=false",
 			)
 		}
 		return out

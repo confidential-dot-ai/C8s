@@ -31,7 +31,7 @@ expect_failure_naming() {
 rows=$(bash "$script" list)
 digest_lines=$(grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:' "$values")
 [[ $(wc -l <<<"$rows") -eq "$digest_lines" ]] || fail "listed $(wc -l <<<"$rows") rows for $digest_lines digest lines"
-for repo in registry.k8s.io/kube-state-metrics/kube-state-metrics nginxinc/nginx-unprivileged busybox; do
+for repo in nginxinc/nginx-unprivileged busybox; do
   grep -qE "^$repo [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "$repo is not listed with a tag and digest"
 done
 tests=$((tests + 1))

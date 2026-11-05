@@ -861,9 +861,9 @@ func TestChartAttestationApiSocketWiresNRI(t *testing.T) {
 	}
 }
 
-// The require_host_image_policy guard exempts cvmMode=bare-metal: the node image bakes
-// its own fail-closed nri-image-policy, so nri off there is not an unenforced
-// cluster. The served seed under this shape is covered by
+// The require_host_image_policy guard exempts cvmMode=bare-metal: the measured
+// image carries its own fail-closed nri-image-policy, so nri off there is not
+// an unenforced cluster. The served seed under this shape is covered by
 // TestChartServesAllowlistSeedInBareMetalMode.
 func TestChartAllowsImagePolicyOffInBareMetalMode(t *testing.T) {
 	t.Parallel()
@@ -4791,55 +4791,6 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	}
 }
 
-// TestChartPinsCDSInBareMetalMode guards the node-as-CVM pin path: the chart is
-// the only thing that knows this release's flat CDS pins, so an install must
-// carry them into the baked plugin config.
-func TestChartPinsCDSInBareMetalMode(t *testing.T) {
-	t.Parallel()
-	const pinsImageDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000d1"
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=bare-metal",
-		"--set", "attestationApi.enabled=false",
-		"--set", "nriImagePolicy.baked=true",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		"--set-string", "nriImagePolicy.image.digest="+pinsImageDigest,
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	if !strings.Contains(script, "set-measure-policies") {
-		t.Errorf("bare-metal-mode installer script does not patch the baked config\n%s", script)
-	}
-
-	// The baked config carries the image base whose RKE2 system digests only
-	// the image build resolves, so the installer must patch it, never rewrite
-	// it — and must leave the binary and the containerd registration alone.
-	for _, forbidden := range []string{"IMAGE_POLICY_EOF", "install_file", "render_nri_toml"} {
-		if strings.Contains(script, forbidden) {
-			t.Errorf("bare-metal-mode installer script must not run %q — it would replace what the node image measured\n%s", forbidden, script)
-		}
-	}
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name == "containerd-prep" {
-			t.Errorf("bare-metal-mode installer renders containerd-prep; the node image owns the containerd NRI registration")
-		}
-	}
-
-	// The installer image is a chart image, not a baked one, so the node admits
-	// it only through the seed CDS serves.
-	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
-	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-	if err != nil {
-		t.Fatalf("bare-metal-mode seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
-	}
-	if got := seedLabel(seed, pinsImageDigest); got != "ghcr.io/confidential-dot-ai/nri-image-policy@"+pinsImageDigest {
-		t.Errorf("seed[%s] = %q, want the policy-measurement installer image; the baked plugin would deny it", pinsImageDigest, got)
-	}
-}
-
 // TestChartServesAllowlistSeedInBareMetalMode guards the node-as-CVM seed path: even
 // with chart nriImagePolicy disabled, the baked plugin pulls the live allowlist
 // from CDS. If the seed is not served, CDS starts empty and every un-baked
@@ -6039,10 +5990,10 @@ func digestOf(image string) string {
 	return digest
 }
 
-// The node image bakes the pull interval too, and under nriImagePolicy.baked
-// the installer runs set-measure-policies, which rewrites only that switch. So
-// the interval a node-CVM's gate actually runs on is the baked one, and a
-// drift surfaces only as a policy change that bites later than the chart says.
+// The measured image bakes the pull interval too, and nothing in the chart
+// reaches that config. So the interval a measured node's gate runs on is the
+// baked one, and a drift surfaces only as a policy change that bites later
+// than the chart says.
 func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 	t.Parallel()
 	const bakedPath = "../../images/node-guest/worker/image-policy.yaml.in"
@@ -6095,16 +6046,28 @@ func TestChartValuesSchemaRejectsUnknownRootKeys(t *testing.T) {
 	}
 }
 
-// teeProxy stays in the schema on purpose: validations.yaml answers it with a
-// migration message, which a generic unknown-key refusal would replace.
-func TestChartTeeProxyKeepsItsMigrationMessage(t *testing.T) {
+// A removed value stays in the schema on purpose: validations.yaml answers it
+// with a migration message, which a generic unknown-key refusal would replace.
+// Each of these shipped, so a carried-over values file still names it.
+func TestChartRemovedValuesKeepTheirMigrationMessage(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "teeProxy.hostPort.enabled=true")
-	if err == nil {
-		t.Fatalf("helm template accepted teeProxy values\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "removed_component" {
-		t.Errorf("validation kind = %q, want removed_component (the schema swallowed it)", kind)
+	for _, tc := range []struct{ name, set, names string }{
+		{"tee-proxy", "teeProxy.hostPort.enabled=true", "router.hostPort"},
+		{"the baked installer", "nriImagePolicy.baked=true", "nriImagePolicy.enabled=false"},
+		{"kube-state-metrics", "kubeStateMetrics.enabled=true", "kube-state-metrics"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, "--set", tc.set)
+			if err == nil {
+				t.Fatalf("helm template accepted %s\n%s", tc.set, out)
+			}
+			if kind := parseValidationErrorKind(out); kind != "removed_component" {
+				t.Errorf("validation kind = %q, want removed_component (the schema swallowed it)", kind)
+			}
+			if !strings.Contains(out, tc.names) {
+				t.Errorf("the refusal does not name %q, so it does not say what replaced the value:\n%s", tc.names, out)
+			}
+		})
 	}
 }
 
@@ -6271,42 +6234,38 @@ func TestRouterProbesUseHTTPSHealthChecks(t *testing.T) {
 
 func TestChartSweepMountAdmission(t *testing.T) {
 	t.Parallel()
-	for _, baked := range []bool{false, true} {
-		t.Run(fmt.Sprintf("baked=%v", baked), func(t *testing.T) {
-			out, err := helmTemplate(t, "--set", "nriImagePolicy.baked="+strconv.FormatBool(baked))
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
-			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-			if err != nil {
-				t.Fatal(err)
-			}
-			script, err := os.ReadFile("c8s/files/scripts/host-sweep.sh")
-			if err != nil {
-				t.Fatal(err)
-			}
-			idx := seed.BuildIndex()
-			for _, tc := range []struct {
-				name            string
-				argv            []string
-				hostMount, want bool
-			}{
-				{"sweep", []string{"/bin/sh", "-c", strings.TrimRight(string(script), "\n") + "\n"}, true, true},
-				{"pause", []string{"/bin/sleep", "2147483647"}, false, true},
-				{"pause with host mount", []string{"/bin/sleep", "2147483647"}, true, false},
-				{"shell pause with host mount", []string{"/bin/sh", "-c", "sleep infinity"}, true, false},
-				{"unpinned script", []string{"/bin/sh", "-c", "echo unexpected"}, true, false},
-			} {
-				mounts := []pkgallowlist.ObservedMount{}
-				if tc.hostMount {
-					mounts = append(mounts, pkgallowlist.ObservedMount{Source: "/", Destination: "/host", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
-				}
-				if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: mounts}); got != tc.want {
-					t.Errorf("%s admitted=%v, want %v", tc.name, got, tc.want)
-				}
-			}
-		})
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
+	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile("c8s/files/scripts/host-sweep.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := seed.BuildIndex()
+	for _, tc := range []struct {
+		name            string
+		argv            []string
+		hostMount, want bool
+	}{
+		{"sweep", []string{"/bin/sh", "-c", strings.TrimRight(string(script), "\n") + "\n"}, true, true},
+		{"pause", []string{"/bin/sleep", "2147483647"}, false, true},
+		{"pause with host mount", []string{"/bin/sleep", "2147483647"}, true, false},
+		{"shell pause with host mount", []string{"/bin/sh", "-c", "sleep infinity"}, true, false},
+		{"unpinned script", []string{"/bin/sh", "-c", "echo unexpected"}, true, false},
+	} {
+		mounts := []pkgallowlist.ObservedMount{}
+		if tc.hostMount {
+			mounts = append(mounts, pkgallowlist.ObservedMount{Source: "/", Destination: "/host", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
+		}
+		if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: mounts}); got != tc.want {
+			t.Errorf("%s admitted=%v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -6356,11 +6315,10 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 	}
 }
 
-// nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
-// boot config and, where the node image bakes one, the set-measure-policies
-// patch. The router's
-// cds-attest reads the journal wherever it mounts the runtime directory, so a
-// node that stopped measuring still reports the extends RTMR[3] keeps.
+// nriImagePolicy.measurePolicies reaches the rendered boot config. The
+// router's cds-attest reads the journal wherever it mounts the runtime
+// directory, so a node that stopped measuring still reports the extends
+// RTMR[3] keeps.
 func TestChartMeasurePolicies(t *testing.T) {
 	for _, measure := range []bool{false, true} {
 		set := fmt.Sprintf("nriImagePolicy.measurePolicies=%t", measure)
@@ -6370,24 +6328,6 @@ func TestChartMeasurePolicies(t *testing.T) {
 		}
 		if got := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.MeasurePolicies; got != measure {
 			t.Errorf("%s: boot config measure_policies = %v, want %v", set, got, measure)
-		}
-
-		out, err = helmTemplate(t,
-			"--set-string", "attestationApi.cvmMode=bare-metal",
-			// Measuring needs the journal mount beside the attestation-api socket.
-			"--set", fmt.Sprintf("attestationApi.enabled=%t", measure),
-			"--set", "nriImagePolicy.baked=true",
-			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-			"--set-string", "nriImagePolicy.image.digest=sha256:"+strings.Repeat("d", 64),
-			"--set", set,
-		)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-		script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-		if want := fmt.Sprintf("--measure-policies=%t", measure); !strings.Contains(script, want) {
-			t.Errorf("%s: baked policy-measurement script missing %q\n%s", set, want, script)
 		}
 	}
 

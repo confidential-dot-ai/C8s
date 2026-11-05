@@ -287,7 +287,7 @@ func preflightNotBakedNode(ctx context.Context) error {
 	if ns.Metadata.Labels["confidential.ai/baked"] != "true" {
 		return nil
 	}
-	return fmt.Errorf("c8s-system carries confidential.ai/baked=true: this node image owns the core services, operator and admission policies; configure its signed launch.yaml and workloads instead of running c8s install")
+	return fmt.Errorf("c8s-system carries confidential.ai/baked=true: this node's measured image owns the core services, operator and admission policies; configure them in its worker document and deploy only your workloads here, instead of running c8s install")
 }
 
 // preflightRouterHostPort fails fast when router's host port is already bound on
@@ -461,14 +461,6 @@ const deniedImagesListed = 20
 // --force installs anyway, and returns the same list as a warning.
 func preflightImagePolicy(ctx context.Context, w io.Writer, values map[string]any, components []c8sComponent, releaseNamespace string, force bool) (warn string, err error) {
 	if !boolAtPath(values, "nriImagePolicy.enabled") {
-		return "", nil
-	}
-	// Under .baked the node's floor is the one the image build rendered — the
-	// RKE2 system digests included — and the chart cannot see it, so every
-	// baked-floor pod here reads as denied. The plugin has also been enforcing
-	// since boot, so what runs is already admitted and the pins the installer
-	// writes change who may serve the allowlist, not what it admits.
-	if boolAtPath(values, "nriImagePolicy.baked") {
 		return "", nil
 	}
 	// A mode the chart cannot read is the render guard's to reject, not this
@@ -1448,7 +1440,7 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // GitOps/HelmRelease installs get it too), not emitted as a --set here; see
 // internal/helmchart/c8s/templates/webhook.yaml.
 func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform string) ([]string, error) {
-	bakedAttestationAndNRIPlugin, err := deployment.BakedAttestationAndNRIPlugin(cvmMode)
+	measuredImageCarriesAttestationAndPlugin, err := deployment.MeasuredImageCarriesAttestationAndNRIPlugin(cvmMode)
 	if err != nil {
 		return nil, err
 	}
@@ -1516,16 +1508,14 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 			"--set-string", "router.attest.generation=",
 		)
 	}
-	// node: the node image bakes host attestation-api and nri-image-policy;
-	// re-rendering them duplicates the baked pair and the baked fail-closed NRI
-	// floor denies the chart copies' own images. The NRI installer does stay
-	// on, in its baked form — the pins below are the one thing an image built
-	// before this release cannot carry, and the installer is the only path that
-	// reaches the baked plugin's config.
-	if bakedAttestationAndNRIPlugin {
+	// bare-metal: the measured image carries host attestation-api and
+	// nri-image-policy with its own containerd registration and config.
+	// Re-rendering them duplicates the measured pair, and the installer would
+	// write a second plugin config over the measured one.
+	if measuredImageCarriesAttestationAndPlugin {
 		helmArgs = append(helmArgs,
 			"--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.baked=true",
+			"--set", "nriImagePolicy.enabled=false",
 		)
 	}
 	return helmArgs, nil

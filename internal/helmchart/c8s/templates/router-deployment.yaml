@@ -7,12 +7,6 @@ enableServiceLinks: false
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
 {{- $operatorKeys := and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys -}}
-{{- /* Same control-plane pin as CDS: a baked image boots one server,
-       and only servers carry this RKE2 role label. */}}
-{{- if .Values.node.baked }}
-nodeSelector:
-  node-role.kubernetes.io/control-plane: "true"
-{{- end }}
 
 {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
 {{- /* Every container of this pod holds a platform role the measured base

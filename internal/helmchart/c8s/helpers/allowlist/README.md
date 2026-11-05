@@ -190,8 +190,8 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | `nriImagePolicy.enabled` | Install script (policy-measurement script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
-| NRI containerd-prep | NRI enabled, RKE2, and not baked | Containerd-prep script |
+| NRI installer | `nriImagePolicy.enabled` | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+| NRI containerd-prep | NRI enabled and RKE2 | Containerd-prep script |
 | Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
