@@ -1579,9 +1579,10 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 	}
 }
 
-// digestLookup resolves imageRef as resolveDigest does, at most once, so the
-// checks of one container judge one digest, and one needing none costs no
-// containerd round-trip.
+// digestLookup resolves imageRef at most once, so the checks of one container
+// judge one digest, and one needing none costs no containerd round-trip. It
+// returns containerd's error: checkImageAt denies on it as resolve_failed,
+// and every other caller reads a failed lookup as "", which nothing admits.
 func (p *plugin) digestLookup(ctx context.Context, imageRef string) func() (string, error) {
 	return sync.OnceValues(func() (string, error) {
 		if digest := extractDigest(imageRef); digest != "" || imageRef == "" {
