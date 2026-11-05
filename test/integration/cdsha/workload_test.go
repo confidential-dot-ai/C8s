@@ -45,7 +45,7 @@ var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 // issuance and workload secret requests are real. Hardware evidence, sandbox
 // discovery and object storage are fixtures; no container runtime is required.
 func TestWorkloadBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current", "direct-state"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current", "direct-state", "direct-state-current"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
@@ -54,7 +54,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 				if strings.HasPrefix(backend, "transactional-metadata") {
 					attachMetadata(t, objects)
 				}
-				if backend == "direct-state" {
+				if strings.HasPrefix(backend, "direct-state") {
 					attachMetadata(t, objects)
 					objects.config.DirectState, objects.config.AtomicOperatorWrites = true, true
 				}

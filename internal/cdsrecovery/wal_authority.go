@@ -109,30 +109,37 @@ func (a *WALAuthority) current(ctx context.Context, origin string) (Target, stri
 // A concurrent revocation ordered after it may complete before the grant reaches
 // its recipient: this is not a promise to recall an already authorized key.
 func (a *WALAuthority) Release(ctx context.Context, origin string) (*Grant, error) {
-	if _, exists := a.authority.targets[origin]; !exists {
+	return a.authority.releaseCurrent(ctx, origin, a.current)
+}
+
+// Shared release procedure for the two concrete, mandatory current-policy
+// readers. This callback is private; callers cannot opt out of freshness or
+// supply their own image policy through a public constructor or release API.
+func (a *Authority) releaseCurrent(ctx context.Context, origin string, current func(context.Context, string) (Target, string, error)) (*Grant, error) {
+	if _, exists := a.targets[origin]; !exists {
 		return nil, errors.New("recovery: replica origin is not approved")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	stop := context.AfterFunc(a.authority.ctx, cancel)
+	stop := context.AfterFunc(a.ctx, cancel)
 	defer stop()
-	release, err := a.authority.gate.Acquire(ctx)
+	release, err := a.gate.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	target, policy, err := a.current(ctx, origin)
+	target, policy, err := current(ctx, origin)
 	if err != nil {
 		return nil, err
 	}
-	q, err := fetchRecipient(ctx, a.authority.identity, target)
+	q, err := fetchRecipient(ctx, a.identity, target)
 	if err != nil {
 		return nil, err
 	}
-	if policy == "" && !bytes.Equal(a.authority.genesis, requestHash(q)) {
+	if policy == "" && !bytes.Equal(a.genesis, requestHash(q)) {
 		return nil, errors.New("recovery: only the enrolled initial process may receive a key before committed Genesis")
 	}
-	_, finalPolicy, err := a.current(ctx, origin)
+	_, finalPolicy, err := current(ctx, origin)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +149,7 @@ func (a *WALAuthority) Release(ctx context.Context, origin string) (*Grant, erro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return seal(q, Material{Key: a.authority.key, AllowGenesis: policy == ""}, a.authority.signer)
+	return seal(q, Material{Key: a.key, AllowGenesis: policy == ""}, a.signer)
 }
 
 func (a *WALAuthority) Stats() requestgate.Stats  { return a.authority.Stats() }

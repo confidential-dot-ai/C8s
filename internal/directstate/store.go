@@ -28,6 +28,7 @@ import (
 )
 
 const (
+	IdentityRecord = "identity"
 	InlineBytes    = 32 << 10
 	MaxValueBytes  = 8 << 20
 	Shards         = 16

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	coreKey   = "identity"
+	coreKey   = directstate.IdentityRecord
 	policyKey = "policy"
 	ledgerKey = "bindings"
 	countKey  = "secret-count"

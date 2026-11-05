@@ -85,6 +85,15 @@ func (f *recoveryFixture) restoreCurrent(c *cluster, expected cdsrecovery.Identi
 	// store defaults. The shared FSM rejects any mismatch at Genesis/restore.
 	fsm := cdsha.NewFSM(launch, al, secrets.NewMemoryStore(20000, secrets.DefaultMaxPathsPerHolder, 4096),
 		sandboxledger.New(issuer.CapTTL(24*time.Hour, issuer.MaxLeafTTL), 10000))
+	if config.DirectState {
+		authority, err := cdsrecovery.RestoreCurrentAuthority(c.t.Context(), expected, record, f.capsule, f.wrappingKey, f.verifier,
+			cdsrecovery.CurrentRecords{Metadata: metadata, Objects: s3, Launch: launch, Policy: fsm.LocalPolicy(), LaunchFile: c.config})
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		f.authority = authority
+		return
+	}
 	authority, err := cdsrecovery.RestoreWALAuthority(c.t.Context(), expected, record, f.capsule, f.wrappingKey, f.verifier,
 		cdsrecovery.Replay{Store: store, Machine: fsm, LaunchFile: c.config})
 	if err != nil {

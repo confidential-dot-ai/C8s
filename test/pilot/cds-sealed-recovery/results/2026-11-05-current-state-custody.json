@@ -1,0 +1,95 @@
+{
+  "schema": "cds-current-state-recovery/v1",
+  "date": "2026-11-05",
+  "scope": "Local software attestation and test-held wrapping key; real CDS processes and metadata executable.",
+  "runs": [
+    {
+      "case": "unit",
+      "source_commit": "f6ef602c922145e5e33cda814299343a32da2654",
+      "source_tree": "db9c1feaedf074423428e30c4e2a1d3983a2b259",
+      "working_tree": "",
+      "command": [
+        "go",
+        "test",
+        "-race",
+        "-p=1",
+        "-count=1",
+        "-timeout=12m",
+        "./internal/directstate",
+        "./internal/metadatapilot",
+        "./internal/cdsdirect",
+        "./internal/cdsrecovery",
+        "./internal/cmds/cds",
+        "./internal/secrets",
+        "./internal/allowlist",
+        "./internal/sandboxledger",
+        "./internal/cdsconfig"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 142.32176933900337,
+      "log_sha256": "e0e56d9357c43068a5afa22133637a3e2c779404ef683bacae5119199d1cf734"
+    },
+    {
+      "case": "parity",
+      "source_commit": "f6ef602c922145e5e33cda814299343a32da2654",
+      "source_tree": "db9c1feaedf074423428e30c4e2a1d3983a2b259",
+      "working_tree": "",
+      "command": [
+        "go",
+        "test",
+        "-tags",
+        "integration",
+        "-count=1",
+        "-timeout=25m",
+        "-v",
+        "-run",
+        "^(TestAtomicOperatorHTTPCompatibility|TestWorkloadBackendParity|TestStorageImageTransitionAndInterruptedRecovery)$/^(legacy|atomic|direct-state|direct-state-current|transactional-current-state)$",
+        "./test/integration/cdsha"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 93.35042790800799,
+      "log_sha256": "cbcdfd212f66238148a35b9558ddb74ec7bed304569905ddba4c0b162645b219"
+    },
+    {
+      "case": "vet",
+      "source_commit": "f6ef602c922145e5e33cda814299343a32da2654",
+      "source_tree": "db9c1feaedf074423428e30c4e2a1d3983a2b259",
+      "working_tree": "",
+      "command": [
+        "go",
+        "vet",
+        "./internal/directstate",
+        "./internal/metadatapilot",
+        "./internal/cdsdirect",
+        "./internal/cdsrecovery",
+        "./internal/cmds/cds",
+        "./internal/secrets",
+        "./internal/allowlist",
+        "./internal/sandboxledger",
+        "./internal/cdsconfig"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 6.218788137979573,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "checks": {
+    "original_capsule_reads_current_image_policy": true,
+    "original_initializer_only_before_genesis": true,
+    "revocation_before_final_read_prevents_grant": true,
+    "revocation_after_final_read_has_documented_ordering": true,
+    "metadata_outage_prevents_grant": true,
+    "authority_does_not_write_state": true,
+    "same_ca_after_total_cds_process_loss_and_authority_reconstruction": true,
+    "spent_tokens_and_revocation_survive": true,
+    "original_leaf_and_secret_remain_usable_after_reauthorization": true,
+    "retired_image_and_previous_incarnation_grants_rejected": true,
+    "worker_issuance_and_renewal_bursts": true,
+    "rolling_restart": true
+  },
+  "native_custody_qualified": false,
+  "operator_exclusion_qualified": false,
+  "metadata_ha_qualified": false,
+  "production_ready": false,
+  "cloud_resources_created": 0
+}

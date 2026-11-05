@@ -21,12 +21,15 @@ import (
 // history; attestation, custody roots and storage services remain local fixtures.
 // Retiring an image denies NEW grants. It cannot recall keys already issued.
 func TestStorageImageTransitionAndInterruptedRecovery(t *testing.T) {
-	for _, backend := range []string{"object-wal-current", "transactional-metadata-current"} {
+	for _, backend := range []string{"object-wal-current", "transactional-metadata-current", "transactional-current-state"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			objects := newObjectFixture(t)
-			if strings.HasPrefix(backend, "transactional-metadata") {
+			if strings.HasPrefix(backend, "transactional-") {
 				attachMetadata(t, objects)
+			}
+			if backend == "transactional-current-state" {
+				objects.config.DirectState, objects.config.AtomicOperatorWrites = true, true
 			}
 			protectCurrentRecovery(t, objects)
 			c := newClusterWithNodes(t, threeReplicas, objects, nodeImagesCertifying(seededNodeImage), []string{host + "/32"})
@@ -84,12 +87,14 @@ func TestStorageImageTransitionAndInterruptedRecovery(t *testing.T) {
 			c.provisionObjects(c.replicas[0])
 			c.waitServing(30 * time.Second)
 			w.setPolicy(true) // Establish the replacement as preferred writer.
-			newWriter := c.awaitStatus(c.replicas[0]).ID
 			c.replaceAllowlist(c.replicas[1], "forward-to-approved-new-image")
-			code, data := c.get(c.replicas[1], "/ha/object-wal/status")
-			var stats objectwal.Stats
-			if code != http.StatusOK || json.Unmarshal(data, &stats) != nil || stats.Writer.ID != newWriter || stats.Forwarded == 0 {
-				t.Fatalf("pin refresh did not forward to the healthy new-image writer: HTTP %d %+v", code, stats)
+			if !objects.config.DirectState {
+				newWriter := c.awaitStatus(c.replicas[0]).ID
+				code, data := c.get(c.replicas[1], "/ha/object-wal/status")
+				var stats objectwal.Stats
+				if code != http.StatusOK || json.Unmarshal(data, &stats) != nil || stats.Writer.ID != newWriter || stats.Forwarded == 0 {
+					t.Fatalf("pin refresh did not forward to the healthy new-image writer: HTTP %d %+v", code, stats)
+				}
 			}
 			w.setPolicy(false)
 
