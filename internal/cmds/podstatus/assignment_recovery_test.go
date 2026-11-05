@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,8 +20,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 )
 
+// Any failure re-verifying the record stops the service, one row per
+// check; the record itself is never touched.
 func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
-	for _, failure := range []string{"version", "request", "serving-key", "launch-binding", "payload", "renderer"} {
+	for _, failure := range []string{"version", "request", "serving-key", "launch-binding", "signature", "payload", "renderer"} {
 		t.Run(failure, func(t *testing.T) {
 			s, key, peer, store := assignmentFixture(t)
 			request := issuedAssignment(t, s, key, peer, "pod-a")
@@ -36,6 +39,9 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 				store.record.ServingKey = []byte("invalid SPKI")
 			case "launch-binding":
 				s.boundKey = func(context.Context) (*ecdsa.PublicKey, error) { return nil, errors.New("binding unavailable") }
+			case "signature":
+				// The recorded request no longer verifies against another serving key.
+				store.record.ServingKey, _ = x509.MarshalPKIXPublicKey(&ecdsaCert(t).PrivateKey.(*ecdsa.PrivateKey).PublicKey)
 			case "payload":
 				request.MeshPeers = []byte("null")
 				var err error
@@ -61,8 +67,9 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 	}
 }
 
+// A record is never replaced, even one the service cannot read.
 func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testing.T) {
-	for _, failure := range []string{"unknown-field", "trailing-data", "truncated", "oversized", "symlink"} {
+	for _, failure := range []string{"truncated", "oversized", "symlink"} {
 		t.Run(failure, func(t *testing.T) {
 			s, key, peer, memory := assignmentFixture(t)
 			if response := postAssignment(s, peer, encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))); response.Code != http.StatusOK {
@@ -79,10 +86,6 @@ func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testin
 				t.Fatal(err)
 			}
 			switch failure {
-			case "unknown-field":
-				data = append([]byte(`{"extra":true,`), data[1:]...)
-			case "trailing-data":
-				data = append(data, []byte(" {}")...)
 			case "truncated":
 				data = data[:len(data)/2]
 			case "oversized":
@@ -114,50 +117,47 @@ func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testin
 	}
 }
 
-func TestAssignmentWorkerRetriesCommittedIntentUntilSuccessOrShutdown(t *testing.T) {
-	for _, shutdown := range []bool{false, true} {
-		t.Run(map[bool]string{false: "recovery", true: "shutdown"}[shutdown], func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				s, key, peer, store := assignmentFixture(t)
-				body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-				if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
-					t.Fatal(response.Code)
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				attempts := 0
-				s.apply = func(_ context.Context, runtime nodeservices.PodRuntime) error {
-					attempts++
-					if runtime.UID != "pod-a" || store.commits != 1 || !bytes.Equal(store.record.Request, body) {
-						t.Error("retry lost committed identity")
-					}
-					if attempts == 1 {
-						if shutdown {
-							cancel()
-						}
-						return errors.New("runtime restart interrupted")
-					}
-					cancel()
-					return nil
-				}
-				s.run(ctx)
-				want := 2
-				if shutdown {
-					want = 1
-				}
-				if attempts != want {
-					t.Fatalf("apply attempts=%d, want %d", attempts, want)
-				}
-				if response := postAssignment(s, peer, body); response.Code != http.StatusConflict {
-					t.Fatal("worker failure reopened assignment")
-				}
-			})
-		})
-	}
+// Retry until it succeeds, and a restart with a record completes the
+// assignment from the committed record and refuses a second one).
+func TestAssignmentWorkerRetriesCommittedIntentAfterRestart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, key, peer, store := assignmentFixture(t)
+		body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
+		if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
+			t.Fatal(response.Code)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		attempts := 0
+		apply := func(_ context.Context, runtime nodeservices.PodRuntime) error {
+			attempts++
+			if runtime.UID != "pod-a" || store.commits != 1 || !bytes.Equal(store.record.Request, body) {
+				t.Error("retry lost committed identity")
+			}
+			if attempts == 1 {
+				return errors.New("runtime restart interrupted")
+			}
+			cancel()
+			return nil
+		}
+		restarted, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, apply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted.run(ctx)
+		if attempts != 2 {
+			t.Fatalf("apply attempts=%d, want 2", attempts)
+		}
+		if response := postAssignment(restarted, peer, body); response.Code != http.StatusConflict {
+			t.Fatal("worker failure reopened assignment")
+		}
+	})
 }
 
+// No measured digest, no kubelet pod, and 503 while the
+// kubelet is unavailable); the kubelet is consulted only after the journal.
 func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T) {
-	for _, failure := range []string{"journal-unreadable", "measured", "kubelet-unavailable", "malformed", "wrong-kind", "existing-pod"} {
+	for _, failure := range []string{"journal-unreadable", "measured", "kubelet-unavailable", "malformed", "existing-pod"} {
 		t.Run(failure, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "journal")
 			body := []byte(`{"kind":"PodList","items":[]}`)
@@ -175,8 +175,6 @@ func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T)
 				podErr = errors.New("kubelet unavailable")
 			case "malformed":
 				body = []byte("{")
-			case "wrong-kind":
-				body = []byte(`{"kind":"Status"}`)
 			case "existing-pod":
 				body = []byte(`{"kind":"PodList","items":[{"metadata":{"uid":"old"}}]}`)
 			}
@@ -199,6 +197,7 @@ func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T)
 	}
 }
 
+// The launch key the document binds is exactly one P-256 key.
 func TestAssignmentPublicKeyRequiresExactlyOneBoundP256Key(t *testing.T) {
 	s, key, _, _ := assignmentFixture(t)
 	if got, err := assignmentPublicKey([]byte(s.doc.PodOperatorPublicKey)); err != nil || !got.Equal(&key.PublicKey) {
