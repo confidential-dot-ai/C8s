@@ -19,6 +19,23 @@ import (
 
 var ErrAlreadyAssigned = errors.New("guest already holds a Pod")
 
+// AlreadyAssignedError is the guest's refusal of an assignment because it
+// already holds a Pod. It matches ErrAlreadyAssigned. HeldUID names the Pod the
+// guest holds, or is empty when its answer named none; only a HeldUID equal to
+// the assigned Pod's UID shows that the guest holds the caller's Pod.
+type AlreadyAssignedError struct {
+	HeldUID string
+}
+
+func (e *AlreadyAssignedError) Error() string {
+	if e.HeldUID == "" {
+		return "guest already holds a Pod it did not name"
+	}
+	return fmt.Sprintf("guest already holds Pod %s", e.HeldUID)
+}
+
+func (e *AlreadyAssignedError) Is(target error) bool { return target == ErrAlreadyAssigned }
+
 // AssignmentTarget holds the freshly verified, key-pinned channel of an empty
 // guest. Prepare and Send are separate so the provider can persist its exact
 // assignment intent before an ambiguous network operation.
@@ -105,14 +122,20 @@ func (t *AssignmentTarget) Send(ctx context.Context, data []byte) (string, error
 	if err != nil {
 		return "", err
 	}
+	if len(body) > 4096 {
+		return "", errors.New("assignment response exceeds size limit")
+	}
 	if response.StatusCode == http.StatusConflict {
-		return "", ErrAlreadyAssigned
+		var held struct {
+			UID string `json:"uid"`
+		}
+		if strictErrors, err := strictjson.UnmarshalStrict(body, &held); err != nil || len(strictErrors) != 0 {
+			held.UID = ""
+		}
+		return "", &AlreadyAssignedError{HeldUID: held.UID}
 	}
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("assignment refused with HTTP %d", response.StatusCode)
-	}
-	if len(body) > 4096 {
-		return "", errors.New("assignment response exceeds size limit")
 	}
 	var accepted struct {
 		UID string `json:"uid"`
