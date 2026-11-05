@@ -31,13 +31,13 @@ gate.
 |---|---|
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s`, version `X.Y.Z`, packaged byte-reproducibly from the release commit |
-| Node images | `ghcr.io/confidential-dot-ai/node-guest-base:rke2-{tdx,snp}[-cdi]-vX.Y.Z` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, `allowlist-seed-tdx.json`, `allowlist-seed-snp.json` |
+| Node images | `ghcr.io/confidential-dot-ai/node-guest-base:worker-{tdx,snp}[-cdi]-vX.Y.Z` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
 adds no moving node-image alias: it only creates the exact `-vX.Y.Z` tags. The
-floating `rke2-{tdx,snp}[-cdi]` tags track `main` builds, so pin the exact
+floating `worker-{tdx,snp}[-cdi]` tags track `main` builds, so pin the exact
 release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
@@ -52,17 +52,17 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"allowlistSeeds":{...},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
 
 and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
-signed keyless through GitHub Actions OIDC, so there is no release key.
-Releases before `v0.74.0` carry no `allowlistSeeds` field. A statement or
-bundle that is present but does not verify is a failure, not an unsigned tag.
+signed keyless through GitHub Actions OIDC, so there is no release key. A
+statement or bundle that is present but does not verify is a failure, not an
+unsigned tag.
 
 The checks below need an authenticated `gh`, cosign 3 or later (CI signs and
-verifies with 3.1.3), `jq`, and `sha256sum` from GNU coreutils — on macOS,
-`shasum -a 256`. Run them in one shell and directory, starting with the tag:
+verifies with 3.1.3), and `jq`. Run them in one shell and directory, starting
+with the tag:
 
 ```sh
 TAG=<RELEASE_TAG>
@@ -105,48 +105,13 @@ jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
 true
 ```
 
-### Allowlist seeds
-
-Releases from `v0.74.0` on also publish the file each node-image platform bakes
-at `/usr/lib/c8s/allowlist-seed.json`: the base allowlist a node admits before
-it reaches CDS, and the content a baked node publishes as its CDS seed
-([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). The
-statement lists each asset's SHA-256 under its platform:
-
-| Asset | Node images |
-|---|---|
-| `allowlist-seed-tdx.json` | `rke2-tdx-vX.Y.Z`, `rke2-tdx-cdi-vX.Y.Z` |
-| `allowlist-seed-snp.json` | `rke2-snp-vX.Y.Z`, `rke2-snp-cdi-vX.Y.Z` |
-
-The `-cdi` image is the same disk in another format, so it bakes its platform's
-copy. The node image build compares that copy against the asset and fails
-before publishing if they differ. Continue in the shell where you verified the
-statement, which set `TAG` and downloaded `release-statement.json`:
-
-```sh
-PLATFORM=tdx
-ASSET="allowlist-seed-$PLATFORM.json"
-gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "$ASSET"
-WANT=$(jq -er --arg p "$PLATFORM" --arg a "$ASSET" \
-  '.allowlistSeeds[$p] | select(.asset == $a) | .sha256' release-statement.json)
-echo "$WANT  $ASSET" | sha256sum --check
-```
-
-```text
-allowlist-seed-tdx.json: OK
-```
-
-`PLATFORM` is `tdx` or `snp`. The asset is byte for byte the file the image
-bakes, in the canonical form `c8s node-image render` writes: the form to mirror
-into an uploaded allowlist and to digest.
-
 ## Beta releases
 
 A push to the protected `beta` branch runs the same pipeline and releases
 `vX.Y.Z-beta.N`, where `vX.Y.Z` is the stable version the same commits would
 get on `main` and `N` counts the betas of that base. A beta publishes exact
-image and chart tags, node-image aliases `rke2-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`,
-and a GitHub prerelease with its own statement and seed assets. It never moves
+image and chart tags, node-image aliases `worker-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`,
+and a GitHub prerelease with its own statement. It never moves
 `latest`, an `X.Y` alias, a stable tag, or a floating node-image tag, and beta
 tags never change the stable baseline on `main`.
 
@@ -179,7 +144,7 @@ A release needs:
 Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
 Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
-and chart publication, the signed statement, and the seed assets; re-run the
+and chart publication and the signed statement; re-run the
 **c8s-image** workflow to repair node-image aliases. Missing aliases are
 created and matching ones verified by digest; neither workflow moves a Git tag,
 overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`

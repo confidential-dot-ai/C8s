@@ -81,9 +81,6 @@ API server — below the layer the adversary controls.
   volume.
 - **volumed** is the node agent that opens an entitled pod's encrypted volumes —
   [volumes.md](volumes.md).
-- On the measured node image, **kube-state-metrics** runs in `kube-system`
-  outside the mesh, and the measured mesh policy lets every member pod reach its
-  Service uncaptured — [armtls.md](armtls.md#cluster-metrics).
 
 ```text
   outside the TEE
@@ -117,22 +114,21 @@ shape; all three are node-as-CVM, and this table is the one place they differ.
 | | `bare-metal` | `gke` | `aks` |
 |---|---|---|---|
 | The node is | the C8s measured node image | a GKE confidential VM | an AKS confidential VM |
-| Node services | baked into the image (a chart DaemonSet writes the release's CDS pins into the baked config) | deployed by the chart | deployed by the chart |
-| Base allowlist | a baked file, measured with the image | chart values | chart values |
+| Node services | baked into the image | deployed by the chart | deployed by the chart |
+| Base allowlist | the floor the image build rendered, measured with it | chart values | chart values |
 | Privilege floor | `c8s-runc`, measured | none | none |
-| Exec, attach, port-forward | denied by a baked policy | the ordinary path | the ordinary path |
+| Exec, attach, port-forward | served by no kubelet handler, denied under the runtime | the ordinary path | the ordinary path |
 | Evidence | the CPU TEE directly | the CPU TEE directly | the Azure vTPM (`az-snp`, `az-tdx`) |
 | volumed | `volumed.service` | chart DaemonSet, `--volumes` | chart DaemonSet, `--volumes` |
-| Launch configuration | signed `launch.yaml` | none | none |
+| Launch configuration | the worker document `worker.yaml` | none | none |
 
 Node services are `attestation-api` and the admission plugin; the base
 allowlist is the set of entries each plugin holds itself
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)); the
 privilege floor and the exec denial are
-[node-exec-mode.md](node-exec-mode.md); the launch configuration fixes a
-measured node's role, identity, and image pins
-([operator.md](operator.md#authenticated-launch-configuration), with every
-field in [launch-configuration.md](launch-configuration.md)).
+[node-exec-mode.md](node-exec-mode.md); the launch configuration names the CDS
+a worker trusts and the control plane it joins, with every field in
+[launch-configuration.md](launch-configuration.md).
 
 Only the measured node image carries the baked policy that refuses host
 privilege. On the chart lanes the plugin's own configuration comes from chart

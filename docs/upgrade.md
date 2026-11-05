@@ -16,9 +16,8 @@ which is why the steps are ordered this way
   signed under any other key.
 - The new release's `c8s` CLI, plus `helm`, `kubectl`, `crane`, `yq`, and
   `curl` on each node.
-- The `-f` values file and flags you installed with
-  ([QUICKSTART.md](QUICKSTART.md)): step 1 renders from them, and
-  `nriImagePolicy.mesh.resolver` and `.clusterRanges` are in that file.
+- The `-f` values file and flags you installed with: step 1 renders from them,
+  and `nriImagePolicy.mesh.resolver` and `.clusterRanges` are in that file.
 - Outbound HTTPS to AMD's key service on SEV-SNP: `c8s allowlist` verifies
   CDS's evidence itself, inside its 15s `--timeout`.
 - A root shell on each node for steps 2 and 4. A measured node image has none.
@@ -89,10 +88,12 @@ the seed raises it by the number of entries in the file.
 A version at or below a node's means CDS restarted since that node last pulled,
 so its counter started from the seed again. Repeat step 3 until `list` passes
 the highest number from step 2. A node that stays higher takes nothing until its
-plugin restarts: restart containerd there, one node at a time, having
-published every entry its pods need, since on that first pull the plugin
-kills what the new document does not
-admit. Repeat step 2 until every node reports a version at or above this one.
+plugin restarts: restart containerd there, one node at a time, having published
+every entry its pods need, since on that first pull the plugin kills what the
+new document does not admit. A measured worker has no shell for that, so
+relaunch its VM instead; it stages the new policy at boot and registers under a
+new node name. Repeat step 2 until every node reports a version at or above
+this one.
 
 ## 5. Run the upgrade
 

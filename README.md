@@ -161,9 +161,8 @@ virtualization (for example Azure AKS).
 
 ## Quickstart
 
-Install C8s onto an existing cluster. The full walkthrough is
-[docs/QUICKSTART.md](docs/QUICKSTART.md); the hosted version with
-provisioning guides is at
+Install C8s onto an existing cluster. The walkthrough with provisioning
+guides is at
 [confidential.ai/docs/c8s](https://confidential.ai/docs/c8s/how-to/install).
 
 ### Prerequisites
@@ -173,8 +172,7 @@ provisioning guides is at
 - SEV-SNP / TDX confidential VMs as nodes for node-as-CVM
   (see the [first-cluster tutorial](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster)).
   Node kernels must expose the selected TEE attestation interface and support
-  the admission inventory's `SO_PEERPIDFD` checks — see
-  [docs/QUICKSTART.md](docs/QUICKSTART.md).
+  the admission inventory's `SO_PEERPIDFD` checks.
 - An external CDS CVM, or capacity to launch one before installing. Its measured
   configuration must pin your operator public key; installation needs its
   address and `cds-pin.json` (see [operator docs](docs/operator.md)).
@@ -483,8 +481,8 @@ Per-role image names remain stable, but each image copies the same multi-mode
 [docs/releases.md](docs/releases.md) for the version policy.
 
 The measured `node-guest-base` artifacts follow the same root release with
-platform-qualified exact aliases such as `rke2-tdx-v0.1.0` and
-`rke2-snp-cdi-v0.1.0`; they intentionally have no ambiguous bare or moving
+platform-qualified exact aliases such as `worker-tdx-v0.1.0` and
+`worker-snp-cdi-v0.1.0`; they intentionally have no ambiguous bare or moving
 SemVer alias.
 
 | Image | Base | Notes |
