@@ -140,6 +140,12 @@ func SplitList(value string) []string {
 	return items
 }
 
+// AnnotationWorkloadID names the workload a pod belongs to: node mode selects a
+// SAN from it (get-cert), a pod CVM carries it as the tenant identity of its
+// credential claims (PodClaims.AssignedWorkloadID). It is control-plane input
+// that a leaf states only where something the relying party trusts signed it.
+const AnnotationWorkloadID = "confidential.ai/cw"
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the

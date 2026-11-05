@@ -431,3 +431,42 @@ func extractAttestationDigest(t *testing.T, leaf *x509.Certificate) []byte {
 	t.Fatal("OIDAttestationDigest extension not found on leaf")
 	return nil
 }
+
+func TestCASignCSR_StampsAssignedWorkloadID(t *testing.T) {
+	ca, err := issuer.NewCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("new ca: %v", err)
+	}
+	csr, _ := mustCSR(t, "node", []string{"foo.mesh.svc"}, nil, nil)
+	const workloadID = "tenant-a.web"
+
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, AssignedWorkloadID: workloadID})
+	if err != nil {
+		t.Fatalf("SignCSR: %v", err)
+	}
+	got, err := armtls.AssignedWorkloadIDFromCert(mustParseCert(t, certPEM))
+	if err != nil {
+		t.Fatalf("AssignedWorkloadIDFromCert: %v", err)
+	}
+	if got != workloadID {
+		t.Fatalf("assigned workload = %q, want %q", got, workloadID)
+	}
+	// The tenant stamp is its own extension: it never masquerades as a sandbox.
+	if sandbox, err := armtls.SandboxIDFromCert(mustParseCert(t, certPEM)); err != nil || sandbox != "" {
+		t.Fatalf("sandbox = %q, %v; want none", sandbox, err)
+	}
+
+	// No AssignedWorkloadID param ⇒ no extension.
+	certPEM, _, _, err = ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("SignCSR: %v", err)
+	}
+	if got, err := armtls.AssignedWorkloadIDFromCert(mustParseCert(t, certPEM)); err != nil || got != "" {
+		t.Fatalf("assigned workload without param = %q, %v; want empty", got, err)
+	}
+
+	// An invalid workload ID fails the signing, not silently drops.
+	if _, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, AssignedWorkloadID: "tenant a"}); err == nil {
+		t.Fatal("invalid workload ID signed")
+	}
+}
