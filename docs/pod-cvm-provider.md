@@ -122,10 +122,24 @@ The Secret volume is optional. When `config.json` is absent, the operator logs
 that the provider is disabled and runs without it, including its webhook
 routing; a present but invalid configuration still stops the operator. The
 measured node image renders the chart with the provider enabled and
-`existingSecret: pod-cvm-provider`, so on a baked server create that Secret in
-`c8s-system` after boot, then restart the operator
-(`kubectl -n c8s-system rollout restart deployment/c8s-operator`). The chart
-default stays disabled.
+`existingSecret: pod-cvm-provider`. The chart default stays disabled.
+
+On a measured server, use the operator credential from `c8s get-kubeconfig`.
+The baked `confos-operator-scope` policy lets that credential write only the
+Opaque Secret `c8s-system/pod-cvm-provider` and delete the operator's Pods in
+`c8s-system`; it cannot patch the operator Deployment. Create the Secret as
+shown above, then delete the operator Pod so its Deployment starts one that
+loads the configuration:
+
+```sh
+kubectl -n c8s-system delete pod \
+  -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/instance=c8s,app.kubernetes.io/component=operator
+```
+
+To change the configuration, replace the Secret (for example `kubectl create
+secret ... --dry-run=client -o yaml | kubectl apply -f -`) and delete the Pod
+again. Elsewhere, `kubectl -n c8s-system rollout restart
+deployment/c8s-operator` also works.
 
 Keep this namespace restricted to platform administrators. It contains the
 launch signing key, Cloud credential and durable provider records. The chart
