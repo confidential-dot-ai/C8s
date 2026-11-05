@@ -3212,6 +3212,33 @@ func TestRouterDiscoveryReportsCDSModeWithoutPublicTLSSecret(t *testing.T) {
 		"--discovery-public-tls-mode=cds")
 }
 
+// TestRouterLogsOnlyReviewedMetadata rejects request fields in access logs.
+func TestRouterLogsOnlyReviewedMetadata(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplateRouter(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	conf := renderedRouterNginxConf(t, out)
+	if !strings.Contains(conf, "error_log /dev/null crit;") {
+		t.Fatal("native error output must not expose request fields")
+	}
+	format := regexp.MustCompile(`(?s)log_format main.*?;`).FindString(conf)
+	if !strings.Contains(format, `"event":"http_request_completed"`) {
+		t.Fatal("reviewed access event is absent")
+	}
+	allowed := map[string]bool{
+		"$time_iso8601": true, "$status": true, "$bytes_sent": true,
+		"$request_length": true, "$request_time": true,
+		"$connection": true, "$connection_requests": true,
+	}
+	for _, name := range regexp.MustCompile(`\$[A-Za-z_][A-Za-z0-9_]*`).FindAllString(format, -1) {
+		if !allowed[name] {
+			t.Fatalf("unreviewed access-log variable: %s", name)
+		}
+	}
+}
+
 func TestRouterRollsOnNginxConfigChange(t *testing.T) {
 	t.Parallel()
 	defaultOut, err := helmTemplateRouter(t)
@@ -4558,7 +4585,8 @@ func Example_routerConfig() {
 	// # Each connection may hold a client socket, an upstream socket and a
 	// # request body temp file.
 	// worker_rlimit_nofile 65536;
-	// error_log /var/log/nginx/error.log warn;
+	// # Native error messages can include private request fields.
+	// error_log /dev/null crit;
 	// pid /tmp/nginx.pid;
 	//
 	// events {
@@ -4569,9 +4597,10 @@ func Example_routerConfig() {
 	//     include /etc/nginx/mime.types;
 	//     default_type application/octet-stream;
 	//
-	//     log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-	//                     '$status $body_bytes_sent "$http_referer" '
-	//                     '"$http_user_agent"';
+	//     # Keep only server timestamps, counts, status and elapsed time.
+	//     log_format main escape=json '{"event":"http_request_completed","timestamp":"$time_iso8601",'
+	//                                 '"status":$status,"bytes_sent":$bytes_sent,"request_length":$request_length,'
+	//                                 '"duration_seconds":$request_time,"connection":$connection,"connection_requests":$connection_requests}';
 	//     access_log /var/log/nginx/access.log main;
 	//
 	//     sendfile on;
