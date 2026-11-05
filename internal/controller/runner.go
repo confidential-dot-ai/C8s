@@ -128,6 +128,10 @@ func init() {
 
 // Run boots the manager and blocks until ctx is cancelled or the manager exits.
 func Run(ctx context.Context, opts Options) error {
+	if opts.WebhookHost != "" && (opts.GetCertImage == "" || opts.MeshImage == "") {
+		return fmt.Errorf("--webhook-host requires --get-cert-image and --mesh-image to serve admission webhooks")
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 

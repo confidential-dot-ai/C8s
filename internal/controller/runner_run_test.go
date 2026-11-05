@@ -68,6 +68,29 @@ func TestRunManagerCreateError(t *testing.T) {
 	}
 }
 
+func TestRunWebhookHostRequiresInjectionImages(t *testing.T) {
+	for name, opts := range map[string]Options{
+		"both images missing": {},
+		"get-cert missing":    {MeshImage: "mesh"},
+		"mesh missing":        {GetCertImage: "get-cert"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := getKubeConfig
+			getKubeConfig = func(string) (*rest.Config, error) {
+				t.Fatal("loaded Kubernetes credentials before rejecting missing webhook images")
+				return nil, nil
+			}
+			t.Cleanup(func() { getKubeConfig = original })
+
+			opts.WebhookHost = "127.0.0.1"
+			err := Run(context.Background(), opts)
+			if err == nil || !strings.Contains(err.Error(), "--get-cert-image") || !strings.Contains(err.Error(), "--mesh-image") {
+				t.Fatalf("Run error = %v, want the external webhook's required image flags", err)
+			}
+		})
+	}
+}
+
 func TestRunDiscoveryClientError(t *testing.T) {
 	stubRunWiring(t, stubStartManager{Manager: newTestManager(t)}, nil)
 	stubNewDiscoveryClient(t, errors.New("no api server"))
