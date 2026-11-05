@@ -274,6 +274,6 @@ chain was verified, so `c8s verify --workload` and `--allowlist` require
 
 A pod CVM's leaf may also carry the assigned workload ID (`…1.8`), the tenant
 the pod was assigned to. Two tenants can run one workload, so the matched name
-does not tell their pods apart; `c8s verify --assigned-workload-id <id>`
-requires the leaf to name exactly that tenant, refuses a leaf without the
-extension, and requires `--mesh-ca` for the same reason as the other stamps.
+does not tell their pods apart. A relying party that expects a tenant compares
+this extension, and refuses a leaf without it; like the other stamps it is
+CA-vouched, so the comparison means something only after the chain check.

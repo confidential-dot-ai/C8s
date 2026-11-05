@@ -92,27 +92,6 @@ func AssignedWorkloadIDFromCert(cert *x509.Certificate) (string, error) {
 	return id, nil
 }
 
-// CheckAssignedWorkloadPin requires cert to carry exactly expectedID as its
-// assigned workload ID. A leaf without the extension fails: absence names no
-// tenant. The caller must have verified the leaf's chain to the mesh CA, which
-// is what authenticates the ID.
-func CheckAssignedWorkloadPin(cert *x509.Certificate, expectedID string) error {
-	if expectedID == "" {
-		return nil
-	}
-	id, err := AssignedWorkloadIDFromCert(cert)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
-	}
-	if id == "" {
-		return fmt.Errorf("%w: assigned-workload-ID pin set but certificate carries no assigned-workload-ID extension", ErrPolicyViolation)
-	}
-	if id != expectedID {
-		return fmt.Errorf("%w: certificate assigned workload ID %q does not match pinned %q", ErrPolicyViolation, id, expectedID)
-	}
-	return nil
-}
-
 // RequireSameAssignedWorkload is the AcceptPeer of a pod CVM's mesh endpoint:
 // the peer must carry exactly the assigned workload ID of the endpoint's own
 // leaf, in both roles. The ID names the tenant, not the image: it is the
