@@ -148,22 +148,3 @@ func writeGrant(t *testing.T, dir, content string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 }
-
-// The node image grants execs to kube-apiserver alone.
-func TestNodeImageGrantsExecsToKubeAPIServerAlone(t *testing.T) {
-	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var holders []string
-	for name, workload := range cfg.Allowlist.Base.Workloads {
-		for _, container := range slices.Concat(workload.InitContainers, workload.Containers) {
-			if len(container.Execs) > 0 {
-				holders = append(holders, name)
-			}
-		}
-	}
-	if !slices.Equal(holders, []string{"kube-apiserver"}) {
-		t.Fatalf("workloads granted execs = %q, want kube-apiserver alone", holders)
-	}
-}

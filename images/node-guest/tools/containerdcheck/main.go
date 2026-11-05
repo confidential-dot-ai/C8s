@@ -1,26 +1,18 @@
-// Command containerdcheck proves that every ordinary-pod runtime handler on
-// the node image reaches the measured runtime wrapper (c8s-runc), and not runc
-// itself.
+// Command containerdcheck proves that every ordinary-pod runtime handler of
+// the worker image's containerd configuration reaches the measured runtime
+// wrapper (c8s-runc), and not runc itself.
 //
-// The check renders the containerd config the way RKE2 does — the vendored
-// RKE2 base template, through the profile's config-v3.toml.tmpl if it bakes
-// one — then merges the drop-ins containerd imports, in the lexical order
-// containerd merges them. It asserts against the effective
-// configuration, so a drop-in that overrides a handler, an alternate runc, an
-// empty BinaryName or a runtime RKE2's auto-detection introduced all fail
-// here rather than on a node.
+// The check reads the main config the image bakes and merges the drop-ins
+// containerd imports, in the lexical order containerd merges them. It asserts
+// against the effective configuration, so a drop-in that overrides a handler,
+// an alternate runc or an empty BinaryName fails here rather than on a worker.
 //
 //	containerdcheck -wrapper /usr/local/bin/c8s-runc \
-//	    -config-dir images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
-//
-// -extra-runtime NAME=BINARY adds a handler the way RKE2's runtime
-// auto-detection would; the gate uses it to prove the check still fails when
-// an unwrapped runtime appears on the node's PATH.
+//	    -config-dir images/node-guest/worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd \
+//	    -config images/node-guest/worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml
 package main
 
 import (
-	_ "embed"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,28 +20,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
-	"text/template"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// The base template RKE2 renders, alone or as `{{ template "base" . }}` from
-// a user template. Vendored: see the file's header for the pin and the
-// re-vendor rule.
-//
-//go:embed rke2-base-v3.toml.tmpl
-var baseTemplate string
-
 const (
-	userTemplateName = "config-v3.toml.tmpl"
-	dropInDirName    = "config-v3.toml.d"
+	dropInDirName = "config-v3.toml.d"
 	// criPlugin is the containerd v2 CRI runtime plugin: the one table the
 	// ordinary-pod handlers live under.
-	criPlugin   = "io.containerd.cri.v1.runtime"
-	runcShim    = "io.containerd.runc.v2"
-	windowsShim = "io.containerd.runhcs.v1"
+	criPlugin = "io.containerd.cri.v1.runtime"
+	runcShim  = "io.containerd.runc.v2"
 )
 
 func main() {
@@ -63,22 +44,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("containerdcheck", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	wrapper := flags.String("wrapper", "/usr/local/bin/c8s-runc", "absolute path every ordinary-pod handler must run")
-	configDir := flags.String("config-dir", "", "containerd config directory holding "+dropInDirName+" and, optionally, "+userTemplateName)
-	mainConfig := flags.String("config", "", "a containerd main config to check in place of RKE2's rendering, as the worker image bakes one")
-	var extra extraRuntimes
-	flags.Var(&extra, "extra-runtime", "NAME=BINARY handler RKE2 auto-detection would add (repeatable; for negative tests)")
+	configDir := flags.String("config-dir", "", "containerd config directory holding "+dropInDirName)
+	mainConfig := flags.String("config", "", "the containerd main config the image bakes")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *configDir == "" {
-		fmt.Fprintln(stderr, "containerdcheck: -config-dir is required")
+	if *configDir == "" || *mainConfig == "" {
+		fmt.Fprintln(stderr, "containerdcheck: -config-dir and -config are required")
 		return 2
 	}
-	if *mainConfig != "" && len(extra) > 0 {
-		fmt.Fprintln(stderr, "containerdcheck: -extra-runtime renders RKE2's template, which -config replaces")
+	if !filepath.IsAbs(*wrapper) {
+		fmt.Fprintf(stderr, "containerdcheck: -wrapper %q must be an absolute path\n", *wrapper)
 		return 2
 	}
-	cfg, err := effectiveConfig(*configDir, *mainConfig, extra)
+	cfg, err := effectiveConfig(*configDir, *mainConfig)
 	if err != nil {
 		fmt.Fprintf(stderr, "containerdcheck: %v\n", err)
 		return 1
@@ -92,43 +71,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// extraRuntimes collects repeated -extra-runtime NAME=BINARY flags.
-type extraRuntimes map[string]string
-
-func (e extraRuntimes) String() string { return strings.Join(slices.Sorted(maps.Keys(e)), ",") }
-
-func (e *extraRuntimes) Set(v string) error {
-	name, binary, ok := strings.Cut(v, "=")
-	if !ok || name == "" {
-		return fmt.Errorf("want NAME=BINARY, got %q", v)
-	}
-	if *e == nil {
-		*e = extraRuntimes{}
-	}
-	(*e)[name] = binary
-	return nil
-}
-
-// effectiveConfig renders the template in configDir, or reads mainConfig when
-// given, and merges configDir's drop-ins, returning what containerd would
-// hold after loading the imports.
-func effectiveConfig(configDir, mainConfig string, extra extraRuntimes) (map[string]any, error) {
-	var rendered string
-	if mainConfig != "" {
-		data, err := os.ReadFile(mainConfig)
-		if err != nil {
-			return nil, err
-		}
-		rendered = string(data)
-	} else {
-		var err error
-		if rendered, err = render(filepath.Join(configDir, userTemplateName), extra); err != nil {
-			return nil, err
-		}
+// effectiveConfig reads mainConfig and merges configDir's drop-ins, returning
+// what containerd would hold after loading the imports.
+func effectiveConfig(
+	configDir string,
+	mainConfig string,
+) (map[string]any, error) {
+	data, err := os.ReadFile(mainConfig)
+	if err != nil {
+		return nil, err
 	}
 	cfg := map[string]any{}
-	if err := toml.Unmarshal([]byte(rendered), &cfg); err != nil {
-		return nil, fmt.Errorf("parse the rendered %s: %w\n%s", userTemplateName, err, rendered)
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", mainConfig, err)
 	}
 
 	if err := checkImports(cfg); err != nil {
@@ -139,7 +94,7 @@ func effectiveConfig(configDir, mainConfig string, extra extraRuntimes) (map[str
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(dropIns) // containerd merges imports in lexical order, later wins
+	slices.Sort(dropIns) // containerd merges imports in lexical order, later wins
 	for _, path := range dropIns {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -149,104 +104,33 @@ func effectiveConfig(configDir, mainConfig string, extra extraRuntimes) (map[str
 		if err := toml.Unmarshal(data, &imported); err != nil {
 			return nil, fmt.Errorf("parse drop-in %s: %w", path, err)
 		}
-		mergeInto(cfg, imported)
+		mergeTablesImportWins(cfg, imported)
 	}
 	return cfg, nil
 }
 
-// checkImports fails unless the rendered config imports the drop-in
-// directory: the wrapper's BinaryName lives in a drop-in, so a base template
-// that stopped importing them would silently fall back to PATH runc.
+// checkImports fails unless the config's one import is the drop-in directory
+// this check merges. The wrapper's BinaryName lives in a drop-in, so a config
+// that stopped importing them would silently fall back to PATH runc, and a
+// second import would be a drop-in nothing here reads. The baked config names
+// the directory by its absolute path on a worker, which is not where this
+// check reads it from, so the import is matched by its last two elements.
 func checkImports(cfg map[string]any) error {
 	want := dropInDirName + "/*.toml"
 	imports, _ := cfg["imports"].([]any)
-	for _, v := range imports {
-		if s, ok := v.(string); ok && strings.HasSuffix(s, want) {
-			return nil
-		}
+	if len(imports) != 1 {
+		return fmt.Errorf("the baked config imports %v, want only %q", imports, want)
 	}
-	return fmt.Errorf("the rendered config has no import matching %q; the drop-in that wraps runc would never be read", want)
+	if s, _ := imports[0].(string); !strings.HasSuffix(s, want) {
+		return fmt.Errorf("the baked config imports %q, want %q, the drop-ins this check merges", s, want)
+	}
+	return nil
 }
 
-// render executes RKE2's base template with the node's rendering inputs,
-// through the user template at path when one exists. RKE2 renders the base
-// alone when the profile bakes none (k3s pkg/agent/containerd), and the C8s
-// profile bakes none: the base already emits the drop-in import, and a user
-// template that repeated it produced a duplicate key containerd refused.
-func render(path string, extra extraRuntimes) (string, error) {
-	user := `{{ template "base" . }}`
-	if data, err := os.ReadFile(path); err == nil {
-		user = string(data)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	funcs := template.FuncMap{
-		// k3s's linux templateFuncs: deschemify is identity there, and no
-		// containerd v3 template calls toJson.
-		"deschemify":   func(s string) string { return s },
-		"filepathjoin": filepath.Join,
-	}
-	t, err := template.New(userTemplateName).Funcs(funcs).Parse(user)
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	if _, err := t.New("base").Parse(baseTemplate); err != nil {
-		return "", fmt.Errorf("parse the vendored RKE2 base template: %w", err)
-	}
-	var out strings.Builder
-	if err := t.Execute(&out, renderData(extra)); err != nil {
-		return "", fmt.Errorf("render %s: %w", path, err)
-	}
-	return out.String(), nil
-}
-
-// renderData mirrors k3s's templates.ContainerdConfig for a C8s node: the
-// fields the base template reads, with the values RKE2 fills in on this image.
-// Only ExtraRuntimes varies, and only for the negative tests.
-func renderData(extra extraRuntimes) map[string]any {
-	runtimes := map[string]any{}
-	for name, binary := range extra {
-		runtimes[name] = map[string]any{"RuntimeType": runcShim, "BinaryName": binary}
-	}
-	return map[string]any{
-		"Program":            "rke2",
-		"SystemdCgroup":      true,
-		"DisableCgroup":      false,
-		"IsRunningInUserNS":  false,
-		"EnableUnprivileged": true,
-		"NonrootDevices":     false,
-		"NoDefaultEndpoint":  false,
-		"ExtraRuntimes":      runtimes,
-		"PrivateRegistryConfig": map[string]any{
-			"Configs": map[string]any{},
-		},
-		"NodeConfig": map[string]any{
-			"SELinux":        false,
-			"DefaultRuntime": "",
-			"Containerd": map[string]any{
-				"Root":          "/var/lib/rancher/rke2/agent/containerd",
-				"State":         "/run/k3s/containerd",
-				"Address":       "/run/k3s/containerd/containerd.sock",
-				"Template":      "/var/lib/rancher/rke2/agent/etc/containerd",
-				"Opt":           "/var/lib/rancher/rke2/agent/containerd",
-				"Registry":      "/var/lib/rancher/rke2/agent/etc/containerd/certs.d",
-				"BlockIOConfig": "",
-				"RDTConfig":     "",
-			},
-			"AgentConfig": map[string]any{
-				"Snapshotter":        "overlayfs",
-				"PauseImage":         "index.docker.io/rancher/mirrored-pause:3.6",
-				"CNIBinDir":          "/opt/cni/bin",
-				"CNIConfDir":         "/etc/cni/net.d",
-				"ImageServiceSocket": "",
-			},
-		},
-	}
-}
-
-// mergeInto merges an imported config over dst the way containerd's
-// mergeConfig does: nested tables merge key by key, and the import wins.
-func mergeInto(dst, src map[string]any) {
+// mergeTablesImportWins merges an imported config over dst the way
+// containerd's mergeConfig does: nested tables merge key by key, the import
+// wins, and any other value, arrays included, is replaced whole.
+func mergeTablesImportWins(dst, src map[string]any) {
 	for k, v := range src {
 		sub, ok := v.(map[string]any)
 		if !ok {
@@ -258,7 +142,7 @@ func mergeInto(dst, src map[string]any) {
 			dst[k] = sub
 			continue
 		}
-		mergeInto(existing, sub)
+		mergeTablesImportWins(existing, sub)
 	}
 }
 
@@ -267,12 +151,9 @@ func mergeInto(dst, src map[string]any) {
 // this gate's promise is that no handler the node enables escapes the wrapper,
 // so a new one has to be classified deliberately.
 func checkHandlers(cfg map[string]any, wrapper string) ([]string, error) {
-	if !filepath.IsAbs(wrapper) {
-		return nil, fmt.Errorf("-wrapper %q must be an absolute path", wrapper)
-	}
 	runtimes := table(cfg, "plugins", criPlugin, "containerd", "runtimes")
 	if len(runtimes) == 0 {
-		return nil, fmt.Errorf("no %s runtime handlers in the effective config; the template did not render the CRI plugin", criPlugin)
+		return nil, fmt.Errorf("no %s runtime handlers in the effective config", criPlugin)
 	}
 
 	var wrapped []string
@@ -281,16 +162,9 @@ func checkHandlers(cfg map[string]any, wrapper string) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("runtime handler %q is not a table", name)
 		}
-		shim, _ := handler["runtime_type"].(string)
-		switch shim {
-		case runcShim:
-		case windowsShim:
-			// Windows-only shim the base template always emits; it has no
-			// binary on a Linux node, so a pod selecting it never starts.
-			continue
-		default:
-			return nil, fmt.Errorf("runtime handler %q uses unaudited shim %q; only %s (wrapped) and %s handlers may be enabled",
-				name, shim, runcShim, windowsShim)
+		if shim, _ := handler["runtime_type"].(string); shim != runcShim {
+			return nil, fmt.Errorf("runtime handler %q uses unaudited shim %q; only wrapped %s handlers may be enabled",
+				name, shim, runcShim)
 		}
 		binary, _ := table(handler, "options")["BinaryName"].(string)
 		if binary != wrapper {
@@ -303,10 +177,13 @@ func checkHandlers(cfg map[string]any, wrapper string) ([]string, error) {
 		return nil, fmt.Errorf("no %s handler is enabled; ordinary pods would have no runtime", runcShim)
 	}
 
-	if def, ok := table(cfg, "plugins", criPlugin, "containerd")["default_runtime_name"].(string); ok && def != "" {
-		if !slices.Contains(wrapped, def) {
-			return nil, fmt.Errorf("default_runtime_name %q is not one of the wrapped handlers %v", def, wrapped)
-		}
+	// containerd runs "runc" when the config names no default handler.
+	def, _ := table(cfg, "plugins", criPlugin, "containerd")["default_runtime_name"].(string)
+	if def == "" {
+		def = "runc"
+	}
+	if !slices.Contains(wrapped, def) {
+		return nil, fmt.Errorf("default_runtime_name %q is not one of the wrapped handlers %v", def, wrapped)
 	}
 	return wrapped, nil
 }

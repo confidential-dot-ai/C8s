@@ -123,6 +123,8 @@ containerd_waits_for=$(sed -n 's/^\(Requires\|After\)=//p' "$containerd" | tr '\
 for gate in "${BOOT_GATES[@]}"; do
   holds "$containerd_waits_for" "$gate" \
       || fail boot-gate "containerd.service must wait for the boot gate $gate"
+  holds "$(sed -n 's/^Before=//p' "$units/$gate" | tr '\n' ' ')" containerd.service \
+      || fail boot-gate "the boot gate $gate must order itself before containerd.service, the unit it gates"
   grep -qx 'Type=oneshot' "$units/$gate" \
       || fail boot-gate "the boot gate $gate runs before staging, so it must be a oneshot"
 done

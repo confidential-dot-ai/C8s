@@ -17,12 +17,12 @@
 # inside the same measured CVM, so it is a self-check: it gates Ready state
 # and node start but does not reach relying parties (README: known gaps).
 #
-# PCI presence (vendor 0x10de) mirrors gpu-node-label.sh so a GPU-less boot
+# PCI presence (vendor 0x10de) decides whether this gate applies, so a GPU-less boot
 # of the same image is a clean no-op.
 #
 # Runs once per boot. That is enough only because the guest kernel has PCI
 # hotplug compiled out, so the host cannot add a GPU later; kernel/c8s.config
-# pins it and .github/scripts/node-guest-image-invariants.sh enforces it. A
+# pins it and images/node-guest/tests/worker-invariants.sh enforces it. A
 # /sys/bus/pci/rescan by guest root or any privileged platform pod is not
 # covered (#669).
 set -eu

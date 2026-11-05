@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -106,15 +106,6 @@ test-integration-cluster:
 test-integration-cdsha:
 	./test/integration/cdsha/run.sh -short
 
-# The byte-exact launch script with device and C8s stubs in disposable Linux.
-# Needs Docker; host files are mounted read-only and no privileges are added.
-test-node-guest-image-role:
-	./images/node-guest/tests/rke2-role-test.sh
-
-# GPU-node label logic (root-free unit test; fakes the PCI tree).
-test-node-guest-image-gpu-label:
-	./images/node-guest/tests/gpu-node-label-test.sh
-
 test-node-guest-image-gpu-cc:
 	./images/node-guest/tests/gpu-cc-enforce-test.sh
 
@@ -123,29 +114,11 @@ test-node-guest-image-scratch:
 
 # AppArmor configuration and byte-exact boot-gate regression tests.
 # Needs Docker and CONFOS_RELEASE from the pinned confos base configuration.
-.PHONY: test-node-guest-image-apparmor test-node-guest-image-apparmor-runtime
+.PHONY: test-node-guest-image-apparmor
 test-node-guest-image-apparmor:
 	bash test/e2e/lib-test.sh
 	bash images/node-guest/tests/apparmor-config-test.sh
 	bash images/node-guest/tests/apparmor-enforce-test.sh
-
-# Disposable single-node C8s image and its operator kubeconfig.
-test-node-guest-image-apparmor-runtime:
-	bash images/node-guest/tests/apparmor-runtime-test.sh
-
-test-node-guest-image-psa-ready:
-	./images/node-guest/tests/psa-ready-test.sh
-
-# Role-gated unit wiring under real systemd in a privileged container.
-# Needs only docker.
-test-node-guest-image-role-systemd:
-	./images/node-guest/tests/rke2-role-systemd-test.sh
-
-# Verify measured OCI archives offline with a real ORAS multi-platform copy.
-# Needs ORAS, jq, Python 3 and GNU tar.
-.PHONY: test-node-guest-image-airgap
-test-node-guest-image-airgap:
-	bash images/node-guest/tests/airgap-images-test.sh
 
 # Needs root (private mount namespace) and a ./confos checkout.
 test-node-guest-image-cloud-init:
@@ -197,33 +170,31 @@ mutation-full:
 
 # Live-cluster check of the cw-label integrity admission policy. Needs
 # kubectl pointed at a cluster with the C8s chart installed. Also runs
-# post-merge in the snp-metal-e2e lane's in-guest payload.
+# installed.
 test-e2e-cw-label-policy:
 	./test/e2e/cw-label-policy.sh
 
 # Live-cluster check that image admission is fail-closed and that a signed
 # allowlist write opens it. Needs kubectl pointed at a cluster with C8s
 # installed, plus C8S_ALLOWLIST_URL, C8S_MEASUREMENTS and C8S_OPERATOR_KEY.
-# Also runs post-merge in the tdx-metal-e2e lane.
 test-e2e-allowlist-enforcement:
 	./test/e2e/allowlist-enforcement.sh
 
 # Live-cluster check that every c8s-system pod is Running and Ready. Needs
-# kubectl pointed at a cluster with C8s installed. Also runs post-merge in
-# the tdx-metal-e2e lane.
+# kubectl pointed at a cluster with C8s installed.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
 
-# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from a
-# lane's own CDS VM. Needs kubectl pointed at the launcher cluster; runs last
-# in a metal lane's payload, because it replaces the lane's CVMs with its own.
+# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from an
+# existing CDS VM. Needs kubectl pointed at the launcher cluster; run it last,
+# because it replaces that cluster's CVMs with its own.
 test-e2e-cds-ha-vms:
 	./test/e2e/cds-ha-vms.sh
 
 # Live-cluster check that the sample confidential workload runs with the
 # injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s
 # installed; under a fail-closed floor also C8S_OPERATOR_KEY,
-# C8S_ALLOWLIST_URL and C8S_MEASUREMENTS. Runs post-merge in both metal lanes.
+# C8S_ALLOWLIST_URL and C8S_MEASUREMENTS.
 test-e2e-cw-workload:
 	./test/e2e/cw-workload.sh
 

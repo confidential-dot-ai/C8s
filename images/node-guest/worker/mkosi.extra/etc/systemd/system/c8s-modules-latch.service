@@ -8,7 +8,7 @@
 # composition documented in mkosi.conf boots with modules loadable for the
 # whole boot, and nothing pins the gpu profile into the canonical build.
 #
-# Same split as 99-c8s-bpf.conf: the c8s profile owns the runtime lock its own
+# Same split as 99-c8s-bpf.conf: this profile owns the runtime lock its own
 # kernel fragment makes necessary.
 [Unit]
 Description=Latch kernel.modules_disabled once boot-time module loading is done
@@ -20,9 +20,7 @@ ConditionPathExists=/proc/sys/kernel/modules_disabled
 # None of these units exist in a GPU-less build; a missing After= target is
 # inert ordering, not a requirement.
 After=nvidia-modules-latch.service nvidia-cc-ready.service systemd-modules-load.service
-# rke2's ExecStartPre modprobes are already overridden to a no-op
-# (rke2-server.service.d/no-modprobe.conf), which assumes this latch has run.
-Before=rke2-server.service rke2-agent.service
+Before=containerd.service
 
 [Service]
 Type=oneshot
@@ -35,7 +33,5 @@ RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
-# Preset creates the .requires links, so rke2 cannot start while the latch is
-# failing. A skipped condition is not a failure, so a modules-less kernel
-# still boots.
-RequiredBy=rke2-server.service rke2-agent.service
+# A skipped condition is not a failure, so a modules-less kernel still boots.
+RequiredBy=containerd.service

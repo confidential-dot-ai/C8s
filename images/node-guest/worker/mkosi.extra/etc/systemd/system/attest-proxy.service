@@ -1,4 +1,4 @@
-# As the node image's: the attestation API on the socket pods mount.
+# The attestation API on the socket pods mount.
 [Unit]
 Description=Local workload access to the measured hardware attester
 Requires=worker-stage.service attestation-api.service

@@ -11,8 +11,5 @@
 # parser rejects a file that defines a key twice. containerd merges each
 # import over the main config key by key, so SystemdCgroup from the base
 # survives.
-#
-# The C8S_DEV=1 build renders 60-dev-runc.toml (mkosi.sync) on top of this to
-# restore the unwrapped runtime; drop-ins merge in lexical order.
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
   BinaryName = "/usr/local/bin/c8s-runc"

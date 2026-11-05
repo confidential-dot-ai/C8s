@@ -1,5 +1,5 @@
 # Mount a pre-populated read-only weights disk (serial=confai-models) at
-# /var/lib/models before rke2 starts, so large model weights persist across CVM
+# /var/lib/models before containerd starts, so large model weights persist across CVM
 # relaunches instead of re-downloading. See models-disk.sh for the why.
 #
 # The disk is public (weights), so unlike containerd-data-disk.service there is
@@ -8,13 +8,13 @@
 #
 # A oneshot (not a .mount unit) because the device is matched by serial at
 # runtime, which a static .mount cannot express. RemainAfterExit ties the mount
-# lifecycle to the unit. Ordered Before rke2 so /var/lib/models is ready when
-# pods start.
+# lifecycle to the unit. Ordered before containerd.service, so
+# /var/lib/models is ready when pods start.
 [Unit]
 Description=Mount the read-only weights disk (serial=confai-models) at /var/lib/models
 DefaultDependencies=no
 Conflicts=umount.target
-Before=rke2-server.service rke2-agent.service
+Before=containerd.service
 After=systemd-udevd.service
 # Order After=systemd-udevd so udevd has started before we resolve /dev/disk/by-id.
 # NOT a hard Require, and no udev-settle: a dep on the by-id device unit would hang

@@ -284,6 +284,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 func TestMeshPolicyAddressesAreParsedAtLoad(t *testing.T) {
 	document := func(resolver, port string) []byte {
 		return []byte(`
+worker: true
 allowlist:
   node_tcb: true
   base:
@@ -299,6 +300,8 @@ allowlist:
 policy:
   mode: fail-closed
   fatal_existing: true
+  sandbox: enforce
+  deny_missing_annotation: true
   boot_marker_path: /run/nri-image-policy/registered
 mesh:
   resolver: "` + resolver + `"

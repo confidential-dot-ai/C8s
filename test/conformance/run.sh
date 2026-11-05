@@ -6,7 +6,7 @@
 # backend down. README.md beside this file states the contract.
 #
 # Env:
-#   CONFORMANCE_BACKEND    kind or metal (backends/<name>.sh), plus what it requires
+#   CONFORMANCE_BACKEND    the backend (backends/<name>.sh), plus what it requires
 #   CONFORMANCE_FEATURES   the directory of .feature files to run
 #   CONFORMANCE_REPORT     where to write the Cucumber JSON report
 #   GODOG_TAGS             optional tag expression, e.g. @area:enforcement
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-: "${CONFORMANCE_BACKEND:?kind or metal}"
+: "${CONFORMANCE_BACKEND:?the backend under backends/}"
 : "${CONFORMANCE_FEATURES:?the directory of .feature files}"
 : "${CONFORMANCE_REPORT:?where to write the Cucumber JSON report}"
 

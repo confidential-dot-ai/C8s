@@ -102,7 +102,7 @@ func TestStaticPodEntryPinsTheTemplate(t *testing.T) {
 	}
 
 	root := workerRoot(t)
-	floor, err := Floor(renderedNodeFloor(t), routerSeed("/run/c8s-node/cds.json"), map[string][]byte{"agent.yaml": []byte(agentTemplate)})
+	floor, err := Floor(renderedTemplate(t), routerSeed("/run/c8s-node/cds.json"), map[string][]byte{"agent.yaml": []byte(agentTemplate)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestStaticPodEntryRefusesTemplatesTheControlPlaneCouldShape(t *testing.T) {
 			}
 		})
 	}
-	if _, err := Floor(renderedNodeFloor(t), routerSeed("/run/c8s-node/cds.json"), map[string][]byte{"agent.yaml": []byte(strings.Replace(agentTemplate, "name: agent\n  namespace", "name: c8s-mesh-endpoint\n  namespace", 1))}); err == nil || !strings.Contains(err.Error(), "named as another entry") {
+	if _, err := Floor(renderedTemplate(t), routerSeed("/run/c8s-node/cds.json"), map[string][]byte{"agent.yaml": []byte(strings.Replace(agentTemplate, "name: agent\n  namespace", "name: c8s-mesh-endpoint\n  namespace", 1))}); err == nil || !strings.Contains(err.Error(), "named as another entry") {
 		t.Fatalf("Floor = %v, want a template named as a platform role refused", err)
 	}
 }

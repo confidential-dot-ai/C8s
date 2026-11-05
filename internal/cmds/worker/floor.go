@@ -18,9 +18,9 @@ import (
 
 const routerWorkloadPrefix = "c8s-router-"
 
-// floorSettings are the node floor's settings a worker's floor takes as they
-// are. INVARIANT: every field is omitempty, so a key the node floor leaves out
-// stays out.
+// floorSettings are the floor template's settings a worker's floor takes as
+// they are. INVARIANT: every field is omitempty, so a key the template leaves
+// out stays out.
 type floorSettings struct {
 	Platform       string         `yaml:"platform,omitempty"`
 	Plugin         map[string]any `yaml:"plugin,omitempty"`
@@ -36,29 +36,19 @@ type floorAllowlist struct {
 	Pull    map[string]any       `yaml:"pull,omitempty"`
 }
 
-// workerMesh is the node floor's mesh policy as a worker's floor takes it;
+// workerMesh is the mesh policy a worker's floor takes from the template;
 // stage completes it from the worker document.
 type workerMesh struct {
 	Capture map[string]any `yaml:"capture,omitempty"`
 	Roles   []any          `yaml:"roles,omitempty"`
 }
 
-// nodeMesh is the node floor's mesh policy: a worker's, and the keys stage
-// fills from the worker document or a worker refuses.
-type nodeMesh struct {
-	workerMesh       `yaml:",inline"`
-	ExemptNamespaces any `yaml:"exempt_namespaces"`
-	Exits            any `yaml:"exits"`
-	Resolver         any `yaml:"resolver"`
-	ClusterRanges    any `yaml:"cluster_ranges"`
-}
-
-// nodeFloor is the node image's floor, decoded strictly: a key it does not
-// name is refused rather than copied.
-type nodeFloor struct {
+// floorTemplate is the worker image's floor template, decoded strictly: a key
+// it does not name is refused rather than copied.
+type floorTemplate struct {
 	floorSettings `yaml:",inline"`
 	Allowlist     *floorAllowlist `yaml:"allowlist"`
-	Mesh          *nodeMesh       `yaml:"mesh"`
+	Mesh          *workerMesh     `yaml:"mesh"`
 }
 
 // workerFloor is a worker image's floor.
@@ -69,27 +59,31 @@ type workerFloor struct {
 	Worker        bool           `yaml:"worker"`
 }
 
-// Floor builds a worker image's NRI floor from the node image's floor, its
-// digests filled, the seed `c8s node-image render` writes, and the image's
+// Floor builds a worker image's NRI floor from the image's floor template,
+// its digests filled, the seed `c8s node-image render` writes, and the image's
 // static pod templates by file name. See NewFloorCmd for what it keeps.
-func Floor(nodeFloorData, seed []byte, templates map[string][]byte) ([]byte, error) {
-	node, err := parseNodeFloor(nodeFloorData)
+func Floor(templateData, seed []byte, staticPods map[string][]byte) ([]byte, error) {
+	template, err := parseTemplate(templateData)
 	if err != nil {
 		return nil, err
 	}
-	if err := keepPlatformRoles(node.Allowlist.Base); err != nil {
+	if err := requirePlatformRoles(template.Allowlist.Base); err != nil {
 		return nil, err
 	}
-	base := node.Allowlist.Base
+	// The output takes a copy: the parsed template stays as it was read.
+	allow := *template.Allowlist
+	base := &allowlist.Allowlist{Schema: template.Allowlist.Base.Schema, Workloads: maps.Clone(template.Allowlist.Base.Workloads)}
+	allow.Base = base
+	allow.Pull = maps.Clone(template.Allowlist.Pull)
 	name, router, err := routerEntry(seed)
 	if err != nil {
 		return nil, err
 	}
 	if _, taken := base.Workloads[name]; taken {
-		return nil, fmt.Errorf("node floor: a platform role is named %s, the router's entry", name)
+		return nil, fmt.Errorf("floor template: a platform role is named %s, the router's entry", name)
 	}
 	base.Workloads[name] = router
-	for file, data := range templates {
+	for file, data := range staticPods {
 		pod, entry, err := staticPodEntry(data)
 		if err != nil {
 			return nil, fmt.Errorf("static pod template %s: %w", file, err)
@@ -99,45 +93,50 @@ func Floor(nodeFloorData, seed []byte, templates map[string][]byte) ([]byte, err
 		}
 		base.Workloads[pod] = entry
 	}
-	if node.Allowlist.Pull == nil {
-		return nil, fmt.Errorf("node floor: no allowlist.pull: a worker pulls its served allowlist from its CDS")
+	if allow.Pull == nil {
+		return nil, fmt.Errorf("floor template: no allowlist.pull: a worker pulls its served allowlist from its CDS")
 	}
 	// Each served allowlist extends RTMR[3] before the worker applies it.
-	node.Allowlist.Pull["measure_policies"] = true
+	allow.Pull["measure_policies"] = true
 	return yaml.Marshal(workerFloor{
-		floorSettings: node.floorSettings,
-		Allowlist:     *node.Allowlist,
-		Mesh:          node.Mesh.workerMesh,
+		floorSettings: template.floorSettings,
+		Allowlist:     allow,
+		Mesh:          *template.Mesh,
 		Worker:        true,
 	})
 }
 
-// parseNodeFloor decodes data strictly and requires its allowlist base and
+// parseTemplate decodes data strictly and requires its allowlist base and
 // mesh policy.
-func parseNodeFloor(data []byte) (*nodeFloor, error) {
+func parseTemplate(data []byte) (*floorTemplate, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	var floor nodeFloor
-	if err := dec.Decode(&floor); err != nil {
-		return nil, fmt.Errorf("node floor: %w", err)
+	var template floorTemplate
+	if err := dec.Decode(&template); err != nil {
+		return nil, fmt.Errorf("floor template: %w", err)
 	}
-	if floor.Allowlist == nil || floor.Allowlist.Base == nil || floor.Mesh == nil {
-		return nil, errors.New("node floor: no allowlist base or mesh policy")
+	if template.Allowlist == nil || template.Allowlist.Base == nil || template.Mesh == nil {
+		return nil, errors.New("floor template: no allowlist base or mesh policy")
 	}
-	return &floor, nil
+	if len(template.Allowlist.Base.Workloads) == 0 {
+		return nil, errors.New("floor template base: no entry")
+	}
+	return &template, nil
 }
 
-// keepPlatformRoles deletes from base every entry with a container that holds
-// no platform role.
-func keepPlatformRoles(base *allowlist.Allowlist) error {
-	maps.DeleteFunc(base.Workloads, func(_ string, w allowlist.Workload) bool {
-		containers := slices.Concat(w.InitContainers, w.Containers)
-		return len(containers) == 0 || slices.ContainsFunc(containers, func(c allowlist.Container) bool {
-			return c.Role == ""
-		})
-	})
-	if len(base.Workloads) == 0 {
-		return errors.New("node floor base: no platform-role entry")
+// requirePlatformRoles refuses a base entry whose containers do not all carry
+// a platform role: a worker grants roles from this measured base alone.
+func requirePlatformRoles(base *allowlist.Allowlist) error {
+	for _, name := range slices.Sorted(maps.Keys(base.Workloads)) {
+		containers := slices.Concat(base.Workloads[name].InitContainers, base.Workloads[name].Containers)
+		if len(containers) == 0 {
+			return fmt.Errorf("floor template base: entry %s holds no container", name)
+		}
+		for _, c := range containers {
+			if c.Role == "" {
+				return fmt.Errorf("floor template base: entry %s container with digest %s holds no platform role", name, c.Digest)
+			}
+		}
 	}
 	return nil
 }

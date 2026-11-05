@@ -80,12 +80,11 @@ func (c CDS) LaunchFile() ([]byte, error) {
 	return file, nil
 }
 
-// The pod and service ranges the node image's RKE2 configuration fixes, which
-// a node subnet may not reach into.
+// The cluster's pod and service ranges, which a node subnet may not reach
+// into.
 //
-// INVARIANT: equal to cluster-cidr and service-cidr in
-// images/node-guest/c8s/mkosi.extra/etc/rancher/rke2/config.yaml, which
-// TestClusterRangesMatchTheNodeImage checks.
+// INVARIANT: equal to the ranges the worker image's kube-proxy static pod and
+// CoreDNS configuration carry (images/node-guest/worker/mkosi.extra/usr/lib/c8s/worker).
 var clusterRanges = []string{"10.52.0.0/16", "10.53.0.0/16"}
 
 // clusterCDS renders the launch file of this cluster's CDS VM and the

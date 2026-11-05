@@ -15,7 +15,6 @@
 # The core image digests resolve from the registry, or from the local OCI
 # layouts the build shares between the image repro gate's two runs.
 #
-# The RKE2 and Helm pins equal the c8s profile's (profile_test.go).
 set -euo pipefail
 # A FATAL inside v=$(f) ends the sync; inside an argument or a local it does not.
 shopt -s inherit_errexit
@@ -78,8 +77,8 @@ case "$BINARY_INPUT" in
         C8S_SOURCE=plugin ;;
     *)  fail "c8s-binary sync-input must be 1 or empty, got '$BINARY_INPUT'" ;;
 esac
-NODE_FLOOR="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
-[ -f "$NODE_FLOOR" ] || fail "no floor template at $NODE_FLOOR"
+FLOOR_TEMPLATE="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
+[ -f "$FLOOR_TEMPLATE" ] || fail "no floor template at $FLOOR_TEMPLATE"
 
 # fetch <url> <dest> <sha256>: download once into the package cache.
 fetch() {
@@ -276,12 +275,12 @@ sed \
     -e "s|@OPERATOR_DIGEST@|$OPERATOR_DIGEST|g" \
     -e "s|@ROUTER_REPO@|${ROUTER_IMAGE%@*}|g" \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
-    "$NODE_FLOOR" > "$TMP/node-floor.yaml"
-! grep -o '@[A-Z_]*@' "$TMP/node-floor.yaml" || fail "the node floor names a placeholder this sync does not fill"
+    "$FLOOR_TEMPLATE" > "$TMP/floor-template.yaml"
+! grep -o '@[A-Z_]*@' "$TMP/floor-template.yaml" || fail "the floor template names a placeholder this sync does not fill"
 TEMPLATES="$SRCDIR/mkosi.profiles/worker/mkosi.extra/usr/lib/c8s/worker/static-pods"
 [ -d "$TEMPLATES" ] || fail "no static pod templates at $TEMPLATES"
 "$C8S" worker floor \
-    --node-floor "$TMP/node-floor.yaml" \
+    --floor-template "$TMP/floor-template.yaml" \
     --render-dir "$RENDER" \
     --static-pods "$TEMPLATES" \
     --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"

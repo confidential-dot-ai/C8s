@@ -96,7 +96,7 @@ func TestSetMeasurePoliciesPreservesFileMode(t *testing.T) {
 }
 
 // The switch lands and the baked base allowlist — which the chart cannot
-// re-render, because only the image build resolves the RKE2 system digests —
+// re-render, because only the image build resolves the floor's digests —
 // survives untouched, as does the CDS the node's launch staging pins.
 func TestSetMeasurePoliciesKeepsTheBakedConfig(t *testing.T) {
 	path := writeConfig(t, bakedConfig)

@@ -458,6 +458,7 @@ func measuredConfig(t *testing.T, mesh bool) string {
 	t.Helper()
 	document := `
 platform: snp
+worker: true
 allowlist:
   node_tcb: true
   base:
@@ -473,12 +474,13 @@ allowlist:
 policy:
   mode: fail-closed
   fatal_existing: true
+  sandbox: enforce
+  deny_missing_annotation: true
   boot_marker_path: /run/nri-image-policy/registered
 `
 	if mesh {
 		document += `
 mesh:
-  exempt_namespaces: [kube-system]
   resolver: "10.43.0.10"
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
