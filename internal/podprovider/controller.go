@@ -66,7 +66,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	rec, secret, err := r.loadRecord(ctx, identityKey(r.cfg.ProviderID, string(pod.UID)))
 	if err != nil && !apierrors.IsNotFound(err) {
-		return r.unavailable(ctx, pod, "LaunchRefused", err)
+		return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 	}
 	if rec != nil {
 		// Existing cleanup authority does not depend on a healthy virtual node.

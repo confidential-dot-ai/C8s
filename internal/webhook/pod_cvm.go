@@ -103,7 +103,9 @@ func rejectUnrequestedPodCVMRouting(pod *corev1.Pod, providerEnabled bool) error
 }
 
 func validatePodCVMRequest(req admission.Request, old, pod *corev1.Pod, cfg Config) error {
-	if req.SubResource != "" && req.SubResource != "status" {
+	// The webhook rules route no status, binding or eviction request here; the
+	// only subresource that arrives is ephemeral containers, which is refused.
+	if req.SubResource != "" {
 		return fmt.Errorf("pod CVM does not support the %s subresource", req.SubResource)
 	}
 	if err := rejectNamespaceMismatch(pod, req.Namespace); err != nil {

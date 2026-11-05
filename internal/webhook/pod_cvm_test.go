@@ -249,9 +249,8 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 		updated.Labels["controller.example/observed"] = "yes"
 		updated.Annotations["confidential.ai/pod-cvm-endpoints"] = "[]"
 		updated.Status.Phase = corev1.PodRunning
-		for _, subresource := range []string{"", "status"} {
-			assertPodCVMResponse(t, cfg, podCVMRequest(t, old, updated, subresource), true, "")
-		}
+		assertPodCVMResponse(t, cfg, podCVMRequest(t, old, updated, ""), true, "")
+		assertPodCVMResponse(t, cfg, podCVMRequest(t, old, updated, "status"), false, "status subresource")
 	}
 }
 
