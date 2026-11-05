@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -18,5 +19,20 @@ func TestStaticPodIsYAMLOnly(t *testing.T) {
 	}
 	if served.Workloads["entry"].StaticPod {
 		t.Fatal("a served document marked a static pod's entry")
+	}
+}
+
+// A static pod's entry grants no host ports or capabilities, so a boot config
+// whose static-pod entry declares either is refused.
+func TestStaticPodEntryDeclaresNoHostPortsOrCapabilities(t *testing.T) {
+	ports := grantingEntry(t, []string{"/app"}, HostPort{Protocol: "TCP", HostPort: 443, ContainerPort: 8443})
+	capabilities := grantingEntry(t, []string{"/app"})
+	capabilities.Containers[0].Capabilities = CapabilityList{"SYS_PTRACE"}
+	for name, entry := range map[string]Workload{"host ports": ports, "capabilities": capabilities} {
+		entry.StaticPod = true
+		a := Allowlist{Schema: Schema, Workloads: map[string]Workload{"static": entry}}
+		if err := a.Normalize(); !errors.Is(err, errStaticPodDeclaresGrants) {
+			t.Errorf("%s: Normalize = %v, want the declaration refused", name, err)
+		}
 	}
 }

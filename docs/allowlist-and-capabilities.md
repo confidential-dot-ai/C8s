@@ -218,7 +218,9 @@ worker's measured config (`worker: true`) narrows both cases:
 - no other pod is exempt. An API pod holds the host binds, host ports and
   capabilities an entry declares for its launch, as the router does, and no
   other host privilege. A static pod's entry, which the worker's floor marks
-  `staticPod: true`, grants no host bind, host port or capability.
+  `staticPod: true`, grants no host bind, host port or capability, and a
+  boot config whose static-pod entry declares host ports or capabilities is
+  refused.
 
 A worker's config also names no mesh-exempt namespace, so the mesh protects
 every API pod with its own network namespace wherever the control plane puts

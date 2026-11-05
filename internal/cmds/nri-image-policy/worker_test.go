@@ -256,8 +256,9 @@ func TestWorkerAdmitsOnlyDigestReferences(t *testing.T) {
 	}
 }
 
-// A static pod's entry grants no host bind, host port or capability, so an
-// API pod copying its launch holds none; the same entry unmarked grants all.
+// A static pod's entry grants no host bind, so an API pod copying its launch
+// holds none; the same entry unmarked grants it and the host ports and
+// capability it declares, which a static pod's entry may not.
 func TestStaticPodEntriesGrantNothing(t *testing.T) {
 	root, err := allowlist.HostSourceDigest("/")
 	if err != nil {
@@ -271,18 +272,21 @@ func TestStaticPodEntriesGrantNothing(t *testing.T) {
 	ports := []allowlist.HostPort{{Protocol: "TCP", HostPort: 443, ContainerPort: 8443}}
 	caps := []string{"SYS_PTRACE"}
 	for _, static := range []bool{false, true} {
-		base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{"entry": {
+		entry := allowlist.Workload{
 			StaticPod: static,
-			HostPorts: ports,
 			Containers: []allowlist.Container{{
-				Digest:       mustDigestOrPanic(pushDigestA),
-				Command:      allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/agent"}},
-				Args:         allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
-				Mounts:       allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/host", Kind: allowlist.MountHost, Source: "/"}}},
-				Env:          allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"PATH": "/bin"}},
-				Capabilities: caps,
+				Digest:  mustDigestOrPanic(pushDigestA),
+				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/agent"}},
+				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+				Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/host", Kind: allowlist.MountHost, Source: "/"}}},
+				Env:     allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"PATH": "/bin"}},
 			}},
-		}}}
+		}
+		if !static {
+			entry.HostPorts = ports
+			entry.Containers[0].Capabilities = caps
+		}
+		base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{"entry": entry}}
 		if err := base.Normalize(); err != nil {
 			t.Fatal(err)
 		}

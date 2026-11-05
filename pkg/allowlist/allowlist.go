@@ -401,6 +401,7 @@ var (
 	errGrantUnpinnedMounts        = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
 	errHostPortsUnpinnedLaunch    = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errCapabilitiesUnpinnedLaunch = fmt.Errorf("declared capabilities need every container to pin its launch: command, args and mounts not any, and env constrained")
+	errStaticPodDeclaresGrants    = fmt.Errorf("a static pod's entry grants no host ports or capabilities, so it may declare none")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -524,6 +525,10 @@ func (w Workload) DeclaresHostPrivilege() bool {
 
 func (w Workload) declaresHostPorts() bool {
 	return len(w.HostPorts) > 0
+}
+
+func (w Workload) declaresHostPortsOrCapabilities() bool {
+	return w.declaresHostPorts() || slices.ContainsFunc(w.containers(), Container.declaresAnyCapability)
 }
 
 func (c Container) declaresHostPrivilege() bool {
@@ -704,6 +709,9 @@ func (a *Allowlist) normalize(strict bool) error {
 			slog.Warn("allowlist: dropping a served workload entry's capabilities no pinned launch holds",
 				"name", name, "error", err)
 			w.dropDeclaredCapabilities()
+		}
+		if w.StaticPod && w.declaresHostPortsOrCapabilities() {
+			return fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
 		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
