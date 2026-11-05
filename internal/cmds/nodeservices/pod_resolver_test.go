@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// Resolvers come from the measured configuration alone and none is a
+// loopback, link-local, Pod-local or guest-service address.
 func TestPodResolvConfNamesOnlyMeasuredRemoteResolvers(t *testing.T) {
 	for _, tt := range []struct {
 		name  string

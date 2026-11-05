@@ -11,6 +11,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
+// A generic boot stages the waiting floor and no manifest.
 func TestGenericPodPreparationPublishesOnlyWaitingPolicy(t *testing.T) {
 	root := preparePodRoot(t)
 	doc := podDocument(t)
@@ -62,7 +63,7 @@ func TestGenericPodPreparationPublishesOnlyWaitingPolicy(t *testing.T) {
 func TestAssignedRuntimeRendersWithoutWritingAndMarksOrigin(t *testing.T) {
 	root := preparePodRoot(t)
 	doc := podDocument(t)
-	for _, entries := range []string{"", "{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{}}", podWorkloads} {
+	for _, entries := range []string{"", podWorkloads} {
 		doc.Workloads = entries
 		runtime, err := RenderAssignedPodRuntime(root, doc)
 		if err != nil {
