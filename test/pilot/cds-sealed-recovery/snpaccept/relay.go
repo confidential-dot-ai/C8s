@@ -95,7 +95,11 @@ func (r *Relay) Exchange(ctx context.Context, request StorageRequest) (StorageRe
 		return StorageResponse{}, errors.New("storage relay backpressure")
 	}
 	defer func() { <-r.slots }()
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	timeout := 15 * time.Second
+	if request.Method == "CUSTODY" {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request.ID = r.sequence.Add(1)
 	job := storageJob{request, make(chan StorageResponse, 1), ctx}

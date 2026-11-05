@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
@@ -178,7 +179,7 @@ func snpCluster(t *testing.T) (*cluster, *objectwal.S3) {
 
 func snpProvision(t *testing.T, c *cluster, store *objectwal.S3) []byte {
 	t.Helper()
-	signer, wrap, err := snpHardware.Material(t.Context(), snpRequest.Parameters, true)
+	signer, wrap, err := snpCustody(t.Context(), c.objectWAL.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,6 +243,37 @@ func snpProvision(t *testing.T, c *cluster, store *objectwal.S3) []byte {
 	}
 	c.waitServing(time.Minute)
 	return wrap
+}
+
+func snpCustody(ctx context.Context, config cdsconfig.ObjectWALPilot) (ed25519.PrivateKey, []byte, error) {
+	recipient, request, err := snpaccept.NewCustodyRecipient(ctx, snpHardware)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := json.Marshal(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	response, err := snpRelay.Exchange(ctx, snpaccept.StorageRequest{Method: "CUSTODY", Path: "/pilot/" + config.Prefix + "/custody", Data: b})
+	if err != nil {
+		return nil, nil, err
+	}
+	if response.Status != 200 {
+		return nil, nil, errors.New("protected custodian refused delegation")
+	}
+	var grant snpaccept.CustodyGrant
+	if err := json.Unmarshal(response.Data, &grant); err != nil {
+		return nil, nil, err
+	}
+	public, err := cdsrecovery.ParseAuthority(config.RecoveryAuthority)
+	if err != nil {
+		return nil, nil, err
+	}
+	signer, wrap, err := recipient.Open(grant, public)
+	if err == nil {
+		snpChecks["attested_custodian_delegation"] = true
+	}
+	return signer, wrap, err
 }
 
 func TestSNPIntegratedRecovery(t *testing.T) {

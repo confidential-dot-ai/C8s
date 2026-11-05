@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Owned SNP CDS recovery test; no shared rollout, egress grant, or CI.
 
-Three CDS processes and their custodian live in one disposable measured VM.
+Three CDS processes run in one measured VM; a second VM retains the stable
+custodian launch. Both VMs are destroyed before recovery.
 The host owns a bounded conditional-object fixture whose SQLite FULL commits
 finish before acknowledging S3 writes. Only ciphertext/public metadata cross
 the VM tunnel. This is a correctness test, not an S3 latency benchmark.
@@ -13,6 +14,7 @@ import hashlib
 import http.client
 import json
 import os
+import queue
 from pathlib import Path
 import secrets
 import signal
@@ -76,6 +78,13 @@ class DurableObjects:
 
 
 class Integrated(Run):
+    def stop_forward(self):
+        Run.stop_forward(self)
+        for forward in getattr(self, "extra_forwards", []):
+            self.forward = forward
+            Run.stop_forward(self)
+        self.extra_forwards = []
+
     def upload(self, pod, archive, destination):
         # Bound each native exec upload below the streaming proxy's lifetime.
         # A lost response is reconciled by the exact chunk hash, never its exit
@@ -150,6 +159,9 @@ class Integrated(Run):
             c.close()
 
     def tunnel(self, vm, phase):
+        if self.forward:
+            self.extra_forwards = getattr(self, "extra_forwards", []) + [self.forward]
+            self.forward = None
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
@@ -164,9 +176,40 @@ class Integrated(Run):
                     return port
             except (OSError, http.client.HTTPException):
                 pass
-            self.stop_forward()
+            Run.stop_forward(self)
             time.sleep(2)
         raise RuntimeError("measured guest service did not become reachable")
+
+    def delegate(self, phase, request, parameters, collateral):
+        # Called by the single relay worker. It writes separate evidence files,
+        # never the main thread's ownership journal or mutable state.
+        need(request["path"] == "/pilot/" + self.state["prefix"] + "/custody", "custody request outside owned prefix")
+        body = base64.b64decode(request["data"], validate=True)
+        need(len(body) < 16 * 1024, "oversized custody request")
+        label = phase + "-custodian"
+        q = {"operation": "delegate", "nonce": base64.b64encode(secrets.token_bytes(32)).decode(),
+             "measurement": self.state["measurement"], "parameters": parameters,
+             "collateral": collateral, "custody": json.loads(body)}
+        self.atomic(self.directory / (label + "-request.json"), q)
+        code, _ = self.http(self.custodian_port, "POST", "/v1/start", q)
+        need(code == 202, "custodian start refused or ambiguous")
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            code, reply = self.http(self.custodian_port, "GET", "/v1/result")
+            if code == 200:
+                break
+            need(code == 202, "custodian result unavailable")
+            time.sleep(0.1)
+        else:
+            raise TimeoutError("custodian delegation deadline exceeded")
+        self.atomic(self.directory / (label + "-reply.json"), reply)
+        self.command(label + "-verify", [self.args.probe, "-request", str(self.directory / (label + "-request.json")),
+            "-reply", str(self.directory / (label + "-reply.json")), "-launch", str(self.directory / "enrollment-launch.yaml"),
+            "-receipt", str(self.directory / (label + "-receipt.json")), "-collateral", str(self.directory / (label + "-collateral.json"))], timeout=40)
+        derivation = reply["result"]["derivation"]
+        need(derivation == self.custodian_identity, "stable custodian launch did not recover its original authority")
+        grant = json.dumps(reply["result"]["custody"]).encode()
+        return {"id": request["id"], "status": 200, "data": base64.b64encode(grant).decode()}
 
     def phase(self, vm, phase, launch, parameters, collateral):
         port = self.tunnel(vm, phase)
@@ -175,26 +218,30 @@ class Integrated(Run):
             request.update(collateral=collateral, operator_key=base64.b64encode((self.directory / "operator.pem").read_bytes()).decode())
         self.atomic(self.directory / (phase + "-request.json"), request)
         stop = threading.Event()
-        failures = []
-        counters = {}
+        failures = queue.Queue(maxsize=1)
+        statistics = queue.Queue(maxsize=1)
 
         def serve_storage():
-            store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
+            store = None
             try:
+                store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
                 while not stop.is_set():
                     code, q = self.http(port, "GET", "/v1/storage")
                     if code == 204:
                         continue
                     need(code == 200, "storage poll failed")
-                    response = store.answer(q)
+                    response = self.delegate(phase, q, parameters, collateral) if q["method"] == "CUSTODY" else store.answer(q)
                     code, _ = self.http(port, "POST", "/v1/storage", response)
                     need(code in (204, 409), "storage response failed")
             except Exception as error:
                 if not stop.is_set():
-                    failures.append(str(error))
+                    failures.put(str(error))
             finally:
-                counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
-                store.close()
+                counters = {"reads": 0, "writes": 0, "conflicts": 0}
+                if store is not None:
+                    counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
+                    store.close()
+                statistics.put(counters)
 
         worker = threading.Thread(target=serve_storage, daemon=True)
         worker.start()
@@ -204,7 +251,11 @@ class Integrated(Run):
             deadline = time.monotonic() + 480
             progress = time.monotonic()
             while time.monotonic() < deadline:
-                need(not failures, "external durable store failed: " + str(failures))
+                try:
+                    failure = failures.get_nowait()
+                except queue.Empty:
+                    failure = None
+                need(failure is None, "external durable store failed: " + str(failure))
                 code, reply = self.http(port, "GET", "/v1/result")
                 if code == 200:
                     self.atomic(self.directory / (phase + "-reply.json"), reply)
@@ -220,7 +271,7 @@ class Integrated(Run):
             stop.set()
             worker.join(timeout=27)
             need(not worker.is_alive(), "storage worker did not stop")
-            self.event("external-storage", phase=phase, **counters)
+            self.event("external-storage", phase=phase, **statistics.get_nowait())
         self.command(phase + "-verify", [self.args.probe, "-request", str(self.directory / (phase + "-request.json")), "-reply", str(self.directory / (phase + "-reply.json")), "-launch", str(launch), "-receipt", str(self.directory / (phase + "-receipt.json")), "-collateral", str(self.directory / (phase + "-collateral.json"))], timeout=60)
         receipt = json.loads((self.directory / (phase + "-receipt.json")).read_text())
         self.event("cds-phase-passed", phase=phase, checks=receipt["result"].get("checks", {}))
@@ -286,13 +337,14 @@ class Integrated(Run):
         for archive, files in (("root.tar.gz", [("disk.raw", "disk.img")]), ("boot.tar.gz", [("guest-smp2.igvm", "guest-smp2.igvm"), ("manifest.json", "manifest.json")])):
             with tarfile.open(self.directory / archive, "w:gz", compresslevel=1) as tar:
                 for src, dst in files: tar.add(Path(self.args.image) / src, arcname=dst, recursive=False)
-        run = "cds-snp-" + secrets.token_hex(6)
-        items = self.render(run, node, baseline[node]["uid"], template)
-        self.populate(items, hashes, run)
-        vm = next(i for i in items if i["kind"] == "VirtualMachine")
-        row, enrollment_vmi = self.boot(vm, "enroll")
-        enrolled = self.phase(vm, "enroll", template, {"guest_svn": 0, "tcb_version": 0}, {})
-        self.stop_forward(); self.remove(row); self.wait_absent(VMI + "/" + run)
+        custodian_run = "cds-snp-" + secrets.token_hex(6)
+        custodian_items = self.render(custodian_run, node, baseline[node]["uid"], template)
+        self.populate(custodian_items, hashes, custodian_run)
+        custodian_vm = next(i for i in custodian_items if i["kind"] == "VirtualMachine")
+        row, enrollment_vmi = self.boot(custodian_vm, "enroll")
+        enrolled = self.phase(custodian_vm, "enroll", template, {"guest_svn": 0, "tcb_version": 0}, {})
+        self.stop_forward(); self.remove(row); self.wait_absent(VMI + "/" + custodian_run)
+        self.custodian_identity = enrolled["result"]["derivation"]
         launch = self.directory / "cds-launch.yaml"
         launch.write_bytes(base64.b64decode(enrolled["result"]["launch"], validate=True))
         # Verify the attested enrollment changed exactly the authority public key.
@@ -300,29 +352,42 @@ class Integrated(Run):
         public_authority = final["ha"]["objectWALPilot"].pop("recoveryAuthority")
         original_authority = config["ha"]["objectWALPilot"].pop("recoveryAuthority")
         need(final == config and public_authority != original_authority, "enrollment changed unrelated launch settings")
+        if "derivation" in enrolled["result"]:
+            need(enrolled["result"]["derivation"]["authority_public"] == public_authority,
+                 "two derivations in the enrollment guest produced different public authorities")
+        # The custodian keeps its original HOST_DATA forever. Only the separate
+        # CDS guest boots the completed public-authority configuration.
+        run = "cds-snp-" + secrets.token_hex(6)
         items = self.render(run, node, baseline[node]["uid"], launch)
-        old_secret = next(r for r in self.state["resources"] if r["item"]["kind"] == "Secret" and not r.get("deleted"))
-        self.remove(old_secret)
-        self.create(next(i for i in items if i["kind"] == "Secret"))
+        self.populate(items, hashes, run)
         vm = next(i for i in items if i["kind"] == "VirtualMachine")
         parameters = enrolled["result"]["parameters"]
         collateral = json.loads((self.directory / "enroll-collateral.json").read_text())
-        receipts, vmis = [], [enrollment_vmi]
+        receipts, custody_receipts, vmis = [], [enrolled], [enrollment_vmi]
         for phase in ("seed", "recover"):
             self.health()
+            custody_row, custody_vmi = self.boot(custodian_vm, phase + "-custodian")
+            need(custody_vmi not in vmis, "new custodian VMI required")
+            vmis.append(custody_vmi)
+            self.custodian_port = self.tunnel(custodian_vm, phase + "-custodian")
             row, vmi = self.boot(vm, phase)
             need(vmi not in vmis, "new VMI required")
             vmis.append(vmi)
             receipts.append(self.phase(vm, phase, launch, parameters, collateral))
+            custody_receipts.append(json.loads((self.directory / (phase + "-custodian-receipt.json")).read_text()))
             self.stop_forward()
             self.remove(row)
             self.wait_absent(VMI + "/" + run)
-            self.event("all-cds-and-custodian-memory-destroyed", phase=phase, vmi_uid=vmi)
-        need(len({r["guest_report_id_sha256"] for r in [enrolled] + receipts}) == 3, "hardware guest identities must differ")
-        need(len({r["chip_id_sha256"] for r in [enrolled] + receipts}) == 1, "same chip recovery required")
+            self.remove(custody_row)
+            self.wait_absent(VMI + "/" + custodian_run)
+            self.event("all-cds-and-custodian-memory-destroyed", phase=phase, cds_vmi_uid=vmi, custodian_vmi_uid=custody_vmi)
+        need(len({r["guest_report_id_sha256"] for r in custody_receipts + receipts}) == 5, "hardware guest identities must differ")
+        need(len({r["chip_id_sha256"] for r in custody_receipts + receipts}) == 1, "same chip recovery required")
+        need(len({r["launch_sha256"] for r in custody_receipts}) == 1, "custodian launch changed")
+        need(len({r["launch_sha256"] for r in receipts}) == 1, "CDS launch changed")
         before, after = [r["result"]["checks"] for r in receipts]
         need(before["ca_fingerprint"] == after["ca_fingerprint"], "independent CA receipts differ")
-        need(all(after.get(k) is True for k in ("same_ca_all_replicas", "unexpired_replay_rejected_all_replicas", "revocation_preserved_all_replicas", "old_leaf_and_secret_positive_control")), "acceptance evidence incomplete")
+        need(all(after.get(k) is True for k in ("same_ca_all_replicas", "unexpired_replay_rejected_all_replicas", "revocation_preserved_all_replicas", "old_leaf_and_secret_positive_control", "attested_custodian_delegation")), "acceptance evidence incomplete")
         self.state["integrated_cds_recovery_passed"] = True
         self.state["full_acceptance_passed"] = False  # fleet/image retirement/operator-policy proof remain separate
         self.event("integrated-cds-recovery-passed", ca_fingerprint=after["ca_fingerprint"], production_ready=False)

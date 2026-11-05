@@ -37,7 +37,7 @@ func testLaunch(t *testing.T, authority, prefix string) []byte {
 	return b
 }
 
-func TestEnrollmentOnlyOmitsAuthorityFromDerivation(t *testing.T) {
+func TestEnrollmentChangesOnlyThePublicCDSDocument(t *testing.T) {
 	a := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 	b := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
 	launch := testLaunch(t, a, "owned-prefix")
@@ -50,7 +50,29 @@ func TestEnrollmentOnlyOmitsAuthorityFromDerivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(original, changed) {
-		t.Fatal("public enrollment dependency not resolved")
+		t.Fatal("normalized CDS context changed with public authority")
+	}
+	_, doc, err := authorityContext(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc["ha"].(map[string]any)["objectWALPilot"].(map[string]any)["recoveryAuthority"] = b
+	reencoded, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _, err = authorityContext(reencoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(original, changed) {
+		t.Fatalf("YAML enrollment round trip changed authority context:\n%s\n%s", original, changed)
+	}
+	// The custodian must retain the original bytes: equality of these normalized
+	// contexts does NOT imply equality of the hardware roots (HOST_DATA differs).
+	h := &Hardware{Launch: bytes.Clone(launch)}
+	if _, err := h.cdsLaunch(bytes.Repeat([]byte{2}, 32)); err != nil || !bytes.Equal(h.Launch, launch) {
+		t.Fatal("enrollment mutated the custodian launch")
 	}
 	changed, _, err = authorityContext(bytes.Replace(launch, []byte("owned-prefix"), []byte("other-prefix"), 1))
 	if err != nil {

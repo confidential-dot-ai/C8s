@@ -19,20 +19,23 @@ import (
 )
 
 type Request struct {
-	Operation   string     `json:"operation"`
-	Nonce       []byte     `json:"nonce"`
-	Measurement string     `json:"measurement"`
-	Parameters  Parameters `json:"parameters"`
-	Collateral  Collateral `json:"collateral,omitempty"`
-	OperatorKey []byte     `json:"operator_key,omitempty"`
+	Operation   string          `json:"operation"`
+	Nonce       []byte          `json:"nonce"`
+	Measurement string          `json:"measurement"`
+	Parameters  Parameters      `json:"parameters"`
+	Collateral  Collateral      `json:"collateral,omitempty"`
+	OperatorKey []byte          `json:"operator_key,omitempty"`
+	Custody     *CustodyRequest `json:"custody,omitempty"`
 }
 type Result struct {
-	Operation  string         `json:"operation"`
-	Passed     bool           `json:"passed"`
-	Launch     []byte         `json:"launch,omitempty"`
-	Parameters Parameters     `json:"parameters"`
-	Checks     map[string]any `json:"checks,omitempty"`
-	Error      string         `json:"error,omitempty"`
+	Operation  string              `json:"operation"`
+	Passed     bool                `json:"passed"`
+	Launch     []byte              `json:"launch,omitempty"`
+	Parameters Parameters          `json:"parameters"`
+	Checks     map[string]any      `json:"checks,omitempty"`
+	Error      string              `json:"error,omitempty"`
+	Derivation *DerivationIdentity `json:"derivation,omitempty"`
+	Custody    *CustodyGrant       `json:"custody,omitempty"`
 }
 type Reply struct {
 	Result Result `json:"result"`
@@ -71,7 +74,7 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/start", func(w http.ResponseWriter, r *http.Request) {
 		var q Request
-		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || (q.Operation != "enroll" && q.Operation != "seed" && q.Operation != "recover") {
+		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || (q.Operation != "enroll" && q.Operation != "delegate" && q.Operation != "seed" && q.Operation != "recover") {
 			http.Error(w, "invalid bounded phase request", 400)
 			return
 		}
@@ -81,14 +84,34 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 		}
 		go func() {
 			var out Result
+			p := q.Parameters
+			if q.Operation == "enroll" {
+				p = Parameters{h.ReportInfo.GuestSvn, h.ReportInfo.CommittedTcb}
+			}
+			var identity *DerivationIdentity
+			var identityErr error
+			if q.Operation == "enroll" || q.Operation == "delegate" {
+				identity, identityErr = h.PublicIdentity(ctx, p)
+			}
 			if q.Operation == "enroll" {
 				launch, p, err := h.Enroll(ctx)
 				out = Result{Operation: q.Operation, Passed: err == nil, Launch: launch, Parameters: p}
 				if err != nil {
 					out.Error = err.Error()
 				}
+			} else if q.Operation == "delegate" {
+				grant, err := h.Delegate(ctx, p, q.Custody, q.Collateral)
+				out = Result{Operation: q.Operation, Passed: err == nil, Custody: grant, Parameters: p}
+				if err != nil {
+					out.Error = err.Error()
+				}
 			} else {
 				out = run(q, relay)
+			}
+			out.Derivation = identity
+			if identityErr != nil {
+				out.Passed = false
+				out.Error = "public derivation identity unavailable: " + identityErr.Error()
 			}
 			raw, err := h.Report(ctx, Binding(q, out))
 			if err != nil {

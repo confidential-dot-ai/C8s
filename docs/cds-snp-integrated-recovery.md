@@ -1,10 +1,11 @@
 # Integrated CDS recovery on SNP
 
 The pilot joins the qualified SNP derivation primitive to the real CDS
-process suite and `cdsrecovery.WALAuthority`. It runs three release-build CDS
-processes and the authority inside one measured, disposable SNP VM. Destroying
-that VM removes all CDS, authority, workload-client and attestation-service
-memory. The replacement uses the same measured image and physical chip.
+process suite and `cdsrecovery.WALAuthority`. It uses two disposable SNP VMs:
+one custodian with an unchanged launch template, and one running three release
+CDS processes, the policy-checking authority and the synthetic workload client.
+Destroying both VMs removes all of their memory. Replacements use the same
+measured image and physical chip.
 
 This is an isolated correctness experiment. It does not qualify a production
 rollout, three independent failure domains, image retirement, firmware changes,
@@ -14,16 +15,31 @@ storage pilots are unchanged.
 ## Custody and enrollment
 
 The first guest derives an Ed25519 authority from SNP and publishes only its
-public key in an attested reply. Its derivation binds all normalized CDS
-settings except that public-key field. The host checks that the resulting
-launch document changes only that field, then recreates the VM with the exact
-complete launch document bound in SNP `HOST_DATA`.
+public key in an attested reply. Its derivation binds the custodian's full
+launch through SNP and a normalized CDS context through HKDF. The host checks
+that the completed CDS document changes only the authority field. A separate
+CDS VM boots that completed document; the custodian always boots its original
+template, byte for byte.
 
-The complete launch bytes bind the capsule wrapping key. The firmware request
+SNP **always mixes `HOST_DATA` into derived keys**, independently of the six
+optional guest-field selectors. [AMD's implementation](https://github.com/amd/AMD-ASPFW/blob/3ca6650dd35d878b3fcbe5c7f58b145eed042bbf/fw/psp_bl_uapps/sev_uapp/src/sev_mcmd.c#L5502)
+shows this unconditional binding. Native run 02 exposed the earlier fixture's
+incorrect assumption: writing the derived public key back into the custodian's
+own launch changed its hardware root. Normalizing a software HKDF context
+cannot undo that binding. No launch check or hardware selector is relaxed.
+
+The custodian computes the approved CDS launch itself and verifies an actual
+SNP report binding that exact launch, image and a fresh X-Wing recipient key.
+Only then does it send the authority signing seed and capsule wrapping key in
+a signed encrypted grant. The raw hardware root stays in the custodian. The
+receiving measured fixture verifies the authority pinned in its CDS launch and
+consumes the grant once. The untrusted host only transports public evidence
+and ciphertext. This fixed-image delegation is an acceptance fixture, not a
+production custodian API or a qualification of authority-image retirement.
+
+The capsule wrapping key binds the unchanged custodian launch. The capsule's
+authenticated identity also binds the complete CDS launch. The firmware request
 selects all six supported guest fields and the saved committed TCB/guest SVN.
-SNP does not derive a key from `HOST_DATA`: the measured program checks that
-binding before using the hardware key. A different measured launch must not
-open the original capsule.
 
 The WAL key is generated inside the guest. The signed registration and
 `SealAuthority` capsule are persisted before releasing any grant. Every grant
@@ -43,8 +59,9 @@ The real S3 adapter talks to a local TLS endpoint that relays conditional
 object operations over the owned VM tunnel. One host worker owns a SQLite
 fixture with `synchronous=FULL`; it commits before replying. The external data
 contains encrypted WAL objects, a signed public registration, the encrypted
-authority capsule and an encrypted test-client capsule. The CA and WAL keys
-never appear in the relay API.
+authority capsule and an encrypted test-client capsule. A distinct bounded
+relay operation carries the encrypted custody grant. The CA and WAL keys never
+appear as plaintext in the relay API.
 
 The relay has bounded admission and message queues. This fixture exercises
 conditional-write and durability semantics; its latency is not an AWS result.
@@ -58,10 +75,11 @@ history to a cold recovery authority.
    attested workload. A signed policy update revokes that access; all three
    processes refuse a fresh request after the update is acknowledged.
 2. Persist the original workload leaf/key and spent operator request only in
-   the encrypted test-client capsule. Remove the VM and verify its VMI is gone.
-3. Recreate it with a new hardware guest identity. Restore the authority from
-   SNP and the original capsule, then restore all three CDS processes from the
-   external encrypted history.
+   the encrypted test-client capsule. Remove both VMs and verify both VMIs are
+   gone before starting either replacement.
+3. Recreate both with new hardware guest identities. Restore custody from SNP,
+   delegate over the new attested encrypted channel, and restore the authority
+   and all three CDS processes from the original capsules and encrypted history.
 4. All replicas must expose the original CA, reject the spent request with the
    explicit token-reuse error while it remains unexpired, and refuse the
    revoked workload's fresh secret requests.
@@ -71,7 +89,8 @@ history to a cold recovery authority.
 
 `integrated_cds_recovery_passed` is separate from the broader production and
 operator-exclusion qualification flags. A successful run must also demonstrate
-new VMI/report IDs, the same chip, and UID-scoped cleanup.
+five distinct VMI/report IDs (enrollment plus two pairs), unchanged per-role
+launch hashes, the same chip, and UID-scoped cleanup.
 
 ## Local build and owned cloud runner
 
@@ -83,8 +102,8 @@ binary hashes and measured boot inputs before launch.
 
 `test/pilot/cds-sealed-recovery/hardware/integrated.py` accepts the same owned
 native renderer and access-tool paths as the primitive runner. It creates only
-its own claims, public launch Secret, population Pod, narrow NetworkPolicy and
-Manual VM. It reuses public immutable disk artifacts across guest recreation,
+its own claims, public launch Secrets, population Pods, narrow NetworkPolicies
+and Manual VMs. It reuses public immutable disk artifacts across guest recreation,
 does not mount a writable CDS state disk, records resource UIDs before dependent
 actions, and cleans in `finally`. `cleanup` resumes from the durable journal.
 
