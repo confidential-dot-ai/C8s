@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -138,5 +139,40 @@ func TestWorkerKubeProxyAndCoreDNS(t *testing.T) {
 	}
 	if !strings.Contains(string(corefile), "kubernetes cluster.local") || !strings.Contains(string(corefile), "kubeconfig /var/lib/kubelet/kubeconfig") {
 		t.Fatalf("Corefile serves no cluster.local through the kubelet's kubeconfig:\n%s", corefile)
+	}
+}
+
+// The control plane's kube-dns Service, at the document's clusterDNS, selects
+// the CoreDNS static pod on the asking pod's own node.
+func TestKubeDNSSelectsTheWorkersCoreDNS(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(imageTree, staticPodTemplates, "coredns.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := decodeStaticPod(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := ControlPlaneObjects(&Document{Kubernetes: Kubernetes{ClusterDNS: "10.53.0.10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var service *corev1.Service
+	for _, doc := range strings.Split(string(objects), "\n---\n") {
+		var s corev1.Service
+		if err := yaml.Unmarshal([]byte(doc), &s); err == nil && s.Kind == "Service" && s.Name == "kube-dns" {
+			service = &s
+		}
+	}
+	if service == nil || len(service.Spec.Selector) == 0 || service.Spec.ClusterIP != "10.53.0.10" {
+		t.Fatalf("kube-dns = %+v, want a selector and the document's clusterDNS", service)
+	}
+	if p := service.Spec.InternalTrafficPolicy; p == nil || *p != corev1.ServiceInternalTrafficPolicyLocal {
+		t.Fatalf("kube-dns internalTrafficPolicy = %v, want Local: a lookup leaves its node otherwise", p)
+	}
+	for k, v := range service.Spec.Selector {
+		if pod.Labels[k] != v {
+			t.Fatalf("kube-dns selects %v, which the CoreDNS static pod's labels %v do not carry", service.Spec.Selector, pod.Labels)
+		}
 	}
 }
