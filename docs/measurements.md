@@ -140,6 +140,7 @@ node with `--image-manifest`.
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
 | `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
+| `launch_file_digest` | Optional, schema 2 only: the digest of the configuration file the guest was launched with, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.

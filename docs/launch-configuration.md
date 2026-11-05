@@ -154,3 +154,48 @@ The [document rules](#document-rules) apply.
 Neither range may reach into `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` or
 `224.0.0.0/4`, overlap the other, or overlap a node subnet (`nodeCIDRs`) of
 the CDS configuration that `cds.measurements` binds.
+
+### Admitting a worker document
+
+The CDS certifies a worker only under a node image entry bound to its exact
+document, which the customer signs into a `node-images` decree
+([cds-ha.md](cds-ha.md#the-node-images-the-cluster-certifies)). Given the
+document, the decree adds that entry itself:
+
+```sh
+c8s cds ha decree node-images \
+    --config cds-config.yaml \
+    --operator-key operator.key \
+    --base-version 12 \
+    --nodes nodes-v12.json \
+    --worker-document worker.yaml \
+    --worker-image worker-image.json \
+    --to cds-1.example.org \
+    --cds-pin cds-pin.json
+```
+
+| Flag | Holds |
+|---|---|
+| `--worker-document` | The worker document, read once. |
+| `--worker-image` | The worker image's measurements, as `c8s measurements derive` writes them: the TEE family of `--nodes`, and no launch binding. |
+| `--nodes` | The node images the cluster certifies now: the set of the `node-images` decree in force. |
+| `--cds-pin` | Your CDS pin, as `c8s cds config new` wrote it. The document's `cds.measurements` must pin the same TEE family and the same images, each bound to the same configuration. |
+
+The decree certifies, under `schema_version` `"2"`, every entry of `--nodes`,
+unchanged, followed by each `--worker-image` entry with `launch_file_digest`
+set to the document's digest (SHA-256 on SEV-SNP, SHA-384 on TDX) and the
+digest's first 12 hex digits appended to its name. That set, the decree's
+`node_pins`, is the `--nodes` of the next `node-images` decree: `--out` writes
+it inside the signed decree, and `c8s cds ha decrees --json` prints it.
+
+Nothing is signed if a check fails: the document breaks the rules above or
+pins another CDS, `--nodes` already admits the worker image with this
+document, or the set is one a `node-images` decree refuses. Otherwise the
+command prints, to standard error, the API server, the CA's subject and
+SHA-256 fingerprint, the pod and Service ranges, the cluster DNS address, the
+CDS address and pin floor, the router hostnames, and the name of every node
+image it would certify. It signs only once you confirm them on standard
+input: any answer but `y` or `yes` (in any case), or none, signs nothing. Every worker
+launched with this document joins with these facts. Workers launched with the
+same document need no new decree; a changed document, such as one naming a
+new CA, is admitted beside the old one by a decree on the set in force.
