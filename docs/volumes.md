@@ -131,6 +131,22 @@ filesystem, so volumed refuses a device carrying a mutable mount, or a mutable
 open on one carrying any mount. Give a mutable consumer one replica or a
 `Recreate` strategy; immutable volumes share freely.
 
+Each immutable pod uses its own read-only dm-crypt mapping. The open uses
+`--readonly --shared`, so a replacement pod can open the same ciphertext device
+while another reader remains mounted. Each reader still has its own dm-verity
+mapping and its authorized key and root hash. Mutable opens omit `--shared`.
+The existing checks refuse any open that conflicts with a mutable holder.
+
+The kernel test in `test/readonly-volume-sharing.py` creates a new 32 MiB loop
+device with encrypted EROFS and dm-verity. It checks a second reader, reader
+replacement, read-only mappings and rejection of a wrong key. It removes its
+own mounts, mappings, loop device and temporary files. Run it as root on a
+test host with `cryptsetup`, `veritysetup`, `mkfs.erofs` and loop-device support:
+
+```sh
+sudo python3 test/readonly-volume-sharing.py
+```
+
 On a node running the C8s node image, volumed runs as the host service
 `volumed.service`, because the image fixes the paths it needs. Everywhere else
 it is a chart DaemonSet, off by default because it is privileged, with `hostPID`
