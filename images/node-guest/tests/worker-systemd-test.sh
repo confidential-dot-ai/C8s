@@ -45,6 +45,7 @@ PRESET=usr/lib/systemd/system-preset/50-worker.preset
 # can start; everything else is a host service that must wait for staging.
 # worker-invariants.sh holds the image to that split.
 mapfile -t BAKED < <(cd "$UNITS" && printf '%s\n' *.service | sort)
+mapfile -t BAKED_PATHS < <(cd "$UNITS" && printf '%s\n' *.path | sort)
 STAGED=()
 GATES=()
 for unit in "${BAKED[@]}"; do
@@ -53,12 +54,15 @@ for unit in "${BAKED[@]}"; do
 done
 
 install -D -m644 "$EXTRA/$PRESET" "/$PRESET"
-for unit in "${BAKED[@]}"; do
+for unit in "${BAKED[@]}" "${BAKED_PATHS[@]}"; do
     install -D -m644 "$UNITS/$unit" "/etc/systemd/system/$unit"
 done
 
 # The external attester and the stock AppArmor loader are the only units not
-# in this repository. Their test payloads wait indefinitely.
+# in this repository. Their test payloads wait indefinitely and carry systemd's
+# default dependencies, as the attester in the measured image does: it starts
+# after basic.target, which is what makes a watch unit ordered after staging an
+# ordering cycle.
 for unit in attestation-api apparmor; do
     install -D -m644 /dev/stdin "/etc/systemd/system/$unit.service" <<EOF
 [Unit]
@@ -104,7 +108,7 @@ done
 systemctl daemon-reload
 
 CASE=units
-for unit in "${BAKED[@]}"; do
+for unit in "${BAKED[@]}" "${BAKED_PATHS[@]}"; do
     ok "$unit under test is the image's" \
         test "$(systemctl show -p FragmentPath --value "$unit")" = "/etc/systemd/system/$unit"
 done
@@ -134,9 +138,46 @@ ordered_after() { contains "$(systemctl show -p After --value "$1")" "$2"; }
 required_by_the_runtime() { contains "$(systemctl show -p Requires --value containerd.service)" "$1"; }
 active() { systemctl is-active --quiet "$1"; }
 not_active() { ! active "$1"; }
-boot() { systemctl start "${STAGED[@]}"; }
+# wait_active UNIT SECONDS, and stays_inactive UNIT SECONDS: both poll, so a
+# unit that starts late fails the first and the second alike.
+wait_active() {
+    local unit=$1 deadline=$(( $(date +%s) + $2 ))
+    while [[ $(date +%s) -lt $deadline ]]; do
+        active "$unit" && return 0
+        /bin/sleep 0.2
+    done
+    return 1
+}
+stays_inactive() {
+    local unit=$1 deadline=$(( $(date +%s) + $2 ))
+    while [[ $(date +%s) -lt $deadline ]]; do
+        active "$unit" && return 1
+        /bin/sleep 0.2
+    done
+    return 0
+}
+# watch_orders_nothing UNIT: systemd parsed no ordering of its own for the
+# watch, beyond the implicit ordering every path unit carries.
+watch_orders_nothing() {
+    local after
+    after=$(systemctl show -p After --value "$1")
+    for unit in "${BAKED[@]}" "${BAKED_PATHS[@]}"; do
+        contains "$after" "$unit" && return 1
+    done
+    return 0
+}
+# no_ordering_cycle: the manager reported no ordering cycle since the journal
+# was rotated, which is where it reports one it had to break.
+no_ordering_cycle() { ! journalctl -b --no-pager | grep -qiF 'ordering cycle'; }
+
+# The boot's services, less the ones a watch starts on a condition of its own.
+BOOTED=()
+for unit in "${STAGED[@]}"; do
+    grep -q '^ConditionPathExists=' "$UNITS/$unit" || BOOTED+=("$unit")
+done
+boot() { systemctl start "${BOOTED[@]}"; }
 scenario_reset() {
-    systemctl stop "${STAGED[@]}" worker-stage.service "${GATES[@]}" >/dev/null 2>&1 || true
+    systemctl stop "${STAGED[@]}" "${BAKED_PATHS[@]}" worker-stage.service "${GATES[@]}" >/dev/null 2>&1 || true
     systemctl reset-failed >/dev/null 2>&1 || true
     rm -f /run/worker-stage-fail /run/gate-fail-*
 }
@@ -144,6 +185,9 @@ scenario_reset() {
 CASE=ordering
 for unit in "${STAGED[@]}"; do
     ok "$unit is ordered after staging" ordered_after "$unit" worker-stage.service
+done
+for unit in "${BAKED_PATHS[@]}"; do
+    ok "$unit is ordered against no unit of this image" watch_orders_nothing "$unit"
 done
 for unit in "${GATES[@]}"; do
     ok "$unit is ordered before the runtime" ordered_after containerd.service "$unit"
@@ -153,7 +197,7 @@ CASE=boot
 scenario_reset
 ok "the worker boots" boot
 ok "staging is active" active worker-stage.service
-for unit in "${STAGED[@]}"; do ok "$unit active" active "$unit"; done
+for unit in "${BOOTED[@]}"; do ok "$unit active" active "$unit"; done
 for unit in "${GATES[@]}"; do
     if required_by_the_runtime "$unit"; then
         ok "$unit active" active "$unit"
@@ -164,12 +208,41 @@ for unit in "${GATES[@]}"; do
     fi
 done
 
+# The volume service is started by its watch, not by the boot: nothing opens a
+# volume before the kubelet has a pod directory to open it into. The watch and
+# the service's condition run against a directory this scenario owns; the
+# production paths are checked in worker/profile_test.go.
+CASE=kubelet-pod-directory
+PODS_DIR=/run/test-kubelet/pods
+scenario_reset
+install -D -m644 /dev/stdin /etc/systemd/system/volumed.path.d/90-test-path.conf <<EOF
+[Path]
+PathExists=
+PathExists=$PODS_DIR
+EOF
+install -D -m644 /dev/stdin /etc/systemd/system/volumed.service.d/91-test-condition.conf <<EOF
+[Unit]
+ConditionPathExists=
+ConditionPathExists=$PODS_DIR
+EOF
+systemctl daemon-reload
+ok "no kubelet runs in this scenario" not_active kubelet.service
+ok "the watch starts" systemctl start volumed.path
+ok "the volume service waits for the kubelet's pod directory" stays_inactive volumed.service 3
+mkdir -p "$PODS_DIR"
+ok "the volume service starts once the directory appears" wait_active volumed.service 10
+systemctl stop volumed.path volumed.service >/dev/null 2>&1 || true
+rm -rf "${PODS_DIR%/*}"
+rm -f /etc/systemd/system/volumed.path.d/90-test-path.conf \
+      /etc/systemd/system/volumed.service.d/91-test-condition.conf
+systemctl daemon-reload
+
 CASE=staging-failure
 scenario_reset
 : > /run/worker-stage-fail
 ok "startup fails visibly" not boot
 ok "staging failed" systemctl is-failed --quiet worker-stage.service
-for unit in "${STAGED[@]}"; do ok "$unit stayed down" not_active "$unit"; done
+for unit in "${BOOTED[@]}"; do ok "$unit stayed down" not_active "$unit"; done
 
 CASE=gate-failure
 scenario_reset
@@ -178,6 +251,22 @@ ok "startup fails visibly" not boot
 ok "the gate failed" systemctl is-failed --quiet scratch-enforce.service
 ok "the runtime stayed down" not_active containerd.service
 ok "the kubelet stayed down" not_active kubelet.service
+
+# A watch unit ordered after a service sits in paths.target, before
+# basic.target, while every service here starts after it: the manager reports
+# an ordering cycle and drops one job of it, so the worker stages by luck. A
+# real boot reports that on the kernel log, which a container does not see, so
+# this scenario puts the boot's own targets back in a transaction: every unit
+# of the cycle needs a job for the manager to find it.
+CASE=ordering-cycle
+scenario_reset
+systemctl stop attestation-api.service paths.target basic.target multi-user.target >/dev/null 2>&1 || true
+journalctl --rotate >/dev/null 2>&1 || true
+journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+ok "the boot starts" systemctl start multi-user.target
+ok "the transaction holds no ordering cycle" no_ordering_cycle
+ok "staging is active" active worker-stage.service
+for unit in "${BOOTED[@]}"; do ok "$unit active" active "$unit"; done
 
 scenario_reset
 summarize "worker host units behind authenticated staging"
