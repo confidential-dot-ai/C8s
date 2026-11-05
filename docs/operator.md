@@ -181,9 +181,14 @@ A pod CVM boots the same image as one pod, with no RKE2. It is TDX only: the pod
 role measures each container image it starts into RTMR[3], and SNP has no
 register a guest can extend after launch, so an SNP image manifest is refused at
 signing and in the guest. Cloud launches a pod CVM from a Pod manifest through
-its API or console with this guest contract; the manual commands below use the
-same contract. A Kubernetes-side provider that schedules annotated Pods onto
-Cloud is deferred.
+its API or console with this guest contract. For automatic placement from
+Kubernetes, enable the optional [Pod CVM provider](pod-cvm-provider.md): it
+signs the scheduler-assigned Pod, launches its Cloud VM, projects attested
+status and owns cleanup. The provider requires explicit `cdsAddress` and
+`cdsImagePolicyFile` configuration, plus a guest image and Cloud launch
+contract accepting `c8s-launch/v2`. Follow its [configuration and upgrade
+requirements](pod-cvm-provider.md#platform-configuration). The manual commands
+below use the same guest contract.
 
 ```sh
 c8s node launch-config new-pod --out pod1 --cluster-id demo \
