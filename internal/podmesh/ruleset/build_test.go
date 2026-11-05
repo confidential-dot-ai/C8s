@@ -23,7 +23,8 @@ import (
 var update = flag.Bool("update", false, "regenerate testdata/ruleset.golden")
 
 // testPolicy exercises every kind of permission a node's trusted policy can
-// name: the resolver and a credential role with one destination.
+// name: the resolver, this cluster's own ranges, and a credential role that
+// reaches one destination on this node and the CDS port outside the cluster.
 func testPolicy() Policy {
 	return Policy{
 		Resolver: netip.MustParseAddr("10.53.0.10"),
@@ -35,15 +36,21 @@ func testPolicy() Policy {
 		MeshUID: 1337,
 		Roles: []Role{{
 			UID:          1338,
-			Destinations: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
+			Destinations: []Destination{{netip.MustParseAddr("10.43.0.2"), 8400}},
+			OutsidePort:  8443,
 		}},
+		ClusterRanges: []netip.Prefix{
+			netip.MustParsePrefix("10.52.0.0/16"),
+			netip.MustParsePrefix("10.53.0.0/16"),
+		},
 	}
 }
 
 // serverPolicy is the same policy for a pod that serves a platform role's own
 // ports: the router answers external listeners, its upstream identity reaches
-// its node's CDS and the cluster itself, and a third identity of that pod
-// reaches the egress port outside the cluster.
+// the verifier on its node, the CDS port outside the cluster and the cluster
+// itself, and a third identity of that pod reaches the egress port outside
+// the cluster.
 func serverPolicy() Policy {
 	policy := testPolicy()
 	policy.Server = ServerRole{
@@ -52,12 +59,9 @@ func serverPolicy() Policy {
 			UID:   1340,
 			Ports: []uint16{443},
 		},
-		Upstream: 1341,
-		Services: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
-		ClusterRanges: []netip.Prefix{
-			netip.MustParsePrefix("10.52.0.0/16"),
-			netip.MustParsePrefix("10.53.0.0/16"),
-		},
+		Upstream:    1341,
+		Services:    []Destination{{netip.MustParseAddr("10.43.0.2"), 8400}},
+		OutsidePort: 8443,
 	}
 	return policy
 }
@@ -151,17 +155,19 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	want := []string{
 		"meta l4proto tcp th dport 8443 return # server-listener-8443",
 		"meta l4proto tcp th dport 8080 return # server-listener-8080",
-		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 return # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8400 return # server-service-10.43.0.2-8400",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.52.0.0/16",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.53.0.0/16",
+		"skuid 1341 meta l4proto tcp th dport 8443 return # server-upstream-outside-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 return # server-egress-443",
 		"meta l4proto tcp th dport 8443 accept # server-listener-8443",
 		"meta l4proto tcp th dport 8080 accept # server-listener-8080",
-		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 accept # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8400 accept # server-service-10.43.0.2-8400",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.52.0.0/16",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.53.0.0/16",
+		"skuid 1341 meta l4proto tcp th dport 8443 accept # server-upstream-outside-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 accept # server-egress-443",
@@ -179,17 +185,19 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	}
 }
 
-// The upstream identity fetches the signed route manifest from its own node's
-// CDS, so that one destination is returned before the capture and accepted on
-// the way out, and it reaches the cluster's members itself. Everything else
-// it dials is captured: no other rule of either chain names its identity.
+// The upstream identity fetches the signed route manifest from this
+// cluster's CDS, so the port that CDS serves on is returned before the
+// capture and accepted on the way out, as is the verifier on its own node,
+// and it reaches the cluster's members itself. Everything else it dials is
+// captured: no other rule of either chain names its identity.
 func TestServerRoutingIdentityReachesItsServiceAndTheCluster(t *testing.T) {
 	policy := serverPolicy()
 	service := policy.Server.Services[0]
 	match := fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s meta l4proto tcp th dport %d",
 		policy.Server.Upstream, service.Addr, service.Port)
+	outside := fmt.Sprintf("skuid %d meta l4proto tcp th dport %d", policy.Server.Upstream, policy.Server.OutsidePort)
 	var inCluster []string
-	for _, in := range policy.Server.ClusterRanges {
+	for _, in := range policy.ClusterRanges {
 		inCluster = append(inCluster, fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s & 255.255.0.0 meta l4proto tcp",
 			policy.Server.Upstream, in.Addr()))
 	}
@@ -204,6 +212,12 @@ func TestServerRoutingIdentityReachesItsServiceAndTheCluster(t *testing.T) {
 	if !slices.Contains(output, match+" accept") {
 		t.Fatalf("the service never leaves the pod:\n%s", strings.Join(output, "\n"))
 	}
+	if at := slices.Index(capture, outside+" return"); at < 0 || at > redirect {
+		t.Fatalf("the CDS port outside the cluster is not returned before the capture:\n%s", strings.Join(capture, "\n"))
+	}
+	if !slices.Contains(output, outside+" accept") {
+		t.Fatalf("the CDS port outside the cluster never leaves the pod:\n%s", strings.Join(output, "\n"))
+	}
 	for _, member := range inCluster {
 		at := slices.Index(capture, member+" return")
 		if at < 0 || at > redirect {
@@ -217,11 +231,35 @@ func TestServerRoutingIdentityReachesItsServiceAndTheCluster(t *testing.T) {
 		if !strings.HasPrefix(rule, fmt.Sprintf("skuid %d ", policy.Server.Upstream)) {
 			continue
 		}
-		reaches := slices.ContainsFunc(append(inCluster, match), func(allowed string) bool {
+		reaches := slices.ContainsFunc(append(inCluster, match, outside), func(allowed string) bool {
 			return strings.HasPrefix(rule, allowed)
 		})
 		if !reaches {
-			t.Errorf("the upstream identity reaches more than its service and the cluster: %s", rule)
+			t.Errorf("the upstream identity reaches more than its service, the CDS port and the cluster: %s", rule)
+		}
+	}
+}
+
+// A role's port is reached outside this cluster and nowhere in it: the deny
+// for each cluster range stands before the accept, which names no address, so
+// a name the role resolves cannot be answered with a member's address.
+func TestARolePortStopsAtTheClusterRanges(t *testing.T) {
+	policy := testPolicy()
+	role := policy.Roles[0]
+	output := renderedRules(filterOutput(policy).rules)
+	accept := fmt.Sprintf("skuid %d meta l4proto tcp th dport %d accept", role.UID, role.OutsidePort)
+	at := slices.Index(output, accept)
+	if at < 0 {
+		t.Fatalf("the role never reaches its port:\n%s", strings.Join(output, "\n"))
+	}
+	for _, in := range policy.ClusterRanges {
+		denied := fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s & 255.255.0.0 meta l4proto tcp th dport %d drop",
+			role.UID, in.Addr(), role.OutsidePort)
+		switch denied := slices.Index(output, denied); {
+		case denied < 0:
+			t.Fatalf("the role's port is not denied in %s:\n%s", in, strings.Join(output, "\n"))
+		case denied > at:
+			t.Fatalf("the deny in %s is rule %d, after the accept %d", in, denied, at)
 		}
 	}
 }

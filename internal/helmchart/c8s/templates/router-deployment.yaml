@@ -6,7 +6,7 @@ enableServiceLinks: false
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
-{{- $operatorKeys := and (not .Values.node.baked) .Values.cds.operatorKeys -}}
+{{- $operatorKeys := and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys -}}
 {{- /* Same control-plane pin as CDS: a baked image boots one server,
        and only servers carry this RKE2 role label. */}}
 {{- if .Values.node.baked }}
@@ -42,7 +42,7 @@ initContainers:
     # nginx's config names the acme cert files, so nginx must not start
     # before the bootstrap placeholder exists; regular containers wait
     # for a native sidecar's startup probe. HTTP, not exec: a locked
-    # node image denies every runc exec, so an exec probe can never pass
+    # node image denies every runc exec it was not granted, so an exec probe can never pass
     # there (internal/cmds/c8srunc). /readyz reports exactly what the
     # probe-file exec reported — both files present and non-empty.
     startupProbe:
@@ -77,14 +77,14 @@ containers:
   - name: nginx
     image: {{ include "c8s-common.image" .Values.router.nginx.image }}
     imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
-    {{- /* nginx runs as the child of reload.sh, which reloads it when a file
-           an nginx directive loads changes (router-configmap.yaml). The
+    {{- /* nginx runs as the child of serve.sh, which stops it when the
+           front-door certificate is withdrawn (router-configmap.yaml). The
            allowlist pins this argv exactly and admits no argument beside it,
            so nothing a pod adds (-g load_module, another -c) runs under the
            nginx entry. */}}
     command:
       - /bin/sh
-      - {{ include "router.configDir" . }}/reload.sh
+      - {{ include "router.configDir" . }}/serve.sh
     ports:
       - name: https
         containerPort: {{ .Values.router.nginx.httpsPort }}
@@ -217,7 +217,7 @@ containers:
         readOnly: true
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if .Values.cds.measurementsConfig }}
+      {{- if include "c8s.cdsFromValues" . }}
       - name: measurements-config
         mountPath: /mnt/c8s-data/measurements
         readOnly: true
@@ -305,7 +305,7 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 1Mi
-  {{- if .Values.cds.measurementsConfig }}
+  {{- if include "c8s.cdsFromValues" . }}
   - name: measurements-config
     projected:
       sources:
@@ -317,7 +317,7 @@ volumes:
     projected:
       sources:
         - configMap:
-            name: {{ include "c8s.cdsName" . }}-operator-keys
+            name: {{ include "c8s.fullname" . }}-operator-keys
   {{- end }}
   {{- if eq $publicTLSMode "webpki" }}
   - name: public-tls
@@ -459,12 +459,12 @@ spec:
       annotations:
         {{- /* On a baked node this tracks the image's copy of the config. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        {{- if .Values.cds.measurementsConfig }}
+        {{- if include "c8s.cdsFromValues" . }}
         # A ConfigMap edit alone does not change the pod template, so without
         # this a tightened pin would not roll the router.
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
         {{- end }}
-        {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
+        {{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys }}
         checksum/operator-keys: {{ .Values.cds.operatorKeys | sha256sum }}
         {{- end }}
     spec:

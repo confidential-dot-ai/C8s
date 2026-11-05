@@ -3,7 +3,9 @@
 package nodeservices
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -46,6 +48,21 @@ func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 			return fmt.Errorf("resolve node address: %w", err)
 		}
 	}
+	return PublishNodeAddress(rootDir, address)
+}
+
+// ClearNodeIP removes what PublishNodeAddress writes.
+func ClearNodeIP(rootDir string) error {
+	err := os.Remove(filepath.Join(rootDir, nodeIPPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// PublishNodeAddress publishes address, a routable IPv4, as the address the
+// node's NRI inventory advertises.
+func PublishNodeAddress(rootDir, address string) error {
 	if err := launchconfig.ValidateIPv4(address, true); err != nil {
 		return fmt.Errorf("node inventory requires a routable IPv4 address")
 	}

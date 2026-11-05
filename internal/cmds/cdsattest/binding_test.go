@@ -4,24 +4,36 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // poll runs one poll of the last applied envelope, which records the router
-// digest of the published router leaf (B10).
+// digest of the published router leaf.
 func (rs *routedServer) poll(t *testing.T) {
 	t.Helper()
 	poller := routing.NewPoller(routing.PollerConfig{
@@ -61,17 +73,17 @@ func tunnelGet(t *testing.T, base, sessionID string, channel *overenc.Channel) (
 	return resp.StatusCode, e.Error
 }
 
-func TestE6TunnelRefusesAChangedBinding(t *testing.T) {
+func TestTunnelRefusesAChangedBinding(t *testing.T) {
 	tests := []struct {
 		name   string
 		change func(*testing.T, *routedServer)
 		want   string
 	}{
-		{"E6 manifest applied", func(t *testing.T, rs *routedServer) { rs.apply(t, 2, time.Hour) }, types.ErrorCodeRouteDigestChanged},
-		{"E6 route's entry redefined", func(t *testing.T, rs *routedServer) {
-			rs.allowlists.serve(bytes.Repeat([]byte{0x43}, 32), testAllowlist("v2"))
+		{"manifest applied", func(t *testing.T, rs *routedServer) { rs.apply(t, 2, time.Hour) }, types.ErrorCodeRouteDigestChanged},
+		{"router digest changed", func(t *testing.T, rs *routedServer) {
+			publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
 			rs.poll(t)
-		}, types.ErrorCodeRouteEntryChanged},
+		}, types.ErrorCodeRouterDigestChanged},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +151,7 @@ func routedGet(t *testing.T, listener, connection string) (int, string) {
 	return resp.StatusCode, strings.TrimSpace(string(body))
 }
 
-func TestE6ListenerRefusesABoundConnection(t *testing.T) {
+func TestListenerRefusesABoundConnection(t *testing.T) {
 	rs := newRoutedServer(t)
 	listener := httptest.NewServer(rs.proxy)
 	t.Cleanup(listener.Close)
@@ -177,7 +189,106 @@ func TestE6ListenerRefusesABoundConnection(t *testing.T) {
 	}
 }
 
-func TestE5AttestLBBindsOnlyARelayedConnection(t *testing.T) {
+// nginx reads its certificate per TLS handshake, so a connection opened
+// before a renewal keeps presenting its leaf: a handshake on it attests that
+// leaf, and one on a new connection the renewed leaf.
+func TestAttestLBAttestsTheLeafItsConnectionPresents(t *testing.T) {
+	var servingCert string
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, c *Config) { servingCert = c.ServingCertFile })
+	rs.apply(t, 1, time.Hour)
+	opened := attestedServingLeaf(t, rs.ts.URL, "7.1")
+
+	_, renewed := writeTestServingLeaf(t)
+	writeTestPEM(t, servingCert, "CERTIFICATE", renewed)
+
+	if got := attestedServingLeaf(t, rs.ts.URL, "7.1"); got != opened {
+		t.Fatalf("attest-lb on the connection opened before the renewal attests %s, want its own leaf %s", got, opened)
+	}
+	sum := sha256.Sum256(renewed)
+	if got, want := attestedServingLeaf(t, rs.ts.URL, "7.2"), base64.RawURLEncoding.EncodeToString(sum[:]); got != want {
+		t.Fatalf("attest-lb on a new connection attests %s, want the renewed leaf %s", got, want)
+	}
+}
+
+// attestedServingLeaf runs attest-lb on connection and returns the serving
+// leaf digest its bundle attests.
+func attestedServingLeaf(t *testing.T, base, connection string) string {
+	t.Helper()
+	resp := attestLB(t, base, connection)
+	defer resp.Body.Close()
+	var bundle types.AttestationBundle
+	if err := json.NewDecoder(resp.Body).Decode(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ServingLeafSHA256 == "" {
+		t.Fatalf("attest-lb on %q = %d with no serving leaf, want a bundle", connection, resp.StatusCode)
+	}
+	return bundle.ServingLeafSHA256
+}
+
+// servedLeaves keeps the last maxServedLeaves unexpired leaves: an older or
+// expired one is not found, and a connection bound to it is attested with the
+// leaf on disk, which its client then refuses.
+func TestServedLeavesKeepsTheLastFew(t *testing.T) {
+	var l servedLeaves
+	now := time.Now()
+	var hashes [][sha256.Size]byte
+	for i := range maxServedLeaves + 1 {
+		leaf := servedLeaf{der: []byte{byte(i)}, expires: now.Add(time.Hour)}
+		l.remember(leaf)
+		l.remember(servedLeaf{der: []byte{byte(i)}, expires: leaf.expires}) // read twice, kept once
+		hashes = append(hashes, sha256.Sum256(leaf.der))
+	}
+	if _, kept := l.find(hashes[0], now); kept {
+		t.Fatal("find(oldest) after maxServedLeaves newer leaves = kept, want evicted")
+	}
+	for i, hash := range hashes[1:] {
+		if der, kept := l.find(hash, now); !kept || der[0] != byte(i+1) {
+			t.Fatalf("find(leaf %d) = %v, %v, want it kept", i+1, der, kept)
+		}
+	}
+	if _, kept := l.find(hashes[1], now.Add(2*time.Hour)); kept {
+		t.Fatal("find(leaf) past its chain's expiry = kept, want an expired leaf refused")
+	}
+}
+
+// A served leaf expires with the first certificate of its chain to expire, as
+// get-cert expires a generation when its CA does.
+func TestServingLeafExpiresWithItsChain(t *testing.T) {
+	_, leafDER := writeTestServingLeaf(t)
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "mesh"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Minute),
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "chain.pem")
+	chain := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})...)
+	if err := os.WriteFile(path, chain, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{ServingCertFile: path}}
+	leaf, err := s.servingLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leaf.der, leafDER) {
+		t.Fatal("servingLeaf() committed another certificate than the chain's first")
+	}
+	if !leaf.expires.Equal(ca.NotAfter.Truncate(time.Second)) {
+		t.Fatalf("servingLeaf() expires %v, want the CA's earlier NotAfter %v", leaf.expires, ca.NotAfter)
+	}
+}
+
+func TestAttestLBBindsOnlyARelayedConnection(t *testing.T) {
 	rs := newRoutedServer(t)
 	rs.apply(t, 1, time.Hour)
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
@@ -193,7 +304,7 @@ func TestE5AttestLBBindsOnlyARelayedConnection(t *testing.T) {
 	}
 }
 
-func TestE7BindingCapRefusesHandshakes(t *testing.T) {
+func TestBindingCapRefusesHandshakes(t *testing.T) {
 	rs := newRoutedServer(t)
 	clock := &testClock{now: time.Now()}
 	rs.bindings.max, rs.bindings.now = 1, clock.Now
@@ -222,60 +333,60 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 	}
 }
 
-// TestE7PerClientBindingCap: one client's attest-lb bindings are capped
+// TestPerClientBindingCap: one client's attest-lb bindings are capped
 // below the store's bound, and another client still binds.
-func TestE7PerClientBindingCap(t *testing.T) {
+func TestPerClientBindingCap(t *testing.T) {
+	clock := &testClock{now: time.Now()}
 	b := NewBindings()
-	b.maxClient = 1
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	b.now, b.maxClient = clock.Now, 1
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("second binding for one client = %v, want %v", err, errClientBindingsFull)
 	}
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("rebind at the client's share = %v, want nil", err)
 	}
-	if err := b.bind("1.3", "client:b", routing.Binding{}); err != nil {
+	if err := b.bind("1.3", "client:b", lbHandshake{}); err != nil {
 		t.Fatalf("another client's binding = %v, want nil", err)
 	}
 	b.max = 2 // the store is full: 1.1 and 1.3
-	if err := b.bind("1.1", "client:c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:c", lbHandshake{}); err != nil {
 		t.Fatalf("rebind under another client at the global bound = %v, want nil", err)
 	}
-	if err := b.bind("1.1", "client:b", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.1", "client:b", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("rebind under a client at its share = %v, want %v", err, errClientBindingsFull)
 	}
 	b.max = maxLBBindings
-	b.mu.Lock()
-	b.dropLocked("1.1", b.entries["1.1"])
-	b.mu.Unlock()
-	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+	clock.Advance(lbBindingLife + time.Second)
+	b.prune()
+	if err := b.bind("1.2", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("binding after the client's other binding dropped = %v, want nil", err)
 	}
 }
 
-// TestE7LapsedBindingsKeepTheirClientShare: a client cannot cycle through
+// TestLapsedBindingsKeepTheirClientShare: a client cannot cycle through
 // handshakes and idling to hold more than its share, and a handshake without
 // a client key is bounded only globally.
-func TestE7LapsedBindingsKeepTheirClientShare(t *testing.T) {
+func TestLapsedBindingsKeepTheirClientShare(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now, b.maxClient = clock.Now, 1
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("bind after the client's binding lapsed = %v, want %v", err, errClientBindingsFull)
 	}
 	for _, c := range []string{"2.1", "2.2", "2.3"} {
-		if err := b.bind(c, "", routing.Binding{}); err != nil {
+		if err := b.bind(c, "", lbHandshake{}); err != nil {
 			t.Fatalf("bind %s with no client key = %v, want nil", c, err)
 		}
 	}
 	clock.Advance(lbBindingLife)
-	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("bind once the lapsed binding's connection is gone = %v, want nil", err)
 	}
 	if n := len(b.perClient); n != 1 {
@@ -283,14 +394,14 @@ func TestE7LapsedBindingsKeepTheirClientShare(t *testing.T) {
 	}
 }
 
-// TestE7WellKnownRequestHoldsTheBinding: a request to any attestation
+// TestWellKnownRequestHoldsTheBinding: a request to any attestation
 // location on a bound connection keeps the binding live for as long as it
 // runs, so a long tunnel request cannot let the sweep drop it.
-func TestE7WellKnownRequestHoldsTheBinding(t *testing.T) {
+func TestWellKnownRequestHoldsTheBinding(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("7.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("7.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{bindings: b}
@@ -318,59 +429,118 @@ func TestE7WellKnownRequestHoldsTheBinding(t *testing.T) {
 		t.Fatalf("binding after the request = %+v, %v, want released and live", e, ok)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if _, refused, _, release, ok := b.Hold("7.1"); !ok || refused != types.ErrorCodeBindingExpired {
-		t.Fatalf("Hold() after the request's idle lifetime = %q, %v, want %q, true", refused, ok, types.ErrorCodeBindingExpired)
-	} else {
-		release()
+	held := b.Hold("7.1")
+	if held == nil || held.RefusedWith != types.ErrorCodeBindingExpired {
+		t.Fatalf("Hold() after the request's idle lifetime = %+v, want refused with %q", held, types.ErrorCodeBindingExpired)
 	}
+	held.Release()
 }
 
-// TestE6RefuseSkipsAReplacedBinding: a refusal recorded for a request that
+// TestRefuseSkipsAReplacedBinding: a refusal recorded for a request that
 // held an earlier binding does not mark the binding a later handshake on the
 // same connection installed meanwhile.
-func TestE6RefuseSkipsAReplacedBinding(t *testing.T) {
+func TestRefuseSkipsAReplacedBinding(t *testing.T) {
 	b := NewBindings()
-	first := routing.Binding{RouterDigest: "a"}
-	second := routing.Binding{RouterDigest: "b"}
+	first := lbHandshake{bound: routing.Binding{RouterDigest: "a"}}
+	second := lbHandshake{bound: routing.Binding{RouterDigest: "b"}}
 	if err := b.bind("1.1", "c", first); err != nil {
 		t.Fatal(err)
 	}
-	_, _, held, release, ok := b.Hold("1.1")
-	if !ok {
-		t.Fatal("Hold() = false, want true")
+	held := b.Hold("1.1")
+	if held == nil {
+		t.Fatal("Hold() = nil, want the binding")
 	}
 	if err := b.bind("1.1", "c", second); err != nil {
 		t.Fatal(err)
 	}
-	b.Refuse("1.1", held, types.ErrorCodeRouteEntryChanged)
-	release()
-	if _, refused, _, _, _ := b.Hold("1.1"); refused != "" {
+	held.Refuse(types.ErrorCodeRouterDigestChanged)
+	held.Release()
+	if refused := holdRefusal(t, b, "1.1"); refused != "" {
 		t.Fatalf("replaced binding refused with %q, want the refusal dropped", refused)
 	}
-	_, _, current, release2, _ := b.Hold("1.1")
-	release2()
-	b.Refuse("1.1", current, types.ErrorCodeRouteEntryChanged)
-	if _, refused, _, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouteEntryChanged {
-		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouteEntryChanged)
+	current := b.Hold("1.1")
+	current.Release()
+	current.Refuse(types.ErrorCodeRouterDigestChanged)
+	if refused := holdRefusal(t, b, "1.1"); refused != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouterDigestChanged)
 	}
 }
 
-func TestE7BindingIdleLifetime(t *testing.T) {
+// holdRefusal holds and releases connection's binding and returns the code
+// it is refused with.
+func holdRefusal(t *testing.T, b *Bindings, connection string) string {
+	t.Helper()
+	held := b.Hold(connection)
+	if held == nil {
+		t.Fatalf("Hold(%s) = nil, want the binding", connection)
+	}
+	held.Release()
+	return held.RefusedWith
+}
+
+// TestRefuseSurvivesAnotherConnectionsHandshake: handshakes on other
+// connections before a hold and before its refusal leave the refusal in force.
+func TestRefuseSurvivesAnotherConnectionsHandshake(t *testing.T) {
+	b := NewBindings()
+	for _, c := range []string{"1.1", "1.2"} {
+		if err := b.bind(c, "c", lbHandshake{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held := b.Hold("1.1")
+	if held == nil {
+		t.Fatal("Hold() = nil, want the binding")
+	}
+	if err := b.bind("1.3", "c", lbHandshake{}); err != nil {
+		t.Fatal(err)
+	}
+	held.Refuse(types.ErrorCodeRouteDigestChanged)
+	held.Release()
+	if refused := holdRefusal(t, b, "1.1"); refused != types.ErrorCodeRouteDigestChanged {
+		t.Fatalf("binding refused with %q, want %q", refused, types.ErrorCodeRouteDigestChanged)
+	}
+}
+
+// TestReleaseIsIdempotent: a second Release of one hold leaves the binding
+// free to lapse.
+func TestReleaseIsIdempotent(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
+	held := b.Hold("1.1")
+	if held == nil {
+		t.Fatal("Hold() = nil, want the binding")
+	}
+	held.Release()
+	held.Release()
+	if n := b.entries["1.1"].inFlight; n != 0 {
+		t.Fatalf("requests in flight after Release twice = %d, want 0", n)
+	}
+	clock.Advance(lbBindingIdle + time.Second)
+	if refused := holdRefusal(t, b, "1.1"); refused != types.ErrorCodeBindingExpired {
+		t.Fatalf("binding idle past its lifetime refused with %q, want %q", refused, types.ErrorCodeBindingExpired)
+	}
+}
+
+func TestBindingIdleLifetime(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now = clock.Now
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle - time.Second)
-	_, _, _, release, ok := b.Hold("1.1")
-	if !ok {
-		t.Fatal("Hold() of a live binding = false, want true")
+	held := b.Hold("1.1")
+	if held == nil {
+		t.Fatal("Hold() of a live binding = nil, want the binding")
 	}
-	release()
+	held.Release()
 	clock.Advance(2 * time.Second)
 	b.prune()
 	if _, ok := b.entries["1.1"]; !ok {
@@ -383,67 +553,67 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 		t.Fatalf("client charge after a lapse = %d, want 2", n)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if _, refused, _, release, ok := b.Hold("1.1"); !ok || refused != types.ErrorCodeBindingExpired {
-		t.Fatalf("Hold() of an idle binding = %q, %v, want %q, true: a lapse fails closed", refused, ok, types.ErrorCodeBindingExpired)
+	if held := b.Hold("1.1"); held == nil || held.RefusedWith != types.ErrorCodeBindingExpired {
+		t.Fatalf("Hold() of an idle binding = %+v, want refused with %q: a lapse fails closed", held, types.ErrorCodeBindingExpired)
 	} else {
-		release()
+		held.Release()
 	}
 	clock.Advance(lbBindingLife + time.Second)
-	if _, _, _, _, ok := b.Hold("1.1"); ok {
-		t.Fatal("Hold() past the connection's life = true, want the binding dropped")
+	if held := b.Hold("1.1"); held != nil {
+		t.Fatalf("Hold() past the connection's life = %+v, want the binding dropped", held)
 	}
 }
 
-// TestE7BindingHeldByARequestInFlight: a request outlasting the idle lifetime
+// TestBindingHeldByARequestInFlight: a request outlasting the idle lifetime
 // keeps its connection bound, and its end restarts the lifetime.
-func TestE7BindingHeldByARequestInFlight(t *testing.T) {
+func TestBindingHeldByARequestInFlight(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{RouterDigest: "D"}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{bound: routing.Binding{RouterDigest: "D"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, release, ok := b.Hold("1.1")
-	if !ok {
-		t.Fatal("Hold() of a live binding = false, want true")
+	held := b.Hold("1.1")
+	if held == nil {
+		t.Fatal("Hold() of a live binding = nil, want the binding")
 	}
 	clock.Advance(3 * lbBindingIdle)
 	b.prune()
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil { // prunes on insert
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil { // prunes on insert
 		t.Fatal(err)
 	}
-	if bound, _, _, again, ok := b.Hold("1.1"); !ok || bound.RouterDigest != "D" {
-		t.Fatalf("Hold() during a long request = %+v, %v, want the binding kept", bound, ok)
+	if again := b.Hold("1.1"); again == nil || again.RouterDigest != "D" {
+		t.Fatalf("Hold() during a long request = %+v, want the binding kept", again)
 	} else {
-		again()
+		again.Release()
 	}
-	release()
+	held.Release()
 	clock.Advance(lbBindingIdle - time.Second)
-	if _, _, _, again, ok := b.Hold("1.1"); !ok {
-		t.Fatal("Hold() within the idle lifetime after the request ended = false, want true")
+	if again := b.Hold("1.1"); again == nil {
+		t.Fatal("Hold() within the idle lifetime after the request ended = nil, want the binding")
 	} else {
-		again()
+		again.Release()
 	}
 }
 
-// TestE7InsertPrunesExpiredBindings: an insert drops expired bindings without
+// TestInsertPrunesExpiredBindings: an insert drops expired bindings without
 // waiting for the sweep or the cap.
-func TestE7InsertPrunesExpiredBindings(t *testing.T) {
+func TestInsertPrunesExpiredBindings(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	if e, ok := b.entries["1.1"]; !ok || e.refused != types.ErrorCodeBindingExpired {
 		t.Fatalf("idle binding after an insert = %+v, %v, want it lapsed", e, ok)
 	}
 	clock.Advance(lbBindingLife)
-	if err := b.bind("1.3", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.3", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := b.entries["1.1"]; ok {
@@ -451,44 +621,89 @@ func TestE7InsertPrunesExpiredBindings(t *testing.T) {
 	}
 }
 
-// TestE6RouterRenewalKeepsSessions: an allowlist write that leaves the
-// route's entries unchanged, and the router's renewal under it, refuse
-// neither an attest-pq session nor an attest-lb connection, and new
-// handshakes on the renewed leaf are admitted at once.
-func TestE6RouterRenewalKeepsSessions(t *testing.T) {
-	rs := newRoutedServer(t)
-	listener := httptest.NewServer(rs.proxy)
-	t.Cleanup(listener.Close)
-	rs.apply(t, 1, time.Hour)
-	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
-	if code := errorCode(t, attestLB(t, rs.ts.URL, "4.1")); code != "" {
-		t.Fatalf("attest-lb = %q, want success", code)
+// TestInsertAtTheBoundPrunesFully: a new connection at the bound takes the
+// room of a binding past its life wherever it sits in the store; below the
+// bound an insert ages only pruneOnInsert entries.
+func TestInsertAtTheBoundPrunesFully(t *testing.T) {
+	const live = 31
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now, b.max = clock.Now, live+1
+	if err := b.bind("gone", "", lbHandshake{}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(lbBindingLife - time.Minute)
+	for i := range live {
+		if err := b.bind(fmt.Sprint("live.", i), "", lbHandshake{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.Advance(2 * time.Minute) // "gone" is past its life, the rest are not
+	if err := b.bind("new", "", lbHandshake{}); err != nil {
+		t.Fatalf("bind at the bound with a binding past its life = %v, want nil", err)
 	}
 
-	renewed := bytes.Repeat([]byte{0x43}, 32)
-	next := testAllowlist("v1")
-	next.Workloads["other"] = allowlist.Workload{Label: "v1"}
-	rs.allowlists.serve(renewed, next)
-	rs.poll(t)
-	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", renewed), rs.ca)
-	rs.poll(t)
-
-	if status, code := tunnelGet(t, rs.ts.URL, sessionID, channel); status != http.StatusOK {
-		t.Fatalf("tunnel after the renewal = %d %q, want 200", status, code)
+	below := NewBindings()
+	below.now = clock.Now
+	for i := range 8 {
+		if err := below.bind(fmt.Sprint("old.", i), "", lbHandshake{}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	<-rs.lastHost
-	if status, body := routedGet(t, listener.URL, "4.1"); status != http.StatusOK {
-		t.Fatalf("GET on the bound connection after the renewal = %d %q, want 200", status, body)
+	clock.Advance(lbBindingLife + time.Second)
+	if err := below.bind("new", "", lbHandshake{}); err != nil {
+		t.Fatal(err)
 	}
-	<-rs.lastHost
-	if pq, lb := rs.handshakeCodes(t); pq != "" || lb != "" {
-		t.Fatalf("handshakes on the renewed leaf = %q, %q, want success", pq, lb)
+	if n, want := len(below.entries), 8-pruneOnInsert+1; n != want {
+		t.Fatalf("bindings after an insert below the bound = %d, want %d", n, want)
 	}
 }
 
-// TestE6RefusalOutlivesItsCause: a connection refused once stays refused when
-// the entry changes back, until a handshake on it binds again.
-func TestE6RefusalOutlivesItsCause(t *testing.T) {
+// TestHandshakeWaitsForTheRouterDigest: a handshake whose mesh leaf is
+// stamped under another digest than the router checks requests against is
+// refused before any evidence, rather than admit a session every request of
+// which is refused.
+func TestHandshakeWaitsForTheRouterDigest(t *testing.T) {
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
+		unstamped := writeTestMeshIdentity(t)
+		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = unstamped.certFile, unstamped.keyFile, unstamped.caFile
+	})
+	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
+	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
+		t.Fatalf("handshakes with a leaf the router does not hold = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	}
+}
+
+// TestHandshakeWaitsForARenewalToReachTheRouter: a leaf stamped under
+// another digest than the router's own credential is refused, and admitted
+// once the router holds it.
+func TestHandshakeWaitsForARenewalToReachTheRouter(t *testing.T) {
+	var renewed tls.Certificate
+	var renewedCA *issuer.CA
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
+		var err error
+		if renewedCA, err = issuer.NewCA("mesh", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		renewed = namedLeafUnder(t, renewedCA, "router", bytes.Repeat([]byte{0x43}, 32))
+		_, dir := publishedMeshIdentity(t, renewed, renewedCA)
+		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = volumeFile(dir, "tls.crt"), volumeFile(dir, "tls.key"), volumeFile(dir, "ca.crt")
+	})
+	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
+	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
+		t.Fatalf("handshakes with a leaf stamped under another digest = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	}
+	publishLeaf(t, rs.meshDir, renewed, renewedCA)
+	if pq, lb := rs.handshakeCodes(t); pq != "" || lb != "" {
+		t.Fatalf("handshakes once the router holds the leaf = %q, %q, want success", pq, lb)
+	}
+}
+
+// TestRefusalOutlivesItsCause: a connection refused once stays refused when
+// the router digest changes back, until a handshake on it binds again.
+func TestRefusalOutlivesItsCause(t *testing.T) {
 	rs := newRoutedServer(t)
 	listener := httptest.NewServer(rs.proxy)
 	t.Cleanup(listener.Close)
@@ -496,15 +711,16 @@ func TestE6RefusalOutlivesItsCause(t *testing.T) {
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "3.1")); code != "" {
 		t.Fatalf("attest-lb = %q, want success", code)
 	}
-	rs.allowlists.serve(bytes.Repeat([]byte{0x43}, 32), testAllowlist("v2"))
+	original := namedLeaf(t, rs.ca, "router")
+	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
 	rs.poll(t)
-	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouteEntryChanged {
-		t.Fatalf("GET after the route's entry changed = %d %q, want 503 %q", status, body, types.ErrorCodeRouteEntryChanged)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET after the router renewed = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
 	}
-	rs.allowlists.serve(testDigest, testAllowlist("v1"))
+	publishLeaf(t, rs.meshDir, original, rs.ca)
 	rs.poll(t)
-	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouteEntryChanged {
-		t.Fatalf("GET after the entry changed back = %d %q, want 503 %q", status, body, types.ErrorCodeRouteEntryChanged)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET after the router digest changed back = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
 	}
 	if len(rs.lastHost) != 0 {
 		t.Fatal("a refused request reached the backend")
@@ -514,5 +730,30 @@ func TestE6RefusalOutlivesItsCause(t *testing.T) {
 	}
 	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusOK {
 		t.Fatalf("GET after attesting again = %d %q, want 200", status, body)
+	}
+}
+
+// TestHandshakeRetiresPoolsOfARenewedLeaf: a handshake presenting a leaf
+// renewed under another digest retires the connections pooled under the old
+// one first, without waiting for a poll.
+func TestHandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
+	rs := newRoutedServer(t)
+	listener := httptest.NewServer(rs.proxy)
+	t.Cleanup(listener.Close)
+	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
+	if status, body := routedGet(t, listener.URL, ""); status != http.StatusOK {
+		t.Fatalf("GET = %d %q, want 200", status, body)
+	}
+	<-rs.lastHost
+
+	// The backend stays stamped under the old digest: a fresh dial fails B8,
+	// a pooled connection would not.
+	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
+		t.Fatalf("attest-lb with the renewed leaf = %q, want success", code)
+	}
+	if status, body := routedGet(t, listener.URL, ""); status != http.StatusBadGateway || !strings.Contains(body, "backend_digest_mismatch") {
+		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}
 }

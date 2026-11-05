@@ -115,8 +115,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The base commit must be present to stage the diff against it.
-          fetch-depth: 0
+          # The staging step reads only the PR merge commit and its parents.
+          fetch-depth: 2
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -146,11 +146,14 @@ jobs:
       # meat has no pathspec filter, so hand it a pre-filtered index instead:
       # index := head tree, HEAD := base, tests unstaged. The worktree stays at
       # head so meat's read-only tools still see the real source.
+      # HEAD is GitHub's PR merge commit; its first parent is the base it was
+      # built on. The event's base sha can move past it (base force-pushed
+      # after the merge was cached) and would stage the base's gains too.
       - name: Stage the PR diff without tests
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          git reset -q --soft "$BASE"
+          set -euo pipefail
+          git rev-parse --verify -q HEAD^2 >/dev/null
+          git reset -q --soft HEAD^1
           git restore --staged -- ':(glob)**/*_test.go' ':(glob)**/testdata/**'
 
       - name: Abridge the PR diff

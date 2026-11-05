@@ -88,6 +88,7 @@ func captureOutbound(p Policy) chain {
 	rules = append(rules, exitRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
+	rules = append(rules, serverOutsideRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
@@ -126,10 +127,12 @@ func filterOutput(p Policy) chain {
 	})
 	for _, role := range p.Roles {
 		rules = append(rules, roleDestinationRules(role)...)
+		rules = append(rules, outsidePortRules(p, role.UID, role.OutsidePort, expr.VerdictAccept)...)
 	}
 	rules = append(rules, exitRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictAccept)...)
+	rules = append(rules, serverOutsideRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
@@ -191,7 +194,7 @@ func serverListenerRules(p Policy, kind expr.VerdictKind) []rule {
 func serverClusterCaptureRules(p Policy) []rule {
 	var rules []rule
 	for _, port := range p.Server.Egress.Ports {
-		for _, in := range p.Server.ClusterRanges {
+		for _, in := range p.ClusterRanges {
 			exprs := slices.Concat(serverClusterMatch(p, port, in), redirectTo(p.Capture.Outbound))
 			rules = append(rules, rule{serverClusterRuleName(port, in), exprs})
 		}
@@ -204,7 +207,7 @@ func serverClusterCaptureRules(p Policy) []rule {
 func serverClusterDropRules(p Policy) []rule {
 	var rules []rule
 	for _, port := range p.Server.Egress.Ports {
-		for _, in := range p.Server.ClusterRanges {
+		for _, in := range p.ClusterRanges {
 			exprs := withVerdict(serverClusterMatch(p, port, in), expr.VerdictDrop)
 			rules = append(rules, rule{serverClusterRuleName(port, in), exprs})
 		}
@@ -240,8 +243,11 @@ func serverServiceRules(p Policy, kind expr.VerdictKind) []rule {
 // identity of the pod matches them, so every other container's connection to
 // a member is captured.
 func serverUpstreamRules(p Policy, kind expr.VerdictKind) []rule {
-	rules := make([]rule, 0, len(p.Server.ClusterRanges))
-	for _, in := range p.Server.ClusterRanges {
+	if !p.Server.serves() {
+		return nil
+	}
+	rules := make([]rule, 0, len(p.ClusterRanges))
+	for _, in := range p.ClusterRanges {
 		exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchDestinationRange(in), matchProtocol(unix.IPPROTO_TCP))
 		name := fmt.Sprintf("server-upstream-in-cluster-%s", in)
 		rules = append(rules, rule{name, withVerdict(exprs, kind)})
@@ -289,6 +295,39 @@ func roleDestinationRules(role Role) []rule {
 		rules = append(rules, rule{name, withVerdict(exprs, expr.VerdictAccept)})
 	}
 	return rules
+}
+
+// outsidePortRules permit one identity a TCP port on every address outside
+// this cluster, and deny it that port inside: the service it reaches there is
+// named by <host>:<port> and resolved by whoever dials it, so no rule can name
+// its address, and the deny keeps the exception from carrying plaintext to a
+// member pod or a Service.
+func outsidePortRules(p Policy, uid uint32, port uint16, kind expr.VerdictKind) []rule {
+	if port == 0 {
+		return nil
+	}
+	rules := make([]rule, 0, len(p.ClusterRanges)+1)
+	for _, in := range p.ClusterRanges {
+		exprs := slices.Concat(matchSocketUID(uid), matchDestinationRange(in), matchTCPPort(port))
+		name := fmt.Sprintf("role-%d-outside-%d-in-cluster-%s", uid, port, in)
+		rules = append(rules, rule{name, withVerdict(exprs, expr.VerdictDrop)})
+	}
+	exprs := slices.Concat(matchSocketUID(uid), matchTCPPort(port))
+	name := fmt.Sprintf("role-%d-outside-%d", uid, port)
+	return append(rules, rule{name, withVerdict(exprs, kind)})
+}
+
+// serverOutsideRules match the upstream identity's traffic to the port it
+// reaches outside this cluster: where the CDS it fetches the signed route
+// manifest from serves. They follow serverUpstreamRules, which carry that
+// identity's traffic to the cluster itself.
+func serverOutsideRules(p Policy, kind expr.VerdictKind) []rule {
+	if !p.Server.serves() || p.Server.OutsidePort == 0 {
+		return nil
+	}
+	exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchTCPPort(p.Server.OutsidePort))
+	name := fmt.Sprintf("server-upstream-outside-%d", p.Server.OutsidePort)
+	return []rule{{name, withVerdict(exprs, kind)}}
 }
 
 // replyAndControlRules permit the replies of an admitted connection, its ICMP

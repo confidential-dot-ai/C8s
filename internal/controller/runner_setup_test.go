@@ -172,7 +172,7 @@ func TestBootstrapWebhookPKISkipsWithoutConfigName(t *testing.T) {
 
 func TestBootstrapWebhookPKIRequiresServiceName(t *testing.T) {
 	err := bootstrapWebhookPKI(context.Background(), nil, Options{WebhookConfigName: "c8s-mutating"})
-	if err == nil || !strings.Contains(err.Error(), "webhook-service-name is required") {
+	if err == nil || !strings.Contains(err.Error(), "webhook-service-name or webhook-host is required") {
 		t.Fatalf("err = %v, want webhook-service-name requirement", err)
 	}
 }

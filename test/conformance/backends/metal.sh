@@ -7,6 +7,7 @@
 
 : "${KUBECONFIG:?the attested kubeconfig from the lane}"
 : "${C8S_ALLOWLIST_URL:?the allowlist front door of the guest}"
+: "${C8S_CDS_URL:?the CDS VM the launch of this cluster names}"
 : "${C8S_OPERATOR_KEY:?the operator key of the launch}"
 PLATFORM="${SUITE_PLATFORM:-metal}"
 # Not the router's nginx digest: the served allowlist carries the router's
@@ -70,7 +71,7 @@ injected_image() { return $UNSUPPORTED; }
 
 # model-server's reporter image (images/reporter), whose log the steps read
 # in place of an exec (pod_read).
-CONFORMANCE_IMAGES[model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
+CONFORMANCE_IMAGES[model-server]=sha256:2f70f844a31ac3573c38d742bad0ba37d4bf1cb755b6dfdb18f2f0ca0521835f
 
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
@@ -80,11 +81,10 @@ scratch_encrypted() { echo yes; }
 # allowlist route, which forwards the /allowlist routes unchanged. The
 # operator's credential may neither exec, port-forward nor write in $NS, and
 # a pod the run keeps is a mesh member whose traffic to the CDS is dropped,
-# so the CDS's other routes are sent from here to its Service's node port on
-# the guest's address, as is the CDS's own serving certificate read; its
-# Service answers unsupported below. The launch bundle's key is the run's operator key; the
-# token minter is built from the checkout on first use, with the Go
-# toolchain that built the CLI.
+# so the CDS's other routes are sent from here to the CDS VM itself, as is
+# the CDS's own serving certificate read. The launch bundle's key is the run's
+# operator key; the token minter is built from the checkout on first use, with
+# the Go toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 cds_request() {
     case "$2" in
@@ -92,19 +92,15 @@ cds_request() {
         *) cds_pod_request "$@" ;;
     esac
 }
+# The CDS VM the lane launched this cluster on, which answers the harness host
+# on both platforms: it serves a listener of its own, not a node port of the
+# guest's Kubernetes, which on the SNP lane's bridge interface never answers
+# here (run 40547124565: every write to it timed out on SNP while the TDX lane
+# of the same run passed them). It is the address an injected client dials too.
+cds_vm_url() { echo "${C8S_CDS_URL%/}"; }
+cds_pod_url() { cds_vm_url; }
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
-cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
-cds_pod_url() { cds_node_url; }
-cds_service_url() { cds_node_url; }
-# The guest's address from the allowlist URL, with the CDS Service's node port.
-cds_node_url() {
-    local host port
-    host="${C8S_ALLOWLIST_URL#*://}"
-    host="${host%%/*}"
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
-    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
-    echo "https://${host%:*}:$port"
-}
+cds_pod_request() { local url; url="$(cds_vm_url)" || return; http_request "$url" "$@"; }
 cds_read() {
     local path
     [ "${2:-}" != plain ] || return "$UNSUPPORTED"
@@ -113,7 +109,7 @@ cds_read() {
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 # The leaf, the first certificate curl's %{certs} lists for the chain.
-cds_serving_cert() { local url; url="$(cds_node_url)" || return; serving_cert "$url"; }
+cds_serving_cert() { local url; url="$(cds_vm_url)" || return; serving_cert "$url"; }
 # No node shell, so the plugin's health socket is out of reach.
 applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
@@ -151,12 +147,20 @@ cds_pins() {
 }
 
 # Reconfiguring or stopping node services, and searching the node, need a
-# shell on it; an issuance from the harness host needs a TEE it has not.
+# shell on it; an issuance from the harness host needs a TEE it has not. The
+# CDS VM is outside the cluster and outside the operator's reach, so what it
+# runs with cannot be read here either.
 cds_restart_with() { return "$UNSUPPORTED"; }
+cds_arg() { return "$UNSUPPORTED"; }
 attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
+# No namespace the mesh exempts (exempt_namespace), so a requester is always a
+# mesh member whose CDS requests leave from the backend, not its own pod — the
+# CDS never sees the requester's own address as the source. (The IP-SAN
+# scenarios already skip earlier here anyway, on cds_arg.)
+requester_source_is_own_address() { return "$UNSUPPORTED"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
@@ -200,13 +204,37 @@ AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
 AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; /bin/sleep 1; done'
 
-manifest_filter() { agent_wrap; }
+manifest_filter() { agent_wrap | discovery_wrap; }
 
-# Sent by curl in the requester through its agent.
+# A pod carrying a workload ID whose first container the agent runs in, or
+# whose first container's mounts no entry restricts (c8s-conformance/mounts-free),
+# also asks its credential client for the discovery document (the webhook's
+# c8s-discovery annotations), which carries the leaf, and mounts the volume
+# the client writes it into, so pod_cert_file can read the leaf of a pod
+# whose certificate volume no readable container may mount. The volume is a
+# memory-backed emptyDir, the one kind the client's pinned mount table admits
+# there; the URL the document names is not served, as nothing reads it.
+DISCOVERY_VOLUME=c8s-conformance-discovery
+DISCOVERY_MOUNT=/run/c8s-conformance-discovery
+discovery_wrap() {
+    jq -c --arg a "$AGENT" --arg v "$DISCOVERY_VOLUME" --arg dir "$DISCOVERY_MOUNT" '
+        if (.metadata.annotations[$a] == "yes" or .metadata.annotations["c8s-conformance/mounts-free"] == "yes")
+            and .metadata.annotations["confidential.ai/cw"] != null then
+            .metadata.annotations += {
+                "confidential.ai/c8s-discovery-volume": $v,
+                "confidential.ai/c8s-discovery-out": "/run/c8s/discovery/discovery.json",
+                "confidential.ai/c8s-discovery-cds-cert-url": "/.well-known/c8s/cds.pem",
+                "confidential.ai/c8s-discovery-public-tls-mode": "cds"}
+            | .spec.containers[0].volumeMounts += [{name: $v, mountPath: $dir, readOnly: true}]
+            | .spec.volumes += [{name: $v, emptyDir: {medium: "Memory"}}]
+        else . end'
+}
+
+# The requester is a mesh member here (exempt_namespace below), so the steps
+# send only its requests to the node's sockets from inside the pod, by curl
+# through its agent; its CDS requests leave from here (cds_pod_request).
 requester_request() {
-    local -a opts=()
-    [ -z "${6:-}" ] || opts+=(--unix-socket "$6")
-    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${opts[@]+"${opts[@]}"} "$4"
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${6:+--unix-socket "$6"} "$4"
 }
 
 # agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
@@ -317,18 +345,21 @@ pod_read() {
 pod_file() { pod_read "$1" "$2" "$3" file "$4"; }
 pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 
-# Nothing while the file is absent, as pod_cert_file answers elsewhere. Only
-# the platform containers mount the credential volume (the webhook's
-# rejectCredentialMounts), so a pod whose readable container does not is
-# unsupported.
+# Only the platform containers mount the credential volume (the webhook's
+# rejectCredentialMounts), so the chain is read from the discovery document
+# the credential client writes for a pod discovery_wrap shaped, through the
+# agent in its first container or from the reporter's log (pod_read):
+# tls.crt alone, and from that container alone; nothing while the document
+# is absent, as pod_cert_file answers elsewhere. The key never leaves the pod.
 pod_cert_file() {
     local out rc=0
+    [ "$3" = tls.crt ] && [ -z "${4:-}" ] || return "$UNSUPPORTED"
     kubectl -n "$1" get pod "$2" -o json 2>/dev/null |
-        jq -e --arg d "$CERT_VOLUME_PATH" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
+        jq -e --arg d "$DISCOVERY_MOUNT" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
         return "$UNSUPPORTED"
-    out="$(pod_file "$1" "$2" "" "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    out="$(pod_file "$1" "$2" "" "$DISCOVERY_MOUNT/discovery.json" 2>/dev/null)" || rc=$?
     case "$rc" in
-        0) base64 -d <<<"$out" ;;
+        0) base64 -d <<<"$out" | jq -r '.cds_tls.certificate_pem // empty' ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }
@@ -368,26 +399,15 @@ image_env() {
 # Signed writes through the route, as kind's are, not `apply`: that lints
 # against the live document and refuses an entry a broader one shadows,
 # which the CDS accepts and scenarios write on purpose.
-allowlist_write() {
-    local method="$1" path="/allowlist/workloads/$2" body="$3" token code
-    token="$(write_token operator "$method" "$path" "$body")" || return
-    code="$(router_request "$method" "$path" "$body" "$token" | head -1)"
-    case "$code" in
-        204) ;;
-        404) [ "$method" = DELETE ] || return 1 ;;
-        *) echo "backend: $method $path: HTTP $code" >&2; return 1 ;;
-    esac
-}
-allowlist_put() { allowlist_write PUT "$1" "$2"; }
-allowlist_delete() { allowlist_write DELETE "$1" /dev/null; }
+allowlist_request() { router_request "$@"; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
-# node-guest-image/c8s/image-policy.yaml.in. c8s's own component entries,
+# images/node-guest/c8s/image-policy.yaml.in. c8s's own component entries,
 # which boot staging merges in, pin each image to its component's entrypoint,
 # so they declare no image for a container of the scenario's.
 base_declares() {
-    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
+    if grep -qF "$2" "$C8S_ROOT/images/node-guest/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
 }
 
 # The lane's components-ready assert gates the suite; here only the node's
@@ -398,9 +418,7 @@ plugin_ready() {
 
 node_containers() { return $UNSUPPORTED; }
 
-# The node image's confos-operator-scope policy denies the operator every
-# write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods.
+# Operator scope forbids exempt namespaces.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and
@@ -410,6 +428,9 @@ node_refuses() { return "$UNSUPPORTED"; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
+# What the CDS VM keeps across a restart is the lane's storage, which the
+# harness cannot see.
+cds_volatile() { return $UNSUPPORTED; }
 
 
 dispatch "$@"

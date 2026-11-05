@@ -7,10 +7,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -31,12 +29,11 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -68,7 +65,6 @@ func (c *testClock) Advance(d time.Duration) {
 // /big answers with bigResponseBytes.
 type routedServer struct {
 	ts         *httptest.Server
-	allowlists *testAllowlists
 	proxy      *routing.Proxy
 	transports *routing.Transports
 	bindings   *Bindings
@@ -126,13 +122,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	routerIdentity, meshDir := publishedMeshIdentity(t, routerLeaf, ca)
 	rs.ca, rs.meshDir = ca, meshDir
 	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: routerIdentity.MeshCAs, Now: rs.clock.Now})
-	rs.allowlists = &testAllowlists{docs: map[string]*allowlist.Allowlist{}}
-	rs.allowlists.serve(testDigest, testAllowlist("v1"))
-	entries := routing.NewEntries(rs.allowlists)
-	if err := entries.Refresh(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential, Entries: entries})
+	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential})
 	rs.bindings = NewBindings()
 	proxyCfg := routing.ProxyConfig{
 		State:      rs.state,
@@ -165,56 +155,9 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 // testSandboxID is the workload instance a member leaf names.
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
-// testDigest is the allowlist digest namedLeaf stamps, that of the routed
-// server's first current allowlist.
-var testDigest = bytes.Repeat([]byte{0x42}, 32)
-
-// testAllowlists serves allowlists under the digests a test assigns them.
-type testAllowlists struct {
-	mu      sync.Mutex
-	current string
-	version int
-	docs    map[string]*allowlist.Allowlist
-}
-
-// testAllowlist holds the routed server's entries, web's under label.
-func testAllowlist(label string) *allowlist.Allowlist {
-	return &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
-		"web": {Label: label}, "router": {Label: "v1"},
-	}}
-}
-
-// serve stores al under digest and makes it the current allowlist.
-func (a *testAllowlists) serve(digest []byte, al *allowlist.Allowlist) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.docs[string(digest)] = al
-	a.current = string(digest)
-	a.version++
-}
-
-func (a *testAllowlists) FetchServed(_ context.Context, ifNoneMatch string) (allowlistclient.Served, bool, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	etag := fmt.Sprintf("W/\"%d\"", a.version)
-	if ifNoneMatch == etag {
-		return allowlistclient.Served{}, true, nil
-	}
-	return allowlistclient.Served{Allowlist: a.docs[a.current], ETag: etag, Digest: "sha256:" + hex.EncodeToString([]byte(a.current))}, false, nil
-}
-
-func (a *testAllowlists) Object(_ context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if al, ok := a.docs[string(digest[:])]; ok {
-		return al, nil
-	}
-	return nil, errors.New("404 not found")
-}
-
 func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
-	return namedLeafUnder(t, ca, workload, testDigest)
+	return namedLeafUnder(t, ca, workload, bytes.Repeat([]byte{0x42}, 32))
 }
 
 // namedLeafUnder is namedLeaf stamped under allowlist digest.
@@ -224,7 +167,7 @@ func namedLeafUnder(t *testing.T, ca *issuer.CA, workload string, digest []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: workload}}, key)
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +175,7 @@ func namedLeafUnder(t *testing.T, ca *issuer.CA, workload string, digest []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: digest,
 	}})
 	if err != nil {
@@ -594,7 +537,7 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 }
 
 func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true})
+	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {
@@ -618,9 +561,9 @@ func TestAttestEndpointsDisabled(t *testing.T) {
 }
 
 func TestCheckRoutingFlags(t *testing.T) {
-	mesh := config{meshIdentityCertFile: memberCertPath, meshIdentityKeyFile: memberKeyPath, meshIdentityCAFile: workloadclaims.MemberCAPath, attestationAPIURL: "http://127.0.0.1:9"}
+	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
-		c := mesh
+		c := base
 		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
 		if edit != nil {
 			edit(&c)
@@ -636,20 +579,6 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
-		{"attest endpoints without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
-		{"mesh identity cert off the member volume", routed(func(c *config) { c.meshIdentityCertFile = "/other/tls.crt" }), "--mesh-identity-cert-file"},
-		{"mesh identity key off the member volume", routed(func(c *config) { c.meshIdentityKeyFile = "/other/tls.key" }), "--mesh-identity-cert-file"},
-		{"mesh identity CA off the member volume", routed(func(c *config) { c.meshIdentityCAFile = "/other/ca.crt" }), "--mesh-identity-cert-file"},
-		{"attest off with another mesh identity", routed(func(c *config) {
-			c.attestOff = true
-			c.routing.port = 8802
-			c.meshIdentityCertFile = "/other/tls.crt"
-		}), ""},
-		{"attest off without mesh identity", routed(func(c *config) {
-			c.attestOff = true
-			c.routing.port = 8802
-			c.meshIdentityKeyFile = ""
-		}), ""},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
@@ -717,25 +646,20 @@ func TestW6OperatorKeySource(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     routingConfig
-		pinned  bool
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration", routingConfig{launchKeysFile: present}, true, routing.KeyFile(present), false},
-		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, true, routing.KeyFile(present), false},
-		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, true, routing.KeyFile(other), false},
-		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, true, nil, true},
-		{"W6 CDS", routingConfig{launchKeysFile: missing}, true, cds, false},
-		{"unpinned CDS with launch keys", routingConfig{launchKeysFile: present}, false, routing.KeyFile(present), false},
-		{"unpinned CDS with a configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, false, routing.KeyFile(other), false},
-		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, true, nil, true},
-		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, true, nil, true},
-		{"unpinned CDS supplying keys", routingConfig{launchKeysFile: missing}, false, nil, true},
-		{"unpinned CDS supplying keys, dev opt-in", routingConfig{launchKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
+		{"W6 launch configuration", routingConfig{launchKeysFile: present}, routing.KeyFile(present), false},
+		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, routing.KeyFile(present), false},
+		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, routing.KeyFile(other), false},
+		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, nil, true},
+		{"W6 CDS", routingConfig{launchKeysFile: missing}, cds, false},
+		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, nil, true},
+		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, nil, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := operatorKeySource(tc.cfg, tc.pinned, cds, logger)
+			got, err := operatorKeySource(tc.cfg, cds, logger)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("operatorKeySource() error = %v, want error %v", err, tc.wantErr)
 			}
@@ -743,6 +667,17 @@ func TestW6OperatorKeySource(t *testing.T) {
 				t.Fatalf("operatorKeySource() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A router whose launch configuration carries no operator keys takes both the
+// manifest and its keys from the CDS it polls, so the client is built only for
+// a pinned one.
+func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.routing.imagePolicyFile = ""
+	if _, err := newRoutingEngine(t.Context(), cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
 
@@ -755,7 +690,6 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
 		{"operator-keys-file", ""},
-		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)
 		if f == nil {
@@ -877,5 +811,32 @@ func TestCheckVerifierEndpoint(t *testing.T) {
 	// plaintext endpoint beyond this pod is refused whatever it names.
 	if err := checkVerifierEndpoint("http://"+node+":8400", filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("a plaintext verifier was admitted with no published node address")
+	}
+}
+
+// The router is held to the CDS pins its node follows, so a CDS image roll
+// does not cost it the route manifest. Where the node mounts none, its own
+// --image-policy-file stands.
+func TestTheRouteSourceFollowsTheNodePins(t *testing.T) {
+	mounted := filepath.Join(t.TempDir(), "router-cds-pins.json")
+	if err := os.WriteFile(mounted, []byte(testutil.CDSPinDocument(testutil.NextCDSImage, testutil.CDSLaunchFile)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flags := routingConfig{imagePolicyFile: testutil.CDSPinFile(t)}
+
+	flagged, err := routeSourcePins(t.Context(), flags, filepath.Join(t.TempDir(), "absent.json"))
+	if err != nil {
+		t.Fatalf("routeSourcePins: %v", err)
+	}
+	if got := hex.EncodeToString(flagged.Current().Images[0].Digest); got != testutil.TestMeasurement {
+		t.Fatalf("pins name %s, want --image-policy-file's image", got)
+	}
+
+	followed, err := routeSourcePins(t.Context(), flags, mounted)
+	if err != nil {
+		t.Fatalf("routeSourcePins: %v", err)
+	}
+	if got := hex.EncodeToString(followed.Current().Images[0].Digest); got != testutil.NextCDSImage {
+		t.Fatalf("pins name %s, want the image the node follows", got)
 	}
 }

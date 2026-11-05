@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -46,16 +47,6 @@ func TestNewCmdDefaults(t *testing.T) {
 	}
 }
 
-// A malformed measurement is a typo in rendered config, and pinning nothing is
-// not an acceptable fallback for it.
-func TestRunRejectsBadMeasurements(t *testing.T) {
-	cfg := validConfig(t)
-	cfg.Measurements = []string{"not-hex"}
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--measurements") {
-		t.Fatalf("err = %v, want a measurement-parse failure", err)
-	}
-}
-
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.CDSURL = ""
@@ -70,7 +61,7 @@ func TestFetchAllWithoutLeaf(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.CertPath = filepath.Join(t.TempDir(), "absent.crt")
 	cfg.KeyPath = filepath.Join(t.TempDir(), "absent.key")
-	if _, err := fetchAll(context.Background(), cfg, armtls.Pins{}); err == nil {
+	if _, err := fetchAll(context.Background(), cfg, armtls.FixedPins(refvalues.ReferenceValues{})); err == nil {
 		t.Fatal("a missing leaf was accepted")
 	}
 }

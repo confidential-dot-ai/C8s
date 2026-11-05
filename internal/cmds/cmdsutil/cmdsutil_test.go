@@ -1,7 +1,6 @@
 package cmdsutil
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -206,21 +205,6 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 	}
 }
 
-func TestWarnIfCDSUnpinned(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	for _, count := range []int{0, 1, 2} {
-		logs.Reset()
-		WarnIfCDSUnpinned(count, "unpinned development configuration")
-		warned := strings.Contains(logs.String(), "unpinned development configuration")
-		if warned != (count == 0) {
-			t.Errorf("measurement count %d: warning=%t", count, warned)
-		}
-	}
-}
-
 func TestExpandHostIP(t *testing.T) {
 	for _, tc := range []struct {
 		name, hostIP, in, want string
@@ -278,3 +262,18 @@ func TestExpandNodeIP(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestConfirmAcceptsOnlyYes(t *testing.T) {
+	for answer, want := range map[string]bool{
+		"y\n": true, "yes\n": true, " YES \n": true, "Y": true,
+		"n\n": false, "\n": false, "": false, "yes please\n": false, "sure\n": false,
+	} {
+		var prompt strings.Builder
+		if got := Confirm(strings.NewReader(answer), &prompt, "sign it?"); got != want {
+			t.Errorf("Confirm(%q) = %v, want %v", answer, got, want)
+		}
+		if prompt.String() != "sign it? [y/N] " {
+			t.Errorf("prompt = %q", prompt.String())
+		}
+	}
+}

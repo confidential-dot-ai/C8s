@@ -339,3 +339,116 @@ func TestWebhookCertRotatorLogsOutcomes(t *testing.T) {
 		}
 	})
 }
+
+// From outside the cluster the webhook is a host, not a Service: the serving
+// certificate names the host, the webhook server binds it, and no Service name
+// is needed.
+func TestWebhookAtAHostOutsideTheCluster(t *testing.T) {
+	dir := stubWebhookCertDir(t)
+	fc := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
+	stubDirectClient(t, fc, nil)
+	opts := Options{WebhookConfigName: "c8s-mutating", WebhookHost: "127.0.0.1", LeaderElectionNS: "c8s-system"}
+	if err := bootstrapWebhookPKI(context.Background(), newTestManager(t), opts); err != nil {
+		t.Fatalf("bootstrapWebhookPKI: %v", err)
+	}
+	crtPEM, err := os.ReadFile(filepath.Join(dir, "tls.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(crtPEM)
+	if block == nil {
+		t.Fatal("tls.crt is not PEM")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.VerifyHostname("127.0.0.1"); err != nil || len(leaf.DNSNames) != 0 {
+		t.Fatalf("leaf names DNS %v and IPs %v, want the webhook host alone: %v", leaf.DNSNames, leaf.IPAddresses, err)
+	}
+	server, ok := managerOptions(opts).WebhookServer.(*crwebhook.DefaultServer)
+	if !ok || server.Options.Host != "127.0.0.1" || server.Options.CertDir != dir {
+		t.Fatalf("webhook server = %#v, want one bound to the webhook host", managerOptions(opts).WebhookServer)
+	}
+	if managerOptions(Options{}).WebhookServer != nil {
+		t.Fatal("an in-cluster operator's manager set a webhook server of its own")
+	}
+}
+
+// A kubeconfig file the operator is given names the cluster it runs against,
+// whatever KUBECONFIG and HOME hold.
+func TestKubeConfigLoadsTheFileGiven(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	data := "apiVersion: v1\nkind: Config\nclusters: [{name: c, cluster: {server: 'https://cp.example:6443'}}]\nusers: [{name: u, user: {token: t}}]\ncontexts: [{name: x, context: {cluster: c, user: u}}]\ncurrent-context: x\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(other, []byte(strings.ReplaceAll(data, "cp.example", "other.example")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", other)
+	t.Setenv("HOME", t.TempDir())
+	config, err := kubeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Host != "https://cp.example:6443" {
+		t.Fatalf("host = %q, want the kubeconfig's server", config.Host)
+	}
+}
+
+// An operator at a webhook host keeps the CAs of operators before it, which
+// other control-plane replicas' API servers may still call; one behind a
+// Service prunes them once it leads.
+func TestOperatorsAtAWebhookHostKeepEachOthersCAs(t *testing.T) {
+	if !prunesSupersededCAs(Options{LeaderElection: true, WebhookServiceName: "c8s-operator"}) {
+		t.Fatal("a leader behind a Service keeps superseded CAs")
+	}
+	if prunesSupersededCAs(Options{LeaderElection: true, WebhookHost: "127.0.0.1"}) {
+		t.Fatal("a leader at a webhook host prunes other replicas' CAs")
+	}
+	if prunesSupersededCAs(Options{WebhookServiceName: "c8s-operator"}) {
+		t.Fatal("an operator without leader election prunes")
+	}
+}
+
+// The webhook is named by a host or by a Service, not both.
+func TestWebhookHostAndServiceNameAreExclusive(t *testing.T) {
+	_, _, err := webhookNames(Options{WebhookHost: "127.0.0.1", WebhookServiceName: "c8s-operator"})
+	if err == nil || !strings.Contains(err.Error(), "give one") {
+		t.Fatalf("err = %v, want both names refused", err)
+	}
+}
+
+// recordingManager records the runnables added to it.
+type recordingManager struct {
+	manager.Manager
+	added []manager.Runnable
+}
+
+func (m *recordingManager) Add(r manager.Runnable) error {
+	m.added = append(m.added, r)
+	return m.Manager.Add(r)
+}
+
+// At a webhook host every replica serves its own webhook, so each renews its
+// leaf, leader or not, and none prunes another's CA.
+func TestEveryReplicaAtAWebhookHostRenewsItsLeaf(t *testing.T) {
+	stubWebhookCertDir(t)
+	fc := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
+	stubDirectClient(t, fc, nil)
+	mgr := &recordingManager{Manager: newTestManager(t)}
+	opts := Options{WebhookConfigName: "c8s-mutating", WebhookHost: "127.0.0.1", LeaderElection: true, LeaderElectionNS: "c8s-system"}
+	if err := bootstrapWebhookPKI(context.Background(), mgr, opts); err != nil {
+		t.Fatalf("bootstrapWebhookPKI: %v", err)
+	}
+	if len(mgr.added) != 1 {
+		t.Fatalf("added %d runnables, want the leaf rotator alone", len(mgr.added))
+	}
+	if r, ok := mgr.added[0].(manager.LeaderElectionRunnable); !ok || r.NeedLeaderElection() {
+		t.Fatal("the leaf rotator runs on the leader alone")
+	}
+}

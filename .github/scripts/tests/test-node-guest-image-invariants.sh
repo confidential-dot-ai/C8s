@@ -8,7 +8,9 @@ repo_dir=$(cd "$test_dir/../../.." && pwd)
 confos_dir=$(cd "$repo_dir/confos" && pwd -P)
 fixture_dir=$(mktemp -d)
 trap 'rm -rf -- "$fixture_dir"' EXIT
-cp -a "$repo_dir/node-guest-image" "$repo_dir/.github" "$fixture_dir/"
+mkdir -p "$fixture_dir/images"
+cp -a "$repo_dir/images/node-guest" "$fixture_dir/images/"
+cp -a "$repo_dir/.github" "$fixture_dir/"
 # The gate also pins the runtime wrapper's compiled real-runc path against
 # mkosi.sync, so the fixture needs that package at its repo-relative path.
 mkdir -p "$fixture_dir/internal/cmds"
@@ -17,7 +19,7 @@ mkdir -p "$fixture_dir/confos/mkosi/initrd/mkosi.extra"
 ln -s "$confos_dir/kernel" "$fixture_dir/confos/kernel"
 fixture_init="$fixture_dir/confos/mkosi/initrd/mkosi.extra/init"
 cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
-probe="$fixture_dir/node-guest-image/c8s/mkosi.extra/usr/local/bin/invariant-write-test.sh"
+probe="$fixture_dir/images/node-guest/c8s/mkosi.extra/usr/local/bin/invariant-write-test.sh"
 tests=0
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -95,7 +97,7 @@ tests=$((tests + 1))
 # hotplug (#669). Fragment edits go to both fragments so the c8s-dev
 # superset check still passes and the hotplug check is what fails.
 cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
-kernel_dir="$fixture_dir/node-guest-image/kernel"
+kernel_dir="$fixture_dir/images/node-guest/kernel"
 cp -a "$kernel_dir" "$fixture_dir/kernel.orig"
 rejects_hotplug() {
   local name=$1 expected=$2 edit=$3 config
@@ -126,4 +128,36 @@ rejects_hotplug "snapshot resolving HOTPLUG_PCI on" \
   "c8s.snapshot must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" config-x86_64-c8s.snapshot
 rejects_hotplug "snapshot resolving acpiphp on" \
   'c8s.snapshot enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_ACPI=y" config-x86_64-c8s.snapshot
+
+# The AppArmor sysctl drop-in must exist with the restriction off, and no
+# later sysctl.d file in the profile or the confos base may set it again.
+sysctl_key=kernel.apparmor_restrict_unprivileged_unconfined
+dropin="$fixture_dir/images/node-guest/c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf"
+cp "$dropin" "$fixture_dir/20-apparmor.conf.orig"
+rejects_sysctl() {
+  local name=$1 expected=$2
+  if run_gate; then fail "$name was accepted"; fi
+  grep -Fq "$expected" "$fixture_dir/output" || {
+    cat "$fixture_dir/output"
+    fail "$name failed for an unrelated reason"
+  }
+  tests=$((tests + 1))
+}
+sed "s/= 0\$/= 1/" "$fixture_dir/20-apparmor.conf.orig" >"$dropin"
+rejects_sysctl "drop-in leaving the restriction on" "20-apparmor.conf must set $sysctl_key = 0"
+rm "$dropin"
+rejects_sysctl "missing drop-in" "20-apparmor.conf must set $sysctl_key = 0"
+cp "$fixture_dir/20-apparmor.conf.orig" "$dropin"
+for later in "$fixture_dir/images/node-guest/c8s/mkosi.extra/etc/sysctl.d/90-rke2.conf" \
+             "$fixture_dir/confos/mkosi/base/mkosi.extra/etc/sysctl.d/99-kspp-hardening.conf"; do
+  mkdir -p "${later%/*}"
+  rm -f "$fixture_dir/later.orig"
+  if [ -f "$later" ]; then cp "$later" "$fixture_dir/later.orig"; fi
+  printf '%s = 1\n' "$sysctl_key" >>"$later"
+  rejects_sysctl "${later##*/} setting the key after the drop-in" "sort after 20-apparmor.conf and set $sysctl_key"
+  grep -Fq "${later##*/}" "$fixture_dir/output" || fail "${later##*/} was not named as the overriding file"
+  if [ -f "$fixture_dir/later.orig" ]; then cp "$fixture_dir/later.orig" "$later"; else rm "$later"; fi
+done
+run_gate || { cat "$fixture_dir/output"; fail "baseline after the sysctl cases was rejected"; }
+tests=$((tests + 1))
 echo "$tests node-image invariant assertions passed"

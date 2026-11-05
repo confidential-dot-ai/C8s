@@ -19,7 +19,7 @@ func routesEnvelope(revision uint64, token string) routes.Envelope {
 	return routes.Envelope{Manifest: []byte(m), Token: token}
 }
 
-func assertStoredRoutes(t *testing.T, s *Store, want routes.Envelope) {
+func assertStoredRoutes(t *testing.T, s *Handle, want routes.Envelope) {
 	t.Helper()
 	got, err := s.LoadRoutes()
 	if err != nil {
@@ -31,11 +31,7 @@ func assertStoredRoutes(t *testing.T, s *Store, want routes.Envelope) {
 }
 
 func TestLoadRoutesEmpty(t *testing.T) {
-	s, err := OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openInMemory(t)
 	if _, err := s.LoadRoutes(); !errors.Is(err, ErrNoRoutes) {
 		t.Fatalf("LoadRoutes() error = %v, want ErrNoRoutes", err)
 	}
@@ -43,11 +39,7 @@ func TestLoadRoutesEmpty(t *testing.T) {
 
 // A manifest that does not parse carries no revision to store.
 func TestReplaceRoutesRefusesInvalidManifest(t *testing.T) {
-	s, err := OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openInMemory(t)
 	if err := s.ReplaceRoutes(routes.Envelope{Manifest: []byte(`{"revision":2}`), Token: "t"}, ""); err == nil {
 		t.Fatal("ReplaceRoutes(invalid manifest) = nil, want error")
 	}
@@ -59,11 +51,7 @@ func TestReplaceRoutesRefusesInvalidManifest(t *testing.T) {
 // C3, C4: the revision only rises, and a refused write leaves the stored
 // manifest whole.
 func TestReplaceRoutesRevisionMustRise(t *testing.T) {
-	s, err := OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openInMemory(t)
 
 	r2 := routesEnvelope(2, "token-2")
 	if err := s.ReplaceRoutes(r2, ""); err != nil {
@@ -74,13 +62,13 @@ func TestReplaceRoutesRevisionMustRise(t *testing.T) {
 			t.Fatalf("ReplaceRoutes(%d) error = %v, want ErrRevisionNotGreater", rev, err)
 		}
 	}
-	assertStoredRoutes(t, &s, r2)
+	assertStoredRoutes(t, s, r2)
 
 	r3 := routesEnvelope(3, "token-3")
 	if err := s.ReplaceRoutes(r3, ""); err != nil {
 		t.Fatalf("ReplaceRoutes(3) error = %v", err)
 	}
-	assertStoredRoutes(t, &s, r3)
+	assertStoredRoutes(t, s, r3)
 	if g := s.Generation(); g != 0 {
 		t.Fatalf("Generation() = %d after route writes, want 0", g)
 	}
@@ -90,24 +78,26 @@ func TestReplaceRoutesRevisionMustRise(t *testing.T) {
 // keeps it across a reopen.
 func TestReplaceRoutesPersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "allowlist.db")
-	s, err := OpenStore(path)
+	store, err := OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := store.Local()
 	want := routesEnvelope(7, "token-7")
 	if err := s.ReplaceRoutes(want, ""); err != nil {
 		t.Fatalf("ReplaceRoutes() error = %v", err)
 	}
-	if err := s.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenStore(path)
+	store, err = OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
-	assertStoredRoutes(t, &reopened, want)
+	defer store.Close()
+	reopened := store.Local()
+	assertStoredRoutes(t, reopened, want)
 	if err := reopened.ReplaceRoutes(routesEnvelope(7, "x"), ""); !errors.Is(err, ErrRevisionNotGreater) {
 		t.Fatalf("ReplaceRoutes(7) after reopen error = %v, want ErrRevisionNotGreater", err)
 	}
@@ -135,11 +125,7 @@ func TestReplaceRoutesIfMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := OpenInMemory()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer s.Close()
+			s := openInMemory(t)
 			if tc.seed {
 				if err := s.ReplaceRoutes(r2, ""); err != nil {
 					t.Fatal(err)
@@ -151,9 +137,9 @@ func TestReplaceRoutesIfMatch(t *testing.T) {
 			}
 			switch {
 			case tc.want == nil:
-				assertStoredRoutes(t, &s, r3)
+				assertStoredRoutes(t, s, r3)
 			case tc.seed:
-				assertStoredRoutes(t, &s, r2)
+				assertStoredRoutes(t, s, r2)
 			default:
 				if _, err := s.LoadRoutes(); !errors.Is(err, ErrNoRoutes) {
 					t.Fatalf("LoadRoutes() error = %v, want ErrNoRoutes", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"strconv"
@@ -21,9 +22,6 @@ import (
 func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
 	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
-	sc.Step(`^the seed of the CDS changes to also declare image "([^"]*)"$`, seedChanges)
-	sc.Step(`^the seed of the CDS changes to declare image "([^"]*)" under its generated name$`, seedChangesGenerated)
-	sc.Step(`^the CDS has not restarted$`, cdsNotRestarted)
 	sc.Step(`^the served allowlist has (a|no) workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^a workload entry in the served allowlist admits image "([^"]*)" under any argv$`, servedAdmitsAnyArgv)
 	sc.Step(`^a caller holds no write token$`, callerHoldsNoToken)
@@ -40,10 +38,9 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the operator sends the CDS that write with that write token$`, operatorSendsSigned)
 	sc.Step(`^the CDS refuses the write$`, cdsRefusesWrite)
 	sc.Step(`^the CDS refuses the write as invalid$`, cdsRefusesInvalid)
-	sc.Step(`^the CDS refuses the removal because no entry has that name$`, cdsRefusesRemovalNoEntry)
 	sc.Step(`^a relying party reads the version$`, readsVersion)
 	sc.Step(`^a relying party reads the allowlist with no client authentication$`, readsAllowlist)
-	sc.Step(`^that relying party reads the allowlist naming the version it read before$`, readsAllowlistNamingVersion)
+	sc.Step(`^that relying party reads the allowlist naming the document it read before$`, readsAllowlistNamingDocument)
 	sc.Step(`^that relying party receives the served allowlist$`, receivesServed)
 	sc.Step(`^the CDS answers with the version and no body$`, answersVersionNoBody)
 	sc.Step(`^(a|no) workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedDeclares)
@@ -58,26 +55,29 @@ const (
 	callerForeign = "foreign"
 )
 
-// write is one request to the CDS's write routes; validity is the lifetime
-// its token is minted with, the signer's default when empty, and headers
-// ("Name: value") go beside the token's Authorization.
+// write is one request to the CDS's write route; validity is the lifetime its
+// token is minted with, the signer's default when empty, and headers
+// ("Name: value") go beside the token's Authorization. entry is the workload
+// entry the write sets or, with removes, takes out: the scenario's to undo
+// afterwards.
 type write struct {
 	method, path string
 	body         []byte
 	validity     string
 	headers      []string
+	entry        string
+	removes      bool
 }
 
 // reading is what a relying party got back from a read.
 type reading struct {
 	status  int
 	version string
+	tag     string
 	body    []byte
 }
 
-const workloadsPath = "/allowlist/workloads/"
-
-func (w *world) workloadPath(name string) string { return workloadsPath + w.writtenName(name) }
+const allowlistPath = "/allowlist"
 
 // cdsAPIState is the scenario's view of the CDS API (cdsapi.go): who sends
 // the next write, the last write's token and status, a write signed before
@@ -88,11 +88,12 @@ type cdsAPIState struct {
 	lastStatus    int
 	pending       *write
 	versionBefore string
+	tagBefore     string
 	read          *reading
 }
 
-// putAnyArgv is the write of an entry named name admitting image under any
-// argv.
+// putAnyArgv is the write of the whole document with an entry named name
+// admitting image under any argv put in.
 func (w *world) putAnyArgv(name, image string) (write, error) {
 	ref, err := w.be.call("image_ref", image)
 	if err != nil {
@@ -102,7 +103,7 @@ func (w *world) putAnyArgv(name, image string) (write, error) {
 	if err != nil {
 		return write{}, err
 	}
-	body, err := json.Marshal(entry{
+	raw, err := json.Marshal(entry{
 		Label:          name,
 		InitContainers: []entryContainer{},
 		Containers: []entryContainer{{
@@ -114,7 +115,39 @@ func (w *world) putAnyArgv(name, image string) (write, error) {
 	if err != nil {
 		return write{}, err
 	}
-	return write{method: http.MethodPut, path: w.workloadPath(name), body: body}, nil
+	return w.documentWrite(w.writtenName(name), raw)
+}
+
+// documentWrite is the write of the served document with the named entry put
+// in, or taken out when raw is nil: a write replaces the whole document.
+func (w *world) documentWrite(name string, raw json.RawMessage) (write, error) {
+	served, err := w.served()
+	if err != nil {
+		return write{}, err
+	}
+	entries := maps.Clone(served.raw)
+	if entries == nil {
+		entries = map[string]json.RawMessage{}
+	}
+	if raw == nil {
+		delete(entries, name)
+	} else {
+		entries[name] = raw
+	}
+	body, err := json.Marshal(struct {
+		Schema    string                     `json:"schema"`
+		Workloads map[string]json.RawMessage `json:"workloads"`
+	}{served.schema, entries})
+	if err != nil {
+		return write{}, err
+	}
+	return write{
+		method:  http.MethodPut,
+		path:    allowlistPath,
+		body:    body,
+		entry:   name,
+		removes: raw == nil,
+	}, nil
 }
 
 // withBodyFile runs fn with body in a file, the form the backend takes.
@@ -147,8 +180,8 @@ func (w *world) token(signer string, wr write) (string, error) {
 }
 
 // send sends wr with auth as its Authorization, none when empty, and records
-// the status. A stored allowlist write changed the served allowlist: a put
-// entry is the scenario's to delete afterwards.
+// the status. A stored allowlist write changed the served allowlist: an entry
+// it put is the scenario's to delete afterwards.
 func (w *world) send(wr write, auth string) error { return w.sendVia("cds_request", wr, auth) }
 
 // sendVia is send through a backend function taking cds_request's arguments.
@@ -162,10 +195,10 @@ func (w *world) sendVia(fn string, wr write, auth string) error {
 		return err
 	}
 	w.api.lastStatus = a.status
-	if w.api.lastStatus == http.StatusNoContent && strings.HasPrefix(wr.path, workloadsPath) {
+	if w.api.lastStatus == http.StatusNoContent && wr.entry != "" {
 		lastMutation = time.Now()
-		if wr.method == http.MethodPut {
-			w.written[strings.TrimPrefix(wr.path, workloadsPath)] = true
+		if !wr.removes {
+			w.written[wr.entry] = true
 		}
 	}
 	return nil
@@ -207,102 +240,6 @@ func seedDeclares(ctx context.Context, image string) error {
 	}
 	if answer != "yes" {
 		return skipf("the seed of the CDS does not declare %s here", digest)
-	}
-	return nil
-}
-
-// seedFollowTimeout bounds how long a changed seed takes to be served: the
-// kubelet refreshes a mounted ConfigMap within its sync period, then the CDS
-// rereads the file on its own interval.
-const seedFollowTimeout = 4 * time.Minute
-
-// seedChanges adds an entry admitting image under any argv to the seed the
-// CDS follows and waits until the served allowlist admits the image, so the
-// sentences after it read the state the change produced. The seed goes back
-// at the scenario's end, and so does the entry, which seeding never removes.
-func seedChanges(ctx context.Context, image string) error {
-	w := getWorld(ctx)
-	return w.seedAdds(image, w.writtenName("seed-"+image))
-}
-
-// seedChangesGenerated is seedChanges with the entry under the name the
-// chart generates for image, so a stored entry of that generated form, under
-// another name, is one the seed replaces (B2).
-func seedChangesGenerated(ctx context.Context, image string) error {
-	w := getWorld(ctx)
-	name, err := w.generatedBase(image)
-	if err != nil {
-		return err
-	}
-	return w.seedAdds(image, name)
-}
-
-func (w *world) seedAdds(image, name string) error {
-	ref, err := w.be.call("image_ref", image)
-	if err != nil {
-		return err
-	}
-	digest, err := w.digestOf(image)
-	if err != nil {
-		return err
-	}
-	instance, err := w.be.call("cds_instance")
-	if err != nil {
-		return err
-	}
-	if instance == "" {
-		return errors.New("harness precondition: no CDS pod found")
-	}
-	w.cdsInstance = instance
-	e := &entry{Label: ref, InitContainers: []entryContainer{}, Containers: []entryContainer{{
-		Digest: digest, Image: ref, Command: anyArgv(), Args: anyArgv(),
-		Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
-	}}}
-	body, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	w.onUndo(func() error {
-		if _, err := w.be.call("seed_restore"); err != nil {
-			return err
-		}
-		return w.deleteEntry(name)
-	})
-	err = withBodyFile(body, func(path string) error {
-		_, err := w.be.call("seed_add", name, path)
-		return err
-	})
-	lastMutation = time.Now()
-	if err != nil {
-		return err
-	}
-	served, err := pollEvery(5*time.Second, seedFollowTimeout, func() (bool, error) {
-		s, err := w.served()
-		if err != nil {
-			return false, err
-		}
-		return s.admitsAnyArgv(digest), nil
-	})
-	if err != nil {
-		return err
-	}
-	if !served {
-		return fmt.Errorf("the CDS did not serve the changed seed within %s", seedFollowTimeout)
-	}
-	return nil
-}
-
-func cdsNotRestarted(ctx context.Context) error {
-	w := getWorld(ctx)
-	if w.cdsInstance == "" {
-		return errors.New("the scenario noted no CDS instance to compare with")
-	}
-	instance, err := w.be.call("cds_instance")
-	if err != nil {
-		return err
-	}
-	if instance != w.cdsInstance {
-		return fmt.Errorf("the CDS restarted: pod and restart count %q, before %q", instance, w.cdsInstance)
 	}
 	return nil
 }
@@ -415,7 +352,11 @@ func operatorRemoves(ctx context.Context, name string) error {
 	if raw, ok := s.raw[written]; ok && !w.written[written] {
 		w.removed[written] = raw
 	}
-	return w.operatorWrite(write{method: http.MethodDelete, path: w.workloadPath(name)})
+	wr, err := w.documentWrite(written, nil)
+	if err != nil {
+		return err
+	}
+	return w.operatorWrite(wr)
 }
 
 func (w *world) replay(wr write) error {
@@ -436,7 +377,11 @@ func replayOnWrite(ctx context.Context, name, image string) error {
 
 func replayOnRemoval(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	return w.replay(write{method: http.MethodDelete, path: w.workloadPath(name)})
+	wr, err := w.documentWrite(w.writtenName(name), nil)
+	if err != nil {
+		return err
+	}
+	return w.replay(wr)
 }
 
 // operatorSignsWrite describes a write whose token the next sentences shape;
@@ -486,49 +431,57 @@ func cdsRefusesInvalid(ctx context.Context) error {
 	return getWorld(ctx).cdsAnswered(http.StatusUnprocessableEntity, "validation failed")
 }
 
-func cdsRefusesRemovalNoEntry(ctx context.Context) error {
-	return getWorld(ctx).cdsAnswered(http.StatusNotFound, "no entry has that name")
-}
-
+// readsVersion records the version and the tag of the document served now.
 func readsVersion(ctx context.Context) error {
 	w := getWorld(ctx)
-	version, err := w.be.call("served_version")
+	r, err := w.read("")
 	if err != nil {
 		return err
 	}
-	if version == "" {
+	if r.version == "" {
 		return errors.New("the CDS answered with no version")
 	}
-	w.api.versionBefore = version
+	w.api.versionBefore, w.api.tagBefore = r.version, r.tag
 	return nil
 }
 
-// get reads the allowlist, naming version in If-None-Match when given.
-func (w *world) get(version string) error {
+// read reads the allowlist, naming tag in If-None-Match when given.
+func (w *world) read(tag string) (*reading, error) {
 	var args []string
-	if version != "" {
-		args = append(args, version)
+	if tag != "" {
+		args = append(args, tag)
 	}
 	out, err := w.be.call("allowlist_get", args...)
 	if err != nil {
+		return nil, err
+	}
+	status, more, body, err := statusLine(out)
+	if err != nil {
+		return nil, fmt.Errorf("allowlist_get: %w", err)
+	}
+	version, tag, _ := strings.Cut(more, " ")
+	return &reading{status: status, version: version, tag: tag, body: body}, nil
+}
+
+// get reads the allowlist as the relying party's last read, naming tag in
+// If-None-Match when given.
+func (w *world) get(tag string) error {
+	r, err := w.read(tag)
+	if err != nil {
 		return err
 	}
-	status, version, body, err := statusLine(out)
-	if err != nil {
-		return fmt.Errorf("allowlist_get: %w", err)
-	}
-	w.api.read = &reading{status: status, version: version, body: body}
+	w.api.read = r
 	return nil
 }
 
 func readsAllowlist(ctx context.Context) error { return getWorld(ctx).get("") }
 
-func readsAllowlistNamingVersion(ctx context.Context) error {
+func readsAllowlistNamingDocument(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.api.versionBefore == "" {
-		return errors.New("the relying party has read no version")
+	if w.api.tagBefore == "" {
+		return errors.New("the relying party has read no document tag")
 	}
-	return w.get(w.api.versionBefore)
+	return w.get(w.api.tagBefore)
 }
 
 // received is the allowlist the last read carried.

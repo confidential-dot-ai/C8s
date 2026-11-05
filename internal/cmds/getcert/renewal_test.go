@@ -311,17 +311,17 @@ func TestRenewalRetryInterval(t *testing.T) {
 		caTTL:   24 * time.Hour,
 	})
 
-	first := renewalRetryInterval(cfg, gen, 1)
+	first := renewalRetryInterval(cfg, gen, 1, 0)
 	if first != renewalRetryBase {
 		t.Fatalf("first retry = %v, want %v", first, renewalRetryBase)
 	}
-	if second := renewalRetryInterval(cfg, gen, 2); second != 2*renewalRetryBase {
+	if second := renewalRetryInterval(cfg, gen, 2, 0); second != 2*renewalRetryBase {
 		t.Fatalf("second retry = %v, want %v", second, 2*renewalRetryBase)
 	}
 	// Never past the ordinary pacing ceiling; each call samples fresh jitter.
 	for _, failures := range []int{1, 5, 50} {
 		ceiling := min(cfg.RenewInterval, time.Until(generationExpiry(gen))/2)
-		if got := renewalRetryInterval(cfg, gen, failures); got > ceiling {
+		if got := renewalRetryInterval(cfg, gen, failures, 0); got > ceiling {
 			t.Fatalf("retry after %d failures = %v, exceeds the pacing ceiling %v", failures, got, ceiling)
 		}
 	}
@@ -330,7 +330,7 @@ func TestRenewalRetryInterval(t *testing.T) {
 		leaf:    namedLeaf(t),
 		leafTTL: 12 * time.Second,
 		caTTL:   24 * time.Hour,
-	}), 9); got > 12*time.Second {
+	}), 9, 0); got > 12*time.Second {
 		t.Fatalf("retry = %v, want under the leaf's remaining 12s", got)
 	}
 	// A leaf naming another entry than --expected-workload backs off like a
@@ -338,7 +338,7 @@ func TestRenewalRetryInterval(t *testing.T) {
 	wrong := cfg
 	wrong.UnnamedRenewInterval = 30 * time.Second
 	wrong.ExpectedWorkload = "c8s-router-0123456789ab"
-	if got := renewalRetryInterval(wrong, gen, 5); got != 16*renewalRetryBase {
+	if got := renewalRetryInterval(wrong, gen, 5, 0); got != 16*renewalRetryBase {
 		t.Fatalf("retry after 5 failures on a wrong-name leaf = %v, want %v", got, 16*renewalRetryBase)
 	}
 }

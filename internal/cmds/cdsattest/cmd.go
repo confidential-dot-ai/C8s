@@ -23,24 +23,21 @@ import (
 )
 
 type config struct {
-	host                 string
-	port                 int
-	logLevel             string
-	frontDoorMode        types.FrontDoorMode
-	servingCertFile      string
-	meshIdentityCertFile string
-	meshIdentityKeyFile  string
-	meshIdentityCAFile   string
-	expectedWorkload     string
-	measuredPolicies     string
-	evidenceFixture      string
-	attestationAPIURL    string
-	platform             string
-	generation           string
-	sessionTTL           time.Duration
-	sessionMaxAge        time.Duration
-	readHeaderTimeout    time.Duration
-	tunnelIOTimeout      time.Duration
+	host              string
+	port              int
+	logLevel          string
+	frontDoorMode     types.FrontDoorMode
+	servingCertFile   string
+	expectedWorkload  string
+	measuredPolicies  string
+	evidenceFixture   string
+	attestationAPIURL string
+	platform          string
+	generation        string
+	sessionTTL        time.Duration
+	sessionMaxAge     time.Duration
+	readHeaderTimeout time.Duration
+	tunnelIOTimeout   time.Duration
 
 	// Launch-driven inputs (node image): each file overrides its flag.
 	frontDoorModeFile   string
@@ -78,9 +75,6 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: cds (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
 	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In cds front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER. Re-read per request to follow get-cert rotation.")
-	f.StringVar(&cfg.meshIdentityCertFile, "mesh-identity-cert-file", "", "TEE-held mesh leaf PEM whose possession both attestation endpoints prove (re-read per request); must be /etc/c8s/certs/tls.crt, the credential the router reaches backends with")
-	f.StringVar(&cfg.meshIdentityKeyFile, "mesh-identity-key-file", "", "TEE-held mesh leaf private key matching --mesh-identity-cert-file (re-read per request); must be /etc/c8s/certs/tls.key")
-	f.StringVar(&cfg.meshIdentityCAFile, "mesh-identity-ca-file", "", "mesh CA bundle that issued the identity leaf (re-read per request); must be /etc/c8s/certs/ca.crt")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
@@ -131,12 +125,12 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
 	}
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		cfg.routing.cdsURL = cmdsutil.CDSURL(endpoint)
+		cfg.routing.cdsURL = cmdsutil.CDSURL(address)
 	}
 	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
@@ -160,7 +154,7 @@ func run(ctx context.Context, cfg config) error {
 	defer stop()
 
 	bindings := NewBindings()
-	engine, err := newRoutingEngine(cfg, bindings, logger)
+	engine, err := newRoutingEngine(ctx, cfg, bindings, logger)
 	if err != nil {
 		return err
 	}
@@ -170,9 +164,9 @@ func run(ctx context.Context, cfg config) error {
 		Evidence:               provider,
 		FrontDoorMode:          cfg.frontDoorMode,
 		ServingCertFile:        cfg.servingCertFile,
-		MeshIdentityCertFile:   cfg.meshIdentityCertFile,
-		MeshIdentityKeyFile:    cfg.meshIdentityKeyFile,
-		MeshIdentityCAFile:     cfg.meshIdentityCAFile,
+		MeshIdentityCertFile:   memberCertPath,
+		MeshIdentityKeyFile:    memberKeyPath,
+		MeshIdentityCAFile:     workloadclaims.MemberCAPath,
 		ExpectedWorkload:       cfg.expectedWorkload,
 		MeasuredPoliciesFile:   cfg.measuredPolicies,
 		Routes:                 engine.proxy,

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -31,33 +32,23 @@ import (
 // AttestHandler serves POST /attest by verifying TEE evidence and signing the
 // requester's CSR in-process.
 //
-// THREAT MODEL: the measurement check is the only thing standing between an
+// THREAT MODEL: the node image check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements skips this check (UNSAFE outside dev).
+// they choose. A set that names no node image admits nobody.
 type AttestHandler struct {
-	Challenges        *attestation.ChallengeStore
+	Challenges        attestation.Challenges
 	AttestationClient remote.Client
-	MeshCA            *issuer.MeshCA
+	MeshCA            meshCA
 	CertTTL           time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf. Empty = no measurement pinning.
-	Measurements map[string]bool
-
-	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
-	// launch digest (MRTD) covers the TDVF firmware alone, so without these a
-	// host can boot the pinned firmware with a substituted kernel and rootfs
-	// and still be issued a leaf. Enforced only against TDX-shaped evidence;
-	// SNP evidence is unaffected (kernel-hashes folds the guest image into
-	// its launch digest). Empty = no RTMR pinning.
-	RTMRs map[int][]byte
-
-	// Images binds each node image to an authorized launch key.
-	Images []remote.ImagePin
+	// NodeImages are the node images permitted to obtain a signed leaf, each
+	// matched as one entry: its launch digest with the registers measured from
+	// the same build. Read per request, so the set in force decides.
+	NodeImages armtls.PinSource
 
 	// Policy enforces SAN/CN constraints on the CSR before signing. Without
 	// this, an attestation-passing workload could mint a leaf for any
@@ -97,7 +88,7 @@ type AttestHandler struct {
 	// operator's node CIDRs. Empty rejects any request carrying a sandbox
 	// token: without it a workload could point CDS at its own pod IP and
 	// answer as the inventory.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	// SandboxBindings records which inventory vouched for a sandbox, so a
 	// later decision about that sandbox asks the same one rather than one the
@@ -192,9 +183,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
+	verifyReq := remote.NewVerifyRequestNoToken(req.Evidence, &remote.VerifyParams{
 		ExpectedReportData: expectedReportData[:sha512.Size384],
-	}, false)
+	})
 	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
 	if err != nil {
 		status, code, msg := classifyVerifyError(err)
@@ -203,31 +194,11 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read outside the pinning branch: with h.Measurements empty every
-	// measurement is admitted, so the digest a leaf was issued against is the
-	// only record of what actually attested.
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
-	if len(h.Images) > 0 {
-		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
-			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
-			return
-		}
-	} else {
-		if len(h.Measurements) > 0 {
-			if !h.Measurements[launchDigest] {
-				slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-				return
-			}
-		}
-		if req.Evidence.Platform.HasRegisters() {
-			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
-				slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed")
-				return
-			}
-		}
+	if err := h.matchPinnedNodeImage(verifyResp, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
+		slog.Warn("node identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
+		return
 	}
 
 	policy := h.Policy
@@ -262,12 +233,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every other gate has passed, so this sandbox is about to be named on a
-	// leaf: bind it to the inventory that vouched for it. Recorded here rather
-	// than at token verification so a request that then fails the measurement
-	// or workload check cannot claim a sandbox ID it never got a cert for.
-	h.recordSandboxBinding(sandbox)
-
 	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
 	// (see issuer.SignCSR): the client embeds evidence bound to
 	// SHA-384(pubkey) with no nonce, which is the only form downstream
@@ -294,19 +259,31 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
-	signing := h.MeshCA.Current()
-	certPEM, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
+	signing, issuing := h.MeshCA.Current()
+	if !issuing {
+		// A replica that stopped serving between the gate and the signature.
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		return
+	}
+	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
 		SandboxID:       sandbox.SandboxID,
 		MatchedWorkload: matched,
 	})
+	if errors.Is(err, issuer.ErrSubjectDenied) {
+		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		return
+	}
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
 		return
 	}
+
+	h.recordSandboxBinding(sandbox)
 
 	// The issuance record is the audit-relevant event: a mesh identity is only
 	// as accountable as what was written down when it was granted, and a leaf
@@ -319,7 +296,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// version it matched under, and the sandbox that vouched, so a disputed
 	// name reconstructs from the log alone.
 	issued := []any{
-		"cn", csr.Subject.CommonName,
+		"cn", leafCN,
 		"sans", csr.DNSNames,
 		"serial", serialHex(serial),
 		"ttl", ttl,
@@ -338,6 +315,16 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
+}
+
+// matchPinnedNodeImage holds the verified evidence to one node image this CDS
+// certifies, judging the platform and extensions the caller claims.
+func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
+	images := h.NodeImages.Current().Images
+	if len(images) == 0 {
+		return errors.New("this CDS certifies no node image")
+	}
+	return armtls.EnforceImages(verified, images, claimedPlatform, claimedExtensions)
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,
@@ -360,7 +347,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if h.SandboxDigests == nil {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this CDS cannot reach an inventory to verify it")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but the inventory callback has no node addresses to bound it")
 	}
 	var token workloadclaims.SignedSandboxToken

@@ -42,9 +42,9 @@ func meshRoles() *meshPolicy {
 				UID:  testMeshUID,
 			},
 			{
-				Name:         testCertRole,
-				UID:          testCertUID,
-				Destinations: []netip.AddrPort{netip.MustParseAddrPort("10.43.0.5:8443")},
+				Name: testCertRole,
+				UID:  testCertUID,
+				Port: 8443,
 			},
 		},
 	}
@@ -97,10 +97,18 @@ func TestMeshPolicyValidation(t *testing.T) {
 		{
 			name: "role reaching nothing",
 			mesh: func(m *meshPolicy) {
-				m.Roles[1].Destinations = nil
+				m.Roles[1].Port = 0
 			},
 			tcb:   true,
 			wants: "reaches nothing",
+		},
+		{
+			name: "the mesh endpoint given a port of its own",
+			mesh: func(m *meshPolicy) {
+				m.Roles[0].Port = 8443
+			},
+			tcb:   true,
+			wants: "reaches no port of its own",
 		},
 		{
 			name: "two roles on one uid",
@@ -117,16 +125,6 @@ func TestMeshPolicyValidation(t *testing.T) {
 			},
 			tcb:   true,
 			wants: "reserved for the " + CredentialRole + " role",
-		},
-		{
-			name: "the credential role reaching two addresses",
-			mesh: func(m *meshPolicy) {
-				m.Roles[1].Name = CredentialRole
-				m.Roles[1].UID = workloadclaims.CredentialsUID
-				m.Roles[1].Destinations = append(m.Roles[1].Destinations, netip.MustParseAddrPort("10.43.0.6:8443"))
-			},
-			tcb:   true,
-			wants: "needs exactly one destination",
 		},
 		{
 			name: "the router's namespace exempt from the mesh",
@@ -281,10 +279,10 @@ func TestMeshPolicyValidation(t *testing.T) {
 	}
 }
 
-// The mesh policy's addresses are parsed by the config loader, so a resolver
-// or destination that names no address fails the node's start.
+// The mesh policy's resolver is parsed by the config loader, and a role's
+// port is a port, so neither naming one fails the node's start.
 func TestMeshPolicyAddressesAreParsedAtLoad(t *testing.T) {
-	document := func(resolver, destination string) []byte {
+	document := func(resolver, port string) []byte {
 		return []byte(`
 allowlist:
   node_tcb: true
@@ -310,21 +308,21 @@ mesh:
       uid: 1337
     - name: get-cert
       uid: 1342
-      destinations: ["` + destination + `"]
+      port: ` + port + `
 `)
 	}
-	cfg, err := parseConfig(document("10.43.0.10", "10.43.0.5:8443"))
+	cfg, err := parseConfig(document("10.43.0.10", "8443"))
 	if err != nil {
 		t.Fatalf("a valid mesh policy was refused: %v", err)
 	}
 	if cfg.Mesh.Resolver.String() != "10.43.0.10" {
 		t.Fatalf("resolver = %v", cfg.Mesh.Resolver)
 	}
-	if _, err := parseConfig(document("cluster.local", "10.43.0.5:8443")); err == nil {
+	if _, err := parseConfig(document("cluster.local", "8443")); err == nil {
 		t.Fatal("a resolver that is no address was accepted")
 	}
-	if _, err := parseConfig(document("10.43.0.10", "10.43.0.5")); err == nil {
-		t.Fatal("a destination without a port was accepted")
+	if _, err := parseConfig(document("10.43.0.10", "0")); err == nil {
+		t.Fatal("a role reaching no port was accepted")
 	}
 }
 

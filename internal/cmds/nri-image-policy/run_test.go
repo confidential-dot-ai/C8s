@@ -23,9 +23,11 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -96,9 +98,8 @@ func TestRemoveContainer_EvictsFromInventory(t *testing.T) {
 	}
 }
 
-func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
+func TestConfigureEventMask(t *testing.T) {
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	p.inventory = newAdmissionInventory(t.TempDir())
 
 	mask, err := p.Configure(context.Background(), "", "containerd", "1.7")
 	if err != nil {
@@ -288,6 +289,9 @@ func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "cds-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	occupySocketPath(t, dir)
 	renderInTempDir(t)
 	cfgYAML := fmt.Sprintf(`
@@ -306,26 +310,35 @@ allowlist:
             image: image-a
             command: {policy: any}
             args: {policy: any}
+  pull:
+    cds_address_file: %s/cds-address
+    attestation_api_url: http://127.0.0.1:1
+    cds_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
 workload_claims:
   socket_dir: %s
-  cds_node_port: 30808
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, dir)
+`+meshYAML, dir, dir, pushDigestA, dir, testCDSPinFile(t), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
-	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
-		t.Fatalf("err = %v, want an admission-inventory start failure", err)
+	if err == nil || !strings.Contains(err.Error(), "start admission inventory") || !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("err = %v, want an admission-inventory listen failure", err)
 	}
 }
 
-// occupySocketPath puts a directory where the inventory's socket belongs, so
-// the listen fails and nothing else does.
+// occupySocketPath puts a non-empty directory where the inventory's socket
+// belongs, so the listen fails and nothing else does. An empty one would not
+// do: the listener unlinks whatever is at the path first, and os.Remove takes
+// an empty directory.
 func occupySocketPath(t *testing.T, socketDir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(socketDir, workloadclaims.SocketName), 0o755); err != nil {
+	dir := filepath.Join(socketDir, workloadclaims.SocketName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "occupied"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -363,13 +376,13 @@ allowlist:
   pull:
     url: https://127.0.0.1:1/
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements: ["%s"]
+    cds_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, testCDSPinFile(t))
 	err := runWithDeadline(t, 20*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if !errors.Is(err, errPluginDied) {
 		t.Fatalf("err = %v, want errPluginDied", err)
@@ -426,7 +439,7 @@ allowlist:
   pull:
     url: https://%s/
     attestation_api_url: %s
-    cds_measurements: ["%s"]
+    cds_measurements_config: %s
     interval: 30s
     timeout: 300ms
 policy:
@@ -434,7 +447,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, testCDSPinFile(t))
 
 	// Hand the stub a connected socket so the plugin cannot die while the pull
 	// is running: without it the NRI dial fails instantly, pullInitial's first
@@ -477,13 +490,18 @@ func holdNRISocket(t *testing.T) {
 
 // --- allowlistPullHTTPClient ------------------------------------------------
 
-func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
+func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	timeout := 7 * time.Second
-	client, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
-		AttestationApiURL: "http://127.0.0.1:30840",
-		Timeout:           timeout,
-	}, "sev-snp")
+	pulled := pullConfig{
+		CDSMeasurementsConfig: testCDSPinFile(t),
+		AttestationApiURL:     "http://127.0.0.1:30840",
+		Timeout:               timeout,
+	}
+	set, err := pulled.policySet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set), testClusterDNS)
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -492,35 +510,15 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 	}
 }
 
-// The accept-any-measurement warning is a security signal: it must fire
-// exactly when no measurement is pinned.
-func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
-	const warning = "accepts any armTLS-attested CDS measurement"
-	var buf bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	defer slog.SetDefault(orig)
-
-	if _, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
+// The plugin pulls its allowlist from a pinned CDS: with no pin document the
+// node has no pin source, so no client is built against any attested peer.
+func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
+	_, _, err := pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}, "sev-snp"); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), warning) {
-		t.Fatal("pinned measurements must not warn about accepting any measurement")
-	}
-
-	buf.Reset()
-	if _, err := allowlistPullHTTPClient(pullConfig{
-		AttestationApiURL: "http://127.0.0.1:30840",
-		Timeout:           time.Second,
-	}, "sev-snp"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), warning) {
-		t.Fatal("missing warning when no measurements are pinned")
+	}.cdsPinSource(discardLogger())
+	if !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
 
@@ -543,6 +541,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 
 	start := time.Now()
 	_, err := pullInitial(context.Background(), pullArgs{
+		pull:        quietPull(),
 		client:      client,
 		store:       store,
 		timeout:     time.Second,
@@ -799,14 +798,14 @@ func TestStartHealthServer_InvalidAddr(t *testing.T) {
 	}
 }
 
-func TestAllowlistPullHTTPClient_InvalidMeasurements(t *testing.T) {
-	_, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{"not-hex"},
-		AttestationApiURL: "http://localhost:30840",
-		Timeout:           time.Second,
-	}, "sev-snp")
+func TestTheNodePinSourceRefusesAnInvalidPin(t *testing.T) {
+	_, _, err := pullConfig{
+		CDSMeasurementsConfig: cdsPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
+		AttestationApiURL:     "http://localhost:30840",
+		Timeout:               time.Second,
+	}.cdsPinSource(discardLogger())
 	if err == nil {
-		t.Fatal("expected error for invalid CDS measurements")
+		t.Fatal("expected error for an unparseable CDS pin")
 	}
 }
 

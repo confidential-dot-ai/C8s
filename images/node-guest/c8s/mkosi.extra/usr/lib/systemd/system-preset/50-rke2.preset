@@ -1,0 +1,32 @@
+# Presets are applied at image build time. Both RKE2 units are enabled;
+# the authenticated launch verdict selects exactly one at each boot.
+enable containerd-data-disk.service
+enable models-disk.service
+enable nri-node-ip.service
+# Restarts a Cilium agent that kept the previous boot's node address.
+enable cilium-node-ip.service
+enable gpu-node-label.service
+# Fail closed on a non-CC or unattested GPU before nvidia-cc-ready sets the
+# CC Ready state; RequiredBy nvidia-cc-ready and the rke2 pair so a failed
+# gate never readies or schedules the GPU.
+enable gpu-cc-enforce.service
+enable scratch-enforce.service
+enable c8s-modules-latch.service
+enable rke2-role.service
+enable rke2-server.service
+enable rke2-agent.service
+enable systemd-timesyncd.service
+# Makes time-sync.target block until the clock is actually synchronised,
+# which gpu-cc-enforce now orders after (NRAS JWT nbf).
+enable systemd-time-wait-sync.service
+enable cred-release.service
+enable attest-proxy.service
+# Opens C8s encrypted volumes for workload sidecars on both roles.
+enable volumed.service
+# Check the running LSM and exercise a real policy before RKE2 can start.
+enable apparmor-enforce.service
+# The apparmor package supplies apparmor_parser and aa-exec for the boot
+# probe. Its unit would load the package's stock
+# host profiles from /etc/apparmor.d at boot; none of them are wanted on a
+# node, and one (nvidia_modprobe) sits on the GPU path.
+disable apparmor.service

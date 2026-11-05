@@ -31,9 +31,9 @@ server_name by router-configmap.yaml. Fails if san is set but not a list.
 {{- end -}}
 
 {{/*
-The single identity baked into the CDS-issued mesh cert (get-cert) and validated
-by cds.dnsSanPatterns: the first entry of router.sanList. Extra san entries
-widen only nginx server_name, not the mesh cert.
+The single identity baked into the CDS-issued mesh cert (get-cert), which the
+CDS's own leaf DNS rules must admit: the first entry of router.sanList. Extra
+san entries widen only nginx server_name, not the mesh cert.
 */}}
 {{- define "router.san" -}}
 {{- first (include "router.sanList" . | fromJsonArray) -}}
@@ -91,10 +91,8 @@ location{{ if .exact }} ={{ end }} {{ .path }} {
     {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
     {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
     {{- end }}
-    # A request here holds no attest-lb binding. The connection stays open
-    # for the next request only while it is younger than keepalive_time, so
-    # a binding cannot lapse under a connection kept open this way (E7), and
-    # a client can read the allowlist on the connection it attested.
+    # Holds no attest-lb binding: the connection stays open only while it is
+    # younger than keepalive_time (see the discovery location).
     keepalive_time 1m;
     # These run before nginx collapses callers onto the loopback proxy source.
     # Each zone's map key is empty for the methods it does not cover, so
@@ -395,7 +393,7 @@ true
 Where nginx reads nginx.conf, and on a baked node the tls-cds.conf and
 tls-acme.conf snippets the launch file's tls.conf includes: the nginx
 ConfigMap, or on a baked node the image directory mkosi.sync installs them in
-(node-guest-image/c8s/mkosi.sync), mounted read-only from the measured /usr
+(images/node-guest/c8s/mkosi.sync), mounted read-only from the measured /usr
 instead of a ConfigMap the control plane can edit.
 */}}
 {{- define "router.configDir" -}}
@@ -535,11 +533,6 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- if and $v.attest.enabled (include "c8s.attestationApiSocketPresent" $root) -}}
 {{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}
-{{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
-       optional publicTLS Secret. */ -}}
-{{- $args = append $args (printf "--mesh-identity-cert-file=%s" (include "c8s.certFile" $root)) -}}
-{{- $args = append $args (printf "--mesh-identity-key-file=%s" (include "c8s.keyFile" $root)) -}}
-{{- $args = append $args (printf "--mesh-identity-ca-file=%s" (include "c8s.caFile" $root)) -}}
 {{- /* Route by the operator-signed manifest polled from the verified CDS:
        application requests from nginx on --routing-port, and requests
        decrypted from the tunnel. The enforcer mounts the one CDS endpoint
@@ -549,17 +542,11 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        naming it makes a missing file fatal, else cds.operatorKeys, else
        CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
        manifest). cds-attest prefers the launch configuration whenever it
-       finds it. An unpinned CDS could be any attested TEE, so cds-attest
-       refuses that last source without the opt-in. */ -}}
-{{- if $root.Values.node.baked -}}
+       finds it. */ -}}
+{{- if not (include "c8s.cdsFromValues" $root) -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
-{{- else if not (or $root.Values.cds.measurements $root.Values.cds.measurementsConfig) -}}
-{{- if not $v.routing.allowUnpinnedCDS -}}
-{{- fail "VALIDATION_ERROR kind=unpinned_route_source: the router would take its operator keys from an unpinned CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, pin the operator keys with `--operator-keys`, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true." -}}
-{{- end -}}
-{{- $args = append $args "--allow-unpinned-cds" -}}
 {{- end -}}
 {{- $args = append $args (printf "--routes-poll-interval=%v" $v.routing.pollInterval) -}}
 {{- $args = append $args "--routing-host=127.0.0.1" -}}
@@ -688,8 +675,8 @@ true
 
 {{/*
 c8s-cert native sidecar (restartPolicy: Always): obtains the leaf on startup
-and renews it on a ticker. nginx's own entrypoint reloads on the renewal, so
-this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
+and renews it on a ticker. nginx reads the renewed leaf on its next TLS
+handshake, so this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
 list.
 */}}
 {{- define "router.getCertContainers" -}}
@@ -786,35 +773,23 @@ refuses one that is not already normalized.
 {{- end -}}
 
 {{/*
-The CDS measurement pins a router sidecar verifies the chart-managed CDS
-against, as a JSON list of container args: the node's signed policy on a baked node, else
-cds.measurementsConfig, else cds.measurements and cds.rtmrs. Shared by
-allowlist-proxy and cds-attest, so the relay and the route manifest poller
-trust the same CDS.
+The pin a router sidecar verifies this cluster's CDS against, as a JSON list of
+container args: the node's signed policy on a baked node, else the mounted
+cds.measurementsConfig. Shared by allowlist-proxy and cds-attest, so the relay
+and the route manifest poller trust the same CDS.
 */}}
 {{- define "router.cdsPinArgs" -}}
-{{- $args := list -}}
-{{- if .Values.node.baked -}}
-{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
-{{- else if .Values.cds.measurementsConfig -}}
-{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- else -}}
-{{- with .Values.cds.measurements -}}
-{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
-{{- end -}}
-{{- with .Values.cds.rtmrs -}}
-{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
-{{- end -}}
-{{- end -}}
-{{- $args | toJson -}}
+{{- $pin := "/run/c8s-node/cds.json" -}}
+{{- if include "c8s.cdsFromValues" . -}}{{- $pin = "/mnt/c8s-data/measurements/cds.json" -}}{{- end -}}
+{{- list (printf "--image-policy-file=%s" $pin) | toJson -}}
 {{- end -}}
 
 {{/*
 router.wellKnownProxyDirectives renders the directives every
 /.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
 buffering on and no temp-file spill, and the forwarded headers, including
-the connection identifier attest-lb binds (route policy E8). Inputs: root
-(the chart context) and readTimeout.
+the connection identifier attest-lb binds. Inputs: root (the chart context)
+and readTimeout.
 */}}
 {{- define "router.wellKnownCorsDirectives" -}}
 {{- if default false .Values.router.cors.enabled -}}
@@ -836,24 +811,19 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
-proxy_set_header X-C8s-Connection $pid.$connection;
+proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
 
 
 {{- end -}}
 
 {{/*
-router.filesNginxLoads — every file an nginx directive loads: the leaf and key
-get-cert publishes, the mesh CA it proxies upstream with, and the public
-certificate and key of whichever TLS mode serves the front door. One
-space-separated list, read by reload.sh.
+router.servedCredentials — the credential files the router serves from: the
+leaf, key and CA get-cert publishes, and the front door's own certificate and
+key in webpki and acme mode. One space-separated list, read by serve.sh.
 */}}
-{{- define "router.filesNginxLoads" -}}
+{{- define "router.servedCredentials" -}}
 {{- $paths := list (include "c8s.certFile" .) (include "c8s.keyFile" .) (include "c8s.caFile" .) -}}
-{{- if eq (include "router.publicTLSMode" .) "webpki" -}}
-{{- $paths = append $paths (include "router.publicCertPath" .) -}}
-{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
-{{- end -}}
-{{- if eq (include "router.publicTLSMode" .) "acme" -}}
+{{- if has (include "router.publicTLSMode" .) (list "webpki" "acme") -}}
 {{- $paths = append $paths (include "router.publicCertPath" .) -}}
 {{- $paths = append $paths (include "router.publicKeyPath" .) -}}
 {{- end -}}

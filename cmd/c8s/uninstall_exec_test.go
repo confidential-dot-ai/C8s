@@ -536,7 +536,7 @@ func seedCMFile(t *testing.T, imageRef string, shapes [][]string) string {
 }
 
 func seedCMStub(cmFile string) string {
-	return `"get configmap c8s-cds-allowlist-seed -n c8s-system -o json") /bin/cat '` + cmFile + `' ;;
+	return `"get configmap c8s-allowlist-seed -n c8s-system -o json") /bin/cat '` + cmFile + `' ;;
 `
 }
 
@@ -559,7 +559,7 @@ func TestUninstallSweepReplaysPinnedArgv(t *testing.T) {
 	}
 	calls := s.f.calls(t)
 	// The seed is read before helm uninstall deletes it.
-	gi := lineIndex(calls, "kubectl get configmap c8s-cds-allowlist-seed -n c8s-system -o json")
+	gi := lineIndex(calls, "kubectl get configmap c8s-allowlist-seed -n c8s-system -o json")
 	hi := lineIndex(calls, "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
 	if gi < 0 || hi < 0 || gi > hi {
 		t.Fatalf("seed read must precede helm uninstall (get=%d helm=%d):\n%s", gi, hi, strings.Join(calls, "\n"))
@@ -604,7 +604,7 @@ func TestUninstallSweepFallsBackToEmbeddedArgv(t *testing.T) {
 
 	t.Run("seed ConfigMap gone", func(t *testing.T) {
 		values := hostReleaseValuesNRIFile(t, imageRef)
-		s := newUninstallStubs(t, values, `"get configmap c8s-cds-allowlist-seed -n c8s-system -o json") exit 1 ;;
+		s := newUninstallStubs(t, values, `"get configmap c8s-allowlist-seed -n c8s-system -o json") exit 1 ;;
 `, false)
 		if err := runC8s(t, "uninstall"); err != nil {
 			t.Fatalf("uninstall: %v", err)
