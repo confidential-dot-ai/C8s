@@ -193,7 +193,7 @@ func (s *poolSession) Send(ctx context.Context, body []byte) (string, error) {
 		return "", errors.New("POST outcome lost before commit")
 	}
 	if g.assigned[stored.Key] {
-		return "", podstatus.ErrAlreadyAssigned
+		return "", &podstatus.AlreadyAssignedError{HeldUID: string(rec.UID)}
 	}
 	g.assigned[stored.Key] = true
 	if g.lostResponse {

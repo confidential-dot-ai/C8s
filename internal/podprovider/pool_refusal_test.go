@@ -124,7 +124,7 @@ func (s refusalSession) Send(ctx context.Context, b []byte) (string, error) {
 }
 
 func TestWarmAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
-	for _, phase := range []string{"rotated-launch-key", "unverified", "canceled-verification", "expired-verification", "nonce-unavailable", "canceled-preparation", "malformed-body", "different-payload", "intent-write-failed", "different-ack", "already-assigned"} {
+	for _, phase := range []string{"rotated-launch-key", "unverified", "canceled-verification", "expired-verification", "nonce-unavailable", "canceled-preparation", "malformed-body", "different-payload", "intent-write-failed", "different-ack", "already-assigned", "already-holds-another", "already-holds-unnamed"} {
 		t.Run(phase, func(t *testing.T) {
 			r, _, guest, pod := poolFixture(t)
 			rec, podSecret, err := r.ensureRecord(t.Context(), pod)
@@ -183,13 +183,18 @@ func TestWarmAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
 					}
 					return b, nil
 				}
-				if phase == "different-ack" || phase == "already-assigned" {
+				if phase == "different-ack" || strings.HasPrefix(phase, "already-") {
 					session.send = func(ctx context.Context, b []byte) (string, error) {
 						if _, err := base.Send(ctx, b); err != nil {
 							return "", err
 						}
-						if phase == "already-assigned" {
-							return "", podstatus.ErrAlreadyAssigned
+						switch phase {
+						case "already-assigned":
+							return "", &podstatus.AlreadyAssignedError{HeldUID: string(pod.UID)}
+						case "already-holds-another":
+							return "", &podstatus.AlreadyAssignedError{HeldUID: "another-pod"}
+						case "already-holds-unnamed":
+							return "", &podstatus.AlreadyAssignedError{}
 						}
 						return "another-pod", nil
 					}
@@ -213,7 +218,7 @@ func TestWarmAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
 			if loadErr != nil {
 				t.Fatal(loadErr)
 			}
-			acknowledged := phase == "different-ack" || phase == "already-assigned"
+			acknowledged := phase == "different-ack" || strings.HasPrefix(phase, "already-")
 			expectedSends := 0
 			if acknowledged {
 				expectedSends = 1
