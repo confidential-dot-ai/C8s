@@ -1030,9 +1030,15 @@ const (
 	staticPodSource        = "file"
 )
 
+// StaticPodAnnotations reports the annotations of a pod the kubelet read from
+// its manifest directory.
+func StaticPodAnnotations(annotations map[string]string) bool {
+	return annotations[configSourceAnnotation] == staticPodSource
+}
+
 // staticPod reports a pod the kubelet read from its manifest directory.
 func staticPod(pod *api.PodSandbox) bool {
-	return pod.GetAnnotations()[configSourceAnnotation] == staticPodSource
+	return StaticPodAnnotations(pod.GetAnnotations())
 }
 
 // nodeTCBExempt reports whether the measured base excuses a launch holding

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -331,5 +332,100 @@ func TestStaticPodEntriesGrantNothing(t *testing.T) {
 				t.Errorf("staticPod %v: %s granted = %v", static, what, got)
 			}
 		}
+	}
+}
+
+// A worker's static pod keeps the capabilities its runtime gave it when a base
+// entry pins its launch, as a server's exempt namespaces do; the same launch
+// as an API pod, or a static pod only an open entry admits, holds none
+// undeclared.
+func TestWorkerStaticPodKeepsItsCapabilities(t *testing.T) {
+	static := func(pod *api.PodSandbox) {
+		pod.Annotations = map[string]string{configSourceAnnotation: staticPodSource}
+	}
+	for _, tc := range []struct {
+		name   string
+		server bool
+		pod    func(*api.PodSandbox)
+		argv   []string
+		want   imageVerdict
+	}{
+		{name: "a static pod on a pinned launch", pod: static, argv: []string{"/app"}, want: verdictAllow},
+		{name: "an API pod on that launch", argv: []string{"/app"}, want: verdictDeny},
+		{name: "a static pod an open entry admits", pod: static, argv: []string{"/other"}, want: verdictDeny},
+		{name: "a server's static pod on a pinned launch", server: true, pod: static, argv: []string{"/app"}, want: verdictDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := capabilityPlugin(t, SandboxEnforce)
+			p.cfg.Worker = !tc.server
+			p.containerd = &fakeContainerd{spec: func(context.Context, string) (*specs.Spec, error) {
+				spec := workloadSpec()
+				spec.Process.User.UID = 0
+				spec.Process.Capabilities.Bounding = append(spec.Process.Capabilities.Bounding, "CAP_SYS_ADMIN", "CAP_NET_ADMIN")
+				spec.Process.Capabilities.Effective = append(spec.Process.Capabilities.Effective, "CAP_SYS_ADMIN", "CAP_NET_ADMIN")
+				return spec, nil
+			}}
+			pod := sandboxedPod()
+			if tc.pod != nil {
+				tc.pod(pod)
+			}
+			verdict, reason := capabilityVerdict(t, p, pod, tc.argv)
+			if verdict != tc.want {
+				t.Fatalf("checkContainerPhase = %d %q, want %d", verdict, reason, tc.want)
+			}
+			if tc.want == verdictDeny && !strings.Contains(reason, "capabilities") {
+				t.Fatalf("reason = %q, want the capabilities named", reason)
+			}
+		})
+	}
+}
+
+// c8s-runc's floor leaves a static pod to its template, so on a worker the
+// validator, whose refusal always stops the create, refuses a static pod's
+// container whose launch no base entry pins; and on any node it refuses an
+// NRI edit of the kubelet's mark.
+func TestValidationHoldsTheStaticPodMark(t *testing.T) {
+	static := map[string]string{configSourceAnnotation: staticPodSource}
+	for _, tc := range []struct {
+		name   string
+		server bool
+		api    bool
+		argv   string
+		adjust map[string]string
+		want   string
+	}{
+		{name: "a static pod on a pinned launch", argv: "/app"},
+		{name: "a static pod an open entry admits", argv: "/other", want: "only on a launch a base entry pins"},
+		{name: "a server's static pod an open entry admits", server: true, argv: "/other"},
+		{name: "an API pod an open entry admits", api: true, argv: "/other"},
+		{name: "a plugin setting the mark", argv: "/app", adjust: map[string]string{configSourceAnnotation: staticPodSource}, want: "edits the " + configSourceAnnotation},
+		{name: "a plugin removing the mark", argv: "/app", adjust: map[string]string{api.MarkForRemoval(configSourceAnnotation): ""}, want: "edits the " + configSourceAnnotation},
+		{name: "a server's plugin setting the mark", server: true, argv: "/app", adjust: map[string]string{configSourceAnnotation: staticPodSource}, want: "edits the " + configSourceAnnotation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := capabilityPlugin(t, SandboxEnforce)
+			p.cfg.Worker = !tc.server
+			pod := sandboxedPod()
+			pod.Annotations = static
+			if tc.api {
+				// On the node's network, which the mesh gate leaves alone.
+				pod.Annotations = map[string]string{configSourceAnnotation: "api"}
+				pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool { return ns.Type == "network" })
+			}
+			imageRef := "registry/repo@" + pushDigestB
+			ctr := sandboxedContainer()
+			ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+			ctr.Annotations = map[string]string{annotationImageName: imageRef}
+			ctr.Args = []string{tc.argv}
+			err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{
+				Pod: pod, Container: ctr, Adjust: &api.ContainerAdjustment{Annotations: tc.adjust},
+			})
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("ValidateContainerAdjustment = %v, want the create admitted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("ValidateContainerAdjustment = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
 	}
 }

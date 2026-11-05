@@ -242,8 +242,9 @@ func TestFloorRefusals(t *testing.T) {
 	}
 }
 
-// Trusted policy names the namespaces that host no member pods, and the pod's
-// own sandbox container is the runtime's: both keep what they are given.
+// Trusted policy names the namespaces that host no member pods, a static pod is
+// the node's own, and the pod's own sandbox container is the runtime's: each
+// keeps what it is given.
 func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	cilium := workloadBundle()
 	cilium.Annotations[annotationSandboxNamespace] = "kube-system"
@@ -259,6 +260,25 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	pause.Process.NoNewPrivileges = false
 	if err := requireFloor(pause, "sandbox-1", nil, testFloor()); err != nil {
 		t.Fatalf("the pod's own sandbox container was refused: %v", err)
+	}
+
+	// A static pod is the node's own: its privileged container, in a
+	// namespace the policy does not exempt, keeps what it is given.
+	static := workloadBundle()
+	static.Annotations["kubernetes.io/config.source"] = "file"
+	static.Process.User = specs.User{}
+	static.Process.NoNewPrivileges = false
+	static.Linux.Resources.Devices = []specs.LinuxDeviceCgroup{{Allow: true, Access: "rwm"}}
+	if err := requireFloor(static, "ctr", nil, testFloor()); err != nil {
+		t.Fatalf("a static pod's container was refused: %v", err)
+	}
+	for _, source := range []string{"api", ""} {
+		apiPod := workloadBundle()
+		apiPod.Annotations["kubernetes.io/config.source"] = source
+		apiPod.Process.NoNewPrivileges = false
+		if err := requireFloor(apiPod, "ctr", nil, testFloor()); err == nil {
+			t.Fatalf("a container of a pod from source %q escaped the floor", source)
+		}
 	}
 
 	// A container of a pod in no namespace is covered, not exempt.

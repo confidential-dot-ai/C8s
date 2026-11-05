@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 const c8sProfile = "../c8s"
@@ -112,5 +114,30 @@ func TestUnitsNameUnitsTheImageHas(t *testing.T) {
 		if !units[unit] {
 			t.Errorf("%s is no unit of the worker image", unit)
 		}
+	}
+}
+
+// The runtime every static pod runs under passes the kubelet's static pod
+// mark into the bundle, where c8s-runc's floor reads it.
+func TestContainerdPassesTheStaticPodMark(t *testing.T) {
+	data, err := os.ReadFile("mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Plugins map[string]struct {
+			Containerd struct {
+				Runtimes map[string]struct {
+					PodAnnotations []string `toml:"pod_annotations"`
+				} `toml:"runtimes"`
+			} `toml:"containerd"`
+		} `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	runc := cfg.Plugins["io.containerd.cri.v1.runtime"].Containerd.Runtimes["runc"]
+	if !slices.Contains(runc.PodAnnotations, "kubernetes.io/config.source") {
+		t.Fatalf("runc pod_annotations = %v, want the kubelet's kubernetes.io/config.source", runc.PodAnnotations)
 	}
 }
