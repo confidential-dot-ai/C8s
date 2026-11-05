@@ -255,7 +255,7 @@ These are ordinary mesh leaves: a relying party sees neither the claims nor the
 profile, and a named leaf records authorization at issuance, not current
 liveness or exclusive assignment. The profile creates no node inventory binding
 and does not enable secret release. Setup is in
-[operator.md](operator.md#authenticated-launch-configuration).
+[operator.md](operator.md#pod-cvm).
 
 A standalone pod CVM captures only its signed IPv4 TCP peer tuples: the pod
 network namespace's packet rules, which the guest installs from outside it and
