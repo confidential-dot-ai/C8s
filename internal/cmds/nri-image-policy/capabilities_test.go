@@ -277,3 +277,84 @@ func TestCapabilitiesNeedADeclaringEntry(t *testing.T) {
 		})
 	}
 }
+
+// gpuCapabilityPlugin is a measured base whose GPU entry pins the launch a
+// `k8s.device-plugin.nvidia.com/gpu` injection leaves — the spec's variable
+// and its driver bind — and declares SYS_PTRACE for it. It returns the
+// directory the capability grants land in.
+func gpuCapabilityPlugin(t *testing.T) (*plugin, string) {
+	t.Helper()
+	base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+		"gpu": {Containers: []allowlist.Container{{
+			Digest:  mustDigest(t, pushDigestB),
+			Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/app"}},
+			Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+			Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{
+				{Destination: libcudaPath, Kind: allowlist.MountHost, ReadOnly: true, Source: libcudaPath},
+			}},
+			Env:          allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"NVIDIA_VISIBLE_DEVICES": "void"}},
+			Capabilities: allowlist.CapabilityList{"SYS_PTRACE"},
+		}}},
+	}}
+	if err := base.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config{
+		Allowlist: allowlistConfig{Base: base, NodeTCB: true},
+		Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+	}
+	p, _ := newCachedPlugin(cfg, &allowlist.Allowlist{Schema: allowlist.Schema})
+	p.SetReady()
+	p.cdiSpecDirs = writeCDISpecs(t, map[string]string{"gpu.json": gpuSpec})
+	dir := t.TempDir()
+	p.capGrants = &capabilityGrants{dir: dir}
+	return p, dir
+}
+
+// A GPU container holds the capabilities its entry declares: containerd
+// injects the CDI edits of the device it requested before this plugin sees the
+// launch, so the entry pinning that launch admits it at the start check and
+// the validation check records what it declares for the runtime wrapper's
+// floor. A launch carrying the pod's own value for the spec's variable is
+// another launch, which that entry does not admit.
+func TestGPULaunchIsGrantedItsDeclaredCapabilities(t *testing.T) {
+	const containerID = "5b2d1c3e4f506172839a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	imageRef := "registry/repo@" + pushDigestB
+	p, dir := gpuCapabilityPlugin(t)
+	spec := workloadSpec()
+	capabilitySets["bounding"](spec.Process.Capabilities, "CAP_SYS_PTRACE")
+	p.containerd = &fakeContainerd{spec: func(context.Context, string) (*specs.Spec, error) {
+		return spec, nil
+	}}
+	ctr := cdiGPUContainer()
+	ctr.Id = containerID
+	ctr.Args = []string{"/app"}
+	ctr.Env = []string{"NVIDIA_VISIBLE_DEVICES=all", "NVIDIA_VISIBLE_DEVICES=void"}
+	ctr.Annotations[annotationImageName] = imageRef
+	ctr.Mounts = append(mountsADenyPolicyAdmits(ctr), gpuDriverBind())
+
+	if verdict, reason := p.checkContainerPhase(t.Context(), p.cfg, sandboxedPod(), ctr, imageRef, launchFinal); verdict != verdictAllow {
+		t.Fatalf("the GPU launch was refused at the start check: %d %q", verdict, reason)
+	}
+	// A mesh-exempt namespace: the gate's own record is a node fixture.
+	pod := sandboxedPod()
+	pod.Namespace = "kube-system"
+	req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
+		t.Fatalf("the GPU launch was refused at the validation check: %v", err)
+	}
+	granted, err := ReadCapabilityGrant(dir, containerID)
+	if err != nil || len(granted) != 1 || !slices.Equal(granted[0], []string{"SYS_PTRACE"}) {
+		t.Fatalf("ReadCapabilityGrant = %v, %v, want [[SYS_PTRACE]]", granted, err)
+	}
+
+	const otherID = "6c3e2d4f5061728394ab5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"
+	ctr.Id = otherID
+	ctr.Env = []string{"NVIDIA_VISIBLE_DEVICES=all"}
+	if verdict, _ := p.checkContainerPhase(t.Context(), p.cfg, sandboxedPod(), ctr, imageRef, launchFinal); verdict != verdictDeny {
+		t.Fatal("a launch holding the pod's own value for the spec's variable was admitted")
+	}
+	if granted, err := ReadCapabilityGrant(dir, otherID); err != nil || granted != nil {
+		t.Fatalf("a launch no entry admits holds %v, %v", granted, err)
+	}
+}
