@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import signal
 from pathlib import Path
 import tempfile
 import subprocess
@@ -50,6 +51,20 @@ class LifecycleTests(unittest.TestCase):
     def runner(self, kube):
         args = types.SimpleNamespace(directory=self.tmp.name)
         return module.Run(args, kube, lambda p, v: Path(p).write_text(json.dumps(v)))
+
+    def test_interrupt_escapes_child_wait_to_reach_cleanup(self):
+        previous = signal.signal(signal.SIGINT, module.interrupt_run)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        cleaned = False
+        with self.assertRaisesRegex(SystemExit, "test interrupted"):
+            try:
+                subprocess.run([sys.executable, "-c",
+                    "import os,signal,sys,time; sys.stdin.buffer.read(1); "
+                    "os.kill(os.getppid(),signal.SIGINT); time.sleep(30)"],
+                    input=b"ready", check=True, timeout=5)
+            finally:
+                cleaned = True
+        self.assertTrue(cleaned)
 
     def health_runner(self):
         owner_path = "/apis/kubevirt.io/v1/namespaces/customer/virtualmachines/existing"

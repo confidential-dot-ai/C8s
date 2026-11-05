@@ -476,6 +476,13 @@ class Run:
         self.event("primitive-passed", full_acceptance_passed=False, production_ready=False)
 
 
+def interrupt_run(signum, frame):
+    # InterruptedError is an OSError: subprocess waitpid may swallow it as an
+    # interrupted system call. SystemExit escapes to our cleanup finally and
+    # makes subprocess reap the child rather than defer KeyboardInterrupt cleanup.
+    raise SystemExit("test interrupted")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["run", "cleanup"])
@@ -497,7 +504,7 @@ def main():
         return
     need(all(getattr(args, f) for f in ("image", "renderer", "probe", "tools_image", "nodes", "product_line")), "run requires complete measured inputs and expected AMD product line")
     for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda signum, frame: (_ for _ in ()).throw(InterruptedError("test interrupted")))
+        signal.signal(sig, interrupt_run)
     signal.signal(signal.SIGALRM, lambda signum, frame: (_ for _ in ()).throw(TimeoutError("45-minute test deadline")))
     signal.alarm(2700)
     try:

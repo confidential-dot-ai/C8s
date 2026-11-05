@@ -55,9 +55,12 @@ The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
 still gates VM creation. Failed completion reads retry within the original
-deadline. Nineteen local lifecycle tests include this failure mode,
+deadline. Twenty local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
 ownership, explicit VM stops, and lost API responses during cleanup.
+An interrupt test also exercises a real child-process wait: SIGINT/SIGTERM
+raise `SystemExit`, since `InterruptedError` can be swallowed by subprocess as
+a retriable OS interruption. Cleanup still runs through the outer `finally`.
 
 The port-6443 attempt reached KubeVirt Ready but never returned a signed probe
 response. Its native port-forward failed with `no route to host`. KubeVirt
