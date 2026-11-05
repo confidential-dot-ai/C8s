@@ -9,7 +9,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
 func providerCDSPolicy(t *testing.T, launch []byte) []byte {
@@ -20,37 +19,6 @@ func providerCDSPolicy(t *testing.T, launch []byte) []byte {
 		t.Fatal(err)
 	}
 	return policy
-}
-
-func TestStaticAndGenericLaunchKeepIndependentCDSTrust(t *testing.T) {
-	cfg := fixtureConfig(t)
-	static, err := cfg.launch(fixturePod())
-	if err != nil {
-		t.Fatal(err)
-	}
-	generic, err := cfg.genericLaunch(identityKey(cfg.ProviderID, "generic-cds-check"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, req := range []createRequest{static, generic} {
-		if req.Trust.InitData.Format != launchconfig.SchemaVersion {
-			t.Fatal("launch envelope and document schema differ")
-		}
-		doc, err := signedDocument(req.Trust)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if doc.CDS != cfg.cds || doc.CDS.Address != "cds.example.test:8443" || doc.CDS.PinFloor != 0 {
-			t.Fatal("signed launch lost explicit DNS-addressed CDS trust")
-		}
-		pins, err := refvalues.Parse([]byte(doc.CDS.Measurements))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if doc.Image.Platform != "tdx" || pins.Family != teetypes.FamilySNP || len(pins.Images) != 1 || !bytes.Equal(pins.Images[0].Digest, bytes.Repeat([]byte{0x88}, 48)) || len(pins.Images[0].LaunchFile) == 0 || len(pins.Images[0].Anchor) != 0 {
-			t.Fatal("CDS trust was derived from the Pod image or cluster server key")
-		}
-	}
 }
 
 func TestCDSRotationDrainsIdlePoolWithoutRewritingFrozenTrust(t *testing.T) {

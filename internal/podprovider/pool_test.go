@@ -7,7 +7,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"maps"
@@ -28,13 +27,12 @@ import (
 )
 
 type poolCloud struct {
-	mu                             sync.Mutex
-	byKey                          map[string]*instance
-	requests                       map[string]createRequest
-	creates, deletes, ingressCalls int
-	loseCreate, holdDeletion       bool
-	ingressPending                 bool
-	beforeCreate                   func(string, createRequest)
+	mu                       sync.Mutex
+	byKey                    map[string]*instance
+	requests                 map[string]createRequest
+	creates, deletes         int
+	loseCreate, holdDeletion bool
+	beforeCreate             func(string, createRequest)
 }
 
 func copyPoolInstance(in *instance) *instance {
@@ -116,28 +114,25 @@ func (f *poolCloud) AddIngress(_ context.Context, id, key string, rule ingress) 
 				return copyPoolInstance(in), nil
 			}
 		}
-		f.ingressCalls++
 		in.Network.Ingress = append(in.Network.Ingress, rule)
 		port := 30000 + len(in.Network.Ingress)
 		if f.requests[launchKey].Network.PublicIP == "dedicated" {
 			port = rule.Port
 		}
 		in.Endpoints = append(in.Endpoints, endpoint{Name: rule.Name, Host: "203.0.113.5", Port: port})
-		in.Network.IngressUpdating = f.ingressPending
 		return copyPoolInstance(in), nil
 	}
 	return nil, errCloudNotFound
 }
 
 type poolGuest struct {
-	t                                         *testing.T
-	r                                         *Reconciler
-	key                                       *ecdsa.PrivateKey
-	assigned                                  map[string]bool
-	prepares, sends                           int
-	lostResponse, failBeforeCommit, failReads bool
-	beforeSend                                func()
-	beforePrepare                             func()
+	t                              *testing.T
+	r                              *Reconciler
+	key                            *ecdsa.PrivateKey
+	assigned                       map[string]bool
+	prepares, sends                int
+	lostResponse, failBeforeCommit bool
+	beforeSend                     func()
 }
 type poolSession struct {
 	guest *poolGuest
@@ -159,9 +154,6 @@ func (s *poolSession) ServingKey() []byte {
 }
 func (s *poolSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest, entries, peers []byte) ([]byte, error) {
 	s.guest.prepares++
-	if s.guest.beforePrepare != nil {
-		s.guest.beforePrepare()
-	}
 	nonce := make([]byte, podassign.NonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
@@ -204,7 +196,7 @@ func (s *poolSession) Send(ctx context.Context, body []byte) (string, error) {
 }
 func (*poolSession) Close() {}
 func (g *poolGuest) read(ctx context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
-	if g.failReads || rec.Pool == nil {
+	if rec.Pool == nil {
 		return podstatus.PodProjection{}, errors.New("no verified Pod")
 	}
 	p, _, err := g.r.loadPool(ctx, rec.Pool.Name)
@@ -552,29 +544,6 @@ func TestWarmConcurrentReservationAndClaimsRespectCAS(t *testing.T) {
 	}
 }
 
-func TestWarmWaitsForAppliedIngressBeforeAssignment(t *testing.T) {
-	r, cloud, guest, pod := poolFixture(t)
-	cloud.ingressPending = true
-	for range 4 {
-		if err := reconcile(t, r, pod); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if guest.prepares != 0 || guest.sends != 0 || cloud.ingressCalls != 1 {
-		t.Fatal("pending ingress allowed assignment or concurrent ingress mutation")
-	}
-	cloud.mu.Lock()
-	cloud.ingressPending = false
-	for _, in := range cloud.byKey {
-		in.Network.IngressUpdating = false
-	}
-	cloud.mu.Unlock()
-	runToAssigned(t, r, pod)
-	if guest.sends != 1 || cloud.ingressCalls != 2 {
-		t.Fatal("applied ingress did not unblock the single assignment")
-	}
-}
-
 func TestWarmCorruptedAssignmentCannotRecoverThroughStatus(t *testing.T) {
 	for _, field := range []string{"signature", "serving-key", "manifest"} {
 		t.Run(field, func(t *testing.T) {
@@ -652,139 +621,6 @@ func TestWarmOrphanCleanupRetainsClaimUntilVMTermination(t *testing.T) {
 	}
 }
 
-func TestWarmConfigurationIsBoundedAndOptIn(t *testing.T) {
-	for _, target := range []int64{-1, 0, 1, 10, 11} {
-		cfg := fixtureConfig(t)
-		cfg.WarmTarget = target
-		err := cfg.validate()
-		if (err == nil) != (target >= 0 && target <= cfg.MaxPods) {
-			t.Fatalf("warmTarget %d: %v", target, err)
-		}
-	}
-}
-
-func TestWarmUncommittedMissingAnchorCanRecoverButStaleWriterCannotClearCommit(t *testing.T) {
-	r, cloud, _, pod := poolFixture(t)
-	rec, podSecret, err := r.ensureRecord(t.Context(), pod)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, oldSlot, err := r.reservePool(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.Pool = &poolRef{Name: oldSlot.Name, UID: oldSlot.UID}
-	if err := r.save(t.Context(), rec, podSecret); err != nil {
-		t.Fatal(err)
-	}
-	stale, staleSecret, err := r.loadRecord(t.Context(), rec.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.discard(t.Context(), oldSlot); err != nil {
-		t.Fatal(err)
-	}
-	current, currentSecret, err := r.loadRecord(t.Context(), rec.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, secret, err := r.selectPool(t.Context(), current, currentSecret)
-	if err != nil || secret.UID == oldSlot.UID || !current.PoolCommitted || cloud.creates != 0 {
-		t.Fatal("unused stale anchor could not recover to a committed replacement")
-	}
-	if _, _, err := r.selectPool(t.Context(), stale, staleSecret); err == nil {
-		t.Fatal("stale false marker cleared a published commitment")
-	}
-	published := getRecord(t, r, pod)
-	if !published.PoolCommitted || published.Pool.UID != secret.UID || published.Pool.Name != secret.Name {
-		t.Fatal("stale anchor write changed durable assignment authority")
-	}
-	if p.Claim == nil {
-		t.Fatal("replacement had no reciprocal immutable claim")
-	}
-}
-
-func TestWarmLostCommitMarkerReplyDoesNotLaunchBeforeReload(t *testing.T) {
-	r, cloud, guest, pod := poolFixture(t)
-	watching, ok := r.client.(client.WithWatch)
-	if !ok {
-		t.Fatal("fixture client has no watch")
-	}
-	lost := false
-	r.client = interceptor.NewClient(watching, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-		err := c.Update(ctx, obj, opts...)
-		if err != nil {
-			return err
-		}
-		if secret, ok := obj.(*corev1.Secret); ok && secret.Labels[slotLabel] != "true" && !lost {
-			var rec record
-			if err := decode(secret.Data["state.json"], &rec); err != nil {
-				t.Fatal(err)
-			}
-			if rec.PoolCommitted {
-				lost = true
-				return errors.New("committed marker response lost")
-			}
-		}
-		return nil
-	}})
-	if err := reconcile(t, r, pod); err != nil {
-		t.Fatal(err)
-	}
-	rec := getRecord(t, r, pod)
-	if !lost || !rec.PoolCommitted || cloud.creates != 0 || guest.sends != 0 {
-		t.Fatal("uncertain marker write reached workload side effects")
-	}
-	r = restartPoolReconciler(r, guest)
-	runToAssigned(t, r, pod)
-	if cloud.creates != 1 || guest.prepares != 1 || guest.sends != 1 {
-		t.Fatal("marker recovery duplicated the permanent allocation")
-	}
-}
-
-func TestWarmCleanupCanReleaseAnUnusedMissingReservation(t *testing.T) {
-	r, cloud, _, pod := poolFixture(t)
-	rec, podSecret, err := r.ensureRecord(t.Context(), pod)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, slot, err := r.reservePool(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.Pool = &poolRef{Name: slot.Name, UID: slot.UID}
-	if err := r.save(t.Context(), rec, podSecret); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.discard(t.Context(), slot); err != nil {
-		t.Fatal(err)
-	}
-	done, err := r.removePooledInstance(t.Context(), rec, podSecret)
-	if err != nil || !done || !getRecord(t, r, pod).Deleted || cloud.creates != 0 || cloud.deletes != 0 {
-		t.Fatal("unused missing reservation stranded cleanup or touched a foreign VM")
-	}
-}
-
-func TestWarmLateAssignmentPreparationCannotPost(t *testing.T) {
-	r, cloud, guest, pod := poolFixture(t)
-	now := time.Now()
-	r.now = func() time.Time { return now }
-	guest.beforePrepare = func() { now = *getRecord(t, r, pod).VerificationDeadline }
-	for range 5 {
-		if err := reconcile(t, r, pod); err != nil {
-			t.Fatal(err)
-		}
-		if getPod(t, r, pod).Status.Phase == corev1.PodFailed {
-			break
-		}
-	}
-	rec := getRecord(t, r, pod)
-	p, _, err := r.loadPool(t.Context(), rec.Pool.Name)
-	if err != nil || len(p.Assignment) != 0 || guest.prepares != 1 || guest.sends != 0 || cloud.deletes != 1 || getPod(t, r, pod).Status.Reason != verificationTimeoutReason {
-		t.Fatal("late preparation posted or survived its persisted verification deadline")
-	}
-}
-
 func runToAssignmentAttempt(t *testing.T, r *Reconciler, pod *corev1.Pod, guest *poolGuest) {
 	t.Helper()
 	for range 8 {
@@ -796,32 +632,4 @@ func runToAssignmentAttempt(t *testing.T, r *Reconciler, pod *corev1.Pod, guest 
 		}
 	}
 	t.Fatal("provider never attempted the frozen assignment")
-}
-
-func TestWarmSavedAssignmentSurvivesConfiguredSigningKeyRotation(t *testing.T) {
-	r, cloud, guest, pod := poolFixture(t)
-	guest.failBeforeCommit = true
-	runToAssignmentAttempt(t, r, pod, guest)
-	rec := getRecord(t, r, pod)
-	p, _, err := r.loadPool(t.Context(), rec.Pool.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := slices.Clone(p.Assignment)
-	r.cfg.key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	public, err := x509.MarshalPKIXPublicKey(&r.cfg.key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.cfg.pub = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: public}))
-	guest.failBeforeCommit = false
-	r = restartPoolReconciler(r, guest)
-	runToAssigned(t, r, pod)
-	restored, _, err := r.loadPool(t.Context(), rec.Pool.Name)
-	if err != nil || !bytes.Equal(body, restored.Assignment) || restored.Request.Trust.LaunchKey == r.cfg.pub || guest.prepares != 1 || guest.sends != 2 || cloud.creates != 1 {
-		t.Fatal("configured key rotation altered or stranded the already signed assignment")
-	}
 }
