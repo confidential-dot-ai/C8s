@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,7 +19,7 @@ import (
 // The parent stays in the node namespace; only disposable child processes join.
 func TestApplicationPIDSharingInTheNamespace(t *testing.T) {
 	requireNetNS(t)
-	for _, name := range []string{"nsenter", "unshare", "sh", "tr", "sleep", "kill"} {
+	for _, name := range []string{"nsenter", "unshare", "sh", "tr", "sleep", "kill", "mount", "cat"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
@@ -34,12 +36,33 @@ func TestApplicationPIDSharingInTheNamespace(t *testing.T) {
 		t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
 		return done
 	}
-	sandbox := exec.CommandContext(ctx, "sleep", "600")
+	// unshare makes mount propagation private before procfs or tmpfs changes.
+	sandbox := exec.CommandContext(ctx, "unshare", "--mount", "--mount-proc", "sleep", "600")
 	sandbox.SysProcAttr = &unix.SysProcAttr{Cloneflags: unix.CLONE_NEWPID}
 	start(sandbox)
-	support := exec.CommandContext(ctx, "sleep", "602")
+	credentialDir := filepath.Join(t.TempDir(), "support-credentials")
+	if err := os.Mkdir(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credentialPath := filepath.Join(credentialDir, "key")
+	const syntheticKey = "synthetic-c8s-test-key"
+	const supportSetup = `mount -t tmpfs tmpfs "$1" && printf '%s' "$2" > "$1/key" && exec sleep 602`
+	support := exec.CommandContext(ctx, "unshare", "--mount", "--mount-proc", "sh", "-c", supportSetup, "support", credentialDir, syntheticKey)
 	support.SysProcAttr = &unix.SysProcAttr{Cloneflags: unix.CLONE_NEWPID}
-	start(support)
+	supportDone := start(support)
+	for {
+		out, err := exec.CommandContext(ctx, "nsenter", "--target="+strconv.Itoa(support.Process.Pid), "--mount", "--pid", "--", "cat", credentialPath).CombinedOutput()
+		if err == nil && string(out) == syntheticKey {
+			break
+		}
+		select {
+		case <-supportDone:
+			t.Fatalf("support exited before it could read its synthetic credential: %s", out)
+		case <-ctx.Done():
+			t.Fatalf("support could not read its synthetic credential: %v: %s", err, out)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -51,15 +74,20 @@ func TestApplicationPIDSharingInTheNamespace(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = RemovePIDNamespace(dir, sandboxID) })
 	app := func(marker string) <-chan error {
-		return start(exec.CommandContext(ctx, "nsenter", "--pid="+path, "--", "sleep", marker))
+		return start(exec.CommandContext(ctx, "nsenter", "--pid="+path, "--", "unshare", "--mount", "--mount-proc", "sleep", marker))
 	}
 	prefill, decode := app("601"), app("603")
 	const scan = `for f in /proc/[0-9]*/cmdline; do p=${f%/cmdline}; printf '%s ' "${p##*/}"; tr '\000' ' ' < "$f"; printf '\n'; done`
+	const refuseCredential = `if cat "$1" >/dev/null 2>&1; then echo 'direct credential access'; exit 1; fi
+for root in /proc/[0-9]*/root; do
+  if cat "$root$1" >/dev/null 2>&1; then echo 'credential access through procfs'; exit 1; fi
+done
+`
 	var prefillPID string
 	visible := func() {
 		t.Helper()
 		for {
-			out, err := exec.CommandContext(ctx, "nsenter", "--pid="+path, "--", "unshare", "--mount", "--mount-proc", "sh", "-c", scan).CombinedOutput()
+			out, err := exec.CommandContext(ctx, "nsenter", "--pid="+path, "--", "unshare", "--mount", "--mount-proc", "sh", "-c", refuseCredential+scan, "application", credentialPath).CombinedOutput()
 			if err != nil {
 				t.Fatalf("read the application procfs: %v: %s", err, out)
 			}

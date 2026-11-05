@@ -4,6 +4,12 @@ Selected application containers can share one Linux PID namespace in a pod.
 C8s support containers and applications without this permission keep private
 PID namespaces. Keep Kubernetes `shareProcessNamespace` false or unset.
 
+Operator-supplied application containers must not be able to read C8s
+authentication credentials, including through another process's `/proc` view.
+Process sharing between applications is permitted. The signed workload policy
+still controls application launches, capabilities, and application secret
+access. Sharing does not grant access to C8s credentials.
+
 The shared group also contains the Kubernetes sandbox pause process. It keeps
 the namespace alive across worker restarts and has no C8s credential mounts.
 The isolation boundary separates this application group from C8s support
