@@ -26,14 +26,16 @@ const testMeshSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6
 // zero value is a valid leaf: both TLS purposes, a P-256 key, a one-hour
 // window around now and the sandbox-ID extension for testMeshSandboxID.
 type meshLeafSpec struct {
-	purposes      []x509.ExtKeyUsage // nil means serverAuth and clientAuth
-	key           *ecdsa.PrivateKey  // nil generates a P-256 key
-	notBefore     time.Time
-	notAfter      time.Time
-	omitSandboxID bool            // the leaf carries no sandbox-ID extension
-	sandboxExt    *pkix.Extension // replaces the well-formed sandbox-ID extension
-	armtlsExt     *pkix.Extension // an armTLS attestation extension the leaf also carries
-	workload      string          // the matched workload CDS stamped, none when empty
+	purposes         []x509.ExtKeyUsage // nil means serverAuth and clientAuth
+	key              *ecdsa.PrivateKey  // nil generates a P-256 key
+	notBefore        time.Time
+	notAfter         time.Time
+	omitSandboxID    bool            // the leaf carries no sandbox-ID extension
+	sandboxExt       *pkix.Extension // replaces the well-formed sandbox-ID extension
+	armtlsExt        *pkix.Extension // an armTLS attestation extension the leaf also carries
+	workload         string          // the matched workload CDS stamped, none when empty
+	assignedWorkload string          // the assigned workload ID CDS stamped, none when empty
+	assignedExt      *pkix.Extension // replaces the well-formed assigned-workload-ID extension
 }
 
 func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, spec meshLeafSpec) *tls.Certificate {
@@ -67,6 +69,16 @@ func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, s
 	}
 	if spec.workload != "" {
 		extensions = append(extensions, mustWorkloadExt(t, spec.workload))
+	}
+	switch {
+	case spec.assignedExt != nil:
+		extensions = append(extensions, *spec.assignedExt)
+	case spec.assignedWorkload != "":
+		ext, err := MarshalAssignedWorkloadIDExtension(spec.assignedWorkload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		extensions = append(extensions, ext)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:    big.NewInt(700),
@@ -146,6 +158,11 @@ func TestChainVerifyPeerCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ia5Assigned, err := asn1.MarshalWithParams("tenant-a", "ia5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	damagedAssigned := pkix.Extension{Id: OIDAssignedWorkloadID, Value: ia5Assigned}
 	now := time.Now()
 
 	rootKey, rootCert := meshCA(t, nil, nil, 710, nil)
@@ -165,6 +182,8 @@ func TestChainVerifyPeerCallback(t *testing.T) {
 		{"garbage certificate", [][]byte{{0x01, 0x02}}, caCert, true},
 		{"another mesh CA", [][]byte{meshLeafDER(t, foreignKey, foreignCert)}, caCert, true},
 		{"self-signed attested peer", [][]byte{attested.Raw}, caCert, true},
+		{"damaged assigned workload ID", [][]byte{signMeshLeaf(t, caKey, caCert, meshLeafSpec{assignedExt: &damagedAssigned}).Leaf.Raw}, caCert, true},
+		{"assigned workload ID", [][]byte{signMeshLeaf(t, caKey, caCert, meshLeafSpec{assignedWorkload: "tenant-a"}).Leaf.Raw}, caCert, false},
 		{
 			"no sandbox ID",
 			[][]byte{signMeshLeaf(t, caKey, caCert, meshLeafSpec{omitSandboxID: true}).Leaf.Raw},
@@ -551,7 +570,7 @@ func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
 	accepted := make(chan Peer, 1)
 	var reachedServer Peer
 	server, client := acceptingMeshPair(t,
-		meshLeafSpec{workload: "web"},
+		meshLeafSpec{workload: "web", assignedWorkload: "tenant-a"},
 		meshLeafSpec{},
 		func(peer Peer) error {
 			accepted <- peer
@@ -566,11 +585,12 @@ func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
 		t.Fatalf("mesh handshake failed: %v", err)
 	}
 	want := Peer{
-		SandboxID:        testMeshSandboxID,
-		WorkloadName:     "web",
-		AllowlistVersion: "1",
-		AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
-		Purpose:          x509.ExtKeyUsageServerAuth,
+		SandboxID:          testMeshSandboxID,
+		WorkloadName:       "web",
+		AllowlistVersion:   "1",
+		AllowlistDigest:    bytes.Repeat([]byte{0x42}, 32),
+		AssignedWorkloadID: "tenant-a",
+		Purpose:            x509.ExtKeyUsageServerAuth,
 	}
 	if !reflect.DeepEqual(reachedServer, want) {
 		t.Fatalf("the client judged %+v, want %+v", reachedServer, want)
