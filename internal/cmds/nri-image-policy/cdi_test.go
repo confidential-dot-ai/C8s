@@ -79,7 +79,7 @@ func cdiGPUContainer() *api.Container {
 func cdiViolations(t *testing.T, ctr *api.Container, dirs []string) []string {
 	t.Helper()
 	cdi, _ := expandCDI(ctr, dirs)
-	return observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, noBindGrant{}, cdi).violations()
+	return observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, noBindGrant{}, cdi).violations(false)
 }
 
 func TestCDIExpansionSetsAsideExactlyTheRequestedDevices(t *testing.T) {

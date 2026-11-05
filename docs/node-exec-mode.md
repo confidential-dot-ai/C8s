@@ -63,7 +63,11 @@ container the measured mesh policy covers holds more than the floor:
   masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`;
 - its own PID namespace, no user namespace or id mapping — the packet rules
   match the socket's UID in the initial user namespace — and an identity that is
-  neither root nor an id reserved for another role;
+  neither root nor an id reserved for another role. A pod CVM runs one pod, so
+  its floor admits root: the capability bound is the admission plugin's
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)),
+  and without `SETUID` and `SETGID` root cannot take a reserved socket identity.
+  The plugin's mesh gate applies the same verdict before a container is created;
 - a working directory that is not at or below a data or host mount (a
   ConfigMap, Secret, projected or downward API volume, a PVC or CSI volume, or a
   host path), resolved through the image's symlinks; an emptyDir, including the
@@ -83,6 +87,33 @@ which reaches the bundle only where the node's containerd passes it through
 (`pod_annotations`), as a worker's does. Before the create, the node's
 admission plugin refuses any NRI plugin's edit of that annotation and, on a
 worker, a static pod whose launch no base entry pins.
+
+A pod CVM's measured policy is the node's with the mesh role alone and no exempt
+namespace, so the floor covers every container of its pod; its `mesh.pod`
+section is what marks the policy as a pod CVM's. A pod CVM adds one bound the
+node does not: its kubelet applies the runtime's default seccomp profile to
+every container that names none, and the admission plugin refuses a container
+that runs without a filter, which a node judges under its own TCB rules.
+
+## Pod admission before start
+
+In a pod CVM, `create` prepares the process without running the workload.
+Before `start`, the NRI plugin verifies the selected image, admits the final
+runtime configuration, records its measurement and checks the Pod inventory and
+credential broker; only then does it grant that container's created process
+permission to start. The wrapper reads the persisted runc state under the same
+global options, `--root` included, and consumes the permission over
+`/run/c8s-pod/start.sock`, which accepts local root only. A permission binds the
+container ID, sandbox ID and created PID, is consumed once and expires after 30
+seconds; a missing, timed-out, mismatched, replayed or expired one denies the
+start, and NRI disconnection, identity loss, container removal and plugin
+shutdown invalidate those pending.
+
+The sandbox pause process is exempt only when its persisted sandbox annotation
+matches its own container ID. `run` is refused, since it creates and starts with
+no boundary between, and so are OCI hooks at creation, the sandbox's included. A
+plugin restart means replacing the pod CVM: old permissions are not restored.
+The node role keeps its existing admission path.
 
 ## What this means for debugging a workload
 
