@@ -189,10 +189,25 @@ class Run:
         self.state["cleanup_verified"] = False
         self.state["resources"].append(row)
         self.save()  # creation intent survives a lost POST response
-        _, created = self.kube.call("POST", path.rsplit("/", 1)[0], item, expected=(201,))
-        row["uid"] = created["metadata"]["uid"]
-        self.save()
-        return row
+        for attempt in range(3):
+            code, created = self.kube.call("POST", path.rsplit("/", 1)[0], item,
+                                          expected=(201, 500, 502, 503, 504))
+            if code != 201:
+                self.event("create-unavailable", path=path, http_status=code, attempt=attempt + 1)
+                # A server error does not prove the write failed. Reconcile
+                # the recorded intent before retrying the same object name.
+                code, created = self.kube.call("GET", path, expected=(200, 404))
+                if code == 404:
+                    if attempt < 2:
+                        time.sleep(2 * (attempt + 1))
+                    continue
+            meta = created["metadata"]
+            need(meta.get("labels", {}).get(LABEL) == item["metadata"]["labels"][LABEL],
+                 "create response owner mismatch")
+            row["uid"] = meta["uid"]
+            self.save()
+            return row
+        raise RuntimeError("owned create failed after three transient API responses: " + path)
 
     def remove(self, row):
         need(row["path"] == resource_path(row["item"]), "journal path outside owned scope")

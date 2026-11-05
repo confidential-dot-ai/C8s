@@ -5,6 +5,12 @@ qualification work for the [sealed-custody design](cds-sealed-custody-experiment
 not a production CDS replacement. It uses a disposable random sentinel, never
 a CA key or an existing cluster's data.
 
+On 2026-11-05, the probe obtained verified signed results for sealing, reopening
+in the same live guest, and reopening after destroying and recreating that guest
+on the same chip. The different-chip test remains incomplete: its VM creation
+returned HTTP 500. Cleanup removed all owned resources. No unexpected baseline
+health regression was observed; an unrelated VM deletion was recorded separately.
+
 ## What is built
 
 The measured guest runs only the bounded SNP probe service. One actor owns
@@ -55,12 +61,15 @@ The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
 still gates VM creation. Failed completion reads retry within the original
-deadline. Twenty local lifecycle tests include this failure mode,
+deadline. Twenty-two local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
 ownership, explicit VM stops, and lost API responses during cleanup.
 An interrupt test also exercises a real child-process wait: SIGINT/SIGTERM
 raise `SystemExit`, since `InterruptedError` can be swallowed by subprocess as
 a retriable OS interruption. Cleanup still runs through the outer `finally`.
+Resource creation now reconciles recorded ownership after a server error before
+retrying the same name, with at most three attempts. Tests cover a failed write,
+a write whose success response was lost, persistent errors and an owner collision.
 
 The port-6443 attempt reached KubeVirt Ready but never returned a signed probe
 response. Its native port-forward failed with `no route to host`. KubeVirt

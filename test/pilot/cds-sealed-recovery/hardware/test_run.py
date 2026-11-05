@@ -382,6 +382,54 @@ class LifecycleTests(unittest.TestCase):
         self.assertIsNone(kube.obj)
         self.assertEqual("created-uid", restarted.state["resources"][0]["uid"])
 
+    def test_transient_create_reconciles_before_retry_and_stays_bounded(self):
+        for outcome in ("absent", "already-created", "persistent-failure"):
+            with self.subTest(outcome=outcome):
+                class TransientKube(FakeKube):
+                    posts = 0
+
+                    def call(self, method, path, body=None, **kwargs):
+                        if method == "POST":
+                            self.posts += 1
+                            if outcome == "already-created":
+                                super().call(method, path, body, **kwargs)
+                                return 500, None
+                            if outcome == "persistent-failure" or self.posts == 1:
+                                self.calls.append((method, path, body))
+                                return 503, None
+                        return super().call(method, path, body, **kwargs)
+
+                kube = TransientKube()
+                run = self.runner(kube)
+                run.state["resources"] = []
+                with patch.object(module.time, "sleep"):
+                    if outcome == "persistent-failure":
+                        with self.assertRaisesRegex(RuntimeError, "three transient API"):
+                            run.create(self.item)
+                        self.assertEqual(3, kube.posts)
+                    else:
+                        row = run.create(self.item)
+                        self.assertEqual("created-uid", row["uid"])
+                        self.assertEqual(1 if outcome == "already-created" else 2, kube.posts)
+                self.assertEqual(1, len(run.state["resources"]))
+                for index, (method, _, _) in enumerate(kube.calls):
+                    if method == "POST" and index:
+                        self.assertEqual("GET", kube.calls[index - 1][0])
+
+    def test_failed_create_never_adopts_another_owner(self):
+        class CollisionKube(FakeKube):
+            def call(self, method, path, body=None, **kwargs):
+                result = super().call(method, path, body, **kwargs)
+                if method == "POST":
+                    self.obj["metadata"]["labels"][module.LABEL] = "someone-else"
+                    return 500, None
+                return result
+
+        kube = CollisionKube()
+        with self.assertRaisesRegex(RuntimeError, "owner mismatch"):
+            self.runner(kube).create(self.item)
+        self.assertEqual(1, sum(method == "POST" for method, _, _ in kube.calls))
+
     def test_existing_resource_is_never_adopted(self):
         kube = FakeKube(self.item)
         run = self.runner(kube)
