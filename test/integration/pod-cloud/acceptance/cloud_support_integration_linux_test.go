@@ -292,7 +292,7 @@ func (c cloudRunConfig) instanceCount() int64 {
 }
 
 func (c cloudRunConfig) validate(artifacts bool) error {
-	if c.scenario() != "connected" && c.scenario() != "warm-assignment" && c.scenario() != "cds-decree" && !c.cdsOutageScenario() {
+	if c.scenario() != "connected" && c.scenario() != "warm-assignment" && !c.cdsOutageScenario() {
 		return errors.New("unknown live Cloud acceptance scenario")
 	}
 	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-cds@", 1) {

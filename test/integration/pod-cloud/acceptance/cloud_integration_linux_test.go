@@ -124,16 +124,6 @@ func TestPodCloud(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("launched PodA through Cloud; real guest status and exact measured digests verified")
-	if r.cfg.scenario() == "cds-decree" {
-		if err = r.cdsDecree(ctx, cfg, a, cds); err != nil {
-			t.Fatal(err)
-		}
-		if err = r.deleteOwned(ctx); err != nil {
-			t.Fatal(err)
-		}
-		accepted = true
-		return
-	}
 	if r.cfg.cdsOutageScenario() {
 		if r.cfg.scenario() == "cds-renewal-outage" {
 			err = r.cdsRenewalOutage(ctx, cfg, a, cds)

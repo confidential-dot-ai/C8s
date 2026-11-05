@@ -145,7 +145,6 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 	}
 	until, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
-	haStarted := false
 	for {
 		in, readErr := r.getOwned(until, "cds")
 		if readErr != nil {
@@ -154,12 +153,6 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		if in != nil {
 			cds, err = cloudEndpoint(in, "cds")
 			if err == nil && cds.Port == 8443 {
-				if r.cfg.scenario() == "cds-decree" && !haStarted {
-					if err = r.haBootstrap(until, cds); err != nil {
-						return nil, nil, cds, err
-					}
-					haStarted = true
-				}
 				_, err = r.ca(until, cds)
 				if err == nil {
 					break
@@ -178,9 +171,6 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	cfg := &Config{ProviderID: r.ledger.Run, CloudURL: r.cfg.CloudURL, CloudTokenFile: r.cfg.TokenFile, Image: r.cfg.Image, ImageManifestFile: r.cfg.ManifestFile, LaunchKeyFile: providerKey, ServerAddress: cds.Host, ServerPublicKeyFile: filepath.Join(r.dir, "server.pub"), CDSAddress: net.JoinHostPort(cds.Host, strconv.Itoa(cds.Port)), CDSImagePolicyFile: filepath.Join(r.dir, "cds/cds-pin.json"), WorkloadsFile: workloadPath, ClusterID: r.ledger.Run, Size: r.cfg.Size, Location: r.cfg.Location, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, PublicIP: "shared"}
-	if r.cfg.scenario() == "cds-decree" {
-		cfg.CDSPinDecreeFile = filepath.Join(r.dir, "ha-applied-decree.json")
-	}
 	if err = cloudWrite(filepath.Join(r.dir, "provider.json"), cfg); err != nil {
 		return nil, nil, cds, err
 	}

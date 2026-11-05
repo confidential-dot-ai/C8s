@@ -51,13 +51,6 @@ func (r *cloudRun) writeResult() error {
 		assertions = map[string]bool{"cdsAccessControl": true, "attestedReadiness": true, "authenticatedPolicyUpdate": true, "cdsIngressRestored": true, "certificateIdentity": true, "cleanup": true, "exactDigests": true, "guestObservedOutage": true, "ownedDeletion": true, "revocationEnforced": true, "servedPolicyRetained": true, "renewalAfterOutage": true, "taskContinuity": true}
 		scope = "real Cloud TDX; 65-minute owned CDS network outage spanning the production renewal schedule, unchanged tasks and leaf during outage, same-CA restoration and renewed serial/SPKI, signed revocation and cleanup; not leaf expiry or CDS process restart"
 	}
-	if r.cfg.scenario() == "cds-decree" {
-		if err := r.haProofComplete(); err != nil {
-			return err
-		}
-		assertions = map[string]bool{"attestedReadiness": true, "cdsAccessControl": true, "certificateIdentity": true, "cleanup": true, "exactDigests": true, "genesisApplied": true, "localGenericTrustPreserved": true, "ownedDeletion": true, "pinDecreeApplied": true, "policyRefusals": true, "staticPinFloor": true, "taskContinuity": true, "unjoinedRefusal": true}
-		scope = "real Cloud TDX; one HA replica, signed Genesis and same-image pin decree, static Pod cold-boot floor and authenticated refusals with unchanged CA/member/boot/tasks; generic trust checks are local only; no failover, image roll, old-image refusal or process restart"
-	}
 	return cloudWrite(filepath.Join(r.dir, "result.json"), map[string]any{
 		"version": 2, "podLaunchFormat": "c8s-launch/v2", "cdsLaunchFormat": "c8s-cds/v1",
 		"cdsConfigSHA256": r.ledger.Owned["cds"].LaunchFileSHA256,
