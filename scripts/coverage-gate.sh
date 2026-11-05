@@ -30,7 +30,7 @@ profile="${2:-coverage.out}"
 unmeasured_pattern() {
   local module
   module=$(GOWORK=off go list -m)
-  printf '%s' "(${module}/test/workflows|${module}/test/tdxpod|${module}/test/integration/pod-runtime)"
+  printf '%s' "(${module}/test/workflows|${module}/test/tdxpod|${module}/test/integration/pod-runtime|${module}/test/integration/pod-cloud)"
 }
 
 percent() { # per-package coverage table from a coverprofile: "<pct> <stmts> <pkg>"
