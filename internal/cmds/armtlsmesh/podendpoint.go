@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -53,6 +54,10 @@ type podEndpointConfig struct {
 	// probes are the health-port paths the injector rewrote the pod's
 	// application probes onto, from MeshProbesEnv.
 	probes []string
+	// connectSocket is the guest's connect broker, from MeshConnectSocketEnv.
+	// Set, the guest opens every peer connection and the endpoint dials none
+	// itself; unset, as in a member pod, the endpoint dials its peers.
+	connectSocket string
 }
 
 func newArmtlsMeshCommand() *cobra.Command {
@@ -68,11 +73,16 @@ original destination on one of the pod's own addresses.
 
 Each application probe the injector moved onto the health port is named in
 ${C8S_MESH_PROBES}. The endpoint forwards those paths, and no others, to the
-pod's own addresses, and answers with the application's status code alone.`,
+pod's own addresses, and answers with the application's status code alone.
+
+A guest Pod's endpoint names the guest's connect broker in
+${C8S_MESH_CONNECT_SOCKET}; the guest then opens every peer connection and the
+endpoint dials none itself.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.probes = workloadclaims.SplitMeshProbePaths(os.Getenv(workloadclaims.MeshProbesEnv))
+			cfg.connectSocket = os.Getenv(workloadclaims.MeshConnectSocketEnv)
 			return runPodEndpoint(cmd.Context(), &cfg, podOutboundPort, podInboundPort, podHealthPort)
 		},
 	}
@@ -119,6 +129,12 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 	if err != nil {
 		return nil, err
 	}
+	dialPeer := dialPeerDirectly
+	if socket := c.connectSocket; socket != "" {
+		dialPeer = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+			return connectbroker.Dial(ctx, socket, dst)
+		}
+	}
 	return &podEndpoint{
 		credentials: &credentials{
 			volume: volume,
@@ -126,6 +142,7 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 		},
 		own:         own,
 		origDst:     defaultOrigDstFunc,
+		dialPeer:    dialPeer,
 		logger:      logger,
 		bufPool:     newBufPool(),
 		probes:      probes,
@@ -167,6 +184,9 @@ type podEndpoint struct {
 	credentials *credentials
 	own         podAddresses
 	origDst     origDstFunc
+	// dialPeer opens the transport to a peer; the armTLS handshake runs on it.
+	// Nil dials directly, as a member pod does.
+	dialPeer    func(context.Context, netip.AddrPort) (net.Conn, error)
 	logger      *slog.Logger
 	bufPool     *bufPool
 	probes      probeTargets
@@ -340,13 +360,7 @@ func (e *podEndpoint) handleOutbound(ctx context.Context, app net.Conn) {
 		log.Warn("refusing a captured connection", "dst", dst, "error", err)
 		return
 	}
-	peer, err := (&tls.Dialer{
-		Config: g.clientTLS,
-		NetDialer: &net.Dialer{
-			Timeout:   podDialTimeout,
-			KeepAlive: podKeepAlive,
-		},
-	}).DialContext(ctx, "tcp", dst.String())
+	peer, err := e.dialMesh(ctx, g.clientTLS, dst)
 	if err != nil {
 		log.Warn("armTLS dial failed", "dst", dst, "error", err)
 		return
@@ -431,13 +445,11 @@ func (e *podEndpoint) requireDeliverable(dst netip.AddrPort) error {
 	return e.rejectMeshPort(dst)
 }
 
-// requireMeshDestination holds that a captured connection leaves the pod, and
-// enters its peer on an application port rather than a mesh port.
+// requireMeshDestination holds that a captured connection leaves the pod.
+// A provider may translate any remote port to the peer's application port;
+// requireDeliverable still excludes local endpoint control ports.
 func (e *podEndpoint) requireMeshDestination(dst netip.AddrPort) error {
-	if err := e.rejectOwnAddress(dst.Addr()); err != nil {
-		return err
-	}
-	return e.rejectMeshPort(dst)
+	return e.rejectOwnAddress(dst.Addr())
 }
 
 func (e *podEndpoint) rejectOwnAddress(addr netip.Addr) error {
@@ -596,4 +608,30 @@ func (e *podEndpoint) handleReady(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.Write([]byte("ready\n"))
+}
+
+// dialMesh opens the transport to dst and completes the armTLS handshake on
+// it, both within podDialTimeout.
+func (e *podEndpoint) dialMesh(ctx context.Context, config *tls.Config, dst netip.AddrPort) (*tls.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, podDialTimeout)
+	defer cancel()
+	dial := e.dialPeer
+	if dial == nil {
+		dial = dialPeerDirectly
+	}
+	raw, err := dial(ctx, dst)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// dialPeerDirectly is a member pod's transport: its own captured TCP dial.
+func dialPeerDirectly(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	return (&net.Dialer{KeepAlive: podKeepAlive}).DialContext(ctx, "tcp", dst.String())
 }
