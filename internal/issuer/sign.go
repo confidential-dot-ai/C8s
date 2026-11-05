@@ -39,7 +39,8 @@ type SignCSRParams struct {
 	// AssignedWorkloadID, when set, is stamped as the assigned-workload-ID
 	// extension (armtls.OIDAssignedWorkloadID): the tenant identity a pod
 	// CVM's verified claims carried. The caller MUST have verified the
-	// claims the value came from — SignCSR does not re-verify.
+	// claims the value came from — SignCSR does not re-verify
+	// (docs/armtls.md, "Pod CVM issuance").
 	AssignedWorkloadID string
 }
 
