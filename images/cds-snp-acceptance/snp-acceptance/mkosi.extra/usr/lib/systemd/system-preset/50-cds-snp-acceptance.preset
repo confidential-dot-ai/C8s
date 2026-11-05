@@ -1,0 +1,2 @@
+enable cds-snp-acceptance.service
+enable cds-snp-acceptance-expiry.timer

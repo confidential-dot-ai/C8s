@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="$(cd "$IMAGE_DIR/../.." && pwd)"
+: "${ACCEPTANCE_BUILD_DIR:?dedicated output directory required}"
+mkdir -p "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin"
+cd "$SOURCE"
+export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off
+go build -mod=readonly -trimpath -buildvcs=false -o "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/c8s" ./cmd/c8s
+go test -mod=readonly -trimpath -buildvcs=false -c -tags integration -o "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/cds-snp-acceptance" ./test/integration/cdsha
+go build -mod=readonly -trimpath -buildvcs=false -o "$ACCEPTANCE_BUILD_DIR/verify" ./test/pilot/cds-sealed-recovery/snp-integrated
+git rev-parse HEAD > "$ACCEPTANCE_BUILD_DIR/source-parent.txt"
+git diff --binary HEAD > "$ACCEPTANCE_BUILD_DIR/source.diff"
+sha256sum "$ACCEPTANCE_BUILD_DIR/extra/usr/local/bin/"* "$ACCEPTANCE_BUILD_DIR/verify" > "$ACCEPTANCE_BUILD_DIR/binaries.sha256"
+go version > "$ACCEPTANCE_BUILD_DIR/go-version.txt"
+cp "$IMAGE_DIR/kernel.config" "$ACCEPTANCE_BUILD_DIR/kernel.config"
+cp "$SOURCE/.github/build-pins.json" "$ACCEPTANCE_BUILD_DIR/build-pins.json"

@@ -133,6 +133,10 @@ func processReadLease() time.Duration {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CDSHA_SNP_ACCEPTANCE") == "1" {
+		runSNPTestMain(m)
+		return
+	}
 	dir, err := os.MkdirTemp("", "cdsha-it-")
 	if err != nil {
 		panic(err)
@@ -415,6 +419,9 @@ func (c *cluster) start(i int) *replica {
 // this CDS image and the launch file of this cluster's replicas.
 func (c *cluster) attestationAPI(name, measurement string) string {
 	c.t.Helper()
+	if snpHardware != nil {
+		return "http://127.0.0.1:9090"
+	}
 	port := freePort(c.t)
 	launch := runtimemeasure.HostData(c.config)
 	c.run(name+"-attestation-api", built.api, nil, []string{
@@ -567,7 +574,7 @@ func (c *cluster) genesis(r *replica) {
 func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion uint64) {
 	c.t.Helper()
 	reported := c.awaitStatus(r)
-	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(c.measurement(), string(c.config))))
 	if err != nil {
 		c.t.Fatal(err)
 	}

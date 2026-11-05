@@ -334,7 +334,7 @@ func startPilotWorkload(c *cluster, listener net.Listener, host string) *pilotWo
 	t := c.t
 	t.Helper()
 	w := &pilotWorkload{c: c, apiURL: c.attestationAPI("workload-node", seededNodeImage.mrtd), key: newKey(t)}
-	pins, err := refvalues.ParseRendered([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	pins, err := refvalues.ParseRendered([]byte(testutil.CDSPinDocument(c.measurement(), string(c.config))))
 	if err != nil {
 		t.Fatal(err)
 	}
