@@ -71,29 +71,55 @@ func (n *Node) checkPeer(ctx context.Context, address string) error {
 	return objectwal.ErrRequestMismatch
 }
 
+// One immutable snapshot binds a transport and its TLS connection pool to the
+// committed image policy that created them. WAL forwarding already runs in the
+// bounded log actor; atomic publication also keeps shutdown/readers race-safe.
+type pinnedPeerClient struct {
+	http    *http.Client
+	intent  string
+	version uint64
+}
+
 func (n *Node) forwardingClient() (*http.Client, error) {
-	if client := n.peerClient.Load(); client != nil {
-		return client, nil
+	for {
+		if n.ctx.Err() != nil {
+			return nil, objectwal.ErrClosed
+		}
+		core := n.fsm.ClusterState()
+		if core.PinsDecree == nil || core.PinsDecree.Decree.CDSPins == nil {
+			return nil, errors.New("object WAL: no committed CDS pins")
+		}
+		intent := core.PinsDecree.Decree.IntentID
+		previous := n.peerClient.Load()
+		if previous != nil {
+			if previous.intent == intent {
+				return previous.http, nil
+			}
+			if previous.version > core.Version {
+				continue // A concurrent publication observed a later FSM version.
+			}
+		}
+		pins, err := core.PinsDecree.Decree.CDSPins.WithLaunchFile(n.cfg.LaunchFile)
+		if err != nil {
+			return nil, err
+		}
+		client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(pins.Policy()), n.cfg.AttestationURL)
+		if err != nil {
+			return nil, err
+		}
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		next := &pinnedPeerClient{http: client, intent: intent, version: core.Version}
+		if !n.peerClient.CompareAndSwap(previous, next) {
+			client.CloseIdleConnections()
+			continue
+		}
+		if previous != nil {
+			previous.http.CloseIdleConnections()
+		}
+		// Recheck through the loop before returning: a pin update may have
+		// applied while this client was constructed. Already in-flight work
+		// keeps its earlier authorization; this cannot recall an issued key.
 	}
-	core := n.fsm.ClusterState()
-	if core.PinsDecree == nil || core.PinsDecree.Decree.CDSPins == nil {
-		return nil, errors.New("object WAL: no committed CDS pins")
-	}
-	pins, err := core.PinsDecree.Decree.CDSPins.WithLaunchFile(n.cfg.LaunchFile)
-	if err != nil {
-		return nil, err
-	}
-	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(pins.Policy()), n.cfg.AttestationURL)
-	if err != nil {
-		return nil, err
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	// This pilot supports SetNodeImages, but no CDS image/launch rotation.
-	if !n.peerClient.CompareAndSwap(nil, client) {
-		client.CloseIdleConnections()
-		client = n.peerClient.Load()
-	}
-	return client, nil
 }
 
 func (n *Node) forward(ctx context.Context, owner objectwal.Owner, request objectwal.ForwardRequest) error {

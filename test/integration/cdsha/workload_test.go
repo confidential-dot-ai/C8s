@@ -330,11 +330,17 @@ func (w *pilotWorkload) issuanceBurst(secret []byte) {
 	}
 }
 
-func startPilotWorkload(c *cluster, listener net.Listener, host string) *pilotWorkload {
+func startPilotWorkload(c *cluster, listener net.Listener, host string, cdsImages ...string) *pilotWorkload {
 	t := c.t
 	t.Helper()
 	w := &pilotWorkload{c: c, apiURL: c.attestationAPI("workload-node", seededNodeImage.mrtd), key: newKey(t)}
 	pins, err := refvalues.ParseRendered([]byte(testutil.CDSPinDocument(c.measurement(), string(c.config))))
+	if len(cdsImages) != 0 {
+		// The rolling-image fixture explicitly trusts the operator's overlap
+		// set for inventory callbacks; the recovery authority independently
+		// enforces the current committed image policy for every new grant.
+		pins, err = c.pinDocument(cdsImages...).WithLaunchFile(c.config)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

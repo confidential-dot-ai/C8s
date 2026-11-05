@@ -105,11 +105,12 @@ continues to keep `full_acceptance_passed` and `production_qualified` false.
   solely for baseline comparisons; this is not a migration of old sealed roots.
 - **Policy control:** infrastructure administrators must not also control the
   policy-signing keys if the requirement is to exclude them from CA access.
-- **Production wiring:** the new authority is a library exercised by the pilot
-  fixture, not a deployed key service. Signed image transitions use the existing
-  FSM/WAL command format in the focused tests. The object backend's public
-  decree endpoint still needs its broader image-upgrade lifecycle implemented;
-  this change does not claim that running retired CDS replicas lose keys.
+- **Production wiring:** the authority is a library exercised by the pilot
+  fixture, not a deployed key service. The object backend now accepts signed
+  image transitions through its public decree endpoint, with
+  [interrupted-upgrade process coverage](cds-storage-image-transitions.md).
+  Native custody-image upgrades remain unqualified; running retired replicas
+  do not lose keys they already hold.
 
 ## Hardware run status
 
@@ -130,5 +131,7 @@ wired the hardware root into WALAuthority and the real CDS processes. After both
 CDS and custody VMs were destroyed, replacements on the same chip and image
 recovered the same CA, rejected an unexpired spent request and enforced the
 acknowledged revocation. A new authorization let the original leaf read the
-original secret. Independent physical roots, firmware policy and safe image
-retirement remain unqualified; full acceptance and production qualification are false.
+original secret. A subsequent [cross-host run](cds-cross-host-recovery.md) enrolled
+an independent second chip and recovered there with the original host excluded.
+Loss of every enrolled root, firmware policy and custody-image retirement remain
+unqualified; full acceptance and production qualification are false.

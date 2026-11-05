@@ -1,0 +1,59 @@
+{
+  "verified_at": "2026-11-05T08:55:05.759781+00:00",
+  "source_commit": "87bcefaa3dfa978a34ae9225f1ad463640c95518",
+  "source_tree": "c1458fe533e1036ef36def0982b089def705a3bd",
+  "scenario": "TestStorageImageTransitionAndInterruptedRecovery",
+  "backends": {
+    "object-wal-current": {
+      "passed": true,
+      "duration_seconds": 9.18
+    },
+    "transactional-metadata-current": {
+      "passed": true,
+      "duration_seconds": 10.45
+    }
+  },
+  "release_binaries": true,
+  "real_processes": true,
+  "hardware_attestation": false,
+  "hardware_custody": false,
+  "ci_used": false,
+  "cloud_mutations": false,
+  "shared_production_rollout": false,
+  "full_acceptance_passed": false,
+  "production_ready": false,
+  "checks": [
+    "unapproved image denied a new grant",
+    "overlap policy accepts replacement image",
+    "cached peer pins refreshed without unnecessary writer takeover",
+    "interrupted mixed-image recovery uses original capsule and empty local databases",
+    "same CA after both cold recoveries",
+    "still-valid spent token rejected on every recovered replica",
+    "acknowledged revocation preserved",
+    "original leaf and secret positive control after fresh authorization",
+    "retired image denied new grant after authority restart",
+    "stale incarnation grant refused"
+  ],
+  "local_checks": {
+    "object_backend_race": true,
+    "existing_release_policy_race": true,
+    "go_vet": true
+  },
+  "log_sha256": {
+    "process-upgrade-04.log": "5e680b1dd58e505906a0dee12d77b494124bd2c51b592dec68737857782c171b",
+    "object-race.log": "a4e6b38c13543c7239a308485e5fe7f10b48ebcb9aad1f971442179748f27ea9",
+    "race.log": "e9b4cd1cfe387bed119183b533c710916445ea6bad584aef896a9601f4d21aa6",
+    "vet-02.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "log_notes": {
+    "race.log": "Recovery-authority race checks passed; object compilation initially stopped on an unused import. Corrected object suite passed in object-race.log.",
+    "process-upgrade-04.log": "Final passing run. Initial process run used a fixture that trusted only the old image for inventory callbacks; the final fixture explicitly trusts the overlap set."
+  },
+  "not_qualified": [
+    "native custody image upgrades",
+    "TDX hardware recovery",
+    "dynamic inventory pin retirement",
+    "recall of previously issued keys",
+    "production performance"
+  ]
+}

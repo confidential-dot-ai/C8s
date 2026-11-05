@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -72,7 +71,7 @@ type Node struct {
 	secrets       *secrets.Handle
 	bindings      *sandboxledger.Handle
 	forwardKey    atomic.Pointer[[32]byte]
-	peerClient    atomic.Pointer[http.Client]
+	peerClient    atomic.Pointer[pinnedPeerClient]
 	incoming      chan struct{}
 	incomingBytes atomic.Int64
 	recovery      *cdsrecovery.Recipient // immutable recipient; only control actor opens grants
@@ -218,7 +217,7 @@ func (n *Node) Close() {
 		n.metadata.Close()
 	}
 	if client := n.peerClient.Load(); client != nil {
-		client.CloseIdleConnections()
+		client.http.CloseIdleConnections()
 	}
 }
 
@@ -416,7 +415,7 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (cdsha.Delivered, error) {
 		if err != nil {
 			return cdsha.Delivered{}, err
 		}
-	case cdsdecree.SetNodeImages:
+	case cdsdecree.SetNodeImages, cdsdecree.UpdateMeasurements:
 		// Policy changes retain exactly the shared FSM's validation.
 	case cdsdecree.RotateKey:
 		// The signed intent and base version still pass through the shared
@@ -432,7 +431,7 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (cdsha.Delivered, error) {
 			return cdsha.Delivered{}, err
 		}
 	default:
-		return cdsha.Delivered{}, fmt.Errorf("object WAL pilot supports Genesis, SetNodeImages and RotateKey; %s requires a separate lifecycle design", d.Kind)
+		return cdsha.Delivered{}, fmt.Errorf("object WAL pilot supports Genesis, SetNodeImages, UpdateMeasurements and RotateKey; %s requires a separate lifecycle design", d.Kind)
 	}
 	defer clear(de.MeshCAKey)
 	res, err := n.propose(cdsha.Entry{Kind: cdsha.KindDecree, Decree: &de})
