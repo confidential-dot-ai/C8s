@@ -2,9 +2,12 @@ package controller
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -80,5 +83,22 @@ func TestPodProviderSecretCacheStaysInItsNamespace(t *testing.T) {
 		if configured != enabled {
 			t.Fatalf("Secret cache configured=%t, enabled=%t", configured, enabled)
 		}
+	}
+}
+
+func TestPodProviderWithoutInstalledConfigurationIsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(present, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := Options{PodCVMProviderConfig: filepath.Join(dir, "absent", "config.json"), LeaderElectionNS: "system"}
+	if got := withPresentPodCVMProvider(missing, logr.Discard()); got.PodCVMProviderConfig != "" {
+		t.Fatalf("absent configuration kept the provider enabled: %q", got.PodCVMProviderConfig)
+	}
+	// An invalid file stays configured so setupPodCVMProvider fails on it.
+	invalid := Options{PodCVMProviderConfig: present}
+	if got := withPresentPodCVMProvider(invalid, logr.Discard()); got.PodCVMProviderConfig != present {
+		t.Fatal("present configuration was dropped")
 	}
 }

@@ -118,6 +118,15 @@ invocations can use the same flag. Leader election and Pod admission webhooks
 must remain enabled. The configuration namespace must match
 `--leader-election-namespace`.
 
+The Secret volume is optional. When `config.json` is absent, the operator logs
+that the provider is disabled and runs without it, including its webhook
+routing; a present but invalid configuration still stops the operator. The
+measured node image renders the chart with the provider enabled and
+`existingSecret: pod-cvm-provider`, so on a baked server create that Secret in
+`c8s-system` after boot, then restart the operator
+(`kubectl -n c8s-system rollout restart deployment/c8s-operator`). The chart
+default stays disabled.
+
 Keep this namespace restricted to platform administrators. It contains the
 launch signing key, Cloud credential and durable provider records. The chart
 grants Secret access only in the release namespace. The provider additionally

@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -133,6 +135,7 @@ func init() {
 func Run(ctx context.Context, opts Options) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
+	opts = withPresentPodCVMProvider(opts, logger)
 
 	config, err := getKubeConfig(opts.Kubeconfig)
 	if err != nil {
@@ -321,6 +324,21 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		return fmt.Errorf("add readyz: %w", err)
 	}
 	return nil
+}
+
+// withPresentPodCVMProvider disables the provider when its configuration file
+// does not exist. A measured image enables the provider before an administrator
+// creates the Secret holding that file; the operator then runs without it until
+// restarted. A present but invalid configuration still fails setup.
+func withPresentPodCVMProvider(opts Options, logger logr.Logger) Options {
+	if opts.PodCVMProviderConfig == "" {
+		return opts
+	}
+	if _, err := os.Stat(opts.PodCVMProviderConfig); errors.Is(err, fs.ErrNotExist) {
+		logger.Info("pod CVM provider disabled: its configuration is not installed", "path", opts.PodCVMProviderConfig)
+		opts.PodCVMProviderConfig = ""
+	}
+	return opts
 }
 
 var loadPodCVMProvider = podprovider.LoadConfig

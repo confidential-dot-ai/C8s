@@ -197,6 +197,10 @@ func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra 
 		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
 		"--set", "kubeStateMetrics.enabled=true",
 		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
+		// The measured operator always carries the Pod CVM provider; an
+		// administrator enables it after boot by creating this Secret.
+		"--set", "operator.podCVMProvider.enabled=true",
+		"--set-string", "operator.podCVMProvider.existingSecret=pod-cvm-provider",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
