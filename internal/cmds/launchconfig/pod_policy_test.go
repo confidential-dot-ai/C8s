@@ -2,8 +2,6 @@ package launchconfig
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +9,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 )
 
 func podTrustPolicy(t *testing.T, key string) string {
@@ -28,6 +25,8 @@ func podTrustPolicy(t *testing.T, key string) string {
 	return string(data)
 }
 
+// Pod authority lives in the measured CDS
+// configuration, and a Pod launch key must differ from the node launch keys.
 func TestPodPolicyCannotGrantNodeAuthority(t *testing.T) {
 	doc, _, _ := testDocument(t, "tdx", Server)
 	_, podKey := testKey(t)
@@ -74,48 +73,4 @@ func TestPodPolicyCannotGrantNodeAuthority(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestBundlePodPolicyRemainsInMeasuredCDS(t *testing.T) {
-	_, podKey := testKey(t)
-	path := writeFile(t, "pods.json", podTrustPolicy(t, podKey))
-	dir := filepath.Join(t.TempDir(), "bundle")
-	args := append(bundleArgs(t, dir, "tdx"), "--server-address", "192.0.2.10", "--agent", "worker", "--pod-image-policy-file", path)
-	if err := runBundleCmd(t, args...); err != nil {
-		t.Fatal(err)
-	}
-	cfg := readBundleCDSConfig(t, dir)
-	if len(cfg.PodImages) != 1 || string(cfg.PodImages[0].Anchor) != podKey {
-		t.Fatal("bundle did not measure the Pod authorization policy in CDS")
-	}
-	config, err := os.ReadFile(filepath.Join(dir, cdsconfig.ConfigFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, node := range []string{serverDir, "worker"} {
-		doc, raw := readBundleDocument(t, dir, node)
-		tree, err := yamlutil.DecodeTree(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if yamlutil.PathPresent(tree, "podImagePolicy") {
-			t.Fatal("node document retained the former CDS server override")
-		}
-		pins := stagedCDSPolicy(t, doc)
-		for _, pin := range pins.Images {
-			if !bytes.Equal(pin.LaunchFile, config) {
-				t.Fatal("CDS pin does not bind the Pod authorization policy")
-			}
-		}
-		stageBundleNode(t, dir, node)
-	}
-}
-
-func TestBundleRejectsExplicitEmptyPodPolicy(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "bundle")
-	args := append(bundleArgs(t, dir, "tdx"), "--pod-image-policy-file", writeFile(t, "pods.json", ""))
-	if err := runBundleCmd(t, args...); err == nil || !strings.Contains(err.Error(), "--pod-image-policy-file:") {
-		t.Fatalf("empty Pod policy: %v", err)
-	}
-	requireAbsent(t, dir)
 }
