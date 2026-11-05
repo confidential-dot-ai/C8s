@@ -90,6 +90,16 @@ tunnel on retries, retaining its original deadline and requiring the same
 verified response. A regression test reproduces the still-alive but unusable
 forwarder. Boot logs are diagnostic observations, not signed recovery evidence.
 
+The next attempt reached the probe, but AMD verification requested an `Unknown`
+product's certificate endpoint and failed. All owned resources were removed;
+the final node and VM readiness observations matched the baseline. The host
+client now requires an independently expected product line, uses it to verify
+v2 certificate product extensions, and rejects mismatching or unknown signed
+CPUID in newer reports. Signature, embedded AMD root trust and issuer revocation
+checks remain mandatory. This host-only change does not require rebuilding or
+replacing the measured guest image. Both selected workers advertise Genoa;
+that inventory is a selection hint, not attestation evidence.
+
 ## Required hardware evidence
 
 The sequential fixture must seal, open in the same live guest as a control,

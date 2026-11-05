@@ -10,13 +10,65 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/go-sev-guest/abi"
+	spb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
 )
+
+type refusingKDS struct{ urls []string }
+
+func (k *refusingKDS) Get(url string) ([]byte, error) {
+	k.urls = append(k.urls, url)
+	return nil, errors.New("offline test refuses certificate fetch")
+}
+
+func TestV2VerifierUsesExplicitRemoteProductAndFailsClosed(t *testing.T) {
+	for _, invalid := range []string{"", "Unknown", "genoa", "Genoa-B1"} {
+		if err := request([]string{"-product-line", invalid}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "expected AMD product") {
+			t.Fatalf("missing/invalid product reached request: %q: %v", invalid, err)
+		}
+	}
+	d, _, _ := deviceFixture()
+	for _, product := range []string{"Milan", "Genoa", "Turin"} {
+		opts, err := verificationOptions(product)
+		if err != nil || !opts.CheckRevocations || opts.DisableCertFetching || len(opts.TrustedRoots) != 0 {
+			t.Fatalf("weakened verification for %s: %v", product, err)
+		}
+		getter := &refusingKDS{}
+		opts.Getter = getter
+		if err := verify.SnpReport(d.report, opts); err == nil {
+			t.Fatal("unverified report accepted")
+		}
+		want := "https://kdsintf.amd.com/vcek/v1/" + product + "/cert_chain"
+		if len(getter.urls) != 1 || getter.urls[0] != want {
+			t.Fatalf("remote product %s selected endpoints %v", product, getter.urls)
+		}
+	}
+}
+
+func TestSignedCPUIDCannotOverrideExpectedProduct(t *testing.T) {
+	for _, product := range []string{"Milan", "Genoa", "Turin"} {
+		opts, _ := verificationOptions(product)
+		r := &spb.Report{Version: 3, Cpuid1EaxFms: abi.MaskedCpuid1EaxFromSevProduct(opts.Product)}
+		if err := checkReportProduct(r, product); err != nil {
+			t.Fatal(err)
+		}
+		for _, different := range []string{"Milan", "Genoa", "Turin"} {
+			if different != product && checkReportProduct(r, different) == nil {
+				t.Fatalf("%s report accepted for %s", product, different)
+			}
+		}
+	}
+	if checkReportProduct(&spb.Report{Version: 3, Cpuid1EaxFms: 1}, "Genoa") == nil {
+		t.Fatal("unknown signed CPUID accepted")
+	}
+}
 
 func TestExchangeBindsFreshRequestResultAndChip(t *testing.T) {
 	d, measurement, launch := deviceFixture()

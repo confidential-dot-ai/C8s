@@ -345,6 +345,7 @@ class Run:
         # VM Ready is not guest service readiness. Only retry failed connects;
         # a sent seal with a lost response is safe (disposable independent keys).
         command = [self.args.probe, "request", "-operation", operation, "-expect", expected,
+            "-product-line", self.args.product_line,
             "-url", f"http://127.0.0.1:{port}/v1/probe",
             "-measurement", measurement, "-launch-file", str(self.directory / "launch.json"),
             "-capsule-file", str(self.directory / "sentinel.json")]
@@ -393,6 +394,7 @@ class Run:
         measurement, hashes = image_inputs(self.args.image)
         need(not self.state["resources"], "existing journal: run cleanup, then choose a new directory")
         self.state["artifact_hashes"], self.state["measurement"] = hashes, measurement
+        self.state["expected_product_line"] = self.args.product_line
         self.state["tool_hashes"] = {"probe": digest(self.args.probe), "renderer": digest(self.args.renderer), "runner": digest(__file__)}
         _, storage = self.kube.call("GET", "/apis/storage.k8s.io/v1/storageclasses/local-path")
         need(storage.get("reclaimPolicy") == "Delete" and storage.get("volumeBindingMode") == "WaitForFirstConsumer", "owned disk cleanup/placement contract unavailable")
@@ -482,6 +484,7 @@ def main():
     for field in ("image", "renderer", "probe", "tools-image"):
         parser.add_argument("--" + field)
     parser.add_argument("--nodes", nargs=2)
+    parser.add_argument("--product-line", choices=["Milan", "Genoa", "Turin"])
     args = parser.parse_args()
     os.umask(0o077)
     Path(args.directory).mkdir(parents=True, exist_ok=True)
@@ -492,7 +495,7 @@ def main():
         need(run.path.exists(), "cleanup requires an existing ownership journal")
         run.cleanup()
         return
-    need(all(getattr(args, f) for f in ("image", "renderer", "probe", "tools_image", "nodes")), "run requires complete measured inputs")
+    need(all(getattr(args, f) for f in ("image", "renderer", "probe", "tools_image", "nodes", "product_line")), "run requires complete measured inputs and expected AMD product line")
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda signum, frame: (_ for _ in ()).throw(InterruptedError("test interrupted")))
     signal.signal(signal.SIGALRM, lambda signum, frame: (_ for _ in ()).throw(TimeoutError("45-minute test deadline")))

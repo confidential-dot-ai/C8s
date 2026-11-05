@@ -65,6 +65,7 @@ virtctl --kubeconfig "$TEST_KUBECONFIG" -n "$TEST_NAMESPACE" \
   port-forward "vmi/$OWNED_VMI" 24445:6443
 
 snp-probe request -operation seal -expect sealed \
+  -product-line "$EXPECTED_AMD_PRODUCT_LINE" \
   -measurement "$INDEPENDENT_SNP_MEASUREMENT" -launch-file ./launch.pub \
   -capsule-file ./sentinel.json > seal-receipt.json
 
@@ -72,11 +73,13 @@ snp-probe request -operation seal -expect sealed \
 # the identical measured image and launch file on the same pinned worker.
 # Re-establish the authenticated port-forward to the NEW VMI UID.
 snp-probe request -operation open -expect opened \
+  -product-line "$EXPECTED_AMD_PRODUCT_LINE" \
   -measurement "$INDEPENDENT_SNP_MEASUREMENT" -launch-file ./launch.pub \
   -capsule-file ./sentinel.json > same-chip-receipt.json
 
 # Repeat on an independently selected SNP worker/chip, one VM at a time.
 snp-probe request -operation open -expect rejected \
+  -product-line "$EXPECTED_AMD_PRODUCT_LINE" \
   -measurement "$INDEPENDENT_SNP_MEASUREMENT" -launch-file ./launch.pub \
   -capsule-file ./sentinel.json > other-chip-receipt.json
 ```
@@ -86,6 +89,10 @@ request and response, including ciphertext and outcome. The host client
 checks the independent image/configuration pins, non-debug/non-migratable
 VMPL-0 policy, unmasked VCEK chip identity, report signature and issuer
 revocation. A network error cannot count as the different-chip rejection.
+The expected AMD product line (`Milan`, `Genoa` or `Turin`) is explicit:
+v2 reports use it for certificate selection and product-extension verification;
+newer reports must also match it in their signed CPUID. Unknown products fail
+closed. The verifier's own CPU is never used to identify the remote guest.
 Only an authentication failure after successful hardware key derivation counts
 as rejection; a device or firmware error fails the run. Capsule files contain
 only ciphertext and public metadata; creation refuses
@@ -139,6 +146,7 @@ python3 "$C8S_SOURCE/test/pilot/cds-sealed-recovery/hardware/run.py" run \
   --image "$CONFOS_DIR/output/cds-snp-probe" \
   --renderer "$PROBE_BUILD_DIR/render" \
   --probe "$PROBE_BUILD_DIR/extra/usr/local/bin/snp-probe" \
+  --product-line "$EXPECTED_AMD_PRODUCT_LINE" \
   --tools-image "$PINNED_EXISTING_TOOLS_IMAGE" --nodes "$SNP_WORKER_A" "$SNP_WORKER_B"
 ```
 

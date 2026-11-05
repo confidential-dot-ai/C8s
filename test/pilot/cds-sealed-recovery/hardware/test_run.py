@@ -139,6 +139,7 @@ class LifecycleTests(unittest.TestCase):
     def test_live_process_with_dead_tunnel_is_replaced_before_retry(self):
         run = self.runner(FakeKube())
         run.args.virtctl, run.args.kubeconfig, run.args.probe = "virtctl", "test-config", "probe"
+        run.args.product_line = "Genoa"
         processes = []
 
         class Forwarder:
@@ -159,6 +160,8 @@ class LifecycleTests(unittest.TestCase):
             return process
 
         def request(*args, **kwargs):
+            command = args[1]
+            self.assertEqual("Genoa", command[command.index("-product-line") + 1])
             if len(processes) == 1:
                 # The process remains alive even though it accepts no more
                 # connections after the initial guest-dial failure.

@@ -26,6 +26,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/google/go-sev-guest/abi"
 	"github.com/google/go-sev-guest/client"
+	"github.com/google/go-sev-guest/kds"
+	spb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
 	"golang.org/x/net/netutil"
 )
@@ -294,15 +296,40 @@ func checkReply(req probeRequest, reply probeReply, launch []byte) error {
 	return nil
 }
 
+func verificationOptions(productLine string) (*verify.Options, error) {
+	product, err := kds.ParseProductLine(productLine)
+	if err != nil {
+		return nil, fmt.Errorf("explicit expected AMD product line required: %w", err)
+	}
+	options := verify.DefaultOptions()
+	options.Product, options.CheckRevocations, options.Now = product, true, time.Now()
+	return options, nil
+}
+
+func checkReportProduct(report *spb.Report, expected string) error {
+	// v2 has no signed CPUID: the verifier checks the VCEK's product extension
+	// against options.Product. For newer reports the library prefers signed
+	// CPUID over that option, so enforce our independent expectation here too.
+	if fms := report.GetCpuid1EaxFms(); fms != 0 && kds.ProductLineFromFms(fms) != expected {
+		return fmt.Errorf("report version %d CPUID %#x maps to %q, expected %q", report.GetVersion(), fms, kds.ProductLineFromFms(fms), expected)
+	}
+	return nil
+}
+
 func request(args []string, out io.Writer) error {
 	f := flag.NewFlagSet("request", flag.ContinueOnError)
 	target := f.String("url", "http://127.0.0.1:24445/v1/probe", "authenticated local VM port-forward")
 	operation := f.String("operation", "", "seal or open")
 	pin := f.String("measurement", "", "independently built SNP measurement")
+	productLine := f.String("product-line", "", "independently expected AMD product line: Milan, Genoa, or Turin")
 	launchPath := f.String("launch-file", "", "independently approved launch bytes")
 	capsulePath := f.String("capsule-file", "", "seal: new output file; open: existing capsule")
 	expect := f.String("expect", "", "sealed, opened, or rejected")
 	if err := f.Parse(args); err != nil {
+		return err
+	}
+	options, err := verificationOptions(*productLine)
+	if err != nil {
 		return err
 	}
 	u, err := url.Parse(*target)
@@ -359,19 +386,20 @@ func request(args []string, out io.Writer) error {
 	if err := checkReply(req, reply, launch); err != nil {
 		return err
 	}
-	options := verify.DefaultOptions()
-	options.CheckRevocations, options.Now = true, time.Now()
+	r, _ := abi.ReportToProto(reply.Report) // checkReply already validated its encoding.
+	if err := checkReportProduct(r, *productLine); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if err := verify.RawSnpReportContext(ctx, reply.Report, options); err != nil {
-		return fmt.Errorf("AMD report verification: %w", err)
+		return fmt.Errorf("AMD report verification (version %d, CPUID %#x, expected %s): %w", r.GetVersion(), r.GetCpuid1EaxFms(), *productLine, err)
 	}
 	if req.Operation == "seal" && reply.Result.Outcome == *expect {
 		if err := writeNew(*capsulePath, *reply.Result.Capsule); err != nil {
 			return err
 		}
 	}
-	r, _ := abi.ReportToProto(reply.Report)
 	chipHash := sha256.Sum256(r.ChipId)
 	guestHash := sha256.Sum256(r.ReportId)
 	err = json.NewEncoder(out).Encode(struct {
@@ -379,13 +407,14 @@ func request(args []string, out io.Writer) error {
 		Reply                     probeReply   `json:"reply"`
 		ChipSHA256                string       `json:"chip_sha256"`
 		GuestReportIDSHA256       string       `json:"guest_report_id_sha256"`
+		ExpectedProductLine       string       `json:"expected_product_line"`
 		SignatureVerified         bool         `json:"signature_verified"`
 		IssuerRevocationChecked   bool         `json:"issuer_revocation_checked"`
 		MinimumTCBQualified       bool         `json:"minimum_tcb_qualified"`
 		OperatorExclusionVerified bool         `json:"operator_exclusion_verified"`
 		VersionRetirementVerified bool         `json:"version_retirement_verified"`
 		FullAcceptancePassed      bool         `json:"full_acceptance_passed"`
-	}{Request: req, Reply: reply, ChipSHA256: hex.EncodeToString(chipHash[:]), GuestReportIDSHA256: hex.EncodeToString(guestHash[:]), SignatureVerified: true, IssuerRevocationChecked: true})
+	}{Request: req, Reply: reply, ChipSHA256: hex.EncodeToString(chipHash[:]), GuestReportIDSHA256: hex.EncodeToString(guestHash[:]), ExpectedProductLine: *productLine, SignatureVerified: true, IssuerRevocationChecked: true})
 	if err != nil {
 		return err
 	}
