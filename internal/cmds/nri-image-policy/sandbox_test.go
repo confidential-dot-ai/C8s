@@ -832,6 +832,19 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	}
 }
 
+func TestValidationWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
+	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	// On the node's network, which the mesh gate leaves alone.
+	pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool { return ns.Type == "network" })
+	ctr.Annotations = map[string]string{annotationImageName: "registry/repo:tag"}
+	// fakeContainerd panics on Resolve.
+	if err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}); err != nil {
+		t.Fatalf("ValidateContainerAdjustment(no allowlist, no mesh pod) = %v, want the create admitted", err)
+	}
+}
+
 // The served entry granting the privilege is withdrawn while admission
 // resolves the tag, after the check took its snapshot: every grant must judge
 // the digest and snapshot admission judged.
