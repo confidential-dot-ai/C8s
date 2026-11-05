@@ -108,7 +108,8 @@ func dialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Du
 // Redirects are not followed for the same reason — a non-200, including a
 // redirect, is a fetch failure (connectError).
 // dialFrontDoor + this guard are a sibling of internal/routerdiscovery's
-// dialFrontDoor + newSingleConnClient — port fixes both ways.
+// dialFrontDoor + attestedDialer — port fixes both ways. This one makes a
+// single request, so it never needs the redial the library performs.
 func singleConnClient(conn *tls.Conn, timeout time.Duration) *http.Client {
 	var dialed atomic.Bool
 	return &http.Client{
@@ -157,7 +158,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 
 // evidenceFromDiscovery parses a discovery document into verifiable evidence.
 // REPORTDATA = SHA-384(cert pubkey ‖ challenge), matching get-cert's issuance
-// binding (reportDataForCSR → armtls.ReportDataForKey). The parsed certificate
+// binding (attestclient nodeReportData → armtls.ReportDataForKey). The parsed certificate
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
 // pins work against discovery targets too. A CDS-issued (CA-vouched) cert in

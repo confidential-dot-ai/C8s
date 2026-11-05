@@ -1,0 +1,32 @@
+{
+  "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d": {
+    "image": "docker.io/rancher/klipper-helm:v0.13.3-build20260820",
+    "entrypoint": [
+      "entry"
+    ]
+  },
+  "sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8": {
+    "image": "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717",
+    "entrypoint": [
+      "./install-cnis.sh"
+    ]
+  },
+  "sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166": {
+    "image": "docker.io/rancher/hardened-coredns:v1.14.7-build20260819",
+    "entrypoint": [
+      "/coredns"
+    ]
+  },
+  "sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c": {
+    "image": "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
+    "entrypoint": [
+      "/metrics-server"
+    ]
+  },
+  "sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4": {
+    "image": "docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819",
+    "entrypoint": [
+      "/snapshot-controller"
+    ]
+  }
+}

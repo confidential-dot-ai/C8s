@@ -4,6 +4,8 @@ enableServiceLinks: false
 serviceAccountName: {{ include "c8s.attestationApiName" . }}
 tolerations:
   - operator: Exists
+affinity:
+  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
 containers:
   - name: attestation-api
     image: {{ include "c8s.attestationApiImage" . }}
@@ -94,7 +96,7 @@ containers:
         drop: [ALL]
       seccompProfile:
         type: RuntimeDefault
-    # HTTP, not exec: a locked node image denies every runc exec, so an
+    # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
     # exec probe can never pass there (c8s internal/cmds/c8srunc). The
     # handler runs the same check the `attest-proxy healthcheck`
     # subcommand does — a /health round-trip over the proxy's own socket —

@@ -137,6 +137,12 @@ func (h OperatorHandler) writeFailed(w http.ResponseWriter, path string, err err
 	case errors.Is(err, ErrStoreFull):
 		h.logger().Warn("operator secret write refused", "path", path, "error", err)
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
+	case errors.Is(err, ErrCapacity):
+		h.logger().Warn("operator secret write refused", "path", path, "error", err)
+		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeStateCapacity, capacityMessage)
+	case errors.Is(err, ErrUnavailable):
+		h.logger().Warn("operator secret write not committed", "path", path, "error", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 	default:
 		h.logger().Error("operator secret write failed", "path", path, "error", err)
 		http.Error(w, "secret write failed", http.StatusInternalServerError)

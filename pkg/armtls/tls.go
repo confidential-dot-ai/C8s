@@ -711,6 +711,9 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		}
 		tlsCfg.GetConfigForClient = clientCAsPerHandshake(tlsCfg, clientCAs)
 	case cfg.ClientPolicy != nil:
+		if err := requirePins(cfg.ClientPolicy.Policy); err != nil {
+			return nil, nil, err
+		}
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
 		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 	}
@@ -772,6 +775,9 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 
 	if cfg.Policy == nil {
 		return nil, nil, fmt.Errorf("armtls: Policy is required: the client verifies the server's evidence against it on every handshake")
+	}
+	if err := requirePins(cfg.Policy.Policy); err != nil {
+		return nil, nil, err
 	}
 
 	tlsCfg := &tls.Config{
@@ -876,6 +882,9 @@ type Peer struct {
 	// match was decided under, empty with WorkloadName.
 	AllowlistVersion string
 	AllowlistDigest  []byte
+	// AssignedWorkloadID is the tenant identity CDS stamped on a pod CVM's
+	// leaf (extension 1.3.6.1.4.1.66378.1.8), empty on every other leaf.
+	AssignedWorkloadID string
 	// Purpose is the TLS purpose the peer's role required of it:
 	// serverAuth for the peer a mesh client reached, clientAuth for the peer
 	// a mesh server accepted.
@@ -954,6 +963,12 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 		if sandboxID == "" {
 			return fmt.Errorf("armtls: mesh peer leaf carries no sandbox-ID extension")
 		}
+		// A damaged tenant stamp fails every relying party, not only one that
+		// expects a tenant: damage is never read as absence.
+		assigned, err := AssignedWorkloadIDFromCert(leaf)
+		if err != nil {
+			return fmt.Errorf("armtls: mesh peer assigned workload ID: %w", err)
+		}
 		if acceptPeer == nil {
 			return nil
 		}
@@ -962,8 +977,9 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 			return fmt.Errorf("armtls: mesh peer matched workload: %w", err)
 		}
 		peer := Peer{
-			SandboxID: sandboxID,
-			Purpose:   peerPurpose,
+			SandboxID:          sandboxID,
+			AssignedWorkloadID: assigned,
+			Purpose:            peerPurpose,
 		}
 		if matched != nil {
 			peer.WorkloadName = matched.Name

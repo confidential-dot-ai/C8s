@@ -1,0 +1,25 @@
+[Unit]
+Description=Local workload access to the measured hardware attester
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service nri-node-ip.service
+ConditionPathExists=|/run/confos/role-server
+ConditionPathExists=|/run/confos/role-agent
+ConditionPathExists=|/run/confos/role-pod
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/c8s attest-proxy --socket=/run/nri-image-policy/attestation-api.sock --socket-gid=65532 --upstream=http://127.0.0.1:8400
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+# Only to chgrp the socket it creates at --socket to --socket-gid, so the
+# non-root workloads in that group can connect. Nothing under /dev is
+# touched: the hardware attester is reached over --upstream on loopback.
+CapabilityBoundingSet=CAP_CHOWN
+
+[Install]
+WantedBy=multi-user.target

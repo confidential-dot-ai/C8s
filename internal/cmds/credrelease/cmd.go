@@ -30,10 +30,10 @@ func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cred-release",
 		Short: "Release a kube operator credential to the attested holder of the launch-bound key",
-		Long: "cred-release serves an armTLS endpoint that issues a short-lived\n" +
-			"kube client certificate to a caller who proves possession of the\n" +
-			"operator key whose public half was bound into the launch identity\n" +
-			"(TDX: RTMR[3]; SNP: HOSTDATA) at launch.\n" +
+		Long: "cred-release serves an armTLS endpoint that issues a kube client\n" +
+			"certificate, valid for --cert-ttl (default 7 days), to a caller who\n" +
+			"proves possession of the operator key whose public half was bound\n" +
+			"into the launch identity (TDX: RTMR[3]; SNP: HOSTDATA) at launch.\n" +
 			"It gives an external operator console-free, non-TOFU, RBAC-backed\n" +
 			"operator access with no pre-shared secret and no trust in the\n" +
 			"host. The same key may instead request a log-reader cert (role\n" +

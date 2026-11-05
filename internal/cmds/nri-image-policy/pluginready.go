@@ -47,7 +47,7 @@ var errPluginNotRunning = errors.New("plugin not running")
 // processes through hostPID, while reaching the socket would take a host mount
 // that this container's argv-pinned allowlist entry does not admit. So a plugin
 // that is alive but hung still reads as ready. An HTTP endpoint rather than an
-// exec probe because the locked node image denies every runc exec
+// exec probe because the locked node image denies every runc exec it was not granted
 // (docs/node-exec-mode.md).
 func runPluginReady(args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+pluginReadyVerb, flag.ContinueOnError)

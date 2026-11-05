@@ -250,7 +250,7 @@ func TestVerifyServerCertRejectsEachMismatchedRegister(t *testing.T) {
 		}, "RTMR[2] does not match"},
 		{"wrong rtmr3", func(r *teetypes.VerificationResult) {
 			r.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
-		}, "not bound to the expected anchor"},
+		}, "not bound to the expected launch binding"},
 		{"absent MRTD", func(r *teetypes.VerificationResult) {
 			r.Claims.LaunchDigest = ""
 		}, "no launch digest"},

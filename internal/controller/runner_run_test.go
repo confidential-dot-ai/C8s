@@ -25,7 +25,7 @@ func (m stubStartManager) Start(context.Context) error { return m.startErr }
 func stubRunWiring(t *testing.T, mgr manager.Manager, mgrErr error) {
 	t.Helper()
 	origConfig, origManager := getKubeConfig, newManager
-	getKubeConfig = func() (*rest.Config, error) { return &rest.Config{}, nil }
+	getKubeConfig = func(string) (*rest.Config, error) { return &rest.Config{}, nil }
 	newManager = func(*rest.Config, ctrl.Options) (manager.Manager, error) { return mgr, mgrErr }
 	t.Cleanup(func() { getKubeConfig, newManager = origConfig, origManager })
 }

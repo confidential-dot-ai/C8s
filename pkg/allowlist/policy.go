@@ -11,6 +11,9 @@ import (
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
+	// published are the entries that declare host ports, which belong to the
+	// whole entry rather than to a digest.
+	published []hostPortGrant
 }
 
 // BuildIndex projects an Allowlist into an admission index.
@@ -22,6 +25,9 @@ func (a *Allowlist) BuildIndex() *Index {
 		}
 		for _, c := range w.Containers {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
+		}
+		if len(w.HostPorts) > 0 {
+			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
 		}
 	}
 	return idx
@@ -167,6 +173,32 @@ func (i *Index) RoleOf(r RunningContainer) string {
 	return roles[0]
 }
 
+// ExecsOf reports the commands this policy lets a runtime wrapper start in an
+// observed container. Like a role they ride on the whole verified identity,
+// and only a declaration that fixes the command, args and mounts grants them;
+// declarations admitting one launch that disagree grant none.
+func (i *Index) ExecsOf(r RunningContainer) [][]string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = d.String()
+	var execs [][]string
+	for _, c := range i.byDigest[r.Digest] {
+		if len(c.Execs) == 0 || c.Command.Policy == PolicyAny || c.Args.Policy == PolicyAny || !c.Mounts.pinned() || !c.admits(r) {
+			continue
+		}
+		if execs != nil && !slices.EqualFunc(execs, c.Execs, slices.Equal[[]string]) {
+			return nil
+		}
+		execs = c.Execs
+	}
+	return execs
+}
+
 // BindsRoleMounts reports whether a declaration that grants this launch the
 // role also pins its mount set. A namespace whose pods separate credentials by
 // mount set admits a role container only under such a declaration, so an entry
@@ -208,11 +240,151 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 	return false
 }
 
-// AdmitsNodeRoot reports whether some entry that admits r does so through an
-// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
-// node image; mounts admitted under `any` or by a host rule do not.
-func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
-	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+// Mismatch names the policy fields (command, args, mounts, env) that keep the
+// entry closest to admitting r from admitting it. It names fields, never
+// values. With final false it checks command and args alone, as AdmitsProcess
+// does.
+func (i *Index) Mismatch(r RunningContainer, final bool) []string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	var closest []string
+	for n, c := range i.byDigest[d.String()] {
+		if fields := c.mismatch(r, final); n == 0 || closer(fields, closest) {
+			closest = fields
+		}
+	}
+	return closest
+}
+
+// closer orders mismatches by distance: a failed command leaves the args
+// unchecked, so it counts for both. Ties break on the field names, as the
+// entries come out of a map.
+func closer(a, b []string) bool {
+	distance := func(fields []string) int {
+		if slices.Contains(fields, "command") {
+			return len(fields) + 1
+		}
+		return len(fields)
+	}
+	if da, db := distance(a), distance(b); da != db {
+		return da < db
+	}
+	return slices.Compare(a, b) < 0
+}
+
+func (c Container) mismatch(r RunningContainer, final bool) []string {
+	var fields []string
+	if rest, ok := c.Command.matchCommand(r.Argv); !ok {
+		fields = append(fields, "command")
+	} else if !c.Args.matchArgs(rest) {
+		fields = append(fields, "args")
+	}
+	if !final {
+		return fields
+	}
+	if !c.Mounts.admits(r.Mounts) || c.executableShadowed(r) {
+		fields = append(fields, "mounts")
+	}
+	if !newEnvConstraint(&c.Env).admits(r) {
+		fields = append(fields, "env")
+	}
+	return fields
+}
+
+// GrantsHostBind reports whether a declaration that pins its launch admits the
+// host bind m, which must be one of r.Mounts.
+func (i *Index) GrantsHostBind(r RunningContainer, m ObservedMount) bool {
+	if m.Class != MountHost || !slices.Contains(r.Mounts, m) {
+		return false
+	}
+	return i.AdmitsContainerWhere(r, Container.LaunchPinned)
+}
+
+// DeclaredCapabilities is what each declaration admitting this launch whole
+// declares for it, one set per declaration and none for a declaration that
+// declares no capability. A container's capabilities lie within one of the
+// sets: declarations are never combined.
+func (i *Index) DeclaredCapabilities(r RunningContainer) [][]string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = d.String()
+	var declared [][]string
+	for _, c := range i.byDigest[r.Digest] {
+		if len(c.Capabilities) > 0 && c.admits(r) {
+			declared = append(declared, c.Capabilities)
+		}
+	}
+	return declared
+}
+
+// GrantsCapabilities reports whether one declaration declares every capability
+// in caps and admits this launch whole; declarations are never combined.
+func (i *Index) GrantsCapabilities(r RunningContainer, caps []string) bool {
+	if len(caps) == 0 {
+		return false
+	}
+	return i.AdmitsContainerWhere(r, func(c Container) bool {
+		return c.declaresCapabilities(caps)
+	})
+}
+
+// declaresCapabilities reports whether the container declares every capability in caps.
+func (c Container) declaresCapabilities(caps []string) bool {
+	for _, name := range caps {
+		if !slices.Contains(c.Capabilities, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// hostPortGrant is one entry's mappings and the containers it declares them for.
+type hostPortGrant struct {
+	ports      HostPortList
+	containers []Container
+}
+
+// declares reports whether the entry declares every mapping in ports.
+func (p hostPortGrant) declares(ports []HostPort) bool {
+	for _, m := range ports {
+		if !slices.Contains(p.ports, m) {
+			return false
+		}
+	}
+	return true
+}
+
+// admits reports whether a container of the entry admits r whole.
+func (p hostPortGrant) admits(r RunningContainer) bool {
+	return slices.ContainsFunc(p.containers, func(c Container) bool {
+		return c.admits(r)
+	})
+}
+
+// DeclaresHostPorts reports whether some entry declares every mapping in ports.
+func (i *Index) DeclaresHostPorts(ports []HostPort) bool {
+	if i == nil || len(ports) == 0 {
+		return false
+	}
+	return slices.ContainsFunc(i.published, func(p hostPortGrant) bool {
+		return p.declares(ports)
+	})
+}
+
+// GrantsHostPorts reports whether one entry declares every mapping in ports and
+// admits this launch whole; entries are never combined.
+func (i *Index) GrantsHostPorts(r RunningContainer, ports []HostPort) bool {
+	if i == nil || len(ports) == 0 {
 		return false
 	}
 	d, err := types.ParseDigest(r.Digest)
@@ -220,17 +392,9 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 		return false
 	}
 	r.Digest = d.String()
-	for _, c := range i.byDigest[r.Digest] {
-		if c.Mounts.Policy != PolicyExact || !c.admits(r) {
-			continue
-		}
-		for _, rule := range c.Mounts.Rules {
-			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
-				return true
-			}
-		}
-	}
-	return false
+	return slices.ContainsFunc(i.published, func(p hostPortGrant) bool {
+		return p.declares(ports) && p.admits(r)
+	})
 }
 
 // DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
@@ -248,4 +412,31 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 			return rule.Kind == MountNodeRootFile
 		})
 	})
+}
+
+// LaunchPinned reports whether the container fixes everything the pod could
+// otherwise choose about its launch: command, args and mounts are not any, and
+// the environment is constrained (an absent env policy is any).
+func (c Container) LaunchPinned() bool {
+	return c.Command.Policy != PolicyAny && c.Args.Policy != PolicyAny &&
+		c.Mounts.Policy != PolicyAny && c.Env.Policy != PolicyAny && c.Env.Policy != ""
+}
+
+// AdmitsContainerWhere is AdmitsContainer restricted to the entries keep
+// selects.
+func (i *Index) AdmitsContainerWhere(r RunningContainer, keep func(Container) bool) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if keep(c) && c.admits(r) {
+			return true
+		}
+	}
+	return false
 }

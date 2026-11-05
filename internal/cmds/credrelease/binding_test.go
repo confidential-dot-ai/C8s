@@ -25,6 +25,10 @@ import (
 
 var operatorPub = []byte("operator public key bytes")
 
+// launchFile stands in for a whole configuration document a VM is launched
+// with, the anchor shape a CDS VM binds.
+var launchFile = []byte("schemaVersion: c8s-cds/v1\n")
+
 // TestMain shortens the attestation-api readiness wait so the unreachable-URL
 // cases fail in milliseconds rather than the 90s a real boot allows.
 func TestMain(m *testing.M) {
@@ -273,6 +277,135 @@ func TestSelfReportFailsWhenAttestationAPINeverReady(t *testing.T) {
 	}
 }
 
+// A VM whose launch file is its whole configuration is bound to it on both
+// platforms, and the platform it serves comes from the report rather than from
+// something it was configured to believe.
+func TestVerifyMeasuredLaunchFile(t *testing.T) {
+	for _, tc := range []struct {
+		platform teetypes.PlatformType
+		binding  []byte
+		want     teetypes.Family
+	}{
+		{teetypes.PlatformTDX, tdxBinding(launchFile), teetypes.FamilyTDX},
+		{teetypes.PlatformSNP, snpBinding(launchFile), teetypes.FamilySNP},
+		{teetypes.PlatformGcpSNP, snpBinding(launchFile), teetypes.FamilySNP},
+	} {
+		t.Run(string(tc.platform), func(t *testing.T) {
+			got, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, tc.platform, tc.binding), launchFile)
+			if err != nil {
+				t.Fatalf("VerifyMeasuredLaunchFile: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("platform = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// Serving a configuration the launch did not bind serves whatever the host
+// wrote, so every binding other than the launch file's own fails closed —
+// including a register extended past the seed, which no such VM does.
+func TestVerifyMeasuredLaunchFileFailsClosed(t *testing.T) {
+	extended := runtimemeasure.Extend(runtimemeasure.Seed(launchFile), runtimemeasure.Event("sha256:"+strings.Repeat("1", 64)))
+
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+	}{
+		{"tdx: another document", teetypes.PlatformTDX, tdxBinding([]byte("another document"))},
+		{"tdx: the seed extended at runtime", teetypes.PlatformTDX, extended[:]},
+		{"tdx: fileless launch leaves the register zero", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size)},
+		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document"))},
+		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, tc.platform, tc.binding), launchFile); err == nil {
+				t.Fatal("VerifyMeasuredLaunchFile = nil error, want a refusal")
+			}
+		})
+	}
+}
+
+// tdxLaunchedWith is the RTMR[3] of a TDX guest launched with launchFile
+// that has since extended policies, from launchFile's launch-file digest.
+func tdxLaunchedWith(t *testing.T, launchFile []byte, policies ...string) []byte {
+	t.Helper()
+	digest, err := runtimemeasure.LaunchFileDigest(teetypes.FamilyTDX, launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Extend(runtimemeasure.Zero, [runtimemeasure.Size]byte(digest)), policies)
+	return reg[:]
+}
+
+var (
+	policyP = "sha256:" + strings.Repeat("1", 64)
+	policyQ = "sha256:" + strings.Repeat("2", 64)
+)
+
+// A launch bound to the file passes: on TDX its RTMR[3] seed followed by a
+// prefix of the journal, on SEV-SNP HOSTDATA.
+func TestVerifyLaunchBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+		journal  string
+	}{
+		{"tdx: register at the file's seed, no journal", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile), ""},
+		{"tdx: register at journal prefix [P] of [P,Q]", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile, policyP), policyP + "\n" + policyQ + "\n"},
+		{"sev-snp: HOSTDATA is the file's digest", teetypes.PlatformSNP, snpBinding(launchFile), ""},
+		{"sev-snp: HOSTDATA is the file's digest, and SNP ignores the journal", teetypes.PlatformSNP, snpBinding(launchFile), policyP + "\n"},
+		{"gcp-snp: HOSTDATA is the file's digest", teetypes.PlatformGcpSNP, snpBinding(launchFile), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := VerifyLaunchBinding(context.Background(), attester(t, tc.platform, tc.binding), writeJournal(t, tc.journal), launchFile); err != nil {
+				t.Fatalf("VerifyLaunchBinding: %v", err)
+			}
+		})
+	}
+}
+
+// Every refusal fails closed; only a binding compared and found different is
+// ErrLaunchFileNotBound.
+func TestVerifyLaunchBindingFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+		journal  string
+		file     []byte
+		notBound bool
+	}{
+		{"tdx: register at another document's seed", teetypes.PlatformTDX, tdxLaunchedWith(t, []byte("another document")), "", launchFile, true},
+		{"tdx: register zero, launched with no disk", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size), "", launchFile, true},
+		{"tdx: register extended with Q, which journal [P] does not hold", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile, policyQ), policyP + "\n", launchFile, true},
+		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document")), "", launchFile, true},
+		{"snp: fileless launch leaves HOSTDATA zero", teetypes.PlatformSNP, make([]byte, runtimemeasure.HostDataSize), "", launchFile, true},
+		{"snp: an empty file", teetypes.PlatformSNP, snpBinding(nil), "", []byte{}, false},
+		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile), "", launchFile, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifyLaunchBinding(context.Background(), attester(t, tc.platform, tc.binding), writeJournal(t, tc.journal), tc.file)
+			if err == nil {
+				t.Fatal("VerifyLaunchBinding = nil error, want a refusal")
+			}
+			if errors.Is(err, ErrLaunchFileNotBound) != tc.notBound {
+				t.Fatalf("VerifyLaunchBinding = %v, want ErrLaunchFileNotBound %v", err, tc.notBound)
+			}
+		})
+	}
+}
+
+// An unreachable attestation API is a refusal, never a binding mismatch.
+func TestVerifyLaunchBindingReportsAnUnreachableAttester(t *testing.T) {
+	err := VerifyLaunchBinding(context.Background(), "http://127.0.0.1:1", "", launchFile)
+	if err == nil || errors.Is(err, ErrLaunchFileNotBound) || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("VerifyLaunchBinding = %v, want the attestation API reported unreachable", err)
+	}
+}
+
 // operatorReport is a self-report from a guest launched with operatorPub,
 // carrying launchDigest and, on TDX, fixed RTMR pins.
 func operatorReport(platform teetypes.PlatformType, launchDigest []byte) selfReport {
@@ -480,4 +613,43 @@ func distinctJournal(n int) string {
 		fmt.Fprintf(&b, "sha256:%064x\n", i)
 	}
 	return b.String()
+}
+
+// Only a register that is not the staged key's seed extended with a prefix of
+// the measured list is ErrRegisterDoesNotReplay. A caller that keeps running
+// on it must not also run on a missing key or an unreachable attestation-api,
+// which a retry or a restart can clear.
+func TestLoadMeasuredOperatorKeyClassifiesAReplayFailure(t *testing.T) {
+	otherKey := []byte("a different operator key")
+	dA := "sha256:" + strings.Repeat("a", 64)
+	journal := filepath.Join(t.TempDir(), "journal")
+	if err := os.WriteFile(journal, []byte(dA+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seeded := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), []string{dA})
+	for _, tc := range []struct {
+		name    string
+		staged  []byte
+		url     func(t *testing.T) string
+		journal string
+		want    bool
+	}{
+		{"register holds another key's seed", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(otherKey)) }, "", true},
+		{"register took an extend the journal does not list", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, seeded[:]) }, "", true},
+		{"journal lists an extend the register did not take", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(operatorPub)) }, journal, false},
+		{"register replays the journal", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, seeded[:]) }, journal, false},
+		{"no staged key", nil, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(operatorPub)) }, "", false},
+		{"attestation-api unreachable", operatorPub, func(*testing.T) string { return "http://127.0.0.1:1" }, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stageOperatorPubkey(t, tc.staged)
+			_, err := LoadMeasuredOperatorKey(context.Background(), tc.url(t), tc.journal)
+			if got := errors.Is(err, ErrRegisterDoesNotReplay); got != tc.want {
+				t.Fatalf("errors.Is(err, ErrRegisterDoesNotReplay) = %v, want %v: %v", got, tc.want, err)
+			}
+			if tc.name == "register replays the journal" && err != nil {
+				t.Fatalf("a replaying register was refused: %v", err)
+			}
+		})
+	}
 }

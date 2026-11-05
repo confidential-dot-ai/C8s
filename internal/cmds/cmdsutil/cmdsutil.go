@@ -3,10 +3,12 @@
 package cmdsutil
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -186,14 +188,11 @@ func ServeInBackground(ctx context.Context, addr string, handler http.Handler, l
 	return listener.Addr(), nil
 }
 
-// WarnIfCDSUnpinned warns when a sidecar talks to CDS without launch measurements.
-//
-// An empty set accepts any armTLS-attested CDS. "No pinning" is a supported
-// development shape (`c8s install --measurements` documents empty as UNSAFE),
-// so it stays a warning. Shared by get-cert, get-secret and get-volume: three
-// copies of this decision would be three chances to drift.
-func WarnIfCDSUnpinned(measurementCount int, warn string) {
-	if measurementCount <= 0 {
-		slog.Warn(warn)
-	}
+// Confirm writes prompt to out and reports whether the line read from in is
+// "y" or "yes", in any case.
+func Confirm(in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
 }

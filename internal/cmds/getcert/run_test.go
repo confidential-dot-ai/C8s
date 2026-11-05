@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -42,16 +43,21 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --cds-url must be refused, not quietly served over a client
 	// that skips armTLS attestation of CDS.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
-		if _, err := cdsHTTPClient(config{CDSURL: scheme, AttestationApiURL: "http://attestation-api:8400"}); err == nil {
+		cfg := config{
+			CDSURL:            scheme,
+			AttestationApiURL: "http://attestation-api:8400",
+		}
+		if _, err := cdsHTTPClient(t.Context(), cfg); err == nil {
 			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
 		}
 	}
 }
 
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
-	client, err := cdsHTTPClient(config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
+	client, err := cdsHTTPClient(t.Context(), config{
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
 	})
 	if err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)
@@ -59,15 +65,13 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	if client == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	// The client is the shared armTLS shape over a transport it rebuilds as
+	// the node's pins move; a plain one would verify CDS by the system roots.
+	if _, plain := client.Transport.(*http.Transport); plain {
+		t.Fatalf("transport = %T, want the armTLS pin-following round-tripper", client.Transport)
 	}
-	if transport.TLSClientConfig == nil {
-		t.Fatal("TLSClientConfig is nil")
-	}
-	if !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want armTLS verification path")
+	if armTLSClient := armtls.HTTPClient(nil); client.Timeout != armTLSClient.Timeout {
+		t.Fatalf("client timeout = %v, want the armTLS client shape's %v", client.Timeout, armTLSClient.Timeout)
 	}
 }
 
@@ -741,7 +745,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 }
 
 func TestNewCDSClientInvalidURL(t *testing.T) {
-	if _, _, err := newCDSClient(config{CDSURL: "://bad"}); err == nil {
+	if _, _, err := newCDSClient(t.Context(), config{CDSURL: "://bad"}); err == nil {
 		t.Fatal("newCDSClient succeeded, want error for invalid URL")
 	}
 }
@@ -1109,27 +1113,28 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	}
 	dir := ramBackedDir(t)
 	err := run(config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
-		CertPath:          filepath.Join(dir, "tls.crt"),
-		KeyPath:           filepath.Join(dir, "tls.key"),
-		CAPath:            filepath.Join(dir, "ca.crt"),
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
+		CertPath:               filepath.Join(dir, "tls.crt"),
+		KeyPath:                filepath.Join(dir, "tls.key"),
+		CAPath:                 filepath.Join(dir, "ca.crt"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "inventory socket directory") {
 		t.Fatalf("run() = %v, want the missing socket-directory failure", err)
 	}
 }
 
-func TestRunFailsOnBadCDSMeasurements(t *testing.T) {
+func TestRunFailsOnACDSPinWithoutALaunchBinding(t *testing.T) {
 	cfg := stagePodEnvironment(t, config{
-		CDSURL:            "https://cds:8443",
-		CDSMeasurements:   "zz",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
 	})
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--cds-measurements") {
-		t.Fatalf("error = %v, want measurements error", err)
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("error = %v, want a launch-binding refusal", err)
 	}
 }
 
@@ -1374,13 +1379,14 @@ func TestMeasuredPoliciesFileDefaultsToSidecarJournal(t *testing.T) {
 func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{
-		CDSURL:                "https://cds:8443",
-		AttestationApiURL:     "http://attestation-api:8400",
-		SAN:                   "host.example.com",
-		WorkloadClaimsTimeout: time.Second,
-		CertPath:              filepath.Join(v.dir, v.leafName),
-		KeyPath:               filepath.Join(v.dir, v.keyName),
-		CAPath:                filepath.Join(v.dir, v.caName),
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
+		WorkloadClaimsTimeout:  time.Second,
+		CertPath:               filepath.Join(v.dir, v.leafName),
+		KeyPath:                filepath.Join(v.dir, v.keyName),
+		CAPath:                 filepath.Join(v.dir, v.caName),
 	}
 	// An inventory that refuses: the pod cannot know which instance it is, so
 	// nothing it holds can be revalidated.

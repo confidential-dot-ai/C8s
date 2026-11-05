@@ -11,6 +11,34 @@ import (
 	"time"
 )
 
+func TestCoverageTotalExcludesAcceptancePrograms(t *testing.T) {
+	script, err := filepath.Abs("../../scripts/coverage-gate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module fixture.invalid/coverage\n\ngo 1.22\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profile := "mode: set\n" +
+		"fixture.invalid/coverage/production/value.go:1.1,1.2 1 1\n" +
+		"fixture.invalid/coverage/test/tdxpod-production/value.go:1.1,1.2 1 0\n"
+	for _, pkg := range []string{"test/workflows", "test/tdxpod", "test/integration/pod-runtime/workload", "test/integration/pod-runtime/fixtures", "test/integration/pod-cloud/acceptance", "test/integration/pod-cloud/tool"} {
+		profile += "fixture.invalid/coverage/" + pkg + "/main.go:1.1,1.2 100 0\n"
+	}
+	path := filepath.Join(fixture, "profile.out")
+	if err := os.WriteFile(path, []byte(profile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), "bash", script, "total", path)
+	cmd.Dir = fixture
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "50.00" {
+		t.Fatalf("acceptance statements changed the production denominator: %v %s", err, out)
+	}
+}
+
 func TestCoverageGateMeasuresGoExecution(t *testing.T) {
 	script, err := filepath.Abs("../../scripts/coverage-gate.sh")
 	if err != nil {
@@ -169,15 +197,15 @@ exec "$@"
 `,
 				// The script's own harness takes the coverage directory.
 				"head/scripts/coverage-gate.sh": string(body),
-				"head/node-guest-image/tests/mount-verity-test.sh": `cp dm.out "$2/dm-verity.out"
+				"head/images/node-guest/tests/mount-verity-test.sh": `cp dm.out "$2/dm-verity.out"
 `,
 			}
 			if name == "no profile" {
-				files["head/node-guest-image/tests/mount-verity-test.sh"] = "exit 0\n"
+				files["head/images/node-guest/tests/mount-verity-test.sh"] = "exit 0\n"
 			}
 			if name != "older base without harness" {
 				// The checked-out base revision's harness takes one argument.
-				files["node-guest-image/tests/mount-verity-test.sh"] = "[ $# = 1 ] || { echo 'usage: one-argument harness' >&2; exit 1; }\n"
+				files["images/node-guest/tests/mount-verity-test.sh"] = "[ $# = 1 ] || { echo 'usage: one-argument harness' >&2; exit 1; }\n"
 			}
 			for path, contents := range files {
 				full := filepath.Join(fixture, path)

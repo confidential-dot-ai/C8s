@@ -70,7 +70,7 @@ func ValidateInventoryHost(host string) error {
 // host first. Hence: an IP literal, never a name (a resolvable name lets DNS
 // decide the destination after the check), and global unicast only (no
 // loopback, link-local/IMDS, multicast, or unspecified). Callers additionally
-// constrain it to the operator's inventory CIDRs — see InventoryHosts.
+// constrain it to the operator's node subnets — see CIDRHosts.
 func ParseInventoryHost(host string) (string, error) {
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -82,20 +82,10 @@ func ParseInventoryHost(host string) (string, error) {
 	return ip.String(), nil
 }
 
-// InventoryHosts bounds which addresses an inventory may live at — the
-// operator's node addresses. CDS refuses to dial anything outside the set,
-// which is what keeps a pod (whose IP is in the pod CIDR) from standing in
-// for a node. Implementations: CIDRHosts (operator-given CIDRs, static) and
-// NodeHosts (derived live from the cluster's node objects).
-type InventoryHosts interface {
-	// Contains reports whether host is inside the set. An empty set contains
-	// nothing: callers must fail closed rather than dial anywhere.
-	Contains(host string) bool
-	// Empty reports whether the set currently holds nothing.
-	Empty() bool
-}
-
-// CIDRHosts is the static InventoryHosts parsed from operator-given CIDRs.
+// CIDRHosts bounds which addresses an inventory may live at — the operator's
+// node subnets. CDS refuses to dial anything outside the set, which is what
+// keeps a pod (whose IP is in the pod CIDR) from standing in for a node. An
+// empty set contains nothing, so a caller holding one fails closed.
 type CIDRHosts []*net.IPNet
 
 // ParseInventoryHosts builds the set from CIDR strings.
@@ -111,8 +101,18 @@ func ParseInventoryHosts(cidrs []string) (CIDRHosts, error) {
 	return out, nil
 }
 
-func (h CIDRHosts) Contains(host string) bool { return cidrSet(h).contains(host) }
-func (h CIDRHosts) Empty() bool               { return len(h) == 0 }
+func (h CIDRHosts) Contains(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range h {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // ResolveAdvertiseHost returns the node IP an inventory signs into its sandbox
 // tokens. An explicit host always wins; the plugin passes the node-ip file's
@@ -162,23 +162,31 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 
 // DigestsServerTLSConfig builds the inventory's listener config for
 // ServeDigests: it presents an armTLS certificate proving the inventory runs in
-// a TEE, and requires the caller to present a hardware-attested one too. With
-// cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
-// when pinned), so the endpoint discloses what a node runs only to a CDS on an
-// expected measurement; zero pins accept any TEE on the network. UNSAFE
-// outside development; callers warn. A TDX certificate lists the policies in
-// the measuredPolicies journal; empty lists none.
-func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
+// a TEE, and requires the caller to present a hardware-attested one too. The
+// caller must satisfy cdsPins (launch measurement, and TDX RTMRs when pinned),
+// so the endpoint discloses what a node runs only to a CDS on an expected
+// measurement; pins that name no guest are refused ([armtls.ErrUnpinned]). A
+// TDX certificate lists the policies in the measuredPolicies journal; empty
+// lists none.
+//
+// cdsPins follows the node's own pins, so a replica relaunched on a newly
+// decreed CDS image reaches the endpoint.
+func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
 	}
-	return armtls.NewServerTLSConfig(&armtls.ServerConfig{
+	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
 		Platform:             platform,
 		AttestFunc:           attestFunc,
 		CertTTL:              certTTL,
-		ClientPolicy:         cdsPins.VerifyPolicy(attestationApiURL),
+		ClientPolicy:         armtls.Pins(cdsPins.Current().Policy()).VerifyPolicy(attestationApiURL),
 		MeasuredPoliciesFile: measuredPolicies,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	armtls.FollowClientPins(tlsCfg, cdsPins, attestationApiURL)
+	return tlsCfg, certMgr, nil
 }
 
 // requireAttestationApi rejects an empty attestation-api URL at construction.
@@ -200,7 +208,7 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) error {
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, measuredPolicies string) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
 	if err != nil {
 		return err
@@ -239,13 +247,10 @@ type DigestsClientConfig struct {
 	Platform          string
 	AttestFunc        func(ctx context.Context, customData string) (string, error)
 	AttestationAPIURL string
-	// Pins hold the launch digests (and any TDX RTMR pins) an inventory may
-	// present — the same allowlist CDS pins for the inventory's armTLS
-	// certificate, so a sandbox token and the callback that follows it are
-	// held to one standard. Zero pins accept any armTLS-attested inventory,
-	// matching what an empty allowlist already means for the certificate:
-	// UNSAFE outside development; callers warn.
-	Pins armtls.Pins
+	// NodeImages are the node images an inventory may run — the set CDS
+	// certifies its nodes by. A set that names no guest is refused
+	// ([armtls.ErrUnpinned]).
+	NodeImages armtls.PinSource
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
 	// MeasuredPoliciesFile is the node's measured-policy journal its TDX client
@@ -255,7 +260,7 @@ type DigestsClientConfig struct {
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	return &armtls.ClientConfig{
-		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
+		Policy:               armtls.Pins(c.NodeImages.Current().Policy()).VerifyPolicy(c.AttestationAPIURL),
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
@@ -272,14 +277,35 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	if err := requireAttestationApi(cfg.AttestationAPIURL); err != nil {
 		return nil, err
 	}
+	if cfg.NodeImages == nil {
+		return nil, fmt.Errorf("workloadclaims: the sandbox-digests client holds an inventory to the node images CDS certifies, and was given no source for them")
+	}
 	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(cfg.tlsConfig())
 	if err != nil {
 		return nil, fmt.Errorf("workloadclaims: build sandbox-digests client: %w", err)
 	}
+	// An inventory relaunched on a newly certified image needs no restart.
+	armtls.FollowServerPins(tlsCfg, cfg.NodeImages, cfg.AttestationAPIURL)
 	warmupCtx, cancel := context.WithTimeout(ctx, warmUpBudget)
 	defer cancel()
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {
 		return nil, fmt.Errorf("workloadclaims: warm up sandbox-digests client cert: %w", err)
+	}
+	// A handshake follows current pins; the pool must follow them too, so
+	// a connection authenticated before a retirement carries no later request.
+	// Clones share the same warmed certificate manager and its rotation loop.
+	transport, err := armtls.NewRefreshingTransport(cfg.NodeImages, func(_ armtls.Pins) (*http.Transport, error) {
+		return &http.Transport{
+			TLSClientConfig: tlsCfg.Clone(),
+			// No HTTP_PROXY can interpose on an attested inventory callback.
+			// Bound the idle pool whose dial targets come from requesters.
+			MaxIdleConns:        64,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     30 * time.Second,
+		}, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("workloadclaims: build sandbox-digests transport: %w", err)
 	}
 	go certMgr.RunRotation(ctx)
 	timeout := cfg.Timeout
@@ -288,18 +314,8 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	}
 	return &DigestsClient{
 		http: &http.Client{
-			Timeout: timeout,
-			// Fresh Transport, so Proxy stays nil: no HTTP_PROXY can interpose
-			// on a call whose whole point is to reach one attested peer. The
-			// idle pool is bounded because the dial target is chosen by the
-			// requester: unbounded, never-expiring idle conns would be a
-			// retention primitive rather than a reuse optimisation.
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsCfg,
-				MaxIdleConns:        64,
-				MaxIdleConnsPerHost: 2,
-				IdleConnTimeout:     30 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: transport,
 		},
 	}, nil
 }

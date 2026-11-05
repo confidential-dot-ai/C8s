@@ -36,18 +36,17 @@ those sidecars.
 
 `c8s.attestationApiConfig` takes a dict with `root` and renders the API's TOML.
 
-With `node.baked=true`, the attester and proxy run as systemd services; CDS,
+With `node.baked=true`, the attester and proxy run as systemd services; the
 router, mesh and operator use the same Kubernetes templates as ordinary installs.
-CDS and router are singleton workloads on the signed server's control-plane node.
-Pod clients use the CDS Service URL; the host NRI client uses its signed endpoint.
+The router is a singleton workload on the signed server's control-plane node.
+Every client reaches the CDS the signed launch file names.
 
 `c8s.nodeConfigVolume` and `c8s.nodeConfigMount` expose only the nonsecret verified
-launch files in `/run/c8s-node`, read-only. CDS and mesh verify peers with
-`peers.json`; every CDS client uses the separate server-only `cds.json` policy.
-CDS also consumes the merged seed and operator public key; the router's
-cds-attest reads the same public key to verify route manifests. Router certificate
-issuance and CDS SAN authorization read `tls-san`; nginx uses its sole default
-virtual host. The token-bearing launch directory is never mounted into pods.
+launch files in `/run/c8s-node`, read-only. The mesh verifies peers with
+`peers.json`; every CDS client uses the `cds.json` policy the launch file
+carries. The router's cds-attest reads the operator public key to verify route
+manifests, and its certificate issuance reads `tls-san`; nginx uses its sole
+default virtual host. The token-bearing launch directory is never mounted into pods.
 Missing policy files fail startup. Workload sidecars retain NRI socket injection.
 Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 
@@ -55,6 +54,9 @@ Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 ports (`c8s-router`). The chart renders that Namespace under the fixed name the
 enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
 
-`c8s.cdsURL` builds the in-cluster CDS Service URL.
-`c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
-`https://127.0.0.1:<cds.service.nodePort>` for the host plugin.
+`c8s.nodeReadsCDSAddress` is non-empty where the chart hands the node the CDS
+address instead of the node image's launch staging.
+
+The host plugin and the clients it injects reach the CDS by the address the
+installer copies to the node from the `-measurements` ConfigMap, beside the pin
+it holds it to (`cds.address`, `cds.measurementsConfig`).

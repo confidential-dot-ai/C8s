@@ -111,7 +111,7 @@ type Handler struct {
 
 	// InventoryHosts bounds the addresses the callback may dial. Empty refuses
 	// every request: without it a workload could name its own pod.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	Logger *slog.Logger
 }
@@ -233,6 +233,14 @@ func (h Handler) servePost(ctx context.Context, w http.ResponseWriter, g grant, 
 				"holders", h.Store.TopHolders(censusHolders))
 		}
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
+		return
+	case errors.Is(err, ErrCapacity):
+		h.logger().Warn("secret create refused", "path", path, "workload", g.workload, "error", err)
+		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeStateCapacity, capacityMessage)
+		return
+	case errors.Is(err, ErrUnavailable):
+		h.logger().Warn("secret create not committed", "path", path, "workload", g.workload, "error", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
 	if err != nil {
@@ -392,7 +400,7 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 	if h.Inventory == nil || h.Bindings == nil {
 		return "", fmt.Errorf("secrets are not configured to reach an inventory")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return "", fmt.Errorf("the inventory callback has no node addresses to bound it")
 	}
 	// The binding, not the token, decides who is asked. The token names a host

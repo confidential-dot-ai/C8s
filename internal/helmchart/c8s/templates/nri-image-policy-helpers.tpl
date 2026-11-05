@@ -55,6 +55,22 @@ Host paths derived from values.
 {{- end }}
 
 {{/*
+The CDS this cluster trusts, as the installer mounts it: its address and its
+pin, which it copies to the node beside the boot config that names both paths.
+*/}}
+{{- define "nri-image-policy.cdsPolicyMount" -}}
+/mnt/c8s-data/measurements
+{{- end }}
+
+{{- define "nri-image-policy.hostCDSAddressPath" -}}
+{{ printf "%s/cds-address" .Values.nriImagePolicy.hostPaths.configDir }}
+{{- end }}
+
+{{- define "nri-image-policy.hostCDSPinPath" -}}
+{{ printf "%s/cds.json" .Values.nriImagePolicy.hostPaths.configDir }}
+{{- end }}
+
+{{/*
 The installer DaemonSet's long-running container: a readiness endpoint that
 follows the host plugin process. The script is shared with its argv-pinned seed
 entry (c8s.argvPinnedEntries) so the two cannot drift. It runs under /bin/sh -c
@@ -84,6 +100,9 @@ uninstall hook.
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.cacheDir }}
 - name: host-runtime-dir
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+- name: cds-policy
+  mountPath: {{ include "nri-image-policy.cdsPolicyMount" . }}
+  readOnly: true
 {{- end }}
 
 {{- define "nri-image-policy.hostVolumes" -}}
@@ -107,21 +126,26 @@ uninstall hook.
   hostPath:
     path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
     type: DirectoryOrCreate
+- name: cds-policy
+  projected:
+    sources:
+      - configMap:
+          name: {{ include "c8s.fullname" . }}-measurements
 {{- end }}
 
 {{/*
-Host mounts for the node-as-CVM pins installer: the baked config it patches and
-the runtime dir holding the plugin's health socket. It touches neither the
-plugin binary nor containerd's config, so neither is mounted.
+Host mounts for the node-as-CVM policy-measurement installer: the baked config
+it patches and the runtime dir holding the plugin's health socket. It touches
+neither the plugin binary nor containerd's config, so neither is mounted.
 */}}
-{{- define "nri-image-policy.pinsVolumeMounts" -}}
+{{- define "nri-image-policy.measurePoliciesVolumeMounts" -}}
 - name: host-config-dir
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.configDir }}
 - name: host-runtime-dir
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
 {{- end }}
 
-{{- define "nri-image-policy.pinsVolumes" -}}
+{{- define "nri-image-policy.measurePoliciesVolumes" -}}
 - name: host-config-dir
   hostPath:
     path: {{ .Values.nriImagePolicy.hostPaths.configDir }}

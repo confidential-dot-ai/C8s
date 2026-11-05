@@ -38,3 +38,29 @@ cds_measurement_args() {
     measurement_args=(--measurements "$C8S_MEASUREMENTS")
   fi
 }
+
+# cds_write <command...> runs one signed CDS write, such as `c8s allowlist
+# add`. A CDS without persistence refuses operator tokens for
+# --jwt-clock-skew (30s) after it starts (docs/operator.md, "CDS is a
+# singleton"), and the first write of a lane can land inside that window, so
+# that refusal is retried, re-running the command for a fresh token, for
+# longer than the window. Any other outcome returns at once with the
+# command's status, its stdout and its stderr.
+cds_write() {
+  local status err noted=
+  for _ in $(seq 1 20); do
+    status=0
+    { err=$("$@" 2>&1 >&3); } 3>&1 || status=$?
+    if [ "$status" -eq 0 ] || [[ "$err" != *'issued too early'* ]]; then
+      if [ -n "$err" ]; then printf '%s\n' "$err" >&2; fi
+      return "$status"
+    fi
+    if [ -z "$noted" ]; then
+      echo "note: CDS refuses operator tokens until --jwt-clock-skew after it starts; retrying the write with a fresh token" >&2
+      noted=1
+    fi
+    sleep 2
+  done
+  printf '%s\n' "$err" >&2
+  return "$status"
+}

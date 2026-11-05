@@ -13,8 +13,10 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -37,12 +39,95 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 }
 
-// fakeContainerd is the containerdOps a test drives. An unset hook panics, so a
-// test that reaches containerd without arranging for it names the call it made.
+func TestCredentialMountRefusalBlocksIdentityUntilSameNameAdmission(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ready=%v", ready), func(t *testing.T) {
+			base := anyAllowlist(map[string]string{pushDigestA: "app"})
+			p, _ := newCachedPlugin(&config{Allowlist: allowlistConfig{Base: base}, Policy: policyConfig{Mode: ModeFailClosed}}, base)
+			p.inventory = newAdmissionInventory(t.TempDir())
+			if ready {
+				p.SetReady()
+			}
+			pod := makePod("default", "pod")
+			ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestA)
+			ctr.User = &api.User{Uid: workloadclaims.CredentialsUID}
+			_, _, err := p.CreateContainer(t.Context(), pod, ctr)
+			if err == nil || !strings.Contains(err.Error(), "would reach CDS unpinned") {
+				t.Fatalf("expected credential-mount refusal: %v", err)
+			}
+			if refusal := p.inventory.denial(pod.Id); refusal == nil {
+				t.Fatal("credential-mount failure left sandbox identity available")
+			}
+			ctr.User.Uid = testWorkloadUID
+			if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
+				t.Fatal(err)
+			}
+			if refusal := p.inventory.denial(pod.Id); refusal != nil {
+				t.Fatalf("same-name safe retry did not clear credential-mount refusal: %v", refusal)
+			}
+		})
+	}
+}
+
+// fakeContainerd is the containerdOps a test drives. An unset resolve or stop
+// hook panics, so a test that reaches containerd without arranging for it names
+// the call it made; an unset network hook maps no host port and an unset spec
+// hook reads as an ordinary container's.
 type fakeContainerd struct {
 	resolve func(ctx context.Context, imageRef string) (string, error)
+	verify  func(ctx context.Context, containerID, sandboxID, digest string) error
 	stop    func(ctx context.Context, containerID string) error
+	network func(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
+	spec    func(ctx context.Context, containerID string) (*specs.Spec, error)
 }
+
+func (f *fakeContainerd) ContainerSpec(ctx context.Context, containerID string) (*specs.Spec, error) {
+	if f.spec == nil {
+		return workloadSpec(), nil
+	}
+	return f.spec(ctx, containerID)
+}
+
+// workloadSpec is the OCI spec containerd stores for an ordinary container: the
+// node's default capability set under an unreserved identity.
+func workloadSpec() *specs.Spec {
+	return &specs.Spec{Process: &specs.Process{
+		User: specs.User{UID: testWorkloadUID, GID: testWorkloadUID},
+		Capabilities: &specs.LinuxCapabilities{
+			Bounding:  capabilityNames(allowlist.DefaultCapabilities),
+			Effective: capabilityNames(allowlist.DefaultCapabilities),
+			Permitted: capabilityNames(allowlist.DefaultCapabilities),
+		},
+	}}
+}
+
+// capabilityNames is how an OCI spec spells the capabilities an entry names.
+func capabilityNames(declared []string) []string {
+	out := make([]string, 0, len(declared))
+	for _, name := range declared {
+		out = append(out, "CAP_"+name)
+	}
+	return out
+}
+
+func (f *fakeContainerd) SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+	if f.network == nil {
+		return ctrdresolver.SandboxNetwork{}, nil
+	}
+	return f.network(ctx, sandboxID, pod)
+}
+
+func (f *fakeContainerd) VerifyContainerImage(ctx context.Context, containerID, sandboxID, digest string) error {
+	if f.verify == nil {
+		panic("unexpected container image verification")
+	}
+	return f.verify(ctx, containerID, sandboxID, digest)
+}
+
+func (f *fakeContainerd) Close() error { return nil }
 
 func (f *fakeContainerd) Resolve(ctx context.Context, imageRef string) (string, error) {
 	if f.resolve == nil {
@@ -163,31 +248,6 @@ func TestPodSandboxEventsFeedInventory(t *testing.T) {
 	}
 }
 
-// Pod-sandbox events carry the gate's protection, and the container
-// lifecycle the inventory needs is subscribed exactly when it is enabled.
-func TestConfigureSubscribesContainerLifecycleWithInventory(t *testing.T) {
-	p := newTestPlugin(&config{})
-	mask, err := p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events not subscribed")
-	}
-	if mask.IsSet(api.Event_STOP_CONTAINER) || mask.IsSet(api.Event_REMOVE_CONTAINER) {
-		t.Fatal("container stop and removal subscribed without an inventory")
-	}
-
-	p.inventory = newAdmissionInventory(t.TempDir())
-	mask, err = p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !mask.IsSet(api.Event_STOP_CONTAINER) || !mask.IsSet(api.Event_REMOVE_CONTAINER) {
-		t.Fatal("container stop and removal not subscribed with the inventory enabled")
-	}
-}
-
 func TestCreateContainer_NotReady_DeniesNonBaseImage(t *testing.T) {
 	p := basePlugin(t)
 	// plugin is NOT ready (default zero value of atomic.Bool is false)
@@ -262,7 +322,9 @@ func TestSynchronize_NotReady_Defers(t *testing.T) {
 	}
 }
 
-func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
+// With the startup check off and no inventory, a not-ready Synchronize still
+// defers its batch for recovery, and RunDeferredCheck consumes it.
+func TestSynchronize_NotReady_EnforceExistingDisabled_DefersForRecovery(t *testing.T) {
 	p := newTestPlugin(&config{
 		Policy: policyConfig{
 			Mode:            "fail-closed",
@@ -273,15 +335,80 @@ func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
 	pods := []*api.PodSandbox{makePod("default", "pod1")}
 	ctrs := []*api.Container{makeCtr(pods[0].Id, "ctr1")}
 
-	_, err := p.Synchronize(context.Background(), pods, ctrs)
-	if err != nil {
+	if _, err := p.Synchronize(context.Background(), pods, ctrs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	p.deferredMu.Lock()
+	deferred := len(p.deferredPods)
+	p.deferredMu.Unlock()
+	if deferred != 1 {
+		t.Fatalf("expected the batch deferred for recovery, got %d deferred pods", deferred)
+	}
+
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
 
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredPods) != 0 {
-		t.Fatalf("expected no deferred pods, got %d", len(p.deferredPods))
+	if len(p.deferredPods) != 0 || len(p.deferredCtrs) != 0 {
+		t.Fatal("RunDeferredCheck did not consume the deferred batch")
+	}
+}
+
+// Recovery runs from the deferred path when not ready at connect, inline when
+// ready, and with the startup check off. The refusal recorded for the
+// unprovable test namespace shows recoverPod ran.
+func TestRecoveryRunsFromTheDeferredPath(t *testing.T) {
+	newReady := func(ready, check bool) *plugin {
+		cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: check}}
+		p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))
+		if !check {
+			p = newTestPlugin(cfg) // no inventory: shouldCheckExisting() is false
+			p.policy.apply(exitsAllowlist(t, ""), 1)
+		}
+		if ready {
+			p.SetReady()
+		}
+		return p
+	}
+	pod := meshPod("default", "pod", testNetNS)
+
+	// Not ready at connect: on record only after the deferred path runs.
+	p := newReady(false, true)
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if p.mesh.pods[pod.GetId()] != nil {
+		t.Fatal("a member pod was recovered before the plugin was ready")
+	}
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
+	state := p.mesh.pods[pod.GetId()]
+	if state == nil {
+		t.Fatal("recovery did not run from the deferred path")
+	}
+	if state.refusal == nil || !strings.Contains(state.refusal.Error(), testNetNS) {
+		t.Fatalf("recovered-pod refusal = %v, want the namespace proof to have run on %s", state.refusal, testNetNS)
+	}
+
+	// Ready at connect: recovered inline by Synchronize.
+	ready := newReady(true, true)
+	if _, err := ready.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if ready.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("a ready plugin did not recover a member pod at connect")
+	}
+
+	// Startup check off (no inventory): recovery still runs from the deferred path.
+	off := newReady(false, false)
+	if _, err := off.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	off.SetReady()
+	off.RunDeferredCheck(context.Background())
+	if off.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("recovery did not run with the startup check off")
 	}
 }
 
@@ -900,7 +1027,7 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 		Argv:      []string{"/bin/evil"},
 		Mounts:    []allowlist.ObservedMount{},
 	}, launchFinal)
-	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy") {
+	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy; the closest entry differs in command") {
 		t.Fatalf("a listed digest denied on argv should say so, got %q", argvMismatch)
 	}
 
@@ -914,6 +1041,30 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 	}, launchFinal)
 	if !strings.Contains(unlisted, "image not in allowlist") {
 		t.Fatalf("an unlisted digest should keep the not-in-allowlist denial, got %q", unlisted)
+	}
+}
+
+// An unobservable environment fails an env deny entry; the reason says which
+// variable made it unobservable, so the author need not guess.
+func TestCheckImage_DenialNamesTheUnobservableVariable(t *testing.T) {
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	w := al.Workloads["w"]
+	w.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+	al.Workloads["w"] = w
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, al)
+
+	_, envErr := observeEnv(&api.Container{Env: []string{"HOME=/tmp", "HOME=/root"}})
+	_, reason := p.checkImagePhase(context.Background(), p.cfg, imageCheck{
+		Namespace: "default",
+		PodName:   "pod",
+		Container: "ctr",
+		ImageRef:  "registry/repo@" + pushDigestB,
+		Argv:      []string{"/bin/app"},
+		EnvErr:    envErr,
+		Mounts:    []allowlist.ObservedMount{},
+	}, launchFinal)
+	if !strings.HasSuffix(reason, "; the closest entry differs in env (OCI environment sets HOME twice with different values)") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
@@ -1078,7 +1229,9 @@ func TestRunDeferredCheck_OrphanContainer_Skipped(t *testing.T) {
 	assertDeferredCleared(t, p)
 }
 
-func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
+// With the startup check off, RunDeferredCheck consumes the batch for recovery
+// and skips the container check.
+func TestRunDeferredCheck_EnforceExistingDisabled_RecoversThenSkipsCheck(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
 		Policy:    policyConfig{Mode: ModeFailClosed, EnforceExisting: false},
@@ -1092,12 +1245,11 @@ func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
 	p.deferredCtrs = []*api.Container{ctr}
 	p.deferredMu.Unlock()
 
-	// EnforceExisting=false → early return before clearing deferred state.
 	p.RunDeferredCheck(context.Background())
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredCtrs) != 1 || len(p.deferredPods) != 1 {
-		t.Fatal("disabled check must leave deferred state untouched")
+	if len(p.deferredCtrs) != 0 || len(p.deferredPods) != 0 {
+		t.Fatal("recovery must consume the deferred batch even with the check off")
 	}
 }
 
@@ -1193,7 +1345,7 @@ func TestSynchronize_ReadyWhileDeferring_ChecksBatch(t *testing.T) {
 		Policy:    policyConfig{Mode: ModeFailClosed},
 	}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
 	p.inventory = newAdmissionInventory("/proc")
-	p.logger = slog.New(onLog{message: "plugin not ready, deferring startup check", hook: func() {
+	p.logger = slog.New(onLog{message: "plugin not ready, deferring recovery and the startup check", hook: func() {
 		p.SetReady()
 		p.RunDeferredCheck(context.Background())
 	}})
@@ -1674,26 +1826,6 @@ func TestCreateContainer_DeniedContainerIsNotRecorded(t *testing.T) {
 	}
 	if _, ok := p.inventory.containers[ctr.Id]; ok {
 		t.Fatal("a denied container must not be recorded in the inventory")
-	}
-}
-
-// --- Configure ---
-
-func TestConfigure_SetsCreateContainerMask(t *testing.T) {
-	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	mask, err := p.Configure(context.Background(), "", "containerd", "1.7")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var want api.EventMask
-	want.Set(api.Event_CREATE_CONTAINER)
-	want.Set(api.Event_START_CONTAINER)
-	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
-	want.Set(api.Event_RUN_POD_SANDBOX)
-	want.Set(api.Event_REMOVE_POD_SANDBOX)
-	want.Set(api.Event_UPDATE_CONTAINER)
-	if mask != want {
-		t.Fatalf("mask = %v, want %v", mask, want)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -17,18 +18,20 @@ import (
 	"testing"
 	"time"
 
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-// fakeAllowlist is a CDS /allowlist with HandleList's weak-ETag and 304
-// semantics.
+// fakeAllowlist is a CDS /allowlist with HandleList's digest tag, version
+// header and 304 semantics.
 type fakeAllowlist struct {
 	mu       sync.Mutex
 	version  int
 	body     string
 	requests atomic.Int64
-	// notModified counts the 304s served.
+	// notModified counts the 304s served, bodies the 200s.
 	notModified atomic.Int64
+	bodies      atomic.Int64
 }
 
 func (f *fakeAllowlist) set(version int, body string) {
@@ -55,13 +58,16 @@ func (f *fakeAllowlist) serve(t *testing.T) string {
 func (f *fakeAllowlist) handle(w http.ResponseWriter, r *http.Request) {
 	f.requests.Add(1)
 	version, body := f.snapshot()
-	etag := `W/"` + version + `"`
+	digest := sha256.Sum256([]byte(body))
+	etag := pkgallowlist.EntityTag("sha256:" + hex.EncodeToString(digest[:]))
 	w.Header().Set("ETag", etag)
+	w.Header().Set(pkgallowlist.VersionHeader, version)
 	if r.Header.Get("If-None-Match") == etag {
 		f.notModified.Add(1)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	f.bodies.Add(1)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(body))
 }
@@ -253,9 +259,9 @@ func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
 	waitForAttempts(t, attempts, 1)
 }
 
-// A write that bumps the version but keeps the bytes renews nothing, and the
-// watch asks for the new version from then on instead of re-fetching the body.
-func TestRenewLoopFollowsServedVersionWithStampedBytes(t *testing.T) {
+// A write that bumps the version but keeps the bytes renews nothing and
+// fetches no body: the watch names the stamped bytes, not a version.
+func TestRenewLoopIgnoresVersionBumpWithStampedBytes(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(4, policyTwoWorkloads)
 	url := cds.serve(t)
@@ -266,14 +272,12 @@ func TestRenewLoopFollowsServedVersionWithStampedBytes(t *testing.T) {
 	cds.waitForRequests(t, 1)
 
 	cds.set(5, policyTwoWorkloads)
-	cds.waitForTicks(t, 1)
-	before := cds.notModified.Load()
-	cds.waitForTicks(t, 2)
+	cds.waitForTicks(t, 3)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals after a write with unchanged bytes, want 0", got)
 	}
-	if got := cds.notModified.Load() - before; got < 1 {
-		t.Fatalf("%d 304s in the two polls after the first 200 at the new version, want at least 1", got)
+	if got := cds.bodies.Load(); got != 0 {
+		t.Fatalf("%d polls fetched the body, want 0", got)
 	}
 }
 
@@ -402,87 +406,57 @@ func TestRenewLoopPolicyWatchRenewsUnexpectedWorkload(t *testing.T) {
 func TestStampedPolicyStale(t *testing.T) {
 	tests := []struct {
 		name        string
-		stamp       *x509.Certificate
 		served      int
 		body        string
 		wantVersion string
 		want        bool
+		want304     bool
 	}{
-		{name: "304 on version match skips the digest", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 4, body: policyRouterOnly, wantVersion: "4", want: false},
-		{name: "new version", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyRouterOnly, wantVersion: "5", want: true},
-		{name: "new version, same bytes", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyTwoWorkloads, wantVersion: "5", want: false},
+		{name: "304 on the stamped bytes at a newer version", served: 5, body: policyTwoWorkloads, wantVersion: "5", want304: true},
+		{name: "new bytes", served: 5, body: policyRouterOnly, wantVersion: "5", want: true},
+		{name: "new bytes at the stamped version", served: 4, body: policyRouterOnly, wantVersion: "4", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cds := &fakeAllowlist{}
 			cds.set(tt.served, tt.body)
-			stamp, err := armtls.MatchedWorkloadFromCert(tt.stamp)
+			stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
 			if err != nil {
 				t.Fatal(err)
 			}
-			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp.AllowlistVersion, stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp.AllowlistDigest)
 			if err != nil {
 				t.Fatalf("stampedPolicyStale: %v", err)
 			}
 			if served != tt.wantVersion || stale != tt.want {
 				t.Fatalf("stampedPolicyStale = %q, %v, want %q, %v", served, stale, tt.wantVersion, tt.want)
 			}
+			if got := cds.notModified.Load() == 1; got != tt.want304 {
+				t.Fatalf("answered 304: %v, want %v", got, tt.want304)
+			}
 		})
 	}
 
-	t.Run("304 on a matched newer version", func(t *testing.T) {
-		cds := &fakeAllowlist{}
-		cds.set(5, policyTwoWorkloads)
-		stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
-		if err != nil {
-			t.Fatal(err)
-		}
-		served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), "5", stamp.AllowlistDigest)
-		if err != nil {
-			t.Fatalf("stampedPolicyStale: %v", err)
-		}
-		if served != "5" || stale {
-			t.Fatalf("stampedPolicyStale = %q, %v, want \"5\", false", served, stale)
-		}
-		if got := cds.notModified.Load(); got != 1 {
-			t.Fatalf("304s served = %d, want 1", got)
-		}
-	})
-
-	t.Run("same version, different digest", func(t *testing.T) {
-		// A 200 can carry the stamped version when CDS's version read fails
-		// and it falls back to the full load; only the digest tells then.
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("ETag", `W/"4"`)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(policyRouterOnly))
-		}))
-		t.Cleanup(srv.Close)
-		stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err != nil || !stale {
-			t.Fatalf("stampedPolicyStale = %v, %v, want stale", stale, err)
-		}
-	})
-
-	for _, etag := range []string{"", `"5"`} {
-		t.Run("200 with ETag "+strconv.Quote(etag), func(t *testing.T) {
+	// A CDS released before the version header tags by version, so no
+	// request is a 304 and the digest alone decides.
+	for _, tt := range []struct {
+		body string
+		want bool
+	}{{policyTwoWorkloads, false}, {policyRouterOnly, true}} {
+		t.Run("weak version tag, stale "+strconv.FormatBool(tt.want), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if etag != "" {
-					w.Header().Set("ETag", etag)
-				}
+				w.Header().Set("ETag", `W/"5"`)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(policyRouterOnly))
+				_, _ = w.Write([]byte(tt.body))
 			}))
 			t.Cleanup(srv.Close)
 			stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err == nil {
-				t.Fatal("stampedPolicyStale succeeded, want error without a weak ETag")
+			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistDigest)
+			if err != nil || served != "5" || stale != tt.want {
+				t.Fatalf("stampedPolicyStale = %q, %v, %v, want \"5\", %v", served, stale, err, tt.want)
 			}
 		})
 	}
@@ -496,7 +470,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err == nil {
+		if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistDigest); err == nil {
 			t.Fatal("stampedPolicyStale succeeded, want error on a 500")
 		}
 	})

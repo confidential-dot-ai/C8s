@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-integration-pod-runtime test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -82,15 +82,16 @@ build-nri-image-policy:
 C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
-	go test -race $(C8S_TEST_COUNT) -timeout=120s work
+	go test -race $(C8S_TEST_COUNT) -timeout=600s work
+	# The Cloud runner tests fork the test binary as process doubles; see the
+	# build constraint in test/integration/pod-cloud/tool/runner_test.go.
+	go test $(C8S_TEST_COUNT) -timeout=600s ./test/integration/pod-cloud/tool
 
-# The pod ruleset installs over netlink into a network namespace the test
-# creates, so it needs uid 0 there: the test binary runs under sudo unless this
-# shell is already root. C8S_REQUIRE_NFT=1 turns a namespace it cannot create
-# into a failure instead of a skip.
+# Real packet capture, guest bootstrap and private RAM credential custody
+# need Linux root and namespace capabilities.
+# Missing privileges fail this target.
 test-podmesh-netns:
-	@runner="env C8S_REQUIRE_NFT=1"; [ "$$(id -u)" = 0 ] || runner="sudo -n $$runner"; \
-		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy
+	bash ./scripts/test-podmesh.sh -race
 
 test-integration:
 	./test/integration/run.sh
@@ -102,56 +103,73 @@ test-integration:
 test-integration-cluster:
 	./test/integration/cluster/run.sh
 
+# Pinned RKE2 release containerd/runc with the production Pod start gate.
+# Runs inside an owned privileged container without host mounts or networking.
+test-integration-pod-runtime:
+	bash ./test/integration/pod-runtime/run.sh
+
+.PHONY: test-integration-pod-cloud cleanup-integration-pod-cloud
+# Explicit live Cloud acceptance; inputs and recovery state stay private.
+test-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh run "$${C8S_PODCLOUD_INPUT:?absolute input JSON required}" "$${C8S_PODCLOUD_STATE:?new absolute private state directory required}"
+
+cleanup-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh cleanup "$${C8S_PODCLOUD_STATE:?existing absolute private state directory required}"
+
+# Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
+test-integration-cdsha:
+	./test/integration/cdsha/run.sh -short
+
 # The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
 test-node-guest-image-role:
-	./node-guest-image/tests/rke2-role-test.sh
+	./images/node-guest/tests/rke2-role-test.sh
 
 # GPU-node label logic (root-free unit test; fakes the PCI tree).
 test-node-guest-image-gpu-label:
-	./node-guest-image/tests/gpu-node-label-test.sh
+	./images/node-guest/tests/gpu-node-label-test.sh
 
 test-node-guest-image-gpu-cc:
-	./node-guest-image/tests/gpu-cc-enforce-test.sh
+	./images/node-guest/tests/gpu-cc-enforce-test.sh
 
 test-node-guest-image-scratch:
-	./node-guest-image/tests/scratch-enforce-test.sh
+	./images/node-guest/tests/scratch-enforce-test.sh
 
 # AppArmor configuration and byte-exact boot-gate regression tests.
 # Needs Docker and CONFOS_RELEASE from the pinned confos base configuration.
 .PHONY: test-node-guest-image-apparmor test-node-guest-image-apparmor-runtime
 test-node-guest-image-apparmor:
 	bash test/e2e/lib-test.sh
-	bash node-guest-image/tests/apparmor-config-test.sh
-	bash node-guest-image/tests/apparmor-enforce-test.sh
+	bash images/node-guest/tests/apparmor-config-test.sh
+	bash images/node-guest/tests/apparmor-enforce-test.sh
 
 # Disposable single-node C8s image and its operator kubeconfig.
 test-node-guest-image-apparmor-runtime:
-	bash node-guest-image/tests/apparmor-runtime-test.sh
+	bash images/node-guest/tests/apparmor-runtime-test.sh
 
 test-node-guest-image-psa-ready:
-	./node-guest-image/tests/psa-ready-test.sh
+	./images/node-guest/tests/psa-ready-test.sh
 
 # Role-gated unit wiring under real systemd in a privileged container.
 # Needs only docker.
 test-node-guest-image-role-systemd:
-	./node-guest-image/tests/rke2-role-systemd-test.sh
+	./images/node-guest/tests/rke2-role-systemd-test.sh
 
 # Verify measured OCI archives offline with a real ORAS multi-platform copy.
 # Needs ORAS, jq, Python 3 and GNU tar.
 .PHONY: test-node-guest-image-airgap
 test-node-guest-image-airgap:
-	bash node-guest-image/tests/airgap-images-test.sh
+	bash images/node-guest/tests/airgap-images-test.sh
 
 # Needs root (private mount namespace) and a ./confos checkout.
 test-node-guest-image-cloud-init:
-	./node-guest-image/tests/cloud-init-disabled.sh
+	./images/node-guest/tests/cloud-init-disabled.sh
 
 # Needs root on disposable Linux and a ./confos checkout (or CONFOS_DIR).
 # Executes the pinned initrd with real overlays; stops before systemd/TEE boot.
 .PHONY: test-node-guest-image-immutable-root
 test-node-guest-image-immutable-root:
-	bash node-guest-image/tests/immutable-root-test.sh
+	bash images/node-guest/tests/immutable-root-test.sh
 
 # Advisory mutation testing of code changed vs BASE (default origin/main).
 mutation-check:
@@ -181,6 +199,12 @@ test-e2e-allowlist-enforcement:
 # the tdx-metal-e2e lane.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
+
+# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from a
+# lane's own CDS VM. Needs kubectl pointed at the launcher cluster; runs last
+# in a metal lane's payload, because it replaces the lane's CVMs with its own.
+test-e2e-cds-ha-vms:
+	./test/e2e/cds-ha-vms.sh
 
 # Live-cluster check that the sample confidential workload runs with the
 # injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s

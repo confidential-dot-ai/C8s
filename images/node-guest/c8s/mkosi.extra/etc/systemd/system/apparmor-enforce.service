@@ -1,0 +1,17 @@
+[Unit]
+Description=Verify AppArmor enforcement before starting the node
+After=apparmor.service
+Before=rke2-server.service rke2-agent.service podcvm-containerd.service
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/local/bin/apparmor-enforce.sh
+TimeoutStartSec=30
+# Match the node's vsock fence; parser/aa-exec need no network sockets.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service

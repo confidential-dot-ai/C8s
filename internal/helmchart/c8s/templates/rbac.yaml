@@ -24,7 +24,15 @@ rules:
     resources: [pods]
     # delete: the startup reinject sweep deletes un-injected cw pods so their
     # controllers recreate them through the webhook.
-    verbs: [get, list, watch, delete]
+    verbs: [get, list, watch, delete{{ if .Values.operator.podCVMProvider.enabled }}, update, patch{{ end }}]
+  {{- if .Values.operator.podCVMProvider.enabled }}
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [nodes, nodes/status]
+    verbs: [get, list, watch, create, update, patch]
+  {{- end }}
 
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]
@@ -36,11 +44,13 @@ rules:
     # The operator provisions one headless Service per annotated workload in
     # the workload's namespace.
     verbs: [get, list, watch, create, update, delete]
-  - apiGroups: [""]
+  - apiGroups: ["", events.k8s.io]
     resources: [events]
-    # The controller-runtime manager's event recorder (leader election,
-    # reconcile events) creates and patch-aggregates events across the
-    # namespaces it watches; without this it logs "events is forbidden".
+    # The controller-runtime manager's event recorders (leader election,
+    # reconcile events, Pod CVM status transitions) create and
+    # patch-aggregate events across the namespaces they watch, through both
+    # the core and the events.k8s.io APIs; without this they log "events is
+    # forbidden".
     verbs: [create, patch]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
@@ -63,3 +73,29 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "c8s.operatorName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.operator.podCVMProvider.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "c8s.operatorName" . }}-pod-cvm
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "c8s.operatorName" . }}-pod-cvm
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "c8s.operatorName" . }}-pod-cvm
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "c8s.operatorName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

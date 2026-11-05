@@ -37,6 +37,9 @@ func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest, _ rou
 
 func (backendFunc) Acquire(string, int64) (func(), bool) { return func() {}, true }
 
+// SyncRouterDigest is that of the unstamped test mesh identities.
+func (backendFunc) SyncRouterDigest(string) (string, error) { return "", nil }
+
 // echoBackend reflects the request, for tests of the channel rather than of
 // routing.
 var echoBackend = backendFunc(func(_ *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
@@ -67,6 +70,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	return httptest.NewServer(srv.Handler())
 }
@@ -274,6 +278,7 @@ func newBackendTestServer(t *testing.T, backend backendFunc) *httptest.Server {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -363,6 +368,7 @@ func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		SessionTTL:           time.Millisecond,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -392,6 +398,7 @@ func TestTunnelRejectsOverAgeSession(t *testing.T) {
 		MeshIdentityCAFile:   identity.caFile,
 		SessionTTL:           time.Minute,
 		SessionMaxAge:        50 * time.Millisecond,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -487,7 +494,7 @@ func TestAttestPQRejectsBadRequests(t *testing.T) {
 // TestCDSCertRouteAbsentWithoutCert: the optional cds-cert endpoint must not be
 // mounted when no cert was supplied.
 func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/cds-cert.pem")
@@ -513,6 +520,7 @@ func TestAttestationEvidenceUnavailable(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -674,7 +682,7 @@ func TestServingLeafErrors(t *testing.T) {
 	rand.Read(nonce)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
+			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file, Bindings: NewBindings()})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))

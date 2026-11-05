@@ -89,7 +89,7 @@ func NewCmd() *cobra.Command {
 
 // newHealthcheckCmd returns the one-shot probe subcommand. The node-CVM
 // DaemonSet probes --health-addr instead — a locked node image denies every
-// runc exec, so an exec probe can never pass there — but the same check as a
+// runc exec it was not granted, so an exec probe can never pass there — but the same check as a
 // command stays useful from a shell on the node.
 func newHealthcheckCmd() *cobra.Command {
 	var socket string

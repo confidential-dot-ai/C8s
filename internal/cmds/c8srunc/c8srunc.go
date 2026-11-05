@@ -6,13 +6,17 @@
 // at this wrapper makes it the one choke point every CRI request to start a
 // process in a running container passes through: `kubectl exec`, `kubectl cp`,
 // CRI Exec and ExecSync, exec probes and lifecycle exec hooks all converge on
-// `runc exec`. In a locked build the wrapper denies that verb outright and
-// never reaches the real runtime; every other verb is handed to the real runc
-// unchanged. See docs/node-exec-mode.md.
+// `runc exec`. In a locked build the wrapper denies that verb, except for the
+// commands admission granted the container (grantedexec.go); every other verb
+// is handed to the real runc unchanged. Creation enforces the measured
+// privilege floor; Pod starts also consume a process-bound admission
+// permission. See docs/node-exec-mode.md.
 package c8srunc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +26,10 @@ import (
 	"syscall"
 	"time"
 
+	specs "github.com/opencontainers/runtime-spec/specs-go"
+
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/podstart"
 )
 
 // Enforcement postures. The posture is a build-time constant so no file,
@@ -41,15 +48,16 @@ const (
 	programName = "c8s-runc"
 )
 
-// DenyMessage is the stable text a denied exec reports. Tests and the e2e
-// matrix match on it; keep it greppable in kubelet events and containerd logs.
+// DenyMessage is the stable text a denied exec reports, before the reason.
+// Tests and the e2e matrix match on it; keep it greppable in kubelet events
+// and containerd logs.
 const DenyMessage = "c8s-runc: exec is denied on this node: the image is built in locked exec mode"
 
 // Build-time configuration, set with -ldflags -X. Defaults are the production
 // (locked) posture, so an unflagged build is never the permissive one.
 //
 // realRunc is RKE2's, because the wrapper ships only in the RKE2 node image
-// (node-guest-image/c8s/mkosi.sync). The chart installs no wrapper on kubeadm
+// (images/node-guest/c8s/mkosi.sync). The chart installs no wrapper on kubeadm
 // or hosted clusters; an image built on another distribution sets this path
 // at build time.
 var (
@@ -72,6 +80,19 @@ type Wrapper struct {
 	MeshConfig string
 	Floor      nriimagepolicy.MeshFloor
 	FloorError error
+	// State reads the real runtime's persisted created-process identity.
+	State        func(context.Context, string, []string) (specs.State, error)
+	ConsumeStart func(context.Context, string, podstart.Request) error
+	// ExecGrantDir is where admission records the execs each container is
+	// granted (nriimagepolicy.ExecGrantDir).
+	ExecGrantDir string
+	// CapGrantDir is where admission records the capabilities each container
+	// is granted beyond the node's default set
+	// (nriimagepolicy.CapabilityGrantDir).
+	CapGrantDir string
+	// CopyDir is where the checked process of an allowed exec is copied, on a
+	// filesystem every node has writable.
+	CopyDir string
 	// Stdin is this invocation's own standard input, which the floor reads to
 	// tell a create that carries the container's stdin from one that does not.
 	Stdin *os.File
@@ -86,15 +107,20 @@ type Wrapper struct {
 func New(stderr io.Writer) Wrapper {
 	floor, err := nriimagepolicy.LoadMeshFloor(meshConfig)
 	return Wrapper{
-		Mode:       mode,
-		RealRunc:   realRunc,
-		MeshConfig: meshConfig,
-		Floor:      floor,
-		FloorError: err,
-		Stdin:      os.Stdin,
-		Exec:       syscall.Exec,
-		Env:        os.Environ(),
-		Err:        stderr,
+		Mode:         mode,
+		RealRunc:     realRunc,
+		MeshConfig:   meshConfig,
+		Floor:        floor,
+		FloorError:   err,
+		State:        runtimeState,
+		ConsumeStart: podstart.Consume,
+		ExecGrantDir: nriimagepolicy.ExecGrantDir,
+		CapGrantDir:  nriimagepolicy.CapabilityGrantDir,
+		CopyDir:      "/run",
+		Stdin:        os.Stdin,
+		Exec:         syscall.Exec,
+		Env:          os.Environ(),
+		Err:          stderr,
 	}
 }
 
@@ -119,10 +145,17 @@ func (w Wrapper) Run(argv []string) int {
 		return w.deny(g, fmt.Sprintf("%s: built with an unknown exec mode %q", programName, w.Mode))
 	}
 	if w.Mode == ModeLocked && g.verb == execVerb {
-		return w.deny(g, DenyMessage)
+		handoff, err := w.grantedExec(g, args)
+		if err != nil {
+			return w.deny(g, DenyMessage+": "+err.Error())
+		}
+		args = handoff
 	}
 	if g.verb == restoreVerb {
 		return w.deny(g, fmt.Sprintf("%s: %s is denied on this node: what it starts is in a checkpoint, not in the bundle the floor reads", programName, g.verb))
+	}
+	if g.verb == "run" && w.Floor.PodRole {
+		return w.deny(g, programName+": Pod containers require separate create and admitted start")
 	}
 	// The privilege floor holds in every mode: the exec posture is about
 	// reaching a running container, this is about what one may hold.
@@ -133,6 +166,11 @@ func (w Wrapper) Run(argv []string) int {
 	}
 	if !filepath.IsAbs(w.RealRunc) {
 		return w.deny(g, fmt.Sprintf("%s: real runtime path %q is not absolute", programName, w.RealRunc))
+	}
+	if g.verb == "start" {
+		if err := w.requirePodStart(g); err != nil {
+			return w.deny(g, fmt.Sprintf("%s: %v", programName, err))
+		}
 	}
 	handoff := append([]string{w.RealRunc}, args...)
 	err = w.Exec(w.RealRunc, handoff, w.Env)
@@ -147,11 +185,14 @@ func (w Wrapper) checkFloor(args []string) error {
 	if w.FloorError != nil {
 		return fmt.Errorf("read the measured mesh floor from %s: %w", w.MeshConfig, w.FloorError)
 	}
+	if w.Floor.PodWaiting {
+		return errors.New("pod guest is waiting for an assignment")
+	}
 	spec, containerID, err := readBundle(args)
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, w.Floor)
+	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,
@@ -165,17 +206,19 @@ func (w Wrapper) deny(g globals, msg string) int {
 }
 
 // globals is what the wrapper needs from runc's global options: the
-// subcommand that follows them with its own arguments, and where runc was
-// told to log.
+// subcommand that follows them with its own arguments, where runc was told to
+// log, and the state directory it keeps containers in.
 type globals struct {
+	options   []string
 	verb      string
 	rest      []string
 	logPath   string
 	logFormat string
+	root      string
 }
 
-// runc's global options, from runc v1.4.0 main.go (the version rancher's
-// hardened-runc ships in the pinned RKE2 release). Values are urfave/cli v1
+// runc's global options, checked against the shipped hardened-runc v1.4.3.
+// Values are urfave/cli v1
 // flags parsed by Go's flag package: `-x`/`--x` are the same, `--x=v` and
 // `--x v` both set a string flag, and a bool flag never consumes the next
 // argument.
@@ -196,12 +239,14 @@ func parseGlobals(args []string) (globals, error) {
 			// Go's flag package stops here and drops the token; the next
 			// argument is the subcommand.
 			if verb := i + 1; verb < len(args) {
+				g.options = args[:verb]
 				g.verb = args[verb]
 				g.rest = args[verb+1:]
 			}
 			return g, nil
 		}
 		if !isFlag(arg) {
+			g.options = args[:i]
 			g.verb = arg
 			g.rest = args[i+1:]
 			return g, nil
@@ -234,6 +279,8 @@ func (g *globals) setString(name, value string) {
 		g.logPath = value
 	case "log-format":
 		g.logFormat = value
+	case "root":
+		g.root = value
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -160,6 +159,11 @@ func environment(ctx context.Context, line string) error {
 // harness chose, beside which a backend may run its pod agent (metal.sh).
 const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
+// annotationMountsFree marks a pod carrying a workload ID whose first
+// container no entry restricts the mounts of, to which a backend may add a
+// volume (metal.sh, discovery_wrap).
+const annotationMountsFree = "c8s-conformance/mounts-free"
+
 // pinsLaunch reports whether an entry the scenario described pins the argv
 // or the mounts of the image at ref.
 func (w *world) pinsLaunch(ref string) bool {
@@ -167,6 +171,19 @@ func (w *world) pinsLaunch(ref string) bool {
 	for _, e := range w.entries {
 		for _, c := range e.containers() {
 			if c.Image == ref && (!free(c.Command) || !free(c.Args) || c.Mounts.Policy == "exact") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// restrictsMounts reports whether an entry the scenario described leaves the
+// mounts of the image at ref anything but free.
+func (w *world) restrictsMounts(ref string) bool {
+	for _, e := range w.entries {
+		for _, c := range e.containers() {
+			if c.Image == ref && c.Mounts.Policy != "any" {
 				return true
 			}
 		}
@@ -217,6 +234,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		// an entry pins that argv or the mounts, which more would break.
 		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
 	}
+	if p.workloadID && !w.restrictsMounts(p.containers[0].ref) {
+		args = append(args, "--annotation", annotationMountsFree+"=yes")
+	}
 	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {
 		if i > 0 {
@@ -228,49 +248,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	pod, err := leadWithHelpers(manifest, p)
-	if err != nil {
-		return err
-	}
 	p.deployed = true
-	_, err = kubectl(pod, "apply", "-f", "-")
+	_, err = kubectl([]byte(manifest), "apply", "-f", "-")
 	return err
-}
-
-// leadWithHelpers moves each main container running a helper mode to the
-// front of the pod, under the credentials role's identity. The mesh gate
-// starts that role only before every container outside a platform role, and
-// only as its reserved UID (pkg/workloadclaims.CredentialsUID).
-func leadWithHelpers(manifest string, p *pod) ([]byte, error) {
-	if !slices.ContainsFunc(p.containers, func(c *container) bool { return c.helper }) {
-		return []byte(manifest), nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(manifest), &obj); err != nil {
-		return nil, fmt.Errorf("harness: the pod manifest is not JSON: %w", err)
-	}
-	spec, _ := obj["spec"].(map[string]any)
-	rendered, _ := spec["containers"].([]any)
-	if len(rendered) != len(p.containers) {
-		return nil, fmt.Errorf("harness: the manifest has %d containers, the scenario %d", len(rendered), len(p.containers))
-	}
-	var helpers, rest []any
-	for i, c := range rendered {
-		if !p.containers[i].helper {
-			rest = append(rest, c)
-			continue
-		}
-		ctr, _ := c.(map[string]any)
-		sc, _ := ctr["securityContext"].(map[string]any)
-		if sc == nil {
-			sc = map[string]any{}
-		}
-		sc["runAsUser"], sc["runAsGroup"] = workloadclaims.CredentialsUID, workloadclaims.CredentialsUID
-		ctr["securityContext"] = sc
-		helpers = append(helpers, ctr)
-	}
-	spec["containers"] = append(helpers, rest...)
-	return json.Marshal(obj)
 }
 
 // podRunning waits for the deployed pod to be Running with a pod address.
@@ -399,6 +379,30 @@ func (w *world) statuses(p *pod) []containerStatus {
 		st = append(st, s)
 	}
 	return st
+}
+
+// terminated reports that the pod is no longer running. The admission
+// enforcement recheck kills a running container whose image has left the
+// applied allowlist, after which a restartPolicy:Never pod ends and its native
+// sidecars (get-cert included) stop. It returns the reason when so, empty while
+// the pod is still Pending/Running, and empty when the phase cannot be read (a
+// transient get is not a termination). A poll waiting on the sidecar uses it to
+// fail with the cause rather than time out on a dead pod.
+func (w *world) terminated(p *pod) string {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.phase}")
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") {
+			return "the pod is gone"
+		}
+		return ""
+	}
+	switch strings.TrimSpace(out) {
+	case "Failed":
+		return "the pod reached phase Failed"
+	case "Succeeded":
+		return "the pod reached phase Succeeded"
+	}
+	return ""
 }
 
 // created is the id of a created container, or empty.

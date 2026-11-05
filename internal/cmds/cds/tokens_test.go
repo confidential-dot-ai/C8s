@@ -20,19 +20,34 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// floorAt is a CDS whose spent-token record began at start; the zero time
+// refuses no token for its age.
+func floorAt(start time.Time) func() time.Time {
+	return func() time.Time { return start }
+}
+
 func TestSingleUse(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"exp": time.Now().Add(time.Minute).Unix()}).SignedString([]byte("k"))
+	now := time.Now()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iat": now.Unix(),
+		"exp": now.Add(time.Minute).Unix(),
+	}).SignedString([]byte("k"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	denied := errors.New("denied")
 	var verdict error
-	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict }, &store, time.Time{}, 0)
+	authorize := singleUse(
+		func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict },
+		store.Local(),
+		floorAt(time.Time{}),
+		0,
+	)
 	r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -85,7 +100,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	twin := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 
 	verifier := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}
-	authorize := singleUse(verifier.AuthorizeIssuedAt, &store, time.Time{}, 0)
+	authorize := singleUse(verifier.AuthorizeIssuedAt, store.Local(), floorAt(time.Time{}), 0)
 	request := func(token string) *http.Request {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -123,8 +138,13 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 		{"issued inside the skew", start.Add(skew - time.Second), false},
 		{"issued at start plus skew", start.Add(skew), true},
 	} {
-		authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil }, &store, start, skew)
-		r := bearerRequest(t, jwt.MapClaims{"iat": tc.iat.Unix()})
+		authorize := singleUse(
+			func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil },
+			store.Local(),
+			floorAt(start),
+			skew,
+		)
+		r := bearerRequest(t, tc.iat)
 		if err := authorize(r, nil); (err == nil) != tc.ok {
 			t.Errorf("%s: authorize = %v, want ok=%v", tc.name, err, tc.ok)
 		}
@@ -138,7 +158,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 	const skew = 30 * time.Second
 	start := time.Unix(1_700_000_000, 0)
 	iat := start.Add(5 * time.Second)
-	r := bearerRequest(t, jwt.MapClaims{"iat": iat.Unix()})
+	r := bearerRequest(t, iat)
 	allow := func(*http.Request, []byte) (time.Time, error) { return iat, nil }
 
 	first, err := allowlist.OpenInMemory()
@@ -146,7 +166,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if err := singleUse(allow, &first, start.Add(-time.Hour), skew)(r, nil); err != nil {
+	if err := singleUse(allow, first.Local(), floorAt(start.Add(-time.Hour)), skew)(r, nil); err != nil {
 		t.Fatalf("first use = %v", err)
 	}
 
@@ -155,7 +175,8 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
+	afterRestart := singleUse(allow, restarted.Local(), floorAt(start.Add(time.Second)), skew)
+	if err := afterRestart(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
 		t.Fatalf("replay after restart = %v, want operatorauth.ErrTokenBeforeStart", err)
 	}
 }
@@ -168,14 +189,24 @@ func TestSingleUseReportsStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.Close()
-	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil }, &store, time.Time{}, 0)
-	if err := authorize(bearerRequest(t, jwt.MapClaims{}), nil); !errors.Is(err, operatorauth.ErrTokenNotRecorded) {
+	authorize := singleUse(
+		func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil },
+		store.Local(),
+		floorAt(time.Time{}),
+		0,
+	)
+	if err := authorize(bearerRequest(t, time.Now()), nil); !errors.Is(err, operatorauth.ErrTokenNotRecorded) {
 		t.Fatalf("authorize on a closed store = %v, want operatorauth.ErrTokenNotRecorded", err)
 	}
 }
 
-func bearerRequest(t *testing.T, claims jwt.MapClaims) *http.Request {
+// bearerRequest is a write request carrying a token issued at iat.
+func bearerRequest(t *testing.T, iat time.Time) *http.Request {
 	t.Helper()
+	claims := jwt.MapClaims{
+		"iat": iat.Unix(),
+		"exp": iat.Add(time.Minute).Unix(),
+	}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("k"))
 	if err != nil {
 		t.Fatal(err)

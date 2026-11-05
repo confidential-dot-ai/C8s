@@ -2,7 +2,7 @@
        runs in kube-system, which the measured mesh policy exempts, so it reads
        the API like any other system component, and every member pod reaches
        its Service through the one exit that policy names (mesh.exits in
-       node-guest-image/c8s/image-policy.yaml.in). The seed pins its argv,
+       images/node-guest/c8s/image-policy.yaml.in). The seed pins its argv,
        mounts and env (c8s.imageAllowlist). */ -}}
 {{- define "kube-state-metrics.podSpec" -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).

@@ -11,15 +11,17 @@
 #   2. Allowlist the reader busybox invocation as a WORKLOAD entry (digest +
 #      exact argv + secrets grant), run it, and curl its served secret back out
 #      of the immutable volume.
-#   3. Prove argv enforcement: the same image with a different argv is denied.
+#   3. Prove argv enforcement: the reader's pod with a different argv is denied.
 #   4. Allowlist the writer invocation, run it, and curl its served file out of
-#      the mutable volume; delete and recreate the pod and read it again to
-#      prove the write reached the ciphertext device, not a pod-local fs.
+#      the mutable volume; recreate the pod, whose writer appends a second
+#      marker, and read both back to prove the first write reached the
+#      ciphertext device, not a pod-local fs.
 #
 # Needs kubectl pointed at a cluster with C8s installed with --volumes, `c8s`
 # and `crane` on PATH, the volume devices already attached to E2E_VOL_NODE
 # (serials c8s-vol-<name>), and:
-#   C8S_MEASUREMENTS    launch measurement pinning the CDS endpoint
+#   C8S_CDS_URL         the cluster's CDS, as its launch names it
+#   C8S_CDS_PIN         the pin document binding that CDS to its configuration
 #   C8S_OPERATOR_KEY    path to the operator EC key PEM pinned on CDS
 #   E2E_VOL_NODE        node name the volume devices are attached to
 #   E2E_VOL_IMM_ESCROW  escrow (key blob) file of the pre-built immutable volume
@@ -30,19 +32,20 @@
 #                       1.38 is in the node image's baked floor, so it would
 #                       not exercise the entries)
 #   E2E_VOL_IMM_NAME / E2E_VOL_MUT_NAME   volume names (default imm / mut)
-#   E2E_VOL_MUT_MARKER  bytes the writer writes; a single shell word, no quotes
-#                       (default: c8s-e2e-mut-proof)
+#   E2E_VOL_MUT_MARKER  bytes each writer start appends to proof.txt, which the
+#                       mutable source must not hold; a single shell word, no
+#                       quotes (default: c8s-e2e-mut-proof)
 #   E2E_VOL_UID         numeric non-root UID/GID used by both consumers
 #                       (default 65534). The immutable source must be readable
 #                       and the mutable source root writable by this identity;
 #                       c8s volume create --source preserves those modes.
-#   E2E_CDS_LOCAL_PORT  local port for the CDS port-forward (default 18443)
 #   E2E_MESH_CA         path to a pinned mesh CA bundle (default: read from the
 #                       router pod, which serves the live CA on its cert volume)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-: "${C8S_MEASUREMENTS:?pins the launch measurement of the CDS endpoint}"
+: "${C8S_CDS_URL:?the CDS the launch of this cluster names}"
+: "${C8S_CDS_PIN:?the pin document binding that CDS to its configuration}"
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
 : "${E2E_VOL_NODE:?node the c8s-vol-* devices are attached to}"
 : "${E2E_VOL_IMM_ESCROW:?escrow blob of the pre-built immutable volume}"
@@ -53,11 +56,14 @@ BUSYBOX=${E2E_BUSYBOX:-busybox:1.36}
 IMM=${E2E_VOL_IMM_NAME:-imm}
 MUT=${E2E_VOL_MUT_NAME:-mut}
 MARKER=${E2E_VOL_MUT_MARKER:-c8s-e2e-mut-proof}
-CDS_PORT=${E2E_CDS_LOCAL_PORT:-18443}
 VOL_UID=${E2E_VOL_UID:-65534}
 
 [[ "$VOL_UID" =~ ^[1-9][0-9]*$ ]] \
   || fail "E2E_VOL_UID must be a positive numeric UID (got '$VOL_UID')"
+for vol in "$IMM" "$MUT"; do
+  [[ "$vol" =~ ^[a-z0-9-]+$ ]] \
+    || fail "volume names are lowercase letters, digits and dashes (got '$vol')"
+done
 
 ns=c8s-e2e-volumes               # opened for CW pods by cw_namespace below
 READER=e2e-vol-reader
@@ -70,12 +76,16 @@ MUT_PATH=/e2e/volumes/$MUT
 # specs are generated from the same variables so they cannot drift apart. The
 # scripts must stay free of double quotes and backslashes: they are embedded
 # raw into JSON (the workload entry and the pod manifest).
-reader_script="until [ -f /mnt/c8s-data/c8s-volumes/$IMM/secret.txt ]; do sleep 1; done; httpd -f -p 8080 -h /mnt/c8s-data/c8s-volumes/$IMM"
-writer_script="until mountpoint -q /mnt/c8s-data/c8s-volumes/$MUT; do sleep 1; done; printf %s $MARKER > /mnt/c8s-data/c8s-volumes/$MUT/proof.txt; httpd -f -p 8080 -h /mnt/c8s-data/c8s-volumes/$MUT"
+imm_dir=/mnt/c8s-data/c8s-volumes/$IMM
+mut_dir=/mnt/c8s-data/c8s-volumes/$MUT
+# The injected emptyDir is a mountpoint before volumed mounts the dm-crypt device over it.
+mut_crypt_mount_line="^/dev/mapper/c8s-crypt-[^ ]* $mut_dir "
+reader_script="until [ -f $imm_dir/secret.txt ]; do sleep 1; done; httpd -f -p 8080 -h $imm_dir"
+writer_script="until grep -q '$mut_crypt_mount_line' /proc/mounts; do sleep 1; done; printf %s $MARKER >> $mut_dir/proof.txt; httpd -f -p 8080 -h $mut_dir"
 
 PF_PODS=""
 cleanup() {
-  for p in $PF_PODS ${PF_CDS:-}; do kill "$p" 2>/dev/null || true; done
+  for p in $PF_PODS; do kill "$p" 2>/dev/null || true; done
   if cw_namespace_owned "$ns"; then
     kubectl delete namespace "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     al delete "$READER" "$WRITER" >/dev/null 2>&1 || true
@@ -85,19 +95,11 @@ cleanup() {
 trap cleanup EXIT
 cw_namespace "$ns"
 
-# Every CDS call goes over a port-forward: router fronts /allowlist but not
-# /secrets, and the armTLS client verifies attestation rather than PKI
-# hostnames, so one channel serves both APIs (README.md "Operator access").
-kubectl -n c8s-system port-forward svc/c8s-cds "$CDS_PORT:8443" >/dev/null 2>&1 &
-PF_CDS=$!
-CDS_UP=""
-for _ in $(seq 1 30); do
-  curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$CDS_PORT/healthz" && { CDS_UP=1; break; }
-  sleep 1
-done
-[ -n "$CDS_UP" ] || fail "CDS port-forward never came up"
-
-c8s_conn() { c8s "$@" --url "https://127.0.0.1:$CDS_PORT" --measurements "$C8S_MEASUREMENTS"; }
+# Every CDS call goes straight to the CDS the cluster trusts: the router fronts
+# /allowlist but not /secrets, and the armTLS client verifies attestation
+# rather than PKI hostnames, so one channel serves both APIs (README.md
+# "Operator access").
+c8s_conn() { c8s "$@" --url "$C8S_CDS_URL" --image-policy-file "$C8S_CDS_PIN"; }
 al() { c8s_conn allowlist "$@"; }
 
 # serve <pod> <local-port> — wait Ready, port-forward, and answer curl_poll.
@@ -159,7 +161,6 @@ entry() {
         "command": { "policy": "exact", "argv": ["sh", "-c"] },
         "args":    { "policy": "exact", "argv": ["$2"] },
         "mounts":  { "policy": "exact", "rules": [
-          { "destination": "/etc/c8s/certs", "kind": "emptyDir" },
           { "destination": "/mnt/c8s-data/c8s-volumes/$4", "kind": "data" }
         ] }
       }
@@ -210,13 +211,16 @@ consumer_pod() {
 EOF
 }
 
+# reader_pod <pod name> <argv script> — a pod of the reader's entry on the immutable volume.
+reader_pod() { consumer_pod "$1" "$READER" "$IMM" "$IMM_PATH" "$2"; }
+
 entry "$READER" "$reader_script" "$IMM_PATH" "$IMM" | al apply - >/dev/null \
   || fail "reader workload entry rejected"
 echo "ok: reader workload entry applied (grant $IMM_PATH)"
 # The plugin polls CDS for allowlist changes on a 5s interval.
 sleep 8
 
-consumer_pod "$READER" "$READER" "$IMM" "$IMM_PATH" "$reader_script" | kubectl apply -f - >/dev/null
+reader_pod "$READER" "$reader_script" | kubectl apply -f - >/dev/null
 serve "$READER" 18080
 got=$(curl_poll 18080 /secret.txt) \
   || fail "reader never served /secret.txt (volume mount or httpd missing; check the c8s-volume sidecar logs)"
@@ -224,42 +228,15 @@ got=$(curl_poll 18080 /secret.txt) \
   || fail "immutable volume served the wrong bytes: got '$got', want '$E2E_VOL_IMM_CONTENT'"
 echo "ok: immutable volume decrypted, mounted, and served the exact sealed bytes over HTTP"
 
-# --- 3. argv enforcement: same digest, an argv no entry declares --------------
+# --- 3. argv enforcement: the reader's pod with an argv no entry declares -----
 
-cat <<EOF | kubectl apply -f - >/dev/null
-{
-  "apiVersion": "v1",
-  "kind": "Pod",
-  "metadata": { "name": "$DENIED", "namespace": "$ns" },
-  "spec": {
-    "nodeSelector": { "kubernetes.io/hostname": "$E2E_VOL_NODE" },
-    "restartPolicy": "Never",
-    "securityContext": {
-      "runAsNonRoot": true,
-      "runAsUser": $VOL_UID,
-      "runAsGroup": $VOL_UID,
-      "seccompProfile": { "type": "RuntimeDefault" }
-    },
-    "containers": [
-      {
-        "name": "app",
-        "image": "$image",
-        "command": ["sh", "-c"],
-        "args": ["sleep 300"],
-        "securityContext": {
-          "allowPrivilegeEscalation": false,
-          "capabilities": { "drop": ["ALL"] }
-        }
-      }
-    ]
-  }
-}
-EOF
+# INVARIANT: only the argv differs from the admitted reader; the launch denial names no field.
+reader_pod "$DENIED" "sleep 300" | kubectl apply -f - >/dev/null
 argv_denied=""
 for _ in $(seq 1 30); do
   msg=$(kubectl -n "$ns" get pod $DENIED \
     -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null || true)
-  case "$msg" in *"satisfies no workload entry's argv policy"*) argv_denied=1; break ;; esac
+  case "$msg" in *"is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy"*) argv_denied=1; break ;; esac
   sleep 2
 done
 if [ -z "$argv_denied" ]; then
@@ -267,7 +244,7 @@ if [ -z "$argv_denied" ]; then
   fail "SECURITY REGRESSION: $BUSYBOX with an undeclared argv was admitted;" \
        "workload argv policy is not enforced (waiting message: ${msg:-none})"
 fi
-echo "ok: same image with an undeclared argv denied (argv_not_admitted)"
+echo "ok: the reader's pod with an undeclared argv denied"
 kubectl -n "$ns" delete pod $DENIED --wait=true --timeout=60s >/dev/null
 
 # --- 4. the writer: mutable volume, write + read + persistence -----------------
@@ -282,7 +259,8 @@ serve "$WRITER" 18081
 got=$(curl_poll 18081 /proof.txt) \
   || fail "writer never served /proof.txt (mutable mount or httpd missing)"
 [ "$got" = "$MARKER" ] \
-  || fail "mutable volume served the wrong bytes: got '$got', want '$MARKER'"
+  || fail "mutable volume served the wrong bytes: got '$got', want '$MARKER' (the volume must start without proof.txt)"
+first_write=$got
 echo "ok: writer wrote the marker into the mutable volume and served it"
 
 # Pod churn must not lose the write: the recreated pod's sidecar re-opens the
@@ -295,8 +273,8 @@ consumer_pod "$WRITER" "$WRITER" "$MUT" "$MUT_PATH" "$writer_script" | kubectl a
 serve "$WRITER" 18082
 got=$(curl_poll 18082 /proof.txt) \
   || fail "recreated writer never served /proof.txt"
-[ "$got" = "$MARKER" ] \
-  || fail "mutable volume lost the write across a pod recreate: got '$got', want '$MARKER'"
+[ "$got" = "$first_write$MARKER" ] \
+  || fail "mutable volume lost the first write across a pod recreate: got '$got', want '$first_write$MARKER'"
 echo "ok: write survived a pod delete+recreate (persisted on the ciphertext device)"
 
 echo "PASS: encrypted volumes end to end — blob release, argv-scoped entries, immutable read, mutable write+persist"

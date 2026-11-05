@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // newBootstrapEnv exposes only the credential service. Hardware verification is
@@ -43,7 +44,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 			result = verifiedResultFor(env.operatorPubPEM)
 		}
 		if len(params.ExpectedReportData) == 32 {
-			var reported credrelease.AttestRequest
+			var reported types.NonceRequest
 			if err := json.Unmarshal(evidence, &reported); err != nil {
 				return nil, err
 			}
@@ -92,7 +93,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 		}
 		switch r.URL.Path {
 		case credrelease.AttestPath:
-			var req credrelease.AttestRequest
+			var req types.NonceRequest
 			if err := json.Unmarshal(body, &req); err != nil || len(req.Nonce) != 32 {
 				t.Errorf("invalid nonce request: %s", body)
 				http.Error(w, "nonce", http.StatusBadRequest)
@@ -218,6 +219,22 @@ func TestBootstrapTransportFailsClosed(t *testing.T) {
 			t.Fatalf("want HTTPS requirement, got %v", err)
 		}
 	})
+	for _, tc := range []struct{ name, url string }{
+		{"HTTP apiserver URL", "http://node:6443"},
+		{"apiserver URL with injected YAML", "https://node:6443\n    insecure-skip-tls-verify: true"},
+		{"apiserver URL with userinfo", "https://u@node:6443"},
+		{"apiserver URL with query", "https://node:6443?x=1"},
+		{"apiserver URL with fragment", "https://node:6443#x"},
+		{"apiserver URL without host", "https:///x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := env.config()
+			cfg.APIServerURL = tc.url
+			if err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "--apiserver-url must be an absolute HTTPS URL") {
+				t.Fatalf("Run(APIServerURL=%q) = %v, want --apiserver-url refusal", tc.url, err)
+			}
+		})
+	}
 	t.Run("redirect to HTTP", func(t *testing.T) {
 		redirect := newAttestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, plain.URL+credrelease.AttestPath, http.StatusTemporaryRedirect)

@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -18,58 +16,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
-
-// capturedRecord is one captured slog record: message plus resolved attrs.
-type capturedRecord struct {
-	level slog.Level
-	msg   string
-	attrs map[string]slog.Value
-}
-
-// logCapture is a slog.Handler that stores records for later inspection.
-type logCapture struct {
-	mu      sync.Mutex
-	records []capturedRecord
-}
-
-func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
-
-func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
-	rec := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]slog.Value{}}
-	r.Attrs(func(a slog.Attr) bool {
-		rec.attrs[a.Key] = a.Value.Resolve()
-		return true
-	})
-	c.mu.Lock()
-	c.records = append(c.records, rec)
-	c.mu.Unlock()
-	return nil
-}
-
-func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
-func (c *logCapture) WithGroup(string) slog.Handler      { return c }
-
-func (c *logCapture) find(msg string) (capturedRecord, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, rec := range c.records {
-		if rec.msg == msg {
-			return rec, true
-		}
-	}
-	return capturedRecord{}, false
-}
-
-// captureDefaultLogger swaps the process default logger for a capture handler
-// and restores it on cleanup.
-func captureDefaultLogger(t *testing.T) *logCapture {
-	t.Helper()
-	c := &logCapture{}
-	old := slog.Default()
-	slog.SetDefault(slog.New(c))
-	t.Cleanup(func() { slog.SetDefault(old) })
-	return c
-}
 
 // holdSIGTERM keeps a test-side SIGTERM subscription for the test's lifetime,
 // so signalling the process can never hit the default terminate action.
@@ -86,6 +32,7 @@ func holdSIGTERM(t *testing.T) {
 func unreachableRenewalConfig(t *testing.T) config {
 	return stagePodEnvironment(t, config{
 		CDSURL:                 "https://127.0.0.1:1",
+		MeasurementsConfigJSON: testCDSPin,
 		AttestationApiURL:      "http://127.0.0.1:1",
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
@@ -403,13 +350,16 @@ func TestServedCAStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeServed := func(t *testing.T, content string) string {
+	servedIn := func(path string) credentialVolume {
+		return credentialVolume{dir: filepath.Dir(path), caName: filepath.Base(path)}
+	}
+	writeServed := func(t *testing.T, content string) credentialVolume {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "ca.pem")
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
-		return path
+		return servedIn(path)
 	}
 
 	tests := []struct {
@@ -428,7 +378,7 @@ func TestServedCAStale(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := startFakeCAServer(t, func() string { return tt.cds })
-			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), writeServed(t, tt.served), bound)
+			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, writeServed(t, tt.served))
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("servedCAStale err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -440,13 +390,13 @@ func TestServedCAStale(t *testing.T) {
 
 	t.Run("missing served file", func(t *testing.T) {
 		url := startFakeCAServer(t, func() string { return caA })
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), filepath.Join(t.TempDir(), "missing.pem"), bound); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, servedIn(filepath.Join(t.TempDir(), "missing.pem"))); err == nil {
 			t.Fatal("servedCAStale succeeded, want read error")
 		}
 	})
 
 	t.Run("cds unreachable", func(t *testing.T) {
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), writeServed(t, caA), bound); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), bound, writeServed(t, caA)); err == nil {
 			t.Fatal("servedCAStale succeeded, want transport error")
 		}
 	})
@@ -629,54 +579,5 @@ func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
-	}
-}
-
-func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
-	base := config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-	}
-	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
-
-	t.Run("unpinned warns", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		if _, err := cdsHTTPClient(base); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); !ok {
-			t.Fatal("no warning logged for an unpinned CDS measurement set")
-		}
-	})
-
-	t.Run("pinned does not warn", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		cfg := base
-		cfg.CDSMeasurements = strings.Repeat("ab", 48)
-		if _, err := cdsHTTPClient(cfg); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); ok {
-			t.Fatal("warning logged despite pinned measurements")
-		}
-	})
-}
-
-func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
-	base := config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-	}
-
-	cfg := base
-	cfg.CDSRTMRs = "1=zz"
-	if _, err := cdsHTTPClient(cfg); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("err = %v, want an RTMR parse failure naming the flag", err)
-	}
-
-	cfg.CDSMeasurements = strings.Repeat("ab", 48)
-	cfg.CDSRTMRs = "1=" + strings.Repeat("cd", 48)
-	if _, err := cdsHTTPClient(cfg); err != nil {
-		t.Fatalf("cdsHTTPClient with valid pins: %v", err)
 	}
 }

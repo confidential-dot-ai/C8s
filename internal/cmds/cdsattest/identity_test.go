@@ -135,6 +135,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -214,7 +215,7 @@ func validAttestPQBody(t *testing.T) []byte {
 }
 
 func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp := postAttestPQ(t, ts.URL, validAttestPQBody(t))
@@ -232,6 +233,7 @@ func TestIdentityBoundAttestationFailsClosedOnInvalidConfiguredIdentity(t *testi
 		MeshIdentityCertFile: "/does/not/exist/cert.pem",
 		MeshIdentityKeyFile:  "/does/not/exist/key.pem",
 		MeshIdentityCAFile:   "/does/not/exist/ca.pem",
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -450,6 +452,7 @@ func TestAttestationRejectsQuerySelectors(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -494,6 +497,7 @@ func TestIdentityBoundAttestationRejectsDegenerateKey(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

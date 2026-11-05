@@ -47,6 +47,8 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 		pod("injected", "tenant", "ReplicaSet", cwInjected),
 		// Kept: no cw annotation (not opted in).
 		pod("no-cw", "tenant", "ReplicaSet", nil),
+		// Guest-owned injection must not trigger deletion and recreation on operator restart.
+		pod("pod-cvm", "tenant", "ReplicaSet", map[string]string{webhook.AnnotationWorkload: "wl", webhook.AnnotationPodCVM: "true"}),
 		// Kept: bare pod (no controller would recreate it).
 		pod("bare", "tenant", "", cw),
 		// Kept: excluded namespace (webhook never injects there).
@@ -57,7 +59,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithObjects(pods...).Build()
-	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me"})
+	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me", "local-path-storage"})
 
 	if err := reinjectSweep(context.Background(), c, excluded); err != nil {
 		t.Fatalf("reinjectSweep: %v", err)
@@ -73,7 +75,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"bare", "in-extra", "in-kube", "in-provisioner", "in-release", "injected", "no-cw"}
+	want := []string{"bare", "in-extra", "in-kube", "in-provisioner", "in-release", "injected", "no-cw", "pod-cvm"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surviving pods = %v, want %v", got, want)
 	}
@@ -151,7 +153,7 @@ func TestReinjectSweepReportsCounts(t *testing.T) {
 func TestExcludedNamespaceSetManyExtras(t *testing.T) {
 	got := excludedNamespaceSet("rel", []string{"a", "b", "c", "d", "e", " f ", ""})
 	want := map[string]struct{}{
-		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {}, "local-path-storage": {},
+		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {},
 		"a": {}, "b": {}, "c": {}, "d": {}, "e": {}, "f": {},
 	}
 	if !maps.Equal(got, want) {

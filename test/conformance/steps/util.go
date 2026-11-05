@@ -54,15 +54,16 @@ func statusLine(out string) (status int, more string, body []byte, err error) {
 	}
 }
 
-// cdsArg is the value of a flag the CDS runs with. The chart sets every one
-// the scenarios read, so an unset one is a broken install, not a default.
+// cdsArg is the value of a flag the CDS runs with. A CDS VM's unit fixes only
+// some of them, and the value of one left at the CDS's own default is not the
+// backend's to name.
 func (w *world) cdsArg(flag string) (string, error) {
 	out, err := w.be.call("cds_arg", flag)
 	if err != nil {
 		return "", err
 	}
 	if out == "" {
-		return "", fmt.Errorf("the CDS runs without --%s, which the chart sets", flag)
+		return "", skipf("the CDS runs with its built-in --%s, which the backend cannot name", flag)
 	}
 	return out, nil
 }

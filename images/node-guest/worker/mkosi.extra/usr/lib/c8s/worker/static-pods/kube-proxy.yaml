@@ -1,0 +1,36 @@
+# kube-proxy with RKE2 v1.36.4's flags, from registry.k8s.io: RKE2's own image
+# also carries the control plane's binaries.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-proxy
+  namespace: kube-system
+  labels: {k8s-app: kube-proxy}
+spec:
+  hostNetwork: true
+  dnsPolicy: Default
+  enableServiceLinks: false
+  priorityClassName: system-node-critical
+  containers:
+  - name: kube-proxy
+    image: registry.k8s.io/kube-proxy:v1.36.4@sha256:b33fcdd8319290736e566f5fc2225ca07d3c2dfc025fb006342791aa31be4603
+    command: [/usr/local/bin/kube-proxy]
+    args: ['--cluster-cidr=${POD_CIDR}', --conntrack-max-per-core=0, --conntrack-tcp-timeout-close-wait=0s, --conntrack-tcp-timeout-established=0s, --healthz-bind-address=127.0.0.1, '--hostname-override=${NODE_NAME}',
+      --iptables-localhost-nodeports=false, --kubeconfig=/var/lib/kubelet/kubeconfig, --proxy-mode=iptables]
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    securityContext: {privileged: true}
+    volumeMounts:
+    - {name: kubeconfig, mountPath: /var/lib/kubelet/kubeconfig, readOnly: true}
+    - {name: kubelet-pki, mountPath: /var/lib/kubelet/pki, readOnly: true}
+    - {name: xtables-lock, mountPath: /run/xtables.lock}
+    - {name: lib-modules, mountPath: /lib/modules, readOnly: true}
+  volumes:
+  - name: kubeconfig
+    hostPath: {path: /var/lib/kubelet/kubeconfig, type: File}
+  - name: kubelet-pki
+    hostPath: {path: /var/lib/kubelet/pki, type: Directory}
+  - name: xtables-lock
+    hostPath: {path: /run/xtables.lock, type: FileOrCreate}
+  - name: lib-modules
+    hostPath: {path: /lib/modules}

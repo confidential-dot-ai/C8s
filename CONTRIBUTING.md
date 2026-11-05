@@ -52,15 +52,17 @@ rotate it immediately.
 
 ## Signed commits
 
-Every commit must carry a signature GitHub shows as **Verified** — GPG or
-SSH, with the signing key registered on your GitHub account (see [GitHub's
+Before merge, every commit must carry a signature GitHub shows as **Verified** —
+GPG or SSH, with the signing key registered on your GitHub account (see [GitHub's
 commit-signing docs](https://docs.github.com/en/authentication/managing-commit-signature-verification)):
 
 ```sh
 git commit -S    # or once: git config --global commit.gpgsign true
 ```
 
-CI rejects PRs containing commits without a verified signature.
+Agent-created draft PRs may contain unsigned commits while a human prepares to
+sign them. The signature check fails until every commit has a verified signature;
+passing it is required before merge.
 
 ## Contributor License Agreement
 
@@ -82,12 +84,32 @@ Make sure `make lint` and `make test` pass locally before opening a PR. CI
 additionally runs golangci-lint, a CRD/chart consistency check
 (`make check-crd-chart`), and vulnerability scanning.
 
+On Linux, `make test-podmesh-netns` runs the real namespace transport, guest
+bootstrap, retained admission recovery and private RAM credential-custody tests.
+The recovery cases use production NRI callbacks and real namespaces with
+simulated runtime metadata, measurement registers and credential issuance. They
+cover complete history after removal, issuer continuity, damaged state and
+refusal to replay a start permission. The suite requires root (or passwordless
+`sudo`), network/mount namespace capabilities, writable cgroup v2 delegation,
+iptables and nftables. Packages run sequentially because BPF link enumeration
+is global to the kernel.
+CI requires this suite and includes its coverage alongside ordinary tests and
+the kernel dm-verity harness, using the same procedure for the PR and its base.
+
+For Pod runtime changes, also run `make test-integration-pod-runtime`. It needs
+Python 3 and Docker with privileged containers and validates process admission,
+containerd/plugin recovery, and standalone kubelet recovery in an isolated
+container. All three result receipts are required. See
+[Pod scheduler and runtime CI](docs/integration-tests.md#pod-scheduler-and-runtime-ci)
+for the evidence and its limits.
+
 ## Pull requests
 
 - **Discuss large changes first.** Open an issue before starting anything
   substantial so we can agree on the approach — especially changes touching
   attestation flows or trust boundaries.
-- **Keep PRs small and focused.** One logical change per PR.
+- **Keep PRs small and focused.** Follow the
+  [PR shape and description rules](docs/engineering-standards.md#pull-request-shape).
 - **Use conventional commit style** for commits and PR titles:
   `feat(armtls-mesh): ...`, `fix(chart): ...`, `docs: ...`, `test(e2e): ...`.
 - **CI must be green** before requesting review.
@@ -95,6 +117,9 @@ additionally runs golangci-lint, a CRD/chart consistency check
   docs under [docs/](docs/).
 - Maintainers review and merge at their discretion; expect requests for
   changes.
+
+Use the [review guide](docs/review-guide.md) to check the change before submission.
+Agents also follow [AGENTS.md](AGENTS.md).
 
 ## Releases
 

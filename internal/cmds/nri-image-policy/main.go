@@ -14,12 +14,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -46,6 +49,15 @@ var (
 	allowlistApiMaxRetries   = 5
 	allowlistApiInitialDelay = 2 * time.Second
 )
+
+type containerdConnection interface {
+	containerdOps
+	Close() error
+}
+
+var newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
+	return ctrdresolver.NewResolver(socket, namespace)
+}
 
 var (
 	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached CDS allowlist")
@@ -74,8 +86,8 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == setCDSPinsVerb {
-		return runSetCDSPins(os.Stdout, args[1:])
+	if len(args) > 0 && args[0] == setMeasurePoliciesVerb {
+		return runSetMeasurePolicies(os.Stdout, args[1:])
 	}
 	if len(args) > 0 && args[0] == pluginReadyVerb {
 		return runPluginReady(args[1:])
@@ -110,11 +122,24 @@ func Run(args []string) error {
 		"mode", startupSourceMode(cfg),
 	)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runConfigured(ctx, cfg, logger, healthServerConfig{
+		addr:         *healthAddr,
+		readTimeout:  *readTimeout,
+		writeTimeout: *writeTimeout,
+	})
+}
+
+// runConfigured is the startup path after configuration validation.
+func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health healthServerConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	logger.Debug("initializing containerd resolver",
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
 	)
-	resolver, err := ctrdresolver.NewResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
+	resolver, err := newContainerdResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
 	if err != nil {
 		return fmt.Errorf("create containerd resolver: %w", err)
 	}
@@ -124,45 +149,74 @@ func Run(args []string) error {
 
 	store := newPolicyStore(cfg.Allowlist.Base)
 
-	var wlClient allowlistclient.Client
+	// Every CDS client of this node is built on one pin source, so the
+	// source comes before the first of them.
+	cdsPins, decrees, err := cdsPinSource(cfg, logger)
+	if err != nil {
+		return err
+	}
+
+	var (
+		wlClient      allowlistclient.Client
+		pull          *allowlistPull
+		cdsHTTPClient *http.Client
+	)
 	if cfg.PullEnabled() {
-		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
+		logger.Info("initializing allowlist client", "url", cfg.pullURL())
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
+		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
+		cdsHTTPClient = httpClient
 	}
+
+	recovery, err := openPodRecovery(cfg)
+	if err != nil {
+		return fmt.Errorf("open Pod recovery: %w", err)
+	}
+	defer recovery.Close()
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	plugin.recovery = recovery
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
+		return fmt.Errorf("prepare Pod credential broker: %w", err)
+	}
+	defer plugin.closePodBroker()
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+		// NRI closes transport before every queued handler necessarily returns.
+		// Disconnect rejects late callbacks; this lock drains the active mutation.
+		plugin.disconnectPodStarts()
+		plugin.podMu.Lock()
+		clear(plugin.podStarts)
+		plugin.podMu.Unlock()
+	}()
+	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
+	if recovery != nil && !cfg.podWaiting() {
+		applyPolicy = plugin.applyPodPolicy
+	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
-	if err := plugin.prepareCDSPins(); err != nil {
+	if err := plugin.prepareCDSPins(cdsPins); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
+	holdContainersForFirstDecree(plugin, decrees)
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
 	}
 	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		logger.Info("received shutdown signal", "signal", sig)
-		cancel()
-	}()
-
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
 
-	if cfg.WorkloadClaims.PublishNodeIP {
+	if cfg.injectsCredentialClients() && cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
 		// first attempt runs here so the signer below reads a file this
@@ -172,31 +226,41 @@ func Run(args []string) error {
 		go publisher.run(ctx, publisher.publish())
 	}
 
-	addr := *healthAddr
+	addr := health.addr
 	if cfg.Plugin.HealthAddr != "" {
 		addr = cfg.Plugin.HealthAddr
 	}
 	if err := startHealthServer(ctx, healthServerConfig{
 		logger:       logger,
 		plugin:       plugin,
+		pull:         pull,
 		addr:         addr,
-		readTimeout:  *readTimeout,
-		writeTimeout: *writeTimeout,
+		readTimeout:  health.readTimeout,
+		writeTimeout: health.writeTimeout,
 	}); err != nil {
 		return fmt.Errorf("start health server on %q: %w", addr, err)
 	}
 
 	pluginErrCh := make(chan error, 1)
-	go func() {
-		pluginErrCh <- plugin.Run(ctx)
-	}()
+	startListener, err := plugin.listenPodStarts()
+	if err != nil {
+		return fmt.Errorf("start Pod runtime admission: %w", err)
+	}
+	workers.Add(1)
+	go func() { defer workers.Done(); pluginErrCh <- plugin.runWithPodStarts(ctx, startListener) }()
 
-	if plugin.inventory != nil {
+	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, cdsPins, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
+
+	// INVARIANT: after NRI registration started. A CDS that drops packets
+	// holds the look for its whole budget, and containerd kills a plugin
+	// that misses its registration timeout.
+	plugin.serveAfterFirstDecreeLook(decrees)
+	pollForNewerDecrees(ctx, decrees, logger)
 
 	measure := policyMeasurer(cfg, logger)
 	var initialETag string
@@ -204,7 +268,9 @@ func Run(args []string) error {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			apply:       applyPolicy,
 			measure:     measure,
+			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
 			logger:      logger,
@@ -238,15 +304,23 @@ func Run(args []string) error {
 	logger.Info("plugin ready")
 
 	if cfg.PullEnabled() {
-		go runPullLoop(ctx, pullLoopArgs{
-			client:   wlClient,
-			store:    store,
-			measure:  measure,
-			interval: cfg.Allowlist.Pull.Interval,
-			timeout:  cfg.Allowlist.Pull.Timeout,
-			etag:     initialETag,
-			logger:   logger,
-		})
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runPullLoop(ctx, pullLoopArgs{
+				client:   wlClient,
+				store:    store,
+				apply:    applyPolicy,
+				measure:  measure,
+				pull:     pull,
+				interval: cfg.Allowlist.Pull.Interval,
+				timeout:  cfg.Allowlist.Pull.Timeout,
+				etag:     initialETag,
+				logger:   logger,
+
+				killRevoked: plugin.KillRevoked,
+			})
+		}()
 	}
 
 	plugin.RunDeferredCheck(ctx)
@@ -265,29 +339,86 @@ func Run(args []string) error {
 	return nil
 }
 
+// decreePollInterval spaces the looks no CDS connection prompted.
+const decreePollInterval = time.Minute
+
+// cdsPinSource is the set this node holds its CDS to, and the decree source
+// behind it. A node that reaches no CDS at all has neither.
+func cdsPinSource(cfg *config, logger *slog.Logger) (armtls.PinSource, *followedPins, error) {
+	if !cfg.PullEnabled() {
+		return nil, nil, nil
+	}
+	return cfg.Allowlist.Pull.cdsPinSource(logger)
+}
+
+// holdContainersForFirstDecree refuses every container the node's CDS pins
+// would be mounted into: a rebooted node's launch pins may name an image the
+// operator has since retired.
+func holdContainersForFirstDecree(p *plugin, decrees *followedPins) {
+	if decrees == nil {
+		return
+	}
+	decrees.mountInto(p.cdsPins)
+	if p.cdsPins != "" {
+		p.awaitingDecree.Store(true)
+	}
+}
+
+// serveAfterFirstDecreeLook hands CDS pins out whether or not the look
+// succeeded: holding CDS to the launch document's pins is worth an error
+// rather than a node that admits nothing.
+func (p *plugin) serveAfterFirstDecreeLook(decrees *followedPins) {
+	if decrees == nil {
+		return
+	}
+	defer p.awaitingDecree.Store(false)
+	if err := decrees.Refresh(); err != nil {
+		p.logger.Error("no CDS pin decree at start: holding CDS to the launch document's pins until a look succeeds", "error", err)
+	}
+}
+
+// pollForNewerDecrees moves a node talking to no CDS at all.
+func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slog.Logger) {
+	if decrees == nil {
+		return
+	}
+	go func() {
+		for sleepCtx(ctx, decreePollInterval) {
+			if err := decrees.Refresh(); err != nil {
+				logger.Warn("could not look for a newer CDS pin decree", "error", err)
+			}
+		}
+	}()
+}
+
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
-	set, err := cfg.policySet(platform)
-	if err != nil {
-		return nil, err
-	}
-	if set.Empty() {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
-	}
-	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
+func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
+	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
+	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
+		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
+		if err != nil {
+			return nil, err
+		}
+		built.DialContext = dial
+		return built, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
-	client.Timeout = cfg.Timeout
-	return client, nil
+	return &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: transport,
+	}, nil
 }
 
 type pullArgs struct {
+	apply       func(context.Context, *allowlist.Allowlist, uint64) error
 	client      allowlistclient.Client
 	store       *policyStore
 	measure     func(digest string) error // nil measures nothing
+	pull        *allowlistPull
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -322,18 +453,26 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 			} else if wl == nil {
 				err = errInitialAllowlistNil
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
-				version := parseVersion(etag)
-				args.store.apply(wl, version)
-				args.logger.Info("initial allowlist pulled from CDS",
-					"workloads", len(wl.Workloads),
-					"version", version,
-					"etag", etag,
-					"digest", served.Digest,
-				)
-				return etag, nil
+				version := parseVersion(served.Version)
+				if args.apply != nil {
+					err = args.apply(ctx, wl, version)
+				} else {
+					args.store.apply(wl, version)
+				}
+				if err == nil {
+					args.pull.reached()
+					args.logger.Info("initial allowlist pulled from CDS",
+						"workloads", len(wl.Workloads),
+						"version", version,
+						"etag", etag,
+						"digest", served.Digest,
+					)
+					return etag, nil
+				}
 			}
 		}
 
+		args.pull.failed(err)
 		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
 		if errors.Is(err, errPolicyRefused) {
 			return "", err // retrying cannot succeed
@@ -353,19 +492,26 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 }
 
 type pullLoopArgs struct {
+	apply    func(context.Context, *allowlist.Allowlist, uint64) error
 	client   allowlistclient.Client
 	store    *policyStore
 	measure  func(digest string) error // nil measures nothing
+	pull     *allowlistPull
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+
+	// killRevoked runs after each applied document.
+	killRevoked func(context.Context)
 }
 
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
-// pulled document and advances the ETag — unless the pulled version is below the applied
+// pulled document, advances the ETag and kills the running containers it no
+// longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched. A
+// forward version arrives. 304 raises the applied version to the one CDS
+// serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
 // once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
@@ -386,18 +532,21 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		wl, newETag := served.Allowlist, served.ETag
 		cancel()
 		if err != nil {
+			args.pull.failed(err)
 			args.logger.Warn("pull loop fetch failed", "error", err)
 			continue
 		}
 		if notModified {
-			args.logger.Debug("pull loop: not modified", "etag", etag)
+			args.store.raiseAppliedVersion(parseVersion(served.Version))
+			args.pull.reached()
+			args.logger.Debug("pull loop: not modified", "etag", etag, "version", served.Version)
 			continue
 		}
 		if wl == nil {
 			args.logger.Warn("pull loop fetch returned nil allowlist")
 			continue
 		}
-		version := parseVersion(newETag)
+		version := parseVersion(served.Version)
 		// A rolled-back document is never enforced, so it is not measured.
 		if args.store.rolledBack(version) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
@@ -412,6 +561,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 					level = slog.LevelDebug
 				}
 				failing = served.Digest
+				args.pull.failed(err)
 				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
 					"digest", served.Digest, "error", err)
 				continue
@@ -420,6 +570,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			// instead of downloading it again.
 			etag = newETag
 			failing = "" // a later failure is news again
+			args.pull.failed(err)
 			if served.Digest != refused {
 				refused = served.Digest
 				args.logger.Error("pull loop: allowlist refused; keeping current policy",
@@ -427,7 +578,16 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			}
 			continue
 		}
-		args.store.apply(wl, version)
+		if args.apply != nil {
+			if err := args.apply(ctx, wl, version); err != nil {
+				args.pull.failed(err)
+				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
+				continue
+			}
+		} else {
+			args.store.apply(wl, version)
+		}
+		args.pull.reached()
 		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
@@ -435,14 +595,17 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
+		if args.apply == nil {
+			args.killRevoked(ctx)
+		}
 	}
 }
 
-// parseVersion extracts the monotone counter N from a weak ETag W/"N" — the CDS
-// mutation counter used for epoch anti-rollback. An unparseable ETag yields 0,
-// which can only be rejected as a rollback once a real version has been applied.
-func parseVersion(etag string) uint64 {
-	n, err := strconv.ParseUint(allowlistclient.VersionFromETag(etag), 10, 64)
+// parseVersion reads the CDS mutation counter a pull was served at, used for
+// epoch anti-rollback. An unparseable version yields 0, which can only be
+// rejected as a rollback once a real version has been applied.
+func parseVersion(version string) uint64 {
+	n, err := strconv.ParseUint(version, 10, 64)
 	if err != nil {
 		return 0
 	}
@@ -452,9 +615,17 @@ func parseVersion(etag string) uint64 {
 type healthServerConfig struct {
 	logger       *slog.Logger
 	plugin       *plugin
+	pull         *allowlistPull
 	addr         string
 	readTimeout  time.Duration
 	writeTimeout time.Duration
+}
+
+func (cfg healthServerConfig) allowlistStall() string {
+	if cfg.pull == nil {
+		return ""
+	}
+	return cfg.pull.stall()
 }
 
 // healthResponse is the body of GET /healthz. Probes and the installer read
@@ -463,6 +634,10 @@ type healthServerConfig struct {
 type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+	PodUID           string `json:"pod_uid,omitempty"`
+	PodWaiting       bool   `json:"pod_waiting,omitempty"`
+	PodRegistered    bool   `json:"pod_registered,omitempty"`
+	AllowlistStall   string `json:"allowlist_stall,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -471,7 +646,16 @@ type healthResponse struct {
 func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		body := healthResponse{
+			Status:           "ok",
+			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
+			AllowlistStall:   cfg.allowlistStall(),
+		}
+		if cfg.plugin.cfg.Pod != nil {
+			body.PodUID = cfg.plugin.cfg.Pod.UID
+			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
+			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
+		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
 			body.Status = "not ready"
@@ -795,19 +979,12 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	// recheck, with no caller ctx to inherit.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.Allowlist.Pull.URL)
+	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.pullURL())
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
-	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
-	if err != nil {
-		return err
-	}
-	if set.Empty() {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
-	}
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	var journal string
 	if cfg.WorkloadClaims.SocketDir != "" {
@@ -818,14 +995,14 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, armtls.Pins(set.Policy()), journal)
+		attestationApiURL, cdsPins, journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
 // Without pull config there is no CDS in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -844,7 +1021,7 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
 	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, resolver, s)
+		return startSandboxDigests(ctx, logger, cfg, cdsPins, resolver, s)
 	})
 	return nil
 }
@@ -1064,7 +1241,7 @@ func createReadable(path string) error {
 // openJournal opens the measured-policy journal in dir over this node's
 // RTMR[3], whose launch seeded it from anchor.
 func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-	reg, err := runtimemeasure.Open(platform)
+	reg, err := openRegister(platform)
 	if err != nil {
 		return nil, err
 	}

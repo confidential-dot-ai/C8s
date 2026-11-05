@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // meshYAML is the mesh policy every enforcer configuration carries.
@@ -117,14 +119,6 @@ func TestValidate_PullRequiresAttestationApi(t *testing.T) {
 	cfg.Allowlist.Pull.AttestationApiURL = ""
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when pull lacks attestation_api_url")
-	}
-}
-
-func TestValidate_PullRejectsInvalidCDSMeasurement(t *testing.T) {
-	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSMeasurements = []string{"not-hex"}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for invalid CDS measurement")
 	}
 }
 
@@ -618,20 +612,79 @@ func writeAndLoad(t *testing.T, body string) *config {
 	return cfg
 }
 
-func TestValidateRejectsBadCDSRTMRs(t *testing.T) {
+// An unreadable pin document fails the node's pin source rather than
+// silently unpinning CDS.
+func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSRTMRs = []string{"0=" + strings.Repeat("ab", 48)}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cds_rtmrs") {
-		t.Fatalf("err = %v, want a cds_rtmrs parse failure", err)
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
+	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
+		t.Fatal("an unreadable CDS pin was accepted")
 	}
 }
 
-// A malformed RTMR pin fails the pull-client build rather than silently
-// unpinning the registers.
-func TestAllowlistPullHTTPClientRejectsBadRTMRs(t *testing.T) {
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
 	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSRTMRs = []string{"1=zz"}
-	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform()); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("err = %v, want an RTMR parse failure", err)
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	err := cfg.Validate()
+	if !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	for _, key := range []string{"measure.rtmr3", "allowlist.pull.measure_policies"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Fatalf("error %q does not name %s", err, key)
+		}
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one writer: %v", err)
+	}
+	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
+		t.Fatalf("journal elsewhere than its readers look: %v", err)
+	}
+}
+
+// A waiting broker has no identity to carry; an assigned one may carry a
+// workload ID only in the grammar the leaf extension accepts.
+func TestPodBrokerWorkloadIDFollowsTheSignedAssignment(t *testing.T) {
+	cfg := validConfig()
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", WorkloadID: "tenant-a.web", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("assigned pod with a workload ID: %v", err)
+	}
+	cfg.Pod.WorkloadID = "tenant a"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "workload id") {
+		t.Fatalf("workload ID the leaf cannot carry: %v", err)
+	}
+	cfg.Pod = &podConfig{Waiting: true, Generic: true, WorkloadID: "tenant-a.web"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("waiting broker carried a workload ID")
 	}
 }

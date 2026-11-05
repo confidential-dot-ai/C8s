@@ -1,161 +1,188 @@
 # Node exec mode
 
-The measured node image (`node-guest-image/c8s`) denies starting a new process
-inside a container that is already running. This page describes what enforces
-that, what it costs, and what to do when a component needs a health check.
+The measured node image starts no new process inside a container that is already
+running, for any principal, other than the commands its measured policy grants
+([below](#granted-execs)).
 
-The kubelet's debugging handlers are off in the same image
-(`enable-debugging-handlers=false`), which closes `kubectl exec`, `attach`,
-`port-forward` and `logs` over the kubelet's HTTP API. That setting does not
-cover CRI `ExecSync`, which is how exec probes and lifecycle exec hooks run,
-nor a direct call to containerd. The runtime wrapper below covers all of them,
-because every one of those paths ends in the same `runc exec`.
+Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in).
 
-## The wrapper
+There is no debug shell on a confidential node, so a tenant's memory and volume
+plaintext are not reachable that way; the logs stay whatever the workload
+writes.
 
-`internal/cmds/c8srunc` is a dispatcher in front of runc:
+## What is closed, and where
 
-```text
-if build == locked && subcommand == exec:
-    exit non-zero, never reach runc
-else:
-    execve the real runc with the original argv, environment and file descriptors
-```
+Two layers, independent of each other: the API server and the runtime.
 
-It parses runc's global options — `--debug`, `--log`, `--log-format`, `--root`,
-`--systemd-cgroup`, `--rootless`, in every spelling Go's flag package accepts,
-including after a `--` — only to find the subcommand. An option it does not
-recognise is a denial, not a guess: a token modelled wrongly shifts which
-argument the subcommand is. It has no allowlist, reads no configuration, and
-takes its posture from a build-time constant, so nothing on a running node can
-change it.
+The API server denies `pods/exec`, `pods/attach`, `pods/portforward` and
+`pods/ephemeralcontainers` (`kubectl debug`) for every principal, through a
+`ValidatingAdmissionPolicy` the node image bakes. Its expression is a constant
+deny, it fails closed, and its binding narrows nothing, so no RBAC grant reaches
+those subresources: admission runs after authorization, and no released
+credential can delete the policy.
 
-A denial also lands in the file named by `--log`, in the format `--log-format`
-asks for. containerd builds the error it returns to the kubelet from that file,
-so the pod event names the denial instead of an empty runtime error.
+The kubelet's debugging handlers stay **on** in the same image, which is what
+keeps logs working: they also back `kubectl logs`, which the `log-reader`
+credential exists for, and the kubelet has no logs-only switch. Probes are
+unaffected — they go over the container runtime, not the kubelet's HTTP API.
 
-The real runtime is RKE2's own runc at `/var/lib/rancher/rke2/bin/runc`, named
-by absolute path. RKE2 extracts it there from the measured airgap bundle on
-first start; the wrapper never resolves `runc` through `PATH`.
+A second baked policy denies the kubelet-proxy subresources — `nodes/proxy`,
+`pods/proxy`, `services/proxy` — to every credential the node releases, since
+they reach the kubelet's exec endpoint without a `pods/exec` admission check.
 
-## Wiring in the image
+That leaves the paths no API-server policy covers — CRI `ExecSync`, an exec
+probe, a lifecycle exec hook, a direct call to containerd — and they, like the
+proxy paths, end in the same `runc exec`. So the node image puts a measured
+wrapper, `c8s-runc`, in front of runc and points containerd's runc handler at
+it. A release node image is built in locked exec mode: the wrapper denies the
+`exec` verb without reaching the real runtime, except for granted
+commands ([below](#granted-execs)); every other verb is handed to the real
+runc unchanged, by absolute path, and a `restore` is denied
+in every build, because what it starts lives in a checkpoint no bundle
+describes. A denial is written to the log file runc was told to use, so the pod
+event names it instead of an empty runtime error.
 
-The wrapper ships only in the RKE2 node image. The chart installs nothing of
-it on kubeadm or hosted clusters, which keep the ordinary exec path.
-
-`mkosi.sync` installs the wrapper at `/usr/local/bin/c8s-runc` — the same
-measured binary the NRI plugin is, under the name `cmd/c8s/main.go` dispatches
-on — and the baked drop-in
-`config-v3.toml.d/10-c8s-runc.toml` points the runc handler's containerd
-`BinaryName` at it. The setting is a drop-in because the profile bakes no
-`config-v3.toml.tmpl`: RKE2's base template already defines that table and
-imports the drop-in directory, and containerd's TOML parser rejects a
-duplicate key. containerd merges each import over the main config key by key.
-
-`C8S_DEV=1` renders `60-dev-runc.toml` over it, restoring the unwrapped
-runtime. The dev image already ships a serial root shell and the kubelet
-debugging handlers, and it has its own launch measurement — exec posture is a
-property of the image, not a setting.
-
-## The build gate
-
-`node-guest-image/c8s/containerdcheck` renders RKE2's base template the way
-RKE2 does, merges the drop-ins containerd imports, and asserts that every
-enabled ordinary-pod handler runs the wrapper. It fails on an empty
-`BinaryName` (which means `PATH` runc), an alternate runc, a later drop-in that
-unwraps the handler, an unaudited shim, and a `default_runtime_name` that is
-not one of the wrapped handlers.
-
-RKE2 adds a handler for each runtime binary it finds on `PATH` — `crun`, the
-nvidia runtimes, the wasm shims (k3s `pkg/agent/containerd/runtimes.go`). None
-would be wrapped, so `.github/scripts/node-guest-image-invariants.sh` fails if
-the profile bakes any of them, and the CI job runs `containerdcheck` a second
-time with `-extra-runtime` to prove the check still catches one.
-
-RKE2's base template is vendored at
-`node-guest-image/c8s/containerdcheck/rke2-base-v3.toml.tmpl`. Its header
-records the RKE2 version it came from, and the invariants gate compares that to
-`mkosi.sync`'s `RKE2_VERSION`: a pin bump must re-vendor.
+Both layers are the measured node image's; the chart installs neither on its
+other lanes, which keep the ordinary exec path. A development image
+(`C8S_DEV=1`) unwraps the runtime and skips the admission policy, and has its
+own launch measurement: exec posture is a property of the image a verifier pins,
+not a setting.
 
 ## The privilege floor
 
-The same wrapper is where a member pod's containers get their privileges
-bounded, because NRI shows the plugin no capabilities, `no_new_privs`,
-privileged flag or user-namespace mappings
-(`docs/allowlist-and-capabilities.md`). On `create` and `run` it reads the
-bundle's `config.json` and refuses the create when a container of a pod the
-measured `mesh` policy covers holds more than the floor. `restore` is refused
-in every mode: what it starts is in a checkpoint, which no bundle describes.
+The same wrapper bounds the privileges of a member pod's containers, because the
+node's admission plugin cannot see the privileged flag, `no_new_privs`, or
+user-namespace mappings, and the start check where it reads capabilities is one
+the runtime skips when the plugin does not answer
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
+On `create` and `run` it reads the bundle and refuses the create when a
+container the measured mesh policy covers holds more than the floor:
 
-The floor, and why each item is in it:
+- in none of the five capability sets, a capability outside the node's default
+  set that admission did not grant the container — and no capability at all for
+  a container on a platform role, one of C8s's own node-side identities;
+- `no_new_privs` set, so a setuid binary in the image cannot raise its
+  capabilities;
+- none of the privileged marks: a device cgroup allowing every device, no
+  masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`;
+- its own PID namespace, no user namespace or id mapping — the packet rules
+  match the socket's UID in the initial user namespace — and an identity that is
+  neither root nor an id reserved for another role. A pod CVM runs one pod, so
+  its floor admits root: the capability bound is the admission plugin's
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)),
+  and without `SETUID` and `SETGID` root cannot take a reserved socket identity.
+  The plugin's mesh gate applies the same verdict before a container is created;
+- a working directory that is not at or below a data or host mount (a
+  ConfigMap, Secret, projected or downward API volume, a PVC or CSI volume, or a
+  host path), resolved through the image's symlinks; an emptyDir, including the
+  pod's shared memory, is allowed, since only the pod's own containers write it.
+  The allowlist pins the command line, and an interpreter looks up its first
+  module in the working directory.
 
-- **Capabilities** — the runtime's default set less `NET_RAW`, `SETUID` and
-  `SETGID`, in every one of the five sets. `NET_RAW` opens a socket that
-  reaches the wire past the pod ruleset; `SETUID` and `SETGID` let a process
-  call `setuid` into a reserved role's socket identity, which is what the
-  ruleset grants traffic by, and `no_new_privs` does not bound that.
-- **`no_new_privs`** — otherwise a setuid binary or a file capability inside
-  the image raises what the floor just bounded.
-- **The privileged marks** — a device cgroup rule allowing every device, no
-  masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`.
-- **Namespaces** — no id mapping or user namespace, because the ruleset
-  matches the socket UID in the initial user namespace; a PID namespace of the
-  container's own, so neither the node's nor the pod's shared one.
-- **Identity** — no root user outside a role, and no id reserved for another
-  role, as a group or a supplementary group.
+The bundle names a container's image, not the digest admission matched, so the
+plugin records what an entry declares for each launch it clears: the
+capabilities beyond the node's default set, under `/run/nri-image-policy-caps`,
+removed with the container. It writes them at the check whose failure fails the
+create, so a container the plugin's start check never judges — the check the
+runtime skips when the plugin does not answer — holds the default set alone.
 
-A role's container holds no capabilities at all: the enforcer installs the pod
-ruleset, and a role only speaks on it. The role is read from the reserved id in
-the bundle, which the enforcer admits only for the container whose verified
-identity holds that role.
+A measured policy that cannot be read, or that carries no `mesh` policy, denies
+the create. The floor is independent of the exec posture above, and leaves the
+exempt namespaces, the pod's own sandbox container and a static pod as the
+measured policy found them. Attachability is refused for every container the
+wrapper creates — a terminal, and a create carrying the container's standard
+input — so an attach session has no way in even there.
 
-The namespaces `mesh.exempt_namespaces` lists host no member pods and keep
-their privileges, as does the pod's own sandbox container — the one whose own
-container id is the sandbox's, which no other bundle can claim. A measured
-policy that cannot be read denies the create; one with no `mesh` policy
-applies no floor. The floor is independent of the exec mode above.
+A static pod is known by the kubelet's `kubernetes.io/config.source: file`,
+which reaches the bundle only where the node's containerd passes it through
+(`pod_annotations`), as a worker's does. Before the create, the node's
+admission plugin refuses any NRI plugin's edit of that annotation and, on a
+worker, a static pod whose launch no base entry pins.
 
-Attachability is refused outside the floor, for every container the wrapper
-creates: a terminal is refused, and so is a create whose own `fd 0` is a pipe —
-the shim wires runc's standard input to the container's stdin pipe only for a
-container the control plane asked to keep stdin open, and leaves it at the null
-device otherwise. Together they leave an attach session no way in, in an exempt
-namespace and in the pod's sandbox too. What an attach can still carry is the
-output streams the kubelet also serves as `logs`.
+A pod CVM's measured policy is the node's with the mesh role alone and no exempt
+namespace, so the floor covers every container of its pod; its `mesh.pod`
+section is what marks the policy as a pod CVM's. A pod CVM adds one bound the
+node does not: its kubelet applies the runtime's default seccomp profile to
+every container that names none, and the admission plugin refuses a container
+that runs without a filter, which a node judges under its own TCB rules.
 
-## Writing a component that runs on such a node
+## Pod admission before start
 
-A C8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
-the chart renders none and
-`TestChartRendersNoExecProbes` keeps it that way. Use, in order of
-preference:
+In a pod CVM, `create` prepares the process without running the workload.
+Before `start`, the NRI plugin verifies the selected image, admits the final
+runtime configuration, records its measurement and checks the Pod inventory and
+credential broker; only then does it grant that container's created process
+permission to start. The wrapper reads the persisted runc state under the same
+global options, `--root` included, and consumes the permission over
+`/run/c8s-pod/start.sock`, which accepts local root only. A permission binds the
+container ID, sandbox ID and created PID, is consumed once and expires after 30
+seconds; a missing, timed-out, mismatched, replayed or expired one denies the
+start, and NRI disconnection, identity loss, container removal and plugin
+shutdown invalidate those pending.
 
-1. An HTTP, TCP or gRPC probe against a port the component already serves.
-2. A minimal in-process health endpoint, when the service otherwise listens
-   only on a Unix socket. `attest-proxy --health-addr` serves `GET /healthz` by
-   making the same round-trip over its own socket that its exec probe used to
-   make; `armtls-mesh iptables-sync --ready-addr` and `acme --ready-port` do the
-   same for their readiness signals, and `nri-image-policy plugin-ready` serves
-   the NRI installer's readiness from whether the host plugin process is alive.
-3. SIGTERM handling instead of a `preStop` hook. The mesh's cleanup sidecar
-   runs `armtls-mesh iptables-cleanup --on-shutdown`, which idles until SIGTERM
-   and then cleans up; native sidecars stop in reverse init order, so it still
-   runs after the proxy drains.
+The sandbox pause process is exempt only when its persisted sandbox annotation
+matches its own container ID. `run` is refused, since it creates and starts with
+no boundary between, and so are OCI hooks at creation, the sandbox's included. A
+plugin restart means replacing the pod CVM: old permissions are not restored.
+The node role keeps its existing admission path.
 
-## Known limits
+## What this means for debugging a workload
 
-- The wrapper covers post-start exec, not container creation. Whoever can
-  create a pod can put the command in its initial process; the image policy
-  plugin (`internal/cmds/nri-image-policy`) is what restricts that.
-- `runc checkpoint` and `restore` are not aliases of `exec` and pass through.
-- RKE2's runc stays reachable by name on containerd's `PATH`, because RKE2 puts
-  its own data directory there. No enabled handler resolves it, but the wrapper
-  is not the only path to that binary for a process already running as root on
-  the node.
-- Under the immutable root the wrapper itself is on the read-only verity image
-  (`/usr/local/bin`, covered by no `state.d` entry). The containerd
-  configuration that names it and RKE2's extracted runc both live under `/var`,
-  which is a writable overlay backed by the encrypted scratch disk: they are
-  reconstructed at each boot from measured inputs — the baked template and
-  drop-ins, and the baked airgap bundle — rather than read from the verity
-  image directly.
+Logs are the interface: `kubectl logs` works for every kubeconfig holder, and
+`c8s get-kubeconfig --role log-reader` exists for readers who need nothing else
+([operator.md](operator.md)).
+
+An exec probe or a lifecycle exec hook cannot pass on such a node,
+granted commands aside, so C8s renders none. A component that needs a
+health signal serves it: an HTTP, TCP or gRPC probe against a port it already
+listens on, or a small in-process endpoint when it otherwise listens only on a
+Unix socket, and it handles SIGTERM instead of carrying a `preStop` hook.
+
+## Granted execs
+
+A container entry in the measured base allowlist may list `execs`: the exact
+commands the wrapper lets through into a running container of those bytes. The
+field is YAML-only, like `role`, so only a measured boot config grants one and
+no served document can ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
+An entry grants them only when it pins the command, the args and the mounts,
+and never in a pod the mesh gates cover: no new process starts in a member pod.
+
+The node image uses it once. The RKE2 release `images/node-guest/c8s/mkosi.sync`
+pins gives kube-apiserver's static pod exec startup, liveness and readiness
+probes (`kubectl get --raw=/livez` and `--raw=/readyz`, authenticated with the
+API server's own client certificate), and offers no HTTP form of them; etcd,
+kube-scheduler, kube-controller-manager and kube-proxy have HTTP probes. The
+image's kube-apiserver entry lists those two commands. An RKE2 pin bump that
+changes them turns the probes back into denials, never into a wider grant.
+
+The bundle the wrapper reads names a container's image, not the digest
+admission matched, so the admission plugin records what it granted: when it
+starts a container whose launch the base grants execs, it writes the container
+ID and the commands to `/run/nri-image-policy-exec`, a directory only the
+plugin writes, and removes the record with the container. `c8s-runc` lets an
+`exec` reach the real runtime only when:
+
+- it comes in the form containerd's shim sends: `--process`, with only
+  `--detach` and `--pid-file` beside it, and the container ID last;
+- the plugin recorded a grant for that container, and the command is exactly
+  one it names;
+- the process is the container's own process from its bundle, with only the
+  command replaced and no terminal, which is what containerd builds for an
+  exec probe.
+
+The wrapper hands the real runtime a private copy of the process it checked,
+not the caller's file. Whoever triggers such an exec can run only a granted
+command; for kube-apiserver that is a fixed GET of `/livez` or `/readyz` in a
+pinned image, whose output says nothing that `kubectl get --raw='/readyz?verbose'`
+does not.
+
+A denial names its reason after the locked-mode message, in the pod event and
+the runtime log. A denied probe reaches the kubelet as a runtime error, which it
+discards rather than counting as a failure, so a probe command the wrapper does
+not recognise leaves the pod un-Ready without restarting it.
+
+Every other exec is still denied.
+
+Container creation is not what this closes: whoever can create a pod can put any
+command in its initial process, which the allowlist restricts
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
