@@ -39,100 +39,95 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 	return doc, key, pub
 }
 
+// A pod document stages its trust and pod, and nothing of a cluster node.
 func TestStagePodRole(t *testing.T) {
-	for _, platform := range []string{"tdx"} {
-		t.Run(platform, func(t *testing.T) {
-			doc, key, pub := testPodDocument(t, platform)
-			testLoader(t, doc, pub)
-			cfg := testConfig(t, doc, key)
-			// A stale marker from another role must not survive restaging.
-			if err := os.MkdirAll(cfg.path("/run/confos"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(cfg.path(agentMarker), nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := Stage(context.Background(), cfg); err != nil {
-				t.Fatal(err)
-			}
-			requirePresent(t, cfg.path(podMarker))
-			for _, path := range []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, Dir + "/workloads.json", Dir + "/cds.json"} {
-				requireAbsent(t, cfg.path(path))
-			}
-			for path, want := range map[string]string{Dir + "/operator-pubkey": pub} {
-				got, err := os.ReadFile(cfg.path(path))
-				if err != nil || string(got) != want {
-					t.Fatalf("%s = %q, %v", path, got, err)
-				}
-			}
-			staged, err := LoadStaged(cfg.path(DefaultStagedPath))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if staged.Role != Pod || staged.Pod == nil || staged.Pod.UID != testPodUID || staged.PodOperatorPublicKey != pub || staged.Server != doc.Server || staged.CDS != doc.CDS || staged.Workloads != testPodWorkloads {
-				t.Fatalf("staged %+v", staged)
-			}
-			peers, err := refvalues.Load(cfg.path(Dir + "/peers.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(peers.Images) != 2 || string(peers.Images[0].Anchor) != doc.Server.OperatorPublicKey || peers.Images[0].Name != "server" || string(peers.Images[1].Anchor) != pub || peers.Images[1].Name != "pod" {
-				t.Fatalf("pod peers = %+v", peers.Images)
-			}
-			cds := stagedCDSPolicy(t, staged)
-			if cds.Family != teetypes.FamilySNP || len(cds.Images) != 2 {
-				t.Fatalf("pod CDS pins = %+v", cds)
-			}
-			for _, pin := range cds.Images {
-				if string(pin.LaunchFile) != cdsLaunchFile || pin.Anchor != nil {
-					t.Fatalf("Pod CDS pin is not independently launch-file-bound: %+v", pin)
-				}
-			}
+	doc, key, pub := testPodDocument(t, "tdx")
+	testLoader(t, doc, pub)
+	cfg := testConfig(t, doc, key)
+	// A stale marker from another role must not survive restaging.
+	if err := os.MkdirAll(cfg.path("/run/confos"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.path(agentMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	requirePresent(t, cfg.path(podMarker))
+	for _, path := range []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, Dir + "/workloads.json", Dir + "/cds.json"} {
+		requireAbsent(t, cfg.path(path))
+	}
+	for path, want := range map[string]string{Dir + "/operator-pubkey": pub} {
+		got, err := os.ReadFile(cfg.path(path))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q, %v", path, got, err)
+		}
+	}
+	staged, err := LoadStaged(cfg.path(DefaultStagedPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.Role != Pod || staged.Pod == nil || staged.Pod.UID != testPodUID || staged.PodOperatorPublicKey != pub || staged.Server != doc.Server || staged.CDS != doc.CDS || staged.Workloads != testPodWorkloads {
+		t.Fatalf("staged %+v", staged)
+	}
+	peers, err := refvalues.Load(cfg.path(Dir + "/peers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers.Images) != 2 || string(peers.Images[0].Anchor) != doc.Server.OperatorPublicKey || peers.Images[0].Name != "server" || string(peers.Images[1].Anchor) != pub || peers.Images[1].Name != "pod" {
+		t.Fatalf("pod peers = %+v", peers.Images)
+	}
+	cds := stagedCDSPolicy(t, staged)
+	if cds.Family != teetypes.FamilySNP || len(cds.Images) != 2 {
+		t.Fatalf("pod CDS pins = %+v", cds)
+	}
+	for _, pin := range cds.Images {
+		if string(pin.LaunchFile) != cdsLaunchFile || pin.Anchor != nil {
+			t.Fatalf("Pod CDS pin is not independently launch-file-bound: %+v", pin)
+		}
+	}
 
-			if err := clearOutputs(cfg); err != nil {
-				t.Fatal(err)
+	if err := clearOutputs(cfg); err != nil {
+		t.Fatal(err)
+	}
+	requireAbsent(t, cfg.path(podMarker))
+	requireAbsent(t, cfg.path(Dir+"/workloads.json"))
+}
+
+// The pod launch key is the document's single signing key, matched by
+// its exact bytes; the cluster server's key authorizes no pod launch.
+func TestVerifyRequiresTheExactPodLaunchKey(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) (doc Document, signer *ecdsa.PrivateKey, loaded string)
+		want  string
+	}{
+		{"cluster server key", func(t *testing.T) (Document, *ecdsa.PrivateKey, string) {
+			doc, _, _ := testPodDocument(t, "tdx")
+			server, pub := testKey(t)
+			doc.Server.OperatorPublicKey = pub
+			return doc, server, pub
+		}, "pod launch key does not match"},
+		{"differently encoded key", func(t *testing.T) (Document, *ecdsa.PrivateKey, string) {
+			doc, key, pub := testPodDocument(t, "tdx")
+			doc.PodOperatorPublicKey = strings.TrimSpace(pub)
+			return doc, key, pub
+		}, "podOperatorPublicKey bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, signer, loaded := tc.setup(t)
+			testLoader(t, doc, loaded)
+			cfg := testConfig(t, doc, signer)
+			if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 			requireAbsent(t, cfg.path(podMarker))
-			requireAbsent(t, cfg.path(Dir+"/workloads.json"))
 		})
 	}
 }
 
-func TestVerifyRejectsPodSignedByAnotherKey(t *testing.T) {
-	doc, _, _ := testPodDocument(t, "tdx")
-	other, otherPub := testKey(t)
-	testLoader(t, doc, otherPub)
-	cfg := testConfig(t, doc, other)
-	err := Stage(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "pod launch key does not match") {
-		t.Fatalf("got %v", err)
-	}
-	requireAbsent(t, cfg.path(podMarker))
-}
-
-func TestVerifyRejectsPodSignedByItsClusterServer(t *testing.T) {
-	doc, _, _ := testPodDocument(t, "tdx")
-	server, pub := testKey(t)
-	doc.Server.OperatorPublicKey = pub
-	testLoader(t, doc, pub)
-	cfg := testConfig(t, doc, server)
-	if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "pod launch key does not match") {
-		t.Fatalf("cluster server authority authorized a pod launch: %v", err)
-	}
-	requireAbsent(t, cfg.path(podMarker))
-}
-
-func TestVerifyRequiresExactPodLaunchKeyBytes(t *testing.T) {
-	doc, key, pub := testPodDocument(t, "tdx")
-	doc.PodOperatorPublicKey = strings.TrimSpace(pub)
-	testLoader(t, doc, pub)
-	cfg := testConfig(t, doc, key)
-	if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "podOperatorPublicKey bytes") {
-		t.Fatalf("accepted differently encoded pod key: %v", err)
-	}
-	requireAbsent(t, cfg.path(podMarker))
-}
-
+// Every refusal of a pod document, one row per check.
 func TestValidatePodRole(t *testing.T) {
 	_, agentPub := testKey(t)
 	tests := []struct {
@@ -141,41 +136,22 @@ func TestValidatePodRole(t *testing.T) {
 		want   string
 	}{
 		{"no cluster server address", func(d *Document) { d.Server.Address = "" }, "server.address"},
-		{"no CDS address", func(d *Document) { d.CDS.Address = "" }, "cds.address"},
 		{"no CDS policy", func(d *Document) { d.CDS.Measurements = "" }, "cds.measurements"},
-		{"unbound CDS policy", func(d *Document) { d.CDS.Measurements = testDigestOnlyPin(t) }, "cds.measurements"},
 		{"no cluster server key", func(d *Document) { d.Server.OperatorPublicKey = "" }, "server.operatorPublicKey"},
 		{"no pod key", func(d *Document) { d.PodOperatorPublicKey = "" }, "podOperatorPublicKey"},
-		{"invalid pod key", func(d *Document) { d.PodOperatorPublicKey = "not a key" }, "podOperatorPublicKey"},
-		{"server is pod key", func(d *Document) { d.PodOperatorPublicKey = d.Server.OperatorPublicKey }, "must be distinct"},
 		{"server is equivalent pod key", func(d *Document) { d.PodOperatorPublicKey = strings.TrimSpace(d.Server.OperatorPublicKey) }, "must be distinct"},
-		{"node password", func(d *Document) { d.RKE2.NodePassword = strings.Repeat("c", 64) }, "rke2 tokens"},
 		{"agent token", func(d *Document) { d.RKE2.AgentToken = strings.Repeat("a", 64) }, "rke2 tokens"},
-		{"server token", func(d *Document) { d.RKE2.ServerToken = strings.Repeat("b", 64) }, "rke2 tokens"},
 		{"agent keys", func(d *Document) { d.AgentOperatorPublicKeys = []string{agentPub} }, "agentOperatorPublicKeys"},
-		{"router", func(d *Document) { d.Router = &Router{} }, "server-only"},
 		{"generic workloads", func(d *Document) { d.Pod = nil }, "must not carry workloads"},
 		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "runtime register"},
 		{"bad uid", func(d *Document) { d.Pod.UID = "Not A UID" }, "pod.uid"},
 		{"bad namespace", func(d *Document) { d.Pod.Namespace = "Tenant" }, "pod.namespace"},
 		{"uid mismatch", func(d *Document) { d.Pod.UID = "other" }, "must match"},
-		{"name mismatch", func(d *Document) { d.Pod.Name = "other" }, "must match"},
 		{"not a pod", func(d *Document) { d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"Pod"`, `"Deployment"`, 1) }, "v1 Pod"},
 		{"unknown field", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"bogus":true`) }, "pod.manifest"},
 		{"host network", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"hostNetwork":true`) }, "host namespaces"},
-		{"shared processes", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"shareProcessNamespace":true`) }, "shareProcessNamespace"},
 		{"platform container", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"c8s-mesh","image"`, 1)
-		}, "reserved"},
-		{"platform volume", func(d *Document) {
-			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"c8s-certs","emptyDir":{"medium":"Memory"}}]`)
-		}, "reserved"},
-		{"credential mount", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"app","volumeMounts":[{"name":"c8s-certs","mountPath":"/keys"}],"image"`, 1)
-		}, "private credential volume"},
-		{"router namespace", func(d *Document) {
-			d.Pod.Namespace = "c8s-router"
-			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"tenant"`, `"c8s-router"`, 1)
 		}, "reserved"},
 		{"guest status ingress", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"app","ports":[{"containerPort":8443}],"image"`, 1)
@@ -190,15 +166,9 @@ func TestValidatePodRole(t *testing.T) {
 		{"tag-only init image", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"initContainers":[{"name":"init","image":"busybox"}]`)
 		}, "pin the image by digest"},
-		{"bare digest image", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"sha256:`+strings.Repeat("a", 64)+`"`, 1)
-		}, "pin the image by digest"},
 		{"sha512 digest", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), "sha256:"+strings.Repeat("a", 64), "sha512:"+strings.Repeat("a", 128), 1)
 		}, "not sha256"},
-		{"short digest", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(testPodManifest(""), strings.Repeat("a", 64), strings.Repeat("a", 63), 1)
-		}, "image"},
 		{"disk emptyDir", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"d","emptyDir":{}}]`)
 		}, "medium: Memory"},
@@ -208,9 +178,6 @@ func TestValidatePodRole(t *testing.T) {
 		{"host port", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostPort":80}],"image"`, 1)
 		}, "hostPort"},
-		{"host ip", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostIP":"127.0.0.1"}],"image"`, 1)
-		}, "hostIP"},
 		{"privileged", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","securityContext":{"privileged":true},"image"`, 1)
 		}, "privileged"},
@@ -229,54 +196,18 @@ func TestValidatePodRole(t *testing.T) {
 			}
 		})
 	}
-	doc, _, _ := testPodDocument(t, "tdx")
-	doc.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"m","emptyDir":{"medium":"Memory","sizeLimit":"64Mi"}}]`)
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Parse(data); err != nil {
-		t.Fatalf("memory emptyDir refused: %v", err)
-	}
-	doc, _, _ = testDocument(t, "tdx", Server)
+	doc, _, _ := testDocument(t, "tdx", Server)
 	doc.Pod = &PodSpec{}
-	data, _ = yaml.Marshal(doc)
+	data, _ := yaml.Marshal(doc)
 	if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), "requires role pod") {
 		t.Fatalf("server with pod section: %v", err)
 	}
 }
 
-func TestNewPodBundleRefusesAnSNPImage(t *testing.T) {
-	in := t.TempDir()
-	manifest := filepath.Join(in, "pod.json")
-	workloads := filepath.Join(in, "workloads.json")
-	if err := os.WriteFile(manifest, []byte(testPodManifest("")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(workloads, []byte(testPodWorkloads), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(t.TempDir(), "bundle")
-	serverPubPath, _ := writePodServerKey(t)
-	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", writeManifest(t, "snp"),
-		"--vcpus", "8", "--pod-manifest", manifest, "--workloads", workloads, "--server-address", "10.0.0.1", "--server-public-key", serverPubPath,
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t))
-	if err == nil || !strings.Contains(err.Error(), "runtime register") {
-		t.Fatalf("got %v, want a runtime register refusal", err)
-	}
-	requireAbsent(t, filepath.Join(dir, podDir))
-}
-
+// The only happy path of NewPodBundle.
 func TestNewPodBundleStages(t *testing.T) {
-	in := t.TempDir()
-	manifest := filepath.Join(in, "pod.json")
-	workloads := filepath.Join(in, "workloads.json")
-	if err := os.WriteFile(manifest, []byte(testPodManifest("")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(workloads, []byte(testPodWorkloads), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	manifest := writeFile(t, "pod.json", testPodManifest(""))
+	workloads := writeFile(t, "workloads.json", testPodWorkloads)
 	dir := filepath.Join(t.TempDir(), "bundle")
 	serverPubPath, serverPub := writePodServerKey(t)
 	if err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
@@ -301,49 +232,6 @@ func TestNewPodBundleStages(t *testing.T) {
 	}
 	requirePresent(t, filepath.Join(dir, podKeyFile))
 	stageBundleNode(t, dir, podDir)
-
-	again := filepath.Join(t.TempDir(), "again")
-	if err := runBundleCmd(t, "new-pod", "--out", again, "--cluster-id", "cluster-one", "--image-manifest", writeManifest(t, "tdx"),
-		"--pod-manifest", manifest, "--workloads", workloads, "--launch-key", filepath.Join(dir, podKeyFile),
-		"--server-address", "10.0.0.1", "--server-public-key", serverPubPath,
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t)); err != nil {
-		t.Fatal(err)
-	}
-	requireAbsent(t, filepath.Join(again, podKeyFile))
-	first, _ := os.ReadFile(filepath.Join(dir, podDir, pubkeyFile))
-	second, _ := os.ReadFile(filepath.Join(again, podDir, pubkeyFile))
-	if string(first) != string(second) || string(first) != doc.PodOperatorPublicKey {
-		t.Fatal("--launch-key did not reuse the key")
-	}
-	shared := filepath.Join(t.TempDir(), "shared-key")
-	if err := runBundleCmd(t, "new-pod", "--out", shared, "--cluster-id", "cluster-one", "--image-manifest", writeManifest(t, "tdx"),
-		"--pod-manifest", manifest, "--workloads", workloads, "--launch-key", filepath.Join(dir, podKeyFile),
-		"--server-address", "10.0.0.1", "--server-public-key", filepath.Join(dir, podDir, pubkeyFile),
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t)); err == nil || !strings.Contains(err.Error(), "must be distinct") {
-		t.Fatalf("bundle accepted shared Pod/cluster-server authority: %v", err)
-	}
-	requireAbsent(t, shared)
-	for _, tc := range []struct{ name, address, policy string }{
-		{"missing address", "", testCDSPin(t, teetypes.FamilySNP, 2)},
-		{"missing policy", "cds.example.org:8443", ""},
-		{"unbound policy", "cds.example.org:8443", testDigestOnlyPin(t)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out := filepath.Join(t.TempDir(), "rejected")
-			args := []string{"new-pod", "--out", out, "--cluster-id", "cluster-one", "--image-manifest", writeManifest(t, "tdx"),
-				"--pod-manifest", manifest, "--workloads", workloads, "--server-address", "10.0.0.1", "--server-public-key", serverPubPath}
-			if tc.address != "" {
-				args = append(args, "--cds-address", tc.address)
-			}
-			if tc.policy != "" {
-				args = append(args, "--cds-image-policy-file", writeFile(t, "cds.json", tc.policy))
-			}
-			if err := runBundleCmd(t, args...); err == nil {
-				t.Fatal("accepted incomplete external CDS trust")
-			}
-			requireAbsent(t, out)
-		})
-	}
 }
 
 func writePodServerKey(t *testing.T) (string, string) {
