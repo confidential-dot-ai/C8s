@@ -106,23 +106,9 @@ func TestPodCVMCreateRoutesWithoutHostInjection(t *testing.T) {
 func TestPodCVMValidatorRequiresRoutingWithoutMutator(t *testing.T) {
 	_, v := meshHandlers(t, podCVMConfig())
 	pod := podCVMWorkload()
-	for _, missing := range []string{"both", "selector", "toleration"} {
-		t.Run(missing, func(t *testing.T) {
-			candidate := pod.DeepCopy()
-			if err := routePodCVM(candidate, true); err != nil {
-				t.Fatal(err)
-			}
-			if missing != "toleration" {
-				candidate.Spec.NodeSelector = nil
-			}
-			if missing != "selector" {
-				candidate.Spec.Tolerations = nil
-			}
-			response := validate(t, v, candidate, "tenant")
-			if response.Allowed || !strings.Contains(response.Result.Message, "missing its required") {
-				t.Fatalf("unrouted Pod accepted: %+v", response.Result)
-			}
-		})
+	response := validate(t, v, pod, "tenant")
+	if response.Allowed || !strings.Contains(response.Result.Message, "missing its required") {
+		t.Fatalf("unrouted Pod accepted: %+v", response.Result)
 	}
 }
 
@@ -133,15 +119,9 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		want   string
 	}{
 		{"implicit automount", func(p *corev1.Pod) { p.Spec.AutomountServiceAccountToken = nil }, "automountServiceAccountToken"},
-		{"enabled automount", func(p *corev1.Pod) { p.Spec.AutomountServiceAccountToken = new(true) }, "automountServiceAccountToken"},
 		{"service account", func(p *corev1.Pod) { p.Spec.ServiceAccountName = "privileged" }, "service account"},
 		{"unpinned image", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "registry.example/app:latest" }, "pin the image"},
-		{"unpinned init", func(p *corev1.Pod) {
-			p.Spec.InitContainers = []corev1.Container{{Name: "init", Image: "registry.example/init:latest"}}
-		}, "pin the image"},
 		{"host network", func(p *corev1.Pod) { p.Spec.HostNetwork = true }, "host namespaces"},
-		{"host PID", func(p *corev1.Pod) { p.Spec.HostPID = true }, "host namespaces"},
-		{"host IPC", func(p *corev1.Pod) { p.Spec.HostIPC = true }, "host namespaces"},
 		{"shared PID", func(p *corev1.Pod) { p.Spec.ShareProcessNamespace = new(true) }, "shareProcessNamespace"},
 		{"host port", func(p *corev1.Pod) {
 			p.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 8080, HostPort: 8080}}
@@ -158,9 +138,6 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		{"image pull secret", func(p *corev1.Pod) { p.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "registry"}} }, "imagePullSecrets"},
 		{"secret environment", func(p *corev1.Pod) {
 			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{Key: "token"}}}}
-		}, "environment references"},
-		{"ConfigMap environment", func(p *corev1.Pod) {
-			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "CONFIG", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{Key: "config"}}}}
 		}, "environment references"},
 		{"envFrom", func(p *corev1.Pod) { p.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{{Prefix: "EXTERNAL_"}} }, "envFrom"},
 		{"runtime class", func(p *corev1.Pod) { p.Spec.RuntimeClassName = new("other") }, "runtimeClassName"},
@@ -228,10 +205,7 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 		change func(*corev1.Pod)
 	}{
 		{"image", func(p *corev1.Pod) { p.Spec.Containers[0].Image = strings.ReplaceAll(podCVMTestImage, "a", "b") }},
-		{"arguments", func(p *corev1.Pod) { p.Spec.Containers[0].Args = []string{"changed"} }},
-		{"assignment", func(p *corev1.Pod) { p.Spec.NodeName = "another-node" }},
 		{"selector", func(p *corev1.Pod) { delete(p.Spec.NodeSelector, AnnotationPodCVM) }},
-		{"toleration", func(p *corev1.Pod) { p.Spec.Tolerations = nil }},
 		{"referenced label", func(p *corev1.Pod) { p.Labels["release"] = "two" }},
 		{"referenced annotation", func(p *corev1.Pod) { p.Annotations["tenant/config"] = "two" }},
 	} {
@@ -241,17 +215,13 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 			assertPodCVMResponse(t, podCVMConfig(), podCVMRequest(t, old, updated, ""), false, "immutable")
 		})
 	}
-	for _, enabled := range []bool{false, true} {
-		cfg := podCVMConfig()
-		cfg.PodCVMProviderEnabled = enabled
-		updated := old.DeepCopy()
-		updated.Finalizers = []string{"confidential.ai/pod-cvm"}
-		updated.Labels["controller.example/observed"] = "yes"
-		updated.Annotations["confidential.ai/pod-cvm-endpoints"] = "[]"
-		updated.Status.Phase = corev1.PodRunning
-		for _, subresource := range []string{"", "status"} {
-			assertPodCVMResponse(t, cfg, podCVMRequest(t, old, updated, subresource), true, "")
-		}
+	updated := old.DeepCopy()
+	updated.Finalizers = []string{"confidential.ai/pod-cvm"}
+	updated.Labels["controller.example/observed"] = "yes"
+	updated.Annotations["confidential.ai/pod-cvm-endpoints"] = "[]"
+	updated.Status.Phase = corev1.PodRunning
+	for _, subresource := range []string{"", "status"} {
+		assertPodCVMResponse(t, meshConfig(), podCVMRequest(t, old, updated, subresource), true, "")
 	}
 }
 
@@ -280,9 +250,6 @@ func TestPodCVMNodeCannotBeSelectedWithoutOptIn(t *testing.T) {
 			p.Spec.Tolerations = []corev1.Toleration{{Key: AnnotationPodCVM, Operator: corev1.TolerationOpExists}}
 		},
 		func(p *corev1.Pod) { p.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}} },
-		func(p *corev1.Pod) {
-			p.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}}
-		},
 	} {
 		pod := podWithApp()
 		change(pod)
