@@ -17,6 +17,7 @@ C8s assigns them under its own Private Enterprise Number:
 1.3.6.1.4.1.66378.1.2  attestation-evidence audit digest
 1.3.6.1.4.1.66378.1.4  pod sandbox ID
 1.3.6.1.4.1.66378.1.5  matched workload
+1.3.6.1.4.1.66378.1.8  assigned workload ID
 ```
 
 ## Three kinds of certificate
@@ -25,7 +26,7 @@ C8s assigns them under its own Private Enterprise Number:
   evidence binds. Issuer equals subject, so a verifier authenticates the body by
   checking that self-signature, then the evidence inside it.
 - **CDS-issued leaf**: the certificate CDS — the Certificate Distribution
-  Service, the one cluster pod that verifies evidence and signs workload
+  Service, the separate confidential VM that verifies evidence and signs workload
   certificates — signs with the mesh CA. It names one pod run when the request
   proved a sandbox. Its signature under the mesh CA is what vouches for
   everything CDS stamped. A member pod's mesh endpoint presents the leaf
@@ -42,9 +43,10 @@ C8s assigns them under its own Private Enterprise Number:
 | `…1.2` | Every leaf CDS signs | SHA-256 of the evidence bytes that authorized the issuance | Nothing reads it; it records which issuance signed this leaf |
 | `…1.4` | A leaf whose request proved a sandbox | The pod sandbox ID the container runtime gave the pod this leaf was issued to | CDS, when it serves secrets and volume keys to that pod; the pod's own injected sidecars, get-cert and the mesh endpoint (`c8s-mesh`), reading their own leaf; `c8s verify --sandbox-id` |
 | `…1.5` | A leaf whose attested container set matched exactly one allowlist entry | The matched entry name, and the allowlist snapshot the match was decided under | The router, before it writes a request to a workload backend; `c8s verify --workload` and `--allowlist` |
+| `…1.8` | A leaf the Pod CVM issuance profile signed for a pod whose manifest carries `confidential.ai/cw` | The workload ID the provider signed into the pod CVM's assignment, as the guest's verified claims carried it | A relying party that admits a pod CVM as one tenant's; `c8s verify` does not read it yet |
 
-A leaf is signed by the mesh CA, so `…1.2`, `…1.4` and `…1.5` are statements by
-CDS: they are worth nothing on a certificate whose chain the reader has not
+A leaf is signed by the mesh CA, so `…1.2`, `…1.4`, `…1.5` and `…1.8` are
+statements by CDS: they are worth nothing on a certificate whose chain the reader has not
 verified against the mesh CA. `…1.1` is the one extension the hardware vouches
 for, and it covers the public key alone.
 
@@ -76,8 +78,8 @@ TEEAttestation ::= SEQUENCE {
   handshake: that chain is the TLS one, a self-issued certificate alone or a
   CDS-issued leaf under the mesh CA.
 - **`runtimeExtensions`**: TDX only, at most 256 entries, each a canonical
-  `sha256:<hex>`: the allowlist policies the node extended into RTMR[3], in
-  extend order, for a verifier to replay
+  `sha256:<hex>`: the allowlist policies a node extended into RTMR[3], or the image digests
+  a Pod CVM admitted, in extend order, for a verifier to replay
   ([measurements.md](measurements.md#policy-history)). The list is unattested
   on its own. A verifier refuses it on SEV-SNP evidence, which has no register
   to replay.
@@ -100,8 +102,10 @@ canonical encoding: a value that re-encodes to different bytes is refused, so
 two extensions cannot parse to the same ID. CDS stamps it after verifying the
 sandbox token signed by the node's admission inventory, the node service that
 records which containers ran in which pod sandbox
-([armtls.md](armtls.md#sandbox-identity)). A
-certificate carrying two of them, or one that does not parse, is an error and
+([armtls.md](armtls.md#sandbox-identity)). The
+Pod CVM issuance profile instead derives a
+separate Pod identity from verified guest claims; that identity confers no
+node-inventory or secret-release authority. A certificate carrying two of them, or one that does not parse, is an error and
 never read as absence.
 
 For a CSR with no DNS or IP SAN and no common name, the issued common name is
@@ -129,6 +133,27 @@ The mesh CA's signature is what vouches for this stamp, never the hardware
 evidence, so it is readable only off a leaf the reader has verified against
 that CA. A self-issued peer's version of this extension is whatever that peer
 chose.
+
+## Assigned workload ID (`…1.8`)
+
+A DER `UTF8String` in the workload-name grammar that `confidential.ai/cw`
+and an allowlist entry use (`[A-Za-z0-9][A-Za-z0-9._-]*`, at most 63 bytes),
+in the one canonical encoding; a duplicate, another ASN.1 type or a value
+outside the grammar is an error, never read as absence. Only the
+Pod CVM issuance profile stamps it: the pod
+provider signs the manifest's `confidential.ai/cw` annotation into the guest's
+assignment, the guest carries it in the claims its quote binds, and CDS copies
+it from the verified claims. A pod without the annotation gets a leaf without
+the extension. The pod CVM's mesh endpoint admits only peers stamped with its
+own value (`armtls.RequireSameAssignedWorkload`); a relying party that expects
+a tenant refuses a leaf that lacks it rather than treat absence as a wildcard,
+and the chain verifier fails a damaged or duplicated extension for every relying
+party.
+
+It names a tenant, not a policy match: `…1.5` says which allowlist entry the
+containers matched, `…1.8` says which workload the control plane assigned the
+pod to. The two agree when the allowlist entry is named after the workload,
+but nothing in the leaf requires that.
 
 ## Subject, key usage and lifetime
 

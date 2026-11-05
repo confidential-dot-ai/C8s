@@ -158,7 +158,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 
 // evidenceFromDiscovery parses a discovery document into verifiable evidence.
 // REPORTDATA = SHA-384(cert pubkey ‖ challenge), matching get-cert's issuance
-// binding (reportDataForCSR → armtls.ReportDataForKey). The parsed certificate
+// binding (attestclient nodeReportData → armtls.ReportDataForKey). The parsed certificate
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
 // pins work against discovery targets too. A CDS-issued (CA-vouched) cert in

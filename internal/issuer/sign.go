@@ -35,6 +35,12 @@ type SignCSRParams struct {
 	// inventory — SignCSR does not re-match (docs/armtls.md, "Matched
 	// workload").
 	MatchedWorkload *armtls.MatchedWorkload
+
+	// AssignedWorkloadID, when set, is stamped as the assigned-workload-ID
+	// extension (armtls.OIDAssignedWorkloadID): the tenant identity a pod
+	// CVM's verified claims carried. The caller MUST have verified the
+	// claims the value came from — SignCSR does not re-verify.
+	AssignedWorkloadID string
 }
 
 // SignCSR returns the signed leaf's PEM, common name, and serial number.
@@ -93,6 +99,13 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, subjectCN string, serial 
 			return nil, "", nil, err
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, workloadExt)
+	}
+	if p.AssignedWorkloadID != "" {
+		assignedExt, err := armtls.MarshalAssignedWorkloadIDExtension(p.AssignedWorkloadID)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("sign csr: %w", err)
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, assignedExt)
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, c.Cert, p.CSR.PublicKey, c.Key)
