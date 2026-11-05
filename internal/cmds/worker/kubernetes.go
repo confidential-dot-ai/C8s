@@ -89,12 +89,14 @@ func isCanonicalPort(text string) bool {
 }
 
 // checkCACertificate accepts one PEM CERTIFICATE block holding a CA
-// certificate, followed by nothing but whitespace.
+// certificate, with nothing but whitespace before or after it.
 func checkCACertificate(text string) error {
 	block, rest := pem.Decode([]byte(text))
 	switch {
 	case block == nil:
 		return errors.New("must hold a PEM block")
+	case !opensWithPEMBlock(text):
+		return errors.New("must hold exactly one PEM block and nothing before it")
 	case block.Type != "CERTIFICATE":
 		return fmt.Errorf("must be a PEM CERTIFICATE block, not %s", block.Type)
 	case len(block.Headers) != 0:
@@ -110,6 +112,12 @@ func checkCACertificate(text string) error {
 		return errors.New("must be a CA certificate")
 	}
 	return nil
+}
+
+// opensWithPEMBlock reports whether text, past leading whitespace, starts
+// with a PEM block: pem.Decode skips whatever comes before the first one.
+func opensWithPEMBlock(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "-----BEGIN ")
 }
 
 // clusterRange parses a pod or Service range: an IPv4 range named by its

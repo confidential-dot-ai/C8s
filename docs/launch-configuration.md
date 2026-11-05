@@ -146,7 +146,7 @@ The [document rules](#document-rules) apply.
 | `cds.pinFloor` | no | The lowest cluster version a worker takes a CDS pin decree at. |
 | `router.*` | no | As in a server document above. |
 | `kubernetes.apiServer` | yes | The API server's `<host>:<port>`, the host a lowercase DNS name or a unicast IPv4 address (private ones included), the port 1..65535 without leading zeros. No scheme, path, user or brackets. |
-| `kubernetes.caCertificate` | yes | One PEM `CERTIFICATE` block without headers, holding a CA certificate, followed by nothing but whitespace. |
+| `kubernetes.caCertificate` | yes | One PEM `CERTIFICATE` block without headers, holding a CA certificate, with nothing but whitespace before or after it. |
 | `kubernetes.podCIDR` | yes | The pod range: IPv4, written as its network address and prefix length. |
 | `kubernetes.serviceCIDR` | yes | The Service range, under the same rules, and `/30` or wider. |
 | `kubernetes.clusterDNS` | yes | The cluster DNS Service's IPv4 address: inside `serviceCIDR`, and neither its network nor its broadcast address. |

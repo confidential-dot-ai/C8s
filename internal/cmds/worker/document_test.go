@@ -256,6 +256,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		{"no ca", func(d *Document) { d.Kubernetes.CACertificate = "" }, "must hold a PEM block"},
 		{"two cas", func(d *Document) { d.Kubernetes.CACertificate = ca + ca }, "exactly one PEM block"},
 		{"ca with trailing bytes", func(d *Document) { d.Kubernetes.CACertificate = ca + "issuer=kubernetes\n" }, "exactly one PEM block"},
+		{"ca with leading bytes", func(d *Document) { d.Kubernetes.CACertificate = "issuer=kubernetes\n" + ca }, "nothing before it"},
 		{"ca with pem headers", func(d *Document) {
 			block, _ := pem.Decode([]byte(ca))
 			block.Headers = map[string]string{"Proc-Type": "4,ENCRYPTED"}
