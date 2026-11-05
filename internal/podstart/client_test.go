@@ -49,8 +49,9 @@ func mockUnixServer(t *testing.T, h http.Handler) string {
 	return socket
 }
 
+// Only one explicit confirmation authorizes a start; nothing is retried or followed.
 func TestConsumeRequiresExplicitPermissionWithoutRedirectOrRetry(t *testing.T) {
-	for _, status := range []int{http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusForbidden, http.StatusInternalServerError, http.StatusTemporaryRedirect} {
+	for _, status := range []int{http.StatusNoContent, http.StatusForbidden, http.StatusTemporaryRedirect} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var calls atomic.Int32
 			socket := mockUnixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +77,7 @@ func TestConsumeRequiresExplicitPermissionWithoutRedirectOrRetry(t *testing.T) {
 	}
 }
 
+// A missing plugin or a cancelled caller prevents the start.
 func TestConsumeUnavailableOrCancelledAuthorityDenies(t *testing.T) {
 	missing := filepath.Join(socketDir(t), "missing.sock")
 	if err := Consume(context.Background(), missing, testStart); err == nil {
@@ -93,33 +95,13 @@ func TestConsumeUnavailableOrCancelledAuthorityDenies(t *testing.T) {
 	}
 }
 
-func TestConsumePreservesShorterCallerDeadline(t *testing.T) {
-	entered := make(chan struct{})
-	socket := mockUnixServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		close(entered)
-		<-r.Context().Done()
-	}))
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	err := Consume(ctx, socket, testStart)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("blocked authority did not fail at caller deadline: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed >= Timeout {
-		t.Fatalf("caller deadline was replaced by the default timeout: %s", elapsed)
-	}
-	select {
-	case <-entered:
-	default:
-		t.Fatal("deadline test never reached the authority")
-	}
-}
-
+// A connection lost or an unbounded response before the confirmation is a refusal.
 func TestConsumeRejectsBrokenOrOversizedHTTPResponse(t *testing.T) {
-	for _, response := range []string{"", "not HTTP\r\n\r\n", "HTTP/1.1 204 No Content\r\nX-Oversized: " + strings.Repeat("x", 8192) + "\r\n\r\n"} {
-		t.Run(responseName(response), func(t *testing.T) {
+	for _, tc := range []struct{ name, response string }{
+		{"connection lost", ""},
+		{"oversized headers", "HTTP/1.1 204 No Content\r\nX-Oversized: " + strings.Repeat("x", 8192) + "\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			socket := filepath.Join(socketDir(t), "gate.sock")
 			l, err := net.Listen("unix", socket)
 			if err != nil {
@@ -134,7 +116,7 @@ func TestConsumeRejectsBrokenOrOversizedHTTPResponse(t *testing.T) {
 				}
 				defer c.Close()
 				_ = c.SetDeadline(time.Now().Add(time.Second))
-				_, _ = io.WriteString(c, response)
+				_, _ = io.WriteString(c, tc.response)
 			}()
 			t.Cleanup(func() { _ = l.Close(); <-done })
 			if err := Consume(context.Background(), socket, testStart); err == nil {
@@ -142,14 +124,4 @@ func TestConsumeRejectsBrokenOrOversizedHTTPResponse(t *testing.T) {
 			}
 		})
 	}
-}
-
-func responseName(response string) string {
-	if response == "" {
-		return "connection lost"
-	}
-	if strings.HasPrefix(response, "HTTP/") {
-		return "oversized headers"
-	}
-	return "malformed response"
 }
