@@ -44,8 +44,8 @@ ok() { # ok DESC cmd...
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 
 # --- the marker is in the tree mkosi bakes into the verity root -------------
-ok "the c8s profile bakes $MARKER" \
-    test -f "$NGI_DIR/c8s/mkosi.extra${MARKER}"
+ok "the worker profile bakes $MARKER" \
+    test -f "$NGI_DIR/worker/mkosi.extra${MARKER}"
 
 # --- fetch the exact cloud-init the image installs --------------------------
 DEB=""

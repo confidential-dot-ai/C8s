@@ -9,9 +9,8 @@
 #      either the one images/node-guest/build pre-stages at usr/local/bin/c8s,
 #      or the one nri-image-policy:<c8s-ref> carries.
 #   3. the router's nginx files and the worker's NRI floor, rendered from the
-#      chart in that binary, the node profile's floor, which the build
-#      pre-stages at mkosi.local/node-floor.yaml.in, and this profile's static
-#      pod templates.
+#      chart in that binary, this profile's floor template and its static pod
+#      templates.
 #
 # The core image digests resolve from the registry, or from the local OCI
 # layouts the build shares between the image repro gate's two runs.
@@ -79,8 +78,8 @@ case "$BINARY_INPUT" in
         C8S_SOURCE=plugin ;;
     *)  fail "c8s-binary sync-input must be 1 or empty, got '$BINARY_INPUT'" ;;
 esac
-NODE_FLOOR="$SRCDIR/mkosi.local/node-floor.yaml.in"
-[ -f "$NODE_FLOOR" ] || fail "no node floor pre-staged at mkosi.local/node-floor.yaml.in"
+NODE_FLOOR="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
+[ -f "$NODE_FLOOR" ] || fail "no floor template at $NODE_FLOOR"
 
 # fetch <url> <dest> <sha256>: download once into the package cache.
 fetch() {

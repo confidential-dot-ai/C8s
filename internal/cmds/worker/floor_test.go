@@ -18,7 +18,7 @@ import (
 
 // nodeFloorTemplate is the node image's floor, as the worker image's build
 // reads it.
-const nodeFloorTemplate = "../../../images/node-guest/c8s/image-policy.yaml.in"
+const nodeFloorTemplate = "../../../images/node-guest/worker/image-policy.yaml.in"
 
 const testRouterEntry = "c8s-router-0123456789ab"
 

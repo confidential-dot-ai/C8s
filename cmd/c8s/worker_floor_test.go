@@ -36,7 +36,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "c8s", "image-policy.yaml.in"))
+	template, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "worker", "image-policy.yaml.in"))
 	if err != nil {
 		t.Fatal(err)
 	}

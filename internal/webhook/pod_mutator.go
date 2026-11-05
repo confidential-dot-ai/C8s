@@ -905,7 +905,7 @@ func meshContainer(cfg Config, probes []string) corev1.Container {
 		},
 		// The pod's probe targets, which vary per pod: a node's measured
 		// policy pins the endpoint's arguments and mounts for every member
-		// pod alike (images/node-guest/c8s/image-policy.yaml.in).
+		// pod alike (images/node-guest/worker/image-policy.yaml.in).
 		Env: meshEnv(probes),
 		VolumeMounts: []corev1.VolumeMount{
 			{

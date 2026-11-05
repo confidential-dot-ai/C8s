@@ -19,11 +19,10 @@ FIXTURE=$WORK/fixture
 OUTPUT=$WORK/output
 trap 'rm -rf -- "$WORK"' EXIT
 # The gate's whole input surface: the kernel configurations, the worker
-# profile, the c8s files staged with it, and the stager itself.
-mkdir -p "$PRISTINE/images/node-guest/c8s"
+# profile and the gate itself.
+mkdir -p "$PRISTINE/images/node-guest"
 cp -a "$REPO_DIR/images/node-guest/kernel" "$REPO_DIR/images/node-guest/worker" \
       "$REPO_DIR/images/node-guest/tests" "$PRISTINE/images/node-guest/"
-cp -a "$REPO_DIR/images/node-guest/c8s/mkosi.extra" "$PRISTINE/images/node-guest/c8s/"
 ln -s "$CONFOS_DIR" "$PRISTINE/confos"
 WORKER=$FIXTURE/images/node-guest/worker
 KERNEL=$FIXTURE/images/node-guest/kernel
@@ -36,17 +35,10 @@ restore() {
 }
 restore
 
-# baked REL — the fixture file the worker image bakes at REL, as the stager
-# resolves it: this profile's, or the c8s profile's while shared names it.
+# baked REL — the fixture file the worker image bakes at REL.
 baked() {
-    if [ -e "$WORKER/mkosi.extra/$1" ]; then
-        echo "$WORKER/mkosi.extra/$1"
-    elif grep -qxF "$1" "$WORKER/shared"; then
-        echo "$FIXTURE/images/node-guest/c8s/mkosi.extra/$1"
-    else
-        echo "the worker image bakes no $1" >&2
-        exit 2
-    fi
+    [ -e "$WORKER/mkosi.extra/$1" ] || { echo "the worker image bakes no $1" >&2; exit 2; }
+    echo "$WORKER/mkosi.extra/$1"
 }
 
 run_gate() {

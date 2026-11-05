@@ -8,14 +8,10 @@ set -euo pipefail
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd "$TESTS_DIR/../../.." && pwd)
 
-EXTRA=$(mktemp -d)
-trap 'rm -rf -- "$EXTRA"' EXIT
-bash "$TESTS_DIR/stage-worker-extra.sh" "$EXTRA"
-
-CONFIG_DIR=$EXTRA/var/lib/rancher/rke2/agent/etc/containerd
+CONFIG_DIR=$TESTS_DIR/../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
 CONFIG=$CONFIG_DIR/config.toml
 [ -f "$CONFIG" ] \
-    || { echo "the worker image bakes no containerd main config at ${CONFIG#"$EXTRA"}" >&2; exit 1; }
+    || { echo "the worker image bakes no containerd main config" >&2; exit 1; }
 [ -d "$CONFIG_DIR/config-v3.toml.d" ] \
     || { echo "the worker image bakes no containerd drop-in directory" >&2; exit 1; }
 cd "$REPO_DIR"

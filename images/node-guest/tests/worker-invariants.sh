@@ -8,6 +8,9 @@
 # wrapper's compiled path and the containerd drop-in parse
 # (images/node-guest/worker/profile_test.go).
 #
+# PROFILE_EXTRA is the profile's baked tree, read in place: every file below
+# is one the image carries.
+#
 # CONFOS_DIR names the pinned confidential-os-builder checkout the image
 # builds with; the fragment is compared against that tree's gpu fragment.
 set -euo pipefail
@@ -39,9 +42,7 @@ effective_lines() { grep -E '^CONFIG_|^# CONFIG_.* is not set$' "$1" | sort -u; 
 [ -f "$CONFOS_DIR/kernel/gpu.config" ] \
     || fail confos-checkout "CONFOS_DIR=$CONFOS_DIR is no confos checkout"
 
-EXTRA=$(mktemp -d)
-trap 'rm -rf -- "$EXTRA"' EXIT
-bash "$IMAGE_DIR/tests/stage-worker-extra.sh" "$EXTRA"
+PROFILE_EXTRA=$IMAGE_DIR/worker/mkosi.extra
 
 # Only one --kernel-config-fragment is accepted per build, so the C8s
 # fragment duplicates confos's gpu lines verbatim. Catch drift when
@@ -70,8 +71,8 @@ done
 # The fragment compiles modules in (confos's gpu fragment needs them), which
 # the base kernel does not, so confos's 99-kspp-hardening.conf omits
 # kernel.modules_disabled and the image latches the key itself.
-latch=$EXTRA/etc/systemd/system/c8s-modules-latch.service
-preset=$EXTRA/usr/lib/systemd/system-preset/50-worker.preset
+latch=$PROFILE_EXTRA/etc/systemd/system/c8s-modules-latch.service
+preset=$PROFILE_EXTRA/usr/lib/systemd/system-preset/50-worker.preset
 grep -qF 'kernel.modules_disabled=1' "$latch" \
     || fail modules-latch "c8s-modules-latch.service must set kernel.modules_disabled=1: the gpu fragment compiles modules in"
 grep -qx 'enable c8s-modules-latch.service' "$preset" \
@@ -84,14 +85,14 @@ grep -qx 'enable c8s-modules-latch.service' "$preset" \
 # setting the key again, would surface only as a worker powering itself off at
 # first boot.
 key=kernel.apparmor_restrict_unprivileged_unconfined
-dropin=$EXTRA/etc/sysctl.d/20-apparmor.conf
+dropin=$PROFILE_EXTRA/etc/sysctl.d/20-apparmor.conf
 grep -qE "^$key *= *0$" "$dropin" \
     || fail apparmor-sysctl "${dropin##*/} must set $key = 0; apparmor-enforce.sh refuses to boot the worker without it"
-grep -qF "/proc/sys/${key//.//}" "$EXTRA/usr/local/bin/apparmor-enforce.sh" \
+grep -qF "/proc/sys/${key//.//}" "$PROFILE_EXTRA/usr/local/bin/apparmor-enforce.sh" \
     || fail apparmor-sysctl "apparmor-enforce.sh must assert /proc/sys/${key//.//}; the drop-in and the gate move together"
 # sysctl.d applies files by basename order across every directory, so any
 # later (or same-named) basename that sets the key wins over the drop-in.
-later=$(find "$EXTRA" "$CONFOS_DIR/mkosi" -path '*/sysctl.d/*.conf' \
+later=$(find "$PROFILE_EXTRA" "$CONFOS_DIR/mkosi" -path '*/sysctl.d/*.conf' \
           -exec grep -lE "^$key *=" {} + 2>/dev/null \
         | awk -F/ -v name="${dropin##*/}" -v self="$dropin" '$NF >= name && $0 != self' || true)
 if [ -n "$later" ]; then
@@ -105,18 +106,18 @@ fi
 # (k3s pkg/agent/containerd/runtimes.go).
 while IFS= read -r program; do
   holds "${BAKED_PROGRAMS[*]}" "${program##*/}" \
-      || fail baked-program "the worker image bakes ${program#"$EXTRA"}, which is no boot gate of its own; only the measured wrapper may serve ordinary pods"
-done < <(find "$EXTRA" -type f \( -path '*/bin/*' -o -path '*/sbin/*' -o -name 'containerd-shim-*' \))
+      || fail baked-program "the worker image bakes ${program#"$IMAGE_DIR/worker/"}, which is no boot gate of its own; only the measured wrapper may serve ordinary pods"
+done < <(find "$PROFILE_EXTRA" -type f \( -path '*/bin/*' -o -path '*/sbin/*' -o -name 'containerd-shim-*' \))
 
 # The image's own programs hold no shellcheck warning: a quoting or test
 # mistake in a boot gate powers the worker off.
-shellcheck -S warning "$EXTRA"/usr/local/bin/*.sh \
+shellcheck -S warning "$PROFILE_EXTRA"/usr/local/bin/*.sh \
     || fail baked-program-lint "shellcheck refuses a program the worker image bakes (above)"
 
 # A host service holding node secrets must not run before the measured worker
 # document is staged: Requires= propagates a staging failure and After=
 # orders it. Only the boot gates run earlier.
-units=$EXTRA/etc/systemd/system
+units=$PROFILE_EXTRA/etc/systemd/system
 containerd=$units/containerd.service
 containerd_waits_for=$(sed -n 's/^\(Requires\|After\)=//p' "$containerd" | tr '\n' ' ')
 for gate in "${BOOT_GATES[@]}"; do
