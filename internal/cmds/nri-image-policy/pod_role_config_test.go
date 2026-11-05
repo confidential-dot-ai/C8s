@@ -161,3 +161,17 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 		t.Fatalf("signed workload refused by the prepared allowlist: %v", err)
 	}
 }
+
+// Exercise the prepared policy through the production startup path and an NRI
+// runtime connection, including admission before CDS becomes available.
+func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
+	root, doc := podRoleInputs(t, "tdx")
+	if err := nodeservices.PrepareNode(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nriimagepolicy.AssertPodBootstrap(t, cfg, root, []byte(doc.PodOperatorPublicKey), podImageDigest)
+}
