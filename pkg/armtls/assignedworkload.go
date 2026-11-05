@@ -94,10 +94,13 @@ func AssignedWorkloadIDFromCert(cert *x509.Certificate) (string, error) {
 
 // RequireSameAssignedWorkload is the AcceptPeer of a pod CVM's mesh endpoint:
 // the peer must carry exactly the assigned workload ID of the endpoint's own
-// leaf, in both roles. One tenant's pods mesh with each other and with nothing
-// else, so two tenants running the same image cannot substitute certificates,
-// and a leaf without the stamp is refused where a tenant is expected. An
-// endpoint whose own leaf carries no ID admits only peers without one.
+// leaf, in both roles. The ID names the tenant, not the image: it is the
+// `confidential.ai/cw` value the provider signed into the assignment, shared by
+// every pod CVM the tenant runs, so a tenant's router and inference pods mesh
+// with each other and with nothing else, two tenants running the same image
+// cannot substitute certificates, and a leaf without the stamp is refused where
+// a tenant is expected. An endpoint whose own leaf carries no ID admits only
+// peers without one.
 func RequireSameAssignedWorkload(own string) func(Peer) error {
 	return func(peer Peer) error {
 		switch {

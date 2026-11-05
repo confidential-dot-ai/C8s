@@ -219,9 +219,12 @@ type IssuanceProfile struct {
 // request, and returns the chain CDS issued with the material that authorized
 // it. challenge is the base64 CDS challenge the caller fetched, so one nonce
 // can bind the evidence and whatever else the profile carries.
-func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attestationApiURL, csrPEM, challenge string, p IssuanceProfile) (CertificateResult, error) {
+func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attestationApiURL string, csrPEM string, challenge string, p IssuanceProfile) (CertificateResult, error) {
 	ctx = contextOrBackground(ctx)
 
+	if p.ReportData == nil || p.Request == nil {
+		return CertificateResult{}, fmt.Errorf("issuance profile must set ReportData and Request")
+	}
 	challengeBytes, err := base64.StdEncoding.DecodeString(challenge)
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("invalid base64 in challenge: %w", err)
