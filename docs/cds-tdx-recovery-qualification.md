@@ -64,6 +64,34 @@ on TDX. It neither accepts a CA key nor derives a sealing key. An absent feature
 does not justify weakening attestation, substituting a software key or changing
 production hosts to make a test pass.
 
+## Observed result, 2026-11-05
+
+[The native run](../test/pilot/cds-sealed-recovery/results/2026-11-05-tdx-capability.json)
+verified two Intel-signed QuoteV4 responses against the independently built
+image and exact launch. An earlier response failed specifically on the new
+nonce's `REPORT_DATA` commitment. The fixed module query succeeded with status
+zero and a clear native-sealing feature bit. Native sealing is therefore not
+advertised by this attested module on the selected TDX compute worker.
+
+The test used one disposable 2-vCPU/4-GiB guest and no secret key. All seven
+resource paths, including its VMI and backing PV, subsequently returned 404;
+both independent owned-Pod selectors were empty. Node identities, boot IDs and
+readiness checks showed no unexpected regression. Four unrelated VM deletions
+were observed during the run, so the observation is not a claim that
+the entire fleet stayed unchanged.
+
+This settles the deployed TDX capability question without changing production
+firmware or substituting a software sealing key. The current durable custody
+proof remains SNP. Attested release from that qualified custodian to TDX CDS
+replicas is a separate integration route that still needs the complete identity,
+replay and revocation acceptance test. Native custody image upgrades also remain
+unqualified; the logical signed-policy transition tests do not establish them.
+
+The published result contains a summary only. Raw quotes, collateral, platform
+measurements, exact launch bytes and resource identities remain in the private
+local evidence bundle. Automatic approval review blocked exporting those raw
+artifacts to GitHub.
+
 ## References
 
 - [Intel TDX ABI, 348551-006US](https://cdrdv2-public.intel.com/853289/intel-tdx-module-abi-spec-348551006.pdf), sections 5.5.7 and 5.5.13.

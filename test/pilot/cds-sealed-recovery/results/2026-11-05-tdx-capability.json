@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "date": "2026-11-05",
+  "outcome": "native TDX attestation qualified; native sealing not advertised by the tested module",
+  "source_branch": "pilot/cds-tdx-recovery-qualification",
+  "source_commit": "802f6ea18403eafbd1b7abbf43783337accdde16",
+  "fresh_native_quotes_verified": 2,
+  "native_quote_version": 4,
+  "image_pins_verified": true,
+  "exact_launch_binding_verified": true,
+  "intel_chain_collateral_and_revocations_checked": true,
+  "stale_quote_rejected_for_nonce_mismatch": true,
+  "module_query_succeeded": true,
+  "native_sealing_feature_bit": 12,
+  "native_sealing_advertised": false,
+  "native_sealing_qualified": false,
+  "cds_recovery_exercised": false,
+  "full_acceptance_passed": false,
+  "production_ready": false,
+  "cleanup": {
+    "owned_resource_paths_returning_404": 7,
+    "owned_pod_selectors_empty": 2,
+    "complete": true
+  },
+  "unrelated_vm_deletions_observed": 4,
+  "unexpected_health_regression_detected": false,
+  "evidence_handling": "Raw quotes, collateral, launch bytes, platform measurements and resource identities are retained locally; this file contains no such raw evidence.",
+  "limits": [
+    "The capability result applies to the tested deployed module.",
+    "TDX CDS recovery through an already-qualified separate custodian still requires integration and complete acceptance.",
+    "Native custody image upgrades and replicated transactional metadata HA remain unqualified."
+  ]
+}
