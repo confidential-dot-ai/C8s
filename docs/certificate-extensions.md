@@ -103,7 +103,7 @@ two extensions cannot parse to the same ID. CDS stamps it after verifying the
 sandbox token signed by the node's admission inventory, the node service that
 records which containers ran in which pod sandbox
 ([armtls.md](armtls.md#sandbox-identity)). The
-Pod CVM issuance profile instead derives a
+[Pod CVM issuance profile](armtls.md#pod-cvm-issuance) instead derives a
 separate Pod identity from verified guest claims; that identity confers no
 node-inventory or secret-release authority. A certificate carrying two of them, or one that does not parse, is an error and
 never read as absence.
@@ -140,7 +140,7 @@ A DER `UTF8String` in the workload-name grammar that `confidential.ai/cw`
 and an allowlist entry use (`[A-Za-z0-9][A-Za-z0-9._-]*`, at most 63 bytes),
 in the one canonical encoding; a duplicate, another ASN.1 type or a value
 outside the grammar is an error, never read as absence. Only the
-Pod CVM issuance profile stamps it: the pod
+[Pod CVM issuance profile](armtls.md#pod-cvm-issuance) stamps it: the pod
 provider signs the manifest's `confidential.ai/cw` annotation into the guest's
 assignment, the guest carries it in the claims its quote binds, and CDS copies
 it from the verified claims. A pod without the annotation gets a leaf without

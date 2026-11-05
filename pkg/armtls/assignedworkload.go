@@ -1,8 +1,8 @@
 // Assigned workload ID: the tenant identity of a pod CVM, stamped by CDS as an
-// X.509 extension after verifying the guest's claims. The value is the pod's
-// confidential.ai/cw annotation as the provider signed it into the assignment;
-// the guest carries it in its claims, so the quote vouches for it before CDS
-// stamps it.
+// X.509 extension after verifying the guest's claims (docs/armtls.md, "Pod CVM
+// issuance"). The value is the pod's confidential.ai/cw annotation as the
+// provider signed it into the assignment; the guest carries it in its claims,
+// so the quote vouches for it before CDS stamps it.
 
 package armtls
 
