@@ -614,3 +614,42 @@ func distinctJournal(n int) string {
 	}
 	return b.String()
 }
+
+// Only a register that is not the staged key's seed extended with a prefix of
+// the measured list is ErrRegisterDoesNotReplay. A caller that keeps running
+// on it must not also run on a missing key or an unreachable attestation-api,
+// which a retry or a restart can clear.
+func TestLoadMeasuredOperatorKeyClassifiesAReplayFailure(t *testing.T) {
+	otherKey := []byte("a different operator key")
+	dA := "sha256:" + strings.Repeat("a", 64)
+	journal := filepath.Join(t.TempDir(), "journal")
+	if err := os.WriteFile(journal, []byte(dA+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seeded := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), []string{dA})
+	for _, tc := range []struct {
+		name    string
+		staged  []byte
+		url     func(t *testing.T) string
+		journal string
+		want    bool
+	}{
+		{"register holds another key's seed", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(otherKey)) }, "", true},
+		{"register took an extend the journal does not list", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, seeded[:]) }, "", true},
+		{"journal lists an extend the register did not take", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(operatorPub)) }, journal, false},
+		{"register replays the journal", operatorPub, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, seeded[:]) }, journal, false},
+		{"no staged key", nil, func(t *testing.T) string { return attester(t, teetypes.PlatformTDX, tdxBinding(operatorPub)) }, "", false},
+		{"attestation-api unreachable", operatorPub, func(*testing.T) string { return "http://127.0.0.1:1" }, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stageOperatorPubkey(t, tc.staged)
+			_, err := LoadMeasuredOperatorKey(context.Background(), tc.url(t), tc.journal)
+			if got := errors.Is(err, ErrRegisterDoesNotReplay); got != tc.want {
+				t.Fatalf("errors.Is(err, ErrRegisterDoesNotReplay) = %v, want %v: %v", got, tc.want, err)
+			}
+			if tc.name == "register replays the journal" && err != nil {
+				t.Fatalf("a replaying register was refused: %v", err)
+			}
+		})
+	}
+}
