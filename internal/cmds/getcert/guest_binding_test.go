@@ -6,19 +6,12 @@ import (
 	"testing"
 )
 
-func TestGuestIssuerBindingRefusesMissingRoot(t *testing.T) {
+// CC2, CC3: the issuer record outlives withdrawal; only a protected canonical record counts.
+func TestGuestIssuerBindingRetainsPublicIdentityAfterWithdrawal(t *testing.T) {
 	if _, err := GuestIssuerBinding(nil); err == nil {
 		t.Fatal("nil volume read a binding")
 	}
-}
-
-func TestGuestIssuerBindingRetainsPublicIdentityAfterWithdrawal(t *testing.T) {
-	if os.Geteuid() != 0 {
-		if os.Getenv("C8S_REQUIRE_NFT") == "1" {
-			t.Fatal("issuer binding custody requires root")
-		}
-		t.Skip("issuer binding custody requires root")
-	}
+	requireRootCustody(t)
 	root, err := os.OpenRoot(ramBackedDir(t))
 	if err != nil {
 		t.Fatal(err)

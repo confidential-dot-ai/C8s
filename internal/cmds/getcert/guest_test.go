@@ -3,6 +3,7 @@ package getcert
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,73 +35,97 @@ func guestTestClaims(t *testing.T) workloadclaims.PodClaims {
 		RuntimeExtensions: []string{d}, Containers: []workloadclaims.SandboxContainer{{Digest: d, Argv: []string{"/app"}, Env: env, Mounts: []allowlist.ObservedMount{}}}}
 }
 
+// requireRootCustody skips (fails under C8S_REQUIRE_NFT=1) without a root-owned volume.
+func requireRootCustody(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		return
+	}
+	if os.Getenv("C8S_REQUIRE_NFT") == "1" {
+		t.Fatal("guest credential custody requires root")
+	}
+	t.Skip("guest credential custody requires root")
+}
+
+// podIssuance stands in for the attestation API and the CDS Pod issuance
+// profile. The CDS handler refuses every node-profile field (PI2), checks that
+// the quote binds the transmitted claims (PI3) and answers with the leaf issue
+// mints for the CSR key and the instance the claims name.
+func podIssuance(t *testing.T, issue func(pub *ecdsa.PublicKey, instance string) (string, error)) (attesterURL string, cds http.HandlerFunc) {
+	t.Helper()
+	nonce := bytes.Repeat([]byte{3}, 32)
+	var report []byte
+	attester := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req remote.AttestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		report = req.ReportData
+		_, _ = io.WriteString(w, `{"platform":"tdx","evidence":{"quote":"fake"}}`)
+	}))
+	t.Cleanup(attester.Close)
+	return attester.URL, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/authenticate" {
+			_ = json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: base64.StdEncoding.EncodeToString(nonce)})
+			return
+		}
+		var req types.AttestRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		csr, err := attestation.ParseAndVerifyCSR(req.CSR)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		pub, err := attestation.ECDSAPublicKeyFromCSR(csr)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if len(csr.Extensions) != 0 || len(req.SandboxToken) != 0 || req.RuntimeExtensions != nil {
+			t.Error("guest requested node profile")
+		}
+		decoded, err := workloadclaims.DecodePodClaims(req.PodClaims)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		want, err := workloadclaims.PodReportData(pub, nonce, req.PodClaims)
+		if err != nil || !bytes.Equal(want, report) {
+			t.Error("client quote binding differs from transmitted claims")
+		}
+		chain, err := issue(pub, decoded.InstanceID())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = io.WriteString(w, chain)
+	}
+}
+
+// PI1-PI3, CC2: Pod-profile request; publish only for this key, instance and confirmed snapshot.
 func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 	for _, mode := range []string{"publish", "stale snapshot", "cancelled", "wrong instance"} {
 		t.Run(mode, func(t *testing.T) {
 			claims := guestTestClaims(t)
 			ca := newTestCA(t)
-			nonce := bytes.Repeat([]byte{3}, 32)
-			var report []byte
-			attester := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var req remote.AttestRequest
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Error(err)
-					return
-				}
-				report = req.ReportData
-				_, _ = io.WriteString(w, `{"platform":"tdx","evidence":{"quote":"fake"}}`)
-			}))
-			defer attester.Close()
-			cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/authenticate" {
-					_ = json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: base64.StdEncoding.EncodeToString(nonce)})
-					return
-				}
-				var req types.AttestRequestBody
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Error(err)
-					return
-				}
-				csr, err := attestation.ParseAndVerifyCSR(req.CSR)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				pub, err := attestation.ECDSAPublicKeyFromCSR(csr)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				if len(csr.Extensions) != 0 || len(req.SandboxToken) != 0 || req.RuntimeExtensions != nil {
-					t.Error("guest requested node profile")
-				}
-				decoded, err := workloadclaims.DecodePodClaims(req.PodClaims)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				want, err := workloadclaims.PodReportData(pub, nonce, req.PodClaims)
-				if err != nil || !bytes.Equal(want, report) {
-					t.Error("client quote binding differs from transmitted claims")
-				}
-				instance := decoded.InstanceID()
+			attesterURL, issuance := podIssuance(t, func(pub *ecdsa.PublicKey, instance string) (string, error) {
 				if mode == "wrong instance" {
 					instance = "another"
 				}
-				chain, err := ca.issue(pub, instance, time.Hour)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				_, _ = io.WriteString(w, chain)
-			}))
+				return ca.issue(pub, instance, time.Hour)
+			})
+			cds := httptest.NewTLSServer(issuance)
 			defer cds.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
 			creds := &credentials{volume: v, instanceID: claims.InstanceID()}
 			stale := errors.New("admission changed")
-			guest := GuestConfig{InstanceID: claims.InstanceID(), AttestationAPIURL: attester.URL, Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
+			guest := GuestConfig{InstanceID: claims.InstanceID(), AttestationAPIURL: attesterURL, Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 				Commit: func(got workloadclaims.PodClaims, publish func() error) error {
 					if got.Revision != claims.Revision {
 						t.Error("wrong revision")
@@ -130,10 +155,9 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 	}
 }
 
+// CC1 (test plan: substituted volume): publication follows the held handle, not the pathname.
 func TestGuestRootPublicationStaysWithHeldVolume(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("root-owned guest publication requires root")
-	}
+	requireRootCustody(t)
 	base := ramBackedDir(t)
 	path := filepath.Join(base, "volume")
 	if err := os.Mkdir(path, 0750); err != nil {
@@ -175,6 +199,7 @@ func TestGuestRootPublicationStaysWithHeldVolume(t *testing.T) {
 	}
 }
 
+// CC3: lost admission history withdraws the generation and keeps the issuer record (CC2).
 func TestGuestEvidenceLossWithdrawsWithoutRebindingCA(t *testing.T) {
 	v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
 	claims := guestTestClaims(t)

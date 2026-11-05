@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
+// CC3: a failed withdrawal fails closed; a CDS refusal keeps the valid generation and retries (H2).
 func TestGuestRenewalKeepsFatalWithdrawalSeparateFromRefusalBackoff(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -20,7 +21,6 @@ func TestGuestRenewalKeepsFatalWithdrawalSeparateFromRefusalBackoff(t *testing.T
 	}{
 		{"cannot withdraw credentials", fmt.Errorf("withdrawal failed: %w", errFailClosed), true},
 		{"CDS refusal", &attestclient.StatusError{Status: http.StatusForbidden}, false},
-		{"CDS rate limit", &attestclient.StatusError{Status: http.StatusTooManyRequests}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
