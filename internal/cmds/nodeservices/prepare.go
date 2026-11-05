@@ -34,6 +34,9 @@ type FloorInputs struct {
 	// ClusterRanges, when given, are the cluster's pod and Service ranges,
 	// the mesh policy's cluster_ranges; none keeps the baked ones.
 	ClusterRanges []string
+	// Resolver, when given, is the cluster DNS address, the mesh policy's
+	// resolver; empty keeps the baked one.
+	Resolver string
 	// Placeholders give each "<flag>=<placeholder>" in the measured base its
 	// value; an empty value drops the flag.
 	Placeholders map[string]string
@@ -140,6 +143,9 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err := setClusterRanges(policy, in.ClusterRanges); err != nil {
 		return err
 	}
+	if err := setResolver(policy, in.Resolver); err != nil {
+		return err
+	}
 	data, err = yaml.Marshal(floor)
 	if err != nil {
 		return err
@@ -226,6 +232,20 @@ func setClusterRanges(policy map[string]any, ranges []string) error {
 		}
 	}
 	policy["cluster_ranges"] = ranges
+	return nil
+}
+
+// setResolver completes the measured mesh policy with this cluster's DNS
+// address, if given. A policy that declares another is one this step would
+// contradict.
+func setResolver(policy map[string]any, resolver string) error {
+	if resolver == "" {
+		return nil
+	}
+	if declared, ok := policy["resolver"]; ok && declared != resolver {
+		return fmt.Errorf("baked NRI mesh resolver %v contradicts this cluster's %s", declared, resolver)
+	}
+	policy["resolver"] = resolver
 	return nil
 }
 

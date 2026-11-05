@@ -62,6 +62,7 @@ func cdsConfig(t *testing.T, nodeSubnets ...string) string {
 		Workloads:    workloads,
 		Nodes:        nodes,
 		NodeCIDRs:    nodeSubnets,
+		LeafDNSNames: []string{"c8s.acme.example"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +135,7 @@ func testDocument(t *testing.T) Document {
 			Measurements: testCDSPin(t, cdsConfig(t, "192.168.0.0/16")),
 			PinFloor:     1,
 		},
+		TLSSAN: "c8s.acme.example",
 		Router: &launchconfig.Router{Hostnames: []string{"api.acme.example"}, ACMEEmail: "ops@acme.example"},
 		Kubernetes: Kubernetes{
 			APIServer:     "acme.k8s.example:443",
@@ -308,6 +310,14 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		{"cluster dns ipv6", func(d *Document) { d.Kubernetes.ClusterDNS = "fd00:53::a" }, "must be an IPv4 address"},
 		{"cluster dns a name", func(d *Document) { d.Kubernetes.ClusterDNS = "kube-dns" }, "must be an IPv4 address"},
 		{"no cluster dns", func(d *Document) { d.Kubernetes.ClusterDNS = "" }, "kubernetes.clusterDNS"},
+		{"no tls san", func(d *Document) { d.TLSSAN = "" }, "tlsSAN"},
+		{"a tls san that is an address", func(d *Document) { d.TLSSAN = "192.0.2.1" }, "tlsSAN"},
+		{"an uppercase tls san", func(d *Document) { d.TLSSAN = "C8S.acme.example" }, "tlsSAN"},
+		{"a tls san the pinned CDS configuration refuses a leaf", func(d *Document) { d.TLSSAN = "other.acme.example" }, "lets a leaf carry"},
+		{"a tls san no hostname, under a configuration admitting any", func(d *Document) {
+			d.CDS.Measurements = testCDSPin(t, strings.Replace(cdsConfig(t, "192.168.0.0/16"), "leafDNSPatterns: []", `leafDNSPatterns: [".*"]`, 1))
+			d.TLSSAN = "c8s.acme.example."
+		}, "tlsSAN"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -25,6 +25,7 @@ type draft struct {
 	out               string
 	cds               launchconfig.CDS
 	cdsPinPath        string
+	tlsSAN            string
 	router            launchconfig.Router
 	kubernetes        Kubernetes
 	caCertificatePath string
@@ -63,6 +64,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
 	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
 	f.Uint64Var(&d.cds.PinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
 	launchconfig.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
 	f.StringVar(&d.caCertificatePath, "ca-certificate", "", "PEM file holding the one CA certificate the API server's serving certificate chains to")
@@ -72,6 +74,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	for _, name := range []string{
 		"cds-address",
 		"cds-pin",
+		"tls-san",
 		"api-server",
 		"ca-certificate",
 		"pod-cidr",
@@ -96,6 +99,7 @@ func (d draft) render() ([]byte, error) {
 	doc := Document{
 		SchemaVersion: SchemaVersion,
 		CDS:           d.cds,
+		TLSSAN:        d.tlsSAN,
 		Kubernetes:    d.kubernetes,
 	}
 	doc.CDS.Measurements = string(pin)

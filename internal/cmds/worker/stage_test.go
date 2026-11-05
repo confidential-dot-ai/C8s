@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -31,10 +33,11 @@ import (
 )
 
 // bakedFloor is a worker image's NRI config: staging completes its mesh
-// policy with the cluster ranges and the credential role, and its static
-// pod's argv with this worker's values.
+// policy with the cluster ranges, resolver and credential role, and its
+// static pod's argv with this worker's values.
 const bakedFloor = `platform: sev-snp
 allowlist:
+  node_tcb: true
   base:
     schema: c8s.allowlist/v1
     workloads:
@@ -54,17 +57,32 @@ allowlist:
                 - --hostname-override=${NODE_NAME}
                 - --kubeconfig=/var/lib/kubelet/kubeconfig
             mounts: {policy: any}
+      c8s-router-0123456789ab:
+        hostPorts:
+          - {protocol: TCP, hostPort: 443, containerPort: 8443}
+        containers:
+          - digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+            command: {policy: exact, argv: [/router]}
+            args: {policy: exact, argv: [--operator-keys-file=/run/c8s-node/operator-pubkey]}
+            mounts:
+              policy: exact
+              rules:
+                - {destination: /run/c8s-node, kind: host, source: /run/c8s-node, readOnly: true}
+            env: {policy: exact, values: {PATH: /bin}}
   pull:
     url: https://127.0.0.1:30808
     timeout: 30s
+    attestation_api_url: http://127.0.0.1:8400
 policy:
   mode: fail-closed
+  fatal_existing: true
+  boot_marker_path: /run/nri-image-policy/registered
 mesh:
-  exempt_namespaces: [kube-system]
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
     - name: mesh
       uid: 1337
+worker: true
 `
 
 // kubeProxyTemplate is the static pod bakedFloor admits.
@@ -110,6 +128,11 @@ func workerRoot(t *testing.T) string {
 		}
 	}
 	writeBootID(t, root, "5a8c3b0e-9d1f-4e57-a2c6-0f3e8b7d1c24")
+	old := primaryIPv4
+	t.Cleanup(func() { primaryIPv4 = old })
+	primaryIPv4 = func() (string, error) {
+		return "10.0.0.7", nil
+	}
 	return root
 }
 
@@ -161,7 +184,7 @@ func launchedWith(t *testing.T, launchFile []byte) string {
 func stagedOutputs(t *testing.T, root string) map[string]string {
 	t.Helper()
 	outputs := map[string]string{}
-	for _, dir := range []string{nodeservices.PublicDir, "/etc/nri", kubernetesDir} {
+	for _, dir := range []string{nodeservices.PublicDir, "/etc/nri", "/run/nri-image-policy", kubernetesDir} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil || !entry.Type().IsRegular() {
 				return err
@@ -210,6 +233,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		} `yaml:"allowlist"`
 		Mesh struct {
 			ClusterRanges []string     `yaml:"cluster_ranges"`
+			Resolver      string       `yaml:"resolver"`
 			Roles         []stagedRole `yaml:"roles"`
 		} `yaml:"mesh"`
 	}
@@ -218,6 +242,12 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	}
 	if got, want := floor.Mesh.ClusterRanges, []string{"10.100.0.0/16", "10.200.0.0/16"}; !slices.Equal(got, want) {
 		t.Errorf("cluster_ranges = %v, want the document's %v", got, want)
+	}
+	if floor.Mesh.Resolver != doc.Kubernetes.ClusterDNS {
+		t.Errorf("resolver = %q, want the document's cluster DNS %s", floor.Mesh.Resolver, doc.Kubernetes.ClusterDNS)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "run/nri-image-policy/node-ip")); err != nil || string(got) != "10.0.0.7\n" {
+		t.Errorf("node-ip = %q, %v; want this host's primary address", got, err)
 	}
 	pull := floor.Allowlist.Pull
 	if pull.URL != "https://cds.acme.example:8443" || pull.PinFloor != doc.CDS.PinFloor {
@@ -242,10 +272,22 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)
 	}
-	for _, name := range []string{"peers.json", "operator-pubkey", "tls-san"} {
-		if _, err := os.Stat(filepath.Join(root, nodeservices.PublicDir, name)); !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("published %s, a server's or an agent's output: %v", name, err)
-		}
+	launchFile, err := doc.CDS.LaunchFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := cdsconfig.Parse(launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "operator-pubkey")); err != nil || !bytes.Equal(got, pinned.OperatorKeys.PEM()) {
+		t.Errorf("operator-pubkey = %q, %v; want the pinned CDS configuration's operator keys", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "tls-san")); err != nil || string(got) != doc.TLSSAN+"\n" {
+		t.Errorf("tls-san = %q, %v; want the document's tlsSAN", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, nodeservices.PublicDir, "peers.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("published peers.json, a server's or an agent's output: %v", err)
 	}
 }
 
@@ -310,6 +352,73 @@ func TestStageRemovesAFailedPreparationsOutputs(t *testing.T) {
 	}
 	if left := stagedOutputs(t, root); len(left) != 0 {
 		t.Fatalf("a failed preparation left outputs behind: %v", slices.Sorted(maps.Keys(left)))
+	}
+}
+
+// A worker without a router block still publishes what the router reads: it
+// fronts the cluster in the CDS's mode, under the document's tlsSAN.
+func TestStagePublishesTheRoutersFilesWithoutARouterBlock(t *testing.T) {
+	doc := testDocument(t)
+	doc.Router = nil
+	data := marshalDocument(t, doc)
+	root := workerRoot(t)
+	if err := stage(context.Background(), root, stagedDocument(t, data), tokenFile(t), launchedWith(t, data)); err != nil {
+		t.Fatal(err)
+	}
+	public := filepath.Join(root, nodeservices.PublicDir)
+	for name, want := range map[string]string{"router/front-door-mode": "cds\n", "router/hostnames": "", "tls-san": "c8s.acme.example\n"} {
+		if got, err := os.ReadFile(filepath.Join(public, name)); err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(public, "operator-pubkey")); err != nil || !strings.Contains(string(got), "PUBLIC KEY") {
+		t.Errorf("operator-pubkey = %q, %v; want the pinned operator keys", got, err)
+	}
+}
+
+// A floor the plugin would refuse, or run under a server's rules, stops the
+// worker before the kubelet's inputs, and leaves no output behind.
+func TestStageRefusesAFloorThePluginWouldNotRunAsAWorkers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through directory permissions")
+	}
+	data := workerDocumentBytes(t)
+	for _, tc := range []struct {
+		name, old, new, want string
+	}{
+		{"a misspelt worker key", "\nworker: true\n", "\nworkers: true\n", "field workers not found"},
+		{"no worker key", "\nworker: true\n", "\n", "worker: true"},
+		{"a mesh-exempt namespace", "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", "mesh.exempt_namespaces"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := workerRoot(t)
+			floor := strings.Replace(bakedFloor, tc.old, tc.new, 1)
+			if floor == bakedFloor {
+				t.Fatalf("bakedFloor holds no %q", tc.old)
+			}
+			if err := os.WriteFile(filepath.Join(root, "usr/lib/c8s/image-policy.yaml"), []byte(floor), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// /run/kubernetes cannot be made, so a refusal naming the floor
+			// shows stage checked it before writing the kubelet's inputs.
+			run := filepath.Join(root, "run")
+			for _, dir := range []string{nodeservices.PublicDir, "/run/nri-image-policy"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chmod(run, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(run, 0o755) })
+			err := stage(context.Background(), root, stagedDocument(t, data), tokenFile(t), launchedWith(t, data))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("stage = %v, want the staged floor refused for %q", err, tc.want)
+			}
+			if left := stagedOutputs(t, root); len(left) != 0 {
+				t.Fatalf("a refused floor left outputs behind: %v", slices.Sorted(maps.Keys(left)))
+			}
+		})
 	}
 }
 
@@ -404,7 +513,7 @@ func TestStageWritesTheKubeletsInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	outputs := stagedOutputs(t, root)
-	if got, want := outputs[kubeletEnvPath], "-rw-r--r--\nNODE_NAME="+mustNodeName(t, root)+"\n"; got != want {
+	if got, want := outputs[kubeletEnvPath], "-rw-r--r--\nNODE_NAME="+mustNodeName(t, root)+"\nNODE_IP=10.0.0.7\n"; got != want {
 		t.Errorf("kubelet.env = %q, want %q", got, want)
 	}
 	mode, bootstrap, _ := strings.Cut(outputs[bootstrapKubeconfigPath], "\n")
@@ -594,15 +703,17 @@ func TestStageRemovesTheFloorWhenTheKubeletsInputsFail(t *testing.T) {
 	}
 	data := workerDocumentBytes(t)
 	root := workerRoot(t)
-	etc := filepath.Join(root, "etc")
-	if err := os.MkdirAll(filepath.Join(etc, "nri/conf.d"), 0o755); err != nil {
+	run := filepath.Join(root, "run")
+	for _, dir := range []string{nodeservices.PublicDir, "/run/nri-image-policy"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The other outputs' directories stay writable; /run/kubernetes cannot be made.
+	if err := os.Chmod(run, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	// The floor's directory stays writable; /etc/kubernetes cannot be made.
-	if err := os.Chmod(etc, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(etc, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(run, 0o755) })
 	err := stage(context.Background(), root, stagedDocument(t, data), tokenFile(t), launchedWith(t, data))
 	if err == nil || !strings.Contains(err.Error(), kubernetesDir) {
 		t.Fatalf("stage = %v, want the failed write of %s", err, kubernetesDir)
