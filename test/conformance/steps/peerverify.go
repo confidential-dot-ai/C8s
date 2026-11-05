@@ -186,6 +186,14 @@ func (w *world) peerFlags(p *pod) ([]string, bool) {
 	return f, ok
 }
 
+// fromSource is whether a log line names srcIP as its src: slog's text
+// form (src=IP:port), or its JSON form, which writes a net.Addr as an object.
+func fromSource(line, srcIP string) bool {
+	return strings.Contains(line, "src="+srcIP+":") ||
+		strings.Contains(line, `"src":"`+srcIP+`:`) ||
+		strings.Contains(line, `"src":{"IP":"`+srcIP+`"`)
+}
+
 // chainRefusals counts the endpoint's log lines refusing a peer at srcIP
 // because its leaf does not chain to a trusted mesh CA
 // (pkg/armtls/tls.go, chainVerifyPeerCallback), so a refusal for another
@@ -194,7 +202,7 @@ func chainRefusals(log, srcIP string) int {
 	n := 0
 	for _, line := range strings.Split(log, "\n") {
 		if strings.Contains(line, peerAuthFailed) && strings.Contains(line, chainRefusal) &&
-			(strings.Contains(line, "src="+srcIP+":") || strings.Contains(line, `"src":"`+srcIP+`:`)) {
+			fromSource(line, srcIP) {
 			n++
 		}
 	}
