@@ -214,8 +214,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	held := p.bindings.Hold(connection)
 	if held != nil {
 		defer held.Release()
-		if code := p.refusalCode(held, applied); code != "" {
-			p.refuseBound(w, r, held, code)
+		if held.RefusedWith != "" {
+			p.refuseBound(w, r, held, held.RefusedWith)
+			return
+		}
+		if err := p.checkBinding(held.Binding, applied); err != nil {
+			var changed *BindingChangedError
+			if errors.As(err, &changed) {
+				p.refuseBound(w, r, held, changed.Code)
+			} else {
+				p.log.Warn("router credential unavailable", "error", err)
+				http.Error(w, "backend unavailable", http.StatusBadGateway)
+			}
 			return
 		}
 	}
@@ -261,25 +271,25 @@ func (p *Proxy) refuseBound(w http.ResponseWriter, r *http.Request, held *HeldBi
 	http.Error(w, code, http.StatusServiceUnavailable)
 }
 
-// refusalCode returns the code refusing a request on held's connection: an
-// earlier refusal, else what changed since it was bound, else "".
-func (p *Proxy) refusalCode(held *HeldBinding, applied *Applied) string {
-	if held.RefusedWith != "" {
-		return held.RefusedWith
+// checkBinding refreshes the published credential before admitting a bound request.
+func (p *Proxy) checkBinding(
+	b Binding,
+	applied *Applied,
+) error {
+	if applied.Signed.Digest() != b.RouteDigest {
+		return &BindingChangedError{Code: types.ErrorCodeRouteDigestChanged}
 	}
-	return p.changedSince(held.Binding, applied)
-}
-
-// changedSince returns the code for what changed since b was bound, or ""
-// while applied and the router digest are b's.
-func (p *Proxy) changedSince(b Binding, applied *Applied) string {
-	switch {
-	case applied.Signed.Digest() != b.RouteDigest:
-		return types.ErrorCodeRouteDigestChanged
-	case p.transports.RouterDigest() != b.RouterDigest:
-		return types.ErrorCodeRouterDigestChanged
+	routerDigest := ""
+	if p.transports != nil {
+		if err := p.transports.syncRouterDigest(); err != nil {
+			return err
+		}
+		routerDigest = p.transports.RouterDigest()
 	}
-	return ""
+	if routerDigest != b.RouterDigest {
+		return &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	}
+	return nil
 }
 
 // backendFailure logs a failed backend exchange and returns the response it
@@ -348,8 +358,8 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 		return textResponse(http.StatusServiceUnavailable, "routes not applied"), nil
 	}
 	// Checked against the manifest that then routes the request.
-	if code := p.changedSince(bound, applied); code != "" {
-		return types.TunnelResponse{}, &BindingChangedError{Code: code}
+	if err := p.checkBinding(bound, applied); err != nil {
+		return types.TunnelResponse{}, err
 	}
 	if p.timeout > 0 {
 		var cancel context.CancelFunc

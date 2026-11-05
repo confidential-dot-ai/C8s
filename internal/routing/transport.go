@@ -405,9 +405,8 @@ func (t *Transports) dropMeshPools() error {
 	return nil
 }
 
-// syncRouterDigest is dropMeshPools for the paths a client can drive,
-// handshakes and dials: an unreadable credential retires nothing, so clients
-// cannot churn the pools while the read fails.
+// syncRouterDigest refreshes credentials for handshakes, bound requests and
+// dials. An unreadable credential leaves the pools intact.
 func (t *Transports) syncRouterDigest() error {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {

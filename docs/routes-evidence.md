@@ -55,8 +55,11 @@ them: `route_digest_changed` once another manifest is applied,
 digest, and `binding_expired` once an attest-lb connection has carried no
 request for two minutes. The client attests again: the first refusal ends an
 attest-pq session, whose later requests get 401 `channel_error`, while an
-attest-lb connection keeps answering 503. The check runs as a request is
-admitted, so a response already streaming runs to its end.
+attest-lb connection keeps answering 503. Each bound request reads the published
+router credential before forwarding, including when reusing a backend connection.
+An unreadable credential blocks forwarding with 502 while retaining the binding;
+an attest-pq request receives that 502 inside its encrypted response. The check
+runs as a request is admitted, so a response already streaming runs to its end.
 
 A renewal of the router's certificate reaches new connections only: nginx
 reads it on each TLS handshake and resumes no TLS session. A handshake on an
