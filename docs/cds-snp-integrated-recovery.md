@@ -56,8 +56,10 @@ nonce, full request/result binding, image, exact launch, signature and CRL.
 ## External persistence
 
 The real S3 adapter talks to a local TLS endpoint that relays conditional
-object operations over the owned VM tunnel. One host worker owns a SQLite
-fixture with `synchronous=FULL`; it commits before replying. The external data
+object operations over the owned VM tunnel. Four workers own persistent tunnel
+connections and exchange bounded messages with one SQLite actor. Only that
+actor owns the database, conditional-write order, counters and timing trace.
+Its `synchronous=FULL` commit finishes before a worker may reply. The external data
 contains encrypted WAL objects, a signed public registration, the encrypted
 authority capsule and an encrypted test-client capsule. A distinct bounded
 relay operation carries the encrypted custody grant. The CA and WAL keys never
@@ -68,6 +70,20 @@ conditional-write and durability semantics; its latency is not an AWS result.
 It retains the pilot's trusted, linearizable object-store freshness assumption.
 It does not establish resistance to an operator presenting a complete old
 history to a cold recovery authority.
+
+The runner's concurrency correction passes 27 local checks, including four
+simultaneous create-if-absent writes with exactly one durable winner. A separate
+local diagnostic added 300 ms to every storage operation. Initial startup
+succeeded, but some replacement CDS processes exceeded their existing five-second
+deadline while committing bootstrap policy. Both preferred-writer and direct-writer
+modes exhibited the failure. This remains an availability limit; the hardware
+acceptance run retains the original CDS deadlines and preferred-writer configuration.
+
+Native run 05 completed all three CDS startups with the concurrent relay, then
+stopped at the workload fixture's interface enumeration: the image's address-family
+sandbox excluded route netlink. The acceptance image now allows `AF_NETLINK` for
+that local query. It adds no guest egress rule, executable-input route, or shared
+host setting. The measured image must be rebuilt and re-enrolled for this change.
 
 ## Acceptance assertions
 
