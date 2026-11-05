@@ -306,3 +306,18 @@ func TestRun(t *testing.T) {
 		})
 	}
 }
+
+// The pod role runs containerd from a baked config without RKE2; it must
+// reach the same wrapper through the same drop-ins.
+func TestPodRoleConfigWrapsEveryHandler(t *testing.T) {
+	cfg, err := effectiveConfig(bakedConfigDir, "../../c8s/mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkHandlers(cfg, "/usr/local/bin/c8s-runc"); err != nil {
+		t.Fatal(err)
+	}
+	if nri := table(cfg, "plugins", "io.containerd.nri.v1.nri", "default_validator"); nri["enable"] != true {
+		t.Fatalf("pod-role config lost the NRI validator: %v", nri)
+	}
+}

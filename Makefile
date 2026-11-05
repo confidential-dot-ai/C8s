@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-integration-pod-runtime test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -83,14 +83,15 @@ C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=600s work
+	# The Cloud runner tests fork the test binary as process doubles; see the
+	# build constraint in test/integration/pod-cloud/tool/runner_test.go.
+	go test $(C8S_TEST_COUNT) -timeout=600s ./test/integration/pod-cloud/tool
 
-# The pod ruleset installs over netlink into a network namespace the test
-# creates, so it needs uid 0 there: the test binary runs under sudo unless this
-# shell is already root. C8S_REQUIRE_NFT=1 turns a namespace it cannot create
-# into a failure instead of a skip.
+# Real packet capture, guest bootstrap and private RAM credential custody
+# need Linux root and namespace capabilities.
+# Missing privileges fail this target.
 test-podmesh-netns:
-	@runner="env C8S_REQUIRE_NFT=1"; [ "$$(id -u)" = 0 ] || runner="sudo -n $$runner"; \
-		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy
+	bash ./scripts/test-podmesh.sh -race
 
 test-integration:
 	./test/integration/run.sh
@@ -101,6 +102,19 @@ test-integration:
 # Integration (cluster) job.
 test-integration-cluster:
 	./test/integration/cluster/run.sh
+
+# Pinned RKE2 release containerd/runc with the production Pod start gate.
+# Runs inside an owned privileged container without host mounts or networking.
+test-integration-pod-runtime:
+	bash ./test/integration/pod-runtime/run.sh
+
+.PHONY: test-integration-pod-cloud cleanup-integration-pod-cloud
+# Explicit live Cloud acceptance; inputs and recovery state stay private.
+test-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh run "$${C8S_PODCLOUD_INPUT:?absolute input JSON required}" "$${C8S_PODCLOUD_STATE:?new absolute private state directory required}"
+
+cleanup-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh cleanup "$${C8S_PODCLOUD_STATE:?existing absolute private state directory required}"
 
 # Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
 test-integration-cdsha:

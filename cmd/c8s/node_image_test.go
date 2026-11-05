@@ -101,6 +101,20 @@ func TestNodeImageRender(t *testing.T) {
 			if !bytes.Contains(docs["c8s-router/Deployment/c8s-router"], []byte("--publish-routes")) {
 				t.Error("baked router does not publish its route manifest")
 			}
+			// The provider waits for an administrator's Secret, so the
+			// operator must start while that Secret is absent.
+			var operator appsv1.Deployment
+			if err := yaml.Unmarshal(docs["c8s-system/Deployment/c8s-operator"], &operator); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(operator.Spec.Template.Spec.Containers[0].Args, "--pod-cvm-provider-config=/mnt/c8s-data/pod-cvm/config.json") {
+				t.Error("baked operator does not carry the Pod CVM provider")
+			}
+			for _, v := range operator.Spec.Template.Spec.Volumes {
+				if v.Name == "pod-cvm-provider" && (v.Secret == nil || v.Secret.SecretName != "pod-cvm-provider" || v.Secret.Optional == nil || !*v.Secret.Optional) {
+					t.Errorf("baked provider Secret volume = %+v, want the optional pod-cvm-provider Secret", v.Secret)
+				}
+			}
 			for _, name := range []string{"c8s-deny-host-namespaces", "c8s-deny-host-namespaces-ephemeral"} {
 				if !bytes.Contains(docs["/ValidatingAdmissionPolicy/"+name], []byte("AppArmor must not")) {
 					t.Errorf("baked node image lost AppArmor admission in %s", name)

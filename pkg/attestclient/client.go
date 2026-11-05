@@ -3,6 +3,7 @@ package attestclient
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
@@ -62,8 +63,10 @@ type CertificateResult struct {
 	Platform    teetypes.PlatformType
 	Evidence    json.RawMessage
 
-	// RuntimeExtensions is the node's RTMR[3] runtime extension list sent
-	// with the evidence (Client.MeasuredPolicies); nil off TDX.
+	// RuntimeExtensions is the TDX RTMR[3] runtime extension list the
+	// evidence vouches for: a node's measured policies sent with the request
+	// (Client.MeasuredPolicies), or a pod's measured images carried inside
+	// its claims; nil off TDX.
 	RuntimeExtensions []string
 }
 
@@ -185,16 +188,52 @@ func (c Client) ObtainCertificateWithEvidenceContext(ctx context.Context, attest
 // The requester never reports its own container images: CDS resolves those
 // from the inventory named by the token (docs/armtls.md, "Sandbox identity").
 func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attestationApiURL, csrPEM, challenge string, sandboxToken json.RawMessage) (CertificateResult, error) {
+	return c.ObtainCertificateWithProfileContext(ctx, attestationApiURL, csrPEM, challenge, IssuanceProfile{
+		ReportData: nodeReportData,
+		Request: func(platform teetypes.PlatformType, req *types.AttestRequestBody) error {
+			req.SandboxToken = sandboxToken
+			if platform.IsTDX() {
+				req.RuntimeExtensions = c.MeasuredPolicies.Policies()
+			}
+			return nil
+		},
+	})
+}
+
+// IssuanceProfile is one profile's share of a challenge-attest-certify round:
+// how its quote binds the CSR key to the challenge, and what its /attest
+// request carries beside the challenge, the evidence and the CSR. Each
+// profile chooses its own report-data preimage, so a quote obtained for one
+// never satisfies another.
+type IssuanceProfile struct {
+	// ReportData returns the 48 report-data bytes binding key, the
+	// signature-checked CSR key, to challenge, the decoded nonce.
+	ReportData func(key crypto.PublicKey, challenge []byte) ([]byte, error)
+	// Request completes req once evidence from platform is in hand. An error
+	// refuses issuance before anything reaches CDS.
+	Request func(platform teetypes.PlatformType, req *types.AttestRequestBody) error
+}
+
+// ObtainCertificateWithProfileContext runs one issuance round for p: it quotes
+// p.ReportData over the CSR key and the challenge, lets p complete the /attest
+// request, and returns the chain CDS issued with the material that authorized
+// it. challenge is the base64 CDS challenge the caller fetched, so one nonce
+// can bind the evidence and whatever else the profile carries.
+func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attestationApiURL string, csrPEM string, challenge string, p IssuanceProfile) (CertificateResult, error) {
 	ctx = contextOrBackground(ctx)
 
-	// The caller fetched the challenge so the same nonce binds both the sandbox
-	// token and the evidence REPORTDATA below.
+	if p.ReportData == nil || p.Request == nil {
+		return CertificateResult{}, fmt.Errorf("issuance profile must set ReportData and Request")
+	}
 	challengeBytes, err := base64.StdEncoding.DecodeString(challenge)
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("invalid base64 in challenge: %w", err)
 	}
-
-	reportData, err := reportDataForCSR(csrPEM, challengeBytes)
+	csr, err := parseCSR(csrPEM)
+	if err != nil {
+		return CertificateResult{}, err
+	}
+	reportData, err := p.ReportData(csr.PublicKey, challengeBytes)
 	if err != nil {
 		return CertificateResult{}, err
 	}
@@ -203,23 +242,16 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("attestation-api: %w", err)
 	}
-	var extensions []string
-	if asResp.Platform.IsTDX() {
-		extensions = c.MeasuredPolicies.Policies()
-	}
 
 	// Submit evidence + CSR to CDS for verification and cert issuance.
 	// asResp.Evidence is the platform-specific evidence object as emitted by
 	// /attest; CDS's /attest expects it wrapped in an AttestationEvidence
 	// envelope keyed by Platform.
-	attestReq := attestRequest{
-		Challenge:         challenge,
-		Evidence:          asResp.Envelope(),
-		CSR:               csrPEM,
-		SandboxToken:      sandboxToken,
-		RuntimeExtensions: extensions,
+	req := attestRequest{Challenge: challenge, Evidence: asResp.Envelope(), CSR: csrPEM}
+	if err := p.Request(asResp.Platform, &req); err != nil {
+		return CertificateResult{}, err
 	}
-	certPEM, err := c.AttestContext(ctx, attestReq)
+	certPEM, err := c.AttestContext(ctx, req)
 	if err != nil {
 		return CertificateResult{}, err
 	}
@@ -229,7 +261,7 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 		Challenge:         challenge,
 		Platform:          asResp.Platform,
 		Evidence:          asResp.Evidence,
-		RuntimeExtensions: extensions,
+		RuntimeExtensions: req.RuntimeExtensions,
 	}, nil
 }
 
@@ -252,14 +284,7 @@ func (c Client) AuthenticateContext(ctx context.Context) (types.ChallengeRespons
 	return result, nil
 }
 
-type attestRequest struct {
-	Challenge    string                       `json:"challenge"`
-	Evidence     teetypes.AttestationEvidence `json:"evidence"`
-	CSR          string                       `json:"csr"`
-	SandboxToken json.RawMessage              `json:"sandbox_token,omitempty"`
-
-	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
-}
+type attestRequest = types.AttestRequestBody
 
 // Attest submits attestation evidence and receives a signed certificate chain
 // PEM.
@@ -343,7 +368,9 @@ func contextOrBackground(ctx context.Context) context.Context {
 	return ctx
 }
 
-func reportDataForCSR(csrPEM string, challenge []byte) ([]byte, error) {
+// parseCSR decodes a PEM certificate request and checks its self-signature,
+// so the key a profile binds is one the requester holds.
+func parseCSR(csrPEM string) (*x509.CertificateRequest, error) {
 	block, _ := pem.Decode([]byte(csrPEM))
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
@@ -355,7 +382,13 @@ func reportDataForCSR(csrPEM string, challenge []byte) ([]byte, error) {
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("CSR signature invalid: %w", err)
 	}
-	reportData, err := armtls.ReportDataForKey(csr.PublicKey, challenge)
+	return csr, nil
+}
+
+// nodeReportData is the node profile's binding, armtls.ReportDataForKey over
+// the CSR key and the challenge, as the 48 bytes the attestation-api quotes.
+func nodeReportData(key crypto.PublicKey, challenge []byte) ([]byte, error) {
+	reportData, err := armtls.ReportDataForKey(key, challenge)
 	if err != nil {
 		return nil, err
 	}

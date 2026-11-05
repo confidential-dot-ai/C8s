@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/podprovider"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -86,6 +89,8 @@ type Options struct {
 	// socket directory: that plugin NRI-mounts it into c8s-cert and the webhook
 	// injects the get-cert workload-digest claim (docs/armtls.md). See webhook.Config.
 	WorkloadClaimsHostDir string
+	// PodCVMProviderConfig enables the Cloud-backed virtual node from trusted mounted configuration.
+	PodCVMProviderConfig string
 }
 
 var scheme = runtime.NewScheme()
@@ -130,6 +135,7 @@ func init() {
 func Run(ctx context.Context, opts Options) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
+	opts = withPresentPodCVMProvider(opts, logger)
 
 	config, err := getKubeConfig(opts.Kubeconfig)
 	if err != nil {
@@ -182,6 +188,14 @@ func kubeConfig(path string) (*rest.Config, error) {
 // managerOptions is the single source of the manager configuration Run uses;
 // factored out so tests can build a manager with the same cache/label scoping.
 func managerOptions(opts Options) ctrl.Options {
+	objects := map[client.Object]cache.ByObject{
+		&corev1.Service{}: {Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue})},
+	}
+	if opts.PodCVMProviderConfig != "" {
+		objects[&corev1.Secret{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{opts.LeaderElectionNS: {}},
+		}
+	}
 	options := ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsserver.Options{BindAddress: opts.MetricsAddr},
@@ -198,11 +212,7 @@ func managerOptions(opts Options) ctrl.Options {
 			// foreign Service is invisible through this cache — CreateOrUpdate
 			// then tries Create and the reconciler maps AlreadyExists to its
 			// not-adopting skip.
-			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Service{}: {
-					Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue}),
-				},
-			},
+			ByObject: objects,
 		},
 	}
 	if opts.WebhookHost != "" {
@@ -214,6 +224,9 @@ func managerOptions(opts Options) ctrl.Options {
 // setupManager wires all controllers, the webhook, and the startup runnables
 // onto mgr. dc may be nil when opts.DisableStatusMirror is set.
 func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesForGroupVersion, opts Options, logger logr.Logger) error {
+	if err := setupPodCVMProvider(mgr, opts); err != nil {
+		return err
+	}
 	if opts.DisableStatusMirror {
 		logger.Info("status-mirror controller disabled by configuration")
 	} else {
@@ -281,6 +294,7 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			CertFSGroup:           new(opts.CertFSGroup),
 			CertRenewInterval:     opts.CertRenewInterval,
 			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
+			PodCVMProviderEnabled: opts.PodCVMProviderConfig != "",
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}
@@ -308,6 +322,47 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 	}
 	if err := mgr.AddReadyzCheck("readyz", readyzCheck(mgr, opts)); err != nil {
 		return fmt.Errorf("add readyz: %w", err)
+	}
+	return nil
+}
+
+// withPresentPodCVMProvider disables the provider when its configuration file
+// does not exist. A measured image enables the provider before an administrator
+// creates the Secret holding that file; the operator then runs without it until
+// restarted. A present but invalid configuration still fails setup.
+func withPresentPodCVMProvider(opts Options, logger logr.Logger) Options {
+	if opts.PodCVMProviderConfig == "" {
+		return opts
+	}
+	if _, err := os.Stat(opts.PodCVMProviderConfig); errors.Is(err, fs.ErrNotExist) {
+		logger.Info("pod CVM provider disabled: its configuration is not installed", "path", opts.PodCVMProviderConfig)
+		opts.PodCVMProviderConfig = ""
+	}
+	return opts
+}
+
+var loadPodCVMProvider = podprovider.LoadConfig
+var registerPodCVMProvider = podprovider.Setup
+
+func setupPodCVMProvider(mgr manager.Manager, opts Options) error {
+	if opts.PodCVMProviderConfig == "" {
+		return nil
+	}
+	if opts.GetCertImage == "" {
+		return fmt.Errorf("--pod-cvm-provider-config requires the pod admission webhooks")
+	}
+	if !opts.LeaderElection {
+		return fmt.Errorf("--pod-cvm-provider-config requires --leader-elect=true")
+	}
+	cfg, err := loadPodCVMProvider(opts.PodCVMProviderConfig)
+	if err != nil {
+		return fmt.Errorf("load pod CVM provider: %w", err)
+	}
+	if cfg.Namespace != opts.LeaderElectionNS {
+		return fmt.Errorf("pod CVM provider namespace must match --leader-election-namespace")
+	}
+	if err := registerPodCVMProvider(mgr, cfg); err != nil {
+		return fmt.Errorf("setup pod CVM provider: %w", err)
 	}
 	return nil
 }

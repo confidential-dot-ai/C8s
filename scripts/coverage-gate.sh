@@ -4,22 +4,39 @@
 # Usage:
 #   scripts/coverage-gate.sh run [profile]        run tests, write coverage profile
 #   scripts/coverage-gate.sh kernel <profile>     add real kernel dm-verity coverage
+#   scripts/coverage-gate.sh privileged <profile> add real Pod mesh/custody coverage
 #   scripts/coverage-gate.sh total <profile>      print total coverage (e.g. "67.94")
 #
 # The profile is produced with -coverpkg=./... so packages without their own
 # test files are still measured (a brand-new untested package counts as 0%,
 # not "absent"). CI compares the PR's total against the base branch's total
-# and fails if it decreased. Workflow tests execute shell/YAML fixtures, not
-# production Go, so they run in the normal test job rather than this measurement.
+# and fails if it decreased. Acceptance programs are not production Go:
+# test/workflows executes shell/YAML fixtures, test/tdxpod holds the Pod workload fixtures,
+# and test/integration/pod-runtime is the disposable runtime lane with its
+# workload and fixtures tool. Their tests drive them as subprocesses, which no
+# profile records. They stay out of the measurement.
+# Their tests run in the normal test job (the Makefile's `work` covers every
+# workspace package); here their tests are not run and their statements are
+# dropped from the table and the total, including the records the kernel and
+# privileged profiles add with -coverpkg=./....
 # Use this same script for both head and base to keep the totals comparable.
 set -euo pipefail
 
 cmd="${1:-}"
 profile="${2:-coverage.out}"
 
+# Regular expression (no anchors) matching the import paths left out of the
+# measurement; see the header.
+unmeasured_pattern() {
+  local module
+  module=$(GOWORK=off go list -m)
+  printf '%s' "(${module}/test/workflows|${module}/test/tdxpod|${module}/test/integration/pod-runtime|${module}/test/integration/pod-cloud)"
+}
+
 percent() { # per-package coverage table from a coverprofile: "<pct> <stmts> <pkg>"
-  awk -F'[ :]' '
+  awk -F'[ :]' -v skip="^$(unmeasured_pattern)/" '
     NR==1 {next}
+    $1 ~ skip {next}
     {
       key=$1":"$2; stmts[key]=$3; if ($4>0) covered[key]=1;
     }
@@ -39,14 +56,25 @@ percent() { # per-package coverage table from a coverprofile: "<pct> <stmts> <pk
 
 case "$cmd" in
 run)
-  module=$(GOWORK=off go list -m)
   packages=$(go list ./...)
   test_packages=()
   while IFS= read -r package; do
-    [ "$package" = "$module/test/workflows" ] || test_packages+=("$package")
+    [[ "$package" =~ ^$(unmeasured_pattern)$ ]] || test_packages+=("$package")
   done <<< "$packages"
   [ "${#test_packages[@]}" -gt 0 ] || { echo "no Go packages to measure" >&2; exit 1; }
   go test "${test_packages[@]}" -count=1 -coverprofile="$profile" -coverpkg=./...
+  ;;
+privileged)
+  [ -s "$profile" ] || { echo "run ordinary coverage first" >&2; exit 1; }
+  privileged_scratch=$(mktemp -d)
+  trap 'rm -rf "$privileged_scratch"' EXIT
+  # The head's selector measures whichever revision is the working directory,
+  # including a base whose Makefile predates the guest credential tests.
+  harness="$(cd "$(dirname "$0")" && pwd)/test-podmesh.sh"
+  bash "$harness" -coverpkg=./... -coverprofile="$privileged_scratch/podmesh.out"
+  [ -s "$privileged_scratch/podmesh.out" ] || { echo "privileged tests produced no profile" >&2; exit 1; }
+  # Keep the ordinary denominator and union covered blocks in percent().
+  tail -n +2 "$privileged_scratch/podmesh.out" >> "$profile"
   ;;
 kernel)
   # Older base revisions have no verity harness. Keep the same measurement
@@ -74,7 +102,7 @@ total)
   percent "$profile" | awk '$3=="TOTAL" {print $1}'
   ;;
 *)
-  echo "usage: $0 {run|kernel|total} [profile]" >&2
+  echo "usage: $0 {run|kernel|privileged|total} [profile]" >&2
   exit 2
   ;;
 esac
