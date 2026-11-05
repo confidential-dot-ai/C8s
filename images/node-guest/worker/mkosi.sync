@@ -113,14 +113,15 @@ sed \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
     "$NODE_FLOOR" > "$TMP/node-floor.yaml"
 ! grep -o '@[A-Z_]*@' "$TMP/node-floor.yaml" || fail "the node floor names a placeholder this sync does not fill"
-mkdir -p "$STAGE_DIR/usr/lib/c8s"
+TEMPLATES="$STAGE_DIR/usr/lib/c8s/worker/static-pods"
+mkdir -p "$TEMPLATES"
 "$C8S" worker floor \
     --node-floor "$TMP/node-floor.yaml" \
     --render-dir "$RENDER" \
+    --static-pods "$TEMPLATES" \
     --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
 printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
 install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/router-nginx" "$RENDER"/router-nginx/*
 # The initrd overlays only directories the image bakes (usr/lib/confai/state.d).
-mkdir -p "$STAGE_DIR/etc/cni/net.d" "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/nri/conf.d" \
-    "$STAGE_DIR/usr/lib/c8s/worker/static-pods"
+mkdir -p "$STAGE_DIR/etc/cni/net.d" "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/nri/conf.d"
 echo "worker sync: staged the RKE2 ${RKE2_VERSION} runtime and the worker floor for c8s ${C8S_REF}"
