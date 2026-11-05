@@ -83,9 +83,6 @@ C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=600s work
-	# The Cloud runner tests fork the test binary as process doubles; see the
-	# build constraint in test/integration/pod-cloud/tool/runner_test.go.
-	go test $(C8S_TEST_COUNT) -timeout=600s ./test/integration/pod-cloud/tool
 
 # Real packet capture, guest bootstrap and private RAM credential custody
 # need Linux root and namespace capabilities.
@@ -107,14 +104,6 @@ test-integration-cluster:
 # Runs inside an owned privileged container without host mounts or networking.
 test-integration-pod-runtime:
 	bash ./test/integration/pod-runtime/run.sh
-
-.PHONY: test-integration-pod-cloud cleanup-integration-pod-cloud
-# Explicit live Cloud acceptance; inputs and recovery state stay private.
-test-integration-pod-cloud:
-	bash ./test/integration/pod-cloud/run.sh run "$${C8S_PODCLOUD_INPUT:?absolute input JSON required}" "$${C8S_PODCLOUD_STATE:?new absolute private state directory required}"
-
-cleanup-integration-pod-cloud:
-	bash ./test/integration/pod-cloud/run.sh cleanup "$${C8S_PODCLOUD_STATE:?existing absolute private state directory required}"
 
 # Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
 test-integration-cdsha:
