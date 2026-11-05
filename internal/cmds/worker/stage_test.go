@@ -665,11 +665,11 @@ func TestStageRefusesUnrenderableKubeletInputs(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "does not hold a bootstrap token"},
-		{"no static pod templates", func(t *testing.T, root, _ string) {
-			if err := os.Remove(filepath.Join(root, staticPodTemplates, "kube-proxy.yaml")); err != nil {
+		{"no static pod templates directory", func(t *testing.T, root, _ string) {
+			if err := os.RemoveAll(filepath.Join(root, staticPodTemplates)); err != nil {
 				t.Fatal(err)
 			}
-		}, "is empty"},
+		}, "static pod templates: open"},
 		{"a linked template", func(t *testing.T, root, _ string) {
 			if err := os.Symlink("kube-proxy.yaml", filepath.Join(root, staticPodTemplates, "linked.yaml")); err != nil {
 				t.Fatal(err)
@@ -706,6 +706,22 @@ func TestStageRefusesUnrenderableKubeletInputs(t *testing.T) {
 				t.Fatalf("a refused input left outputs behind: %v", slices.Sorted(maps.Keys(left)))
 			}
 		})
+	}
+}
+
+// An image without static pods stages a kubelet that runs none.
+func TestStageWritesNoStaticPodsFromAnEmptyDirectory(t *testing.T) {
+	data := workerDocumentBytes(t)
+	root := workerRoot(t)
+	if err := os.Remove(filepath.Join(root, staticPodTemplates, "kube-proxy.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage(context.Background(), root, stagedDocument(t, data), tokenFile(t), launchedWith(t, data)); err != nil {
+		t.Fatal(err)
+	}
+	pods, err := os.ReadDir(filepath.Join(root, staticPodPath))
+	if err != nil || len(pods) != 0 {
+		t.Fatalf("static pods = %v, %v; want an empty manifests directory", pods, err)
 	}
 }
 

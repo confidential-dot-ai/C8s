@@ -25,9 +25,6 @@ func staticPods(rootDir string, values map[string]string) ([]fileutil.NewFile, e
 	if err != nil {
 		return nil, fmt.Errorf("static pod templates: %w", err)
 	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("static pod templates: %s is empty", staticPodTemplates)
-	}
 	pods := make([]fileutil.NewFile, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() {
