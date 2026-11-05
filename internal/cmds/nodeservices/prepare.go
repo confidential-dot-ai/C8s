@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,14 +13,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -42,31 +38,6 @@ type FloorInputs struct {
 	Placeholders map[string]string
 	// Outputs are published under PublicDir, each a publicOutputNames entry.
 	Outputs map[string][]byte
-}
-
-// PrepareNode prepares a server's or an agent's workload inputs from the
-// verified launch document loaded by LoadStaged.
-func PrepareNode(rootDir string, d *launchconfig.Document) error {
-	if err := validateRole(d); err != nil {
-		return err
-	}
-	peers, err := readPeerPolicy(filepath.Join(rootDir, launchDir+"peers.json"), d.Image.Platform)
-	if err != nil {
-		return err
-	}
-	outputs := map[string][]byte{"peers.json": peers}
-	if d.Role == launchconfig.Server {
-		server, err := serverOutputs(d)
-		if err != nil {
-			return err
-		}
-		maps.Copy(outputs, server)
-	}
-	return Prepare(rootDir, FloorInputs{
-		CDS:          d.CDS,
-		Placeholders: nodeValues(d.Node),
-		Outputs:      outputs,
-	})
 }
 
 // Prepare publishes the CDS pin as cds.json, in.Outputs and the measured NRI
@@ -119,7 +90,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err != nil {
 		return err
 	}
-	if err := fillNodeValues(base, in.Placeholders); err != nil {
+	if err := bindPlaceholderFlags(base, in.Placeholders); err != nil {
 		return err
 	}
 	if err := mergeBakedSeed(base, bakedSeed); err != nil {
@@ -161,7 +132,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if err := removeOutputs(publicPath, unpublishedOutputs(outputs)); err != nil {
+	if err := clearUnpublished(publicPath, outputs); err != nil {
 		return err
 	}
 	for name, data := range outputs {
@@ -192,27 +163,34 @@ func Clear(rootDir string) error {
 	return errors.Join(policy, removeOutputs(filepath.Join(rootDir, PublicDir), publicOutputNames))
 }
 
+// The outputs a caller may not hand Prepare.
+var (
+	errOutputIsCDSPin   = errors.New("is the CDS pin staging writes itself")
+	errOutputNotCleared = errors.New("is not a public output staging clears")
+)
+
 // refuseReservedOutput refuses a caller's output that is Prepare's own CDS
 // pin, or one Prepare does not clear.
 func refuseReservedOutput(name string) error {
 	if name == CDSOutput {
-		return fmt.Errorf("output %q is the CDS pin Prepare writes", name)
+		return fmt.Errorf("output %q %w", name, errOutputIsCDSPin)
 	}
 	if !slices.Contains(publicOutputNames, name) {
-		return fmt.Errorf("output %q is not a public output Prepare clears", name)
+		return fmt.Errorf("output %q %w", name, errOutputNotCleared)
 	}
 	return nil
 }
 
-// unpublishedOutputs are the public outputs outputs does not hold.
-func unpublishedOutputs(outputs map[string][]byte) []string {
-	var names []string
+// clearUnpublished removes every public output published does not hold, so no
+// output outlives the staging that wrote it. It runs before the writes.
+func clearUnpublished(publicPath string, published map[string][]byte) error {
+	var stale []string
 	for _, name := range publicOutputNames {
-		if _, published := outputs[name]; !published {
-			names = append(names, name)
+		if _, ok := published[name]; !ok {
+			stale = append(stale, name)
 		}
 	}
-	return names
+	return removeOutputs(publicPath, stale)
 }
 
 // setClusterRanges completes the measured mesh policy with this cluster's
@@ -317,18 +295,9 @@ func NamedPlaceholder(data []byte) string {
 	return ""
 }
 
-// nodeValues are a server's or an agent's placeholder values, from its launch
-// document. An empty address drops its flag, as RKE2 then passes none.
-func nodeValues(node launchconfig.Node) map[string]string {
-	return map[string]string{
-		NodeNamePlaceholder:             node.Name,
-		nodeAdvertiseAddressPlaceholder: node.AdvertiseAddress(),
-	}
-}
-
-// fillNodeValues gives each placeholder flag in the base's argv pins its
-// value.
-func fillNodeValues(base *allowlist.Allowlist, values map[string]string) error {
+// bindPlaceholderFlags gives each placeholder flag in the base's argv pins
+// its value.
+func bindPlaceholderFlags(base *allowlist.Allowlist, values map[string]string) error {
 	for placeholder := range values {
 		if !slices.Contains(floorPlaceholders, placeholder) {
 			return fmt.Errorf("%s is not a placeholder a floor names", placeholder)
@@ -361,19 +330,19 @@ func fillContainer(c *allowlist.Container, values map[string]string) error {
 	return nil
 }
 
+// DropFlag is the placeholder value that passes no flag: a service reads an
+// empty one as a value.
+const DropFlag = ""
+
 // ArgvWithValues is argv with each "<flag>=<placeholder>" element given its
-// value, and left out where the value is empty. An element that names a
+// value, and left out where the value is DropFlag. An element that names a
 // placeholder in any other way, or one values gives no value, is an error.
 // Any other "${" is literal: a pinned shell script expands its own variables.
 func ArgvWithValues(argv []string, values map[string]string) ([]string, error) {
 	filled := make([]string, 0, len(argv))
 	for _, element := range argv {
 		flag, placeholder, isFlag := strings.Cut(element, "=")
-		namesPlaceholder := isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${")
-		for _, p := range floorPlaceholders {
-			namesPlaceholder = namesPlaceholder || strings.Contains(element, p)
-		}
-		if !namesPlaceholder {
+		if !namesFloorPlaceholder(element, flag, placeholder, isFlag) {
 			filled = append(filled, element)
 			continue
 		}
@@ -384,11 +353,25 @@ func ArgvWithValues(argv []string, values map[string]string) ([]string, error) {
 		if !defined {
 			return nil, fmt.Errorf("argv element %q sets a placeholder this preparation has no value for", element)
 		}
-		if value != "" {
+		if value != DropFlag {
 			filled = append(filled, flag+"="+value)
 		}
 	}
 	return filled, nil
+}
+
+// namesFloorPlaceholder reports whether an argv element sets a placeholder:
+// one a floor names anywhere in the element, or any "${" after a flag.
+func namesFloorPlaceholder(
+	element string,
+	flag string,
+	placeholder string,
+	isFlag bool,
+) bool {
+	if isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${") {
+		return true
+	}
+	return slices.ContainsFunc(floorPlaceholders, func(p string) bool { return strings.Contains(element, p) })
 }
 
 // appendCredentialRole completes the measured mesh policy with the one binding
@@ -425,23 +408,10 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 	return nil
 }
 
-// serverOutputNames are the outputs only a server publishes. The router
-// files are always written, empty when unset, so the router pod never waits on
-// a missing file.
-var serverOutputNames = []string{
-	"operator-pubkey",
-	"tls-san",
-	"router/tls.conf",
-	"router/hostnames",
-	"router/acme-email",
-	"router/acme-directory-url",
-	"router/front-door-mode",
-	"router/request-body.conf",
-}
-
 // publicOutputNames are every file Prepare may publish under PublicDir. It
-// removes each one it does not publish, so a demoted node keeps none.
-var publicOutputNames = append([]string{CDSOutput, "peers.json"}, serverOutputNames...)
+// removes each one it does not publish, so no output outlives the staging
+// that wrote it.
+var publicOutputNames = append([]string{CDSOutput, "operator-pubkey", "tls-san"}, routerOutputNames...)
 
 // CDSOutput is the CDS pin Prepare publishes under PublicDir.
 const CDSOutput = "cds.json"
@@ -460,13 +430,31 @@ func line(s string) []byte {
 	return []byte(s + "\n")
 }
 
-// RouterOutputs are the router's public inputs from r, a document's router
-// block or nil when it has none. Every file is returned, empty when unset.
-func RouterOutputs(r *launchconfig.Router) (map[string][]byte, error) {
-	var router launchconfig.Router
-	if r != nil {
-		router = *r
-	}
+// The router's public inputs. Staging writes every one of them, empty where
+// the document sets nothing, so the router pod never waits on a file.
+const (
+	routerTLSOutput           = "router/tls.conf"
+	routerHostnamesOutput     = "router/hostnames"
+	routerACMEEmailOutput     = "router/acme-email"
+	routerACMEDirectoryOutput = "router/acme-directory-url"
+	routerModeOutput          = "router/front-door-mode"
+	routerRequestBodyOutput   = "router/request-body.conf"
+)
+
+// routerOutputNames are those files, the set both RouterOutputs writes and
+// staging clears.
+var routerOutputNames = []string{
+	routerTLSOutput,
+	routerHostnamesOutput,
+	routerACMEEmailOutput,
+	routerACMEDirectoryOutput,
+	routerModeOutput,
+	routerRequestBodyOutput,
+}
+
+// RouterOutputs are the router's public inputs from router, a document's
+// router block; the zero block is a document that sets none.
+func RouterOutputs(router launchconfig.Router) (map[string][]byte, error) {
 	// The document was validated; check the hostnames again, so no path can
 	// publish an injectable file.
 	for _, name := range router.Hostnames {
@@ -484,34 +472,14 @@ func RouterOutputs(r *launchconfig.Router) (map[string][]byte, error) {
 	}
 	return map[string][]byte{
 		// nginx includes this in its server block to pick the certificate.
-		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
-		"router/hostnames":          hostnames,
-		"router/acme-email":         line(router.ACMEEmail),
-		"router/acme-directory-url": line(router.ACMEDirectoryURL),
-		"router/front-door-mode":    []byte(mode + "\n"),
+		routerTLSOutput:           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
+		routerHostnamesOutput:     hostnames,
+		routerACMEEmailOutput:     line(router.ACMEEmail),
+		routerACMEDirectoryOutput: line(router.ACMEDirectoryURL),
+		routerModeOutput:          []byte(mode + "\n"),
 		// nginx includes this in its application location.
-		"router/request-body.conf": []byte(fmt.Sprintf("client_max_body_size %d;\n", router.RequestBodyLimit())),
+		routerRequestBodyOutput: []byte(fmt.Sprintf("client_max_body_size %d;\n", router.RequestBodyLimit())),
 	}, nil
-}
-
-// serverOutputs validates the server-only fields of the staged document and
-// returns the files they publish. It writes nothing: Prepare publishes only
-// after every input has been validated.
-func serverOutputs(d *launchconfig.Document) (map[string][]byte, error) {
-	if err := cmdsutil.ValidateHostname(d.TLSSAN); err != nil {
-		return nil, fmt.Errorf("staged TLS SAN: %w", err)
-	}
-	pub := []byte(d.Server.OperatorPublicKey)
-	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
-		return nil, fmt.Errorf("staged server operator key: %w", err)
-	}
-	files, err := RouterOutputs(d.Router)
-	if err != nil {
-		return nil, err
-	}
-	files["operator-pubkey"] = pub
-	files["tls-san"] = []byte(d.TLSSAN + "\n")
-	return files, nil
 }
 
 // removeOutputs removes the named outputs from the public directory, trying
@@ -524,46 +492,6 @@ func removeOutputs(publicPath string, names []string) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// readPeerPolicy accepts the launch identities this cluster's nodes boot
-// with, refusing partial pins even when the staged file parses: the
-// authenticated launcher emits an anchored tuple for every permitted role, on
-// the family this node booted.
-func readPeerPolicy(path, platform string) ([]byte, error) {
-	family, err := teetypes.ParseFamily(platform)
-	if err != nil {
-		return nil, fmt.Errorf("staged image platform: %w", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	pins, err := refvalues.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("staged identity policy %s: %w", path, err)
-	}
-	if pins.Family != family {
-		return nil, fmt.Errorf("staged identity policy %s does not pin this node's TEE family", path)
-	}
-	if !policyPinsComplete(pins) {
-		return nil, fmt.Errorf("staged identity policy %s requires complete image and operator pins", path)
-	}
-	return data, nil
-}
-
-// policyPinsComplete reports whether every image pin carries an anchor and,
-// on TDX, the kernel and operator registers the launch verifier compares.
-func policyPinsComplete(pins refvalues.ReferenceValues) bool {
-	for _, pin := range pins.Images {
-		if len(pin.Anchor) == 0 {
-			return false
-		}
-		if pins.Family == teetypes.FamilyTDX && (len(pin.Registers[1]) == 0 || len(pin.Registers[2]) == 0) {
-			return false
-		}
-	}
-	return true
 }
 
 // mergeBakedSeed adds the baked component seed to the measured NRI base: both

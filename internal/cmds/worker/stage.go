@@ -134,12 +134,11 @@ func writeOutputs(rootDir string, doc *Document, token string) error {
 	if err != nil {
 		return err
 	}
-	primary, err := cmdsutil.PrimaryIPv4()
+	address, err := cmdsutil.PrimaryIPv4()
 	if err != nil {
 		return fmt.Errorf("resolve node address: %w", err)
 	}
-	address := primary.String()
-	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address)
+	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address.String())
 	if err != nil {
 		return err
 	}
@@ -189,7 +188,7 @@ const (
 // server: its settings, the operator keys it verifies routes under and its
 // front-door name.
 func routerOutputs(doc *Document) (map[string][]byte, error) {
-	outputs, err := nodeservices.RouterOutputs(doc.Router)
+	outputs, err := nodeservices.RouterOutputs(doc.router())
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +203,7 @@ func routerOutputs(doc *Document) (map[string][]byte, error) {
 
 // stagedPublicNames are the files stage publishes under /run/c8s-node.
 func stagedPublicNames() ([]string, error) {
-	router, err := nodeservices.RouterOutputs(nil)
+	router, err := nodeservices.RouterOutputs(launchconfig.Router{})
 	if err != nil {
 		return nil, err
 	}

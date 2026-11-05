@@ -89,6 +89,15 @@ func (d Document) validate() error {
 	return d.Kubernetes.validate(nodeSubnets)
 }
 
+// router is the document's router block; the zero block is a document with
+// none.
+func (d Document) router() launchconfig.Router {
+	if d.Router == nil {
+		return launchconfig.Router{}
+	}
+	return *d.Router
+}
+
 // operatorKeys are the pinned CDS configuration's operator keys, PEM-encoded:
 // the keys the router verifies route manifests under.
 func (d Document) operatorKeys() ([]byte, error) {
