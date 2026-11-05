@@ -5,6 +5,7 @@ package nriimagepolicy
 var (
 	LoadConfig            = loadConfig
 	RenderNodeImagePolicy = renderNodeImagePolicy
+	AssertPodBootstrap    = assertPodBootstrap
 )
 
 // MeshImageDigest is the mesh endpoint image the rendered fixture bakes.
