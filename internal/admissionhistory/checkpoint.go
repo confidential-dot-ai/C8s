@@ -67,10 +67,17 @@ func (c checkpointContainer) observation() workloadclaims.SandboxContainer {
 
 // Checkpoint preserves cumulative observations and the evidence eviction order.
 // Unlike Snapshot, it never filters evidence by the currently served policy.
-// The caller must hold its history lock and retain the result in trusted storage.
+// The caller must hold its history lock and retain the result in trusted
+// storage. Record admits evidence past the budget only Bound enforces, and
+// RestoreCheckpoint refuses a checkpoint over it, so a history is checkpointed
+// after it is Bound and never between the two.
 func (h History) Checkpoint() ([]byte, error) {
 	state := historyCheckpoint{Version: 1, Sequence: h.seq, Records: []checkpointRecord{}, Unresolved: []string{}}
+	evidenceBytes := 0
 	for _, r := range h.byKey {
+		if evidenceBytes += r.evidenceBytes; evidenceBytes > allowlist.MaxSandboxVariableEvidenceBytes {
+			return nil, errors.New("admission history exceeds its evidence budget; Bound it before checkpointing")
+		}
 		running := make([]string, 0, len(r.running))
 		for id := range r.running {
 			running = append(running, id)
