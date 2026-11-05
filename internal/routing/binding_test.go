@@ -74,7 +74,7 @@ func TestListenerRefusesAChangedBinding(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil { // records the router digest
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 
 	if w := f.getOn("1.1"); w.Code != http.StatusOK {
@@ -100,7 +100,7 @@ func TestListenerRefusesAChangedBinding(t *testing.T) {
 	}
 
 	// The binding stays refused once its digests hold again.
-	bindings.entries["1.1"] = f.bound()
+	bindings.entries["1.1"] = f.bound(t)
 	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
 		t.Fatalf("GET / on a refused connection whose digests hold again = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
 	}
@@ -126,19 +126,20 @@ func TestEmptyRouterDigestComparesAsAValue(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if code := f.proxy.changedSince(unbound, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changedSince(empty router digest) under a stamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
+	var changed *BindingChangedError
+	if err := f.proxy.checkBinding(unbound, f.state.Current()); !errors.As(err, &changed) || changed.Code != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("checkBinding(empty router digest) under a stamped router = %v, want %q", err, types.ErrorCodeRouterDigestChanged)
 	}
-	stamped := f.bound()
+	stamped := f.bound(t)
 	f.renew(t, issueLeaf(t, f.mesh, ""))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if code := f.proxy.changedSince(stamped, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changedSince(stamped router digest) under an unstamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
+	if err := f.proxy.checkBinding(stamped, f.state.Current()); !errors.As(err, &changed) || changed.Code != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("checkBinding(stamped router digest) under an unstamped router = %v, want %q", err, types.ErrorCodeRouterDigestChanged)
 	}
-	if code := f.proxy.changedSince(unbound, f.state.Current()); code != "" {
-		t.Fatalf("changedSince(empty router digest) under an unstamped router = %q, want none", code)
+	if err := f.proxy.checkBinding(unbound, f.state.Current()); err != nil {
+		t.Fatalf("checkBinding(empty router digest) under an unstamped router = %v, want none", err)
 	}
 }
 
@@ -148,7 +149,7 @@ func TestForwardRefusesAChangedBinding(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
 	f.apply(t, simpleManifest(1, web.addr()))
-	bound := f.bound()
+	bound := f.bound(t)
 	f.apply(t, simpleManifest(2, web.addr()))
 	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 	_, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, bound)
@@ -172,7 +173,7 @@ func TestRenewalBeforeThePollRefusesABoundDial(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
 	f.transports.For(backend) // built under the bound digest
@@ -226,7 +227,7 @@ func TestTransportUnderAnotherDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
-	bound := f.bound()
+	bound := f.bound(t)
 	if _, ok := f.proxy.transport(route, &HeldBinding{Binding: bound}); !ok {
 		t.Fatal("transport(bound to the tracked digest) refused, want it")
 	}
@@ -248,7 +249,7 @@ func TestListenerRefusesAPoolUnderAnotherDigest(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
 	f.transports.For(backend)
@@ -277,7 +278,7 @@ func TestUnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
 	before := f.transports.For(backend)
@@ -293,7 +294,7 @@ func TestUnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
 		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
 	}
 	if w := f.getOn("1.1"); w.Code != http.StatusBadGateway {
-		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the dial fails, the binding holds)", w.Code, w.Body.String())
+		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the binding holds)", w.Code, w.Body.String())
 	}
 	f.publish(t, caPEM(f.mesh))
 	if err := f.transports.dropMeshPools(); err != nil {

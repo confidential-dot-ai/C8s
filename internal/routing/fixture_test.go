@@ -491,9 +491,12 @@ func (f *fixture) get(target string) *httptest.ResponseRecorder {
 	return w
 }
 
-// bound is the binding of a session admitted now: the applied manifest's
-// digest, zero before the first apply, and the router digest last polled.
-func (f *fixture) bound() Binding {
+// bound admits a session under the published credential and applied manifest.
+func (f *fixture) bound(t testing.TB) Binding {
+	t.Helper()
+	if err := f.transports.syncRouterDigest(); err != nil {
+		t.Fatal(err)
+	}
 	b := Binding{RouterDigest: f.transports.RouterDigest()}
 	if applied := f.state.Current(); applied != nil {
 		b.RouteDigest = applied.Signed.Digest()
