@@ -287,7 +287,8 @@ func completeConfig(data []byte) (*config, error) {
 
 // CheckWorkerConfig loads data as the plugin loads its configuration file,
 // refusing any key the plugin does not read, and requires worker: true, so a
-// misspelt key is an error rather than a server's rules.
+// misspelt key is an error rather than a server's rules, and policy
+// measurement.
 func CheckWorkerConfig(data []byte) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -300,6 +301,9 @@ func CheckWorkerConfig(data []byte) error {
 	}
 	if !cfg.Worker {
 		return errors.New("config does not set worker: true")
+	}
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return errors.New("worker requires allowlist.pull.measure_policies: its evidence records each served allowlist it applies")
 	}
 	return nil
 }

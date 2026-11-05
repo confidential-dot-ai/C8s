@@ -99,6 +99,11 @@ func Floor(nodeFloorData, seed []byte, templates map[string][]byte) ([]byte, err
 		}
 		base.Workloads[pod] = entry
 	}
+	if node.Allowlist.Pull == nil {
+		return nil, fmt.Errorf("node floor: no allowlist.pull: a worker pulls its served allowlist from its CDS")
+	}
+	// Each served allowlist extends RTMR[3] before the worker applies it.
+	node.Allowlist.Pull["measure_policies"] = true
 	return yaml.Marshal(workerFloor{
 		floorSettings: node.floorSettings,
 		Allowlist:     *node.Allowlist,
