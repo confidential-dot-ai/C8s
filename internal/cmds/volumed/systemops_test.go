@@ -65,6 +65,9 @@ func TestCryptOpenIsReadOnlyAndTakesTheKeyByFD(t *testing.T) {
 	if !hasFlag(args, "--readonly") {
 		t.Error("mapping is not opened read-only")
 	}
+	if !hasFlag(args, "--shared") {
+		t.Error("immutable mappings cannot reopen a device held by another reader")
+	}
 	if got := argsAfter(args, "--key-file"); got != "/proc/self/fd/3" {
 		t.Errorf("--key-file = %q, want the inherited fd", got)
 	}
@@ -86,6 +89,9 @@ func TestCryptOpenMutableOmitsReadOnly(t *testing.T) {
 	args := cryptOpenArgs("/dev/vdb", "c8s-crypt-x", false)
 	if hasFlag(args, "--readonly") {
 		t.Error("a writable mapping carries --readonly")
+	}
+	if hasFlag(args, "--shared") {
+		t.Error("a writable mapping permits shared device access")
 	}
 	if args[len(args)-3] != "--batch-mode" || args[len(args)-2] != "/dev/vdb" || args[len(args)-1] != "c8s-crypt-x" {
 		t.Errorf("batch-mode, device and mapper are not the trailing arguments: %v", args[len(args)-3:])
