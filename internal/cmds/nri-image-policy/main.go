@@ -1091,6 +1091,11 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 			}
 			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
 		}
+		if retryableOpen(err) {
+			// An unreconciled register must not be extended: reopen next call.
+			journal = nil
+			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
+		}
 		if err != nil {
 			// A diverged journal refuses every extend, so policy updates stop.
 			logger.Error("allowlist policy measurement journal", "error", err)
@@ -1129,6 +1134,23 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 		}
 		return err
 	}
+}
+
+// retryableOpen reports whether err from OpenJournalSeeded holds a problem
+// other than a diverged register, which already refuses every extend, or a
+// skipped malformed entry.
+func retryableOpen(err error) bool {
+	errs := []error{err}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		errs = joined.Unwrap()
+	}
+	for _, e := range errs {
+		if e != nil && !errors.Is(e, runtimemeasure.ErrRegisterDiverged) && !errors.Is(e, runtimemeasure.ErrMalformedEntry) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkJournalRoom refuses a digest the journal does not hold once it holds

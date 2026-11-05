@@ -6418,17 +6418,34 @@ func TestChartMeasurePolicies(t *testing.T) {
 }
 
 // Producers read the journal at the default runtime directory only, so the
-// chart refuses measuring with another one.
+// chart refuses measuring with another one. It compares the cleaned path, as
+// the plugin does.
 func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.measurePolicies=true",
-		"--set-string", "nriImagePolicy.hostPaths.runtimeDir=/run/custom-nri",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want a measure_policies_runtime_dir failure\n%s", out)
-	}
-	if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
-		t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
+	for _, tc := range []struct {
+		dir     string
+		wantErr bool
+	}{
+		{"/run/custom-nri", true},
+		{"/run/nri-image-policy/", false},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			out, err := helmTemplate(t,
+				"--set", "nriImagePolicy.measurePolicies=true",
+				"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+tc.dir,
+			)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("helm template: %v\n%s", err, out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("helm template succeeded, want a measure_policies_runtime_dir failure\n%s", out)
+			}
+			if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
+				t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
+			}
+		})
 	}
 }
 
