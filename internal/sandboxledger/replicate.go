@@ -27,8 +27,13 @@ type Committer interface {
 // Handle is the ledger as its callers hold it. It is the only way to record,
 // so no path asks which kind of CDS it serves.
 type Handle struct {
-	ledger *Ledger
-	commit Committer
+	ledger  *Ledger
+	commit  Committer
+	current func(string) (string, bool)
+}
+
+func (l *Ledger) Current(commit Committer, lookup func(string) (string, bool)) *Handle {
+	return &Handle{ledger: l, commit: commit, current: lookup}
 }
 
 // Local is a handle whose bindings apply to the ledger itself.
@@ -169,6 +174,9 @@ func (h *Handle) Record(sandboxID, inventoryHost string) bool {
 // A miss may be a binding another CDS of the cluster took a moment ago
 // (issuance there, release here), so it catches up once and looks again.
 func (h *Handle) Lookup(sandboxID string) (string, bool) {
+	if h.current != nil {
+		return h.current(sandboxID)
+	}
 	if host, ok := h.ledger.bound(sandboxID); ok {
 		return host, true
 	}

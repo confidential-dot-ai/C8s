@@ -77,7 +77,9 @@ func newObjectReplica(ctx context.Context, cfg config, st stores) (backend, erro
 	return r, nil
 }
 
-func provisionObjectWAL(node *cdsobject.Node) http.HandlerFunc {
+func provisionObjectWAL(node interface {
+	Provision(cdsobject.Provision) error
+}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := readutil.ReadAll(r.Body, maxProvisionBytes)
 		if err != nil {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/directstate"
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 )
 
@@ -15,18 +16,31 @@ import (
 // include the restarted actor's initialization and readiness work. The other
 // processes and the storage service stay warm; this is not a cold-storage test.
 type scaleRuntime struct {
-	Replicas             []objectwal.Stats `json:"replicas_after_load,omitempty"`
-	MaximumCheckpointLag uint64            `json:"maximum_checkpoint_lag_commands"`
-	ColdProcessReadyMS   float64           `json:"cold_process_ready_ms"`
-	RestartedActor       *objectwal.Stats  `json:"restarted_actor,omitempty"`
-	SameCAAfterRestart   bool              `json:"same_ca_after_restart"`
-	AtomicOperatorWrites bool              `json:"atomic_operator_writes"`
+	Replicas             []objectwal.Stats   `json:"replicas_after_load,omitempty"`
+	MaximumCheckpointLag uint64              `json:"maximum_checkpoint_lag_commands"`
+	ColdProcessReadyMS   float64             `json:"cold_process_ready_ms"`
+	RestartedActor       *objectwal.Stats    `json:"restarted_actor,omitempty"`
+	SameCAAfterRestart   bool                `json:"same_ca_after_restart"`
+	AtomicOperatorWrites bool                `json:"atomic_operator_writes"`
+	DirectState          bool                `json:"direct_state"`
+	CurrentRecords       []directstate.Stats `json:"current_state_replicas,omitempty"`
 }
 
 func (c *cluster) actorStats(r *replica) objectwal.Stats {
 	c.t.Helper()
 	code, body := c.get(r, "/ha/object-wal/status")
 	var s objectwal.Stats
+	if c.objectWAL.config.DirectState {
+		var current directstate.Stats
+		if code != http.StatusOK || json.Unmarshal(body, &current) != nil {
+			c.t.Fatal("direct state stats unavailable")
+		}
+		if current.Admitted > directstate.Shards*directstate.ShardCapacity+64 || current.Active > directstate.Shards+16 || current.Admitted < 0 {
+			c.t.Fatal("direct state admission bound exceeded")
+		}
+		// Compare counts, not invented log positions, writer epochs or replay.
+		return objectwal.Stats{Gets: current.Reads, Puts: current.ObjectPuts, Conflicts: current.Conflicts, CommittedCommands: current.Commits, Rejected: current.Rejected, Ambiguous: current.Unknown}
+	}
 	if code != http.StatusOK || json.Unmarshal(body, &s) != nil {
 		c.t.Fatalf("replica %d actor stats: HTTP %d", r.index, code)
 	}
@@ -40,9 +54,18 @@ func (c *cluster) scaleRuntime() *scaleRuntime {
 	r := &scaleRuntime{}
 	if c.objectWAL != nil {
 		r.AtomicOperatorWrites = c.objectWAL.config.AtomicOperatorWrites
+		r.DirectState = c.objectWAL.config.DirectState
 		for _, replica := range c.replicas {
 			s := c.actorStats(replica)
 			r.Replicas = append(r.Replicas, s)
+			if r.DirectState {
+				_, body := c.get(replica, "/ha/object-wal/status")
+				var current directstate.Stats
+				if err := json.Unmarshal(body, &current); err != nil {
+					c.t.Fatal(err)
+				}
+				r.CurrentRecords = append(r.CurrentRecords, current)
+			}
 			if s.Applied >= s.Snapshot {
 				r.MaximumCheckpointLag = max(r.MaximumCheckpointLag, s.Applied-s.Snapshot)
 			}

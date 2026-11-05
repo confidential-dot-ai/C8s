@@ -90,3 +90,26 @@ func TestCachedPolicyPropagatesErrors(t *testing.T) {
 		}
 	})
 }
+
+type currentAllowlistStore struct{ fakeAllowlistStore }
+
+func (*currentAllowlistStore) Generation() uint64   { return 0 }
+func (*currentAllowlistStore) CanCachePolicy() bool { return false }
+
+func TestRemotePolicyDoesNotTrustAReplicaLocalGeneration(t *testing.T) {
+	store := &currentAllowlistStore{fakeAllowlistStore{version: "1"}}
+	p := NewCachedPolicy(store)
+	first, err := p.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.version = "2" // Another replica committed a revocation.
+	second, err := p.Allowlist()
+	if err != nil || first == second || store.loads != 2 {
+		t.Fatal("remote revocation reused a local-generation cache")
+	}
+	store.loadErr = fmt.Errorf("metadata unavailable")
+	if doc, err := p.Allowlist(); err == nil || doc != nil {
+		t.Fatal("remote outage served cached policy")
+	}
+}

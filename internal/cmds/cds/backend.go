@@ -103,6 +103,9 @@ func newBackend(ctx context.Context, cfg config, st stores) (backend, error) {
 		return newSingleton(cfg, st)
 	}
 	if cfg.measured.HA.ObjectWALPilot != nil {
+		if cfg.measured.HA.ObjectWALPilot.DirectState {
+			return newDirectReplica(ctx, cfg, st)
+		}
 		return newObjectReplica(ctx, cfg, st)
 	}
 	return newReplica(ctx, cfg, st)

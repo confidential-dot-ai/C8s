@@ -45,7 +45,7 @@ var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 // issuance and workload secret requests are real. Hardware evidence, sandbox
 // discovery and object storage are fixtures; no container runtime is required.
 func TestWorkloadBackendParity(t *testing.T) {
-	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current"} {
+	for _, backend := range []string{"raft", "object-wal", "transactional-metadata", "object-wal-protected", "transactional-metadata-protected", "object-wal-current", "transactional-metadata-current", "direct-state"} {
 		t.Run(backend, func(t *testing.T) {
 			listener, host := inventoryListener(t)
 			var objects *objectFixture
@@ -53,6 +53,10 @@ func TestWorkloadBackendParity(t *testing.T) {
 				objects = newObjectFixture(t)
 				if strings.HasPrefix(backend, "transactional-metadata") {
 					attachMetadata(t, objects)
+				}
+				if backend == "direct-state" {
+					attachMetadata(t, objects)
+					objects.config.DirectState, objects.config.AtomicOperatorWrites = true, true
 				}
 				if strings.HasSuffix(backend, "-protected") {
 					protectRecovery(t, objects)
@@ -100,7 +104,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 
 			lost := c.replicas[0]
 			var originalWriter objectwal.Owner
-			if objects != nil {
+			if objects != nil && !objects.config.DirectState {
 				code, body := c.get(lost, "/ha/object-wal/status")
 				var stats objectwal.Stats
 				if code != http.StatusOK || json.Unmarshal(body, &stats) != nil {
@@ -123,7 +127,7 @@ func TestWorkloadBackendParity(t *testing.T) {
 			survivors := c.others(lost)
 			w.assertReads(survivors[0], "/pilot/operator", value)
 			w.issue(survivors[0], survivors[1])
-			if objects != nil {
+			if objects != nil && !objects.config.DirectState {
 				code, body := c.get(survivors[1], "/ha/object-wal/status")
 				var stats objectwal.Stats
 				if code != http.StatusOK || json.Unmarshal(body, &stats) != nil || stats.Writer.ID == originalWriter.ID || stats.Writer.Epoch <= originalWriter.Epoch {

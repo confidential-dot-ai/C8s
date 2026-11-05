@@ -35,6 +35,7 @@ type command struct {
 	expected string
 	value    []byte
 	reply    chan result
+	state    *Transaction
 }
 
 type result struct {
@@ -101,6 +102,9 @@ CREATE TABLE IF NOT EXISTS head (id INTEGER PRIMARY KEY CHECK(id=1), etag TEXT N
 CREATE TABLE IF NOT EXISTS receipts (etag TEXT PRIMARY KEY, previous TEXT NOT NULL, digest BLOB NOT NULL);`); err != nil {
 		return nil, err
 	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS current_state (key TEXT PRIMARY KEY, version TEXT NOT NULL, value BLOB NOT NULL)`); err != nil {
+		return nil, err
+	}
 	if _, err := db.Exec(`INSERT OR IGNORE INTO identity(id,namespace) VALUES(1,?)`, namespace); err != nil {
 		return nil, err
 	}
@@ -159,11 +163,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if (r.URL.Path != HeadPath && r.URL.Path != "/v1/stats") || r.URL.RawQuery != "" || r.Header.Get("X-CDS-Namespace") != s.namespace {
+	statePath := r.URL.Path == StateReadPath || r.URL.Path == StateCommitPath
+	if (r.URL.Path != HeadPath && r.URL.Path != "/v1/stats" && !statePath) || r.URL.RawQuery != "" || r.Header.Get("X-CDS-Namespace") != s.namespace {
 		http.Error(w, "unknown namespace or path", http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodPut {
+	if (statePath && r.Method != http.MethodPost) || (!statePath && r.Method != http.MethodGet && r.Method != http.MethodPut) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -192,7 +197,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	c := command{ctx: ctx, write: r.Method == http.MethodPut, reply: make(chan result, 1)}
-	if c.write {
+	if statePath {
+		txn, err := readTransaction(http.MaxBytesReader(w, r.Body, MaxTransactionBytes))
+		if err != nil || txn.Check(r.URL.Path == StateReadPath) != nil {
+			http.Error(w, "invalid current-state transaction", http.StatusBadRequest)
+			return
+		}
+		c.state = &txn
+		c.write = r.URL.Path == StateCommitPath
+	}
+	if c.write && !statePath {
 		c.expected = r.Header.Get("If-Match")
 		create := r.Header.Get("If-None-Match")
 		if (c.expected == "" && create != "*") || (c.expected != "" && create != "") || len(c.expected) > 128 {
@@ -251,6 +265,9 @@ func (s *Service) run() {
 }
 
 func (s *Service) execute(c command) result {
+	if c.state != nil {
+		return s.executeState(c)
+	}
 	failed := result{status: http.StatusServiceUnavailable}
 	if !c.write {
 		s.reads.Add(1)

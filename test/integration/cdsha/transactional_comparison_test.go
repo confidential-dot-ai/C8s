@@ -53,8 +53,8 @@ type comparisonWrite struct {
 	expected      int
 }
 
-// This comparison preserves one total order in ALL arms. Independent business
-// keys do not mean the metadata variant implements per-key log partitioning.
+// WAL arms preserve one total order. The explicit metadata-current-state arm
+// checks individual record versions and has no application log to replay.
 // Timed load never retries; replay probes run only for acknowledged successes.
 func TestTransactionalComparison(t *testing.T) {
 	if os.Getenv("CDSHA_TRANSACTIONAL_COMPARE") != "1" {
@@ -73,7 +73,7 @@ func TestTransactionalComparison(t *testing.T) {
 		backends = strings.Split(list, ",")
 	}
 	for _, b := range backends {
-		if !slices.Contains([]string{"raft", "object-batch-direct", "object-batch-preferred", "metadata-batch-direct", "metadata-batch-preferred"}, b) {
+		if !slices.Contains([]string{"raft", "object-batch-direct", "object-batch-preferred", "metadata-batch-direct", "metadata-batch-preferred", "metadata-current-state"}, b) {
 			t.Fatalf("unknown backend %q", b)
 		}
 	}
@@ -126,6 +126,9 @@ func TestTransactionalComparison(t *testing.T) {
 								if strings.HasPrefix(backend, "metadata-") {
 									attachMetadata(t, f)
 									r.MetadataLatencyMS = metadataDelay
+								}
+								if backend == "metadata-current-state" {
+									f.config.DirectState, f.config.AtomicOperatorWrites = true, true
 								}
 							}
 							listener, host := inventoryListener(t)
@@ -362,6 +365,9 @@ func (c *cluster) safeRecoveryProbe(result *transactionalResult, probe func() (i
 
 func (c *cluster) preferredComparisonWriter() *replica {
 	c.t.Helper()
+	if c.objectWAL != nil && c.objectWAL.config.DirectState {
+		return c.replicas[0]
+	}
 	var owner objectwal.Owner
 	for _, replica := range c.replicas {
 		code, body := c.get(replica, "/ha/object-wal/status")

@@ -102,6 +102,9 @@ type policySnapshotCache struct {
 // snapshot uses an immutable view for unchanged policy. One refresh owner
 // coalesces a burst; waiters recheck their generation after that owner finishes.
 func (c *policySnapshotCache) snapshot(store policyStore) (*PolicySnapshot, error) {
+	if remote, ok := store.(interface{ CanCachePolicy() bool }); ok && !remote.CanCachePolicy() {
+		return loadPolicySnapshot(store)
+	}
 	src, ok := store.(policyGenerationSource)
 	if !ok {
 		return loadPolicySnapshot(store)

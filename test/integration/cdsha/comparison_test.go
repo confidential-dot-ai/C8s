@@ -230,14 +230,7 @@ func (c *cluster) comparisonStats() objectwal.Stats {
 		return total
 	}
 	for _, r := range c.replicas {
-		code, body := c.get(r, "/ha/object-wal/status")
-		if code != http.StatusOK {
-			c.t.Fatalf("stats: HTTP %d", code)
-		}
-		var s objectwal.Stats
-		if err := json.Unmarshal(body, &s); err != nil {
-			c.t.Fatal(err)
-		}
+		s := c.actorStats(r)
 		total.Gets += s.Gets
 		total.Puts += s.Puts
 		total.Conflicts += s.Conflicts

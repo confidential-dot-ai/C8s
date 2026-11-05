@@ -76,7 +76,7 @@ func TestStorageScaleComparison(t *testing.T) {
 		}
 	})
 	for _, backend := range backends {
-		if !slices.Contains([]string{"raft", "object-batch-preferred", "metadata-batch-preferred"}, backend) {
+		if !slices.Contains([]string{"raft", "object-batch-preferred", "metadata-batch-preferred", "metadata-current-state"}, backend) {
 			t.Fatalf("unknown backend %q", backend)
 		}
 		storageDelays := delays
@@ -102,6 +102,11 @@ func TestStorageScaleComparison(t *testing.T) {
 					fixtures = scaleObjectFixtures(t, count)
 					if strings.HasPrefix(backend, "metadata-") {
 						scaleMetadataFleet(t, fixtures)
+					}
+					if backend == "metadata-current-state" {
+						for _, f := range fixtures {
+							f.config.DirectState, f.config.AtomicOperatorWrites = true, true
+						}
 					}
 				}
 				// One privileged inventory endpoint can be bound on this host.

@@ -23,9 +23,26 @@ type Committer = replicate.Committer[Command, Result]
 // Handle is the allowlist as its writers hold it. It is the only way to
 // write, so no write path asks which kind of CDS it serves.
 type Handle struct {
-	store  *Store
+	store  Reader
 	commit Committer
 }
+
+// Reader separates disposable replicated views from current-state backends.
+type Reader interface {
+	LoadAll() (*pkgallowlist.Allowlist, string, error)
+	Version() (string, error)
+	History() ([]HistoryEntry, error)
+	Object(string) ([]byte, bool, error)
+	Signature(string) (string, bool, error)
+	LoadRoutes() (routes.Envelope, error)
+	Contains(types.Digest) (bool, error)
+	Generation() uint64
+}
+
+func Current(reader Reader, commit Committer) *Handle { return &Handle{store: reader, commit: commit} }
+
+// A remote current-state read has no trustworthy process-local generation.
+func (h *Handle) CanCachePolicy() bool { _, local := h.store.(*Store); return local }
 
 // Local is a handle whose mutations apply to the store's own database.
 func (s *Store) Local() *Handle {

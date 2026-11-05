@@ -245,15 +245,7 @@ func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 // callers hold the lock and have established the path is absent. The holder's
 // quota answers before the ceiling.
 func (s *MemoryStore) checkRoomLocked(by Holder) error {
-	if by.origin != OriginOperator {
-		if held := s.holders[by]; held >= s.maxPerHolder {
-			return fmt.Errorf("%w: %s %q holds %d paths, limit is %d", ErrHolderQuota, by.origin, by.name, held, s.maxPerHolder)
-		}
-	}
-	if len(s.values) >= s.maxPaths {
-		return fmt.Errorf("%w: store holds %d paths, limit is %d", ErrStoreFull, len(s.values), s.maxPaths)
-	}
-	return nil
+	return checkCurrentRoom(len(s.values), s.holders[by], by, s.maxPaths, s.maxPerHolder)
 }
 
 // Len reports how many paths the store holds, for metrics and tests.

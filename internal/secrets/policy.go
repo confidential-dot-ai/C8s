@@ -35,6 +35,10 @@ func NewCachedPolicy(store allowlistStore) *CachedPolicy { return &CachedPolicy{
 // the same version is restored. The fallback retains Version error handling for
 // other implementations of allowlistStore.
 func (c *CachedPolicy) Allowlist() (*pkgallowlist.Allowlist, error) {
+	if remote, ok := c.store.(interface{ CanCachePolicy() bool }); ok && !remote.CanCachePolicy() {
+		document, _, err := c.store.LoadAll()
+		return document, err
+	}
 	return c.cache.Load(context.Background(), func() (policyKey, error) {
 		if source, ok := c.store.(interface{ Generation() uint64 }); ok {
 			return policyKey{generation: source.Generation()}, nil

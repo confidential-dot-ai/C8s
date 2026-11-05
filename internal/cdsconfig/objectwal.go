@@ -28,12 +28,14 @@ type ObjectWALPilot struct {
 	DirectWriters     bool   `yaml:"directWriters,omitempty"`
 	// AtomicOperatorWrites uses one committed request for token consumption and
 	// its mutation. All CDS and recovery readers must understand this format.
-	AtomicOperatorWrites bool  `yaml:"atomicOperatorWrites,omitempty"`
-	BatchMaxEntries      int   `yaml:"batchMaxEntries,omitempty"`
-	BatchMaxBytes        int   `yaml:"batchMaxBytes,omitempty"`
-	BatchDelayMS         int   `yaml:"batchDelayMS,omitempty"`
-	QueueMaxRequests     int   `yaml:"queueMaxRequests,omitempty"`
-	QueueMaxBytes        int64 `yaml:"queueMaxBytes,omitempty"`
+	AtomicOperatorWrites bool `yaml:"atomicOperatorWrites,omitempty"`
+	// DirectState selects the current-record experiment instead of a CDS WAL.
+	DirectState      bool  `yaml:"directState,omitempty"`
+	BatchMaxEntries  int   `yaml:"batchMaxEntries,omitempty"`
+	BatchMaxBytes    int   `yaml:"batchMaxBytes,omitempty"`
+	BatchDelayMS     int   `yaml:"batchDelayMS,omitempty"`
+	QueueMaxRequests int   `yaml:"queueMaxRequests,omitempty"`
+	QueueMaxBytes    int64 `yaml:"queueMaxBytes,omitempty"`
 }
 
 func (p ObjectWALPilot) WALOptions() objectwal.Options {
@@ -43,6 +45,9 @@ func (p ObjectWALPilot) WALOptions() objectwal.Options {
 var objectWALName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
 func (p ObjectWALPilot) Check() error {
+	if p.DirectState && (p.MetadataEndpoint == "" || !p.AtomicOperatorWrites) {
+		return errors.New("directState requires metadataEndpoint and atomicOperatorWrites")
+	}
 	if p.MetadataEndpoint != "" {
 		if err := metadatapilot.CheckEndpoint(p.MetadataEndpoint); err != nil {
 			return err

@@ -155,7 +155,7 @@ func (m *metadataFixture) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
-	if r.Method == http.MethodPut && response.StatusCode == http.StatusNoContent && m.dropNext.CompareAndSwap(true, false) {
+	if (r.Method == http.MethodPut || r.URL.Path == metadatapilot.StateCommitPath) && response.StatusCode == http.StatusNoContent && m.dropNext.CompareAndSwap(true, false) {
 		m.dropped.Add(1)
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {

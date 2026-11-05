@@ -16,8 +16,19 @@ type Committer = replicate.Committer[Command, Result]
 // Handle is the secret store as its writers hold it. It is the only way to
 // write, so no write path asks which kind of CDS it serves.
 type Handle struct {
-	store  *MemoryStore
-	commit Committer
+	store   *MemoryStore
+	commit  Committer
+	current Reader
+}
+
+type Reader interface {
+	Get(context.Context, string) ([]byte, error)
+	TopHolders(int) []HolderPaths
+	Len() int
+}
+
+func (s *MemoryStore) Current(reader Reader, commit Committer) *Handle {
+	return &Handle{store: s, commit: commit, current: reader}
 }
 
 var _ Store = (*Handle)(nil)
@@ -40,14 +51,23 @@ func (s *MemoryStore) CommittedBy(c Committer) *Handle {
 }
 
 func (h *Handle) Get(ctx context.Context, path string) ([]byte, error) {
+	if h.current != nil {
+		return h.current.Get(ctx, path)
+	}
 	return h.store.Get(ctx, path)
 }
 
 func (h *Handle) TopHolders(n int) []HolderPaths {
+	if h.current != nil {
+		return h.current.TopHolders(n)
+	}
 	return h.store.TopHolders(n)
 }
 
 func (h *Handle) Len() int {
+	if h.current != nil {
+		return h.current.Len()
+	}
 	return h.store.Len()
 }
 

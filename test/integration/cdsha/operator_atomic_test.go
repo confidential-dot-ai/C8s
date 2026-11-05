@@ -5,7 +5,6 @@ package cdsha_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -26,12 +25,17 @@ func TestAtomicOperatorHTTPCompatibility(t *testing.T) {
 		body, contentType, cache string
 	}
 	baseline := map[string]response{}
-	for _, enabled := range []bool{false, true} {
-		t.Run(fmt.Sprintf("atomic-%t", enabled), func(t *testing.T) {
+	for _, mode := range []string{"legacy", "atomic", "direct-state"} {
+		t.Run(mode, func(t *testing.T) {
+			enabled := mode != "legacy"
 			listener, host := inventoryListener(t)
 			t.Cleanup(func() { _ = listener.Close() })
 			f := newObjectFixture(t)
 			f.config.AtomicOperatorWrites = enabled
+			if mode == "direct-state" {
+				attachMetadata(t, f)
+				f.config.DirectState = true
+			}
 			c := newClusterWithNodes(t, threeReplicas, f, nodeImagesCertifying(seededNodeImage), []string{host + "/32"})
 			c.replaceAllowlist(c.replicas[0], "atomic-compatibility-warmup")
 			send := func(path string, body []byte, auth, match string) response {
