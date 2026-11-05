@@ -100,73 +100,12 @@ func snpBinding(pub []byte) []byte { v := runtimemeasure.HostData(pub); return v
 // fill returns a 48-byte register value, every byte equal to b.
 func fill(b byte) []byte { return bytes.Repeat([]byte{b}, 48) }
 
-// The happy path on both platforms: the staged pubkey is the one the launch
-// bound, so the key is released. The caller no longer passes a platform — it
-// comes from the verified report.
-func TestLoadMeasuredOperatorKey(t *testing.T) {
-	for _, tc := range []struct {
-		platform teetypes.PlatformType
-		binding  []byte
-	}{
-		{teetypes.PlatformTDX, tdxBinding(operatorPub)},
-		{teetypes.PlatformAzTDX, tdxBinding(operatorPub)},
-		{teetypes.PlatformSNP, snpBinding(operatorPub)},
-		{teetypes.PlatformGcpSNP, snpBinding(operatorPub)},
-	} {
-		t.Run(string(tc.platform), func(t *testing.T) {
-			stageOperatorPubkey(t, operatorPub)
-			url := attester(t, tc.platform, tc.binding)
-
-			got, err := LoadMeasuredOperatorKey(context.Background(), url, "")
-			if err != nil {
-				t.Fatalf("LoadMeasuredOperatorKey: %v", err)
-			}
-			if string(got) != string(operatorPub) {
-				t.Errorf("returned key = %q, want %q", got, operatorPub)
-			}
-		})
-	}
-}
-
-// Every way the anchor check can fail must refuse. Releasing a key the launch
-// did not bind is the vulnerability this check exists to prevent.
-func TestLoadMeasuredOperatorKeyFailsClosed(t *testing.T) {
-	otherKey := []byte("a different operator key")
-	zeroTDX := make([]byte, runtimemeasure.Size)
-	zeroSNP := make([]byte, runtimemeasure.HostDataSize)
-
-	for _, tc := range []struct {
-		name     string
-		staged   []byte
-		platform teetypes.PlatformType
-		binding  []byte
-	}{
-		{"no staged pubkey", nil, teetypes.PlatformTDX, tdxBinding(operatorPub)},
-		{"empty staged pubkey", []byte{}, teetypes.PlatformTDX, tdxBinding(operatorPub)},
-		{"tdx: register holds another key's seed", operatorPub, teetypes.PlatformTDX, tdxBinding(otherKey)},
-		{"tdx: keyless launch leaves the register zero", operatorPub, teetypes.PlatformTDX, zeroTDX},
-		{"snp: HOSTDATA holds another key", operatorPub, teetypes.PlatformSNP, snpBinding(otherKey)},
-		{"snp: keyless launch leaves HOSTDATA zero", operatorPub, teetypes.PlatformSNP, zeroSNP},
-		// A TDX-width value in the SNP claim is MRCONFIGID, not HOSTDATA. It
-		// must be refused by width, never truncated into a match.
-		{"snp claim carrying a 48-byte value", operatorPub, teetypes.PlatformSNP, tdxBinding(operatorPub)},
-		{"tdx claim carrying a 32-byte value", operatorPub, teetypes.PlatformTDX, snpBinding(operatorPub)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			stageOperatorPubkey(t, tc.staged)
-			url := attester(t, tc.platform, tc.binding)
-			if _, err := LoadMeasuredOperatorKey(context.Background(), url, ""); err == nil {
-				t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
-			}
-		})
-	}
-}
-
 // A missing pubkey is reported as ErrNoOperatorKey so a caller can tell a
-// non-operator boot from every other refusal; an empty file is not.
-func TestLoadMeasuredOperatorKeyClassifiesAbsence(t *testing.T) {
+// non-operator boot from every other refusal; an empty file is not. The image
+// policy plugin reads this distinction (internal/cmds/nri-image-policy).
+func TestReadOperatorPubkeyClassifiesAbsence(t *testing.T) {
 	stageOperatorPubkey(t, nil)
-	_, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", "")
+	_, err := ReadOperatorPubkey()
 	if !errors.Is(err, ErrNoOperatorKey) {
 		t.Errorf("err = %v, want errors.Is(..., ErrNoOperatorKey)", err)
 	}
@@ -175,42 +114,25 @@ func TestLoadMeasuredOperatorKeyClassifiesAbsence(t *testing.T) {
 	}
 
 	stageOperatorPubkey(t, []byte{})
-	_, err = LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", "")
-	if err == nil || errors.Is(err, ErrNoOperatorKey) {
+	if _, err := ReadOperatorPubkey(); err == nil || errors.Is(err, ErrNoOperatorKey) {
 		t.Errorf("err = %v, want a refusal that is NOT ErrNoOperatorKey for an empty staged key", err)
 	}
-}
 
-// An unreachable attestation-api is a refusal, not a fallback to the local
-// register: the binding must come from a report whose signature was checked.
-func TestLoadMeasuredOperatorKeyRefusesUnreachableAttester(t *testing.T) {
 	stageOperatorPubkey(t, operatorPub)
-	if _, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", ""); err == nil {
-		t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
-	}
-}
-
-// A platform this build has no binding rules for gets no key.
-func TestLoadMeasuredOperatorKeyRefusesUnknownPlatform(t *testing.T) {
-	stageOperatorPubkey(t, operatorPub)
-	url := attester(t, "nonsense", tdxBinding(operatorPub))
-	if _, err := LoadMeasuredOperatorKey(context.Background(), url, ""); err == nil {
-		t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
+	if pub, err := ReadOperatorPubkey(); err != nil || string(pub) != string(operatorPub) {
+		t.Errorf("ReadOperatorPubkey = %q, %v, want the staged key", pub, err)
 	}
 }
 
 // The self-report must be non-replayable: the code asks the verifier to bind a
 // fresh nonce, and a stub reporting success without one would pass a replay.
 func TestSelfReportBindsAFreshNonce(t *testing.T) {
-	stageOperatorPubkey(t, operatorPub)
 	stub := mockapi.New(t)
 	stub.SetPlatform(teetypes.PlatformType(teetypes.PlatformSNP))
-	v := mockapi.PassingVerdict("")
-	v.Claims.InitData = snpBinding(operatorPub)
-	stub.SetVerdict(v)
+	stub.SetVerdict(mockapi.PassingVerdict(""))
 
-	if _, err := LoadMeasuredOperatorKey(context.Background(), stub.URL(), ""); err != nil {
-		t.Fatalf("LoadMeasuredOperatorKey: %v", err)
+	if _, err := verifiedSelfReport(context.Background(), stub.URL()); err != nil {
+		t.Fatalf("verifiedSelfReport: %v", err)
 	}
 	reqs := stub.VerifyRequests()
 	if len(reqs) != 1 {
@@ -378,13 +300,54 @@ func TestVerifyLaunchBindingFailsClosed(t *testing.T) {
 		file     []byte
 		notBound bool
 	}{
-		{"tdx: register at another document's seed", teetypes.PlatformTDX, tdxLaunchedWith(t, []byte("another document")), "", launchFile, true},
-		{"tdx: register zero, launched with no disk", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size), "", launchFile, true},
-		{"tdx: register extended with Q, which journal [P] does not hold", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile, policyQ), policyP + "\n", launchFile, true},
-		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document")), "", launchFile, true},
-		{"snp: fileless launch leaves HOSTDATA zero", teetypes.PlatformSNP, make([]byte, runtimemeasure.HostDataSize), "", launchFile, true},
-		{"snp: an empty file", teetypes.PlatformSNP, snpBinding(nil), "", []byte{}, false},
-		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile), "", launchFile, false},
+		{
+			name:     "tdx: register at another document's seed",
+			platform: teetypes.PlatformTDX,
+			binding:  tdxLaunchedWith(t, []byte("another document")),
+			file:     launchFile,
+			notBound: true,
+		},
+		{
+			name:     "tdx: register zero, launched with no disk",
+			platform: teetypes.PlatformTDX,
+			binding:  make([]byte, runtimemeasure.Size),
+			file:     launchFile,
+			notBound: true,
+		},
+		{
+			name:     "tdx: register extended with Q, which journal [P] does not hold",
+			platform: teetypes.PlatformTDX,
+			binding:  tdxLaunchedWith(t, launchFile, policyQ),
+			journal:  policyP + "\n",
+			file:     launchFile,
+			notBound: true,
+		},
+		{
+			name:     "snp: another document",
+			platform: teetypes.PlatformSNP,
+			binding:  snpBinding([]byte("another document")),
+			file:     launchFile,
+			notBound: true,
+		},
+		{
+			name:     "snp: fileless launch leaves HOSTDATA zero",
+			platform: teetypes.PlatformSNP,
+			binding:  make([]byte, runtimemeasure.HostDataSize),
+			file:     launchFile,
+			notBound: true,
+		},
+		{
+			name:     "snp: an empty file",
+			platform: teetypes.PlatformSNP,
+			binding:  snpBinding(nil),
+			file:     []byte{},
+		},
+		{
+			name:     "az-snp: HOSTDATA is the paravisor's, not the launcher's",
+			platform: teetypes.PlatformAzSNP,
+			binding:  snpBinding(launchFile),
+			file:     launchFile,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := VerifyLaunchBinding(context.Background(), attester(t, tc.platform, tc.binding), writeJournal(t, tc.journal), tc.file)
@@ -398,198 +361,26 @@ func TestVerifyLaunchBindingFailsClosed(t *testing.T) {
 	}
 }
 
+// A journal over the per-boot cap is refused where it is read, naming the cap:
+// a node that lists more policies than any verifier replays is not a node
+// whose binding can be matched.
+func TestVerifyLaunchBindingRefusesAJournalOverTheCap(t *testing.T) {
+	journal := writeJournal(t, journalOfDistinctDigests(armtls.MaxRuntimeExtensions+1))
+	attestationAPI := attester(t, teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile))
+	err := VerifyLaunchBinding(context.Background(), attestationAPI, journal, launchFile)
+	if err == nil || !strings.Contains(err.Error(), "per-boot cap") {
+		t.Fatalf("VerifyLaunchBinding = %v, want the per-boot cap named", err)
+	}
+	if errors.Is(err, ErrLaunchFileNotBound) {
+		t.Fatalf("VerifyLaunchBinding = %v, want a read failure, not a binding mismatch", err)
+	}
+}
+
 // An unreachable attestation API is a refusal, never a binding mismatch.
 func TestVerifyLaunchBindingReportsAnUnreachableAttester(t *testing.T) {
 	err := VerifyLaunchBinding(context.Background(), "http://127.0.0.1:1", "", launchFile)
 	if err == nil || errors.Is(err, ErrLaunchFileNotBound) || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("VerifyLaunchBinding = %v, want the attestation API reported unreachable", err)
-	}
-}
-
-// operatorReport is a self-report from a guest launched with operatorPub,
-// carrying launchDigest and, on TDX, fixed RTMR pins.
-func operatorReport(platform teetypes.PlatformType, launchDigest []byte) selfReport {
-	r := selfReport{platform: platform, launchDigest: launchDigest}
-	if platform.IsTDX() {
-		r.binding, r.rtmr1, r.rtmr2 = tdxBinding(operatorPub), fill(0xbb), fill(0xcc)
-	} else {
-		r.binding = snpBinding(operatorPub)
-	}
-	return r
-}
-
-var combinedPlatforms = []struct {
-	name     string
-	platform teetypes.PlatformType
-}{{"tdx", teetypes.PlatformTDX}, {"sev-snp", teetypes.PlatformSNP}}
-
-// The combined loader answers both questions off one self-report: the guest
-// attests itself once per boot, not once per check.
-func TestLoadMeasuredIdentityAttestsOnce(t *testing.T) {
-	for _, p := range combinedPlatforms {
-		t.Run(p.name, func(t *testing.T) {
-			stageOperatorPubkey(t, operatorPub)
-			launchDigest := fill(0xab)
-			stub := stubAttester(t, operatorReport(p.platform, launchDigest))
-
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, stub.URL(), "")
-			if err != nil {
-				t.Fatalf("LoadMeasuredIdentity: %v", err)
-			}
-			if got.OperatorKeyErr != nil {
-				t.Fatalf("got.OperatorKeyErr: %v", got.OperatorKeyErr)
-			}
-			if string(got.OperatorKey) != string(operatorPub) {
-				t.Errorf("got.OperatorKey = %q, want %q", got.OperatorKey, operatorPub)
-			}
-			gotMeasurement := got.Image.LaunchDigests()[0].Digest
-			gotRTMRs := got.Image.RTMRs()
-			if got.Image.Family() != p.platform.Family() {
-				t.Errorf("image family = %s, want %s", got.Image.Family(), p.platform.Family())
-			}
-			if !bytes.Equal(gotMeasurement[:], launchDigest) {
-				t.Errorf("measurement = %x, want %x", gotMeasurement, launchDigest)
-			}
-			if (gotRTMRs != nil) != p.platform.IsTDX() {
-				t.Errorf("rtmrs = %v; want them on TDX only", gotRTMRs)
-			}
-			if n := len(stub.AttestRequests()); n != 1 {
-				t.Errorf("attest-api /attest called %d times, want exactly 1 (one self-report shared by both checks)", n)
-			}
-			if n := len(stub.VerifyRequests()); n != 1 {
-				t.Errorf("attest-api /verify called %d times, want exactly 1", n)
-			}
-		})
-	}
-}
-
-// A launch with no opkeydata pubkey at all: the own measurement must still
-// resolve, and OperatorKeyErr must wrap ErrNoOperatorKey rather than failing
-// the whole call.
-func TestLoadMeasuredIdentityNonOperatorBoot(t *testing.T) {
-	for _, p := range combinedPlatforms {
-		t.Run(p.name, func(t *testing.T) {
-			stageOperatorPubkey(t, nil)
-			launchDigest := fill(0xcd)
-			r := operatorReport(p.platform, launchDigest)
-			r.binding = make([]byte, len(r.binding)) // keyless launch: zero binding
-			url := stubAttester(t, r).URL()
-
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, url, "")
-			if err != nil {
-				t.Fatalf("unexpected hard error: %v", err)
-			}
-			if !errors.Is(got.OperatorKeyErr, ErrNoOperatorKey) {
-				t.Errorf("got.OperatorKeyErr = %v, want errors.Is(..., ErrNoOperatorKey)", got.OperatorKeyErr)
-			}
-			if got.OperatorKey != nil {
-				t.Errorf("got.OperatorKey = %v, want nil", got.OperatorKey)
-			}
-			measurement := got.Image.LaunchDigests()[0].Digest
-			if !bytes.Equal(measurement[:], launchDigest) {
-				t.Errorf("measurement = %x, want %x — own measurement must resolve on a non-operator boot too", measurement, launchDigest)
-			}
-		})
-	}
-}
-
-// A staged pubkey the launch did not bind: OperatorKeyErr carries the mismatch
-// (not ErrNoOperatorKey), while the own measurement still resolves from the
-// one self-report already made.
-func TestLoadMeasuredIdentitySubstitutedKey(t *testing.T) {
-	for _, p := range combinedPlatforms {
-		t.Run(p.name, func(t *testing.T) {
-			stageOperatorPubkey(t, []byte("a different key the host swapped in"))
-			launchDigest := fill(0xef)
-			url := stubAttester(t, operatorReport(p.platform, launchDigest)).URL()
-
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, url, "")
-			if err != nil {
-				t.Fatalf("unexpected hard error: %v", err)
-			}
-			if got.OperatorKeyErr == nil {
-				t.Fatal("want got.OperatorKeyErr set for a binding mismatch")
-			}
-			if errors.Is(got.OperatorKeyErr, ErrNoOperatorKey) {
-				t.Errorf("got.OperatorKeyErr = %v, must NOT be classified as absent (a substituted key must fail closed)", got.OperatorKeyErr)
-			}
-			if got.OperatorKey != nil {
-				t.Errorf("got.OperatorKey = %v, want nil", got.OperatorKey)
-			}
-			measurement := got.Image.LaunchDigests()[0].Digest
-			if !bytes.Equal(measurement[:], launchDigest) {
-				t.Errorf("measurement = %x, want %x", measurement, launchDigest)
-			}
-		})
-	}
-}
-
-// The hard-fail path: this guest's own measurement cannot be resolved, which
-// must fail the whole call even though a valid operator key was staged.
-func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) {
-	for _, platform := range []string{"sev-snp", "no-such-platform"} {
-		t.Run("configured family "+platform, func(t *testing.T) {
-			stageOperatorPubkey(t, operatorPub)
-			url := stubAttester(t, operatorReport(teetypes.PlatformTDX, fill(0xaa))).URL()
-			if _, err := LoadMeasuredIdentity(context.Background(), platform, url, ""); err == nil || !strings.Contains(err.Error(), platform) {
-				t.Fatalf("want configured-family refusal naming %q, got %v", platform, err)
-			}
-		})
-	}
-	t.Run("tdx report missing a register", func(t *testing.T) {
-		stageOperatorPubkey(t, operatorPub)
-		r := operatorReport(teetypes.PlatformTDX, fill(0xaa))
-		r.rtmr2 = nil
-		url := stubAttester(t, r).URL()
-		if _, err := LoadMeasuredIdentity(context.Background(), "tdx", url, ""); err == nil {
-			t.Fatal("want an error when this guest's own launch measurement cannot be resolved")
-		}
-	})
-
-	t.Run("attestation-api unreachable", func(t *testing.T) {
-		stageOperatorPubkey(t, operatorPub)
-		if _, err := LoadMeasuredIdentity(context.Background(), "sev-snp", "http://127.0.0.1:1", ""); err == nil {
-			t.Fatal("want an error when the attestation-api is unreachable")
-		}
-	})
-}
-
-// The binding check replays the measured-policy journal, which may run ahead
-// of the report, and still accepts the bare seed.
-func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
-	p := "sha256:" + strings.Repeat("1", 64)
-	q := "sha256:" + strings.Repeat("2", 64)
-	report := func(digests ...string) *teetypes.VerificationResult {
-		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), digests)
-		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: teetypes.Claims{
-			PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
-		}}
-	}
-	for _, tc := range []struct {
-		name    string
-		journal string // "" leaves no journal file
-		report  *teetypes.VerificationResult
-		wantErr bool
-	}{
-		{name: "bare seed, no journal", report: report()},
-		{name: "bare seed, journal ahead", journal: p + "\n", report: report()},
-		{name: "full journal", journal: p + "\n" + q + "\n", report: report(p, q)},
-		{name: "journal ahead of the report", journal: p + "\n" + q + "\n", report: report(p)},
-		{name: "extend the journal does not hold", journal: p + "\n", report: report(q), wantErr: true},
-		{name: "extend without a journal", report: report(p), wantErr: true},
-		{name: "replaying journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1), report: report("sha256:" + strings.Repeat("0", 64)), wantErr: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := writeJournal(t, tc.journal)
-			err := verifyNodeBinding(tc.report, operatorPub, path)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("verifyNodeBinding = %v, want error %v", err, tc.wantErr)
-			}
-			// The error names the journal only when it held policies.
-			if err != nil && strings.Contains(err.Error(), path) != (tc.journal != "") {
-				t.Errorf("verifyNodeBinding = %v, want %s named only when the journal exists", err, path)
-			}
-		})
 	}
 }
 
@@ -606,8 +397,10 @@ func writeJournal(t *testing.T, journal string) string {
 	return path
 }
 
-// distinctJournal is a journal of n distinct digests, the first sha256:0…0.
-func distinctJournal(n int) string {
+// journalOfDistinctDigests is a journal of n distinct policy digests,
+// "sha256:%064x" of i for i in [0,n): a list no binding replays, which is what
+// a cap test needs.
+func journalOfDistinctDigests(n int) string {
 	var b strings.Builder
 	for i := range n {
 		fmt.Fprintf(&b, "sha256:%064x\n", i)
