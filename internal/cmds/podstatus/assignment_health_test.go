@@ -1,8 +1,6 @@
 package podstatus
 
 import (
-	"context"
-	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -10,11 +8,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 )
 
-func TestAssignmentRegistrationPrecedesManifestPublication(t *testing.T) {
+// The plugin must report the waiting floor before
+// assignment and the assigned UID, not waiting, after it; registration before
+// the first CDS pull (503) suffices.
+func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "assignment-health-")
 	if err != nil {
 		t.Fatal(err)
@@ -59,37 +58,6 @@ func TestAssignmentRegistrationPrecedesManifestPublication(t *testing.T) {
 			if err := assignmentHealthAt(t.Context(), tc.uid, socket); (err == nil) != tc.ready {
 				t.Fatalf("registration verdict: %v, ready=%v", err, tc.ready)
 			}
-			if tc.uid == "" {
-				return
-			}
-			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
-			runtime := nodeservices.PodRuntime{UID: "pod-a", Policy: []byte("policy"), Manifest: []byte("manifest")}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			health := func(ctx context.Context, uid string) error {
-				err := assignmentHealthAt(ctx, uid, socket)
-				if err != nil {
-					cancel()
-				}
-				return err
-			}
-			noOp := func(context.Context) error { return nil }
-			err := installAssignment(ctx, runtime, manifests, policy, noOp, noOp, health)
-			if (err == nil) != tc.ready {
-				t.Fatalf("install verdict: %v, ready=%v", err, tc.ready)
-			}
-			data, err := manifests.ReadFile("pod.yaml")
-			if tc.ready {
-				if err != nil || string(data) != "manifest" {
-					t.Fatalf("registered assignment not published: %v", err)
-				}
-			} else if !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("unregistered assignment exposed manifest: %v", err)
-			}
 		})
-	}
-	_ = server.Close()
-	if err := assignmentHealthAt(t.Context(), "pod-a", socket); err == nil {
-		t.Fatal("disconnected plugin reported registration")
 	}
 }

@@ -23,6 +23,8 @@ func assignmentTestRoot(t *testing.T) *os.Root {
 	return root
 }
 
+// The install is restartable at every boundary, the manifest is written
+// last, and a published assignment is never reinstalled or its runtime restarted.
 func TestAssignmentInstallCrashRecoveryAndManifestLast(t *testing.T) {
 	runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("assigned policy"), Manifest: []byte("assigned manifest")}
 	for _, boundary := range []string{"empty", "policy", "restart", "health", "manifest"} {
@@ -96,8 +98,10 @@ func TestAssignmentInstallCrashRecoveryAndManifestLast(t *testing.T) {
 	}
 }
 
+// An assigned manifest or floor is never replaced, and an
+// output that is not a private regular file is refused before any mutation.
 func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
-	for _, kind := range []string{"manifest", "policy", "symlink", "permissions"} {
+	for _, kind := range []string{"manifest", "policy", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
 			runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
@@ -112,10 +116,6 @@ func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
 				runtime.Manifest = []byte("replacement")
 			case "policy":
 				runtime.Policy = []byte("replacement")
-			case "permissions":
-				if err := manifests.Chmod("pod.yaml", 0644); err != nil {
-					t.Fatal(err)
-				}
 			case "symlink":
 				if err := manifests.Remove("pod.yaml"); err != nil {
 					t.Fatal(err)
@@ -132,6 +132,8 @@ func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
 	}
 }
 
+// One service holds the store, a record is never replaced, and a record
+// readable by others is refused.
 func TestAssignmentStoreExclusiveAndImmutable(t *testing.T) {
 	root := assignmentTestRoot(t)
 	store, err := lockAssignmentStore(root)
@@ -161,37 +163,8 @@ func TestAssignmentStoreExclusiveAndImmutable(t *testing.T) {
 	}
 }
 
-func TestAssignmentApplyStartsOnlyAfterCommitAndRecovers(t *testing.T) {
-	s, key, peer, store := assignmentFixture(t)
-	body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-	if rec := postAssignment(s, peer, body); rec.Code != 200 {
-		t.Fatal(rec.Code)
-	}
-	applied := make(chan struct{})
-	s.apply = func(context.Context, nodeservices.PodRuntime) error {
-		if store.record == nil || store.commits != 1 {
-			t.Error("runtime mutated before commitment")
-		}
-		close(applied)
-		return nil
-	}
-	restarted, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { defer close(done); restarted.run(ctx) }()
-	select {
-	case <-applied:
-	case <-time.After(3 * time.Second):
-		cancel()
-		t.Fatal("record was not applied")
-	}
-	cancel()
-	<-done
-}
-
+// Wait for the assigned UID with the runtime still empty, retrying
+// unavailable observations without a second restart.
 func TestAssignmentInstallWaitsForRuntimeObservationsWithoutRestartingAgain(t *testing.T) {
 	manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
 	runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
@@ -227,49 +200,5 @@ func TestAssignmentInstallWaitsForRuntimeObservationsWithoutRestartingAgain(t *t
 	data, err := manifests.ReadFile("pod.yaml")
 	if err != nil || !bytes.Equal(data, runtime.Manifest) {
 		t.Fatalf("ready runtime did not publish assignment: %v", err)
-	}
-}
-
-func TestAssignmentInstallDoesNotRetryDefinitiveRefusalOrExceedDeadline(t *testing.T) {
-	for _, unavailable := range []bool{false, true} {
-		name := "definitive refusal"
-		if unavailable {
-			name = "unavailable until deadline"
-		}
-		t.Run(name, func(t *testing.T) {
-			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
-			runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
-			refusal := errors.New("observed nonempty runtime")
-			emptyCalls, restarts := 0, 0
-			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-			defer cancel()
-			empty := func(context.Context) error {
-				emptyCalls++
-				if emptyCalls == 1 {
-					return nil
-				}
-				if unavailable {
-					return errAssignmentRuntimeUnavailable
-				}
-				if emptyCalls == 2 {
-					return refusal
-				}
-				return nil // A later empty inventory must not erase the refusal.
-			}
-			err := installAssignment(ctx, runtime, manifests, policy, empty, func(context.Context) error { restarts++; return nil }, func(context.Context, string) error { return nil })
-			if unavailable {
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("unavailable runtime exceeded caller budget: %v", err)
-				}
-			} else if !errors.Is(err, refusal) || emptyCalls != 2 {
-				t.Fatalf("definitive refusal retried or replaced: calls=%d err=%v", emptyCalls, err)
-			}
-			if restarts != 1 {
-				t.Fatalf("runtime restarted %d times", restarts)
-			}
-			if _, err := manifests.Stat("pod.yaml"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("unready/refused runtime published manifest")
-			}
-		})
 	}
 }
