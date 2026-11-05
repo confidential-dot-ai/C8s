@@ -30,17 +30,21 @@ jobs:
       - id: diff
         env:
           PR: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then
             image=true
           else
+            # HEAD is GitHub's merge of the PR onto its base; its first parent
+            # is the base that merge was built on. The event's base sha can be
+            # newer than that when the base branch was force-pushed after the
+            # merge was cached, and diffing against it charges the PR with
+            # everything the base gained. Diff the merge against its own parent.
+            base=$(git rev-parse HEAD^1)
             base_manifest="$RUNNER_TEMP/base-build-pins.json"
             changed_paths="$RUNNER_TEMP/changed-paths"
-            git cat-file -e "${BASE_SHA}^{commit}"
-            git show "${BASE_SHA}:.github/build-pins.json" >"$base_manifest"
-            git diff --name-only -z "$BASE_SHA" HEAD -- >"$changed_paths"
+            git show "${base}:.github/build-pins.json" >"$base_manifest"
+            git diff --name-only -z "$base" HEAD -- >"$changed_paths"
             result=$(bash .github/scripts/repro-gate-changes \
               .github/build-pins.json "$base_manifest" "$changed_paths")
             image=$(sed -n 's/^image=//p' <<<"$result")

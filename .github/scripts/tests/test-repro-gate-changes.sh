@@ -52,6 +52,17 @@ set_paths images/node-guest/c8s/mkosi.conf
 expect_result true
 
 reset_case
+set_paths images/node-guest/c8s/containerdcheck/main.go
+expect_result true
+
+# Beside the image sources but never baked: tests, docs, Go test files.
+reset_case
+set_paths images/node-guest/tests/immutable-root-test.sh \
+  images/node-guest/README.md \
+  images/node-guest/c8s/containerdcheck/main_test.go
+expect_result false
+
+reset_case
 set_paths .github/actions/setup-mkosi/action.yml
 expect_result true
 
