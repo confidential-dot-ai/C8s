@@ -344,3 +344,15 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 	}
 	return digests, containers, true, nil
 }
+
+// podSnapshot keeps all available environment evidence, independently of the
+// latest local pull: CDS evaluates the quote-bound observations itself.
+func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.SandboxContainer, uint64, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if _, ok := b.sandboxes[sandboxID]; !ok {
+		return nil, 0, fmt.Errorf("pod sandbox is no longer live")
+	}
+	_, containers, err := b.admitted[sandboxID].Snapshot(nil)
+	return containers, b.revision, err
+}

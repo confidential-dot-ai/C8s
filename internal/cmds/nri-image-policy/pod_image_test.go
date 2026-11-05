@@ -3,12 +3,14 @@ package nriimagepolicy
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -69,6 +71,56 @@ func TestPodImageBindingIgnoresMutableRuntimeNames(t *testing.T) {
 				t.Fatal("container outside its staged binding accepted")
 			}
 		})
+	}
+}
+
+func TestPodStartVerifiesEverySelectionBeforeMeasuringAndRecording(t *testing.T) {
+	reg := &fakeRegister{value: launchSeed}
+	measurer, err := openMeasurer(measureFixture(t, reg), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := makePod("tenant", "assigned-node")
+	pod.Uid = "runtime-uid"
+	p := newTestPlugin(&config{
+		Pod:       &podConfig{UID: "signed-uid", Namespace: pod.Namespace, Name: pod.Name, Images: map[string]string{"app": pushDigestA}},
+		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "app"})},
+		Policy:    policyConfig{Mode: ModeFailClosed},
+		Measure:   measureConfig{RTMR3: true},
+	})
+	p.SetReady()
+	p.measurer = measurer
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.inventory.recordSandbox(pod.Id)
+	ctr := makeCtrWithImageArgs(pod.Id, "app", "repo:latest", []string{"/app"})
+	ctr.Pid = 1234
+	ctr.Env = []string{}
+	brokerCtx, stopBroker := context.WithCancel(t.Context())
+	t.Cleanup(stopBroker)
+	p.podBroker = &podCredentialBroker{ctx: brokerCtx, cancel: stopBroker, pod: pod}
+	checks := 0
+	p.containerd = &fakeContainerd{verify: func(_ context.Context, containerID, sandboxID, digest string) error {
+		checks++
+		if containerID != ctr.Id || sandboxID != pod.Id || digest != pushDigestA {
+			t.Fatalf("wrong selected-image verification: %s/%s/%s", sandboxID, containerID, digest)
+		}
+		return nil
+	}}
+	if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	for _, annotation := range []string{"repo@" + pushDigestB, "repo:replacement"} {
+		ctr.Annotations[annotationImageName] = annotation
+		if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
+			t.Fatalf("verified selected content with moved annotation: %v", err)
+		}
+	}
+	if checks != 2 || reg.value != runtimemeasure.FromDigestsSeeded(launchSeed, []string{pushDigestA}) {
+		t.Fatalf("checks = %d; repeated start must verify twice and extend once", checks)
+	}
+	digests, containers, known, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil || !known || !slices.Equal(digests, []string{pushDigestA}) || len(containers) != 1 || containers[0].Digest != pushDigestA {
+		t.Fatalf("inventory = %v/%+v, known=%v, %v", digests, containers, known, err)
 	}
 }
 
