@@ -122,7 +122,7 @@ func TestOneTokenAndMutationCommitTogetherAfterAllClientsAndMetadataRestart(t *t
 	m, client := metadataAt(t, path, "test")
 	objects := &testObjects{values: map[string][]byte{}}
 	nodes := []*Store{newTestStore(t, client, objects, "cluster/launch"), newTestStore(t, client, objects, "cluster/launch"), newTestStore(t, client, objects, "cluster/launch")}
-	identity := bytes.Repeat([]byte("encrypted CA input stays private"), 100)
+	identity := bytes.Repeat([]byte("encrypted CA input stays private"), InlineBytes/30+100)
 	set(t, nodes[0], "identity", identity)
 	set(t, nodes[0], "policy", []byte("approved"))
 	var created, replayed atomic.Int32
@@ -133,7 +133,7 @@ func TestOneTokenAndMutationCommitTogetherAfterAllClientsAndMetadataRestart(t *t
 				if _, spent := v.Get("token/a"); spent {
 					return nil, false, nil
 				}
-				return map[string][]byte{"token/a": []byte("spent"), "secret/a": bytes.Repeat([]byte("secret"), 1000)}, true, nil
+				return map[string][]byte{"token/a": []byte("spent"), "secret/a": bytes.Repeat([]byte("secret"), InlineBytes/6+100)}, true, nil
 			})
 			if err != nil {
 				t.Error(err)
@@ -165,7 +165,7 @@ func TestOneTokenAndMutationCommitTogetherAfterAllClientsAndMetadataRestart(t *t
 	if _, ok := v.Get("token/a"); !ok {
 		t.Fatal("spent token lost")
 	}
-	if b, _ := v.Get("secret/a"); !bytes.Equal(b, bytes.Repeat([]byte("secret"), 1000)) {
+	if b, _ := v.Get("secret/a"); !bytes.Equal(b, bytes.Repeat([]byte("secret"), InlineBytes/6+100)) {
 		t.Fatal("acknowledged value lost")
 	}
 	for _, b := range objects.values {
@@ -199,7 +199,7 @@ func TestUnknownOutcomeIsNeverRetriedAndRecoversBothEffectsOrNeither(t *testing.
 			broken := &lostReply{Metadata: client, after: after}
 			n := newTestStore(t, broken, objects, "cluster/launch")
 			_, err := n.Update(t.Context(), "secret/a", []string{"token/a", "secret/a"}, func(*View) (map[string][]byte, any, error) {
-				return map[string][]byte{"token/a": []byte("spent"), "secret/a": bytes.Repeat([]byte{31}, 4096)}, nil, nil
+				return map[string][]byte{"token/a": []byte("spent"), "secret/a": bytes.Repeat([]byte{31}, InlineBytes+1)}, nil, nil
 			})
 			if !errors.Is(err, objectwal.ErrInDoubt) || broken.calls.Load() != 1 {
 				t.Fatalf("error=%v calls=%d", err, broken.calls.Load())
@@ -405,7 +405,7 @@ func TestCiphertextCacheNeverSubstitutesForCurrentMetadata(t *testing.T) {
 	objects := &testObjects{values: map[string][]byte{}}
 	m := &offlineMetadata{Metadata: client}
 	s := newTestStore(t, m, objects, "cluster/launch")
-	set(t, s, "policy", bytes.Repeat([]byte("approved"), 1024))
+	set(t, s, "policy", bytes.Repeat([]byte("approved"), InlineBytes))
 	v, err := s.Read(t.Context(), "policy")
 	if err != nil {
 		t.Fatal(err)
@@ -418,14 +418,14 @@ func TestCiphertextCacheNeverSubstitutesForCurrentMetadata(t *testing.T) {
 	}
 	m.offline.Store(false)
 	other := newTestStore(t, client, objects, "cluster/launch")
-	set(t, other, "policy", bytes.Repeat([]byte("revoked"), 1024))
+	set(t, other, "policy", bytes.Repeat([]byte("revoked"), InlineBytes))
 	v, err = s.Read(t.Context(), "policy")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer v.Clear()
 	b, _ := v.Get("policy")
-	if !bytes.Equal(b, bytes.Repeat([]byte("revoked"), 1024)) {
+	if !bytes.Equal(b, bytes.Repeat([]byte("revoked"), InlineBytes)) {
 		t.Fatal("served superseded immutable object")
 	}
 }
@@ -488,5 +488,34 @@ func TestStorageWriterCannotReinstallOldAuthenticatedRecord(t *testing.T) {
 			view.Clear()
 		}
 		t.Fatalf("accepted old bytes relabeled with a new version: %v", err)
+	}
+}
+
+func TestValuesCrossInlineBoundaryWithoutChangingAtomicRecovery(t *testing.T) {
+	_, client := metadataAt(t, filepath.Join(t.TempDir(), "state.db"), "test")
+	objects := &testObjects{values: map[string][]byte{}}
+	s := newTestStore(t, client, objects, "cluster/launch")
+	for _, size := range []int{InlineBytes, InlineBytes + 1, InlineBytes - 1} {
+		value := bytes.Repeat([]byte("s"), size)
+		before := s.Stats().ObjectPuts
+		set(t, s, "value", value)
+		want := uint64(0)
+		if size > InlineBytes {
+			want = 1
+		}
+		if s.Stats().ObjectPuts-before != want {
+			t.Fatal("wrong storage boundary")
+		}
+		cold := newTestStore(t, client, objects, "cluster/launch")
+		v, err := cold.Read(t.Context(), "value")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := v.Get("value")
+		if !bytes.Equal(got, value) {
+			t.Fatal("cold boundary transition changed value")
+		}
+		v.Clear()
+		cold.Close()
 	}
 }

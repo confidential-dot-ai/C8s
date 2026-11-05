@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	InlineBytes    = 1024
+	InlineBytes    = 32 << 10
 	MaxValueBytes  = 8 << 20
 	Shards         = 16
 	ShardCapacity  = 8
@@ -68,17 +69,13 @@ type cachedObject struct {
 type cacheSet struct{ objects [CacheWays]*cachedObject }
 
 type Stats struct {
-	Reads              uint64            `json:"reads"`
-	Commits            uint64            `json:"commits"`
-	Conflicts          uint64            `json:"conflicts"`
-	Unknown            uint64            `json:"unknown"`
-	ObjectPuts         uint64            `json:"object_puts"`
-	PolicyBatches      uint64            `json:"policy_batches"`
-	PolicyRequests     uint64            `json:"policy_requests"`
-	PolicyLargestBatch uint64            `json:"policy_largest_batch"`
-	PolicyAdmission    requestgate.Stats `json:"policy_admission"`
-	Admitted, Active   int
-	Rejected           uint64 `json:"rejected"`
+	Reads            uint64 `json:"reads"`
+	Commits          uint64 `json:"commits"`
+	Conflicts        uint64 `json:"conflicts"`
+	Unknown          uint64 `json:"unknown"`
+	ObjectPuts       uint64 `json:"object_puts"`
+	Admitted, Active int
+	Rejected         uint64 `json:"rejected"`
 }
 
 func New(parent context.Context, metadata Metadata, objects objectwal.Store, key []byte, prefix, scope string) (*Store, error) {
@@ -395,7 +392,7 @@ func (s *Store) Update(ctx context.Context, lane string, keys []string, change f
 			return nil, err
 		}
 		s.conflicts.Add(1)
-		timer := time.NewTimer(time.Duration(1+min(attempt, 10)) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(1+rand.IntN(1<<min(attempt+1, 6))) * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -452,9 +449,9 @@ func (s *Store) prepare(ctx context.Context, v *View, writes map[string][]byte) 
 				return t, fmt.Errorf("direct state: immutable upload: %w", err)
 			}
 			s.puts.Add(1)
-			// This is only an immutable ciphertext cache, not publication. A
-			// reader can use it only when fresh metadata references this hash.
-			s.remember(e.Object, ciphertext)
+			// Cache only validated reads. Speculative uploads otherwise evict
+			// useful objects and give a winning policy writer a persistent
+			// head start over competitors fetching the same current object.
 		}
 		r.Value, err = json.Marshal(e)
 		if err != nil {

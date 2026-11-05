@@ -4,9 +4,11 @@ package cdsdirect
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
@@ -27,21 +29,44 @@ const (
 )
 
 type State struct {
-	store        *directstate.Store
-	launch       cdsha.Launch
-	policy       cdsha.Policy
-	policyWrites *policyBatcher
+	store  *directstate.Store
+	launch cdsha.Launch
+	policy cdsha.Policy
 }
 
-func NewState(ctx context.Context, store *directstate.Store, launch cdsha.Launch, policy cdsha.Policy) *State {
-	s := &State{store: store, launch: launch, policy: policy}
-	s.policyWrites = newPolicyBatcher(ctx, s.applyPolicies)
-	return s
+func NewState(store *directstate.Store, launch cdsha.Launch, policy cdsha.Policy) *State {
+	return &State{store: store, launch: launch, policy: policy}
 }
 
 type policyRecord struct {
-	Image  []byte   `json:"image"`
-	Digest [32]byte `json:"digest"`
+	Encoding string   `json:"encoding,omitempty"`
+	Image    []byte   `json:"image"`
+	Digest   [32]byte `json:"digest"`
+}
+
+// Bound decompression independently of the ciphertext/read budget. Existing
+// uncompressed pilot records remain readable; unknown encodings fail closed.
+func (p policyRecord) open() ([]byte, error) {
+	if p.Encoding == "" {
+		if len(p.Image) > directstate.MaxValueBytes {
+			return nil, objectwal.ErrCorrupt
+		}
+		return bytes.Clone(p.Image), nil
+	}
+	if p.Encoding != "gzip" {
+		return nil, objectwal.ErrCorrupt
+	}
+	r, err := gzip.NewReader(bytes.NewReader(p.Image))
+	if err != nil {
+		return nil, objectwal.ErrCorrupt
+	}
+	defer r.Close()
+	out, err := io.ReadAll(io.LimitReader(r, directstate.MaxValueBytes+1))
+	if err != nil || len(out) > directstate.MaxValueBytes {
+		clear(out)
+		return nil, objectwal.ErrCorrupt
+	}
+	return out, nil
 }
 
 func decode(b []byte, value any) error {
@@ -95,7 +120,12 @@ func (s *State) machine(v *directstate.View) (*cdsha.FSM, *allowlist.Store, *san
 			return failed(err)
 		}
 		defer clear(p.Image)
-		if err := al.Restore(p.Image, p.Digest); err != nil {
+		image, err := p.open()
+		if err != nil {
+			return failed(err)
+		}
+		defer clear(image)
+		if err := al.Restore(image, p.Digest); err != nil {
 			return failed(err)
 		}
 	}
@@ -123,7 +153,22 @@ func policyBytes(al *allowlist.Store) ([]byte, error) {
 		return nil, err
 	}
 	defer clear(image)
-	return json.Marshal(policyRecord{Image: image, Digest: al.Digest()})
+	if len(image) > directstate.MaxValueBytes {
+		return nil, errors.New("direct state: policy image exceeds decoded size bound")
+	}
+	// SQLite's sparse pages and repeated schema/history need not make a small
+	// policy a large object. Compress policy data only, never secret values or
+	// the CA private-key record. Encryption still happens in directstate.
+	var compressed bytes.Buffer
+	writer, _ := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if _, err := writer.Write(image); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	defer clear(compressed.Bytes())
+	return json.Marshal(policyRecord{Encoding: "gzip", Image: compressed.Bytes(), Digest: al.Digest()})
 }
 
 func coreBytes(f *cdsha.FSM) ([]byte, error) {

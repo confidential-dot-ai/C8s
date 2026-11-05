@@ -55,9 +55,6 @@ func (s *State) WriteOperator(ctx context.Context, c cdsha.OperatorCommand) (cds
 	if _, valid := allowlist.OperatorVersion(c.IfMatch); c.Path == "/allowlist" && !valid {
 		return textResult(http.StatusPreconditionFailed, allowlist.InvalidOperatorVersion), nil
 	}
-	if !strings.HasPrefix(c.Path, "/secrets/") {
-		return s.policyWrites.submit(ctx, c)
-	}
 	tokenKey := spentKey(c.Token)
 	keys := []string{coreKey, policyKey, tokenKey}
 	lane := policyKey
@@ -112,6 +109,27 @@ func (s *State) WriteOperator(ctx context.Context, c cdsha.OperatorCommand) (cds
 					result = jsonResult(code, response)
 				}
 			}
+		} else {
+			f, al, _, err := s.machine(v)
+			if err != nil {
+				return nil, nil, err
+			}
+			defer al.Close()
+			body, _ := json.Marshal(cdsha.Entry{Kind: cdsha.KindOperator, Operator: &c})
+			defer clear(body)
+			r := f.Apply(1, body)
+			if r.Stop != nil {
+				return nil, nil, r.Stop
+			}
+			if r.Operator == nil {
+				return nil, nil, errors.New("direct state: missing operator decision")
+			}
+			result = *r.Operator
+			p, err := policyBytes(al)
+			if err != nil {
+				return nil, nil, err
+			}
+			writes[policyKey] = p
 		}
 		// The receipt is current replay state. Refused authorized requests spend
 		// it too. It contains only the public response, never an existing secret.

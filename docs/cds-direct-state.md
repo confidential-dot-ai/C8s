@@ -14,7 +14,7 @@ the object-store and recovery enrollment settings; the selected backend is
 1. Read a consistent set of current record versions from metadata.
 2. Evaluate CDS rules in private memory. The existing FSM evaluates control and
    policy changes; shared secret quota rules evaluate individual secret paths.
-3. Encrypt proposed values. Values up to 1 KiB stay encrypted in metadata;
+3. Encrypt proposed values. Values up to 32 KiB stay encrypted in metadata;
    larger values go into immutable, hash-addressed object storage first.
 4. One strictly serializable metadata transaction checks every read version and
    publishes only changed records. An operator token spend and its mutation or
@@ -38,18 +38,16 @@ patterns, object sizes or transaction structure.
 | Secret quota counters | Exact cluster and holder budgets; new paths still contend on the cluster count |
 | Sandbox bindings | One bounded current record in this first candidate; exact existing expiry/reclamation rules |
 
-The policy image preserves the existing audit history. That is an application
+The policy image is gzip-compressed before encryption, with an 8 MiB decoded
+size bound checked before publication and while reading. Secret values and the
+CA private-key record are not compressed. The policy image preserves the existing audit history. That is an application
 feature, not a command log used to recover other records. It currently also
 contains redundant spent records for policy writes; secret tokens are separate.
 
 ## Concurrency and freshness
 
 Each cluster has 16 write admission shards, one active transition and eight
-admitted requests per shard. Policy writes first enter a separate eight-request
-mailbox and coalesce for at most one millisecond. One disposable FSM evaluates
-the batch in order; one transaction publishes its final policy and every token
-receipt. It holds no writer lease. Cancellation cancels the batch, unknown
-commit outcomes are not retried, and shutdown drains accepted messages. Read admission has 16 active / 64 admitted requests.
+admitted requests per shard. Read admission has 16 active / 64 admitted requests.
 The existing requestgate actor owns scheduling; a hot write shard cannot occupy
 every worker. Shared authoritative state belongs to metadata. Private temporary
 FSM/store locks do not protect cross-request network IO.
@@ -144,3 +142,34 @@ protect against a dishonest metadata service or whole-database rollback, and a
 storage writer can still cause denial of service. Fresh metadata remains a
 trusted dependency. Old prototype namespaces with random versions cannot be
 opened by this revision; the pilot requires a fresh namespace.
+
+The third frozen run (`51522e9b`, tree `afd38643fc11013de9c1f0a6a1c7c5dbcd3de719`)
+returned two 503s in 64 hot-policy writes. All recorded policy batches contained
+one request: the standard armTLS client permits two connections per host and
+freshness checks delayed the second arrival beyond the 1 ms collection window.
+The next candidate uses a bounded 25 ms policy collection window. It does not
+change client pooling, admission capacity, operation deadlines or assertions.
+
+The fourth frozen run (`52134d7e`) combined up to two policy requests per batch
+but still exhausted conflict retries for one request (63/64 acknowledged).
+The next revision caches validated object reads only: speculative uploads no
+longer occupy the cache or give the winning writer a one-GET advantage.
+Conflicts use bounded randomized backoff (1–64 ms), retaining 16 attempts and
+the five-second deadline. This trades a winner's extra GET for fairer contention;
+it is not a claimed general throughput improvement or a fairness guarantee.
+
+The fifth frozen run (`187098c6`, tree `d9a5217789f6c2c948c49df4fc2a976fd5f62577`)
+returned two hot-policy 503s. Backoff/cache changes did not resolve the structural
+cost of rewriting a sparse SQLite policy image through object storage.
+
+The next candidate removes the policy batcher entirely. It compresses policy
+images, preserves the same current policy, version, digest, signatures and
+history, and inlines encrypted records up to 32 KiB within the metadata API's
+existing 64 KiB value limit. Large values still upload before metadata commits.
+Tests cross the inline/object boundary, recover cold, reject corrupted or
+oversized decompression, and retain outage/revocation checks with large objects.
+This changes data placement, not the metadata service's capacity or deadlines.
+Small-policy performance must not be extrapolated to policies whose compressed
+image exceeds the inline limit; the earlier object-path contention remains a
+material limitation. The comparison client retains two connections per replica
+with 16 client workers, as in the WAL control.
