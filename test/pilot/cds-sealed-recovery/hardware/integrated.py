@@ -3,6 +3,8 @@
 
 Three CDS processes run in one measured VM; a second VM retains the stable
 custodian launch. Both VMs are destroyed before recovery.
+With --cross-host, a second approved chip seals an independently recoverable
+copy before seed. Recovery excludes the original host without changing it.
 The host owns a bounded conditional-object fixture whose SQLite FULL commits
 finish before acknowledging S3 writes. Only ciphertext/public metadata cross
 the VM tunnel. This is a correctness test, not an S3 latency benchmark.
@@ -188,9 +190,22 @@ class Integrated(Run):
         body = base64.b64decode(request["data"], validate=True)
         need(len(body) < 16 * 1024, "oversized custody request")
         label = phase + "-custodian"
+        # The recipient can now live on another chip. Fetch only public AMD
+        # collateral and independently verify its exact measured CDS launch.
+        # The sender then verifies this report and collateral inside its TEE.
+        recipient_label = phase + "-recipient"
+        self.atomic(self.directory / (recipient_label + "-request.json"), json.loads(body))
+        self.command(recipient_label + "-verify", [self.args.probe, "-custody-request",
+            "-measurement", self.state["measurement"], "-request", str(self.directory / (recipient_label + "-request.json")),
+            "-launch", str(self.directory / "cds-launch.yaml"),
+            "-receipt", str(self.directory / (recipient_label + "-receipt.json")),
+            "-collateral", str(self.directory / (recipient_label + "-collateral.json"))], timeout=60)
+        recipient_collateral = json.loads((self.directory / (recipient_label + "-collateral.json")).read_text())
         q = {"operation": "delegate", "nonce": base64.b64encode(secrets.token_bytes(32)).decode(),
              "measurement": self.state["measurement"], "parameters": parameters,
-             "collateral": collateral, "custody": json.loads(body)}
+             "collateral": {**collateral, **recipient_collateral}, "custody": json.loads(body)}
+        if getattr(self, "custody_copy", None) is not None:
+            q["copy"] = self.custody_copy
         self.atomic(self.directory / (label + "-request.json"), q)
         code, _ = self.http(self.custodian_port, "POST", "/v1/start", q)
         need(code == 202, "custodian start refused or ambiguous")
@@ -205,7 +220,7 @@ class Integrated(Run):
             raise TimeoutError("custodian delegation deadline exceeded")
         self.atomic(self.directory / (label + "-reply.json"), reply)
         self.command(label + "-verify", [self.args.probe, "-request", str(self.directory / (label + "-request.json")),
-            "-reply", str(self.directory / (label + "-reply.json")), "-launch", str(self.directory / "enrollment-launch.yaml"),
+            "-reply", str(self.directory / (label + "-reply.json")), "-launch", str(self.custodian_launch),
             "-receipt", str(self.directory / (label + "-receipt.json")), "-collateral", str(self.directory / (label + "-collateral.json"))], timeout=40)
         derivation = reply["result"]["derivation"]
         need(derivation == self.custodian_identity, "stable custodian launch did not recover its original authority")
@@ -293,7 +308,9 @@ class Integrated(Run):
         port = self.tunnel(vm, phase)
         request = {"operation": phase, "nonce": base64.b64encode(secrets.token_bytes(32)).decode(), "measurement": self.state["measurement"], "parameters": parameters}
         if phase != "enroll":
-            request.update(collateral=collateral, operator_key=base64.b64encode((self.directory / "operator.pem").read_bytes()).decode())
+            request["collateral"] = collateral
+        if phase in ("seed", "recover"):
+            request["operator_key"] = base64.b64encode((self.directory / "operator.pem").read_bytes()).decode()
         self.atomic(self.directory / (phase + "-request.json"), request)
         stop = threading.Event()
         failures = queue.Queue(maxsize=1)
@@ -345,6 +362,8 @@ class Integrated(Run):
         # have been deleted together; no old process or secret stays alive.
         pending = []
         for role, vm in vms:
+            node = vm["spec"]["template"]["spec"]["nodeSelector"]["kubernetes.io/hostname"]
+            need(node not in self.state.get("excluded_recovery_nodes", []), "original host excluded from recovery")
             row = self.create(vm)
             _, current = self.kube.call("GET", row["path"])
             need(current["metadata"]["uid"] == row["uid"], "VM replaced before start")
@@ -407,6 +426,9 @@ class Integrated(Run):
 
     def exercise(self):
         import yaml
+        cross_host = getattr(self.args, "cross_host", False)
+        need(not cross_host or len(self.args.nodes) == 2 and len(set(self.args.nodes)) == 2,
+             "cross-host recovery requires exactly two distinct approved workers")
         measurement, hashes = image_inputs(self.args.image)
         need(not self.state["resources"], "new run directory required")
         self.state.update(artifact_hashes=hashes, measurement=measurement, prefix="integrated-" + secrets.token_hex(12), expected_product_line="Genoa")
@@ -437,6 +459,8 @@ class Integrated(Run):
         enrolled = self.phase(custodian_vm, "enroll", template, {"guest_svn": 0, "tcb_version": 0}, {})
         self.stop_forward(); self.remove(row); self.wait_absent(VMI + "/" + custodian_run)
         self.custodian_identity = enrolled["result"]["derivation"]
+        self.custodian_launch = template
+        self.custody_copy = None
         launch = self.directory / "cds-launch.yaml"
         launch.write_bytes(base64.b64decode(enrolled["result"]["launch"], validate=True))
         # Verify the attested enrollment changed exactly the authority public key.
@@ -456,27 +480,81 @@ class Integrated(Run):
         parameters = enrolled["result"]["parameters"]
         collateral = json.loads((self.directory / "enroll-collateral.json").read_text())
         receipts, custody_receipts, vmis = [], [enrolled], [enrollment_vmi]
+        destination_custodian_vm, destination_cds_vm, copied = None, None, None
+        if cross_host:
+            # Enroll the second chip while the original authority is available.
+            # Populate every public disk before seed, so artifact upload cannot
+            # consume the spent token's validity window during cold recovery.
+            destination = self.args.nodes[1]
+            destination_run = "cds-snp-" + secrets.token_hex(6)
+            destination_items = self.render(destination_run, destination, baseline[destination]["uid"], launch)
+            self.populate(destination_items, hashes, destination_run)
+            destination_custodian_vm = next(i for i in destination_items if i["kind"] == "VirtualMachine")
+            pair = self.boot_pair((("source", custodian_vm), ("destination", destination_custodian_vm)), "copy")
+            self.custodian_port = self.tunnel(custodian_vm, "copy-source")
+            copied = self.phase(destination_custodian_vm, "copy", launch, parameters, collateral)
+            source_receipt = json.loads((self.directory / "copy-custodian-receipt.json").read_text())
+            need(copied["chip_id_sha256"] != enrolled["chip_id_sha256"], "recovery copy must be on another physical chip")
+            need(source_receipt["chip_id_sha256"] == enrolled["chip_id_sha256"], "unexpected source authority chip")
+            need(copied["result"]["derivation"]["authority_public"] == public_authority,
+                 "cross-host copy changed the recovery authority")
+            self.atomic(self.directory / "custody-copy.json", copied["result"]["copy"])
+            self.state["custody_copy_sha256"] = digest(self.directory / "custody-copy.json")
+            self.event("cross-host-copy-persisted", source_node=node, destination_node=destination,
+                       source_chip=enrolled["chip_id_sha256"], destination_chip=copied["chip_id_sha256"])
+            self.stop_forward()
+            for row, uid in pair.values():
+                vmis.append(uid)
+                self.remove(row)
+                self.wait_absent(VMI + "/" + row["item"]["metadata"]["name"])
+            custody_receipts.append(source_receipt)
+            destination_run = "cds-snp-" + secrets.token_hex(6)
+            destination_items = self.render(destination_run, destination, baseline[destination]["uid"], launch)
+            self.populate(destination_items, hashes, destination_run)
+            destination_cds_vm = next(i for i in destination_items if i["kind"] == "VirtualMachine")
         for phase in ("seed", "recover"):
             self.health()
-            pair = self.boot_pair((("custodian", custodian_vm), ("cds", vm)), phase)
+            if phase == "recover" and cross_host:
+                self.custody_copy = json.loads((self.directory / "custody-copy.json").read_text())
+                need(digest(self.directory / "custody-copy.json") == self.state["custody_copy_sha256"], "persisted copy changed")
+                self.custodian_identity = copied["result"]["derivation"]
+                self.custodian_launch = launch
+                self.state["excluded_recovery_nodes"] = [node]
+                self.event("original-host-excluded-from-recovery", node=node)
+                active_custodian, active_cds = destination_custodian_vm, destination_cds_vm
+                collateral.update(json.loads((self.directory / "copy-collateral.json").read_text()))
+            else:
+                active_custodian, active_cds = custodian_vm, vm
+            pair = self.boot_pair((("custodian", active_custodian), ("cds", active_cds)), phase)
             custody_row, custody_vmi = pair["custodian"]
             need(custody_vmi not in vmis, "new custodian VMI required")
             vmis.append(custody_vmi)
-            self.custodian_port = self.tunnel(custodian_vm, phase + "-custodian")
+            self.custodian_port = self.tunnel(active_custodian, phase + "-custodian")
             row, vmi = pair["cds"]
             need(vmi not in vmis, "new VMI required")
             vmis.append(vmi)
-            receipts.append(self.phase(vm, phase, launch, parameters, collateral))
+            receipts.append(self.phase(active_cds, phase, launch, parameters, collateral))
             custody_receipts.append(json.loads((self.directory / (phase + "-custodian-receipt.json")).read_text()))
             self.stop_forward()
             self.remove(row)
-            self.wait_absent(VMI + "/" + run)
+            self.wait_absent(VMI + "/" + active_cds["metadata"]["name"])
             self.remove(custody_row)
-            self.wait_absent(VMI + "/" + custodian_run)
+            self.wait_absent(VMI + "/" + active_custodian["metadata"]["name"])
             self.event("all-cds-and-custodian-memory-destroyed", phase=phase, cds_vmi_uid=vmi, custodian_vmi_uid=custody_vmi)
-        need(len({r["guest_report_id_sha256"] for r in custody_receipts + receipts}) == 5, "hardware guest identities must differ")
-        need(len({r["chip_id_sha256"] for r in custody_receipts + receipts}) == 1, "same chip recovery required")
-        need(len({r["launch_sha256"] for r in custody_receipts}) == 1, "custodian launch changed")
+        evidence = custody_receipts + receipts + ([copied] if cross_host else [])
+        need(len({r["guest_report_id_sha256"] for r in evidence}) == len(evidence) == len(vmis), "hardware guest identities must differ")
+        if cross_host:
+            need(len({r["chip_id_sha256"] for r in evidence}) == 2, "exactly two independent hardware roots required")
+            need(receipts[0]["chip_id_sha256"] == enrolled["chip_id_sha256"], "seed moved away from original chip")
+            need(receipts[1]["chip_id_sha256"] == copied["chip_id_sha256"] == custody_receipts[-1]["chip_id_sha256"],
+                 "recovery did not use the surviving chip")
+            need(custody_receipts[-1]["launch_sha256"] == copied["launch_sha256"] == receipts[-1]["launch_sha256"],
+                 "recovery copy launch binding changed")
+            need(len({r["launch_sha256"] for r in custody_receipts[:-1]}) == 1, "original custodian launch changed")
+            self.state["cross_host_cds_recovery_passed"] = True
+        else:
+            need(len({r["chip_id_sha256"] for r in evidence}) == 1, "same chip recovery required")
+            need(len({r["launch_sha256"] for r in custody_receipts}) == 1, "custodian launch changed")
         need(len({r["launch_sha256"] for r in receipts}) == 1, "CDS launch changed")
         before, after = [r["result"]["checks"] for r in receipts]
         need(before["ca_fingerprint"] == after["ca_fingerprint"], "independent CA receipts differ")
@@ -494,6 +572,7 @@ def main():
     for field in ("image", "renderer", "probe", "tools-image"):
         p.add_argument("--" + field)
     p.add_argument("--nodes", nargs="+", default=[])
+    p.add_argument("--cross-host", action="store_true", help="enroll a second chip and exclude the original host during recovery")
     args = p.parse_args()
     os.umask(0o077)
     Path(args.directory).mkdir(parents=True, exist_ok=True)

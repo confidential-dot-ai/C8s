@@ -49,18 +49,38 @@ func (g *recordingGetter) GetContext(ctx context.Context, url string) ([]byte, e
 }
 
 func Verify(ctx context.Context, q Request, reply Reply, launch []byte) (map[string]any, Collateral, error) {
-	m, err := hex.DecodeString(q.Measurement)
-	if err != nil || len(m) != 48 || len(q.Nonce) != 32 {
+	if len(q.Nonce) != 32 {
 		return nil, nil, errors.New("independent pin and nonce required")
 	}
-	data := Binding(q, reply.Result)
+	receipt, collateral, err := verifyReport(ctx, q.Measurement, reply.Report, Binding(q, reply.Result), launch)
+	if err == nil {
+		receipt["result"] = reply.Result
+	}
+	return receipt, collateral, err
+}
+
+// VerifyCustody obtains public collateral for a remote chip while independently
+// checking the recipient's report. The measured sender verifies the same report
+// and collateral itself before producing any encrypted grant.
+func VerifyCustody(ctx context.Context, measurement string, q CustodyRequest, launch []byte) (map[string]any, Collateral, error) {
+	if err := checkCustodyRequest(&q); err != nil {
+		return nil, nil, err
+	}
+	return verifyReport(ctx, measurement, q.Report, custodyBinding(q), launch)
+}
+
+func verifyReport(ctx context.Context, measurement string, report []byte, data [64]byte, launch []byte) (map[string]any, Collateral, error) {
+	m, err := hex.DecodeString(measurement)
+	if err != nil || len(m) != 48 || len(launch) == 0 {
+		return nil, nil, errors.New("independent image and launch pins required")
+	}
 	config := sha256.Sum256(launch)
 	g := &recordingGetter{snp.DefaultKDSGetter(40*time.Second, 4*time.Second), make(Collateral)}
-	_, err = snp.VerifyReportContext(ctx, reply.Report, nil, teetypes.VerifyParams{ExpectedReportData: data[:], ExpectedInitDataHash: config[:], ExpectedLaunchDigest: m}, teetypes.PlatformSNP, snp.MinReportVersion, snp.Options{CheckRevocations: true, Getter: g})
+	_, err = snp.VerifyReportContext(ctx, report, nil, teetypes.VerifyParams{ExpectedReportData: data[:], ExpectedInitDataHash: config[:], ExpectedLaunchDigest: m}, teetypes.PlatformSNP, snp.MinReportVersion, snp.Options{CheckRevocations: true, Getter: g})
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := abi.ReportToProto(reply.Report)
+	r, err := abi.ReportToProto(report)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,5 +90,5 @@ func Verify(ctx context.Context, q Request, reply Reply, launch []byte) (map[str
 	}
 	chip := sha256.Sum256(r.ChipId)
 	guest := sha256.Sum256(r.ReportId)
-	return map[string]any{"attestation_chain_verified": true, "issuer_crl_checked": true, "measurement": q.Measurement, "launch_sha256": hex.EncodeToString(config[:]), "chip_id_sha256": hex.EncodeToString(chip[:]), "guest_report_id_sha256": hex.EncodeToString(guest[:]), "result": reply.Result, "production_ready": false, "operator_exclusion_qualified": false}, g.data, nil
+	return map[string]any{"attestation_chain_verified": true, "issuer_crl_checked": true, "measurement": measurement, "launch_sha256": hex.EncodeToString(config[:]), "chip_id_sha256": hex.EncodeToString(chip[:]), "guest_report_id_sha256": hex.EncodeToString(guest[:]), "production_ready": false, "operator_exclusion_qualified": false}, g.data, nil
 }

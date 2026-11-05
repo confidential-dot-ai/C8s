@@ -94,9 +94,32 @@ def check_probe_network_policy(item, run):
         "network policy must permit only KubeVirt API TCP 6443 to the owned probe")
 
 
+class RetryReads:
+    """Retry only transient gateway failures of an unchanged GET request.
+
+    Writes retain the existing UID reconciliation path. A retry is never
+    evidence of success, and authentication or validation failures stop at once.
+    """
+    def __init__(self, client, event):
+        self.client, self.event = client, event
+
+    def call(self, method, path, *args, **kwargs):
+        for attempt in range(3):
+            try:
+                return self.client.call(method, path, *args, **kwargs)
+            except Exception as error:
+                transient = method == "GET" and str(error) in {
+                    f"GET {path.split('?')[0]} returned HTTP {code}" for code in (502, 503, 504)}
+                if not transient or attempt == 2:
+                    raise
+                self.event("api-read-retry", path=path.split('?')[0],
+                           reason=str(error), attempt=attempt + 1)
+                time.sleep(attempt + 1)
+
+
 class Run:
     def __init__(self, args, kube, atomic_json):
-        self.args, self.kube, self.atomic = args, kube, atomic_json
+        self.args, self.atomic = args, atomic_json
         self.directory = Path(args.directory)
         self.path = self.directory / "journal.json"
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {
@@ -104,6 +127,7 @@ class Run:
             "production_ready": False, "hardware_primitive_passed": False}
         need(self.state.get("version") == 1, "unknown ownership journal version")
         self.forward = None
+        self.kube = RetryReads(kube, self.event)
 
     def save(self):
         self.atomic(self.path, self.state)

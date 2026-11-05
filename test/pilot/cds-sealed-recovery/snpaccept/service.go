@@ -26,6 +26,7 @@ type Request struct {
 	Collateral  Collateral      `json:"collateral,omitempty"`
 	OperatorKey []byte          `json:"operator_key,omitempty"`
 	Custody     *CustodyRequest `json:"custody,omitempty"`
+	Copy        *CustodyCopy    `json:"copy,omitempty"`
 }
 type Result struct {
 	Operation  string              `json:"operation"`
@@ -36,6 +37,7 @@ type Result struct {
 	Error      string              `json:"error,omitempty"`
 	Derivation *DerivationIdentity `json:"derivation,omitempty"`
 	Custody    *CustodyGrant       `json:"custody,omitempty"`
+	Copy       *CustodyCopy        `json:"copy,omitempty"`
 }
 type Reply struct {
 	Result Result `json:"result"`
@@ -74,7 +76,7 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/start", func(w http.ResponseWriter, r *http.Request) {
 		var q Request
-		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || (q.Operation != "enroll" && q.Operation != "delegate" && q.Operation != "seed" && q.Operation != "recover") {
+		if decodeHTTP(w, r, &q, 4<<20) != nil || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || (q.Operation != "enroll" && q.Operation != "delegate" && q.Operation != "copy" && q.Operation != "seed" && q.Operation != "recover") || (q.Copy != nil && q.Operation != "delegate") {
 			http.Error(w, "invalid bounded phase request", 400)
 			return
 		}
@@ -90,7 +92,9 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 			}
 			var identity *DerivationIdentity
 			var identityErr error
-			if q.Operation == "enroll" || q.Operation == "delegate" {
+			if q.Operation == "delegate" && q.Copy != nil {
+				identity, identityErr = h.CopyIdentity(ctx, *q.Copy)
+			} else if q.Operation == "enroll" || q.Operation == "delegate" {
 				identity, identityErr = h.PublicIdentity(ctx, p)
 			}
 			if q.Operation == "enroll" {
@@ -100,10 +104,25 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 					out.Error = err.Error()
 				}
 			} else if q.Operation == "delegate" {
-				grant, err := h.Delegate(ctx, p, q.Custody, q.Collateral)
+				var grant *CustodyGrant
+				var err error
+				if q.Copy != nil {
+					grant, err = h.DelegateCopy(ctx, *q.Copy, q.Custody, q.Collateral)
+				} else {
+					grant, err = h.Delegate(ctx, p, q.Custody, q.Collateral)
+				}
 				out = Result{Operation: q.Operation, Passed: err == nil, Custody: grant, Parameters: p}
 				if err != nil {
 					out.Error = err.Error()
+				}
+			} else if q.Operation == "copy" {
+				copy, identityValue, err := h.EnrollCopy(ctx, relay)
+				identity = identityValue
+				out = Result{Operation: q.Operation, Passed: err == nil, Copy: copy}
+				if err != nil {
+					out.Error = err.Error()
+				} else {
+					out.Parameters = copy.Parameters
 				}
 			} else {
 				out = run(q, relay)

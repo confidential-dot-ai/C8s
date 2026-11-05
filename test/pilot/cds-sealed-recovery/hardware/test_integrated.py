@@ -9,6 +9,8 @@ import tempfile
 import subprocess
 import tarfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from integrated import DurableObjects, Integrated
 
@@ -41,6 +43,26 @@ class DurableStoreTests(unittest.TestCase):
                             {"id": 1, "method": "PUT", "path": "/pilot/test/head", "absent": "*", "match": '"1"'}):
                 with self.assertRaises(RuntimeError): store.answer(request)
             store.close()
+
+
+class CrossHostBoundaryTests(unittest.TestCase):
+    def test_recovery_cannot_create_on_excluded_source_host(self):
+        actor = object.__new__(Integrated)
+        actor.state = {"excluded_recovery_nodes": ["original-worker"]}
+        vm = {"spec": {"template": {"spec": {"nodeSelector": {"kubernetes.io/hostname": "original-worker"}}}}}
+        with patch.object(actor, "create") as create:
+            with self.assertRaisesRegex(RuntimeError, "original host excluded"):
+                actor.boot_pair((("custodian", vm),), "recover")
+            create.assert_not_called()
+
+    def test_cross_host_requires_distinct_workers_before_any_image_or_cloud_work(self):
+        for nodes in (["worker"], ["worker", "worker"], ["a", "b", "c"]):
+            actor = object.__new__(Integrated)
+            actor.args = SimpleNamespace(cross_host=True, nodes=nodes)
+            with patch("integrated.image_inputs") as image_inputs:
+                with self.assertRaisesRegex(RuntimeError, "two distinct"):
+                    actor.exercise()
+                image_inputs.assert_not_called()
 
 
 class LocalUpload(Integrated):

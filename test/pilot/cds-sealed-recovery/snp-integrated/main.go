@@ -17,8 +17,16 @@ func main() {
 	lpath := flag.String("launch", "", "independent exact launch bytes")
 	out := flag.String("receipt", "", "new verified receipt path")
 	col := flag.String("collateral", "", "new public collateral path")
+	custody := flag.Bool("custody-request", false, "verify a public attested custody recipient")
+	measurement := flag.String("measurement", "", "independently pinned custody recipient image")
 	flag.Parse()
-	if err := run(*qpath, *rpath, *lpath, *out, *col); err != nil {
+	var err error
+	if *custody {
+		err = runCustody(*qpath, *lpath, *out, *col, *measurement)
+	} else {
+		err = run(*qpath, *rpath, *lpath, *out, *col)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -48,6 +56,41 @@ func run(qpath, rpath, lpath, out, col string) error {
 	if err != nil {
 		return err
 	}
+	if err := writeEvidence(out, col, receipt, collateral); err != nil {
+		return err
+	}
+	if !r.Result.Passed {
+		return fmt.Errorf("verified phase failed: %s", r.Result.Error)
+	}
+	return nil
+}
+
+func runCustody(qpath, lpath, out, col, measurement string) error {
+	b, err := os.ReadFile(qpath)
+	if err != nil {
+		return err
+	}
+	if len(b) > 16<<10 {
+		return fmt.Errorf("oversized custody request")
+	}
+	var q snpaccept.CustodyRequest
+	if err := json.Unmarshal(b, &q); err != nil {
+		return err
+	}
+	launch, err := os.ReadFile(lpath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	receipt, collateral, err := snpaccept.VerifyCustody(ctx, measurement, q, launch)
+	if err != nil {
+		return err
+	}
+	return writeEvidence(out, col, receipt, collateral)
+}
+
+func writeEvidence(out, col string, receipt map[string]any, collateral snpaccept.Collateral) error {
 	for _, item := range []struct {
 		path  string
 		value any
@@ -68,9 +111,6 @@ func run(qpath, rpath, lpath, out, col string) error {
 		if err != nil {
 			return err
 		}
-	}
-	if !r.Result.Passed {
-		return fmt.Errorf("verified phase failed: %s", r.Result.Error)
 	}
 	return nil
 }

@@ -118,9 +118,16 @@ func sealCustody(q CustodyRequest, signer ed25519.PrivateKey, wrap []byte) (*Cus
 	return &g, nil
 }
 
-func (h *Hardware) Delegate(ctx context.Context, p Parameters, q *CustodyRequest, collateral Collateral) (*CustodyGrant, error) {
+func checkCustodyRequest(q *CustodyRequest) error {
 	if q == nil || len(q.Nonce) != overenc.SessionIDBytes || len(q.PublicKey) != overenc.XWingEKBytes || len(q.Report) != abi.ReportSize {
-		return nil, errors.New("bounded attested custody recipient required")
+		return errors.New("bounded attested custody recipient required")
+	}
+	return nil
+}
+
+func (h *Hardware) Delegate(ctx context.Context, p Parameters, q *CustodyRequest, collateral Collateral) (*CustodyGrant, error) {
+	if err := checkCustodyRequest(q); err != nil {
+		return nil, err
 	}
 	signer, wrap, err := h.material(ctx, p)
 	if err != nil {
@@ -128,6 +135,10 @@ func (h *Hardware) Delegate(ctx context.Context, p Parameters, q *CustodyRequest
 	}
 	defer clear(signer)
 	defer clear(wrap)
+	return h.delegateMaterial(ctx, signer, wrap, q, collateral)
+}
+
+func (h *Hardware) delegateMaterial(ctx context.Context, signer ed25519.PrivateKey, wrap []byte, q *CustodyRequest, collateral Collateral) (*CustodyGrant, error) {
 	// The operator supplies neither the approved launch nor a recipient policy.
 	// Both are computed from this custodian's unchanged measured template.
 	launch, err := h.cdsLaunch(signer.Public().(ed25519.PublicKey))
