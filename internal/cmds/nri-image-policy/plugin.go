@@ -664,6 +664,9 @@ type imageCheck struct {
 	// the cause. It names at most a variable, never a value.
 	EnvErr error
 	Mounts []allowlist.ObservedMount
+	// Digest is what an earlier check resolved ImageRef to; "" has
+	// checkImageAt resolve it.
+	Digest string
 }
 
 type launchPhase uint8
@@ -721,7 +724,9 @@ func (p *plugin) checkImageAt(ctx context.Context, cfg *config, snap *policySnap
 
 	digest := extractDigest(check.ImageRef)
 	pinned := digest != ""
-	if !pinned {
+	if !pinned && check.Digest != "" {
+		digest = check.Digest
+	} else if !pinned {
 		resolved, err := p.containerd.Resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
@@ -852,7 +857,7 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	}
 	env := containerEnv(ctr)
 	snap := p.policy.current()
-	verdict, reason, digest := p.checkContainerObserved(ctx, cfg, snap, pod, ctr, imageRef, phase, env, mounts)
+	verdict, reason, digest := p.checkContainerObserved(ctx, cfg, snap, pod, ctr, imageRef, "", phase, env, mounts)
 	if verdict == verdictDeny || !sandboxPolicyApplies(cfg, phase) {
 		return verdict, reason
 	}
@@ -874,13 +879,13 @@ func sandboxPolicyApplies(cfg *config, phase launchPhase) bool {
 	return phase == launchFinal && cfg.sandboxObserved()
 }
 
-// checkContainerObserved also returns the digest admission judged against
-// snap, "" when it resolved none.
-func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *policySnapshot, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string, string) {
+// checkContainerObserved judges imageRef as digest when an earlier check
+// resolved it, and returns the digest admission judged against snap, "" when
+// it resolved none.
+func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *policySnapshot, pod *api.PodSandbox, ctr *api.Container, imageRef, digest string, phase launchPhase, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string, string) {
 	namespace, podName, ctrName := pod.GetNamespace(), pod.GetName(), ctr.GetName()
 
 	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, pod.GetLabels())
-	digest := ""
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
 		verdict, reason, digest = p.checkImageAt(ctx, cfg, snap, imageCheck{
 			Namespace: namespace,
@@ -891,6 +896,7 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *
 			Env:       env,
 			EnvErr:    envError(ctr, env),
 			Mounts:    mounts,
+			Digest:    digest,
 		}, phase)
 	}
 	verdict, reason = p.exemptNamespace(ctx, cfg, pod, ctr, imageRef, digest, verdict, reason)

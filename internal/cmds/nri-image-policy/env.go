@@ -26,9 +26,13 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	}
 	ctr, env := adjustedLaunchContainer(req)
 	mounts := p.adjustedMounts(req, ctr)
+	// The gate and the static-pod check run ahead of admission, so the tag is
+	// resolved once here and all three judge that digest.
+	imageRef := ctr.GetAnnotations()[annotationImageName]
+	launch := allowlist.RunningContainer{Digest: p.resolveDigest(ctx, imageRef), Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
-	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
+	if err := p.gateMesh(req, ctr, launch); err != nil {
 		// A pre-existing pod recovery has not yet reached is off the gate's
 		// record: refuse the create, but transiently, so the retry after
 		// recovery is not met by a denial recorded for the pod's life. A
@@ -39,10 +43,10 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		}
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
-	if err := p.unpinnedStaticPod(ctx, p.cfg, req.GetPod(), ctr, env, mounts); err != nil {
+	if err := p.unpinnedStaticPod(p.cfg, req.GetPod(), launch); err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
-	verdict, reason, _ := p.checkContainerObserved(ctx, p.cfg, p.policy.current(), req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
+	verdict, reason, _ := p.checkContainerObserved(ctx, p.cfg, p.policy.current(), req.GetPod(), ctr, imageRef, launch.Digest, launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
@@ -64,11 +68,11 @@ func refuseSourceEdit(adjust *api.ContainerAdjustment) error {
 
 // unpinnedStaticPod refuses, on a worker, a static pod's container whose launch
 // no base entry pins: c8s-runc's floor leaves a static pod to its template.
-func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+func (p *plugin) unpinnedStaticPod(cfg *config, pod *api.PodSandbox, launch allowlist.RunningContainer) error {
 	if !cfg.Worker || !staticPod(pod) {
 		return nil
 	}
-	if p.policy.baseAdmitsPinned(p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)) {
+	if p.policy.baseAdmitsPinned(launch) {
 		return nil
 	}
 	return errors.New("a worker runs a static pod only on a launch a base entry pins")
@@ -77,12 +81,11 @@ func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, pod *api.Po
 // gateMesh applies the mesh startup gate at the one hook whose error always
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
-func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+func (p *plugin) gateMesh(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, launch allowlist.RunningContainer) error {
 	pod := req.GetPod()
 	if !p.mesh.hosts(pod) {
 		return nil
 	}
-	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
 	adjusted := req.GetAdjust().GetLinux()
 	// The role, and the mount set a declaration pins, are read from the mounts
 	// the pod itself asks for: a credential client of any pod also carries the

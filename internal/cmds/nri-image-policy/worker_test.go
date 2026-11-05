@@ -1,7 +1,9 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -442,5 +444,40 @@ func TestValidationHoldsTheStaticPodMark(t *testing.T) {
 				t.Fatalf("ValidateContainerAdjustment = %v, want a refusal naming %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// ValidateContainerAdjustment resolves a tag once: the static-pod check and
+// admission judge the same digest even when the tag moves between lookups.
+func TestValidationResolvesTheTagOnce(t *testing.T) {
+	p := capabilityPlugin(t, SandboxEnforce)
+	p.cfg.Worker = true
+	var logs bytes.Buffer
+	p.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	digests := []string{pushDigestB, pushDigestA}
+	resolves := 0
+	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
+		digest := digests[min(resolves, len(digests)-1)]
+		resolves++
+		return digest, nil
+	}}
+	pod := sandboxedPod()
+	pod.Annotations = map[string]string{configSourceAnnotation: staticPodSource}
+	imageRef := "registry/repo:tag"
+	ctr := sandboxedContainer()
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: imageRef}
+	ctr.Args = []string{"/app"}
+	err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr})
+	// The static-pod check passes on the pinned launch of the first digest;
+	// admission then refuses the tag, as a worker does, judging that digest.
+	if err == nil || !strings.Contains(err.Error(), "must be referenced by digest") {
+		t.Fatalf("ValidateContainerAdjustment = %v, want the tag refused by admission", err)
+	}
+	if resolves != 1 {
+		t.Fatalf("ValidateContainerAdjustment resolved the tag %d times, want 1", resolves)
+	}
+	if !strings.Contains(logs.String(), "digest="+pushDigestB) || strings.Contains(logs.String(), pushDigestA) {
+		t.Fatalf("admission did not judge the first digest %s:\n%s", pushDigestB, logs.String())
 	}
 }
