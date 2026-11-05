@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -108,19 +107,21 @@ func Run(ctx context.Context, cfg Config) error {
 		if exp.MeasuresPolicies() {
 			// The report comes from elsewhere: record cred-release's list
 			// first. The dial and step 3 share one wait for cred-release.
+			// A failed dial is reported once: in the gate's error when the
+			// gate fails, else by step 3, which dials again.
 			releaseDeadline = time.Now().Add(cfg.ReleaseWait)
 			dialErr = dialRelease(ctx, cfg, releaseURL, exp)
-			if dialErr != nil {
-				slog.Warn("record cred-release measured policies", "error", dialErr)
-			}
 		}
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
 		cancel()
 		switch {
-		case !errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
-		case dialErr != nil:
+		case err == nil:
+		case dialErr != nil && errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
 			err = fmt.Errorf("%w (no list: the dial to cred-release failed: %v)", err, dialErr)
+		case dialErr != nil:
+			err = fmt.Errorf("%w (the cred-release dial also failed: %v)", err, dialErr)
+		case !errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
 		default:
 			err = fmt.Errorf("%w (the list from cred-release's certificate may predate the node's latest policy: retry after cred-release reissues its certificate, or omit --attest-url)", err)
 		}
