@@ -1,0 +1,6 @@
+[Unit]
+Description=Power off the disposable TDX probe
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

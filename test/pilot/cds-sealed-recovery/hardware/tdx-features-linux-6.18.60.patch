@@ -1,0 +1,35 @@
+--- a/drivers/virt/coco/tdx-guest/tdx-guest.c
++++ b/drivers/virt/coco/tdx-guest/tdx-guest.c
+@@ -371,8 +371,32 @@
+ 	.unlocked_ioctl = tdx_guest_ioctl,
+ };
+ 
++/* Disposable CDS qualification only: one fixed read-only module field.
++ * Intel TDX ABI 348551-006US section 5.5.13, TDG.SYS.RD (leaf 11).
++ * Field ID from the global metadata ABI; SEALING is bit 12. No key request,
++ * user-selected leaf/field, write operation, or shared mutable probe state.
++ */
++static ssize_t cds_pilot_features_show(struct device *dev,
++                                      struct device_attribute *attr, char *buf)
++{
++	struct tdx_module_args args = { .rdx = 0x0a00000300000008ULL };
++	u64 status = __tdcall_ret(11, &args);
++
++	return sysfs_emit(buf, "%016llx %016llx\n", status, args.r8);
++}
++static DEVICE_ATTR_RO(cds_pilot_features);
++
++static struct attribute *cds_pilot_attrs[] = {
++	&dev_attr_cds_pilot_features.attr,
++	NULL,
++};
++static const struct attribute_group cds_pilot_group = {
++	.attrs = cds_pilot_attrs,
++};
++
+ static const struct attribute_group *tdx_attr_groups[] = {
+ 	NULL, /* measurements */
++	&cds_pilot_group,
+ 	NULL
+ };
+ 

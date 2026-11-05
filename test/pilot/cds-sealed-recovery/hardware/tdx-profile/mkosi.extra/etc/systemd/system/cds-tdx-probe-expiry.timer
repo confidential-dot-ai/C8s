@@ -1,0 +1,10 @@
+[Unit]
+Description=Bound disposable TDX guest lifetime
+
+[Timer]
+OnBootSec=30min
+AccuracySec=1s
+Unit=cds-tdx-probe-expiry.service
+
+[Install]
+WantedBy=timers.target

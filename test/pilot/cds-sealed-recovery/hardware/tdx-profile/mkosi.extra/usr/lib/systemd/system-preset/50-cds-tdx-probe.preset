@@ -1,0 +1,2 @@
+enable cds-tdx-probe.service
+enable cds-tdx-probe-expiry.timer

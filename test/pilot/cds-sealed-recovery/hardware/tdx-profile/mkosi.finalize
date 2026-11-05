@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+for unit in getty@.service serial-getty@.service console-getty.service rescue.service emergency.service ssh.service sshd.service qemu-guest-agent.service; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+test -x "$BUILDROOT/usr/local/bin/cds-tdx-probe"
+test -f "$BUILDROOT/etc/cloud/cloud-init.disabled"
+chmod 0644 "$BUILDROOT/etc/systemd/network/80-dhcp.network" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-probe.service" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-probe-expiry.service" \
+    "$BUILDROOT/etc/systemd/system/cds-tdx-probe-expiry.timer"

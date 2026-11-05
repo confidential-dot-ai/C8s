@@ -77,7 +77,7 @@ def resource_path(item):
     meta = item["metadata"]
     need(meta["namespace"] == NS and item["kind"] in KINDS, "resource outside fixture scope")
     run = meta["labels"][LABEL]
-    need(re.fullmatch(r"cds-snp-[0-9a-f]{12}", run) and
+    need(re.fullmatch(r"cds-(snp|tdx)-[0-9a-f]{12}", run) and
          meta["name"] in (run, run + "-root", run + "-boot", run + "-opkey", run + "-populate"), "invalid owned name")
     prefix, plural = KINDS[item["kind"]]
     return f"{prefix}/namespaces/{NS}/{plural}/{meta['name']}"
@@ -303,7 +303,16 @@ class Run:
                 need(conditions.get("Ready") == "True" and not node.get("spec", {}).get("unschedulable"), "test worker not ready")
                 need(conditions.get("CloudQualified") == "True", "test worker is not currently qualified")
                 need(all(conditions.get(c) == "False" for c in ("MemoryPressure", "DiskPressure", "PIDPressure")), "test worker has resource pressure")
-                need(node["metadata"].get("labels", {}).get("confidential.ai/sev-snp") == "true", "test worker is not SNP")
+                platform = getattr(self.args, "platform", "snp")
+                need(platform in ("snp", "tdx"), "unknown hardware platform")
+                tee = "sev-snp" if platform == "snp" else "tdx"
+                label = "confidential.ai/sev-snp" if platform == "snp" else "kubevirt.io/tdx"
+                need(node["metadata"].get("labels", {}).get(label) == "true", "test worker TEE label mismatch")
+                if platform == "tdx":
+                    _, host = self.kube.call("GET", "/apis/cloud.confidential.ai/v1alpha1/hosts/" + name)
+                    hs = host.get("status", {})
+                    need(hs.get("tee") == tee and hs.get("nodeUID") == node["metadata"]["uid"] and
+                         hs.get("schedulable") is True and not hs.get("shuttingDown"), "Cloud Host did not qualify the requested TEE and Node UID")
                 need(not any(k.startswith("node-role.kubernetes.io/control-plane") or k.startswith("node-role.kubernetes.io/etcd") for k in node["metadata"].get("labels", {})), "control-plane placement refused")
             observed[name] = {"uid": node["metadata"]["uid"], "boot_id": status["nodeInfo"]["bootID"], "conditions": conditions}
         _, live = self.kube.call("GET", "/apis/kubevirt.io/v1/virtualmachineinstances")
