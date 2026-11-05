@@ -15,13 +15,18 @@ SCRIPT=${GPU_CC_SCRIPT:-"$TESTS_DIR/../c8s/mkosi.extra/usr/local/bin/gpu-cc-enfo
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin" "$WORK/api"
+stub_clock() { # stub_clock yes|no — timedatectl's NTPSynchronized
+    printf '#!/bin/sh\necho %s\n' "$1" > "$WORK/bin/timedatectl"
+    chmod +x "$WORK/bin/timedatectl"
+}
+stub_clock yes
 
 # Run the production script verbatim with the sysfs root rebased into $WORK,
 # the stubs first on PATH, and zero wait budgets so a failing dependency
 # fails on its first probe.
 run_enforce() {
     sed -e "s|/sys/bus/pci/devices|$WORK/sys/bus/pci/devices|g" "$SCRIPT" \
-        | PATH="$WORK/bin:$PATH" GPU_CC_DRIVER_TIMEOUT=0 GPU_CC_API_TIMEOUT=0 sh 2>"$WORK/stderr"
+        | PATH="$WORK/bin:$PATH" GPU_CC_DRIVER_TIMEOUT=0 GPU_CC_API_TIMEOUT=0 GPU_CC_CLOCK_TIMEOUT=0 sh 2>"$WORK/stderr"
 }
 set_vendor() { # set_vendor HEXID
     rm -rf "$WORK/sys/bus/pci/devices"
@@ -122,6 +127,9 @@ set_vendor 0x8086
 stub_smi 1 "No devices were found"
 api_down health
 ok "no-op without a GPU even when nvidia-smi fails" run_enforce
+stub_clock no
+ok "no-op without a GPU even when the clock is unsynchronised" run_enforce
+stub_clock yes
 
 CASE="cc on (driver 595 wording)"
 set_vendor 0x10de
@@ -163,6 +171,14 @@ all_up
 sed -i 's|^--query-gpu=uuid) .*|--query-gpu=uuid) echo "Unable to determine the device handle"; exit 15 ;;|' "$WORK/bin/nvidia-smi"
 ok "fails when nvidia-smi cannot enumerate" not run_enforce
 ok "names the cause" stderr_has "query-gpu failed"
+
+CASE="clock never syncs"
+stub_smi 0 "CC status: ON"
+all_up
+stub_clock no
+ok "fails before attesting" not run_enforce
+ok "names the cause" stderr_has "NTP-synchronised"
+stub_clock yes
 
 CASE="platform endpoint down"
 stub_smi 0 "CC status: ON"

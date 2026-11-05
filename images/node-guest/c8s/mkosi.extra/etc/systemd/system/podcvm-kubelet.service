@@ -1,0 +1,18 @@
+# Pod role only: a standalone kubelet that runs the one signed static pod.
+[Unit]
+Description=Pod-role standalone kubelet
+ConditionPathExists=/run/confos/role-pod
+Requires=podcvm-containerd.service
+After=podcvm-containerd.service
+
+[Service]
+Type=simple
+Environment=PATH=/var/lib/rancher/rke2/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# KUBELET_HOSTNAME is the signed node.name (c8s node-services prepare).
+EnvironmentFile=/run/c8s-pod/kubelet.env
+ExecStart=/var/lib/rancher/rke2/bin/kubelet --config=/usr/lib/c8s/pod-runtime/kubelet.yaml --hostname-override=${KUBELET_HOSTNAME}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
