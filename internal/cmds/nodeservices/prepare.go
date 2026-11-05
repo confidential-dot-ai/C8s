@@ -44,9 +44,13 @@ type FloorInputs struct {
 	Outputs map[string][]byte
 }
 
-// PrepareNode prepares a server's or an agent's workload inputs from the
-// verified launch document loaded by LoadStaged.
+// PrepareNode prepares a server's, an agent's or a Pod's workload inputs from
+// the verified launch document loaded by LoadStaged.
 func PrepareNode(rootDir string, d *launchconfig.Document) error {
+	return prepare(rootDir, d, discoverPodMTU)
+}
+
+func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, error)) error {
 	if err := validateRole(d); err != nil {
 		return err
 	}
@@ -55,6 +59,15 @@ func PrepareNode(rootDir string, d *launchconfig.Document) error {
 		return err
 	}
 	outputs := map[string][]byte{"peers.json": peers}
+	if d.Role == launchconfig.Pod {
+		// The staged document is this Pod's only source for its CDS.
+		cds, err := d.CDS.Policy()
+		if err != nil {
+			return err
+		}
+		outputs[CDSOutput] = cds
+		return preparePod(rootDir, d, outputs, resolveMTU)
+	}
 	if d.Role == launchconfig.Server {
 		server, err := serverOutputs(d)
 		if err != nil {
@@ -95,21 +108,12 @@ func Prepare(rootDir string, in FloorInputs) error {
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
 
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
 	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
-	}
-	pull, ok := a["pull"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing pull")
+	if _, err := bindCDSPull(a, in.CDS); err != nil {
+		return err
 	}
 	base, err := bakedBase(a["base"])
 	if err != nil {
@@ -126,9 +130,6 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err != nil {
 		return err
 	}
-	pull["url"] = cmdsutil.CDSURL(in.CDS.Address)
-	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
-	pull["cds_pin_floor"] = in.CDS.PinFloor
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -146,7 +147,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err := setResolver(policy, in.Resolver); err != nil {
 		return err
 	}
-	data, err = yaml.Marshal(floor)
+	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
 	}
@@ -154,34 +155,80 @@ func Prepare(rootDir string, in FloorInputs) error {
 	// Validate every input before publishing anything. The node's runtime
 	// only starts after this preparation succeeds, so pods never observe
 	// partially staged input.
-	publicPath := path(PublicDir)
+	if err := publishPublic(path(PublicDir), outputs); err != nil {
+		return err
+	}
+	return writeFile(path(floorConfigPath), data, 0600)
+}
+
+// floorConfigPath is the NRI plugin's configuration Prepare writes.
+const floorConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// legacyOutputNames are the in-cluster CDS inputs a v2 boot has no consumer
+// for; Prepare removes them where an earlier image published them.
+var legacyOutputNames = []string{"allowlist-seed.json", "pods.json"}
+
+// loadFloor reads the NRI policy baked into the image, returning the whole
+// document and its allowlist section for the caller to edit.
+func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err error) {
+	data, err := os.ReadFile(filepath.Join(rootDir, "/usr/lib/c8s/image-policy.yaml"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := yaml.Unmarshal(data, &floor); err != nil {
+		return nil, nil, fmt.Errorf("baked NRI policy: %w", err)
+	}
+	allowlistSection, ok := floor["allowlist"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("baked NRI policy missing allowlist")
+	}
+	return floor, allowlistSection, nil
+}
+
+// bindCDSPull points the floor's pull at the signed external CDS and its
+// launch-file-bound pins, dropping the in-cluster pins an earlier floor named.
+func bindCDSPull(a map[string]any, cds launchconfig.CDS) (map[string]any, error) {
+	pull, ok := a["pull"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("baked NRI policy missing pull")
+	}
+	if _, err := cds.Port(); err != nil {
+		return nil, err
+	}
+	pull["url"] = cmdsutil.CDSURL(cds.Address)
+	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
+	pull["cds_pin_floor"] = cds.PinFloor
+	delete(pull, "cds_measurements")
+	delete(pull, "cds_rtmrs")
+	return pull, nil
+}
+
+// publishPublic writes outputs under publicPath and removes every other
+// public output, the legacy ones included.
+func publishPublic(publicPath string, outputs map[string][]byte) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {
 		return err
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if err := removeOutputs(publicPath, unpublishedOutputs(outputs)); err != nil {
+	if err := removeOutputs(publicPath, append(unpublishedOutputs(outputs), legacyOutputNames...)); err != nil {
 		return err
 	}
 	for name, data := range outputs {
-		dst := filepath.Join(publicPath, name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
+		if err := writeFile(filepath.Join(publicPath, name), data, 0644); err != nil {
 			return err
 		}
 	}
-	policyPath := path(floorConfigPath)
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
-		return err
-	}
-	return fileutil.WriteAtomic(policyPath, data, 0600)
+	return nil
 }
 
-// floorConfigPath is the NRI plugin's configuration Prepare writes.
-const floorConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return fileutil.WriteAtomic(path, data, mode)
+}
 
 // Clear removes every output Prepare writes.
 func Clear(rootDir string) error {
@@ -570,11 +617,19 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 // are measured bootstrap sources, so an entry present in each must be
 // identical rather than replaced.
 func mergeBakedSeed(base, seed *allowlist.Allowlist) error {
-	for name, workload := range seed.Workloads {
+	return mergeWorkloads(base, seed, true)
+}
+
+// Signed Pod workloads cannot replace even an identical measured mesh entry.
+func mergeWorkloads(base, extra *allowlist.Allowlist, allowIdentical bool) error {
+	for name, workload := range extra.Workloads {
 		existing, exists := base.Workloads[name]
 		if !exists {
 			base.Workloads[name] = workload
 			continue
+		}
+		if !allowIdentical {
+			return fmt.Errorf("workload %q replaces a baked component", name)
 		}
 		old, err := json.Marshal(existing)
 		if err != nil {
