@@ -15,6 +15,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -163,6 +164,21 @@ func TestMain(m *testing.M) {
 		if err := cmd.Run(); err != nil {
 			fmt.Println("build:", err)
 			os.Exit(1)
+		}
+	}
+	if os.Getenv("CDSHA_SCALE_COMPARE") == "1" {
+		for _, path := range []string{built.cds, built.api, built.metadata} {
+			file, err := os.Open(path)
+			if err != nil {
+				panic(err)
+			}
+			hash := sha256.New()
+			_, err = io.Copy(hash, file)
+			file.Close()
+			if err != nil {
+				panic(err)
+			}
+			fmt.Printf("comparison binary %s sha256=%x\n", filepath.Base(path), hash.Sum(nil))
 		}
 	}
 	fmt.Printf("cdsha integration: release processes=%t, logs in %s\n", releaseProcesses, built.logs)

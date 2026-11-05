@@ -46,11 +46,12 @@ export CDSHA_COMPARE_CONCURRENCY=16 CDSHA_COMPARE_LATENCY_MS=0,100
 export CDSHA_COMPARE_METADATA_LATENCY_MS=2
 export CDSHA_SCALE_CLUSTERS=4 CDSHA_SCALE_REQUESTS_PER_CLUSTER=16
 export CDSHA_SCALE_CONCURRENCY=16 CDSHA_SCALE_CERTIFICATE_BURST=12
-mkdir -p /tmp/cds-scale-results
+export TMPDIR=/workspace/cds-scale-tmp
+mkdir -p "$TMPDIR" /workspace/cds-scale-results
 for backend in raft object-batch-preferred metadata-batch-preferred; do
   CDSHA_COMPARE_BACKENDS="$backend" \
-  CDSHA_COMPARE_OUTPUT="/tmp/cds-scale-results/$backend-transactions.json" \
-  CDSHA_SCALE_OUTPUT="/tmp/cds-scale-results/$backend-clusters.json" \
+  CDSHA_COMPARE_OUTPUT="/workspace/cds-scale-results/$backend-transactions.json" \
+  CDSHA_SCALE_OUTPUT="/workspace/cds-scale-results/$backend-clusters.json" \
   go test -tags integration -count=1 -timeout=30m -v \
     -run '^(TestTransactionalComparison|TestStorageScaleComparison)$' \
     ./test/integration/cdsha
@@ -73,6 +74,8 @@ GOWORK=off go test -race -count=1 ./internal/objectwal ./internal/metadatapilot
   measured latency or durability. The object fixture is in memory. Metadata is
   a real SQLite process using FULL synchronous commits on one local machine;
   its replicated HA, provider networking and billing remain unqualified.
+  Select a disk-backed `TMPDIR`; `/tmp` can be tmpfs. The harness prints the
+  release binary hashes so results from all arms can be compared exactly.
 - Load rows report elapsed wall time and per-cluster successes divided by that
   shared interval. Sum the four cluster rates for fleet throughput. Certificate
   burst latency covers the complete issuance plus successful secret-release

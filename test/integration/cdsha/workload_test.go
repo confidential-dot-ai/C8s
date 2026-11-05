@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -356,7 +357,15 @@ func startPilotWorkload(c *cluster, listener net.Listener, host string, cdsImage
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.socket = "unix://" + filepath.Join(t.TempDir(), "inventory.sock")
+	// Linux sockaddr_un is limited to 108 bytes. A disk-backed TMPDIR plus
+	// the full subtest name can exceed that limit. Only this ephemeral socket
+	// uses a short private directory; persistent fixture state keeps TMPDIR.
+	socketDirectory, err := os.MkdirTemp("/tmp", "cds-inventory-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDirectory) })
+	w.socket = "unix://" + filepath.Join(socketDirectory, "inventory.sock")
 	tokens, err := net.Listen("unix", strings.TrimPrefix(w.socket, "unix://"))
 	if err != nil {
 		t.Fatal(err)
