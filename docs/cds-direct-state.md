@@ -25,7 +25,7 @@ the object-store and recovery enrollment settings; the selected backend is
 
 A replacement reads current identity and policy directly, and reads secrets on
 demand. It does not walk a command history. AEAD binds ciphertext to cluster,
-measured launch, namespace, record key and random version. Keyed hashes hide
+measured launch, namespace, record key and monotonically increasing per-record version. Keyed hashes hide
 token identifiers and secret paths from metadata. They do not hide access
 patterns, object sizes or transaction structure.
 
@@ -45,7 +45,11 @@ contains redundant spent records for policy writes; secret tokens are separate.
 ## Concurrency and freshness
 
 Each cluster has 16 write admission shards, one active transition and eight
-admitted requests per shard. Read admission has 16 active / 64 admitted requests.
+admitted requests per shard. Policy writes first enter a separate eight-request
+mailbox and coalesce for at most one millisecond. One disposable FSM evaluates
+the batch in order; one transaction publishes its final policy and every token
+receipt. It holds no writer lease. Cancellation cancels the batch, unknown
+commit outcomes are not retried, and shutdown drains accepted messages. Read admission has 16 active / 64 admitted requests.
 The existing requestgate actor owns scheduling; a hot write shard cannot occupy
 every worker. Shared authoritative state belongs to metadata. Private temporary
 FSM/store locks do not protect cross-request network IO.
@@ -108,6 +112,35 @@ The same initial run hit HTTP 429 in all three compatibility modes because it
 omitted the comparison harness's existing rate settings. Subsequent comparison
 runs use those identical test-only settings for every backend.
 
-Frozen comparison results and the next custody qualification will be appended
+The first frozen comparison (`3bf3e151`, tree
+`588dc64c410c3525cdd20a85bef4cc2ae477076b`) passed 64/64 independent-path writes
+and all four-cluster correctness checks, but acknowledged only 59/64 hot-policy
+writes; five requests returned 503. It is not a replacement recommendation.
+One fleet cluster performed 199 object GETs while the other three needed 2–3.
+A deterministic cache-collision reproducer showed two hot objects alternating
+between the same slot required 20 GETs instead of two.
+
+The follow-up keeps the same cache bound with four-way immutable atomic sets,
+and retains successfully uploaded ciphertext locally. Neither change caches
+current metadata or authorizes an uncommitted value. The collision regression
+and complete direct-state race suite pass. A test now waits for actor shutdown
+before asserting its completion notifications have drained; operation deadlines
+and admission limits are unchanged.
+
+Further frozen comparison results and custody qualification will be appended
 with source trees, settings and failures. No CI, production rollout or cloud
 resource creation is involved in this local phase.
+
+The second frozen comparison (`46372896`, tree
+`2b9cae086cccbbb558d06aea1e46b2e36c9beb6f`) passed independent paths and the
+four-cluster checks, but still returned six 503s in 64 hot-policy writes.
+The follow-up batches queued policy writes to avoid speculative uploads per
+individual update. Its admission and operation deadlines are unchanged.
+
+Current-record versions now advance by exactly one, enforced by the metadata
+API. A storage client cannot reinstall an old authenticated version/value pair;
+relabeling old bytes with a new version fails AEAD authentication. This does not
+protect against a dishonest metadata service or whole-database rollback, and a
+storage writer can still cause denial of service. Fresh metadata remains a
+trusted dependency. Old prototype namespaces with random versions cannot be
+opened by this revision; the pilot requires a fresh namespace.

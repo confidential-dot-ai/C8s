@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -140,6 +141,45 @@ func TestAtomicOperatorHTTPCompatibility(t *testing.T) {
 			if c.comparisonStats().CommittedCommands != before {
 				t.Fatal("oversized request reached the durable log")
 			}
+			if mode == "direct-state" {
+				// Duplicate successful, malformed and precondition-refused
+				// requests overlap in the bounded policy batching mailbox.
+				type queued struct {
+					body        []byte
+					auth, match string
+				}
+				requests := []queued{{body: allowlistDocument("batched-policy")}, {body: []byte("{")}, {body: allowlistDocument("conflicting-policy"), match: `"0"`}}
+				for i := range requests {
+					requests[i].auth, err = c.signer.Authorization(http.MethodPut, "/allowlist", requests[i].body)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				start := make(chan struct{})
+				answers := make(chan response, 6)
+				var wg sync.WaitGroup
+				for _, r := range requests {
+					for range 2 {
+						wg.Go(func() { <-start; answers <- send("/allowlist", r.body, r.auth, r.match) })
+					}
+				}
+				close(start)
+				wg.Wait()
+				close(answers)
+				counts := map[int]int{}
+				for a := range answers {
+					counts[a.code]++
+				}
+				if counts[204] != 1 || counts[422] != 1 || counts[412] != 1 || counts[409] != 3 {
+					t.Fatalf("batched token/mutation contract: %v", counts)
+				}
+				for _, r := range requests {
+					if a := send("/allowlist", r.body, r.auth, r.match); a.code != 409 || strings.TrimSpace(a.body) != operatorauth.ErrTokenReused.Error() {
+						t.Fatalf("batched token forgotten: %+v", a)
+					}
+				}
+			}
+
 		})
 	}
 }

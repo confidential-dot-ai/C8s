@@ -10,7 +10,6 @@ import (
 	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -34,6 +33,7 @@ const (
 	ShardCapacity  = 8
 	MaxAttempts    = 16
 	CacheSlots     = 64
+	CacheWays      = 4
 	MaxCachedBytes = 256 << 10
 	MaxReadBytes   = 16 << 20
 )
@@ -56,7 +56,7 @@ type Store struct {
 	aead                                     cipher.AEAD
 	gates                                    [Shards]*requestgate.Gate
 	readers                                  *requestgate.Gate
-	cache                                    [CacheSlots]atomic.Pointer[cachedObject]
+	cache                                    [CacheSlots / CacheWays]atomic.Pointer[cacheSet]
 	reads, commits, conflicts, unknown, puts atomic.Uint64
 }
 
@@ -65,14 +65,20 @@ type cachedObject struct {
 	data []byte
 }
 
+type cacheSet struct{ objects [CacheWays]*cachedObject }
+
 type Stats struct {
-	Reads            uint64 `json:"reads"`
-	Commits          uint64 `json:"commits"`
-	Conflicts        uint64 `json:"conflicts"`
-	Unknown          uint64 `json:"unknown"`
-	ObjectPuts       uint64 `json:"object_puts"`
-	Admitted, Active int
-	Rejected         uint64 `json:"rejected"`
+	Reads              uint64            `json:"reads"`
+	Commits            uint64            `json:"commits"`
+	Conflicts          uint64            `json:"conflicts"`
+	Unknown            uint64            `json:"unknown"`
+	ObjectPuts         uint64            `json:"object_puts"`
+	PolicyBatches      uint64            `json:"policy_batches"`
+	PolicyRequests     uint64            `json:"policy_requests"`
+	PolicyLargestBatch uint64            `json:"policy_largest_batch"`
+	PolicyAdmission    requestgate.Stats `json:"policy_admission"`
+	Admitted, Active   int
+	Rejected           uint64 `json:"rejected"`
 }
 
 func New(parent context.Context, metadata Metadata, objects objectwal.Store, key []byte, prefix, scope string) (*Store, error) {
@@ -286,9 +292,13 @@ func (s *Store) object(ctx context.Context, hash string, size int) ([]byte, erro
 	if err != nil || len(digest) != 32 {
 		return nil, objectwal.ErrCorrupt
 	}
-	slot := &s.cache[int(digest[0])%CacheSlots]
-	if c := slot.Load(); c != nil && c.hash == hash && len(c.data) == size {
-		return c.data, nil
+	slot := &s.cache[int(digest[0])%len(s.cache)]
+	if set := slot.Load(); set != nil {
+		for _, c := range set.objects {
+			if c != nil && c.hash == hash && len(c.data) == size {
+				return c.data, nil
+			}
+		}
 	}
 	o, err := s.objects.Get(ctx, s.prefix+"/current/"+hash)
 	if err != nil {
@@ -298,10 +308,39 @@ func (s *Store) object(ctx context.Context, hash string, size int) ([]byte, erro
 	if len(o.Data) != size || !bytes.Equal(actual[:], digest) {
 		return nil, objectwal.ErrCorrupt
 	}
-	if len(o.Data) <= MaxCachedBytes {
-		slot.Store(&cachedObject{hash: hash, data: bytes.Clone(o.Data)})
-	}
+	s.remember(hash, o.Data)
 	return o.Data, nil
+}
+
+func (s *Store) remember(hash string, ciphertext []byte) {
+	if len(ciphertext) > MaxCachedBytes {
+		return
+	}
+	digest, err := hex.DecodeString(hash)
+	if err != nil || len(digest) != 32 {
+		return
+	}
+	slot := &s.cache[int(digest[0])%len(s.cache)]
+	entry := &cachedObject{hash: hash, data: bytes.Clone(ciphertext)}
+	// Immutable four-way sets avoid repeated identity/policy collisions without
+	// locks or a cache-maintenance actor. Contention may skip caching; it never
+	// delays an authoritative transaction or permits a stale metadata read.
+	for range 8 {
+		old := slot.Load()
+		next := &cacheSet{}
+		if old != nil {
+			for _, c := range old.objects {
+				if c != nil && c.hash == hash {
+					return
+				}
+			}
+			copy(next.objects[1:], old.objects[:CacheWays-1])
+		}
+		next.objects[0] = entry
+		if slot.CompareAndSwap(old, next) {
+			return
+		}
+	}
 }
 
 // Update reevaluates a pure transition only after a DEFINITE transaction
@@ -397,11 +436,11 @@ func (s *Store) prepare(ctx context.Context, v *View, writes map[string][]byte) 
 		if _, read := v.versions[key]; !read || len(value) > MaxValueBytes {
 			return t, errors.New("direct state: write outside read set or value bound")
 		}
-		var nonce [32]byte
-		if _, err := rand.Read(nonce[:]); err != nil {
+		version, err := metadatapilot.NextVersion(v.Version(key))
+		if err != nil {
 			return t, err
 		}
-		r := metadatapilot.Record{Key: s.name(key), Version: hex.EncodeToString(nonce[:])}
+		r := metadatapilot.Record{Key: s.name(key), Version: version}
 		ciphertext := s.aead.Seal(nil, nil, value, s.aad(r.Key, r.Version))
 		e := envelope{Format: 1}
 		if len(value) <= InlineBytes {
@@ -413,8 +452,10 @@ func (s *Store) prepare(ctx context.Context, v *View, writes map[string][]byte) 
 				return t, fmt.Errorf("direct state: immutable upload: %w", err)
 			}
 			s.puts.Add(1)
+			// This is only an immutable ciphertext cache, not publication. A
+			// reader can use it only when fresh metadata references this hash.
+			s.remember(e.Object, ciphertext)
 		}
-		var err error
 		r.Value, err = json.Marshal(e)
 		if err != nil {
 			return t, err

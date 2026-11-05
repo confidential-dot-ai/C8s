@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"sync"
@@ -20,9 +22,11 @@ import (
 type testObjects struct {
 	mu     sync.Mutex
 	values map[string][]byte
+	gets   atomic.Uint64
 }
 
 func (s *testObjects) Get(_ context.Context, key string) (objectwal.Object, error) {
+	s.gets.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.values[key]
@@ -30,6 +34,41 @@ func (s *testObjects) Get(_ context.Context, key string) (objectwal.Object, erro
 		return objectwal.Object{}, objectwal.ErrNotFound
 	}
 	return objectwal.Object{Data: bytes.Clone(b), ETag: key}, nil
+}
+
+// A direct-mapped cache can make the two always-read identity/policy objects
+// evict each other forever. The aggregate fleet result must not depend on
+// random encryption nonces happening to select different cache slots.
+func TestTwoHotObjectsWithCollidingCacheSlotsStayCached(t *testing.T) {
+	_, client := metadataAt(t, filepath.Join(t.TempDir(), "state.db"), "test")
+	objects := &testObjects{values: map[string][]byte{}}
+	s := newTestStore(t, client, objects, "cluster/launch")
+	seen := map[byte]string{}
+	var pair []string
+	for i := 0; i <= CacheSlots; i++ {
+		b := []byte(fmt.Sprintf("immutable object %d", i))
+		h := sha256.Sum256(b)
+		key := fmt.Sprintf("%x", h)
+		objects.values["test/current/"+key] = b
+		if prior, ok := seen[h[0]%CacheSlots]; ok {
+			pair = []string{prior, key}
+			break
+		}
+		seen[h[0]%CacheSlots] = key
+	}
+	if len(pair) != 2 {
+		t.Fatal("failed to construct a collision")
+	}
+	for range 10 {
+		for _, key := range pair {
+			if _, err := s.object(t.Context(), key, len(objects.values["test/current/"+key])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := objects.gets.Load(); got != 2 {
+		t.Fatalf("two hot immutable objects required %d GETs; want 2", got)
+	}
 }
 func (s *testObjects) Put(_ context.Context, key string, b []byte, expected string) (string, error) {
 	s.mu.Lock()
@@ -292,6 +331,7 @@ func TestHotShardIsBoundedAndOtherShardsProgress(t *testing.T) {
 	set(t, n, other, []byte("still progressing"))
 	close(resume)
 	wg.Wait()
+	n.Close() // Close drains the actor's buffered completion notifications.
 	if s := n.Stats(); s.Admitted != 0 || s.Rejected != 1 {
 		t.Fatalf("admission did not drain: %+v", s)
 	}
@@ -315,6 +355,7 @@ func TestCiphertextCannotMoveAcrossKeysVersionsOrClusters(t *testing.T) {
 	objects := &testObjects{values: map[string][]byte{}}
 	s := newTestStore(t, client, objects, "cluster/launch")
 	set(t, s, "a", []byte("private-a"))
+	set(t, s, "b", []byte("prior-b"))
 	set(t, s, "b", []byte("private-b"))
 	rows, err := client.Read(t.Context(), []string{s.name("a"), s.name("b")})
 	if err != nil {
@@ -386,5 +427,66 @@ func TestCiphertextCacheNeverSubstitutesForCurrentMetadata(t *testing.T) {
 	b, _ := v.Get("policy")
 	if !bytes.Equal(b, bytes.Repeat([]byte("revoked"), 1024)) {
 		t.Fatal("served superseded immutable object")
+	}
+}
+
+// Capture authenticated old bytes, then try to reinstall them using current
+// write credentials. The API refuses their old version; relabeling the old
+// bytes with a new version cannot pass the CDS authentication check.
+func TestStorageWriterCannotReinstallOldAuthenticatedRecord(t *testing.T) {
+	service, client := metadataAt(t, filepath.Join(t.TempDir(), "state.db"), "test")
+	objects := &testObjects{values: map[string][]byte{}}
+	s := newTestStore(t, client, objects, "cluster/launch")
+	set(t, s, "policy", []byte("approved"))
+	old, err := client.Read(t.Context(), []string{s.name("policy")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set(t, s, "policy", []byte("revoked"))
+	current, err := client.Read(t.Context(), []string{s.name("policy")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	txn := metadatapilot.Transaction{Checks: []metadatapilot.Check{{Key: current[0].Key, Version: current[0].Version}}, Writes: old}
+	if err := client.Commit(t.Context(), txn); err == nil {
+		t.Fatal("reinstalled old authenticated version")
+	}
+	// Bypass client validation: enforcement must belong to the authority.
+	h := httptest.NewTLSServer(service)
+	defer h.Close()
+	body, _ := json.Marshal(txn)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, h.URL+metadatapilot.StateCommitPath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-current-state-metadata-credential")
+	req.Header.Set("X-CDS-Namespace", "test")
+	resp, err := h.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("authority accepted old version: HTTP %d", resp.StatusCode)
+	}
+
+	view, err := s.Read(t.Context(), "policy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ := view.Get("policy")
+	if string(value) != "revoked" {
+		t.Fatal("rollback changed current policy")
+	}
+	view.Clear()
+	txn.Writes[0].Version, err = metadatapilot.NextVersion(current[0].Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Commit(t.Context(), txn); err != nil {
+		t.Fatal(err)
+	}
+	if view, err := s.Read(t.Context(), "policy"); !errors.Is(err, objectwal.ErrCorrupt) {
+		if view != nil {
+			view.Clear()
+		}
+		t.Fatalf("accepted old bytes relabeled with a new version: %v", err)
 	}
 }

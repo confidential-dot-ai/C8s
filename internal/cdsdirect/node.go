@@ -154,7 +154,7 @@ func (n *Node) Provision(p cdsobject.Provision) error {
 	}
 	n.metadata, n.keyHash = metadata, sha256.Sum256(key)
 	n.allowGenesis.Store(initialize)
-	n.state.Store(NewState(store, n.cfg.Launch, n.policy))
+	n.state.Store(NewState(n.ctx, store, n.cfg.Launch, n.policy))
 	return nil
 }
 
@@ -162,6 +162,7 @@ func (n *Node) Close() {
 	n.cancel()
 	n.control.Close()
 	if s := n.state.Load(); s != nil {
+		s.policyWrites.close()
 		s.store.Close()
 	}
 	if n.metadata != nil {
@@ -225,7 +226,10 @@ func (n *Node) Secrets() *secrets.Handle        { return n.sec }
 func (n *Node) Bindings() *sandboxledger.Handle { return n.ledger }
 func (n *Node) Stats() directstate.Stats {
 	if s := n.state.Load(); s != nil {
-		return s.store.Stats()
+		stats := s.store.Stats()
+		stats.PolicyBatches, stats.PolicyRequests, stats.PolicyLargestBatch = s.policyWrites.batches.Load(), s.policyWrites.requests.Load(), s.policyWrites.largest.Load()
+		stats.PolicyAdmission = s.policyWrites.gate.Stats()
+		return stats
 	}
 	return directstate.Stats{}
 }

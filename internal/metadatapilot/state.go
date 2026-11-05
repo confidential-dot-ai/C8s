@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/confidential-dot-ai/c8s/internal/objectwal"
 )
@@ -21,7 +23,7 @@ const (
 )
 
 // Record holds an opaque current value, not a command to replay. Keys are
-// keyed hashes, values are encrypted by CDS, and versions are random nonces.
+// keyed hashes, values are encrypted by CDS, and versions are monotonically increasing per-record counters.
 // An absent record has an empty version and value. Records are never deleted
 // by this pilot, so an absence cannot be manufactured by a delete/recreate ABA.
 type Record struct {
@@ -48,6 +50,26 @@ func digestString(s string) bool {
 	return err == nil && len(b) == 32 && hex.EncodeToString(b) == s
 }
 
+// NextVersion is also enforced by the service. A client that knows storage
+// credentials cannot reinstall a previously authenticated ciphertext/version
+// pair. Whole-database rollback remains outside this trusted-service contract.
+func NextVersion(old string) (string, error) {
+	var n uint64
+	if old != "" {
+		var err error
+		n, err = strconv.ParseUint(old, 16, 64)
+		if err != nil || n == 0 || fmt.Sprintf("%016x", n) != old || n == ^uint64(0) {
+			return "", errors.New("metadata: invalid or exhausted record version")
+		}
+	}
+	return fmt.Sprintf("%016x", n+1), nil
+}
+
+func validVersion(v string) bool {
+	n, err := strconv.ParseUint(v, 16, 64)
+	return err == nil && n != 0 && fmt.Sprintf("%016x", n) == v
+}
+
 func (t Transaction) Check(read bool) error {
 	bad := errors.New("metadata: invalid state transaction")
 	if len(t.Checks) == 0 || len(t.Checks) > MaxTransactionKeys || len(t.Writes) > len(t.Checks) || (read && len(t.Writes) != 0) || (!read && len(t.Writes) == 0) {
@@ -55,7 +77,7 @@ func (t Transaction) Check(read bool) error {
 	}
 	keys := make(map[string]string, len(t.Checks))
 	for _, c := range t.Checks {
-		if _, exists := keys[c.Key]; exists || !digestString(c.Key) || (c.Version != "" && !digestString(c.Version)) || (read && c.Version != "") {
+		if _, exists := keys[c.Key]; exists || !digestString(c.Key) || (c.Version != "" && !validVersion(c.Version)) || (read && c.Version != "") {
 			return bad
 		}
 		keys[c.Key] = c.Version
@@ -63,7 +85,8 @@ func (t Transaction) Check(read bool) error {
 	seen := make(map[string]bool, len(t.Writes))
 	for _, w := range t.Writes {
 		old, exists := keys[w.Key]
-		if !exists || seen[w.Key] || !digestString(w.Version) || w.Version == old || len(w.Value) == 0 || len(w.Value) > MaxHeadBytes {
+		next, err := NextVersion(old)
+		if !exists || seen[w.Key] || err != nil || w.Version != next || len(w.Value) == 0 || len(w.Value) > MaxHeadBytes {
 			return bad
 		}
 		seen[w.Key] = true
@@ -144,7 +167,7 @@ func (c *Client) Read(ctx context.Context, keys []string) ([]Record, error) {
 		return nil, objectwal.ErrCorrupt
 	}
 	for i, r := range rows {
-		if r.Key != keys[i] || (r.Version == "" && len(r.Value) != 0) || (r.Version != "" && (!digestString(r.Version) || len(r.Value) == 0 || len(r.Value) > MaxHeadBytes)) {
+		if r.Key != keys[i] || (r.Version == "" && len(r.Value) != 0) || (r.Version != "" && (!validVersion(r.Version) || len(r.Value) == 0 || len(r.Value) > MaxHeadBytes)) {
 			return nil, objectwal.ErrCorrupt
 		}
 	}

@@ -27,13 +27,16 @@ const (
 )
 
 type State struct {
-	store  *directstate.Store
-	launch cdsha.Launch
-	policy cdsha.Policy
+	store        *directstate.Store
+	launch       cdsha.Launch
+	policy       cdsha.Policy
+	policyWrites *policyBatcher
 }
 
-func NewState(store *directstate.Store, launch cdsha.Launch, policy cdsha.Policy) *State {
-	return &State{store: store, launch: launch, policy: policy}
+func NewState(ctx context.Context, store *directstate.Store, launch cdsha.Launch, policy cdsha.Policy) *State {
+	s := &State{store: store, launch: launch, policy: policy}
+	s.policyWrites = newPolicyBatcher(ctx, s.applyPolicies)
+	return s
 }
 
 type policyRecord struct {
