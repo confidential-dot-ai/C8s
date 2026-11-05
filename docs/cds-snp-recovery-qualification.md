@@ -55,7 +55,7 @@ The connection delivered complete files but did not finish the streaming exec
 clients. The runner now requires a fresh receiver-completion token read through
 a separate authenticated exec before closing a stuck client; hash verification
 still gates VM creation. Failed completion reads retry within the original
-deadline. Eighteen local lifecycle tests include this failure mode,
+deadline. Nineteen local lifecycle tests include this failure mode,
 a receiver finishing after a client connection fails, invalid archives, replaced
 ownership, explicit VM stops, and lost API responses during cleanup.
 
@@ -81,6 +81,14 @@ checkout supplied a root-owned `0600` DHCP file, but networkd runs as
 finalizer now sets explicit permissions on that public file and the probe units.
 No shared network, host or production image configuration was changed. All
 resources from that failed attempt were removed before retrying.
+
+The corrected image's serial trace shows DHCP address acquisition and probe
+startup in approximately nine seconds. The first tunnel request preceded that
+readiness. KubeVirt's client stopped accepting connections after its failed
+guest dial while leaving the process alive. The runner now replaces that
+tunnel on retries, retaining its original deadline and requiring the same
+verified response. A regression test reproduces the still-alive but unusable
+forwarder. Boot logs are diagnostic observations, not signed recovery evidence.
 
 ## Required hardware evidence
 

@@ -155,6 +155,11 @@ hardware test, with its post-cleanup `unchanged` claim false. An unknown or
 replaced owner does not qualify for this distinction. A `Stopped` status without
 an explicit halt request does not qualify either.
 
+VM readiness can precede guest readiness. The runner recreates its owned
+port-forward after failed probe attempts: this virtctl version can leave the
+process alive after a failed first dial has ended its connection-accept loop.
+Retries retain the original deadline, full tunnel log and capsule checks.
+
 Prepare a run-specific manifest and durable ownership journal before creating
 anything. Use one 2-vCPU/4-GiB guest at a time, exact worker UIDs, only new
 test-owned storage, no hostPath writes, and a finite cleanup deadline. Preserve

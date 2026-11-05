@@ -136,6 +136,50 @@ class LifecycleTests(unittest.TestCase):
                     run.health()
                 self.assertNotIn("external_vm_stops", run.state)
 
+    def test_live_process_with_dead_tunnel_is_replaced_before_retry(self):
+        run = self.runner(FakeKube())
+        run.args.virtctl, run.args.kubeconfig, run.args.probe = "virtctl", "test-config", "probe"
+        processes = []
+
+        class Forwarder:
+            stopped = False
+
+            def poll(self):
+                return 0 if self.stopped else None
+
+            def terminate(self):
+                self.stopped = True
+
+            def wait(self, **kwargs):
+                return 0
+
+        def spawn(*args, **kwargs):
+            process = Forwarder()
+            processes.append(process)
+            return process
+
+        def request(*args, **kwargs):
+            if len(processes) == 1:
+                # The process remains alive even though it accepts no more
+                # connections after the initial guest-dial failure.
+                self.assertIsNone(processes[0].poll())
+                raise RuntimeError("guest was not ready")
+            self.assertTrue(processes[0].stopped)
+            return b'{"verified_receipt":true}'
+
+        run.command = request
+        try:
+            with patch.object(module.subprocess, "Popen", side_effect=spawn), \
+                 patch.object(module.time, "sleep"), patch.object(module.socket, "socket") as local_socket:
+                local_socket.return_value.__enter__.return_value.getsockname.return_value = ("127.0.0.1", 24445)
+                result = run.probe({"metadata": {"name": "owned-vm"}}, "seal", "seal", "sealed", "measured-image")
+            self.assertEqual({"verified_receipt": True}, result)
+            self.assertEqual(2, len(processes))
+            self.assertEqual("vm-tunnel-restarted", run.state["events"][-1]["event"])
+        finally:
+            run.stop_forward()
+        self.assertTrue(all(p.stopped for p in processes))
+
     def test_archive_finishes_while_transport_stdin_stays_open(self):
         archive = io.BytesIO()
         payload = b"bounded disposable artifact" * 20

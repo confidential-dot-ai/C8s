@@ -334,10 +334,14 @@ class Run:
         with socket.socket() as temporary:
             temporary.bind(("127.0.0.1", 0))
             port = temporary.getsockname()[1]
-        log = (self.directory / (phase + "-forward.log")).open("wb")
-        process = subprocess.Popen([self.args.virtctl, "--kubeconfig", self.args.kubeconfig, "-n", NS,
-            "port-forward", "vmi/" + name, str(port) + ":6443"], stdout=log, stderr=subprocess.STDOUT)
-        self.forward = process, log
+        def start_forward():
+            log = (self.directory / (phase + "-forward.log")).open("ab")
+            process = subprocess.Popen([self.args.virtctl, "--kubeconfig", self.args.kubeconfig, "-n", NS,
+                "port-forward", "vmi/" + name, str(port) + ":6443"], stdout=log, stderr=subprocess.STDOUT)
+            self.forward = process, log
+            return process
+
+        process = start_forward()
         # VM Ready is not guest service readiness. Only retry failed connects;
         # a sent seal with a lost response is safe (disposable independent keys).
         command = [self.args.probe, "request", "-operation", operation, "-expect", expected,
@@ -346,16 +350,23 @@ class Run:
             "-capsule-file", str(self.directory / "sentinel.json")]
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
-            need(process.poll() is None, "VM port-forward exited")
             try:
-                body = self.command(phase, command, timeout=80)
+                need(process.poll() is None, "VM port-forward exited")
+                body = self.command(phase, command, timeout=min(80, max(1, deadline - time.monotonic())))
                 receipt = json.loads(body)
                 self.atomic(self.directory / (phase + ".json"), receipt)
                 return receipt
-            except RuntimeError:
-                if b"verified unexpected outcome" in (self.directory / (phase + ".stderr")).read_bytes():
+            except (RuntimeError, subprocess.TimeoutExpired):
+                error_log = self.directory / (phase + ".stderr")
+                if error_log.exists() and b"verified unexpected outcome" in error_log.read_bytes():
                     raise
                 need(not (operation == "seal" and (self.directory / "sentinel.json").exists()), "seal saved capsule but receipt failed; retain evidence")
+                # virtctl can leave its process/listening socket alive after
+                # the first failed guest dial has ended its accept loop.
+                # Recreate the owned tunnel, retaining its complete log.
+                self.stop_forward()
+                process = start_forward()
+                self.event("vm-tunnel-restarted", phase=phase)
                 time.sleep(3)
         raise RuntimeError("verified probe response timed out")
 
