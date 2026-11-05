@@ -19,17 +19,27 @@ import (
 // it with FormatCDSAddress (internal/cmds/nri-image-policy) and its clients
 // read it back from workloadclaims.CDSAddressPath.
 
+// The refusals an address or a host name earns, so a caller can name the rule
+// it is testing.
+var (
+	ErrNotHostPort     = errors.New("must be <host>:<port>")
+	ErrPortUnserved    = errors.New("no CDS serves on")
+	ErrNotDNSHostname  = errors.New("must be a lowercase DNS hostname")
+	ErrNotIPv4         = errors.New("must be an IPv4 address")
+	ErrNotRoutableIPv4 = errors.New("must be a unicast IPv4 address")
+)
+
 // SplitCDSAddress is the host and port of the <host>:<port> this cluster's
 // CDS serves on: a DNS name the node resolves, or an IPv4 address it dials as
 // it stands.
 func SplitCDSAddress(address string) (string, uint16, error) {
 	host, portText, err := net.SplitHostPort(address)
 	if err != nil {
-		return "", 0, fmt.Errorf("%q must be <host>:<port>: %w", address, err)
+		return "", 0, fmt.Errorf("%q %w: %w", address, ErrNotHostPort, err)
 	}
 	port, err := strconv.ParseUint(portText, 10, 16)
 	if err != nil || port == 0 {
-		return "", 0, fmt.Errorf("%q names port %q, which no CDS serves on", address, portText)
+		return "", 0, fmt.Errorf("%q names port %q, which %w", address, portText, ErrPortUnserved)
 	}
 	if err := validateCDSHost(host); err != nil {
 		return "", 0, err
@@ -38,17 +48,16 @@ func SplitCDSAddress(address string) (string, uint16, error) {
 }
 
 // validateCDSHost accepts the two things a node's clients can dial: an IPv4
-// address, and a lowercase DNS name they resolve. A signed launch document
-// holds a literal to more than this (launchconfig.ValidateRoutableIPv4).
+// address, and a lowercase DNS name they resolve.
 func validateCDSHost(host string) error {
 	if address, err := netip.ParseAddr(host); err == nil {
 		if !address.Is4() {
-			return fmt.Errorf("%q must be an IPv4 address", host)
+			return fmt.Errorf("%q %w", host, ErrNotIPv4)
 		}
 		return nil
 	}
-	if len(validation.IsDNS1123Subdomain(host)) > 0 {
-		return fmt.Errorf("%q must be a lowercase DNS name or an IPv4 address", host)
+	if err := ValidateHostname(host); err != nil {
+		return fmt.Errorf("%q must be a lowercase DNS name or an IPv4 address: %w", host, err)
 	}
 	return nil
 }
@@ -133,4 +142,64 @@ func resolveNodePolicy[T any](path string, supplied []string, parse func([]byte)
 		return none, true, fmt.Errorf("node policy %s: %w", path, err)
 	}
 	return parsed, true, nil
+}
+
+// ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
+func ValidateHostname(name string) error {
+	if len(name) > 253 {
+		return fmt.Errorf("%q exceeds DNS name length", name)
+	}
+	if name == "" || net.ParseIP(name) != nil {
+		return fmt.Errorf("%q %w", name, ErrNotDNSHostname)
+	}
+	for _, label := range strings.Split(name, ".") {
+		if problems := validation.IsDNS1123Label(label); len(problems) > 0 {
+			return fmt.Errorf("%q %w: label %q %s", name, ErrNotDNSHostname, label, strings.Join(problems, "; "))
+		}
+	}
+	return nil
+}
+
+// ValidateIPv4 accepts an IPv4 address, including the loopback and
+// unspecified addresses a node reads but never publishes.
+func ValidateIPv4(raw string) error {
+	_, err := parseIPv4(raw)
+	return err
+}
+
+// ValidateRoutableIPv4 accepts an IPv4 address a node can publish or dial:
+// global unicast, so loopback, multicast and the unspecified address are
+// refused.
+func ValidateRoutableIPv4(raw string) error {
+	_, err := routableIPv4(raw)
+	return err
+}
+
+// routableIPv4 is raw as an address a peer can dial.
+func routableIPv4(raw string) (netip.Addr, error) {
+	addr, err := parseIPv4(raw)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if !addr.IsGlobalUnicast() {
+		return netip.Addr{}, ErrNotRoutableIPv4
+	}
+	return addr, nil
+}
+
+// isAddress reports whether host is written as an IP address rather than a
+// name a resolver answers.
+func isAddress(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
+}
+
+// parseIPv4 is raw as an IPv4 address. An IPv4-mapped IPv6 literal is not
+// one: the text a document carries is the text a node compares.
+func parseIPv4(raw string) (netip.Addr, error) {
+	addr, err := netip.ParseAddr(raw)
+	if err != nil || !addr.Is4() {
+		return netip.Addr{}, ErrNotIPv4
+	}
+	return addr, nil
 }

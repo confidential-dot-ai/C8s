@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -163,7 +164,7 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 // checkCDSPin requires the document to pin the CDS the customer pins: the
 // same images, each bound to the same configuration. The CDS VM's family need
 // not be the workers'.
-func checkCDSPin(cds launchconfig.CDS, own []byte) error {
+func checkCDSPin(cds cmdsutil.CDS, own []byte) error {
 	mine, err := refvalues.Parse(own)
 	if err != nil {
 		return fmt.Errorf("--cds-pin: %w", err)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -131,12 +133,16 @@ func workerRoot(t *testing.T) string {
 		}
 	}
 	writeBootID(t, root, "5a8c3b0e-9d1f-4e57-a2c6-0f3e8b7d1c24")
-	old := primaryIPv4
-	t.Cleanup(func() { primaryIPv4 = old })
-	primaryIPv4 = func() (string, error) {
-		return "10.0.0.7", nil
-	}
+	stubPrimaryIPv4(t, "10.0.0.7")
 	return root
+}
+
+// stubPrimaryIPv4 places the host on addr, the one seam over its routes.
+func stubPrimaryIPv4(t *testing.T, addr string) {
+	t.Helper()
+	old := cmdsutil.PrimaryIPv4
+	t.Cleanup(func() { cmdsutil.PrimaryIPv4 = old })
+	cmdsutil.PrimaryIPv4 = func() (netip.Addr, error) { return netip.MustParseAddr(addr), nil }
 }
 
 // tokenFile is the bootstrap token beside the document on the launch disk.
@@ -230,8 +236,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	var floor struct {
 		Allowlist struct {
 			Pull struct {
-				URL      string `yaml:"url"`
-				PinFloor uint64 `yaml:"cds_pin_floor"`
+				URL      string                  `yaml:"url"`
+				PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -275,11 +281,11 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)
 	}
-	launchFile, err := doc.CDS.LaunchFile()
+	cds, err := doc.CDS.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinned, err := cdsconfig.Parse(launchFile)
+	pinned, err := cdsconfig.Parse(cds.LaunchFile)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -49,7 +49,7 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
 		Server:                  ServerConfig{Address: "10.0.0.1", OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
-		CDS: CDS{
+		CDS: cmdsutil.CDS{
 			Address:      "cds.example.org:8443",
 			Measurements: testCDSPin(t, teetypes.FamilySNP, 2),
 			PinFloor:     9,
@@ -65,7 +65,7 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 	return doc, agentKey, agentPub
 }
 
-func testMeasuredIdentity(t *testing.T, doc Document, pub string) credrelease.MeasuredIdentity {
+func testMeasuredIdentity(t *testing.T, doc Document, pub string) launchbinding.MeasuredIdentity {
 	t.Helper()
 	image, err := runtimemeasure.IdentityFromResult(&teetypes.VerificationResult{
 		SignatureValid: true,
@@ -78,7 +78,7 @@ func testMeasuredIdentity(t *testing.T, doc Document, pub string) credrelease.Me
 	if err != nil {
 		t.Fatal(err)
 	}
-	return credrelease.MeasuredIdentity{OperatorKey: []byte(pub), Image: image}
+	return launchbinding.MeasuredIdentity{OperatorKey: []byte(pub), Image: image}
 }
 
 func testLoader(t *testing.T, doc Document, pub string) {
@@ -86,7 +86,7 @@ func testLoader(t *testing.T, doc Document, pub string) {
 	old := loadMeasuredIdentity
 	t.Cleanup(func() { loadMeasuredIdentity = old })
 	measured := testMeasuredIdentity(t, doc, pub)
-	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (launchbinding.MeasuredIdentity, error) {
 		return measured, nil
 	}
 }
@@ -286,12 +286,12 @@ func TestParseRejectsNoncanonicalRTMRIndex(t *testing.T) {
 }
 
 func TestKeylessAndFailedAttestationNeverStageARole(t *testing.T) {
-	for _, keyErr := range []error{credrelease.ErrNoOperatorKey, os.ErrNotExist, errors.New("binding mismatch")} {
+	for _, keyErr := range []error{launchbinding.ErrNoOperatorKey, os.ErrNotExist, errors.New("binding mismatch")} {
 		t.Run(keyErr.Error(), func(t *testing.T) {
 			doc, key, pub := testDocument(t, "snp", Server)
 			testLoader(t, doc, pub)
 			cfg := testConfig(t, doc, key)
-			loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(context.Context, string, string, string) (launchbinding.MeasuredIdentity, error) {
 				measured := testMeasuredIdentity(t, doc, "")
 				measured.OperatorKeyErr = keyErr
 				return measured, nil
@@ -383,8 +383,7 @@ func TestServerAddressResolution(t *testing.T) {
 		{name: "signed node address", nodeIP: "10.0.0.8", want: "10.0.0.8"},
 		{name: "primary route", resolved: "10.0.0.9", want: "10.0.0.9"},
 		{name: "no route", resolveErr: errors.New("no default route")},
-		{name: "IPv6 only", resolved: "2001:db8::1"},
-		{name: "unspecified result", resolved: "0.0.0.0"},
+		{name: "a signed address no peer can dial", nodeIP: "127.0.0.1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -393,17 +392,15 @@ func TestServerAddressResolution(t *testing.T) {
 			doc.Node.IP = tc.nodeIP
 			testLoader(t, doc, pub)
 			cfg := testConfig(t, doc, key)
-			old := chooseHostInterface
-			t.Cleanup(func() { chooseHostInterface = old })
-			chooseHostInterface = func() (net.IP, error) {
+			stubPrimaryIPv4Source(t, func() (netip.Addr, error) {
 				if tc.nodeIP != "" {
 					t.Fatal("resolver should not replace signed node IP")
 				}
 				if tc.resolveErr != nil {
-					return nil, tc.resolveErr
+					return netip.Addr{}, tc.resolveErr
 				}
-				return net.ParseIP(tc.resolved), nil
-			}
+				return netip.MustParseAddr(tc.resolved), nil
+			})
 			err := Stage(context.Background(), cfg)
 			if tc.want == "" {
 				if err == nil {
@@ -453,7 +450,7 @@ func TestMissingMeasuredImageCannotStageARole(t *testing.T) {
 			} else {
 				measured.Image = identityWithoutDigests{measured.Image}
 			}
-			loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(context.Context, string, string, string) (launchbinding.MeasuredIdentity, error) {
 				return measured, nil
 			}
 			cfg := testConfig(t, doc, key)

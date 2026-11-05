@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -130,7 +131,7 @@ func testDocument(t *testing.T) Document {
 	t.Helper()
 	return Document{
 		SchemaVersion: SchemaVersion,
-		CDS: launchconfig.CDS{
+		CDS: cmdsutil.CDS{
 			Address:      "cds.acme.example:8443",
 			Measurements: testCDSPin(t, cdsConfig(t, "192.168.0.0/16")),
 			PinFloor:     1,

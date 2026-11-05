@@ -11,7 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +19,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -72,7 +73,7 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"workloads carried by the document", Server, func(d *Document) {
 			d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
 		}, "--tenant-workloads"},
-		{"without cds", Server, func(d *Document) { d.CDS = CDS{} }, "cds.address"},
+		{"without cds", Server, func(d *Document) { d.CDS = cmdsutil.CDS{} }, "cds.address"},
 		{"cds address without port", Server, func(d *Document) { d.CDS.Address = "cds.example.com" }, "must be <host>:<port>"},
 		{"cds ipv6 address", Server, func(d *Document) { d.CDS.Address = "[2001:db8::1]:8443" }, "must be an IPv4 address"},
 		{"cds address port zero", Server, func(d *Document) { d.CDS.Address = "192.0.2.50:0" }, "no CDS serves on"},
@@ -267,13 +268,13 @@ func TestVerifyRejectsBadConfigBeforeReadingFiles(t *testing.T) {
 
 	old := loadMeasuredIdentity
 	t.Cleanup(func() { loadMeasuredIdentity = old })
-	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
-		return credrelease.MeasuredIdentity{}, errors.New("attestation-api unreachable")
+	loadMeasuredIdentity = func(context.Context, string, string, string) (launchbinding.MeasuredIdentity, error) {
+		return launchbinding.MeasuredIdentity{}, errors.New("attestation-api unreachable")
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "verify this boot's identity") {
 		t.Fatalf("self-report failure: %v", err)
 	}
-	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (launchbinding.MeasuredIdentity, error) {
 		return testMeasuredIdentity(t, doc, "not a key"), nil
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "measured launch key") {
@@ -329,21 +330,28 @@ func TestLoadStagedTrustsOnlyCompleteArtifacts(t *testing.T) {
 	}
 }
 
-func TestPrimaryIPv4FollowsTheHostRoute(t *testing.T) {
-	old := chooseHostInterface
-	t.Cleanup(func() { chooseHostInterface = old })
-	chooseHostInterface = func() (net.IP, error) { return nil, errors.New("no default route") }
-	if _, err := PrimaryIPv4(); err == nil {
-		t.Fatal("route failure ignored")
-	}
-	chooseHostInterface = func() (net.IP, error) { return net.ParseIP("192.0.2.9"), nil }
-	if ip, err := PrimaryIPv4(); err != nil || ip != "192.0.2.9" {
-		t.Fatalf("got %q, %v", ip, err)
+// stubPrimaryIPv4Source replaces the one seam over the host's routes.
+func stubPrimaryIPv4Source(t *testing.T, source func() (netip.Addr, error)) {
+	t.Helper()
+	old := cmdsutil.PrimaryIPv4
+	t.Cleanup(func() { cmdsutil.PrimaryIPv4 = old })
+	cmdsutil.PrimaryIPv4 = source
+}
+
+// Stage consults the host route only when a server omits both addresses and
+// no resolver is configured, and fails closed when the host has no route.
+func TestStageResolvesTheServerAddressFromTheHostRoute(t *testing.T) {
+	stubPrimaryIPv4Source(t, func() (netip.Addr, error) { return netip.Addr{}, errors.New("no default route") })
+	doc, key, pub := testDocument(t, "snp", Server)
+	doc.Server.Address = ""
+	doc.Node.IP = ""
+	testLoader(t, doc, pub)
+	if err := Stage(context.Background(), testConfig(t, doc, key)); err == nil || !strings.Contains(err.Error(), "resolve server address") {
+		t.Fatalf("Stage with no host route = %v, want it to fail closed", err)
 	}
 
-	// Stage consults it only when a server omits both addresses and no
-	// resolver is configured.
-	doc, key, pub := testDocument(t, "snp", Server)
+	stubPrimaryIPv4Source(t, func() (netip.Addr, error) { return netip.MustParseAddr("192.0.2.9"), nil })
+	doc, key, pub = testDocument(t, "snp", Server)
 	doc.Server.Address = ""
 	doc.Node.IP = ""
 	testLoader(t, doc, pub)
@@ -402,7 +410,7 @@ func TestVerifyReplaysTheConfiguredJournal(t *testing.T) {
 			testLoader(t, doc, pub)
 			inner := loadMeasuredIdentity
 			var got string
-			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (launchbinding.MeasuredIdentity, error) {
 				got = journal
 				return inner(ctx, platform, api, journal)
 			}
@@ -427,7 +435,7 @@ func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
 			testLoader(t, doc, pub)
 			inner := loadMeasuredIdentity
 			var got string
-			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (launchbinding.MeasuredIdentity, error) {
 				got = platform
 				return inner(ctx, platform, api, journal)
 			}

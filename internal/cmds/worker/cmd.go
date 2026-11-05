@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
@@ -24,7 +25,8 @@ func NewCmd() *cobra.Command {
 // and the CDS pin and the API server's CA from the files they name.
 type draft struct {
 	out               string
-	cds               launchconfig.CDS
+	cds               cmdsutil.CDS
+	cdsPinFloor       uint64
 	cdsPinPath        string
 	tlsSAN            string
 	router            launchconfig.Router
@@ -64,7 +66,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
 	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
 	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
-	f.Uint64Var(&d.cds.PinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	f.Uint64Var(&d.cdsPinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
 	launchconfig.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
@@ -104,6 +106,7 @@ func (d draft) render() ([]byte, error) {
 		Kubernetes:    d.kubernetes,
 	}
 	doc.CDS.Measurements = string(pin)
+	doc.CDS.PinFloor = cmdsutil.ClusterVersion(d.cdsPinFloor)
 	if !d.router.Empty() {
 		doc.Router = &d.router
 	}

@@ -26,7 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 )
 
@@ -97,7 +97,7 @@ func workerDocument(t *testing.T, cdsPin []byte) []byte {
 	}
 	data, err := yaml.Marshal(worker.Document{
 		SchemaVersion: worker.SchemaVersion,
-		CDS:           launchconfig.CDS{Address: "cds.acme.example:8443", Measurements: string(cdsPin), PinFloor: 1},
+		CDS:           cmdsutil.CDS{Address: "cds.acme.example:8443", Measurements: string(cdsPin), PinFloor: 1},
 		TLSSAN:        "c8s-router.c8s-router.svc",
 		Kubernetes: worker.Kubernetes{
 			APIServer:     "acme.k8s.example:443",

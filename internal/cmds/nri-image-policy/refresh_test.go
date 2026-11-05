@@ -22,7 +22,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -811,7 +811,7 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 func TestPolicyMeasurer(t *testing.T) {
 	orig := readOperatorKey
 	t.Cleanup(func() { readOperatorKey = orig })
-	readOperatorKey = func() ([]byte, error) { return nil, fmt.Errorf("%w: test", credrelease.ErrNoOperatorKey) }
+	readOperatorKey = func() ([]byte, error) { return nil, fmt.Errorf("%w: test", launchbinding.ErrNoOperatorKey) }
 
 	for _, tc := range []struct {
 		name     string

@@ -13,9 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/mail"
-	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -28,7 +26,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -128,7 +127,7 @@ type Document struct {
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
 	// CDS is the confidential data service this cluster's nodes trust.
-	CDS CDS `yaml:"cds" json:"cds"`
+	CDS cmdsutil.CDS `yaml:"cds" json:"cds"`
 
 	// Workloads is refused: a cluster's workload entries belong in the CDS
 	// configuration, which the generator writes.
@@ -177,22 +176,6 @@ func (r Router) Empty() bool {
 	return len(r.Hostnames) == 0 && r.ACMEEmail == "" && r.ACMEDirectoryURL == "" && r.MaxRequestBodyBytes == 0
 }
 
-// ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
-func ValidateHostname(name string) error {
-	if len(name) > 253 {
-		return fmt.Errorf("%q exceeds DNS name length", name)
-	}
-	if name == "" || net.ParseIP(name) != nil {
-		return fmt.Errorf("%q must be a lowercase DNS hostname", name)
-	}
-	for _, label := range strings.Split(name, ".") {
-		if !dnsLabel(label) {
-			return fmt.Errorf("%q must be a lowercase DNS hostname", name)
-		}
-	}
-	return nil
-}
-
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
 // Validate accepts a router block the baked router can serve.
@@ -202,7 +185,7 @@ func (r Router) Validate() error {
 	}
 	seen := make(map[string]bool, len(r.Hostnames))
 	for _, name := range r.Hostnames {
-		if err := ValidateHostname(name); err != nil {
+		if err := cmdsutil.ValidateHostname(name); err != nil {
 			return fmt.Errorf("router.hostnames: %w", err)
 		}
 		if seen[name] {
@@ -334,7 +317,7 @@ type Config struct {
 	RootDir              string
 }
 
-var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
+var loadMeasuredIdentity = launchbinding.LoadMeasuredIdentity
 
 // Verified is created only after signature, image and role authorization pass.
 // Its fields are private so staging cannot accidentally consume an unverified
@@ -367,7 +350,7 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	if api == "" {
 		api = DefaultAttestationAPIURL
 	}
-	// credrelease compares against the verified report's family ("sev-snp",
+	// launchbinding compares against the verified report's family ("sev-snp",
 	// "tdx"), not the launch tag ("snp", "tdx").
 	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, cfg.MeasuredPoliciesFile)
 	if err != nil {
@@ -429,7 +412,7 @@ func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
 	}
-	if err := d.CDS.validate(); err != nil {
+	if err := d.CDS.Validate(); err != nil {
 		return err
 	}
 	if d.Workloads != "" {
@@ -456,12 +439,12 @@ func (d *Document) validate() error {
 		return err
 	}
 	if d.Server.Address != "" || rules.namesServer {
-		if err := ValidateIPv4(d.Server.Address, true); err != nil {
+		if err := cmdsutil.ValidateRoutableIPv4(d.Server.Address); err != nil {
 			return fmt.Errorf("server.address: %w", err)
 		}
 	}
 	if d.Node.IP != "" {
-		if err := ValidateIPv4(d.Node.IP, false); err != nil {
+		if err := cmdsutil.ValidateIPv4(d.Node.IP); err != nil {
 			return fmt.Errorf("node.ip: %w", err)
 		}
 		if d.Node.IP == "0.0.0.0" {
@@ -469,7 +452,7 @@ func (d *Document) validate() error {
 		}
 	}
 	if d.Node.ExternalIP != "" {
-		if err := ValidateIPv4(d.Node.ExternalIP, true); err != nil {
+		if err := cmdsutil.ValidateRoutableIPv4(d.Node.ExternalIP); err != nil {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
 	}
@@ -530,7 +513,7 @@ func (d *Document) validate() error {
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
 	}
-	if err := ValidateHostname(d.TLSSAN); err != nil {
+	if err := cmdsutil.ValidateHostname(d.TLSSAN); err != nil {
 		return fmt.Errorf("tlsSAN: %w", err)
 	}
 	if d.Router != nil {
@@ -552,7 +535,7 @@ func validateRegistryMirrors(mirrors map[string]string) error {
 	}
 	for registry, endpoint := range mirrors {
 		host, port, hasPort := strings.Cut(registry, ":")
-		if ValidateHostname(host) != nil || (hasPort && !portNumber(port)) {
+		if cmdsutil.ValidateHostname(host) != nil || (hasPort && !portNumber(port)) {
 			return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname with an optional port", registry)
 		}
 		u, err := url.Parse(endpoint)
@@ -563,7 +546,7 @@ func validateRegistryMirrors(mirrors map[string]string) error {
 		if hasPort && !portNumber(port) {
 			return fmt.Errorf("registryMirrors: %q endpoint port must be 1..65535", registry)
 		}
-		if err := ValidateIPv4(host, true); err != nil {
+		if err := cmdsutil.ValidateRoutableIPv4(host); err != nil {
 			return fmt.Errorf("registryMirrors: %q endpoint host %w", registry, err)
 		}
 	}
@@ -616,30 +599,6 @@ func registerHex(s string) bool {
 }
 
 func mustDecodeHex(s string) []byte { b, _ := hex.DecodeString(s); return b }
-
-// ValidateIPv4 accepts an IPv4 address; routable additionally requires
-// global unicast, so loopback and unspecified addresses cannot be published.
-func ValidateIPv4(raw string, routable bool) error {
-	addr, err := netip.ParseAddr(raw)
-	if err != nil || !addr.Is4() {
-		return fmt.Errorf("must be an IPv4 address")
-	}
-	if !routable {
-		return nil
-	}
-	return ValidateRoutableIPv4(addr)
-}
-
-// ValidateRoutableIPv4 accepts an IPv4 address a node can publish or dial.
-func ValidateRoutableIPv4(addr netip.Addr) error {
-	if !addr.Is4() {
-		return fmt.Errorf("must be an IPv4 address")
-	}
-	if !addr.IsGlobalUnicast() {
-		return fmt.Errorf("must be a unicast IPv4 address")
-	}
-	return nil
-}
 
 func readBounded(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)

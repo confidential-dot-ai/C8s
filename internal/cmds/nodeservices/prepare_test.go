@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,8 +16,17 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
+
+// stubPrimaryIPv4Source replaces the one seam over the host's routes.
+func stubPrimaryIPv4Source(t *testing.T, source func() (netip.Addr, error)) {
+	t.Helper()
+	old := cmdsutil.PrimaryIPv4
+	t.Cleanup(func() { cmdsutil.PrimaryIPv4 = old })
+	cmdsutil.PrimaryIPv4 = source
+}
 
 func TestPreparationRequiresAStagedRole(t *testing.T) {
 	for _, run := range []func(string, *launchconfig.Document) error{PrepareNode, PublishNodeIP} {
@@ -27,19 +37,13 @@ func TestPreparationRequiresAStagedRole(t *testing.T) {
 }
 
 func TestPublishNodeIPResolvesTheHostRoute(t *testing.T) {
-	old := primaryIPv4
-	t.Cleanup(func() { primaryIPv4 = old })
 	doc := document(t, launchconfig.Agent)
 
-	primaryIPv4 = func() (string, error) { return "", errors.New("no default route") }
+	stubPrimaryIPv4Source(t, func() (netip.Addr, error) { return netip.Addr{}, errors.New("no default route") })
 	if err := PublishNodeIP(t.TempDir(), doc); err == nil || !strings.Contains(err.Error(), "no default route") {
 		t.Fatalf("route failure: %v", err)
 	}
-	primaryIPv4 = func() (string, error) { return "2001:db8::1", nil }
-	if err := PublishNodeIP(t.TempDir(), doc); err == nil || !strings.Contains(err.Error(), "IPv4") {
-		t.Fatalf("IPv6 route: %v", err)
-	}
-	primaryIPv4 = func() (string, error) { return "192.0.2.30", nil }
+	stubPrimaryIPv4Source(t, func() (netip.Addr, error) { return netip.MustParseAddr("192.0.2.30"), nil })
 	root := t.TempDir()
 	if err := PublishNodeIP(root, doc); err != nil {
 		t.Fatal(err)
@@ -93,12 +97,10 @@ func TestPrepareFailsClosedOnBrokenBakedInputs(t *testing.T) {
 }
 
 func TestMissingLaunchDocumentHasNoBootSideEffects(t *testing.T) {
-	old := primaryIPv4
-	t.Cleanup(func() { primaryIPv4 = old })
-	primaryIPv4 = func() (string, error) {
+	stubPrimaryIPv4Source(t, func() (netip.Addr, error) {
 		t.Fatal("resolved a host route without a launch document")
-		return "", nil
-	}
+		return netip.Addr{}, nil
+	})
 	for name, run := range map[string]func(string, *launchconfig.Document) error{
 		"prepare":         PrepareNode,
 		"publish node IP": PublishNodeIP,
@@ -216,7 +218,7 @@ func TestPrepareNamesTheExternalCDS(t *testing.T) {
 func TestPrepareRefusesAnUnrenderableCDSPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	doc := document(t, launchconfig.Server)
-	doc.CDS = launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: "{"}
+	doc.CDS = cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: "{"}
 
 	if err := PrepareNode(root, doc); err == nil {
 		t.Fatal("accepted a document whose CDS policy does not parse")

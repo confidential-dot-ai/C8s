@@ -1,3 +1,10 @@
+// Package credrelease implements the in-guest credential-release service (B4
+// of the operator-key design). It issues an operator a short-lived kube client
+// certificate, but only to a caller who proves possession of the operator
+// private key whose public half was bound into the CVM's launch identity at
+// launch — giving an external operator
+// console-free, non-TOFU admin access with no pre-shared cluster secret and
+// no trust in the untrusted host.
 package credrelease
 
 import (
@@ -9,6 +16,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
@@ -62,11 +70,19 @@ func (cfg Config) roles() Roles {
 	}
 }
 
+// measuredKeyLoader reads the operator public key the launch bound, from the
+// local attestation-api and the node's measured-policy journal.
+type measuredKeyLoader func(ctx context.Context, attestationAPIURL, measuredPoliciesFile string) ([]byte, error)
+
+// loadMeasuredOperatorKey is a package var so tests can stand in for the
+// launch-binding check: the staging path it reads is private to launchbinding.
+var loadMeasuredOperatorKey measuredKeyLoader = launchbinding.LoadMeasuredOperatorKey
+
 // Run loads the measured operator key and cluster CA, then serves the
 // armTLS-protected bootstrap and credential endpoints. It blocks until ctx is done.
 //
 // Startup order matters for the trust story:
-//  1. LoadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
+//  1. loadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
 //     matches the launch binding (TDX RTMR[3] / SNP HOSTDATA). Fails closed
 //     if the key was substituted after boot.
 //  2. loadClusterCA — the cluster client-CA that signs the operator's cert.
@@ -86,7 +102,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	cfg.Platform = family.String()
 
-	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
+	operatorPub, err := loadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return fmt.Errorf("load measured operator key: %w", err)
 	}

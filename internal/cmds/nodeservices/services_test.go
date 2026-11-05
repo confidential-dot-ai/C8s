@@ -36,7 +36,7 @@ func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	server := testPins(t).Images[0]
 	return &launchconfig.Document{
 		SchemaVersion: launchconfig.SchemaVersion, Role: role,
-		CDS: launchconfig.CDS{
+		CDS: cmdsutil.CDS{
 			Address:      "cds.example.org:8443",
 			Measurements: string(externalCDSPin(t)),
 			PinFloor:     9,
@@ -508,14 +508,14 @@ const meshPolicy = `mesh:
 const meshFloor = floor + meshPolicy
 
 // publishedPinFloor is the floor the enforcer reads out of the pull section.
-func publishedPinFloor(t *testing.T, pull map[string]any) uint64 {
+func publishedPinFloor(t *testing.T, pull map[string]any) cmdsutil.ClusterVersion {
 	t.Helper()
 	data, err := yaml.Marshal(pull)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var read struct {
-		PinFloor uint64 `yaml:"cds_pin_floor"`
+		PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
 	}
 	if err := yaml.Unmarshal(data, &read); err != nil {
 		t.Fatal(err)

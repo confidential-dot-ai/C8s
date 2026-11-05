@@ -31,8 +31,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -1057,7 +1057,7 @@ func measureWith(measure func(string) error, digest string) error {
 // openPolicyJournal opens the journal over the hardware register. Vars so tests
 // can supply a key and a register.
 var (
-	readOperatorKey   = credrelease.ReadOperatorPubkey
+	readOperatorKey   = launchbinding.ReadOperatorPubkey
 	openPolicyJournal = openJournal
 )
 
@@ -1086,7 +1086,7 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 			journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
 		}
 		if journal == nil {
-			if errors.Is(err, credrelease.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
+			if errors.Is(err, launchbinding.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
 				err = fmt.Errorf("%w: %w", errPolicyRefused, err)
 			}
 			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
