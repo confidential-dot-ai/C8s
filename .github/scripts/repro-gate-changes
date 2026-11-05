@@ -51,8 +51,7 @@ main() {
         # compares the c8s profile. Files flow from c8s into worker, never back.
         ;;
       images/node-guest/tests/* | \
-        images/node-guest/c8s/containerdcheck/* | \
-        images/node-guest/c8s/systemfloor/* | \
+        images/node-guest/tools/* | \
         images/node-guest/*.md | \
         images/node-guest/*_test.go)
         # Tests, lint tools and docs beside the image sources; never baked.

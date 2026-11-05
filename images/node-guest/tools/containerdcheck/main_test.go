@@ -12,7 +12,7 @@ const wrapper = "/usr/local/bin/c8s-runc"
 
 // bakedConfigDir is the profile's containerd directory, the one the CI gate
 // checks.
-const bakedConfigDir = "../mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
+const bakedConfigDir = "../../c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
 
 // The image as committed must pass: RKE2's own base template and the baked
 // drop-ins.

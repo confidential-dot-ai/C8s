@@ -241,7 +241,7 @@ done
 # The gate renders RKE2's base template from a vendored copy; an RKE2 bump
 # that changes it must re-vendor, or the gate checks a config the node never
 # has.
-base_tmpl="$image/c8s/containerdcheck/rke2-base-v3.toml.tmpl"
+base_tmpl="$image/tools/containerdcheck/rke2-base-v3.toml.tmpl"
 rke2_version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$image/c8s/mkosi.sync")
 if ! grep -qF "# RKE2_VERSION: $rke2_version" "$base_tmpl"; then
   echo "::error::$base_tmpl is vendored from another RKE2 than $rke2_version; re-vendor ContainerdConfigTemplateV3 from the k3s revision that RKE2 builds against and update its header"
