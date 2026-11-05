@@ -46,7 +46,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if err := p.unpinnedStaticPod(p.cfg, req.GetPod(), ctr, lookup, env, mounts); err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
-	verdict, reason, _ := p.checkContainerObserved(ctx, p.cfg, p.policy.current(), req.GetPod(), ctr, imageRef, lookup, launchFinal, env, mounts)
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, p.policy.current(), req.GetPod(), ctr, imageRef, lookup, launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}

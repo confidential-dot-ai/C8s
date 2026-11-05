@@ -790,8 +790,7 @@ func mustDigest(t *testing.T, s string) types.Digest {
 
 // checkImagePhase is checkImageAt against the current snapshot.
 func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
-	verdict, reason, _ := p.checkImageAt(ctx, cfg, p.policy.current(), check, phase)
-	return verdict, reason
+	return p.checkImageAt(ctx, cfg, p.policy.current(), check, phase)
 }
 
 // newCachedPlugin builds a plugin whose policy store admits wl (applied as a

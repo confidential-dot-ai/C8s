@@ -494,7 +494,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			reason := ""
 			if cfg.sandboxObserved() {
 				mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
-				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, "", p.policy.current(), containerEnv(ctr), mounts)
+				verdict, reason = p.checkSandbox(cfg, pod, ctr, testFloorImage, p.digestLookup(context.Background(), testFloorImage), p.policy.current(), containerEnv(ctr), mounts)
 			}
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox(%s) = %d %q, want %d", tt.name, verdict, reason, tt.want)
@@ -587,7 +587,7 @@ func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
 			ctr.Args = tt.argv
 			ctr.Env = []string{"PATH=/bin"}
 			mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
-			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, "", p.policy.current(), containerEnv(ctr), mounts)
+			verdict, reason := p.checkSandbox(cfg, pod, ctr, testFloorImage, p.digestLookup(context.Background(), testFloorImage), p.policy.current(), containerEnv(ctr), mounts)
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
 			}
@@ -827,7 +827,7 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
 	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
 	// fakeContainerd panics on Resolve.
-	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", "", p.policy.current(), nil, mounts); verdict != verdictDeny {
+	if verdict, _ := p.checkSandbox(cfg, pod, ctr, "registry/repo:tag", p.digestLookup(context.Background(), "registry/repo:tag"), p.policy.current(), nil, mounts); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(host bind, no allowlist) = %d, want deny", verdict)
 	}
 }
@@ -842,6 +842,40 @@ func TestValidationWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	// fakeContainerd panics on Resolve.
 	if err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}); err != nil {
 		t.Fatalf("ValidateContainerAdjustment(no allowlist, no mesh pod) = %v, want the create admitted", err)
+	}
+}
+
+// With no allowlist, admission resolves nothing, and the host-port and
+// capability checks after it still share one lookup.
+func TestPrivilegeChecksShareOneLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxAudit}}
+	p, _ := newCachedPlugin(cfg, &allowlist.Allowlist{Schema: allowlist.Schema})
+	digests := []string{pushDigestB, pushDigestA}
+	resolves := 0
+	p.containerd = &fakeContainerd{
+		resolve: func(context.Context, string) (string, error) {
+			digest := digests[min(resolves, len(digests)-1)]
+			resolves++
+			return digest, nil
+		},
+		network: func(context.Context, string, ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+			return ports(recordedHTTPS), nil
+		},
+		spec: func(context.Context, string) (*specs.Spec, error) {
+			s := workloadSpec()
+			s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_PTRACE")
+			return s, nil
+		},
+	}
+	const imageRef = "registry/repo:tag"
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: imageRef}
+	if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict == verdictDeny {
+		t.Fatalf("checkContainer(sandbox audit) = %d %q, want admitted", verdict, reason)
+	}
+	if resolves != 1 {
+		t.Fatalf("checkContainer resolved the tag %d times, want 1", resolves)
 	}
 }
 
