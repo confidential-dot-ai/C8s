@@ -102,7 +102,7 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 // it for the clients that verify CDS.
 func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 	t.Helper()
-	data, err := d.CDSPolicy()
+	data, err := d.CDS.Policy()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,11 +27,11 @@ func newFiles(t *testing.T, nodeSubnet string) (pinPath, caPath string) {
 
 func runNew(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := NewCmd()
+	cmd := NewNewCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs(append([]string{"new"}, args...))
+	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
 }

@@ -327,6 +327,85 @@ func TestVerifyMeasuredLaunchFileFailsClosed(t *testing.T) {
 	}
 }
 
+// tdxLaunchedWith is the RTMR[3] of a TDX guest launched with launchFile
+// that has since extended policies, from launchFile's launch-file digest.
+func tdxLaunchedWith(t *testing.T, launchFile []byte, policies ...string) []byte {
+	t.Helper()
+	digest, err := runtimemeasure.LaunchFileDigest(teetypes.FamilyTDX, launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Extend(runtimemeasure.Zero, [runtimemeasure.Size]byte(digest)), policies)
+	return reg[:]
+}
+
+var (
+	policyP = "sha256:" + strings.Repeat("1", 64)
+	policyQ = "sha256:" + strings.Repeat("2", 64)
+)
+
+// A launch bound to the file passes: on TDX its RTMR[3] seed followed by a
+// prefix of the journal, on SEV-SNP HOSTDATA.
+func TestVerifyLaunchBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+		journal  string
+	}{
+		{"tdx: register at the file's seed, no journal", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile), ""},
+		{"tdx: register at journal prefix [P] of [P,Q]", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile, policyP), policyP + "\n" + policyQ + "\n"},
+		{"sev-snp: HOSTDATA is the file's digest", teetypes.PlatformSNP, snpBinding(launchFile), ""},
+		{"sev-snp: HOSTDATA is the file's digest, and SNP ignores the journal", teetypes.PlatformSNP, snpBinding(launchFile), policyP + "\n"},
+		{"gcp-snp: HOSTDATA is the file's digest", teetypes.PlatformGcpSNP, snpBinding(launchFile), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := VerifyLaunchBinding(context.Background(), attester(t, tc.platform, tc.binding), writeJournal(t, tc.journal), launchFile); err != nil {
+				t.Fatalf("VerifyLaunchBinding: %v", err)
+			}
+		})
+	}
+}
+
+// Every refusal fails closed; only a binding compared and found different is
+// ErrLaunchFileNotBound.
+func TestVerifyLaunchBindingFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		binding  []byte
+		journal  string
+		file     []byte
+		notBound bool
+	}{
+		{"tdx: register at another document's seed", teetypes.PlatformTDX, tdxLaunchedWith(t, []byte("another document")), "", launchFile, true},
+		{"tdx: register zero, launched with no disk", teetypes.PlatformTDX, make([]byte, runtimemeasure.Size), "", launchFile, true},
+		{"tdx: register extended with Q, which journal [P] does not hold", teetypes.PlatformTDX, tdxLaunchedWith(t, launchFile, policyQ), policyP + "\n", launchFile, true},
+		{"snp: another document", teetypes.PlatformSNP, snpBinding([]byte("another document")), "", launchFile, true},
+		{"snp: fileless launch leaves HOSTDATA zero", teetypes.PlatformSNP, make([]byte, runtimemeasure.HostDataSize), "", launchFile, true},
+		{"snp: an empty file", teetypes.PlatformSNP, snpBinding(nil), "", []byte{}, false},
+		{"az-snp: HOSTDATA is the paravisor's, not the launcher's", teetypes.PlatformAzSNP, snpBinding(launchFile), "", launchFile, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifyLaunchBinding(context.Background(), attester(t, tc.platform, tc.binding), writeJournal(t, tc.journal), tc.file)
+			if err == nil {
+				t.Fatal("VerifyLaunchBinding = nil error, want a refusal")
+			}
+			if errors.Is(err, ErrLaunchFileNotBound) != tc.notBound {
+				t.Fatalf("VerifyLaunchBinding = %v, want ErrLaunchFileNotBound %v", err, tc.notBound)
+			}
+		})
+	}
+}
+
+// An unreachable attestation API is a refusal, never a binding mismatch.
+func TestVerifyLaunchBindingReportsAnUnreachableAttester(t *testing.T) {
+	err := VerifyLaunchBinding(context.Background(), "http://127.0.0.1:1", "", launchFile)
+	if err == nil || errors.Is(err, ErrLaunchFileNotBound) || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("VerifyLaunchBinding = %v, want the attestation API reported unreachable", err)
+	}
+}
+
 // operatorReport is a self-report from a guest launched with operatorPub,
 // carrying launchDigest and, on TDX, fixed RTMR pins.
 func operatorReport(platform teetypes.PlatformType, launchDigest []byte) selfReport {

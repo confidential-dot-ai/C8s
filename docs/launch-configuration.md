@@ -199,3 +199,26 @@ input: any answer but `y` or `yes` (in any case), or none, signs nothing. Every 
 launched with this document joins with these facts. Workers launched with the
 same document need no new decree; a changed document, such as one naming a
 new CA, is admitted beside the old one by a decree on the set in force.
+
+### Staging a worker document
+
+At boot, `c8s worker stage`, in the node binary, reads the launch file the
+initrd staged at `/run/confai/operator-pubkey` (`--document`) once. It
+refuses, touching nothing, on an image without `/usr/lib/c8s/worker-image`.
+It confirms through the node-local attestation API that a fresh, verified
+self-report binds the document, and only then parses it under the rules
+above. On TDX, RTMR[3] must hold the document's SHA-384 extended into the
+zeroed register, followed by a prefix of the policies in the node's
+measured-policy journal (`/run/nri-image-policy/measured-policies`), so a
+rerun after the NRI plugin measured a policy still passes. On SEV-SNP,
+`HOST_DATA` must be the document's SHA-256. It writes:
+
+| Output | Holds |
+|---|---|
+| `/run/c8s-node/cds.json` | The `cds.measurements` pin. |
+| `/run/c8s-node/router/*` | The router settings `router.*` gives, as on a server. |
+| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the CDS port, and `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges. |
+
+Every output is removed first, and again if a step fails, so a document the
+launch did not bind, or one that breaks the rules, leaves none. A rerun with
+the same document writes the same bytes.
