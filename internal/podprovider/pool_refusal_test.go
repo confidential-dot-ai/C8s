@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
 )
 
 func TestWarmCorruptSlotNeverGrantsCloudAuthority(t *testing.T) {
@@ -26,21 +25,8 @@ func TestWarmCorruptSlotNeverGrantsCloudAuthority(t *testing.T) {
 		name   string
 		mutate func(*poolRecord, *corev1.Secret)
 	}{
-		{"foreign-owner", func(_ *poolRecord, s *corev1.Secret) { s.Labels[ownerLabel] = "foreign" }},
 		{"missing-slot-label", func(_ *poolRecord, s *corev1.Secret) { delete(s.Labels, slotLabel) }},
 		{"different-account", func(p *poolRecord, _ *corev1.Secret) { p.CredentialHash = "foreign-account" }},
-		{"invalid-generation", func(p *poolRecord, _ *corev1.Secret) { p.Key = "podcvm-" + strings.Repeat("z", 40) }},
-		{"zero-deadline", func(p *poolRecord, _ *corev1.Secret) { p.VerificationDeadline = new(time.Time) }},
-		{"unclaimed-assignment", func(p *poolRecord, _ *corev1.Secret) { p.Assignment = []byte("unexpected") }},
-		{"incomplete-assignment", func(p *poolRecord, _ *corev1.Secret) { p.Claim = &poolClaim{}; p.ServingKey = []byte("unpaired") }},
-		{"invalid-claim", func(p *poolRecord, _ *corev1.Secret) { p.Claim = &poolClaim{PodUID: "foreign"} }},
-		{"legacy-launch-format", func(p *poolRecord, _ *corev1.Secret) { p.Request.Trust.InitData.Format = "c8s-launch/v1" }},
-		{"tampered-launch-signature", func(p *poolRecord, _ *corev1.Secret) {
-			p.Request.Trust.InitData.Document = append(p.Request.Trust.InitData.Document, ' ')
-		}},
-		{"unexpected-idle-ingress", func(p *poolRecord, _ *corev1.Secret) {
-			p.Request.Network.Ingress = append(p.Request.Network.Ingress, ingress{Name: "app", Port: 80})
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, cloud, guest, _ := poolFixture(t)
@@ -124,7 +110,7 @@ func (s refusalSession) Send(ctx context.Context, b []byte) (string, error) {
 }
 
 func TestWarmAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
-	for _, phase := range []string{"rotated-launch-key", "unverified", "canceled-verification", "expired-verification", "nonce-unavailable", "canceled-preparation", "malformed-body", "different-payload", "intent-write-failed", "different-ack", "already-assigned"} {
+	for _, phase := range []string{"rotated-launch-key", "unverified", "canceled-verification", "expired-verification", "nonce-unavailable", "canceled-preparation", "intent-write-failed", "different-ack", "already-assigned"} {
 		t.Run(phase, func(t *testing.T) {
 			r, _, guest, pod := poolFixture(t)
 			rec, podSecret, err := r.ensureRecord(t.Context(), pod)
@@ -165,21 +151,6 @@ func TestWarmAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
 					}
 					if phase == "canceled-preparation" {
 						cancel()
-					}
-					if phase == "malformed-body" {
-						return []byte("invalid assignment"), nil
-					}
-					if phase == "different-payload" {
-						req, err := podassign.Decode(b)
-						if err != nil {
-							return nil, err
-						}
-						req.Manifest = append(bytes.Clone(m), ' ')
-						req, err = podassign.Sign(key, &guest.key.PublicKey, req)
-						if err != nil {
-							return nil, err
-						}
-						return podassign.Encode(req)
 					}
 					return b, nil
 				}

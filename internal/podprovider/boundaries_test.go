@@ -25,7 +25,7 @@ func TestGuestReaderRefusesUnattestedStatusAndRemovesTrustFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &record{Request: req, Manifest: cfg.manifest}
+	rec := &record{instanceIntent: instanceIntent{Request: req, Manifest: cfg.manifest}}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"metadata":{"uid":"11111111-1111-1111-1111-111111111111"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}`))

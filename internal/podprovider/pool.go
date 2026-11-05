@@ -20,38 +20,22 @@ func (r *Reconciler) poolMode(ctx context.Context) (bool, error) {
 	return len(pools) > 0, err
 }
 
-// selectPool resumes a published reservation before considering another slot.
-// Only an uncommitted anchor can be reselected after a losing claim or missing
-// slot. A committed Pod never adopts a replacement allocation.
+// selectPool resolves the slot a Pod claimed, or claims one: an unclaimed
+// compatible slot nobody else has anchored, else a fresh reservation. A Pod
+// that named a slot follows that binding and never adopts a replacement.
 func (r *Reconciler) selectPool(ctx context.Context, rec *record, podSecret *corev1.Secret) (*poolRecord, *corev1.Secret, error) {
 	if rec.Pool != nil {
 		p, secret, err := r.loadPool(ctx, rec.Pool.Name)
-		missing := apierrors.IsNotFound(err) || (err == nil && secret.UID != rec.Pool.UID)
-		if missing {
-			if rec.PoolCommitted {
-				return nil, nil, errors.New("committed allocation disappeared or was replaced")
-			}
-			rec.Pool = nil
-			// CAS refuses a stale false marker if another reconciler committed it.
-			if err := r.save(ctx, rec, podSecret); err != nil {
-				return nil, nil, err
-			}
-		} else if err != nil {
-			return nil, nil, err
-		} else if p.Claim != nil && (p.Claim.PodUID != rec.UID || p.Claim.RecordUID != podSecret.UID) {
-			if rec.PoolCommitted {
-				return nil, nil, errors.New("committed allocation belongs to another Pod")
-			}
-			rec.Pool = nil
-			if err := r.save(ctx, rec, podSecret); err != nil {
-				return nil, nil, err
-			}
-		} else {
-			if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
-				return nil, nil, err
-			}
-			return p, secret, r.checkPoolBinding(rec, p)
+		if apierrors.IsNotFound(err) || (err == nil && secret.UID != rec.Pool.UID) {
+			return nil, nil, errors.New("claimed allocation disappeared or was replaced")
 		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
+			return nil, nil, err
+		}
+		return p, secret, nil
 	}
 	pools, _, err := r.allocations(ctx)
 	if err != nil {
@@ -62,19 +46,20 @@ func (r *Reconciler) selectPool(ctx context.Context, rec *record, podSecret *cor
 		if p.Claim != nil || p.DeleteRequested || p.Deleted || !r.compatiblePool(p) {
 			continue
 		}
-		// An unclaimed slot might already have a published Pod anchor after a
-		// process crash. Complete that reservation before offering it elsewhere.
-		reserved, reservedSecret, err := r.poolPod(ctx, p, secret)
+		// An unclaimed slot might already have a Pod anchor after a crash
+		// between the two claim writes. Complete that claim before offering
+		// the slot elsewhere.
+		reserved, _, err := r.poolPod(ctx, p, secret)
 		if err != nil {
 			return nil, nil, err
 		}
-		if reserved != nil && reservedSecret.UID != podSecret.UID {
+		if reserved != nil && reserved.UID != rec.UID {
 			continue
 		}
 		if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
 			return nil, nil, err
 		}
-		return p, secret, r.checkPoolBinding(rec, p)
+		return p, secret, nil
 	}
 	p, secret, err := r.reservePool(ctx)
 	if err != nil {
@@ -83,9 +68,11 @@ func (r *Reconciler) selectPool(ctx context.Context, rec *record, podSecret *cor
 	if err := r.claimPool(ctx, rec, podSecret, p, secret); err != nil {
 		return nil, nil, err
 	}
-	return p, secret, r.checkPoolBinding(rec, p)
+	return p, secret, nil
 }
 
+// poolPod finds the Pod record bound to a slot: the one its claim names, or
+// an anchor written before the claim.
 func (r *Reconciler) poolPod(ctx context.Context, p *poolRecord, secret *corev1.Secret) (*record, *corev1.Secret, error) {
 	if p.Claim != nil {
 		rec, podSecret, err := r.loadRecord(ctx, p.Claim.RecordName)
@@ -95,11 +82,11 @@ func (r *Reconciler) poolPod(ctx context.Context, p *poolRecord, secret *corev1.
 		if err != nil {
 			return nil, nil, err
 		}
-		if podSecret.UID != p.Claim.RecordUID || rec.UID != p.Claim.PodUID {
+		// The pod record names the slot before the slot is marked claimed, so a
+		// record that does not name this slot is a replacement: the claimed
+		// slot's pod is gone and the slot is destroyed.
+		if rec.UID != p.Claim.PodUID || rec.Pool == nil || rec.Pool.Name != secret.Name || rec.Pool.UID != secret.UID {
 			return nil, nil, nil
-		}
-		if rec.Pool == nil || rec.Pool.Name != secret.Name || rec.Pool.UID != secret.UID || p.Claim.DesiredDigest != desiredDigest(rec) {
-			return nil, nil, errors.New("claimed allocation lost its reciprocal Pod anchor")
 		}
 		return rec, podSecret, nil
 	}
@@ -130,6 +117,9 @@ func (r *Reconciler) removePool(ctx context.Context, p *poolRecord, secret *core
 	return removeCloudInstance(ctx, r.cloud, &p.instanceIntent, r.now(), func() error { return r.savePool(ctx, p, secret) })
 }
 
+// removePooledInstance destroys the instance through the slot the Pod claimed.
+// A slot that disappeared or was replaced is never released: its instance may
+// still run. A slot another Pod claimed was never this Pod's to destroy.
 func (r *Reconciler) removePooledInstance(ctx context.Context, rec *record, podSecret *corev1.Secret) (bool, error) {
 	if rec.Deleted {
 		return true, nil
@@ -145,24 +135,14 @@ func (r *Reconciler) removePooledInstance(ctx context.Context, rec *record, podS
 		return true, r.save(ctx, rec, podSecret)
 	}
 	p, secret, err := r.loadPool(ctx, rec.Pool.Name)
-	missing := apierrors.IsNotFound(err) || (err == nil && secret.UID != rec.Pool.UID)
-	if missing {
-		if rec.PoolCommitted {
-			return false, errors.New("refusing cleanup of a missing or replaced committed allocation")
-		}
-		rec.Pool = nil
-		rec.Deleted = true
-		return true, r.save(ctx, rec, podSecret)
+	if apierrors.IsNotFound(err) || (err == nil && secret.UID != rec.Pool.UID) {
+		return false, errors.New("refusing cleanup of a missing or replaced claimed allocation")
 	}
 	if err != nil {
 		return false, err
 	}
-	want := &poolClaim{PodUID: rec.UID, RecordName: podSecret.Name, RecordUID: podSecret.UID, DesiredDigest: desiredDigest(rec)}
+	want := &poolClaim{PodUID: rec.UID, RecordName: podSecret.Name}
 	if p.Claim != nil && !reflect.DeepEqual(p.Claim, want) {
-		if rec.PoolCommitted {
-			return false, errors.New("refusing cleanup of a foreign committed allocation")
-		}
-		// Losing a reservation CAS never authorized this Pod to touch the VM.
 		rec.Deleted = true
 		return true, r.save(ctx, rec, podSecret)
 	}
@@ -183,18 +163,18 @@ func (r *Reconciler) removePooledInstance(ctx context.Context, rec *record, podS
 // maintainPools runs under the same leader/mutex as Pod reconciliation. Cleanup
 // is independent of node availability; only replenishment needs node ownership.
 func (r *Reconciler) maintainPools(ctx context.Context) error {
-	pools, legacy, err := r.allocations(ctx)
+	pools, direct, err := r.allocations(ctx)
 	if err != nil {
 		return err
 	}
 	var pending int64
 	for _, state := range pools {
 		p := state.record
-		if p.Claim == nil && !p.DeleteRequested && !p.Deleted && p.Slot < r.cfg.MaxPods && r.compatiblePool(p) {
+		if p.Claim == nil && !p.DeleteRequested && !p.Deleted && r.compatiblePool(p) {
 			pending++
 		}
 	}
-	total := legacy + int64(len(pools))
+	total := direct + int64(len(pools))
 	if pending < r.cfg.WarmTarget && total < r.cfg.MaxPods {
 		if r.ownsNode != nil {
 			if err := r.ownsNode(ctx); err != nil {
@@ -213,15 +193,9 @@ func (r *Reconciler) maintainPools(ctx context.Context) error {
 	// Process one allocation per sweep. Network calls under the reconciliation
 	// mutex must not grow with warmTarget and starve Pod verification deadlines.
 	// The cursor is only a fairness hint; all cleanup/claim authority is durable.
-	chosen := 0
-	for i, state := range pools {
-		if state.record.Slot >= r.poolCursor {
-			chosen = i
-			break
-		}
-	}
+	chosen := int(r.poolCursor) % len(pools)
+	r.poolCursor = int64(chosen + 1)
 	p, secret := pools[chosen].record, pools[chosen].secret
-	r.poolCursor = p.Slot + 1
 	rec, podSecret, err := r.poolPod(ctx, p, secret)
 	if err != nil {
 		return err
@@ -244,11 +218,11 @@ func (r *Reconciler) maintainPools(ctx context.Context) error {
 	var earlier int64
 	for _, state := range pools[:chosen] {
 		other := state.record
-		if other.Claim == nil && !other.DeleteRequested && !other.Deleted && other.Slot < r.cfg.MaxPods && r.compatiblePool(other) {
+		if other.Claim == nil && !other.DeleteRequested && !other.Deleted && r.compatiblePool(other) {
 			earlier++
 		}
 	}
-	drain := p.DeleteRequested || p.Deleted || !r.compatiblePool(p) || p.Slot >= r.cfg.MaxPods || earlier >= r.cfg.WarmTarget || total > r.cfg.MaxPods
+	drain := p.DeleteRequested || p.Deleted || !r.compatiblePool(p) || earlier >= r.cfg.WarmTarget || total > r.cfg.MaxPods
 	if drain {
 		done, err := r.removePool(ctx, p, secret)
 		if err == nil && done {
@@ -259,6 +233,10 @@ func (r *Reconciler) maintainPools(ctx context.Context) error {
 	return r.inspectIdle(ctx, p, secret)
 }
 
+// inspectIdle verifies an unclaimed slot like an assignment target. The
+// deadline is set when a slot is reserved or first fails and cleared by a
+// successful verification, so a slot that stops verifying is destroyed one
+// verification deadline after its first failure.
 func (r *Reconciler) inspectIdle(ctx context.Context, p *poolRecord, secret *corev1.Secret) error {
 	if p.VerificationDeadline == nil {
 		deadline := r.now().Add(time.Duration(p.VerificationTimeoutSeconds) * time.Second)
@@ -282,14 +260,14 @@ func (r *Reconciler) inspectIdle(ctx context.Context, p *poolRecord, secret *cor
 	if err != nil {
 		return err
 	}
-	if in == nil || validateInstance(p.instanceRecord(), in) != nil || in.Boot.Count > 1 || in.Status == "failed" || in.Status == "terminated" || in.Status == "terminating" || in.Status == "stopped" {
+	if in == nil || validateInstance(&p.instanceIntent, in) != nil || in.Boot.Count > 1 || in.Status == "failed" || in.Status == "terminated" || in.Status == "terminating" || in.Status == "stopped" {
 		_, err := r.removePool(ctx, p, secret)
 		return err
 	}
 	if in.Status != "running" {
 		return nil
 	}
-	address, _, _, err := endpoints(p.instanceRecord(), in)
+	address, _, _, err := endpoints(p.Request.Network, in)
 	if err != nil {
 		return nil
 	}

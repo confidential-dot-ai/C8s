@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// uncertainCreateWindow bounds how long a create whose response was lost is
+// repeated under its idempotency key. Cloud retains completed idempotency
+// records for the instance lifetime plus 90 days; an older uncertain intent is
+// never turned into a new VM.
+const uncertainCreateWindow = 24 * time.Hour
+
 // instanceIntent retains one immutable Cloud create and its cleanup authority.
 // Both static Pod records and allocation slots use this exact lifecycle. The
 // signed desired Pod document is independent of a generic VM's actual launch.
@@ -49,9 +55,7 @@ func ensureCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 	} else {
 		in, err = api.Find(ctx, intent.Key)
 		if err == nil && in == nil {
-			// Never replay uncertain creates outside Cloud's known idempotency
-			// retention window. Keep the intent for authoritative resolution.
-			if now.Sub(intent.CreatedAt) > 24*time.Hour {
+			if now.Sub(intent.CreatedAt) > uncertainCreateWindow {
 				return nil, nil
 			}
 			if !intent.CreateAttempted {
@@ -102,7 +106,9 @@ func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 		return false, err
 	}
 	if in == nil && intent.InstanceID == "" && intent.CreateAttempted {
-		if now.Sub(intent.CreatedAt) > 24*time.Hour {
+		// An empty lookup cannot disprove an in-flight POST. Replay the exact
+		// persisted request and key to resolve that intent before releasing cleanup.
+		if now.Sub(intent.CreatedAt) > uncertainCreateWindow {
 			return false, errors.New("old uncertain create retained for authoritative Cloud resolution")
 		}
 		in, err = api.Create(ctx, intent.Key, intent.Request)

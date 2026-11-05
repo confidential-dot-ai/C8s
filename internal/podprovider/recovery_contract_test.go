@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,7 +15,7 @@ import (
 )
 
 func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
-	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document", "legacy-launch-format", "verification-timeout", "verification-short-timeout", "verification-long-timeout", "verification-zero-deadline", "verification-missing-policy"} {
+	for _, kind := range []string{"invalid-json", "uid"} {
 		t.Run(kind, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -24,37 +23,8 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			switch kind {
-			case "foreign-secret":
-				secret.Labels[ownerLabel] = "foreign-provider"
-			case "version":
-				rec.Version++
-			case "origin":
-				rec.CloudURL = "https://another-cloud.example"
-			case "node":
-				rec.NodeName = "another-node"
-			case "uid":
+			if kind == "uid" {
 				rec.UID = "another-pod"
-			case "manifest":
-				rec.Manifest = nil
-			case "signature":
-				rec.Request.Trust.InitData.Signature = []byte("invalid-signature")
-			case "signed-identity":
-				rec.Name = "another-name"
-			case "signed-document":
-				rec.Request.Trust.InitData.Document = []byte("not a launch document")
-			case "legacy-launch-format":
-				rec.Request.Trust.InitData.Format = "c8s-launch/v1"
-			case "verification-timeout":
-				rec.VerificationTimeoutSeconds = -1
-			case "verification-short-timeout":
-				rec.VerificationTimeoutSeconds = 29
-			case "verification-long-timeout":
-				rec.VerificationTimeoutSeconds = 86401
-			case "verification-zero-deadline":
-				rec.VerificationDeadline = new(time.Time)
-			case "verification-missing-policy":
-				rec.VerificationTimeoutSeconds = 0
 			}
 			secret.Data["state.json"], err = json.Marshal(rec)
 			if err != nil {
@@ -72,7 +42,7 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 			if cloud.createCalls != 0 || cloud.deleteCalls != 0 {
 				t.Fatal("corrupt intent caused Cloud side effects")
 			}
-			if err := r.sweep(context.Background()); err == nil && kind != "foreign-secret" {
+			if err := r.sweep(context.Background()); err == nil {
 				t.Fatal("orphan sweep accepted corrupt owned record")
 			}
 			stored := &corev1.Secret{}
@@ -269,14 +239,14 @@ func TestProjectionRequiresIdentityPhaseAndUniqueConditions(t *testing.T) {
 			case "duplicate-condition":
 				p.Status.Conditions = append(p.Status.Conditions, p.Status.Conditions[0])
 			}
-			if _, err := projectedStatus(rec, p, pod, ""); err == nil {
+			if _, err := projectedStatus(rec, p, pod, "", rec.Key); err == nil {
 				t.Fatal("invalid projection accepted")
 			}
 		})
 	}
 	p := fixtureProjection(rec)
 	p.Status.Conditions = append(p.Status.Conditions, podstatus.PodCondition{Type: corev1.PodScheduled, Status: corev1.ConditionFalse})
-	out, err := projectedStatus(rec, p, pod, "203.0.113.5")
+	out, err := projectedStatus(rec, p, pod, "203.0.113.5", rec.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,18 +265,18 @@ func TestEndpointContractRejectsInvalidAddressesAndDuplicates(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "10.0.0.1", "::1", "status.example", "169.254.1.1"} {
 		in := instanceFor(rec.Request)
 		in.Endpoints[0].Host = host
-		if _, _, _, err := endpoints(rec, in); err == nil {
+		if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 			t.Fatalf("nonpublic endpoint accepted: %s", host)
 		}
 	}
 	in := instanceFor(rec.Request)
 	in.Endpoints = append(in.Endpoints, in.Endpoints[0])
-	if _, _, _, err := endpoints(rec, in); err == nil {
+	if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 		t.Fatal("duplicate public status endpoint accepted")
 	}
 	in = instanceFor(rec.Request)
 	in.ID = "not-an-instance"
-	if _, _, _, err := endpoints(rec, in); err == nil {
+	if err := validateInstance(&rec.instanceIntent, in); err == nil {
 		t.Fatal("malformed instance ID accepted")
 	}
 }

@@ -55,9 +55,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "PodCVMOptInRequired" {
 			return ctrl.Result{}, nil
 		}
-		status := failedStatus(pod, "PodCVMOptInRequired", r.now())
-		status.Message = "Pods bound to this node must opt into Pod CVM execution"
-		return ctrl.Result{}, r.publishStatus(ctx, pod, status)
+		return ctrl.Result{}, r.publishStatus(ctx, pod, failedStatus(pod, "PodCVMOptInRequired", r.now()))
 	}
 	if pod.UID == "" {
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
@@ -70,9 +68,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// Existing cleanup authority does not depend on a healthy virtual node.
 		if rec.TerminalStatus != nil || rec.DeleteRequested || rec.Deleted {
 			return r.finish(ctx, pod, rec, secret)
-		}
-		if err := r.ensureVerificationPolicy(ctx, rec, secret); err != nil {
-			return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 		}
 		if r.verificationExpired(rec) {
 			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
@@ -114,12 +109,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := matchesPod(rec, pod); err != nil {
 		return r.unverified(ctx, pod, rec, secret, "FrozenPodChanged", err)
 	}
-	if rec.Version == 2 {
-		return r.pooled(ctx, pod, rec, secret)
-	}
+	// A direct launch owns its instance; a pooled Pod resolves the slot it
+	// claimed. From here both modes share one instance and status path.
+	var p *poolRecord
+	var slot *corev1.Secret
+	intent := &rec.instanceIntent
 	callCtx, cancel := r.verificationContext(ctx, rec)
-	in, err := r.ensureInstance(callCtx, rec, secret)
-	cancel()
+	defer cancel()
+	save := func() error { return r.save(callCtx, rec, secret) }
+	if rec.Version == 2 {
+		p, slot, err = r.selectPool(ctx, rec, secret)
+		if err != nil {
+			return r.unverified(ctx, pod, rec, secret, "AllocationPending", err)
+		}
+		if p.DeleteRequested || p.Deleted {
+			return r.stop(ctx, pod, rec, secret, "InstanceEnded")
+		}
+		intent = &p.instanceIntent
+		save = func() error { return r.savePool(callCtx, p, slot) }
+	}
+	in, err := ensureCloudInstance(callCtx, r.cloud, intent, r.now(), save)
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
@@ -132,7 +141,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if in == nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceGone")
 	}
-	if err := validateInstance(rec, in); err != nil {
+	if err := validateInstance(intent, in); err != nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceIdentityMismatch")
 	}
 	if in.Boot.Count > 1 {
@@ -142,10 +151,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case "failed", "terminated", "terminating", "stopped":
 		return r.stop(ctx, pod, rec, secret, "InstanceEnded")
 	case "running":
-		return r.running(ctx, pod, rec, secret, in)
 	default:
 		return r.unverified(ctx, pod, rec, secret, "InstanceStarting", nil)
 	}
+	if p != nil {
+		// A generic boot was created with the status port only; the pod's
+		// application ports are opened after the claim.
+		ready, err := r.poolIngress(callCtx, rec, p, in)
+		if ctx.Err() != nil {
+			return ctrl.Result{}, ctx.Err()
+		}
+		if r.verificationExpired(rec) {
+			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+		}
+		if err != nil || !ready {
+			return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
+		}
+	}
+	return r.running(ctx, callCtx, pod, rec, secret, intent, in, p, slot)
 }
 
 func matchesPod(rec *record, pod *corev1.Pod) error {
@@ -166,73 +189,44 @@ func matchesPod(rec *record, pod *corev1.Pod) error {
 	return nil
 }
 
-func (r *Reconciler) ensureInstance(ctx context.Context, rec *record, secret *corev1.Secret) (*instance, error) {
-	if rec.InstanceID != "" {
-		in, err := r.cloud.Get(ctx, rec.InstanceID)
-		if errors.Is(err, errCloudNotFound) {
-			return nil, nil
-		}
-		return in, err
-	}
-	in, err := r.cloud.Find(ctx, rec.Key)
+// running reads the pod's status from a running instance over a verified
+// connection. A pooled guest that reports no verifiable pod yet is assigned.
+func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, intent *instanceIntent, in *instance, p *poolRecord, slot *corev1.Secret) (ctrl.Result, error) {
+	address, apps, podIP, err := endpoints(rec.Request.Network, in)
 	if err != nil {
-		return nil, err
+		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
 	}
-	if in == nil {
-		// Cloud retains completed idempotency records for the instance lifetime
-		// plus 90 days. Never turn a much older uncertain intent into a new VM.
-		if r.now().Sub(rec.CreatedAt) > 24*time.Hour {
-			return nil, nil
-		}
-		if !rec.CreateAttempted {
-			rec.CreateAttempted = true
-			if err := r.save(ctx, rec, secret); err != nil {
-				return nil, err
-			}
-		}
-		in, err = r.cloud.Create(ctx, rec.Key, rec.Request)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if in == nil || in.ID == "" {
-		return nil, errors.New("cloud returned no instance identity")
-	}
-	for key, value := range rec.Request.Labels {
-		if in.Labels[key] != value {
-			return nil, errors.New("idempotency result has another owner")
-		}
-	}
-	rec.InstanceID = in.ID
-	if err := r.save(ctx, rec, secret); err != nil {
-		return nil, err
-	}
-	return in, nil
-}
-
-func (r *Reconciler) running(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, in *instance) (ctrl.Result, error) {
-	address, apps, podIP, err := endpoints(rec, in)
-	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", nil)
-	}
-	callCtx, cancel := r.verificationContext(ctx, rec)
 	projection, err := r.guest(callCtx, rec, address)
-	cancel()
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
-	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "AttestationUnavailable", err)
+	reason := "AttestationUnavailable"
+	var status corev1.PodStatus
+	if err == nil {
+		reason = "GuestStatusRefused"
+		status, err = projectedStatus(rec, projection, pod, podIP, intent.Key)
 	}
-	status, err := projectedStatus(rec, projection, pod, podIP)
 	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "GuestStatusRefused", err)
+		if p == nil {
+			return r.unverified(ctx, pod, rec, secret, reason, err)
+		}
+		err = r.assignPool(callCtx, rec, p, slot, address)
+		if ctx.Err() != nil {
+			return ctrl.Result{}, ctx.Err()
+		}
+		if r.verificationExpired(rec) {
+			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+		}
+		return r.unverified(ctx, pod, rec, secret, "AssignmentPending", err)
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
+	if p != nil && len(p.Assignment) == 0 {
+		return r.stop(ctx, pod, rec, secret, "UnexpectedAssignedGuest")
 	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
 		rec.TerminalStatus = &status
@@ -266,9 +260,6 @@ func (r *Reconciler) stop(ctx context.Context, pod *corev1.Pod, rec *record, sec
 		return ctrl.Result{}, err
 	}
 	status := failedStatus(pod, reason, r.now())
-	if reason == verificationTimeoutReason {
-		status.Message = "The Pod CVM could not be verified before its deadline; a new Pod UID is required for a new launch"
-	}
 	rec.TerminalStatus = &status
 	if err := r.save(ctx, rec, secret); err != nil {
 		return ctrl.Result{}, err
@@ -321,75 +312,13 @@ func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) erro
 	return client.IgnoreNotFound(r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 }
 
+// removeInstance destroys the instance a record owns, directly or through the
+// slot a pooled Pod claimed, and reports whether destruction is confirmed.
 func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *corev1.Secret) (bool, error) {
 	if rec.Version == 2 {
 		return r.removePooledInstance(ctx, rec, secret)
 	}
-	if rec.Deleted {
-		return true, nil
-	}
-	if !rec.DeleteRequested {
-		rec.DeleteRequested = true
-		if err := r.save(ctx, rec, secret); err != nil {
-			return false, err
-		}
-	}
-	var in *instance
-	var err error
-	if rec.InstanceID == "" {
-		in, err = r.cloud.Find(ctx, rec.Key)
-	} else {
-		in, err = r.cloud.Get(ctx, rec.InstanceID)
-	}
-	if errors.Is(err, errCloudNotFound) {
-		in, err = nil, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if in == nil && rec.InstanceID == "" && rec.CreateAttempted {
-		// An empty lookup cannot disprove an in-flight POST. Replay the exact
-		// persisted request/key to resolve that intent before releasing cleanup.
-		if r.now().Sub(rec.CreatedAt) > 24*time.Hour {
-			return false, errors.New("old uncertain create retained for authoritative Cloud resolution")
-		}
-		in, err = r.cloud.Create(ctx, rec.Key, rec.Request)
-		if err != nil {
-			return false, err
-		}
-		if in == nil {
-			return false, errors.New("create replay returned no instance")
-		}
-	}
-	if in == nil {
-		rec.Deleted = true
-		return true, r.save(ctx, rec, secret)
-	}
-	if in.ID == "" {
-		return false, errors.New("cloud returned no instance identity during deletion")
-	}
-	if rec.InstanceID != "" && in.ID != rec.InstanceID {
-		return false, errors.New("cloud get returned another instance during deletion")
-	}
-	for k, v := range rec.Request.Labels {
-		if in.Labels[k] != v {
-			return false, errors.New("refusing deletion of a foreign instance")
-		}
-	}
-	if in.Status == "terminated" {
-		rec.Deleted = true
-		return true, r.save(ctx, rec, secret)
-	}
-	if rec.InstanceID == "" {
-		rec.InstanceID = in.ID
-		if err := r.save(ctx, rec, secret); err != nil {
-			return false, err
-		}
-	}
-	if err := r.cloud.Delete(ctx, rec.InstanceID); err != nil {
-		return false, err
-	}
-	return false, nil
+	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, r.now(), func() error { return r.save(ctx, rec, secret) })
 }
 
 func (r *Reconciler) publishStatus(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus) error {

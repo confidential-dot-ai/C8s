@@ -17,17 +17,6 @@ func validVerificationTimeout(seconds int64) bool {
 	return seconds >= 30 && seconds <= 86400
 }
 
-// Older records receive one persisted upgrade window; a restart or later
-// configuration change must not refresh it or alter the frozen timeout.
-func (r *Reconciler) ensureVerificationPolicy(ctx context.Context, rec *record, secret *corev1.Secret) error {
-	if rec.VerificationTimeoutSeconds != 0 {
-		return nil
-	}
-	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
-	r.beginVerification(rec)
-	return r.save(ctx, rec, secret)
-}
-
 func (r *Reconciler) beginVerification(rec *record) {
 	deadline := r.now().Add(time.Duration(rec.VerificationTimeoutSeconds) * time.Second)
 	rec.VerificationDeadline = &deadline
