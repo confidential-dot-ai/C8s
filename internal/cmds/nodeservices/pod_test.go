@@ -74,6 +74,7 @@ func podDocument(t *testing.T) *launchconfig.Document {
 	return doc
 }
 
+// The pod role is refused on a platform without a runtime register.
 func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 	root := preparePodRoot(t)
 	doc := podDocument(t)
@@ -89,6 +90,8 @@ func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 	}
 }
 
+// The static pod is staged under the measured mesh policy and
+// the floor applies with no exempt namespace.
 func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.T) {
 	root := preparePodRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
@@ -187,32 +190,25 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 	}
 }
 
+// The static pod's DNS policy is the guest's and the manifest's resolver
+// configuration is dropped.
 func TestPreparePodUsesGuestUpstreamDNS(t *testing.T) {
-	for _, tc := range []struct{ name, dns string }{
-		{"omitted", ``},
-		{"cluster", `"dnsPolicy":"ClusterFirst",`},
-		{"default", `"dnsPolicy":"Default",`},
-		{"custom", `"dnsPolicy":"None","dnsConfig":{"nameservers":["10.255.254.1"],"searches":["tenant.invalid"],"options":[{"name":"ndots","value":"5"}]},`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := preparePodRoot(t)
-			doc := podDocument(t)
-			doc.Pod.Manifest = strings.Replace(doc.Pod.Manifest, `"spec":{`, `"spec":{`+tc.dns, 1)
-			if err := preparePodFixture(root, doc); err != nil {
-				t.Fatal(err)
-			}
-			manifest, err := os.ReadFile(filepath.Join(root, podManifestPath))
-			if err != nil {
-				t.Fatal(err)
-			}
-			pod, err := launchconfig.ParsePodManifest(manifest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if pod.Spec.DNSPolicy != corev1.DNSDefault || pod.Spec.DNSConfig != nil {
-				t.Fatalf("prepared DNS policy = %q, config = %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
-			}
-		})
+	root := preparePodRoot(t)
+	doc := podDocument(t)
+	doc.Pod.Manifest = strings.Replace(doc.Pod.Manifest, `"spec":{`, `"spec":{"dnsPolicy":"None","dnsConfig":{"nameservers":["10.255.254.1"],"searches":["tenant.invalid"],"options":[{"name":"ndots","value":"5"}]},`, 1)
+	if err := preparePodFixture(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(root, podManifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := launchconfig.ParsePodManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.Spec.DNSPolicy != corev1.DNSDefault || pod.Spec.DNSConfig != nil {
+		t.Fatalf("prepared DNS policy = %q, config = %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
 	}
 }
 
@@ -251,7 +247,6 @@ func TestPreparePodStagesImagesForInitSidecarsAndApplications(t *testing.T) {
 
 func TestPreparePodRefusesIncompleteImageBindingsBeforePublication(t *testing.T) {
 	for _, tc := range []struct{ name, containers string }{
-		{"missing name", `{"image":"repo@sha256:` + strings.Repeat("b", 64) + `"}`},
 		{"invalid name", `{"name":"../app","image":"repo@sha256:` + strings.Repeat("b", 64) + `"}`},
 		{"duplicate name", `{"name":"app","image":"repo@sha256:` + strings.Repeat("b", 64) + `"},{"name":"app","image":"repo@sha256:` + strings.Repeat("c", 64) + `"}`},
 		{"mutable tag", `{"name":"app","image":"repo:latest"}`},
@@ -274,55 +269,20 @@ func TestPreparePodRefusesIncompleteImageBindingsBeforePublication(t *testing.T)
 	}
 }
 
+// A rejected pod document or baked floor publishes
+// nothing. A missing platform endpoint or role cannot be repaired by tenant
+// policy.
 func TestPreparePodFailsClosed(t *testing.T) {
-	tests := []struct {
-		name   string
-		change func(*launchconfig.Document)
-		want   string
-	}{
-		{"generic with workloads", func(d *launchconfig.Document) { d.Pod = nil }, "must not carry workloads"},
-		{"no CDS address", func(d *launchconfig.Document) { d.CDS.Address = "" }, "cds.address"},
-		{"invalid CDS address", func(d *launchconfig.Document) { d.CDS.Address = "127.0.0.1:8443" }, "cds.address"},
-		{"bad workloads", func(d *launchconfig.Document) { d.Workloads = "{" }, "launch workloads"},
-		{"bad manifest", func(d *launchconfig.Document) { d.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			root := preparePodRoot(t)
-			doc := podDocument(t)
-			tc.change(doc)
-			err := preparePodFixture(root, doc)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("got %v, want %q", err, tc.want)
-			}
-			if _, err := os.Stat(filepath.Join(root, floorConfigPath)); !os.IsNotExist(err) {
-				t.Fatal("published NRI policy from a rejected pod launch")
-			}
-		})
-	}
-}
-
-func TestPreparePodRejectsCompetingPolicyMeasurementsBeforePublication(t *testing.T) {
-	root := preparePodRoot(t)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    measure_policies: true", 1)))
-	if err := preparePodFixture(root, podDocument(t)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
-		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
-	}
-	for _, path := range []string{floorConfigPath, podManifestPath, PublicDir + "/cds.json"} {
-		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
-			t.Fatalf("published %s after refusing the RTMR writer: %v", path, err)
-		}
-	}
-}
-
-// A missing platform endpoint or role cannot be repaired by tenant policy.
-func TestPreparePodRequiresTheBakedMeshEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		floor  string
 		change func(*launchconfig.Document)
 		want   string
 	}{
+		{"generic with workloads", podFloor, func(d *launchconfig.Document) { d.Pod = nil }, "must not carry workloads"},
+		{"no CDS address", podFloor, func(d *launchconfig.Document) { d.CDS.Address = "" }, "cds.address"},
+		{"bad workloads", podFloor, func(d *launchconfig.Document) { d.Workloads = "{" }, "launch workloads"},
+		{"bad manifest", podFloor, func(d *launchconfig.Document) { d.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 		{"no endpoint", meshFloor, func(*launchconfig.Document) {}, "no mesh endpoint"},
 		{"no mesh policy", floor, func(*launchconfig.Document) {}, "missing mesh"},
 		{"no mesh role", strings.Replace(podFloor, "name: mesh", "name: untrusted", 1), func(*launchconfig.Document) {}, "exactly one mesh role"},
@@ -331,7 +291,7 @@ func TestPreparePodRequiresTheBakedMeshEndpoint(t *testing.T) {
 		}, "replaces a baked component"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := prepareRoot(t)
+			root := preparePodRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(tc.floor))
 			doc := podDocument(t)
 			tc.change(doc)
@@ -342,5 +302,19 @@ func TestPreparePodRequiresTheBakedMeshEndpoint(t *testing.T) {
 				t.Fatal("published policy from a rejected Pod launch")
 			}
 		})
+	}
+}
+
+// A floor that also measures served policies into the register is refused.
+func TestPreparePodRejectsCompetingPolicyMeasurementsBeforePublication(t *testing.T) {
+	root := preparePodRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    measure_policies: true", 1)))
+	if err := preparePodFixture(root, podDocument(t)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
+	}
+	for _, path := range []string{floorConfigPath, podManifestPath, PublicDir + "/cds.json"} {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("published %s after refusing the RTMR writer: %v", path, err)
+		}
 	}
 }

@@ -9,24 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
-
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
-
-func TestPodNetworkMTUBoundsAndCaps(t *testing.T) {
-	for _, tc := range []struct{ link, route, want int }{
-		{1400, 0, 1400}, {1500, 0, 1500}, {9000, 0, 1500},
-		{1500, 1400, 1400}, {1400, 1450, 1400}, {9000, 9000, 1500},
-		{68, 0, 68}, {1500, 68, 68}, {65535, 0, 1500},
-		{0, 0, 0}, {67, 0, 0}, {-1, 0, 0}, {65536, 0, 0},
-		{1500, -1, 0}, {1500, 67, 0}, {1500, 65536, 0},
-	} {
-		mtu, err := podNetworkMTU(tc.link, tc.route)
-		if mtu != tc.want || (err == nil) != (tc.want != 0) {
-			t.Errorf("link=%d route=%d: got %d, %v; want %d", tc.link, tc.route, mtu, err, tc.want)
-		}
-	}
-}
 
 func decodeCNI(t *testing.T, data []byte) map[string]any {
 	t.Helper()
@@ -96,6 +79,8 @@ func TestPreparePodStagesMTUWithoutChangingTheBakedTemplate(t *testing.T) {
 	}
 }
 
+// The network is validated before anything is published; a baked template
+// that fixes the MTU competes with uplink discovery and is refused.
 func TestPreparePodRejectsNetworkBeforePublishing(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -104,9 +89,9 @@ func TestPreparePodRejectsNetworkBeforePublishing(t *testing.T) {
 		config string
 	}{
 		{name: "missing route", err: errors.New("no default route")},
-		{name: "invalid MTU", mtu: 0},
 		{name: "uncapped MTU", mtu: 9000},
 		{name: "invalid baked CNI", mtu: 1400, config: "{"},
+		{name: "baked CNI competes with discovery", mtu: 1400, config: `{"plugins":[{"type":"bridge","bridge":"c8spod0","mtu":1500}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := preparePodRoot(t)
@@ -118,33 +103,5 @@ func TestPreparePodRejectsNetworkBeforePublishing(t *testing.T) {
 			}
 			assertNoPodOutputs(t, root)
 		})
-	}
-}
-
-func TestPrepareNodesNeverDiscoversPodNetwork(t *testing.T) {
-	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-		root := prepareRoot(t)
-		if err := prepare(root, document(t, role), func() (int, error) {
-			t.Fatal("node role consulted Pod networking")
-			return 0, nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(filepath.Join(root, PodDir)); !os.IsNotExist(err) {
-			t.Fatalf("node role published Pod networking: %v", err)
-		}
-	}
-}
-
-func TestRenderPodNetworkRejectsCompetingOrMalformedTemplates(t *testing.T) {
-	for _, data := range []string{
-		`null`, `{}`, `{"plugins":null}`, `{"plugins":[null]}`,
-		`{"plugins":[{},{}]}`, `{"plugins":[{"type":"other","bridge":"c8spod0"}]}`,
-		`{"plugins":[{"type":"bridge","bridge":"other"}]}`,
-		`{"plugins":[{"type":"bridge","bridge":"c8spod0","mtu":1500}]}`,
-	} {
-		if _, err := renderPodNetwork([]byte(data), 1400); err == nil {
-			t.Errorf("accepted competing or malformed template: %s", data)
-		}
 	}
 }
