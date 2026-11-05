@@ -1,0 +1,28 @@
+# Standalone kubelet for the pod role: no API server, one static pod.
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+staticPodPath: /run/c8s-pod/manifests
+fileCheckFrequency: 2s
+syncFrequency: 10s
+# Loopback only: pod-status (:8443, armTLS) is the one external reader of
+# /pods. Anonymous AlwaysAllow is reachable from the root netns only; the pod
+# netns has no route to the VM's loopback.
+address: 127.0.0.1
+port: 10250
+readOnlyPort: 0
+enableDebuggingHandlers: false
+authentication: {anonymous: {enabled: true}, webhook: {enabled: false}}
+authorization: {mode: AlwaysAllow}
+cgroupDriver: systemd
+# NRI exclusively owns the standalone guest's packet rules.
+makeIPTablesUtilChains: false
+containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
+# The resolvers the measured image names, rendered by c8s node-services
+# prepare; never resolved's live list, which the host's DHCP can extend.
+resolvConf: /run/c8s-pod/resolv.conf
+maxPods: 1
+# Every container runs under the runtime's default seccomp profile unless its
+# manifest names another; the admission plugin refuses one that runs unfiltered.
+seccompDefault: true
+failSwapOn: false
+serializeImagePulls: false

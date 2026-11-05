@@ -13,6 +13,9 @@
 //	containerdcheck -wrapper /usr/local/bin/c8s-runc \
 //	    -config-dir images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
 //
+// -config checks a baked main config (the worker image's, or the pod role's,
+// which run containerd without RKE2) against the same drop-ins.
+//
 // -extra-runtime NAME=BINARY adds a handler the way RKE2's runtime
 // auto-detection would; the gate uses it to prove the check still fails when
 // an unwrapped runtime appears on the node's PATH.
