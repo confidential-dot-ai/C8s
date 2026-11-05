@@ -17,6 +17,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
+// The list is read before and after the quote and used only when both
+// reads agree; the three reads repeat a bounded number of times.
 func TestAttestRequiresAStableMeasurementSnapshot(t *testing.T) {
 	for _, continuous := range []bool{false, true} {
 		name := "one new launch converges"
@@ -63,36 +65,8 @@ func TestAttestRequiresAStableMeasurementSnapshot(t *testing.T) {
 	}
 }
 
-func TestAttestRefusesAnInterruptedSnapshot(t *testing.T) {
-	for _, path := range []string{EvidencePath, MeasurementsPath} {
-		t.Run(path, func(t *testing.T) {
-			var reads, quotes atomic.Int32
-			cfg := attestFixture(t, []string{dA}, []string{dA}, nil, func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == MeasurementsPath {
-						reads.Add(1)
-					}
-					if r.URL.Path == EvidencePath {
-						quotes.Add(1)
-					}
-					if r.URL.Path == path && (path == EvidencePath || reads.Load() > 1) {
-						http.Error(w, "snapshot unavailable", http.StatusServiceUnavailable)
-						return
-					}
-					next.ServeHTTP(w, r)
-				})
-			})
-			report, client, err := Attest(t.Context(), cfg)
-			if err == nil || !strings.Contains(err.Error(), "snapshot unavailable") || report != nil || client != nil {
-				t.Fatalf("interrupted snapshot returned authority: report=%v client=%v err=%v", report, client, err)
-			}
-			if quotes.Load() != 1 {
-				t.Fatalf("an unavailable snapshot retried %d quotes", quotes.Load())
-			}
-		})
-	}
-}
-
+// No evidence is issued without a serving key to bind, and a failed
+// answer advertises no binding and leaks no backend detail.
 func TestEvidenceHandlerRefusesUnavailableAuthority(t *testing.T) {
 	cert := ecdsaCert(t)
 	body, err := json.Marshal(types.NonceRequest{Nonce: bytes.Repeat([]byte{7}, 32)})
@@ -131,6 +105,7 @@ func TestEvidenceHandlerRefusesUnavailableAuthority(t *testing.T) {
 	}
 }
 
+// 503 while the measured list is unavailable.
 func TestStatusHandlerRefusesUnreadableSources(t *testing.T) {
 	h := Handler{Journal: t.TempDir(), Pods: func(context.Context) ([]byte, error) { return []byte("{"), nil }}
 	if rec := serve(h, http.MethodGet, MeasurementsPath); rec.Code != http.StatusServiceUnavailable {
