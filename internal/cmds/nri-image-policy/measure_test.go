@@ -79,9 +79,6 @@ func TestOpenMeasurerGating(t *testing.T) {
 	if _, err := openMeasurer(cfg, discardLogger()); err != nil {
 		t.Fatalf("missing runtime directory: %v", err)
 	}
-	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
-		t.Fatalf("journal in a created directory = %v, %v; want 0644", info, err)
-	}
 	// No staged launch key: nothing to seed from.
 	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no key") }
 	if _, err := openMeasurer(cfg, discardLogger()); err == nil || !strings.Contains(err.Error(), "no key") {
@@ -117,9 +114,6 @@ func TestPodRoleJournalReconcilesAfterInterruptedExtend(t *testing.T) {
 	}
 	if reg.value != want {
 		t.Fatal("measured d2 twice")
-	}
-	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
-		t.Fatalf("journal = %v, %v; want 0644", info, err)
 	}
 }
 

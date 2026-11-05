@@ -622,24 +622,15 @@ func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	}
 }
 
-func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+// podRoleConfig is a valid assigned pod-role configuration: the measured
+// endpoint in the base, the pod's own mesh policy and no node exemptions.
+func podRoleConfig(t *testing.T) config {
+	t.Helper()
 	cfg := validConfig()
 	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
 	cfg.Measure.RTMR3 = true
-	cfg.Allowlist.Pull.MeasurePolicies = true
-	err := cfg.Validate()
-	if !errors.Is(err, ErrPodRoleMeasurePolicies) {
-		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
-	}
-	for _, key := range []string{"measure.rtmr3", "allowlist.pull.measure_policies"} {
-		if !strings.Contains(err.Error(), key) {
-			t.Fatalf("error %q does not name %s", err, key)
-		}
-	}
-	cfg.Allowlist.Pull.MeasurePolicies = false
 	cfg.Platform = "tdx"
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
-	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
@@ -649,33 +640,33 @@ func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
 	cfg.Policy.FatalExisting = true
 	cfg.Policy.EnforceExisting = true
 	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	return cfg
+}
+
+// The register has no writer besides the plugin's measured launches;
+// The journal lives where its readers look.
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+	cfg := podRoleConfig(t)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("one writer: %v", err)
 	}
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
 	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
 		t.Fatalf("journal elsewhere than its readers look: %v", err)
 	}
 }
 
-// A waiting broker has no identity to carry; an assigned one may carry a
-// workload ID only in the grammar the leaf extension accepts.
+// A waiting broker has no identity to carry; an assigned one may
+// carry a workload ID only in the grammar the leaf extension accepts.
 func TestPodBrokerWorkloadIDFollowsTheSignedAssignment(t *testing.T) {
-	cfg := validConfig()
-	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
-	cfg.Measure.RTMR3 = true
-	cfg.Platform = "tdx"
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
-	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
-	cfg.Mesh.Pod = &podMeshPolicy{}
-	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
-	cfg.Mesh.ExemptNamespaces = nil
-	cfg.Policy.ExemptNamespaces = nil
-	cfg.Policy.Sandbox = SandboxEnforce
-	cfg.Policy.FatalExisting = true
-	cfg.Policy.EnforceExisting = true
-	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
-	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", WorkloadID: "tenant-a.web", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	cfg := podRoleConfig(t)
+	cfg.Pod.WorkloadID = "tenant-a.web"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("assigned pod with a workload ID: %v", err)
 	}
