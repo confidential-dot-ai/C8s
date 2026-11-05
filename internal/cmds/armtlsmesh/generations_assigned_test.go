@@ -26,7 +26,8 @@ func assignedHandshake(t *testing.T, server, client *tls.Config) error {
 }
 
 // A generation stamped with a tenant serves and reaches only peers stamped with
-// the same tenant; a generation without a stamp meshes only with unstamped peers.
+// the same tenant; a generation without a stamp meshes only with unstamped peers
+// .
 func TestGenerationAdmitsOnlyPeersOfItsOwnAssignedWorkload(t *testing.T) {
 	ca := newMeshCA(t, time.Hour)
 	for _, tc := range []struct {
