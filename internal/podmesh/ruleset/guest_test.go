@@ -11,7 +11,8 @@ import (
 )
 
 // The guest forwards a Pod's ordinary egress, but never a Pod-originated
-// packet to an advertised peer tuple: those connections are the guest's own.
+// packet to an advertised peer tuple: those connections are the guest's own
+// .
 func TestGuestForwardDeniesPeerTuplesBeforeOrdinaryEgress(t *testing.T) {
 	policy := GuestPolicy{Bridge: "c8spod0", PodAddress: netip.MustParseAddr("10.255.254.2"),
 		Peers: []Destination{{Addr: netip.MustParseAddr("203.0.113.1"), Port: 15006}}, IngressPorts: []uint16{8080}}

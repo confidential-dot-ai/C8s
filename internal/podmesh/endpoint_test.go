@@ -10,6 +10,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// The guest supplies the measured endpoint before every workload, with its
+// read-only memory-backed credential mount, and tells it the connect broker
+// socket.
 func TestGuestEndpointPrecedesWorkloadsAndOwnsPrivateRAMVolume(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "init"}},
@@ -40,6 +43,7 @@ func TestGuestEndpointPrecedesWorkloadsAndOwnsPrivateRAMVolume(t *testing.T) {
 	}
 }
 
+// A probe naming a host would make the kubelet reach a guest service.
 func TestGuestProbeCannotAskKubeletToReachAGuestService(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Host: "127.0.0.1", Path: "/attest", Port: intstr.FromInt32(8080)}}}}}}}
 	if err := InjectEndpoint(pod, "measured"); err == nil {
