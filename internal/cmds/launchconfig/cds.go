@@ -30,11 +30,11 @@ type CDS struct {
 	PinFloor uint64 `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
-// CDSPort is the port this cluster's CDS serves on, which is what a pod
+// Port is the port this cluster's CDS serves on, which is what a pod
 // ruleset admits outside the cluster for its credential clients. A document
 // naming its CDS by address holds that address to one a node can dial.
-func (d *Document) CDSPort() (uint16, error) {
-	host, port, err := cmdsutil.SplitCDSAddress(d.CDS.Address)
+func (c CDS) Port() (uint16, error) {
+	host, port, err := cmdsutil.SplitCDSAddress(c.Address)
 	if err != nil {
 		return 0, fmt.Errorf("cds.address %w", err)
 	}
@@ -56,21 +56,28 @@ func (d *Document) CDSPolicy() ([]byte, error) {
 	return refvalues.Format(pins)
 }
 
-// validateCDS requires the endpoint this cluster's clients dial and a pin
-// that is an identity for one VM: every entry bound to the exact launch file
-// it boots.
-func (d *Document) validateCDS() error {
-	if _, err := d.CDSPort(); err != nil {
+// validate requires the endpoint this cluster's clients dial and a pin that
+// is an identity for one VM: every entry bound to the exact launch file it
+// boots.
+func (c CDS) validate() error {
+	if _, err := c.Port(); err != nil {
 		return err
 	}
-	pins, err := refvalues.Parse([]byte(d.CDS.Measurements))
+	_, err := c.LaunchFile()
+	return err
+}
+
+// LaunchFile is the CDS configuration every entry of the pin binds.
+func (c CDS) LaunchFile() ([]byte, error) {
+	pins, err := refvalues.Parse([]byte(c.Measurements))
 	if err != nil {
-		return fmt.Errorf("cds.measurements: %w", err)
+		return nil, fmt.Errorf("cds.measurements: %w", err)
 	}
-	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
-		return fmt.Errorf("cds.measurements %w", err)
+	file, err := cmdsutil.CDSLaunchFile(pins)
+	if err != nil {
+		return nil, fmt.Errorf("cds.measurements: the pin %w", err)
 	}
-	return nil
+	return file, nil
 }
 
 // The pod and service ranges the node image's RKE2 configuration fixes, which

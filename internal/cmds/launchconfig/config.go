@@ -172,6 +172,11 @@ func (r Router) RequestBodyLimit() int64 {
 	return r.MaxRequestBodyBytes
 }
 
+// Empty reports whether the block sets no field.
+func (r Router) Empty() bool {
+	return len(r.Hostnames) == 0 && r.ACMEEmail == "" && r.ACMEDirectoryURL == "" && r.MaxRequestBodyBytes == 0
+}
+
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
 func ValidateHostname(name string) error {
 	if len(name) > 253 {
@@ -190,7 +195,8 @@ func ValidateHostname(name string) error {
 
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
-func (r *Router) validate() error {
+// Validate accepts a router block the baked router can serve.
+func (r Router) Validate() error {
 	if len(r.Hostnames) > maxRouterHostnames {
 		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
 	}
@@ -423,7 +429,7 @@ func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
 	}
-	if err := d.validateCDS(); err != nil {
+	if err := d.CDS.validate(); err != nil {
 		return err
 	}
 	if d.Workloads != "" {
@@ -531,7 +537,7 @@ func (d *Document) validate() error {
 		if !rules.router {
 			return fmt.Errorf("router is server-only")
 		}
-		if err := d.Router.validate(); err != nil {
+		if err := d.Router.Validate(); err != nil {
 			return err
 		}
 	}

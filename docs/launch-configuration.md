@@ -128,3 +128,29 @@ collateral that cannot be fetched) is retried with growing waits. If every
 attempt fails, the node logs which step failed and powers off instead of
 staying up with no services; KubeVirt (runStrategy Always or RerunOnFailure)
 then relaunches the VM.
+
+## Worker documents
+
+A worker runs a cluster's workloads while the cluster's Kubernetes control
+plane runs outside every TEE. Its launch file, `worker.yaml`, carries no role,
+signature or launch key. `c8s worker new` drafts one from its flags and the
+CDS pin and CA files they name, checks it under the rules below, and writes
+it to `--out`, or to stdout without one.
+
+The [document rules](#document-rules) apply.
+
+| Field | Required | Holds |
+|---|---|---|
+| `schemaVersion` | yes | `c8s-worker/v1`. |
+| `cds.address`, `cds.measurements` | yes | As in a node document above. |
+| `cds.pinFloor` | no | The lowest cluster version a worker takes a CDS pin decree at. |
+| `router.*` | no | As in a server document above. |
+| `kubernetes.apiServer` | yes | The API server's `<host>:<port>`, the host a lowercase DNS name or a unicast IPv4 address (private ones included), the port 1..65535 without leading zeros. No scheme, path, user or brackets. |
+| `kubernetes.caCertificate` | yes | One PEM `CERTIFICATE` block without headers, holding a CA certificate, with nothing but whitespace before or after it. |
+| `kubernetes.podCIDR` | yes | The pod range: IPv4, written as its network address and prefix length. |
+| `kubernetes.serviceCIDR` | yes | The Service range, under the same rules, and `/30` or wider. |
+| `kubernetes.clusterDNS` | yes | The cluster DNS Service's IPv4 address: inside `serviceCIDR`, and neither its network nor its broadcast address. |
+
+Neither range may reach into `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` or
+`224.0.0.0/4`, overlap the other, or overlap a node subnet (`nodeCIDRs`) of
+the CDS configuration that `cds.measurements` binds.
