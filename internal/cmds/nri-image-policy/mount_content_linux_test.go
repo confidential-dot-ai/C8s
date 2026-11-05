@@ -64,6 +64,10 @@ func TestTransientDMError(t *testing.T) {
 }
 
 func verityTableFixture(options string) []byte {
+	return verityTableFixtureHash("sha256", strings.Repeat("b", 64), options)
+}
+
+func verityTableFixtureHash(algorithm, rootHash, options string) []byte {
 	data := make([]byte, 8192)
 	header := (*unix.DmIoctl)(unsafe.Pointer(&data[0]))
 	header.Data_size = uint32(len(data))
@@ -74,7 +78,7 @@ func verityTableFixture(options string) []byte {
 	target := (*unix.DmTargetSpec)(unsafe.Pointer(&data[unix.SizeofDmIoctl]))
 	target.Length = 1024
 	copy(target.Target_type[:], "verity")
-	parameters := "1 8:1 8:2 4096 4096 128 1 sha256 " + strings.Repeat("b", 64) + " -" + options
+	parameters := "1 8:1 8:2 4096 4096 128 1 " + algorithm + " " + rootHash + " -" + options
 	copy(data[unix.SizeofDmIoctl+unix.SizeofDmTargetSpec:], parameters)
 	return data
 }
@@ -155,6 +159,18 @@ func TestVerityTableProof(t *testing.T) {
 			tc.change(data)
 			if safeVerityTable(data, 123) {
 				t.Fatal("accepted incomplete verity proof")
+			}
+		})
+	}
+	for _, tc := range []struct{ name, algorithm, rootHash string }{
+		{"sha1 root hash", "sha1", strings.Repeat("b", 40)},
+		{"sha512 root hash", "sha512", strings.Repeat("b", 128)},
+		{"uppercase root hash", "sha256", strings.Repeat("B", 64)},
+		{"short root hash", "sha256", strings.Repeat("b", 62)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if safeVerityTable(verityTableFixtureHash(tc.algorithm, tc.rootHash, ""), 123) {
+				t.Fatal("accepted a root hash that is not canonical sha256")
 			}
 		})
 	}

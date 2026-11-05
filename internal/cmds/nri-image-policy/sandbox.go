@@ -160,11 +160,12 @@ type hostBindGrant interface {
 // declaredBindGrant hands a launch the binds an allowlist entry declares for it.
 type declaredBindGrant struct {
 	policy *policyStore
+	snap   *policySnapshot
 	launch allowlist.RunningContainer
 }
 
 func (g declaredBindGrant) grants(m allowlist.ObservedMount) bool {
-	return g.policy.grantsHostBind(g.launch, m)
+	return g.policy.grantsHostBind(g.snap, g.launch, m)
 }
 
 // noBindGrant hands a launch no bind.

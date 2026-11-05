@@ -68,9 +68,9 @@ run_test_case() {
         # nri-image-policy grants node-root provenance only when / is the one
         # strict dm-verity device named by roothash=: no FEC or other options.
         [ -e /verity-root-mounted ] || fail "/ is not mounted read-only from /dev/mapper/root"
+        [ "$(sed -n '$=' /veritysetup-args)" = 5 ] || fail "veritysetup ran more than once or open carries extra options"
         [ "$(sed -n '1p;3p' /veritysetup-args)" = "$(printf 'open\nroot')" ] \
             || fail "veritysetup does not open the root device"
-        [ "$(sed -n '$=' /veritysetup-args)" = 5 ] || fail "veritysetup ran more than once or open carries extra options"
         [ "$(sed -n '5p' /veritysetup-args)" = "$(printf '%064d' 0)" ] || fail "veritysetup root hash is not roothash="
         : > /expected
         cmp /expected /proc/sysrq-trigger || fail "successful init changed sysrq trigger"
