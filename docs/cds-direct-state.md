@@ -25,8 +25,8 @@ the object-store and recovery enrollment settings; the selected backend is
 
 A replacement reads current identity and policy directly, and reads secrets on
 demand. It does not walk a command history. AEAD binds ciphertext to cluster,
-measured launch, namespace, record key and monotonically increasing per-record version. Keyed hashes hide
-token identifiers and secret paths from metadata. They do not hide access
+measured launch, namespace, record key and monotonically increasing per-record
+version. Keyed hashes hide token identifiers and secret paths from metadata. They do not hide access
 patterns, object sizes or transaction structure.
 
 | Record | Coordination |
@@ -40,8 +40,8 @@ patterns, object sizes or transaction structure.
 
 The policy image is gzip-compressed before encryption, with an 8 MiB decoded
 size bound checked before publication and while reading. Secret values and the
-CA private-key record are not compressed. The policy image preserves the existing audit history. That is an application
-feature, not a command log used to recover other records. It currently also
+CA private-key record are not compressed. The policy image preserves the existing
+audit history. That is an application feature, not a command log used to recover other records. It currently also
 contains redundant spent records for policy writes; secret tokens are separate.
 
 ## Concurrency and freshness
@@ -86,6 +86,38 @@ policy access; token records and unreferenced objects are retained without GC;
 existing Raft/WAL namespace is provided. A new measured configuration does not
 magically authorize recovery of an old launch. These limits preclude treating
 this pilot as a production replacement.
+
+## Frozen local result
+
+The [complete comparison](../test/pilot/cds-sealed-recovery/results/2026-11-05-direct-state.json)
+retains all five unsuccessful object-policy attempts as well as the successful
+compact-state candidate. Both final comparison arms use source `e12457fa`, tree
+`c8562291b70c73dfdb39e961805f9e9416ad2b2b`, and identical release-binary hashes.
+There are 16 client workers, two connections per replica, 100 ms added object
+latency and 2 ms added metadata latency. These are local software fixtures.
+
+| Matched workload | Metadata-WAL control | Direct current state |
+| --- | ---: | ---: |
+| Independent paths, successful writes | 64/64 | 64/64 |
+| Independent paths, writes/s; p95 | 7.43; 3.48 s | 27.81; 1.23 s |
+| Hot policy, successful writes | 64/64 | 64/64 |
+| Hot policy, writes/s; p95 | 7.11; 3.45 s | 13.69; 2.72 s |
+| Four clusters, writes/s in aggregate | 13.53 | 17.17 |
+| Four clusters, successful writes / worker flows | 64/64; 96/96 | 64/64; 96/96 |
+| Cold replacement readiness across six cases | 4.97–11.86 s | 0.54–1.05 s |
+| Revocation acknowledgement, independent / hot | 145 / 117 ms | 230 / 223 ms |
+
+Both arms retained the CA, acknowledged secrets, explicit spent-token rejection,
+cluster isolation and immediate-after-acknowledgement revocation. The direct
+candidate then passed three additional hot-policy rounds (192/192 writes,
+20.01–24.78 writes/s). This variation is one reason not to publish a production
+speedup or SLO from these samples. Revocation acknowledgement did not improve.
+
+The final hot-policy load required no object GETs or PUTs: its compressed policy
+fit inside encrypted metadata. The result does not solve high contention on a
+policy that exceeds that bound. Earlier attempts deliberately retain that
+negative evidence. The final candidate removes the extra policy batcher added
+in those experiments; the original bounded admission shards remain.
 
 ## Local acceptance so far
 
