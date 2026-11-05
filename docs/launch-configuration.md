@@ -195,7 +195,7 @@ command prints, to standard error, the API server, the CA's subject and
 SHA-256 fingerprint, the pod and Service ranges, the cluster DNS address, the
 CDS address and pin floor, the router hostnames, and the name of every node
 image it would certify. It signs only once you confirm them on standard
-input: any answer but `y` or `yes`, or none, signs nothing. Every worker
+input: any answer but `y` or `yes` (in any case), or none, signs nothing. Every worker
 launched with this document joins with these facts. Workers launched with the
 same document need no new decree; a changed document, such as one naming a
 new CA, is admitted beside the old one by a decree on the set in force.
