@@ -372,6 +372,11 @@ func serveTransportSource(network, address string) error {
 	}
 }
 
+// Two guests exchange authenticated traffic through provider and guest
+// translation with the same Pod-local address; plaintext, an untrusted
+// certificate and an endpoint without credentials deliver nothing; egress
+// carries the CVM source and no container reaches a guest service or a
+// link-local address.
 func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	if os.Geteuid() != 0 {
 		if os.Getenv("C8S_REQUIRE_NFT") == "1" {

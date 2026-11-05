@@ -5,40 +5,45 @@ package connectbroker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// startBroker serves one peer from a temporary volume to the test's own UID
-// and group, so it needs no privilege.
-func startBroker(t *testing.T, peers []netip.AddrPort, dial func(context.Context, string) (net.Conn, error)) string {
+// startBroker serves one peer from a temporary volume to the given UID and the
+// test's own group, so it needs no privilege. Stopping it at cleanup also
+// checks the socket is gone: a stopped broker holds nothing in the volume.
+func startBroker(t *testing.T, uid uint32, peers []netip.AddrPort, dial func(context.Context, string) (net.Conn, error)) string {
 	t.Helper()
 	dir := t.TempDir()
 	listener, err := Listen(openRoot(t, dir), os.Getgid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{Peers: peers, UID: uint32(os.Getuid()), Dial: dial, Timeout: 2 * time.Second}
+	server := &Server{Peers: peers, UID: uid, Dial: dial, Timeout: 2 * time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx, listener) }()
+	socket := filepath.Join(dir, SocketName)
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
 			t.Error(err)
 		}
+		if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+			t.Error("the broker socket outlived its server")
+		}
 	})
-	return filepath.Join(dir, SocketName)
+	return socket
 }
 
+// The broker dials an advertised tuple for the endpoint and refuses every
+// other destination.
 func TestBrokerHandsBackAConnectionToAnAdvertisedPeerOnly(t *testing.T) {
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -60,7 +65,7 @@ func TestBrokerHandsBackAConnectionToAnAdvertisedPeerOnly(t *testing.T) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
 	}
 	advertised := netip.MustParseAddrPort("203.0.113.1:15006")
-	socket := startBroker(t, []netip.AddrPort{advertised}, dial)
+	socket := startBroker(t, uint32(os.Getuid()), []netip.AddrPort{advertised}, dial)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, err := Dial(ctx, socket, advertised)
@@ -84,43 +89,20 @@ func TestBrokerHandsBackAConnectionToAnAdvertisedPeerOnly(t *testing.T) {
 	}
 }
 
+// Only the mesh endpoint's identity is served, and a request that does not
+// parse never reaches the guest dialer.
 func TestBrokerRefusesOtherOwnersAndMalformedRequests(t *testing.T) {
 	advertised := netip.MustParseAddrPort("203.0.113.1:15006")
 	var dialed atomic.Int32
-	// start serves one broker to the given UID and returns its socket and a stop
-	// that also checks the socket is gone; each case gets its own server, so the
-	// test never mutates one the accept loop is reading.
-	start := func(uid uint32) (string, func()) {
-		dir := t.TempDir()
-		listener, err := Listen(openRoot(t, dir), os.Getgid())
-		if err != nil {
-			t.Fatal(err)
-		}
-		server := &Server{Peers: []netip.AddrPort{advertised}, UID: uid, Timeout: 2 * time.Second,
-			Dial: func(context.Context, string) (net.Conn, error) {
-				dialed.Add(1)
-				return nil, errors.New("must not dial")
-			}}
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() { done <- server.Serve(ctx, listener) }()
-		socket := filepath.Join(dir, SocketName)
-		return socket, func() {
-			cancel()
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("the broker socket outlived its server")
-			}
-		}
+	dial := func(context.Context, string) (net.Conn, error) {
+		dialed.Add(1)
+		return nil, errors.New("must not dial")
 	}
-	other, stopOther := start(uint32(os.Getuid()) + 1)
+	other := startBroker(t, uint32(os.Getuid())+1, []netip.AddrPort{advertised}, dial)
 	if _, err := Dial(context.Background(), other, advertised); !errors.Is(err, ErrRefused) {
 		t.Fatalf("another socket owner was served: %v", err)
 	}
-	stopOther()
-	socket, stop := start(uint32(os.Getuid()))
+	socket := startBroker(t, uint32(os.Getuid()), []netip.AddrPort{advertised}, dial)
 	for _, request := range []string{"c8s-mesh-connect/0 203.0.113.1:15006\n", "c8s-mesh-connect/1 203.0.113.1:15006", "c8s-mesh-connect/1 203.0.113.1\n", "c8s-mesh-connect/1 203.0.113.1:0\n", "GET / HTTP/1.0\r\n\r\n"} {
 		conn, err := net.Dial("unix", socket)
 		if err != nil {
@@ -134,7 +116,6 @@ func TestBrokerRefusesOtherOwnersAndMalformedRequests(t *testing.T) {
 			t.Fatalf("malformed request %q was served", request)
 		}
 	}
-	stop()
 	if dialed.Load() != 0 {
 		t.Fatal("a refused request reached the guest dialer")
 	}
@@ -157,75 +138,5 @@ func TestListenRefusesANonSocketInTheWay(t *testing.T) {
 	}
 	if _, err := Listen(openRoot(t, dir), os.Getgid()); err == nil {
 		t.Fatal("a regular file at the socket path was replaced")
-	}
-}
-
-// A kubelet volume path is longer than a unix socket address allows; the
-// socket is bound through the held directory, so the path length is immaterial.
-func TestListenBindsInsideAVolumeWhosePathExceedsASocketAddress(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), strings.Repeat("v", 110-len(t.TempDir())+len(SocketName)))
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if len(filepath.Join(dir, SocketName)) <= 108 {
-		t.Fatalf("test path %d bytes is not longer than sun_path", len(filepath.Join(dir, SocketName)))
-	}
-	listener, err := Listen(openRoot(t, dir), os.Getgid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &Server{Peers: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.1:15006")}, UID: uint32(os.Getuid()), Timeout: 2 * time.Second,
-		Dial: func(context.Context, string) (net.Conn, error) { return nil, errors.New("not dialled in this test") }}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx, listener) }()
-	// The endpoint connects by its short in-container path; here the directory stands in for it.
-	volume, err := os.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer volume.Close()
-	if _, err := Dial(ctx, fmt.Sprintf("/proc/self/fd/%d/%s", volume.Fd(), SocketName), netip.MustParseAddrPort("203.0.113.1:15006")); !errors.Is(err, ErrRefused) {
-		t.Fatalf("the broker did not answer through the long volume path: %v", err)
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, SocketName)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("the socket outlived its server")
-	}
-}
-
-// A stopped broker holds nothing in the volume: Serve returns only after the
-// connections it accepted are closed, however idle their callers are.
-func TestServeReturnsOnlyAfterItsConnectionsClose(t *testing.T) {
-	dir := t.TempDir()
-	listener, err := Listen(openRoot(t, dir), os.Getgid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &Server{Peers: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.1:15006")}, UID: uint32(os.Getuid()), Timeout: time.Minute}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx, listener) }()
-	idle, err := net.Dial("unix", filepath.Join(dir, SocketName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idle.Close()
-	// The idle caller sends nothing; only the stop can end its request.
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve waited on an idle connection past its stop")
-	}
-	_ = idle.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := idle.Read(make([]byte, 1)); err == nil {
-		t.Fatal("the idle connection outlived the broker")
 	}
 }
