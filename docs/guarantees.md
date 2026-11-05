@@ -114,9 +114,10 @@ neither and has its own measurement, so exec posture is what a verifier pins.
 `gke` and `aks` keep the ordinary exec path
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
-- **Privilege floor**: the `no_new_privs`, namespace, and privileged-mark limits
-  `c8s-runc` enforces on every container of a member pod outside the node's own
-  exempt namespaces; the pod sandbox keeps the privileges the runtime gave it —
+- **Privilege floor**: the capability, `no_new_privs`, namespace, and
+  privileged-mark limits `c8s-runc` enforces on every container of a member pod
+  outside the node's own exempt namespaces; the pod sandbox keeps the
+  privileges the runtime gave it —
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor).
 - **Platform role**: the identity a measured base grants one C8s node-side
   invocation, with the command line and mounts its measured declaration pins —

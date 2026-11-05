@@ -76,6 +76,10 @@ type Wrapper struct {
 	// ExecGrantDir is where admission records the execs each container is
 	// granted (nriimagepolicy.ExecGrantDir).
 	ExecGrantDir string
+	// CapGrantDir is where admission records the capabilities each container
+	// is granted beyond the node's default set
+	// (nriimagepolicy.CapabilityGrantDir).
+	CapGrantDir string
 	// CopyDir is where the checked process of an allowed exec is copied, on a
 	// filesystem every node has writable.
 	CopyDir string
@@ -99,6 +103,7 @@ func New(stderr io.Writer) Wrapper {
 		Floor:        floor,
 		FloorError:   err,
 		ExecGrantDir: nriimagepolicy.ExecGrantDir,
+		CapGrantDir:  nriimagepolicy.CapabilityGrantDir,
 		CopyDir:      "/run",
 		Stdin:        os.Stdin,
 		Exec:         syscall.Exec,
@@ -164,7 +169,7 @@ func (w Wrapper) checkFloor(args []string) error {
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, w.Floor)
+	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,

@@ -305,6 +305,28 @@ func (i *Index) GrantsHostBind(r RunningContainer, m ObservedMount) bool {
 	return i.AdmitsContainerWhere(r, Container.LaunchPinned)
 }
 
+// DeclaredCapabilities is what each declaration admitting this launch whole
+// declares for it, one set per declaration and none for a declaration that
+// declares no capability. A container's capabilities lie within one of the
+// sets: declarations are never combined.
+func (i *Index) DeclaredCapabilities(r RunningContainer) [][]string {
+	if i == nil {
+		return nil
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = d.String()
+	var declared [][]string
+	for _, c := range i.byDigest[r.Digest] {
+		if len(c.Capabilities) > 0 && c.admits(r) {
+			declared = append(declared, c.Capabilities)
+		}
+	}
+	return declared
+}
+
 // GrantsCapabilities reports whether one declaration declares every capability
 // in caps and admits this launch whole; declarations are never combined.
 func (i *Index) GrantsCapabilities(r RunningContainer, caps []string) bool {

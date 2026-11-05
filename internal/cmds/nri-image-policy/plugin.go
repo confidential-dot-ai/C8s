@@ -168,6 +168,20 @@ func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []st
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
 }
 
+// declaredCapabilities is every capability the base, less its static-pod
+// entries, or the applied allowlist declares for this launch
+// (allowlist.Index.DeclaredCapabilities).
+func (s *policyStore) declaredCapabilities(r allowlist.RunningContainer) [][]string {
+	if s == nil {
+		return nil
+	}
+	declared := s.grants.DeclaredCapabilities(r)
+	if snap := s.current(); snap != nil {
+		declared = append(declared, snap.index.DeclaredCapabilities(r)...)
+	}
+	return declared
+}
+
 // declaresNodeRoot reports whether the base or applied allowlist has a
 // nodeRootFile rule for digest.
 func (s *policyStore) declaresNodeRoot(digest string) bool {
@@ -273,6 +287,10 @@ type plugin struct {
 	// execGrants records the started containers the measured base grants execs,
 	// for the runtime wrapper (execgrants.go). nil where the base grants none.
 	execGrants *execGrants
+	// capGrants records the capabilities the allowlists declare for each
+	// container admission clears, for the runtime wrapper
+	// (capabilitygrants.go).
+	capGrants *capabilityGrants
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -351,6 +369,9 @@ func newPlugin(
 	if grantsExecs(cfg.Allowlist.Base) {
 		p.execGrants = &execGrants{dir: ExecGrantDir}
 	}
+	// A served allowlist can declare capabilities the base does not, so the
+	// records are kept whatever the base declares.
+	p.capGrants = &capabilityGrants{dir: CapabilityGrantDir}
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
@@ -452,6 +473,7 @@ func wasStarted(ctr *api.Container) bool {
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	p.running.remove(ctr.GetId())
 	p.execGrants.remove(ctr.GetId())
+	p.capGrants.remove(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
