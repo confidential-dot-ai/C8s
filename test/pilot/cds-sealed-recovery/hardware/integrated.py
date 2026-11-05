@@ -146,9 +146,9 @@ class Integrated(Run):
                     try: process.wait(timeout=5)
                     except subprocess.TimeoutExpired: process.kill(); process.wait()
 
-    def http(self, port, method, path, value=None, timeout=25):
+    def http(self, port, method, path, value=None, timeout=25, connection=None):
         # Only an authenticated native VM tunnel on loopback; never use a proxy.
-        c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        c = connection or http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         try:
             c.request(method, path, None if value is None else json.dumps(value), {"Content-Type": "application/json"})
             r = c.getresponse()
@@ -156,7 +156,8 @@ class Integrated(Run):
             need(len(body) <= 32 * 1024**2, "oversized relay response")
             return r.status, json.loads(body) if body and r.status in (200, 202) else None
         finally:
-            c.close()
+            if connection is None:
+                c.close()
 
     def tunnel(self, vm, phase):
         if self.forward:
@@ -223,20 +224,29 @@ class Integrated(Run):
 
         def serve_storage():
             store = None
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=25)
+            trace = (self.directory / (phase + "-storage-timings.jsonl")).open("w")
             try:
                 store = DurableObjects(self.directory / "objects.sqlite", self.state["prefix"])
                 while not stop.is_set():
-                    code, q = self.http(port, "GET", "/v1/storage")
+                    code, q = self.http(port, "GET", "/v1/storage", connection=connection)
                     if code == 204:
                         continue
                     need(code == 200, "storage poll failed")
+                    started = time.monotonic()
                     response = self.delegate(phase, q, parameters, collateral) if q["method"] == "CUSTODY" else store.answer(q)
-                    code, _ = self.http(port, "POST", "/v1/storage", response)
+                    committed = time.monotonic()
+                    code, _ = self.http(port, "POST", "/v1/storage", response, connection=connection)
                     need(code in (204, 409), "storage response failed")
+                    trace.write(json.dumps({"method": q["method"], "key": q["path"], "commit_ms": (committed-started)*1000,
+                        "reply_ms": (time.monotonic()-committed)*1000, "completion_status": code}) + "\n")
+                    trace.flush()
             except Exception as error:
                 if not stop.is_set():
                     failures.put(str(error))
             finally:
+                connection.close()
+                trace.close()
                 counters = {"reads": 0, "writes": 0, "conflicts": 0}
                 if store is not None:
                     counters.update(reads=store.reads, writes=store.writes, conflicts=store.conflicts)
@@ -245,6 +255,7 @@ class Integrated(Run):
 
         worker = threading.Thread(target=serve_storage, daemon=True)
         worker.start()
+        status_connection = http.client.HTTPConnection("127.0.0.1", port, timeout=25)
         try:
             code, _ = self.http(port, "POST", "/v1/start", request)
             need(code == 202, "phase start refused or ambiguous")
@@ -256,7 +267,7 @@ class Integrated(Run):
                 except queue.Empty:
                     failure = None
                 need(failure is None, "external durable store failed: " + str(failure))
-                code, reply = self.http(port, "GET", "/v1/result")
+                code, reply = self.http(port, "GET", "/v1/result", connection=status_connection)
                 if code == 200:
                     self.atomic(self.directory / (phase + "-reply.json"), reply)
                     break
@@ -268,6 +279,7 @@ class Integrated(Run):
             else:
                 raise RuntimeError("CDS phase deadline exceeded")
         finally:
+            status_connection.close()
             stop.set()
             worker.join(timeout=27)
             need(not worker.is_alive(), "storage worker did not stop")
@@ -276,6 +288,35 @@ class Integrated(Run):
         receipt = json.loads((self.directory / (phase + "-receipt.json")).read_text())
         self.event("cds-phase-passed", phase=phase, checks=receipt["result"].get("checks", {}))
         return receipt
+
+    def boot_pair(self, vms, phase):
+        # Start both owned VMs before waiting for readiness. They must already
+        # have been deleted together; no old process or secret stays alive.
+        pending = []
+        for role, vm in vms:
+            row = self.create(vm)
+            _, current = self.kube.call("GET", row["path"])
+            need(current["metadata"]["uid"] == row["uid"], "VM replaced before start")
+            self.command(phase + "-" + role + "-start", [self.args.virtctl, "--kubeconfig", self.args.kubeconfig,
+                "-n", NS, "start", vm["metadata"]["name"]])
+            _, current = self.kube.call("GET", row["path"])
+            need(current["metadata"]["uid"] == row["uid"] and current["spec"].get("runStrategy") == "Manual", "unexpected VM lifetime policy")
+            pending.append((role, vm, row))
+        ready = {}
+        deadline = time.monotonic() + 300
+        while pending and time.monotonic() < deadline:
+            for role, vm, row in list(pending):
+                code, vmi = self.kube.call("GET", VMI + "/" + vm["metadata"]["name"], expected=(200, 404))
+                if code != 200 or not any(x["type"] == "Ready" and x["status"] == "True" for x in vmi.get("status", {}).get("conditions", [])):
+                    continue
+                need(any(o["uid"] == row["uid"] for o in vmi["metadata"].get("ownerReferences", [])), "VMI has unexpected owner")
+                need(vmi["status"].get("nodeName") == vm["spec"]["template"]["spec"]["nodeSelector"]["kubernetes.io/hostname"], "wrong worker placement")
+                self.event("vm-ready", phase=phase + "-" + role, vmi_uid=vmi["metadata"]["uid"], vm_uid=row["uid"], node=vmi["status"]["nodeName"])
+                ready[role] = (row, vmi["metadata"]["uid"])
+                pending.remove((role, vm, row))
+            if pending: time.sleep(3)
+        need(not pending, "owned VMI readiness timed out")
+        return ready
 
     def render(self, run, node, uid, launch):
         expiry = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=45)).replace(microsecond=0).isoformat()
@@ -366,11 +407,12 @@ class Integrated(Run):
         receipts, custody_receipts, vmis = [], [enrolled], [enrollment_vmi]
         for phase in ("seed", "recover"):
             self.health()
-            custody_row, custody_vmi = self.boot(custodian_vm, phase + "-custodian")
+            pair = self.boot_pair((("custodian", custodian_vm), ("cds", vm)), phase)
+            custody_row, custody_vmi = pair["custodian"]
             need(custody_vmi not in vmis, "new custodian VMI required")
             vmis.append(custody_vmi)
             self.custodian_port = self.tunnel(custodian_vm, phase + "-custodian")
-            row, vmi = self.boot(vm, phase)
+            row, vmi = pair["cds"]
             need(vmi not in vmis, "new VMI required")
             vmis.append(vmi)
             receipts.append(self.phase(vm, phase, launch, parameters, collateral))

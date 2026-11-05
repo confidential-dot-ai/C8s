@@ -83,10 +83,14 @@ available binding fields: policy, image ID, family ID, measurement, GuestSVN
 and TCB version. The last two inputs are preserved in the authenticated
 capsule so an increase in running SVN does not silently select a new key.
 
-SNP does **not** include HOST_DATA in its hardware key derivation. This tool
-checks it in software and includes configuration in its HKDF/AEAD context.
-That is useful only if the complete approved measured program enforces the
-check and prevents arbitrary workloads or a guest shell from using the device.
+SNP unconditionally includes HOST_DATA in its hardware key derivation; it is
+not an optional guest-field selector. [AMD's implementation](https://github.com/amd/AMD-ASPFW/blob/3ca6650dd35d878b3fcbe5c7f58b145eed042bbf/fw/psp_bl_uapps/sev_uapp/src/sev_mcmd.c#L5502)
+confirms this. The probe additionally checks the expected launch and includes
+configuration in its HKDF/AEAD context. The complete approved measured program
+must enforce these checks and prevent arbitrary workloads or a guest shell
+from using the device. A custodian's launch must remain unchanged when enrolling
+its derived public key into a separate CDS launch; see the
+[integrated fixture correction](cds-snp-integrated-recovery.md#custody-and-enrollment).
 A generic VM sharing a firmware measurement is insufficient. See Google's
 [derived-key limitations](https://github.com/google/go-sev-guest/blob/main/LIMITATIONS.md)
 and the AMD [SNP ABI](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).

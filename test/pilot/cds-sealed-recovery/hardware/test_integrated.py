@@ -1,4 +1,8 @@
 import base64
+import http.client
+import http.server
+import queue
+import threading
 from pathlib import Path
 import tempfile
 import subprocess
@@ -74,6 +78,35 @@ class ChunkUploadTests(unittest.TestCase):
             good.upload("owned-pod", "root.tar.gz", str(target))
             self.assertEqual((target / "disk.img").read_bytes(), source.read_bytes())
             self.assertEqual([e[0] for e in good.events], ["upload-chunk-verified", "upload-receiver-completed"])
+
+
+class TunnelKeepaliveTests(unittest.TestCase):
+    def test_actor_reuses_its_tunnel_connection(self):
+        observed = queue.Queue()
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def do_GET(self):
+                observed.put(self.client_address)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+            def log_message(self, *args): pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            actor = object.__new__(Integrated)
+            for _ in range(3):
+                self.assertEqual(actor.http(server.server_port, "GET", "/v1/storage", connection=connection), (200, {}))
+            addresses = [observed.get_nowait() for _ in range(3)]
+            self.assertEqual(len(set(addresses)), 1)
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 if __name__ == "__main__": unittest.main()

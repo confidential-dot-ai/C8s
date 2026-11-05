@@ -104,8 +104,8 @@ func probeCipher(root []byte, e envelope) (cipher.AEAD, []byte, error) {
 	e.Ciphertext = nil
 	meta, _ := json.Marshal(e)
 	aad := append([]byte("c8s/cds-snp-disposable-probe/v1\x00"), meta...)
-	// HOST_DATA is NOT an SNP derived-key field. The measured program must
-	// check it before this application-level configuration binding is useful.
+	// SNP unconditionally mixes HOST_DATA into its key. This adds application
+	// domain separation and authenticates the complete capsule metadata too.
 	key, err := hkdf.Key(sha256.New, root, nil, string(aad), 32)
 	if err != nil {
 		return nil, nil, err
