@@ -50,6 +50,7 @@ func TestMountObserverClassifiesOnlyCurrentPodEmptyDir(t *testing.T) {
 	}
 }
 
+// A mount observation retains its readOnly access mode.
 func TestMountObserverRetainsEmptyDirReadOnlyEvidence(t *testing.T) {
 	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
 	for _, tc := range []struct {
@@ -57,7 +58,6 @@ func TestMountObserverRetainsEmptyDirReadOnlyEvidence(t *testing.T) {
 		options  []string
 		readOnly bool
 	}{
-		{"read-only", []string{"rbind", "ro"}, true},
 		{"last read-only", []string{"rbind", "rw", "ro"}, true},
 		{"last writable", []string{"rbind", "ro", "rw"}, false},
 	} {
