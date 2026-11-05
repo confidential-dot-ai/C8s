@@ -499,23 +499,6 @@ func TestDedicatedEndpointsRequireOnePreservedAddress(t *testing.T) {
 	}
 }
 
-func TestLoadConfigStrictness(t *testing.T) {
-	cfg := fixtureConfig(t)
-	path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, body := range [][]byte{append(append([]byte(nil), original...), []byte(" {}")...), []byte(`{"unexpected":true}`), bytes.Repeat([]byte("a"), maxFile+1)} {
-		if err := os.WriteFile(path, body, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := LoadConfig(path); err == nil {
-			t.Fatal("ambiguous/oversized configuration accepted")
-		}
-	}
-}
-
 func TestDirectBindingWithoutOptInFailsWithoutCloudEffects(t *testing.T) {
 	pod := fixturePod()
 	delete(pod.Annotations, Annotation)

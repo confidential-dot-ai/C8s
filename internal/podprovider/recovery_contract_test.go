@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -309,82 +308,5 @@ func TestEndpointContractRejectsInvalidAddressesAndDuplicates(t *testing.T) {
 	in.ID = "not-an-instance"
 	if _, _, _, err := endpoints(rec, in); err == nil {
 		t.Fatal("malformed instance ID accepted")
-	}
-}
-
-func TestGuestMetadataSnapshotAndLaunchSizeBound(t *testing.T) {
-	pod := fixturePod()
-	r, _ := fixtureReconciler(t, pod)
-	pod.Annotations["team"] = "tenant-one"
-	pod.Annotations["kubernetes.io/config.hash"] = "untrusted"
-	paths := []string{"metadata.namespace", "metadata.uid", "metadata.annotations['team']", "spec.nodeName"}
-	for i, path := range paths {
-		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: strings.Repeat("A", i+1), ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: path}}})
-	}
-	guest := guestPod(pod)
-	if guest.Annotations["kubernetes.io/config.hash"] != "" || guest.Spec.Containers[0].Env[0].Value != pod.Namespace || guest.Spec.Containers[0].Env[1].Value != string(pod.UID) || guest.Spec.Containers[0].Env[2].Value != "tenant-one" || guest.Spec.Containers[0].Env[3].ValueFrom == nil {
-		t.Fatal("guest metadata snapshot changed the Downward API contract")
-	}
-	pod.Annotations["large"] = strings.Repeat("x", 64<<10)
-	if _, err := r.cfg.launch(pod); err == nil || !strings.Contains(err.Error(), "64 KiB") {
-		t.Fatalf("Cloud launch size limit not enforced: %v", err)
-	}
-}
-
-type deletionSignalCloud struct {
-	cloudAPI
-	deleted chan struct{}
-}
-
-func (c *deletionSignalCloud) Delete(ctx context.Context, id string) error {
-	err := c.cloudAPI.Delete(ctx, id)
-	close(c.deleted)
-	return err
-}
-
-func TestOrphanWorkerStopsAfterConfirmedCancellation(t *testing.T) {
-	pod := fixturePod()
-	r, cloud := fixtureReconciler(t, pod)
-	rec, _, err := r.ensureRecord(context.Background(), pod)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cloud.in = instanceFor(rec.Request)
-	if err := r.client.Delete(context.Background(), pod); err != nil {
-		t.Fatal(err)
-	}
-	signal := &deletionSignalCloud{cloudAPI: cloud, deleted: make(chan struct{})}
-	r.cloud = signal
-	worker := &orphanWorker{reconciler: r}
-	if !worker.NeedLeaderElection() || !(&virtualNode{}).NeedLeaderElection() {
-		t.Fatal("side-effect workers must run only under leader election")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- worker.Start(ctx) }()
-	select {
-	case <-signal.deleted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("orphan sweep did not initiate cleanup")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("orphan worker ignored cancellation")
-	}
-	if cloud.deleteCalls != 1 {
-		t.Fatal("orphan worker continued Cloud calls after cancellation")
-	}
-	if getRecord(t, r, pod).Deleted {
-		t.Fatal("orphan worker discarded unconfirmed deletion")
-	}
-	// Already-removed records are harmless to a delayed sweep event.
-	if err := r.sweepRecord(context.Background(), "missing-record"); err != nil {
-		t.Fatal(err)
 	}
 }

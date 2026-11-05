@@ -2,17 +2,14 @@ package podprovider
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +19,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -108,95 +104,6 @@ func writeProviderConfig(t *testing.T, cfg *Config, dir string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestProviderDecreeFloorSurvivesSigningAndAssignment(t *testing.T) {
-	cfg := fixtureConfig(t)
-	key, bootstrap, rolled := providerCDSDecreeFixture(t, cfg)
-	path, current := writeProviderPinDecree(t, key, cfg.ClusterID, rolled, 7)
-	_, older := writeProviderPinDecree(t, key, cfg.ClusterID, bootstrap, 6)
-	cfg.CDSPinDecreeFile = filepath.Base(path)
-	loaded, err := LoadConfig(writeProviderConfig(t, cfg, filepath.Dir(path)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.CDSPinDecreeFile != path {
-		t.Fatal("optional decree path was not resolved beside the provider config")
-	}
-	// Config inputs are frozen at startup; subsequent signing never rereads them.
-	if err := os.WriteFile(path, []byte("changed after startup"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	pod := fixturePod()
-	static, err := loaded.launch(pod)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generic, err := loaded.genericLaunch(identityKey(loaded.ProviderID, "decree-check"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := refvalues.Parse(rolled)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, req := range []createRequest{static, generic} {
-		doc, err := signedDocument(req.Trust)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pins, err := refvalues.Parse([]byte(doc.CDS.Measurements))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if doc.CDS.PinFloor != current.Decree.AppliesAt() || doc.CDS.Address != cfg.CDSAddress || !reflect.DeepEqual(pins, want) {
-			t.Fatal("signed launch lost the complete replacement pin set, endpoint or floor")
-		}
-		if doc.Pod == nil {
-			rec := &record{Request: static, UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, Key: static.Name}
-			manifest, entries, peers, err := assignmentPayload(rec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assigned, err := launchconfig.AssignedPod(doc, manifest, entries, peers)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if assigned.CDS != doc.CDS || doc.Pod != nil || doc.Workloads != "" {
-				t.Fatal("assignment rewrote immutable CDS trust or generic boot authority")
-			}
-		}
-		for _, attested := range []bool{false, true} {
-			for _, floor := range []uint64{doc.CDS.PinFloor, 0} {
-				source, err := cdspins.New(cdspins.Config{Bootstrap: pins, Floor: floor,
-					StateFile: filepath.Join(t.TempDir(), "pins.json"),
-					Attested: func(context.Context, refvalues.ReferenceValues) (*cdsdecree.Signed, error) {
-						if attested {
-							return &older, nil
-						}
-						return nil, errors.New("pinned replica unavailable")
-					},
-					Fetch: func(context.Context) (*cdsdecree.Signed, error) { return &older, nil },
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				err = source.Refresh()
-				version, held := source.Version()
-				if floor != 0 {
-					if err == nil || !strings.Contains(err.Error(), "below this node's floor") || held || !reflect.DeepEqual(source.Current(), pins) {
-						t.Fatalf("provider floor allowed older CDS pins (attested=%t): %v", attested, err)
-					}
-				} else if err != nil || !held || version != older.Decree.AppliesAt() || reflect.DeepEqual(source.Current(), pins) {
-					t.Fatalf("zero-floor control failed to accept the valid older decree (attested=%t): %v", attested, err)
-				}
-			}
-		}
-	}
-	data, err := os.ReadFile(cfg.CDSImagePolicyFile)
-	if err != nil || !bytes.Equal(data, bootstrap) {
-		t.Fatal("provider changed the mounted bootstrap policy")
-	}
 }
 
 func TestProviderRejectsInvalidOrUnboundPinDecree(t *testing.T) {

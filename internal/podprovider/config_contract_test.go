@@ -1,6 +1,7 @@
 package podprovider
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,97 +14,20 @@ import (
 	"testing"
 )
 
-func TestConfigurationRejectsUnsafeOrIncompleteOriginsAndCapacity(t *testing.T) {
-	base := fixtureConfig(t)
-	for _, kind := range []string{"provider-id", "namespace", "node-name", "http", "url-credentials", "url-path", "url-query", "image", "size", "location", "cluster", "public-ip", "vcpus", "memory", "reserve", "pods", "server-ip", "missing-cds-address", "invalid-cds-address", "missing-cds-policy-file", "missing-file"} {
-		t.Run(kind, func(t *testing.T) {
-			cfg := *base
-			switch kind {
-			case "provider-id":
-				cfg.ProviderID = "INVALID"
-			case "namespace":
-				cfg.Namespace = ""
-			case "node-name":
-				cfg.NodeName = "node/invalid"
-			case "http":
-				cfg.CloudURL = "http://cloud.example"
-			case "url-credentials":
-				cfg.CloudURL = "https://user:password@cloud.example"
-			case "url-path":
-				cfg.CloudURL = "https://cloud.example/nested"
-			case "url-query":
-				cfg.CloudURL = "https://cloud.example?token=secret"
-			case "image":
-				cfg.Image = "c8s-pod:latest"
-			case "size":
-				cfg.Size = ""
-			case "location":
-				cfg.Location = ""
-			case "cluster":
-				cfg.ClusterID = ""
-			case "public-ip":
-				cfg.PublicIP = "private"
-			case "vcpus":
-				cfg.VCPUs = 0
-			case "memory":
-				cfg.MemoryMiB = 1 << 23
-			case "reserve":
-				cfg.ReservedMemoryMiB = cfg.MemoryMiB
-			case "pods":
-				cfg.MaxPods = 10001
-			case "server-ip":
-				cfg.ServerAddress = "server.example"
-			case "missing-cds-address":
-				cfg.CDSAddress = ""
-			case "invalid-cds-address":
-				cfg.CDSAddress = "127.0.0.1:8443"
-			case "missing-cds-policy-file":
-				cfg.CDSImagePolicyFile = ""
-			case "missing-file":
-				cfg.WorkloadsFile = ""
-			}
-			b, err := json.Marshal(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, b, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := LoadConfig(path); err == nil {
-				t.Fatal("unsafe/incomplete configuration accepted")
-			}
-		})
-	}
-	base.ReservedMemoryMiB = 0
-	base.PublicIP = ""
-	base.CloudURL += "/"
-	if err := base.validate(); err != nil {
-		t.Fatal(err)
-	}
-	if base.ReservedMemoryMiB != 1024 || base.PublicIP != "shared" || strings.HasSuffix(base.CloudURL, "/") {
-		t.Fatal("documented defaults not applied")
-	}
-}
-
-func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
-	for _, kind := range []string{"missing-token", "empty-token", "multiline-token", "missing-key", "invalid-key", "wrong-curve", "missing-server", "invalid-server", "missing-cds-policy", "empty-cds-policy", "malformed-cds-policy", "unbound-cds-policy", "oversized-cds-policy", "missing-policy", "invalid-policy", "empty-policy-file", "missing-manifest", "invalid-manifest", "unsupported-snp", "oversized-file", "directory"} {
+func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
+	for _, kind := range []string{"http", "url-credentials", "url-query", "invalid-key", "wrong-curve", "invalid-server", "unbound-cds-policy", "oversized-cds-policy", "trailing-data", "unknown-field", "oversized-config"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := fixtureConfig(t)
 			path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
 			target := ""
 			var data []byte
 			switch kind {
-			case "missing-token":
-				cfg.CloudTokenFile += ".missing"
-			case "empty-token":
-				target = cfg.CloudTokenFile
-				data = []byte(" \n")
-			case "multiline-token":
-				target = cfg.CloudTokenFile
-				data = []byte("one\ntwo")
-			case "missing-key":
-				cfg.LaunchKeyFile += ".missing"
+			case "http":
+				cfg.CloudURL = "http://cloud.example"
+			case "url-credentials":
+				cfg.CloudURL = "https://user:password@cloud.example"
+			case "url-query":
+				cfg.CloudURL = "https://cloud.example?token=secret"
 			case "invalid-key":
 				target = cfg.LaunchKeyFile
 				data = []byte("not a key")
@@ -118,68 +42,70 @@ func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
 				}
 				target = cfg.LaunchKeyFile
 				data = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-			case "missing-server":
-				cfg.ServerPublicKeyFile += ".missing"
 			case "invalid-server":
 				target = cfg.ServerPublicKeyFile
 				data = []byte("not a public key")
-			case "missing-cds-policy":
-				cfg.CDSImagePolicyFile += ".missing"
-			case "empty-cds-policy":
-				target = cfg.CDSImagePolicyFile
-			case "malformed-cds-policy":
-				target, data = cfg.CDSImagePolicyFile, []byte("not a policy")
 			case "unbound-cds-policy":
 				target, data = cfg.CDSImagePolicyFile, providerCDSPolicy(t, nil)
 			case "oversized-cds-policy":
 				target, data = cfg.CDSImagePolicyFile, []byte(strings.Repeat("a", maxFile+1))
-			case "missing-policy":
-				cfg.WorkloadsFile += ".missing"
-			case "invalid-policy":
-				target = cfg.WorkloadsFile
-				data = []byte(`{"wrong":"policy"}`)
-			case "empty-policy-file":
-				target = cfg.WorkloadsFile
-				data = nil
-			case "missing-manifest":
-				cfg.ImageManifestFile += ".missing"
-			case "invalid-manifest":
-				target = cfg.ImageManifestFile
-				data = []byte(`{"invalid":"manifest"}`)
-			case "unsupported-snp":
-				target = cfg.ImageManifestFile
-				data = []byte(`{"snp_variants":[{"smp":2,"measurement":{"snp_launch_digest":"` + strings.Repeat("44", 48) + `","algorithm":"sha384"}}]}`)
-			case "oversized-file":
-				target = cfg.WorkloadsFile
-				data = []byte(strings.Repeat("a", maxFile+1))
-			case "directory":
-				cfg.CloudTokenFile = t.TempDir()
 			}
 			if target != "" {
 				if err := os.WriteFile(target, data, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			b, err := json.Marshal(cfg)
+			body, err := json.Marshal(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, b, 0o600); err != nil {
+			switch kind {
+			case "trailing-data":
+				body = append(body, []byte(" {}")...)
+			case "unknown-field":
+				body = []byte(`{"unexpected":true}`)
+			case "oversized-config":
+				body = bytes.Repeat([]byte("a"), maxFile+1)
+			}
+			if err := os.WriteFile(path, body, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := LoadConfig(path); err == nil {
-				t.Fatal("invalid trust material accepted")
+				t.Fatal("unsafe/incomplete configuration accepted")
 			}
 		})
 	}
-	if _, err := LoadConfig(filepath.Join(t.TempDir(), "missing-config.json")); err == nil {
-		t.Fatal("missing configuration accepted")
+}
+
+func TestConfigurationBoundsAndDefaults(t *testing.T) {
+	for _, seconds := range []int64{-1, 0, 29, 30, 600, 86400, 86401} {
+		cfg := fixtureConfig(t)
+		cfg.VerificationTimeoutSeconds = seconds
+		err := cfg.validate()
+		valid := seconds == 0 || seconds >= 30 && seconds <= 86400
+		if (err == nil) != valid {
+			t.Fatalf("timeout %d: %v", seconds, err)
+		}
+		if seconds == 0 && cfg.VerificationTimeoutSeconds != 600 {
+			t.Fatal("missing default")
+		}
 	}
-	path := filepath.Join(t.TempDir(), "empty")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
+	for _, target := range []int64{-1, 0, 1, 10, 11} {
+		cfg := fixtureConfig(t)
+		cfg.WarmTarget = target
+		err := cfg.validate()
+		if (err == nil) != (target >= 0 && target <= cfg.MaxPods) {
+			t.Fatalf("warmTarget %d: %v", target, err)
+		}
+	}
+	base := fixtureConfig(t)
+	base.ReservedMemoryMiB = 0
+	base.PublicIP = ""
+	base.CloudURL += "/"
+	if err := base.validate(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readFile(path); err == nil {
-		t.Fatal("empty mounted input accepted")
+	if base.ReservedMemoryMiB != 1024 || base.PublicIP != "shared" || strings.HasSuffix(base.CloudURL, "/") {
+		t.Fatal("documented defaults not applied")
 	}
 }

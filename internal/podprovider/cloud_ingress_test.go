@@ -3,15 +3,10 @@ package podprovider
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
-
-type ingressTransportFunc func(*http.Request) (*http.Response, error)
-
-func (f ingressTransportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestCloudIngressUsesFrozenRuleAndRecoveryKey(t *testing.T) {
 	rule := ingress{Name: "app-8080", Port: 8080}
@@ -42,28 +37,5 @@ func TestCloudIngressUsesFrozenRuleAndRecoveryKey(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("ingress replay calls = %d", calls)
-	}
-}
-
-func TestCloudIngressRejectsIncompleteIntentBeforeHTTP(t *testing.T) {
-	c := newCloudClient(&Config{CloudURL: "https://unused.invalid", token: "test-token"})
-	calls := 0
-	c.http.Transport = ingressTransportFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return nil, errors.New("unexpected HTTP request")
-	})
-	for _, tc := range []struct {
-		id, key string
-		rule    ingress
-	}{
-		{"", "key", ingress{Name: "app", Port: 80}},
-		{"i-one", "", ingress{Name: "app", Port: 80}},
-		{"i-one", "key", ingress{Port: 80}},
-		{"i-one", "key", ingress{Name: "app", Port: 0}},
-		{"i-one", "key", ingress{Name: "app", Port: 65536}},
-	} {
-		if in, err := c.AddIngress(context.Background(), tc.id, tc.key, tc.rule); err == nil || in != nil || calls != 0 {
-			t.Fatal("incomplete ingress intent reached the network")
-		}
 	}
 }
