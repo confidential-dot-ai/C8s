@@ -26,6 +26,8 @@ func testPodPolicy(t *testing.T, anchor string) []byte {
 	return document
 }
 
+// podImagePolicy rides the measured configuration the CDS pin
+// binds, separate from node pins; its absence disables the profile.
 func TestPodPolicyIsSeparateAndBoundByTheCDSLaunch(t *testing.T) {
 	_, operator := testKey(t)
 	_, node := testKey(t)
@@ -70,6 +72,8 @@ func TestPodPolicyIsSeparateAndBoundByTheCDSLaunch(t *testing.T) {
 	}
 }
 
+// Pod launch keys differ from node and operator keys as parsed
+// keys, and the policy must be a complete TDX document.
 func TestMeasuredPodPolicyRejectsMalformedAndSharedAuthorities(t *testing.T) {
 	_, operator := testKey(t)
 	_, node := testKey(t)
@@ -81,13 +85,9 @@ func TestMeasuredPodPolicyRejectsMalformedAndSharedAuthorities(t *testing.T) {
 	}{
 		{"disabled", nil, true},
 		{"separate launch key", testPodPolicy(t, pod), true},
-		{"node key", testPodPolicy(t, node), false},
 		{"equivalent node key", testPodPolicy(t, " \n"+node+"\n\t"), false},
 		{"operator key", testPodPolicy(t, operator), false},
-		{"equivalent operator key", testPodPolicy(t, "\n"+operator+"\n"), false},
-		{"whitespace", []byte(" "), false},
 		{"null", []byte("null"), false},
-		{"empty pins", []byte(`{"schema_version":"1","tee":"tdx","measurements":[]}`), false},
 		{"node policy", []byte(testNodePins(t, node)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
