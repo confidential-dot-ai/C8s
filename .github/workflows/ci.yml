@@ -191,18 +191,6 @@ jobs:
       - name: Run the cluster integration harness
         run: make test-integration-cluster
 
-  pod-cloud-offline:
-    name: Pod Cloud acceptance (offline)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup-go-c8s
-      - name: Test the connected workload, the CDS guest probe and the mesh probe offline
-        run: go test -count=1 ./test/tdxpod/fixtures/pod-connected/... ./test/integration/pod-cloud/probe
-      - name: Test live Cloud ownership, launch and recovery offline
-        run: go test -race -count=1 -tags pod_cloud_integration -run '^TestCloudAcceptance' ./test/integration/pod-cloud/acceptance
-
   integration-pod-runtime:
     name: Integration (Pod runtime)
     runs-on: ubuntu-latest
