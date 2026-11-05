@@ -15,7 +15,7 @@ on:
       - ".github/scripts/chart-attestation-api-digest.sh"
       - ".github/scripts/chart-image-pins.sh"
       - "internal/helmchart/c8s/values.yaml"
-      - "images/node-guest/c8s/mkosi.sync"
+      - "images/node-guest/worker/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
   workflow_dispatch:
@@ -96,8 +96,8 @@ jobs:
           else
             echo "::error file=$values::could not read the chart's pinnedDigest"; fail=1
           fi
-          # The chart's third-party images (kube-state-metrics, the router's
-          # nginx, the containerd-prep busybox) are digest-pinned into the
+          # The chart's third-party images (every digest in $values whose
+          # Resolve line names a tag) are digest-pinned into the
           # seeded allowlist; the Resolve line above each digest names the tag
           # it came from. A tag upstream has rebuilt since is a notice, not a
           # failure: the pinned bytes are still served, and pin-watch proposes
@@ -114,15 +114,14 @@ jobs:
           done <<<"$resolved"
           # Each pinned image's config must match what the seeded entry pins
           # beside its digest (the argv prefix and the exact env), as `c8s
-          # install --resolve-digests` requires for nginx; kube-state-metrics
-          # is seeded by the node-image render and checked nowhere else. A
-          # block without an entrypoint (busybox) is argv-pinned and skipped.
+          # install --resolve-digests` requires for the router's nginx. A block
+          # without an entrypoint is argv-pinned and skipped.
           if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
             echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
           fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
-          if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
-            echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
+          if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/worker/mkosi.sync; then
+            echo "::error file=images/node-guest/worker/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
           fi
           # Every third-party action is a 40-hex commit. A tag or branch is
           # whatever its owner repoints it at, on a runner holding GHCR push

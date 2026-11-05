@@ -96,7 +96,7 @@ func TestGateCoreImagesSharedWithoutPublication(t *testing.T) {
 	}
 	for _, name := range []string{"build-a", "build-b"} {
 		job := gate.Jobs[name]
-		if !slices.Contains(events(t, job.Needs), "core-images") || job.With["gate_images_artifact"] != artifact {
+		if !slices.Contains(names(t, job.Needs), "core-images") || job.With["gate_images_artifact"] != artifact {
 			t.Errorf("%s must depend on the shared core-image artifact", name)
 		}
 	}
