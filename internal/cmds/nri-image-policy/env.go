@@ -18,6 +18,11 @@ import (
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
 func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) (result error) {
+	defer p.lockPodAdmission()()
+	if err := p.beginPodTransition(); err != nil {
+		return err
+	}
+	defer p.finishPodTransition(&result)
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
@@ -110,6 +115,9 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 		// The Pod endpoint receives no node mounts. Its final adjusted mounts
 		// must retain the exact private RAM volume, even under an any policy.
 		role = p.roleOf(launch)
+		if _, err := p.podCredentialSource(pod, ctr, role, mounts); err != nil {
+			return err
+		}
 	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,

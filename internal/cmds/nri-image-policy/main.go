@@ -157,8 +157,9 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 
 	var (
-		wlClient allowlistclient.Client
-		pull     *allowlistPull
+		wlClient      allowlistclient.Client
+		pull          *allowlistPull
+		cdsHTTPClient *http.Client
 	)
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
@@ -168,19 +169,40 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		}
 		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
+		cdsHTTPClient = httpClient
 	}
+
+	recovery, err := openPodRecovery(cfg)
+	if err != nil {
+		return fmt.Errorf("open Pod recovery: %w", err)
+	}
+	defer recovery.Close()
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	plugin.recovery = recovery
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
+		return fmt.Errorf("prepare Pod credential broker: %w", err)
+	}
+	defer plugin.closePodBroker()
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
 		workers.Wait()
+		// NRI closes transport before every queued handler necessarily returns.
+		// Disconnect rejects late callbacks; this lock drains the active mutation.
+		plugin.disconnectPodStarts()
+		plugin.podMu.Lock()
+		clear(plugin.podStarts)
+		plugin.podMu.Unlock()
 	}()
 	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
+	if recovery != nil && !cfg.podWaiting() {
+		applyPolicy = plugin.applyPodPolicy
+	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(cdsPins); err != nil {
@@ -220,8 +242,12 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 
 	pluginErrCh := make(chan error, 1)
+	startListener, err := plugin.listenPodStarts()
+	if err != nil {
+		return fmt.Errorf("start Pod runtime admission: %w", err)
+	}
 	workers.Add(1)
-	go func() { defer workers.Done(); pluginErrCh <- plugin.Run(ctx) }()
+	go func() { defer workers.Done(); pluginErrCh <- plugin.runWithPodStarts(ctx, startListener) }()
 
 	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
@@ -609,6 +635,8 @@ type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
 	PodUID           string `json:"pod_uid,omitempty"`
+	PodWaiting       bool   `json:"pod_waiting,omitempty"`
+	PodRegistered    bool   `json:"pod_registered,omitempty"`
 	AllowlistStall   string `json:"allowlist_stall,omitempty"`
 }
 
@@ -625,6 +653,8 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 		}
 		if cfg.plugin.cfg.Pod != nil {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
+			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
+			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
 		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
