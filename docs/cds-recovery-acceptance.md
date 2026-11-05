@@ -7,7 +7,11 @@ key inaccessible to the infrastructure operator.
 The follow-up [sealed-custody experiment](cds-sealed-custody-experiment.md)
 tests authority subprocess loss and independently wrapped recovery copies,
 and records the old-enrollment replay counterexample. That experiment is the
-current provider-free direction; hardware custody remains unqualified.
+current provider-free direction; production hardware custody remains unqualified.
+The later [integrated SNP proof](cds-snp-integrated-recovery.md) passed same-CA
+recovery, unexpired replay rejection and preserved revocation after both CDS and
+custody VMs were destroyed. Its scope is one physical chip and one approved
+image, with a trusted conditional-object fixture.
 
 The [current-policy increment](cds-current-release-policy.md) adds mandatory
 committed-policy checks for the new recovery authority. The runner now includes

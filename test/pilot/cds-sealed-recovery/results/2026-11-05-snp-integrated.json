@@ -1,0 +1,317 @@
+{
+  "verified_at": "2026-11-05T05:55:17.635736+00:00",
+  "integrated_cds_recovery_passed": true,
+  "full_acceptance_passed": false,
+  "production_ready": false,
+  "operator_exclusion_qualified": false,
+  "ci_used": false,
+  "shared_production_rollout": false,
+  "scope": "Same-image, same-chip recovery of three real CDS processes and their custody authority after both SNP VMs are destroyed; trusted conditional-object fixture persists ciphertext.",
+  "runner_commit": "12612850144529503f2f3621a981a8dbd9d4c34a",
+  "runner_hashes": {
+    "run.py": "0a7e86823aee80323413a99ce06beec2ef0ac33f48395fa4b9f5b42e85ab3c15",
+    "integrated.py": "eb39faaf7e3c5b623456cb07f0301f6a2933ea5dabfad72e994c566f1d3c6d8b"
+  },
+  "image_source_commit": "12612850144529503f2f3621a981a8dbd9d4c34a",
+  "measurement": "66ee1e68fd9e0f79cda36f07c0dbaef2b6bd0c2aea2ad40424813e94bde00e08ddf356f496c95fafcd27c222b968623e",
+  "artifact_hashes": {
+    "disk.raw": "b9f2394defc9bf6cbd96ce3d11407144fe587b9d28a28ab6d49bfafca467e0e1",
+    "guest-smp2.igvm": "eefd3bfd7a296a8f651ab1c06ef6ba17aec529427cbf2a26fea7a95e4e710be7",
+    "uki.efi": "7a4f11b4e97910eecf317eaaf777f7f238e4cfcad65546f9dd43ee14df52dda3",
+    "OVMF.fd": "53c3bdc6654708a7b23f5db36c0548de4975322e5838e90bd258e082394bf8c0"
+  },
+  "tool_hashes": {
+    "verifier": "8bcbcfa4daadf4622c74641f9da2d3b0fb86111664c142fa56e374bc52eb9aa6",
+    "renderer": "676432c76f0cbe1d1ef2e2ab2032efcf57df3e38d7b1ef145829f404517a5f0c",
+    "runner": "eb39faaf7e3c5b623456cb07f0301f6a2933ea5dabfad72e994c566f1d3c6d8b"
+  },
+  "build": {
+    "source_commit": "12612850144529503f2f3621a981a8dbd9d4c34a",
+    "source_tree": "dda40a09b3f4c9876c9fbab22edd9008acf5e8c0",
+    "builder_commit": "133aeae5e006ee11a72b2a7200a9fb173a1c85ef",
+    "builder_transport_patch_sha256": "3e1424232f572f1f4cccabc52ee9b208fccff23a8632c0cec8f9686ff98cdb1a",
+    "manifest_sha256": "0ea2e0d7f2138bd9d1dfac24cf7cfeab134d26d46af673ffc9e7b192e8f2de40"
+  },
+  "build_inspection": {
+    "public_runtime_modes_verified": {
+      "/etc/systemd/network/80-dhcp.network": "0644",
+      "/etc/systemd/system/cds-snp-acceptance.service": "0644",
+      "/etc/systemd/system/cds-snp-acceptance-expiry.service": "0644",
+      "/etc/systemd/system/cds-snp-acceptance-expiry.timer": "0644",
+      "/etc/systemd/journald.conf.d/50-cds-snp-acceptance-console.conf": "0644",
+      "/etc": "0755",
+      "/etc/systemd": "0755",
+      "/etc/systemd/network": "0755",
+      "/usr": "0755",
+      "/usr/lib": "0755",
+      "/usr/lib/systemd": "0755"
+    },
+    "serial_driver_verified": true,
+    "serial_sysrq_disabled": true,
+    "networkd_enabled": true,
+    "host_visible_boot_diagnostics": true,
+    "artifact_hashes_verified": true,
+    "gpt_crc_verified": true,
+    "erofs_checked": true,
+    "acceptance_binary_sha256": "56be9fa8e8be154404ab2f5f45ac1b5fa48746076deb20644e4c42860b1cbe3a",
+    "cds_binary_sha256": "42d773b75df75bf30d38b0ddda61bbedc199195b28be55a1c8c4f5634bf258b6",
+    "measured_kernel_sha256": "bd22510c1c083effce81c838aae74739298e3dd4ae6683d2a8ab6208dc2a0216",
+    "root_hash": "3d69c61aca2e854521f28c823ea1bfdbf4cb3f0ac373920f61f5a11e7e6b4e7a",
+    "snp_measurement": "66ee1e68fd9e0f79cda36f07c0dbaef2b6bd0c2aea2ad40424813e94bde00e08ddf356f496c95fafcd27c222b968623e",
+    "root_login_locked": true,
+    "cloud_init_disabled": true,
+    "services_masked": [
+      "getty@.service",
+      "serial-getty@.service",
+      "console-getty.service",
+      "rescue.service",
+      "emergency.service",
+      "ssh.service",
+      "sshd.service",
+      "qemu-guest-agent.service"
+    ],
+    "probe_enabled": true,
+    "expiry_timer_enabled": true,
+    "inventory_netlink_enabled": true
+  },
+  "phases": {
+    "enroll": {
+      "guest_report_id_sha256": "70f7c1eefa0aad2ee418f39ef7966fb7b4ce72ce63295bf809aedf76735be6cb",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "6625e42dcb9e1466e5d1947cf75fad88087323215c0f4e714df351773980e194",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "535ebddf4e9036656a03c48ba88f5ae3e25e717248ddf42e1ebea789122110e9",
+      "checks": {},
+      "derivation_parameters": {
+        "guest_svn": 0,
+        "tcb_version": 2025212457433169930
+      }
+    },
+    "seed-custodian": {
+      "guest_report_id_sha256": "ffe7b962c80a07e7119a7e868c2892a9cb39668278549f6ea30e456219dc3727",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "6625e42dcb9e1466e5d1947cf75fad88087323215c0f4e714df351773980e194",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "38678aba6e40465a2d872c4013992ae2cd997811a3e33f3d37ed0d4d1bb868f7",
+      "checks": {},
+      "derivation_parameters": {
+        "guest_svn": 0,
+        "tcb_version": 2025212457433169930
+      }
+    },
+    "seed": {
+      "guest_report_id_sha256": "1b6e2199805d6959acf35eaa577d4a20cd51472b03bace98f99de0e4c9955931",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "d406bae1f551ff711db8e0871179aef766f79f512994f573253f8999f8991ffb",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "5e7e16c256efe5a59620a8e32fa91050aa372d5124cc25c319b5f801f3eaf363",
+      "checks": {
+        "attested_custodian_delegation": true,
+        "authority_reads_current_wal_policy": true,
+        "authorized_read_before_loss": true,
+        "ca_fingerprint": "74c50b388dc49ba7291243edf2e1bd25b5eb95746fb6f71f1ac2e1223cab5c24",
+        "real_snp_attestation": true,
+        "replay_expires": "2026-11-05T05:54:43.635152863Z",
+        "replay_rejected_before_loss": true,
+        "replicas": 3,
+        "revocation_acknowledged_before_loss": true,
+        "wal_key_and_ca_never_exported_as_plaintext": true
+      },
+      "derivation_parameters": {
+        "guest_svn": 0,
+        "tcb_version": 2025212457433169930
+      }
+    },
+    "recover-custodian": {
+      "guest_report_id_sha256": "8322ec720be67dffe9dbbbecb32f8ee3af34260ae4dcb97b526a97fbfa72ee03",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "6625e42dcb9e1466e5d1947cf75fad88087323215c0f4e714df351773980e194",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "be252352ae9d6894bd561aa8a00bc7666a9c7e0c6fa23634aec195f52714cc7b",
+      "checks": {},
+      "derivation_parameters": {
+        "guest_svn": 0,
+        "tcb_version": 2025212457433169930
+      }
+    },
+    "recover": {
+      "guest_report_id_sha256": "5d7361d423be64707ccb66083efe0512922780ca1cff1f0391fc77cf78e3ed57",
+      "chip_id_sha256": "d91a01beec648b4b58a930bfeb7e2dc9c11067101b3b55eadfd8965c2de3dbe0",
+      "launch_sha256": "d406bae1f551ff711db8e0871179aef766f79f512994f573253f8999f8991ffb",
+      "attestation_chain_verified": true,
+      "issuer_crl_checked": true,
+      "receipt_sha256": "1d06d889204a8a1e536f22576057580ff9fea8d23a89d07738824039dfa304ab",
+      "checks": {
+        "attested_custodian_delegation": true,
+        "authority_reads_current_wal_policy": true,
+        "ca_fingerprint": "74c50b388dc49ba7291243edf2e1bd25b5eb95746fb6f71f1ac2e1223cab5c24",
+        "old_leaf_and_secret_positive_control": true,
+        "real_snp_attestation": true,
+        "replay_expires": "2026-11-05T05:54:43.635152863Z",
+        "replicas": 3,
+        "revocation_preserved_all_replicas": true,
+        "same_ca_all_replicas": true,
+        "unexpired_replay_rejected_all_replicas": true,
+        "wal_key_and_ca_never_exported_as_plaintext": true
+      },
+      "derivation_parameters": {
+        "guest_svn": 0,
+        "tcb_version": 2025212457433169930
+      }
+    }
+  },
+  "vm_boots": [
+    {
+      "time": "2026-11-05T05:41:45.754365+00:00",
+      "event": "vm-ready",
+      "phase": "enroll",
+      "vmi_uid": "5dbdf518-ad91-4971-9511-3648d7a874dd",
+      "vm_uid": "e43df78d-be77-4ec5-b9f4-bbd43f045375",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T05:48:51.996796+00:00",
+      "event": "vm-ready",
+      "phase": "seed-custodian",
+      "vmi_uid": "e6eff773-1bbd-46d3-a60c-6dd402822ef8",
+      "vm_uid": "9a7e5971-74aa-437b-be15-3f5ad4dcd2fc",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T05:48:52.225161+00:00",
+      "event": "vm-ready",
+      "phase": "seed-cds",
+      "vmi_uid": "e15f0415-6bd5-4bc8-b83b-cdff1b688957",
+      "vm_uid": "4c3c39ce-5df6-42eb-b419-78a478dd4f4f",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T05:51:15.216630+00:00",
+      "event": "vm-ready",
+      "phase": "recover-custodian",
+      "vmi_uid": "c6df98e5-e846-4902-a39a-d1874ea95428",
+      "vm_uid": "d3a977bc-0b94-495c-8a55-9cc7845c1a77",
+      "node": "ns1032181"
+    },
+    {
+      "time": "2026-11-05T05:51:15.459508+00:00",
+      "event": "vm-ready",
+      "phase": "recover-cds",
+      "vmi_uid": "6b20a1c5-6e98-4507-831e-da9cdd3e0b68",
+      "vm_uid": "a9977452-7d08-4ef5-8c98-48da4d52bd92",
+      "node": "ns1032181"
+    }
+  ],
+  "memory_loss": [
+    {
+      "time": "2026-11-05T05:50:38.067840+00:00",
+      "event": "all-cds-and-custodian-memory-destroyed",
+      "phase": "seed",
+      "cds_vmi_uid": "e15f0415-6bd5-4bc8-b83b-cdff1b688957",
+      "custodian_vmi_uid": "e6eff773-1bbd-46d3-a60c-6dd402822ef8"
+    },
+    {
+      "time": "2026-11-05T05:52:56.395961+00:00",
+      "event": "all-cds-and-custodian-memory-destroyed",
+      "phase": "recover",
+      "cds_vmi_uid": "6b20a1c5-6e98-4507-831e-da9cdd3e0b68",
+      "custodian_vmi_uid": "c6df98e5-e846-4902-a39a-d1874ea95428"
+    }
+  ],
+  "storage_operations": [
+    {
+      "time": "2026-11-05T05:42:28.321918+00:00",
+      "event": "external-storage",
+      "phase": "enroll",
+      "reads": 0,
+      "writes": 0,
+      "conflicts": 0
+    },
+    {
+      "time": "2026-11-05T05:50:19.026639+00:00",
+      "event": "external-storage",
+      "phase": "seed",
+      "reads": 253,
+      "writes": 26,
+      "conflicts": 0
+    },
+    {
+      "time": "2026-11-05T05:52:39.707324+00:00",
+      "event": "external-storage",
+      "phase": "recover",
+      "reads": 262,
+      "writes": 18,
+      "conflicts": 0
+    }
+  ],
+  "environment_observations": {
+    "external_vm_deletions_observed": 6,
+    "fleet_unchanged_claim": false,
+    "unexpected_regression_detected": false,
+    "note": "External owner VM deletions are counted separately. Cleanup and worker health are checked independently; this is not a fleet-wide availability result."
+  },
+  "cleanup": {
+    "verified_at": "2026-11-05T05:54:33.824295+00:00",
+    "runs": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08"
+    ],
+    "resource_paths_checked": 124,
+    "remaining": [],
+    "node_conditions": {
+      "NetworkUnavailable": "False",
+      "MemoryPressure": "False",
+      "DiskPressure": "False",
+      "PIDPressure": "False",
+      "Ready": "True",
+      "CloudQualified": "True"
+    },
+    "no_cleanup_mutations": true,
+    "cleanup_verified": true
+  },
+  "local_checks": {
+    "host_runner_checks": 27,
+    "host_runner_passed": true,
+    "cds_package_race_passed": true,
+    "allowlist_objectwal_cdsobject_race_passed": true,
+    "shared_raft_fsm_race_passed": true,
+    "raft_and_object_wal_current_lifecycle_passed": true,
+    "transactional_metadata_current_lifecycle_passed": true,
+    "go_vet_passed": true,
+    "added_300ms_storage_delay": {
+      "source_commit": "12612850144529503f2f3621a981a8dbd9d4c34a",
+      "added_storage_delay_ms": 300,
+      "mode": "preferred-writer",
+      "initial_startup_passed": true,
+      "recovery_all_replicas_ready": true,
+      "same_ca_all_replicas": true,
+      "operation_deadline_seconds": 5,
+      "log_sha256": "f20d8ef1f226753c5fa4cb5fc63cbdd175c24f7f69c9555683bbca932426f7cc",
+      "hardware_attestation": false
+    },
+    "log_sha256": {
+      "bootstrap-race.log": "cb9246df01fec3cffdeae38222dbef394c00bb625241205e3a81666e340a2718",
+      "shared-fsm-race.log": "ed3c6ccb82c1ca0d31852e958c68d3bb458cb302fabb4917e469f7e35c809be6",
+      "latency-regression.log": "f20d8ef1f226753c5fa4cb5fc63cbdd175c24f7f69c9555683bbca932426f7cc",
+      "lifecycle-parity.log": "f060c941fd04be0c882fb1186d1982d9925d89c152640d3a866550ba67527edd",
+      "vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "not_qualified": [
+    "three independent failure domains",
+    "loss of every physical custody anchor",
+    "image retirement and firmware upgrades",
+    "operator rollback of the freshness store",
+    "production capacity and latency"
+  ]
+}

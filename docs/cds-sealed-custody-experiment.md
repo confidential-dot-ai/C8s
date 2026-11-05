@@ -173,7 +173,9 @@ go vet ./internal/cdsrecovery ./test/pilot/cds-sealed-recovery/snp-probe
 ```
 
 The result narrows the candidate: independent sealed copies can simplify
-durable custody. Current-policy enforcement passes local protocol tests and the
-hardware sealing primitive now passes separately. Their integration, multi-chip
-enrollment and firmware/image lifecycle still require qualification. This is
-not yet the full production acceptance result.
+durable custody. Current-policy enforcement passes local protocol tests, and the
+later [integrated SNP run](cds-snp-integrated-recovery.md) joins the hardware root
+to real CDS recovery after both guest VMs are destroyed. Same-CA recovery,
+unexpired spent-token rejection and preserved revocation passed on the same chip
+and image. Multi-chip enrollment and firmware/image lifecycle still require
+qualification. This is not yet the full production acceptance result.

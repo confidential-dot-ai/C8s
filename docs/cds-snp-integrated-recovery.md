@@ -12,6 +12,40 @@ rollout, three independent failure domains, image retirement, firmware changes,
 or recovery after losing every enrolled physical chip. Raft remains the default;
 the changes stay on the pilot branch.
 
+## Verified hardware result
+
+Native run 08 passed on 2026-11-05 using source commit
+`12612850144529503f2f3621a981a8dbd9d4c34a`. Both original VMIs were absent before
+either replacement started. All three recovered CDS processes:
+
+- Served the original CA fingerprint
+  `74c50b388dc49ba7291243edf2e1bd25b5eb95746fb6f71f1ac2e1223cab5c24`.
+- Rejected the original spent request with the explicit token-reuse error while
+  its token remained valid.
+- Rejected fresh secret requests from the previously revoked workload.
+- Let the original workload leaf read the original secret only after a new
+  signed authorization, ruling out generic unavailability as a false pass.
+
+The original custody authority was reconstructed from SNP and delegated over a
+new attested encrypted channel. Five distinct guest report IDs and VMI UIDs,
+unchanged per-role launch hashes, the same chip, verified AMD signatures and
+issuer CRLs establish the tested sequence. The CA and WAL keys were not exported
+as plaintext. The [sanitized result](../test/pilot/cds-sealed-recovery/results/2026-11-05-snp-integrated.json)
+records the image, binary and source hashes, phase checks and cleanup audit.
+
+Cleanup was independently checked across all eight attempts: 124 unique owned
+resource paths were absent, and the worker remained Ready and CloudQualified
+without memory, disk or PID pressure. Six unrelated owner VM deletions were
+recorded during the successful run; this is not a claim that the entire fleet
+was unchanged or that customer application latency was measured.
+
+Local release-process lifecycle checks also passed for Raft, current-policy object
+WAL and transactional metadata. The storage backends retained the rotated CA,
+existing leaf, secret, binding, spent token and revocation after total process loss.
+The 300 ms storage-latency cold-recovery regression and the affected package race
+suites passed. These local comparisons use software attestation; the hardware
+result above qualifies the object-WAL integration on one physical chip.
+
 ## Custody and enrollment
 
 The first guest derives an Ed25519 authority from SNP and publishes only its

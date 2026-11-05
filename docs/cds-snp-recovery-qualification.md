@@ -173,12 +173,14 @@ does not establish fleet-wide availability or customer application latency.
 
 ## Remaining acceptance work
 
-The complete sentinel pass qualifies only this exact hardware primitive.
-The CDS acceptance goal still needs the same protected recovery key enrolled
-on independent physical roots, complete loss and reconstruction of CDS,
-current-policy release, acknowledged revocation and spent-token rejection.
-Minimum firmware TCB, image upgrades and retirement, and policy signing outside
-the infrastructure operator's control need separate qualification.
+The complete sentinel pass qualifies only this exact hardware primitive. The
+later [integrated CDS run](cds-snp-integrated-recovery.md) passed complete loss and
+reconstruction of the CDS and custody VMs on the same chip and image, retaining
+the original CA, current-policy release, acknowledged revocation and unexpired
+spent-token rejection. The same protected recovery key still needs enrollment
+on independent physical roots. Minimum firmware TCB, image upgrades and
+retirement, and policy signing outside the infrastructure operator's control
+need separate qualification.
 
 Storage remains the trusted ordering and freshness authority. This probe does
 not detect an authentic whole-history rollback by storage, revoke a key already

@@ -125,7 +125,10 @@ no shell or general-purpose workload interface, and carries no CDS or CA key.
 See [SNP recovery qualification](cds-snp-recovery-qualification.md) for the
 exact image inputs, validation and remaining boundaries. Cleanup removed every
 owned resource and the successful run's final monitored health matched its
-baseline. The hardware probe and the fourteen local CDS scenarios remain
-separate proofs: the hardware root is not yet wired into WALAuthority's full
-CDS recovery/revocation run. That integration, firmware policy and safe image
-retirement remain required; full acceptance and production qualification are false.
+baseline. A subsequent [integrated SNP run](cds-snp-integrated-recovery.md)
+wired the hardware root into WALAuthority and the real CDS processes. After both
+CDS and custody VMs were destroyed, replacements on the same chip and image
+recovered the same CA, rejected an unexpired spent request and enforced the
+acknowledged revocation. A new authorization let the original leaf read the
+original secret. Independent physical roots, firmware policy and safe image
+retirement remain unqualified; full acceptance and production qualification are false.
