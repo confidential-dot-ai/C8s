@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -133,7 +132,7 @@ func TestPublishNodeAddressWritesAReadableRoutableAddress(t *testing.T) {
 // is removed when the next staging does not name it.
 func TestPreparePublishesWorldReadableOutputsAndClearsTheRest(t *testing.T) {
 	root := prepareRoot(t)
-	router, err := RouterOutputs(launchconfig.Router{})
+	router, err := RouterOutputs(Router{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,10 +202,10 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 func TestPrepareWritesRouterInputs(t *testing.T) {
 	tests := []struct {
 		name   string
-		router launchconfig.Router
+		router Router
 		want   map[string]string
 	}{
-		{"unset", launchconfig.Router{}, map[string]string{
+		{"unset", Router{}, map[string]string{
 			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
 			"hostnames":          "",
 			"acme-email":         "",
@@ -214,11 +213,11 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"front-door-mode":    "cds\n",
 			"request-body.conf":  "client_max_body_size 1048576;\n",
 		}},
-		{"body limit", launchconfig.Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
+		{"body limit", Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
 			"front-door-mode":   "cds\n",
 			"request-body.conf": "client_max_body_size 67108864;\n",
 		}},
-		{"public", launchconfig.Router{
+		{"public", Router{
 			Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 			ACMEEmail:        "ops@confidential.ai",
 			ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -255,7 +254,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	}
 
 	// An unvalidated document still cannot publish nginx syntax.
-	if _, err := RouterOutputs(launchconfig.Router{Hostnames: []string{`a.example.com; return 200 "x"`}}); err == nil {
+	if _, err := RouterOutputs(Router{Hostnames: []string{`a.example.com; return 200 "x"`}}); err == nil {
 		t.Fatal("an injected hostname became a router input")
 	}
 }

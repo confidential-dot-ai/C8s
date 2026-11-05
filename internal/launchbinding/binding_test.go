@@ -226,7 +226,7 @@ func TestSelfReportBindsAFreshNonce(t *testing.T) {
 	}
 }
 
-// The boot-order race: attestation-api is ordered before launch-config staging
+// The boot-order race: attestation-api is ordered before a guest's staging
 // but binds its port only after fetching its certificate collateral, so the
 // first /health calls fail. The self-report must wait for readiness and then
 // attest exactly once.

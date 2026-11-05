@@ -5,10 +5,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// Inputs is everything one cluster's CDS VM is configured with. Both
-// generators (`c8s cds config new` and `c8s launch-config new`) fill it, so
-// either one's configuration is built and checked the same way. Each embedded
-// policy is the exact bytes its own parser reads.
+// Inputs is everything one cluster's CDS VM is configured with, as `c8s cds
+// config new` fills it. Each embedded policy is the exact bytes its own parser
+// reads.
 type Inputs struct {
 	ClusterID string
 	// OperatorKeys authorize policy writes.

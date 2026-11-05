@@ -17,7 +17,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -51,7 +50,7 @@ const launchDigestSchema = "2"
 // workers launched with it. It reads the document once, so the entries it
 // adds bind the bytes Parse checked.
 func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
-	data, err := readutil.ReadAll(document, launchconfig.MaxDocumentSize)
+	data, err := readutil.ReadAll(document, MaxDocumentSize)
 	if err != nil {
 		return Admission{}, fmt.Errorf("--worker-document: %w", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
@@ -29,7 +29,7 @@ type draft struct {
 	cdsPinFloor       uint64
 	cdsPinPath        string
 	tlsSAN            string
-	router            launchconfig.Router
+	router            nodeservices.Router
 	kubernetes        Kubernetes
 	caCertificatePath string
 }
@@ -68,7 +68,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
 	f.Uint64Var(&d.cdsPinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
-	launchconfig.BindRouterFlags(f, &d.router)
+	nodeservices.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
 	f.StringVar(&d.caCertificatePath, "ca-certificate", "", "PEM file holding the one CA certificate the API server's serving certificate chains to")
 	f.StringVar(&d.kubernetes.PodCIDR, "pod-cidr", "", "the cluster's pod range, an IPv4 CIDR")

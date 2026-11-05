@@ -57,19 +57,3 @@ func SetMappingValue(n *yaml.Node, key string, value *yaml.Node) {
 		},
 		value)
 }
-
-// PathPresent reports whether a document writes the key at path at all; a
-// decoded zero value does not.
-func PathPresent(n *yaml.Node, path ...string) bool {
-	if n.Kind == yaml.DocumentNode && len(n.Content) == 1 {
-		return PathPresent(n.Content[0], path...)
-	}
-	if len(path) == 0 {
-		return true
-	}
-	value := MappingValue(n, path[0])
-	if value == nil {
-		return false
-	}
-	return PathPresent(value, path[1:]...)
-}

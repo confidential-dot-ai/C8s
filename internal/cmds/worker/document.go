@@ -11,25 +11,29 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 )
 
 const SchemaVersion = "c8s-worker/v1"
 
+// MaxDocumentSize bounds a document read off the launch disk, whose bytes the
+// host writes: a worker reads the document before anything has vouched for it.
+const MaxDocumentSize = 1024 * 1024
+
 // Document is the worker.yaml wire contract.
 type Document struct {
 	SchemaVersion string `yaml:"schemaVersion"`
-	// CDS is the block node launch documents carry: where the cluster's CDS
-	// listens and the pin binding the configuration it runs on.
+	// CDS is where this cluster's CDS listens and the pin binding the
+	// configuration it runs on.
 	CDS cmdsutil.CDS `yaml:"cds"`
 	// TLSSAN is the DNS name of the router's front-door certificate, which
-	// the CDS signs onto its leaf, as on a server.
+	// the CDS signs onto its leaf.
 	TLSSAN string `yaml:"tlsSAN"`
-	// Router is the block server launch documents carry; nil when the
-	// document has none.
-	Router     *launchconfig.Router `yaml:"router,omitempty"`
+	// Router selects the router's public hostnames and front-door limits;
+	// nil when the document sets none.
+	Router     *nodeservices.Router `yaml:"router,omitempty"`
 	Kubernetes Kubernetes           `yaml:"kubernetes"`
 }
 
@@ -81,19 +85,17 @@ func (d Document) validate() error {
 	if !(issuer.CSRPolicy{DNSSANPatterns: config.DNSSANPatterns}).AdmitsDNSName(d.TLSSAN) {
 		return fmt.Errorf("tlsSAN %q is not a DNS name the pinned CDS configuration lets a leaf carry", d.TLSSAN)
 	}
-	if d.Router != nil {
-		if err := d.Router.Validate(); err != nil {
-			return err
-		}
+	if _, err := d.router().Validate(); err != nil {
+		return err
 	}
 	return d.Kubernetes.validate(nodeSubnets)
 }
 
 // router is the document's router block; the zero block is a document with
 // none.
-func (d Document) router() launchconfig.Router {
+func (d Document) router() nodeservices.Router {
 	if d.Router == nil {
-		return launchconfig.Router{}
+		return nodeservices.Router{}
 	}
 	return *d.Router
 }
