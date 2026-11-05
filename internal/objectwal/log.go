@@ -75,6 +75,10 @@ type Stats struct {
 	Writer             Owner  `json:"writer"`
 	Forwarded          uint64 `json:"forwarded"`
 	Takeovers          uint64 `json:"takeovers"`
+
+	ReplayCacheHits     uint64 `json:"replay_cache_hits"`
+	ReplayCachedRecords int    `json:"replay_cached_records"`
+	ReplayCachedBytes   int    `json:"replay_cached_bytes"`
 }
 
 type logState struct {
@@ -90,6 +94,16 @@ type logState struct {
 	stopped error
 	options Options
 	fresh   time.Time
+	// The actor retains only authenticated immutable records across interrupted
+	// walks. The head is always fetched again; no partial walk can authorize a
+	// read. The same byte/record budgets also bound this retained memory.
+	replay      map[ref]replayRecord
+	replayBytes int
+}
+
+type replayRecord struct {
+	record record
+	bytes  int
 }
 
 // New opens no objects and changes no state. scope binds ciphertext to the
@@ -116,6 +130,7 @@ func (l *logState) Stats() Stats {
 	s.Applied, s.Revision, s.Snapshot = l.applied.Index, l.head.Revision, l.head.Snapshot.Index
 	s.Stopped = l.stopped != nil
 	s.Writer = l.head.Writer
+	s.ReplayCachedRecords, s.ReplayCachedBytes = len(l.replay), l.replayBytes
 	return s
 }
 
@@ -335,6 +350,7 @@ func (l *logState) sync(ctx context.Context, wanted map[string]struct{}) (map[st
 		// Find the precise WAL reference at the restored index below, then
 		// retain it to validate the link from the next record.
 		l.applied.Index = index
+		l.clearReplay()
 	}
 	var pending []struct {
 		ref    ref
@@ -343,20 +359,13 @@ func (l *logState) sync(ctx context.Context, wanted map[string]struct{}) (map[st
 	cursor := h.Tail
 	replayBytes := 0
 	for cursor.Index > l.applied.Index {
-		data, err := l.readRef(ctx, cursor, "wal")
+		r, size, err := l.replayRecord(ctx, cursor)
 		if err != nil {
 			return nil, err
 		}
-		replayBytes += len(data)
+		replayBytes += size
 		if replayBytes > l.options.ReplayBytes || len(pending) >= 4096 {
 			return nil, ErrReplayLimit
-		}
-		var r record
-		if err := decode(data, &r); err != nil {
-			return nil, l.stop(err)
-		}
-		if !r.valid() || r.Index != cursor.Index {
-			return nil, l.stop(ErrCorrupt)
 		}
 		pending = append(pending, struct {
 			ref    ref
@@ -388,7 +397,42 @@ func (l *logState) sync(ctx context.Context, wanted map[string]struct{}) (map[st
 		}
 	}
 	l.head, l.etag = h, obj.ETag
+	l.clearReplay()
 	return answers, nil
+}
+
+func (l *logState) clearReplay() {
+	l.replay, l.replayBytes = nil, 0
+}
+
+func (l *logState) replayRecord(ctx context.Context, at ref) (record, int, error) {
+	if err := ctx.Err(); err != nil {
+		return record{}, 0, err
+	}
+	if cached, ok := l.replay[at]; ok {
+		l.stats.ReplayCacheHits++
+		return cached.record, cached.bytes, nil
+	}
+	data, err := l.readRef(ctx, at, "wal")
+	if err != nil {
+		return record{}, 0, err
+	}
+	if len(data) > l.options.ReplayBytes-l.replayBytes || len(l.replay) >= 4096 {
+		return record{}, 0, ErrReplayLimit
+	}
+	var r record
+	if err := decode(data, &r); err != nil {
+		return record{}, 0, l.stop(err)
+	}
+	if !r.valid() || r.Index != at.Index {
+		return record{}, 0, l.stop(ErrCorrupt)
+	}
+	if l.replay == nil {
+		l.replay = make(map[ref]replayRecord)
+	}
+	l.replay[at] = replayRecord{record: r, bytes: len(data)}
+	l.replayBytes += len(data)
+	return r, len(data), nil
 }
 
 func (l *logState) apply(at ref, r record) (map[string]any, error) {
@@ -544,6 +588,7 @@ func (l *logState) open(key string, data []byte) ([]byte, error) {
 }
 
 func (l *logState) stop(err error) error {
+	l.clearReplay()
 	if l.stopped == nil {
 		l.stopped = err
 	}
