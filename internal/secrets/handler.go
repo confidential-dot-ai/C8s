@@ -472,7 +472,7 @@ func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowli
 		if c.Role == workloadclaims.MeshRole || c.Role == workloadclaims.CredentialsRole {
 			continue
 		}
-		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}
+		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts, ProcessNamespacePolicy: c.ProcessNamespacePolicy}
 		out = append(out, r)
 	}
 	return out

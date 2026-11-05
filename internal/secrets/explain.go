@@ -33,6 +33,8 @@ type ReportedContainer struct {
 	// EnvEvidence names why the entry's match env policies reject this
 	// foreign container's environment: an allowlist.EnvEvidence constant.
 	EnvEvidence string `json:"envEvidence,omitempty"`
+
+	ProcessNamespacePolicy string `json:"processNamespacePolicy,omitempty"`
 }
 
 // EntryVerdict is one workload entry measured against the candidate set.
@@ -163,11 +165,12 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 	for _, c := range reported {
 		platform := c.Role != ""
 		entry := ReportedContainer{
-			Digest:   c.Digest,
-			Argv:     c.Argv,
-			Env:      c.Env,
-			Mounts:   c.Mounts,
-			Injected: platform,
+			Digest:                 c.Digest,
+			Argv:                   c.Argv,
+			Env:                    c.Env,
+			Mounts:                 c.Mounts,
+			ProcessNamespacePolicy: c.ProcessNamespacePolicy,
+			Injected:               platform,
 		}
 		resp.Reported = append(resp.Reported, entry)
 		if platform {
@@ -192,7 +195,8 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 		for _, f := range d.Foreign {
 			v.Foreign = append(v.Foreign, ReportedContainer{
 				Digest: f.Digest, Argv: f.Argv, Env: f.Env, Mounts: f.Mounts,
-				EnvEvidence: al.Workloads[name].DiagnoseEnvEvidence(f),
+				ProcessNamespacePolicy: f.ProcessNamespacePolicy,
+				EnvEvidence:            al.Workloads[name].DiagnoseEnvEvidence(f),
 			})
 		}
 		for _, m := range d.MissingMains {

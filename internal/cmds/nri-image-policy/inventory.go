@@ -77,6 +77,17 @@ func (b *admissionInventory) record(containerID, sandboxID, name, digest string,
 // role names the one each platform container holds, so CDS drops them from
 // workload matching without reading their command line.
 func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest, role string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+	b.recordLaunch(containerID, sandboxID, name, role, allowlist.RunningContainer{Digest: digest, Argv: argv, Env: env, Mounts: mounts})
+}
+
+// recordLaunch preserves the full observed launch in the sandbox history.
+func (b *admissionInventory) recordLaunch(
+	containerID string,
+	sandboxID string,
+	name string,
+	role string,
+	launch allowlist.RunningContainer,
+) {
 	if containerID == "" || sandboxID == "" {
 		return
 	}
@@ -85,13 +96,13 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	removed, exited := b.pendingExits[containerID]
 	delete(b.pendingExits, containerID)
 	if !removed {
-		b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
+		b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: launch.Digest, argv: launch.Argv}
 	}
 
 	b.liftDenial(sandboxID, name)
 
 	rec := b.admitted[sandboxID]
-	rec.Record(containerID, digest, role, argv, env, mounts...)
+	rec.RecordLaunch(containerID, role, launch)
 	if exited {
 		rec.Exited(containerID)
 	}

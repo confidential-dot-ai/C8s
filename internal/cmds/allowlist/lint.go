@@ -55,7 +55,7 @@ earlier configuration, safe to delete once no pod runs it.`,
 			if err != nil {
 				return err
 			}
-			al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: entries}
+			al := &pkgallowlist.Allowlist{Schema: pkgallowlist.SchemaForWorkloads(entries), Workloads: entries}
 			findings := lintOffline(al)
 			if seedPath != "" {
 				data, err := readFileOrStdin(cmd, seedPath)
