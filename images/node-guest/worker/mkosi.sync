@@ -5,15 +5,21 @@
 #      RKE2 release's rke2-runtime image -> usr/lib/c8s/worker/bin/, and
 #      var/lib/rancher/rke2/bin linked to it, where c8s-runc execs runc. No
 #      rke2, kubectl, ctr or crictl.
-#   2. the multi-command c8s binary images/node-guest/build pre-stages at
-#      usr/local/bin/c8s, also as the NRI plugin and c8s-runc.
+#   2. the multi-command c8s binary, also as the NRI plugin and c8s-runc:
+#      either the one images/node-guest/build pre-stages at usr/local/bin/c8s,
+#      or the one nri-image-policy:<c8s-ref> carries.
 #   3. the router's nginx files and the worker's NRI floor, rendered from the
 #      chart in that binary, the node profile's floor, which the build
 #      pre-stages at mkosi.local/node-floor.yaml.in, and this profile's static
 #      pod templates.
 #
+# The core image digests resolve from the registry, or from the local OCI
+# layouts the build shares between the image repro gate's two runs.
+#
 # The RKE2 and Helm pins equal the c8s profile's (profile_test.go).
 set -euo pipefail
+# A FATAL inside a command substitution ends the sync.
+shopt -s inherit_errexit
 
 STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
 CACHE_DIR="$SRCDIR/mkosi.pkgcache/c8s"
@@ -44,8 +50,29 @@ C8S_REF=$(input c8s-ref)
 [ -n "$C8S_REF" ] || fail "c8s-ref sync-input is empty"
 C8S_REGISTRY=$(input c8s-registry)
 C8S_REGISTRY=${C8S_REGISTRY:-ghcr.io/confidential-dot-ai}
+# The build shares the OCI layouts of unpublished core images with both repro
+# gate runs; every other build resolves them in the registry.
+IMAGES_INPUT=$(input c8s-images)
+LOCAL_IMAGES_DIR=""
+ORAS_FETCH=(oras manifest fetch --descriptor)
+case "$IMAGES_INPUT" in
+    1)  LOCAL_IMAGES_DIR="$SRCDIR/mkosi.local/core-images"
+        [ -d "$LOCAL_IMAGES_DIR" ] || fail "c8s-images=1 but no layouts at ${LOCAL_IMAGES_DIR#"$SRCDIR"/}"
+        ORAS_FETCH+=(--oci-layout) ;;
+    "") ;;
+    *)  fail "c8s-images sync-input must be 1 or empty, got '$IMAGES_INPUT'" ;;
+esac
+# The build pre-stages a locally built c8s binary, or the image bakes the one
+# the published plugin image carries at this ref.
 C8S="$STAGE_DIR/usr/local/bin/c8s"
-[ -f "$C8S" ] || fail "no c8s binary pre-staged at usr/local/bin/c8s"
+BINARY_INPUT=$(input c8s-binary)
+case "$BINARY_INPUT" in
+    1)  [ -x "$C8S" ] || fail "c8s-binary=1 but no executable binary pre-staged at usr/local/bin/c8s"
+        C8S_SOURCE=prestaged ;;
+    "") [ -z "$LOCAL_IMAGES_DIR" ] || fail "local core images require a pre-staged c8s binary"
+        C8S_SOURCE=plugin ;;
+    *)  fail "c8s-binary sync-input must be 1 or empty, got '$BINARY_INPUT'" ;;
+esac
 NODE_FLOOR="$SRCDIR/mkosi.local/node-floor.yaml.in"
 [ -f "$NODE_FLOOR" ] || fail "no node floor pre-staged at mkosi.local/node-floor.yaml.in"
 
@@ -58,17 +85,96 @@ fetch() {
     echo "$3  $2" | sha256sum -c --status || fail "sha256 mismatch for ${2##*/}"
 }
 
+# image_source <repo>: where oras reads repo's C8S_REF tag — the local OCI
+# layout of repo, or repo in the registry.
+image_source() {
+    local layout
+    case "$1" in "$C8S_REGISTRY"/*) ;; *) fail "$1 is no repository of $C8S_REGISTRY" ;; esac
+    if [ -z "$LOCAL_IMAGES_DIR" ]; then
+        echo "$1:$C8S_REF"
+        return
+    fi
+    layout="$LOCAL_IMAGES_DIR/${1#"$C8S_REGISTRY"/}"
+    [ -f "$layout/oci-layout" ] && [ -f "$layout/index.json" ] \
+        || fail "no local OCI layout at ${layout#"$SRCDIR"/}"
+    echo "$layout:$C8S_REF"
+}
+
 # digest <repo>: the digest C8S_REF names in repo.
 digest() {
-    local d
-    d=$(oras manifest fetch --descriptor "$1:$C8S_REF" | jq -r .digest)
-    case "$d" in sha256:*) echo "$d" ;; *) fail "cannot resolve $1:$C8S_REF" ;; esac
+    local ref d
+    ref=$(image_source "$1")
+    d=$("${ORAS_FETCH[@]}" "$ref" | jq -r .digest)
+    case "$d" in sha256:*) echo "$d" ;; *) fail "cannot resolve $ref" ;; esac
+}
+
+# amd64_manifest <repo> <digest>: the OCI image manifest for linux/amd64,
+# through the index a published multi-manifest pin names.
+amd64_manifest() {
+    local manifest child
+    manifest=$(oras manifest fetch "$1@$2")
+    if [ "$(echo "$manifest" | jq -r .mediaType)" = application/vnd.oci.image.index.v1+json ]; then
+        child=$(echo "$manifest" | jq -r '
+            [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest]
+            | if length == 1 then .[0] else "" end')
+        case "$child" in sha256:*) ;; *) fail "$1@$2 indexes no single linux/amd64 image" ;; esac
+        manifest=$(oras manifest fetch "$1@$child")
+    fi
+    case "$(echo "$manifest" | jq -r .mediaType)" in
+        application/vnd.oci.image.manifest.v1+json) printf '%s' "$manifest" ;;
+        *) fail "$1@$2 is no OCI image" ;;
+    esac
+}
+
+# stage_c8s_binary <repo> <digest>: install the binary repo@digest runs as the
+# NRI plugin, cached by that digest. usr/local/bin is the only tree read out of
+# the image, from the newest layer carrying it: the plugin's symlink and its
+# target are written together.
+stage_c8s_binary() {
+    local cache="$CACHE_DIR/nri-image-policy-${2#sha256:}"
+    local rootfs="$TMP/plugin-image" manifest root plugin target layer
+    if [ ! -f "$cache" ]; then
+        manifest=$(amd64_manifest "$1" "$2")
+        rm -rf "$rootfs"
+        mkdir -p "$rootfs"
+        for layer in $(echo "$manifest" | jq -r '[.layers[].digest] | reverse | .[]'); do
+            oras blob fetch --output "$TMP/layer.tar.gz" "$1@$layer"
+            if tar -xzf "$TMP/layer.tar.gz" -C "$rootfs" usr/local/bin; then
+                break
+            fi
+            rm -f "$TMP/layer.tar.gz"
+        done
+        plugin="$rootfs/usr/local/bin/nri-image-policy"
+        [ -L "$plugin" ] || [ -f "$plugin" ] || fail "no usr/local/bin/nri-image-policy in $1@$2"
+        target=$plugin
+        if [ -L "$plugin" ]; then
+            target=$(readlink "$plugin")
+            case "$target" in
+                /*) target="$rootfs$target" ;;
+                *)  target="$(dirname "$plugin")/$target" ;;
+            esac
+            root=$(realpath -m -- "$rootfs")
+            target=$(realpath -m -- "$target")
+            case "$target" in
+                "$root"/*) ;;
+                *) fail "the plugin of $1@$2 links out of the image: $(readlink "$plugin")" ;;
+            esac
+        fi
+        [ -f "$target" ] || fail "the plugin of $1@$2 is no regular file"
+        install -D -m 0755 "$target" "$cache"
+    fi
+    install -D -m 0755 "$cache" "$C8S"
 }
 
 OPERATOR_REPO="$C8S_REGISTRY/c8s-operator"
 MESH_REPO="$C8S_REGISTRY/armtls-mesh"
 OPERATOR_DIGEST=$(digest "$OPERATOR_REPO")
 MESH_DIGEST=$(digest "$MESH_REPO")
+# Before the long fetches below, so an unpublished ref fails early.
+if [ "$C8S_SOURCE" = plugin ]; then
+    NRI_REPO="$C8S_REGISTRY/nri-image-policy"
+    stage_c8s_binary "$NRI_REPO" "$(digest "$NRI_REPO")"
+fi
 
 # --- 1. Runtime binaries from the rke2-runtime image's one layer ----------
 CORE="$CACHE_DIR/rke2-images-core-${RKE2_VERSION//+/-}.tar.zst"
@@ -87,8 +193,8 @@ done
 mkdir -p "$STAGE_DIR/var/lib/rancher/rke2"
 ln -sfn /usr/lib/c8s/worker/bin "$STAGE_DIR/var/lib/rancher/rke2/bin"
 
-# --- 2. The c8s binary, plugin and runtime wrapper -------------------------
-chmod 0755 "$C8S"
+# --- 2. The plugin and the runtime wrapper --------------------------------
+[ -x "$C8S" ] || fail "no executable c8s binary at usr/local/bin/c8s"
 install -D -m 0755 "$C8S" "$STAGE_DIR/opt/nri/plugins/10-nri-image-policy"
 install -D -m 0755 "$C8S" "$STAGE_DIR/usr/local/bin/c8s-runc"
 
