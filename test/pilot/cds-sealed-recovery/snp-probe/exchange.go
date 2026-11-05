@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	snpverify "github.com/confidential-dot-ai/attestation-go/attestation/snp"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/google/go-sev-guest/abi"
 	"github.com/google/go-sev-guest/client"
@@ -310,8 +312,43 @@ func checkReportProduct(report *spb.Report, expected string) error {
 	// v2 has no signed CPUID: the verifier checks the VCEK's product extension
 	// against options.Product. For newer reports the library prefers signed
 	// CPUID over that option, so enforce our independent expectation here too.
-	if fms := report.GetCpuid1EaxFms(); fms != 0 && kds.ProductLineFromFms(fms) != expected {
-		return fmt.Errorf("report version %d CPUID %#x maps to %q, expected %q", report.GetVersion(), fms, kds.ProductLineFromFms(fms), expected)
+	if fms := report.GetCpuid1EaxFms(); fms != 0 {
+		line := kds.ProductLineFromFms(fms)
+		family, model, _ := abi.FmsFromCpuid1Eax(fms)
+		// Match the already-pinned attestation-go verifier's Zen4c handling.
+		// AMD 57230 table 4 specifies Genoa trust roots for Siena; our
+		// dependency fetches and verifies those parts' VCEKs under Genoa.
+		if family == 0x19 && model >= 0xA0 && model <= 0xAF {
+			line = "Genoa"
+		}
+		if line != expected {
+			return fmt.Errorf("report version %d CPUID %#x maps to %q, expected %q", report.GetVersion(), fms, line, expected)
+		}
+	}
+	return nil
+}
+
+func verifyHardwareReport(ctx context.Context, raw []byte, options *verify.Options) error {
+	r, err := abi.ReportToProto(raw)
+	if err != nil {
+		return err
+	}
+	if err := checkReportProduct(r, kds.ProductLine(options.Product)); err != nil {
+		return err
+	}
+	if r.GetVersion() < snpverify.MinReportVersion {
+		return verify.RawSnpReportContext(ctx, raw, options)
+	}
+	// Use the application's existing verifier: it handles Zen4c VCEK fetching
+	// and bundled AMD root selection without rewriting signed report bytes.
+	result, err := snpverify.VerifyReportContext(ctx, raw, nil, teetypes.VerifyParams{},
+		teetypes.PlatformSNP, snpverify.MinReportVersion,
+		snpverify.Options{CheckRevocations: true, Getter: options.Getter})
+	if err != nil {
+		return err
+	}
+	if !result.SignatureValid || !result.CollateralVerified {
+		return errors.New("AMD signature and issuer revocation verification required")
 	}
 	return nil
 }
@@ -387,12 +424,9 @@ func request(args []string, out io.Writer) error {
 		return err
 	}
 	r, _ := abi.ReportToProto(reply.Report) // checkReply already validated its encoding.
-	if err := checkReportProduct(r, *productLine); err != nil {
-		return err
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := verify.RawSnpReportContext(ctx, reply.Report, options); err != nil {
+	if err := verifyHardwareReport(ctx, reply.Report, options); err != nil {
 		return fmt.Errorf("AMD report verification (version %d, CPUID %#x, expected %s): %w", r.GetVersion(), r.GetCpuid1EaxFms(), *productLine, err)
 	}
 	if req.Operation == "seal" && reply.Result.Outcome == *expect {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/go-sev-guest/abi"
+	"github.com/google/go-sev-guest/kds"
 	spb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
 )
@@ -67,6 +68,34 @@ func TestSignedCPUIDCannotOverrideExpectedProduct(t *testing.T) {
 	}
 	if checkReportProduct(&spb.Report{Version: 3, Cpuid1EaxFms: 1}, "Genoa") == nil {
 		t.Fatal("unknown signed CPUID accepted")
+	}
+}
+
+func TestZen4cUsesExistingVerifierWithoutChangingSignedBytes(t *testing.T) {
+	d, _, _ := deviceFixture()
+	d.report.Version, d.report.Cpuid1EaxFms = 5, 0xaa0f02
+	d.report.ChipId = bytes.Repeat([]byte{9}, 64)
+	d.report.ReportData = make([]byte, 64)
+	raw, err := abi.ReportToAbiBytes(d.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := bytes.Clone(raw)
+	opts, _ := verificationOptions("Genoa")
+	getter := &refusingKDS{}
+	opts.Getter = getter
+	if err := verifyHardwareReport(context.Background(), raw, opts); err == nil {
+		t.Fatal("missing AMD collateral accepted")
+	}
+	want := kds.VCEKCertURL("Genoa", d.report.ChipId, kds.TCBVersion(d.report.ReportedTcb))
+	if len(getter.urls) != 1 || getter.urls[0] != want || !bytes.Equal(raw, original) {
+		t.Fatalf("wrong Zen4c endpoint or modified report: %v", getter.urls)
+	}
+	opts, _ = verificationOptions("Milan")
+	getter.urls = nil
+	opts.Getter = getter
+	if err := verifyHardwareReport(context.Background(), raw, opts); err == nil || len(getter.urls) != 0 {
+		t.Fatal("wrong expected product reached certificate fetch")
 	}
 }
 

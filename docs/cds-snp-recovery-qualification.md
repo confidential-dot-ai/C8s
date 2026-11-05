@@ -100,6 +100,17 @@ checks remain mandatory. This host-only change does not require rebuilding or
 replacing the measured guest image. Both selected workers advertise Genoa;
 that inventory is a selection hint, not attestation evidence.
 
+The report then identified CPUID `0xaa0f02` (family 19h, model A0h), which
+upstream go-sev-guest does not classify. The application's existing pinned
+attestation-go verifier already supports these Zen4c parts, fetching their
+VCEKs under Genoa and anchoring them to bundled AMD roots. The probe now reuses
+that verifier for v3+ reports, with mandatory revocation checking and no change
+to signed report bytes. The expected-product check recognizes the same narrow
+model range; unrelated unknown products still fail. AMD's
+[KDS specification, table 4](https://www.amd.com/content/dam/amd/en/documents/epyc-technical-docs/specifications/57230.pdf)
+documents Siena's shared Genoa root keys. The failed attempt's owned resources
+were removed and its final health observations matched the baseline.
+
 ## Required hardware evidence
 
 The sequential fixture must seal, open in the same live guest as a control,
