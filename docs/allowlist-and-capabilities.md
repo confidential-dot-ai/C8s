@@ -180,6 +180,12 @@ runtime wrapper's floor
 ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)), and so does a
 worker's static pod whose launch a base entry pins.
 
+The measured runtime wrapper holds the same containers to the same bound at
+the create, for the containers its floor covers and whatever the plugin's
+state: beyond the node's default set, a container holds only the capabilities
+the plugin recorded for its launch at the check whose failure fails the create
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
+
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
 measured base and a chart-rendered base is the cluster admin's to choose. What

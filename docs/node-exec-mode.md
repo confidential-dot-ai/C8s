@@ -52,11 +52,15 @@ not a setting.
 
 The same wrapper bounds the privileges of a member pod's containers, because the
 node's admission plugin cannot see the privileged flag, `no_new_privs`, or
-user-namespace mappings
+user-namespace mappings, and the start check where it reads capabilities is one
+the runtime skips when the plugin does not answer
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
 On `create` and `run` it reads the bundle and refuses the create when a
 container the measured mesh policy covers holds more than the floor:
 
+- in none of the five capability sets, a capability outside the node's default
+  set that admission did not grant the container — and no capability at all for
+  a container on a platform role, one of C8s's own node-side identities;
 - `no_new_privs` set, so a setuid binary in the image cannot raise its
   capabilities;
 - none of the privileged marks: a device cgroup allowing every device, no
@@ -70,6 +74,13 @@ container the measured mesh policy covers holds more than the floor:
   pod's shared memory, is allowed, since only the pod's own containers write it.
   The allowlist pins the command line, and an interpreter looks up its first
   module in the working directory.
+
+The bundle names a container's image, not the digest admission matched, so the
+plugin records what an entry declares for each launch it clears: the
+capabilities beyond the node's default set, under `/run/nri-image-policy-caps`,
+removed with the container. It writes them at the check whose failure fails the
+create, so a container the plugin's start check never judges — the check the
+runtime skips when the plugin does not answer — holds the default set alone.
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create. The floor is independent of the exec posture above, and leaves the

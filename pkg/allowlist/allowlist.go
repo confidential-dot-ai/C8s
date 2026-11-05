@@ -878,6 +878,15 @@ var DefaultCapabilities = []string{
 	"SYS_CHROOT",
 }
 
+// UndeclarableCapability reports a capability no container may hold: one the
+// default set does not hold and no entry may declare, spelled with no CAP_
+// prefix. NET_ADMIN, NET_RAW, SETUID and SETGID are the names today; each
+// rewrites the pod's packet rules or takes an id trusted policy reserves for a
+// platform role.
+func UndeclarableCapability(name string) bool {
+	return !slices.Contains(DefaultCapabilities, name) && !slices.Contains(declarableCapabilities, name)
+}
+
 // declarableCapabilities are the Linux capabilities outside the container
 // runtime's default set, less NET_ADMIN, NET_RAW, SETUID and SETGID, spelled as
 // a pod spec spells them: no CAP_ prefix.

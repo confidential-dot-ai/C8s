@@ -3,6 +3,7 @@ package nriimagepolicy
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -96,6 +97,48 @@ func TestEveryCapabilitySetNeedsItsDeclaration(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Admission records a container's capability grant at the validation check,
+// the hook whose failure fails the create, and drops the record with the
+// container.
+func TestValidationRecordsTheCapabilityGrant(t *testing.T) {
+	const containerID = "7c1c4e4f1e3a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+	p := capabilityPlugin(t, SandboxEnforce)
+	p.SetReady()
+	dir := t.TempDir()
+	p.capGrants = &capabilityGrants{dir: dir}
+	// A mesh-exempt namespace: the gate's own record is a node fixture.
+	pod := sandboxedPod()
+	pod.Namespace = "kube-system"
+	imageRef := "registry/repo@" + pushDigestB
+	ctr := sandboxedContainer()
+	ctr.Id = containerID
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: imageRef}
+	ctr.Args = []string{"/app"}
+	req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
+		t.Fatalf("the tracer's launch was refused: %v", err)
+	}
+	granted, err := ReadCapabilityGrant(dir, containerID)
+	if err != nil || len(granted) != 1 || !slices.Equal(granted[0], []string{"SYS_PTRACE"}) {
+		t.Fatalf("ReadCapabilityGrant = %v, %v, want [[SYS_PTRACE]]", granted, err)
+	}
+	if err := p.RemoveContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	if granted, err := ReadCapabilityGrant(dir, containerID); err != nil || granted != nil {
+		t.Fatalf("the removed container kept the grant %v, %v", granted, err)
+	}
+	// The open entry admits any launch of the same image and declares nothing.
+	ctr.Args = []string{"/other"}
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
+		t.Fatalf("the open entry's launch was refused: %v", err)
+	}
+	if granted, err := ReadCapabilityGrant(dir, containerID); err != nil || granted != nil {
+		t.Fatalf("a launch no declaration grants holds %v, %v", granted, err)
 	}
 }
 
