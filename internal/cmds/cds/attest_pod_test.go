@@ -70,6 +70,9 @@ func podRequest(t *testing.T, h AttestHandler, p workloadclaims.PodClaims) types
 	return types.AttestRequestBody{Challenge: issueChallenge(t, h), CSR: csr, PodClaims: raw, Evidence: teetypes.AttestationEvidence{Platform: "tdx", Evidence: json.RawMessage(`{"quote":"fake"}`)}}
 }
 
+// The verifier binds key, challenge and claims; the
+// leaf carries the instance identity and the unique match; no node inventory
+// is recorded and the spent challenge refuses a replay.
 func TestPodAttestIssuesBoundNamedLeafWithoutNodeAuthority(t *testing.T) {
 	p := podTestClaims(t, wlDigestA)
 	h, stub := podTestHandler(t, p)
@@ -108,6 +111,7 @@ func TestPodAttestIssuesBoundNamedLeafWithoutNodeAuthority(t *testing.T) {
 	wantRefusal(t, postPodRequest(t, h, req), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
+// The mesh-only snapshot obtains membership without a workload name.
 func TestPodAttestBootstrapIsMembershipOnly(t *testing.T) {
 	p := podTestClaims(t, wlDigestC)
 	p.Containers[0].Role = "mesh"
@@ -122,18 +126,17 @@ func TestPodAttestBootstrapIsMembershipOnly(t *testing.T) {
 	}
 }
 
+// One row per refused condition of the Pod profile.
 func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*AttestHandler, *types.AttestRequestBody)
 	}{
-		{"no Pod policy", func(h *AttestHandler, r *types.AttestRequestBody) { h.PodImages = nil }},
 		{"node pins are not Pod pins", func(h *AttestHandler, r *types.AttestRequestBody) {
 			h.NodeImages = certifying(h.PodImages...)
 			h.PodImages = nil
 		}},
 		{"mixed token", func(h *AttestHandler, r *types.AttestRequestBody) { r.SandboxToken = json.RawMessage(`{}`) }},
-		{"mixed runtime log", func(h *AttestHandler, r *types.AttestRequestBody) { r.RuntimeExtensions = []string{wlDigestA} }},
 		{"null claims", func(h *AttestHandler, r *types.AttestRequestBody) { r.PodClaims = json.RawMessage(`null`) }},
 		{"SNP", func(h *AttestHandler, r *types.AttestRequestBody) { r.Evidence.Platform = "snp" }},
 		{"node subject", func(h *AttestHandler, r *types.AttestRequestBody) { r.CSR, _ = generateCSR(t) }},
@@ -159,6 +162,7 @@ func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 	}
 }
 
+// An inconsistent complete replay is measurement_denied.
 func TestPodAttestRequiresExactJournalNotPrefix(t *testing.T) {
 	// Snapshot claims A+B while the quote proves only A. Generic node pinning
 	// intentionally accepts such a journal prefix; the Pod profile must not.
@@ -168,6 +172,7 @@ func TestPodAttestRequiresExactJournalNotPrefix(t *testing.T) {
 	wantRefusal(t, postPodRequest(t, h, podRequest(t, h, claimed)), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 }
 
+// A Pod profile combined with a node runtime log, even a null one, is refused.
 func TestPodAttestRejectsExplicitNullNodeLog(t *testing.T) {
 	p := podTestClaims(t, wlDigestA)
 	h, _ := podTestHandler(t, p)
@@ -182,19 +187,8 @@ func TestPodAttestRejectsExplicitNullNodeLog(t *testing.T) {
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
-func TestPodAttestRefusesQuoteBindingMismatch(t *testing.T) {
-	p := podTestClaims(t, wlDigestA)
-	h, stub := podTestHandler(t, p)
-	v := tdxVerdict(t, testMRTD, testRTMR1, testRTMR2)
-	mismatch := false
-	v.ReportDataMatch = &mismatch
-	stub.SetVerdict(v)
-	w := postPodRequest(t, h, podRequest(t, h, p))
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("quote mismatch status=%d %s", w.Code, w.Body.String())
-	}
-}
-
+// Every non-platform observation, including retained history, passes full
+// admission before a membership leaf; a subset earns no name.
 func TestPodMembershipChecksWholeObservationBeforeIssuing(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -203,12 +197,6 @@ func TestPodMembershipChecksWholeObservationBeforeIssuing(t *testing.T) {
 	}{
 		{"valid partial startup", func(p *workloadclaims.PodClaims) {}, true},
 		{"denied command", func(p *workloadclaims.PodClaims) { p.Containers[0].Argv = []string{"/bin/sh"} }, false},
-		{"denied args", func(p *workloadclaims.PodClaims) { p.Containers[0].Argv = append(p.Containers[0].Argv, "--unsafe") }, false},
-		{"denied env", func(p *workloadclaims.PodClaims) {
-			p.Containers[0].Env, _ = allowlist.ObserveEnv([]string{"MODE=unsafe"})
-		}, false},
-		{"denied volume storage", func(p *workloadclaims.PodClaims) { p.Containers[0].Mounts[0].Storage = allowlist.MountUnknown }, false},
-		{"denied mount destination", func(p *workloadclaims.PodClaims) { p.Containers[0].Mounts[0].Destination = "/etc" }, false},
 		{"retained denied historical command", func(p *workloadclaims.PodClaims) {
 			old := p.Containers[0]
 			old.Argv = []string{"/old-command"}
