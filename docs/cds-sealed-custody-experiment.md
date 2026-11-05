@@ -139,13 +139,16 @@ At least one enrolled chip and its capsule must survive. Losing every such
 root is outside this design's recovery envelope. Three VMs on the same chip
 can test VM failure, but do not provide three independent recovery roots.
 
-## Hardware qualification remains pending
+## Hardware qualification status
 
 The read-only HIL1 node inventory advertises SNP capacity on three nodes and
 TDX capacity on others. Those advertisements do not prove derived-key support,
 chip independence, correct image measurement or protected device access.
-The current workspace has no SNP guest device. No guest or host changes were
-made for this increment.
+The workspace itself has no SNP guest device. Subsequent isolated HIL1 runs
+qualified the sentinel primitive in measured SNP guests: same-chip recovery
+after VM destruction and different-chip refusal both passed, with signed
+reports and issuer-revocation checks. The exact inputs and remaining limits are
+recorded in [SNP recovery qualification](cds-snp-recovery-qualification.md).
 
 Native TDX sealing is specified by Intel's
 [module specification, section 12.8](https://cdrdv2-public.intel.com/865787/intel-tdx-module-base-spec-348549007.pdf)
@@ -153,10 +156,10 @@ using `TDG.MR.KEY.GET`, gated by `TDX_FEATURES0.SEALING`. We have not establishe
 that our installed modules and guest interfaces support it. This branch adds
 no TDX emulation, SGX sidecar, host installation or Azure dependency.
 
-A hardware run still requires an approved measured pilot image and a working
-isolated launch path. Follow the existing Cloud rehearsal's owned-resource
-journal, expiry, exact-UID cleanup and production boundaries. The shared
-release needed by Cloud PR #1149 is not authorized by this experiment.
+The hardware fixture uses an isolated measured image and native VM launch path,
+with an ownership journal, expiry, exact-UID cleanup and production boundaries.
+Every resource from the completed attempts was removed. No shared production
+rollout was performed; the Cloud PR #1149 release remains outside this experiment.
 
 Local checks (no CI):
 
@@ -166,5 +169,7 @@ go vet ./internal/cdsrecovery ./test/pilot/cds-sealed-recovery/snp-probe
 ```
 
 The result narrows the candidate: independent sealed copies can simplify
-durable custody, but **fresh policy enforcement and hardware qualification
-remain required**. It is not yet the full production acceptance result.
+durable custody. Current-policy enforcement passes local protocol tests and the
+hardware sealing primitive now passes separately. Their integration, multi-chip
+enrollment and firmware/image lifecycle still require qualification. This is
+not yet the full production acceptance result.

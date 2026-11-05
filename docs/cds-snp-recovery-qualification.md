@@ -5,11 +5,24 @@ qualification work for the [sealed-custody design](cds-sealed-custody-experiment
 not a production CDS replacement. It uses a disposable random sentinel, never
 a CA key or an existing cluster's data.
 
-On 2026-11-05, the probe obtained verified signed results for sealing, reopening
-in the same live guest, and reopening after destroying and recreating that guest
-on the same chip. The different-chip test remains incomplete: its VM creation
-returned HTTP 500. Cleanup removed all owned resources. No unexpected baseline
-health regression was observed; an unrelated VM deletion was recorded separately.
+On 2026-11-05, the complete hardware sequence passed on HIL1. Three distinct
+VMIs and three distinct firmware guest report IDs established recreation; two
+verified chip identities established physical separation. All four exchanges
+used fresh nonces and passed AMD signature and issuer-revocation verification.
+
+| Check | Verified result |
+|---|---|
+| Seal a random sentinel | Sealed |
+| Reopen in the same live guest | Opened; same guest and chip identity |
+| Destroy the guest, recreate on the same chip | Opened the exact original capsule; new guest identity |
+| Recreate on another chip | Original capsule rejected by authenticated decryption after successful key derivation |
+
+Every owned resource and backing volume was removed. Final node identity,
+readiness and baseline VM readiness matched the initial observations, with no
+external stop/deletion or unexpected regression recorded in this successful run.
+This was VM destruction, not a physical host reboot or firmware upgrade. It did
+not run CDS, recover a CA, enroll the same secret on multiple chips, or establish
+operator exclusion. Full acceptance and production readiness remain false.
 
 ## What is built
 
@@ -35,7 +48,10 @@ part of this build.
 | confos revision | `133aeae5e006ee11a72b2a7200a9fb173a1c85ef` |
 | Builder transport patch | `3e1424232f572f1f4cccabc52ee9b208fccff23a8632c0cec8f9686ff98cdb1a` |
 | Manifest | `22b34240e0678b47c5f8b352dd7ad6dda68c212fa4ea66fdbe63a5cec818e026` |
-| Probe binary | `6205afc24a0f0c75970078517c916ac7c78ee652484bdb72dd70e6e60d1b0ebb` |
+| Guest probe binary | `6205afc24a0f0c75970078517c916ac7c78ee652484bdb72dd70e6e60d1b0ebb` |
+| Tested host verifier revision | `905e8860f089d3d6aa65aebb5dc55187adb2bb8c` |
+| Host verifier binary | `adfdaaa0e95664403dcfc3660ae8c7609a70df948a2ecc7135c13619093f772c` |
+| Tested runner revision | `9a2e1c0045723f6ed012004763dcac295d9082f9` |
 | Root disk | `5398317be87a04863c583cea172f2c62c9b568158fb3ff02bb75bbcf371fb251` |
 | IGVM | `e00c6fa515f484734fbffda2daa9c7b80460052b5e5c4e424ecbde6236e114ca` |
 | UKI | `c66bf0168cc52829d12cf66261ffbdf88975def0e28de47006b9e4865c7a324b` |
@@ -70,6 +86,9 @@ a retriable OS interruption. Cleanup still runs through the outer `finally`.
 Resource creation now reconciles recorded ownership after a server error before
 retrying the same name, with at most three attempts. Tests cover a failed write,
 a write whose success response was lost, persistent errors and an owner collision.
+The preceding hardware run had passed sealing and same-chip recovery but stopped
+on HTTP 500 while creating the other-chip VM; its resources were fully removed.
+The successful complete run used a fresh capsule and repeated all four exchanges.
 
 The port-6443 attempt reached KubeVirt Ready but never returned a signed probe
 response. Its native port-forward failed with `no route to host`. KubeVirt
@@ -154,7 +173,7 @@ does not establish fleet-wide availability or customer application latency.
 
 ## Remaining acceptance work
 
-Even a complete sentinel pass would qualify only this exact hardware primitive.
+The complete sentinel pass qualifies only this exact hardware primitive.
 The CDS acceptance goal still needs the same protected recovery key enrolled
 on independent physical roots, complete loss and reconstruction of CDS,
 current-policy release, acknowledged revocation and spent-token rejection.

@@ -113,14 +113,19 @@ continues to keep `full_acceptance_passed` and `production_qualified` false.
 
 ## Hardware run status
 
-The dedicated SNP sentinel image has now been built and inspected locally.
+The dedicated SNP sentinel image passed its hardware sequence on 2026-11-05:
+seal, reopen in the live guest, destroy/recreate on the same chip and reopen,
+then reject the original capsule on a different chip. Fresh signed reports
+established guest recreation and physical chip identity, with revocation checks.
 Its qualification fixture uses the existing native VM API with new owned
 storage and one disposable guest at a time. It needs no Cloud catalog change,
 shared production rollout or CI. The image runs a bounded probe service with
 no shell or general-purpose workload interface, and carries no CDS or CA key.
 
 See [SNP recovery qualification](cds-snp-recovery-qualification.md) for the
-exact image inputs, validation and remaining boundaries. Image construction
-alone does not establish same-chip recovery or different-chip refusal. The
-authority's production wiring, firmware policy and safe image retirement
-remain separate work; full acceptance and production qualification remain false.
+exact image inputs, validation and remaining boundaries. Cleanup removed every
+owned resource and the successful run's final monitored health matched its
+baseline. The hardware probe and the fourteen local CDS scenarios remain
+separate proofs: the hardware root is not yet wired into WALAuthority's full
+CDS recovery/revocation run. That integration, firmware policy and safe image
+retirement remain required; full acceptance and production qualification are false.
