@@ -251,10 +251,13 @@ the snapshot's version and digest; anything else — a malformed answer, no matc
 mid-lifecycle, an ambiguous match — issues the unnamed, membership-only leaf,
 since an incomplete pod still needs a certificate. The digest pins which policy
 decided the match, so a client holding the same bytes detects skew. The router
-keeps a route's backend inside its own allowlist by requiring the two stamps to
-carry the same digest, checking the name alone while its own leaf carries no
-stamp and refusing every workload dial with 502 while its own stamp does not
-parse ([operator.md](operator.md#route-manifest)).
+checks a route's backend by name and refuses every workload dial with 502 while
+its own stamp does not parse ([operator.md](operator.md#route-manifest)). A
+sandbox whose inventory reports a `router`-role container gets a leaf of
+`--router-cert-ttl` (20s by default), shorter than the delay before nodes
+enforce a new allowlist, so the router's stamp names that allowlist before any
+node admits code under it
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
 
 A sandbox goes from unnamed to named at the first renewal after its pod is
 complete. There is no third state, and losing the match costs the pod its name

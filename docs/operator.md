@@ -290,18 +290,15 @@ detectable only by pinning the route digest or the operator keys.
 - A request whose `Host` is not a manifest host, or whose path matches no route,
   gets 404. The router's own paths are never routed by the manifest.
 - A workload backend is dialed as a mesh client: the peer must present a leaf
-  chaining to the mesh CA, carrying that route's workload name, stamped under
-  the same allowlist digest as the router's own leaf. A failed handshake is
-  502 — `backend_digest_mismatch` when the two digests differ — and no backend
-  is reached in plaintext. A router whose own leaf carries no stamp binds no
-  policy digest and checks the name alone.
-- The router and its backends renew on their own schedules, so after an
-  allowlist write a workload route refuses requests until both carry the new
-  digest: 502 `backend_digest_mismatch` while a backend lags, 503
-  `router_digest_changed` while the router's own pools still hold its previous
-  digest. The slower of their `--ca-watch-interval`s, plus half an interval of
-  jitter, plus one issuance bounds that; with the watch off it lasts until the
-  next scheduled renewal.
+  chaining to the mesh CA and carrying that route's workload name. A failed
+  handshake is 502 and no backend is reached in plaintext.
+- The router's leaf lives `--router-cert-ttl` (CDS flag, 20s by default) and
+  renews at half its life. Nodes get a new allowlist only after
+  `--allowlist-node-delay` (30s), which must be longer, so the router renews
+  under a write before nodes enforce it. When its leaf expires the router
+  retires every backend pool and dials nothing until it renews.
+- With the front door in `cds` mode the serving leaf is the mesh leaf, so a
+  client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
   the client attests again
@@ -340,8 +337,8 @@ answers 503 until stored.
 With `--resolve-digests` (the default) install also writes one workload entry
 per adopted workload, named `<ENTRY>`, declaring every container of its pod
 template with exact mounts. CDS stamps that name on the pod's leaf, which is
-what the router requires of a workload backend, under the same allowlist digest
-as its own leaf ([Route manifest](#route-manifest)). When two entries describe
+what the router requires of a workload backend
+([Route manifest](#route-manifest)). When two entries describe
 one pod, CDS stamps neither name, and the router answers 502 for that backend
 at runtime. A template with other mounts, a `subPath`, or secrets and volumes
 gets an any-mounts entry and a warning; for the `--upstream` workload install
