@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "runner_exit_code": 0,
+  "three_guest_cds_passed": true,
+  "source": {
+    "cds_commit": "d5fbc56116a208fa3c4c3e799be3f987db541c1b",
+    "agent_commit": "139ee98f10d1dfaa15a2da80eb7b911f9197b7f8",
+    "runner_commit": "37d06f18dcc44389a05ba3dced072c6383a35f74",
+    "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+    "image_build": "three-host-image-06",
+    "attester_commit": "948a5b3f4bcae6a8879b8f1f1bf89aa9a7bc5d20"
+  },
+  "placement": {
+    "distinct_tdx_workers": 3,
+    "initial_guests": 3,
+    "replacement_guests": 3,
+    "same_worker_per_slot_verified": true,
+    "native_tdx_image_and_launch_verified_for_every_phase": true
+  },
+  "checks": {
+    "passed_phases": 60,
+    "initial_handshake_retries": 12,
+    "control_tunnel_restarts_before_dispatch": 12,
+    "control_tls_handshake_retries_before_dispatch": 0,
+    "issuances_and_renewals": 24,
+    "secret_releases_in_burst": 24,
+    "majority_served": true,
+    "valid_requests_refused_without_authority": 2,
+    "revocation_during_failover": true,
+    "revocation_after_each_replacement": true,
+    "same_ca_identity_across_all_guests": true,
+    "live_spent_operator_tokens_rejected": true,
+    "overlap_and_retirement_decrees_applied": true
+  },
+  "phase_observations": [
+    {
+      "operation": "init",
+      "agent": 0,
+      "target": 0,
+      "seconds": 1.057576031
+    },
+    {
+      "operation": "startup",
+      "agent": 0,
+      "target": 0,
+      "seconds": 1.256598333
+    },
+    {
+      "operation": "provision",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.000776011
+    },
+    {
+      "operation": "init",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.043453418
+    },
+    {
+      "operation": "startup",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.2426152639999999
+    },
+    {
+      "operation": "provision",
+      "agent": 1,
+      "target": 1,
+      "seconds": 0.000183889
+    },
+    {
+      "operation": "init",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.028291228
+    },
+    {
+      "operation": "startup",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.249183997
+    },
+    {
+      "operation": "provision",
+      "agent": 2,
+      "target": 2,
+      "seconds": 0.00056357
+    },
+    {
+      "operation": "seed",
+      "agent": 0,
+      "target": 0,
+      "seconds": 34.343221986
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.525504529
+    },
+    {
+      "operation": "attach",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.8290364110000001
+    },
+    {
+      "operation": "attach",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.7399518349999998
+    },
+    {
+      "operation": "burst",
+      "agent": 0,
+      "target": 0,
+      "seconds": 25.717967291
+    },
+    {
+      "operation": "status",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.367180398
+    },
+    {
+      "operation": "prepare",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.455227154
+    },
+    {
+      "operation": "prepare",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.471673654
+    },
+    {
+      "operation": "refuse",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.085730106
+    },
+    {
+      "operation": "survive",
+      "agent": 1,
+      "target": 0,
+      "seconds": 1.9835177389999998
+    },
+    {
+      "operation": "heal",
+      "agent": 1,
+      "target": 0,
+      "seconds": 3.040465986
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.463997401
+    },
+    {
+      "operation": "status",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.350707971
+    },
+    {
+      "operation": "prepare",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.562214657
+    },
+    {
+      "operation": "refuse",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.082022256
+    },
+    {
+      "operation": "heal",
+      "agent": 0,
+      "target": 0,
+      "seconds": 1.379678567
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.581496422
+    },
+    {
+      "operation": "overlap",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.102513821
+    },
+    {
+      "operation": "revoke",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.321115431
+    },
+    {
+      "operation": "prepare",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.598348116
+    },
+    {
+      "operation": "revoked",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.967914565
+    },
+    {
+      "operation": "prepare",
+      "agent": 0,
+      "target": 2,
+      "seconds": 0.360700517
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 2,
+      "seconds": 0.60703628
+    },
+    {
+      "operation": "init",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.032496428
+    },
+    {
+      "operation": "startup",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.275089979
+    },
+    {
+      "operation": "provision",
+      "agent": 0,
+      "target": 2,
+      "seconds": 0.000119713
+    },
+    {
+      "operation": "admit",
+      "agent": 0,
+      "target": 2,
+      "seconds": 0.155978779
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 2,
+      "seconds": 3.50159326
+    },
+    {
+      "operation": "revoked",
+      "agent": 0,
+      "target": 2,
+      "seconds": 1.7902447910000001
+    },
+    {
+      "operation": "attach",
+      "agent": 2,
+      "target": 2,
+      "seconds": 1.774784819
+    },
+    {
+      "operation": "prepare",
+      "agent": 0,
+      "target": 1,
+      "seconds": 0.630695649
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 1,
+      "seconds": 0.607002013
+    },
+    {
+      "operation": "init",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.0626240120000001
+    },
+    {
+      "operation": "startup",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.274324481
+    },
+    {
+      "operation": "provision",
+      "agent": 0,
+      "target": 1,
+      "seconds": 0.000113495
+    },
+    {
+      "operation": "admit",
+      "agent": 0,
+      "target": 1,
+      "seconds": 0.166314034
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 0,
+      "target": 1,
+      "seconds": 3.686848803
+    },
+    {
+      "operation": "revoked",
+      "agent": 0,
+      "target": 1,
+      "seconds": 1.751428228
+    },
+    {
+      "operation": "attach",
+      "agent": 1,
+      "target": 1,
+      "seconds": 1.853711493
+    },
+    {
+      "operation": "prepare",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.489534322
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.54656053
+    },
+    {
+      "operation": "init",
+      "agent": 0,
+      "target": 0,
+      "seconds": 1.021614042
+    },
+    {
+      "operation": "startup",
+      "agent": 0,
+      "target": 0,
+      "seconds": 0.226478819
+    },
+    {
+      "operation": "provision",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.0002515
+    },
+    {
+      "operation": "admit",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.166798817
+    },
+    {
+      "operation": "roll-safe",
+      "agent": 1,
+      "target": 0,
+      "seconds": 0.488953165
+    },
+    {
+      "operation": "revoked",
+      "agent": 1,
+      "target": 0,
+      "seconds": 1.124043391
+    },
+    {
+      "operation": "attach",
+      "agent": 0,
+      "target": 0,
+      "seconds": 1.887012578
+    },
+    {
+      "operation": "retire",
+      "agent": 1,
+      "target": 1,
+      "seconds": 0.102008525
+    },
+    {
+      "operation": "prepare",
+      "agent": 1,
+      "target": 1,
+      "seconds": 0.326797228
+    },
+    {
+      "operation": "revoked",
+      "agent": 1,
+      "target": 1,
+      "seconds": 0.720996478
+    }
+  ],
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 47,
+    "owned_resources_remaining": 0
+  },
+  "kubernetes_api_retries": {},
+  "external_vm_lifecycle_observations": {
+    "declared_stops": 0,
+    "declared_deletions": 0
+  },
+  "limits": [
+    "One cluster; no multi-tenant capacity claim.",
+    "Two measured images of the same CDS executable; no mixed-release compatibility claim.",
+    "Small inline state only; no object-storage availability claim.",
+    "Checks before and after each replacement; no continuous-availability or latency SLO claim.",
+    "Synthetic operator-known state key; combined hardware key custody is not qualified here.",
+    "Workload certificate bursts; managed Kubernetes node-token enrollment is separate.",
+    "Owned network policies test single-guest isolation. Raft quorum loss pauses two owned VMIs; metadata quorum loss uses member policies and a no-leader observation. No physical host fault is injected."
+  ],
+  "authority_quorum_fault": "two_owned_vmis_observed_paused",
+  "collateral_proxy": {
+    "tls_verified_preflight_passed": true,
+    "additional_owned_pod": true,
+    "production_nat_changed": false
+  },
+  "production_ready": false,
+  "operator_exclusion_qualified": false
+}

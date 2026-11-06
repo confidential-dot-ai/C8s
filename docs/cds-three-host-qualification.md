@@ -42,7 +42,10 @@ Only exact owned, expiring fixture resources may be changed. Placement uses both
 worker name and independently observed Node UID, with no control-plane placement
 or host fault. Cleanup uses UID preconditions, ordinary termination and an
 independent read-only absence audit. CI and shared production releases are not
-used. Results remain pending until a complete run and cleanup audit are saved.
+used. The [completed Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
+passed all 60 phases on three distinct TDX workers, including both faults and
+all three image replacements. The independent cleanup audit confirmed all 47
+resource paths absent. The direct-state comparison remains pending.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
@@ -75,7 +78,7 @@ The [collateral preflight](../test/pilot/cds-three-host/results/2026-11-06-colla
 fetched Intel's revocation list through the owned proxy with end-to-end TLS
 verification. All four resources were removed and independently confirmed
 absent. Native CDS startup subsequently passed on three distinct workers; the
-backend comparison remains pending.
+direct-state comparison remains pending.
 
 The fixed test-control endpoint allows 30 seconds of clock skew for signed
 requests, with the existing five-minute maximum token lifetime and strict
@@ -190,3 +193,13 @@ be dispatched; the precise API method was not recorded. No fault was injected.
 All 32 owned resources were removed and 41 paths independently confirmed absent.
 The bounded CONNECT handling above is covered by a real local proxy test that
 observes only CONNECT requests, with no origin authorization header or body.
+
+Raft attempt 19 completed the entire qualification: 24 issuances and 24 secret
+reads in 25.718 seconds; isolated-leader refusal and majority service with
+revocation; observed two-guest pause and quorum-loss refusal; recovery with the
+same CA and replay rejection; all three image replacements; and applied image
+retirement with revocation preserved. All 35 owned resources were removed.
+Twelve initialization handshakes timed out before dispatch and reconnected
+within the startup budget; no workload phase or image upload needed a retry.
+This is one completed bounded qualification, not an availability SLO or a
+replacement recommendation. Earlier unsuccessful attempts remain above.
