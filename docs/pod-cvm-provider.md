@@ -2,15 +2,14 @@
 
 The optional Pod CVM provider lets the Kubernetes scheduler place an opted-in
 Pod on a virtual node. The operator then launches one Cloud CVM for that Pod
-UID, supplies its signed workload at boot or through one authenticated
-assignment, and projects verified guest status back to Kubernetes. Deleting the
-Pod terminates its CVM before releasing the provider finalizer.
+UID from a generic launch document that names no pod, verifies that the guest
+has run no containers, delivers the pod through one authenticated assignment,
+and projects verified guest status back to Kubernetes. Deleting the Pod
+terminates its CVM before releasing the provider finalizer.
 
-By default each Pod boots with its signed workload. Optional warm capacity boots
-generic guests in advance, verifies that they have run no containers, and
-authenticates one immutable assignment when a Pod claims a guest. An assigned,
-rebooted or terminal VM is never reused for another Pod. Kubernetes workload
-controllers can create replacement Pods in their normal way.
+Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
+or terminal VM is never reused for another Pod. Kubernetes workload controllers
+can create replacement Pods in their normal way.
 
 ## Platform configuration
 
@@ -22,12 +21,14 @@ CDS must authorize the Pod image and provider's Pod launch public key in its
 measured Pod image policy; see [the Pod launch contract](operator.md#authenticated-launch-configuration).
 Use a Pod signing key distinct from the cluster server and agent launch keys.
 
-Before upgrading a v1 provider, stop new placements, set `warmTarget` to zero,
-and drain its managed Pods using the original provider and Cloud credential.
-Wait for all old VMs, including idle or uncertain allocations, to finish cleanup
-before replacing the provider. This version refuses v1 launch records and does
-not rewrite their signed bytes or silently migrate them. Retain the original
-provider and credentials until every v1 obligation is resolved.
+Before upgrading a provider that wrote records of an earlier shape, stop new
+placements and drain its managed
+Pods using the original provider and Cloud credential. Wait for all old VMs,
+including uncertain allocations, to finish cleanup before replacing the
+provider. This version reads only its own record version; it reports an older
+record as `ProviderStateUnavailable`, holds its Pod, and does not rewrite the
+record's signed bytes or silently migrate it. Retain the original provider and
+credentials until every old obligation is resolved.
 
 The operator loads trusted configuration once at startup. Put `config.json` and
 the referenced files in a Secret in the operator's release namespace. Relative
@@ -56,7 +57,6 @@ and size placeholders with compatible Cloud values:
   "memoryMiB": 8192,
   "reservedMemoryMiB": 1024,
   "maxPods": 10,
-  "warmTarget": 0,
   "verificationTimeoutSeconds": 600,
   "publicIP": "shared",
   "meshPeers": []
@@ -67,23 +67,17 @@ and size placeholders with compatible Cloud values:
 the generated policy binding every admitted CDS image to the same exact measured
 CDS configuration. Both are required. A DNS host and a different CDS image or
 TEE are supported. `serverAddress` and `serverPublicKeyFile` retain the cluster
-server identity; they do not select or authenticate CDS. Static and generic
-launches carry the same explicit CDS trust. Changing that trust drains idle
-allocations while existing Pod and allocation records retain their signed bytes.
+server identity; they do not select or authenticate CDS. Every generic launch
+document carries this explicit CDS trust. Changing it affects new records only;
+existing Pod records retain their signed bytes.
 
-After an HA CDS image roll, set optional `cdsPinDecreeFile` to the applied decree
-saved by `c8s cds ha pin-policy --decree-out`. For example, add
-`"cdsPinDecreeFile": "cds-pin-decree.json"` to the configuration and mount that file
-in the same Secret. Its relative path resolves beside `config.json`. The provider
-verifies the signature, cluster and launch-file binding using the configuration
-already bound by `cdsImagePolicyFile`, then signs the decree's complete CDS image
-set and version floor into both static and generic launches. It reads the file
-once at startup; deploy the updated configuration to use a later applied decree.
-A higher floor drains idle older-floor allocations even when the images are
-unchanged. Existing frozen Pod, allocation and assignment records keep their
-original trust. Without this optional file, bootstrap behavior is unchanged.
-The operator must supply the actually applied decree: offline verification does
-not prove that replicas applied it or that no newer decree exists.
+The provider takes no CDS pin decree: after a CDS image roll, deploy an updated
+`cdsImagePolicyFile`. Existing frozen Pod and assignment records keep their
+original trust.
+
+`workloadsFile` holds the `c8s.allowlist/v1` entries the provider signs into
+every assignment; its entries may be empty. `meshPeers` lists the static mesh
+peer endpoints every assignment carries.
 
 `vCPUs` and `memoryMiB` describe one VM of the selected size. Each workload must
 fit that VM after the memory reserve. The virtual node advertises the aggregate
@@ -152,47 +146,34 @@ explicit empty required selectors and empty terms unchanged: they match no
 nodes. Keep existing expressions, match fields, node selectors, and preferred
 affinity.
 
-## Optional warm capacity
+## Generic boot and assignment
 
-`warmTarget` defaults to zero. Set it between zero and `maxPods` to maintain that
-many unassigned generic VMs when capacity permits. This requires a Pod image
-with generic boot and the authenticated assignment service. The default cold
-path remains compatible with images that only support boot-time workloads.
-Warm VMs consume Cloud resources even before a Pod claims them. Validate a freshly
-built image containing assignment support before enabling the pool; a successful
-static-launch run does not validate this path.
+On a Pod bound to the virtual node, the provider validates the Pod, freezes it
+and writes one record for its UID: the signed generic launch document, the
+allocation identity used as the Cloud idempotency key, the frozen Pod, the
+allowlist entries and mesh peers, and the verification deadline. Only then does
+it create the instance, with the guest status port and the Pod's declared
+application ports open from the start. The record counts against `maxPods` from
+the moment it is written until Cloud confirms the instance destroyed; a Pod
+that would exceed the budget gets no record and reports `LaunchRefused` until
+capacity is released.
 
-While pooling is active, `maxPods` bounds all outstanding VM obligations:
-existing cold launches, idle and starting generic guests, assigned guests,
-uncertain creates and VMs still terminating. The idle target is best effort
-within that bound. Demand can claim an idle guest or start a new generic guest
-when a slot is free; it cannot allocate above the bound. Lowering the limit
-retires idle capacity and blocks new allocations until outstanding obligations
-fit. Assigned workloads are not evicted to meet a lower idle target.
+Once the instance runs and reports its endpoints, the provider verifies fresh
+guest evidence and an empty measured list, fetches an assignment nonce on that
+verified connection, signs the assignment over the connection's serving key and
+saves the exact assignment bytes and serving key in the record before POSTing
+them. Readiness still comes only from verified Pod status; until the guest
+reports the assigned Pod the status reason is `AssignmentPending`.
 
-Generic launches contain no Pod, workload entries or application ingress. The
-provider verifies fresh guest evidence and an empty measured list before signing
-an assignment. After a permanent claim, it adds the exact workload ingress
-through Cloud's idempotent ingress API and waits for those rules to apply. It
-then saves the exact assignment bytes and verified serving-key binding before
-POSTing them. Readiness still comes only from verified Pod status.
-
-A lost assignment reply retains the same VM and Pod claim. The provider can
-replay the saved bytes to the same serving key and recover through matching
-attested status. It never signs a new assignment for a different serving key
-after publishing an assignment intent. If recovery cannot establish valid Pod
-status within the frozen verification window, the Pod fails and the VM is
-terminated. A claimed VM never returns to the idle pool. Refusal to issue an
-assignment nonce, or refusal of an assignment whose nonce the guest has since
-discarded, uses the same bounded failure path; it does not reset the deadline or
-release the claim.
-
-Set `warmTarget` to zero to drain unused generic guests and stop replenishment.
-Existing assignments continue to run. Generic assignment remains required for
-new allocations while older pool obligations are being drained; once all pool
-slots are gone, new Pods use the default static launch path again. Disable the
-warm target and wait for idle termination as well as Pod cleanup before
-uninstalling the provider.
+A lost assignment reply keeps the same VM and record. The provider replays the
+saved bytes to the same serving key and recovers through matching attested
+status. It never signs a second assignment for the record, and refuses a guest
+that presents another serving key, holds another Pod, or reports the Pod
+without a saved assignment (`UnexpectedAssignedGuest`). If recovery cannot
+establish valid Pod status within the frozen verification window, the Pod fails
+and the VM is terminated. Refusal to issue an assignment nonce, or refusal of an
+assignment whose nonce the guest has since discarded, uses the same bounded
+failure path; it does not reset the deadline.
 
 ## Workload opt-in
 
@@ -277,10 +258,9 @@ or provide Kubernetes cluster DNS/Service networking inside the guest.
 ## Recovery and teardown
 
 Before each Cloud creation, the operator saves the exact signed request in a
-provider-owned Secret. A workload launch also has a Pod finalizer; an unassigned
-generic guest retains its allocation slot as cleanup authority. Retries use the
-same request and idempotency key, including after restart or an ambiguous create response. The
-record is retained until deletion is confirmed. An orphan sweep also handles
+provider-owned Secret and holds the Pod with a finalizer. Retries use the same
+request and idempotency key, including after restart or an ambiguous create
+response. The record is retained until deletion is confirmed. An orphan sweep also handles
 force-deleted Pods and same-name Pods with a new UID. Do not manually remove
 provider records or finalizers to bypass cleanup.
 

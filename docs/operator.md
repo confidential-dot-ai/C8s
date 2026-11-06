@@ -210,27 +210,9 @@ keys or `router` block, and no pod, allowlist entries or mesh peers: the guest
 refuses a document that carries any of them. Re-signing it after an edit
 requires the Pod launch key.
 
-When supplied, `workloads.json` holds a `c8s.allowlist/v1` document; its entries
-may be empty. It is the base allowlist, in force before CDS responds; the plugin
-also admits entries fetched from the authenticated CDS. A failed initial pull
-leaves the base in force while polling continues, and a failed refresh keeps the
-last applied CDS policy. Neither source gets a node-TCB exemption. The pod role
-measures started images only and refuses a baked configuration that also sets
-`allowlist.pull.measure_policies`.
-
-For generic boot, use `--generic --name` and omit `--pod-manifest`, `--workloads`
-and `--mesh-peer`:
-
-```sh
-c8s node launch-config new-pod --generic --name warm-1 \
-  --out warm1 --cluster-id demo --image-manifest manifest.json \
-  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
-  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
-```
-
-The guest starts its runtime and attested
-status service with no static manifest. Admission refuses every sandbox and
-container, including pause and the mesh endpoint, until assignment.
+The guest starts only its attested status service: no container runtime,
+admission plugin or kubelet runs until a pod is assigned, so nothing can start a
+sandbox or container before then.
 
 The launcher first verifies fresh guest evidence and an empty measured list,
 then fetches `GET /v1/assign/nonce` and signs one `POST /v1/assign` with the Pod
