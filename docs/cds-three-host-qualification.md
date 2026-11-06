@@ -94,3 +94,15 @@ tenth of its TTL. Expiry moves back equally: the total validity and named-leaf
 revocation ceiling do not increase. Both backend arms use this same change;
 the harness still uses ordinary X.509 verification with the consumer's clock.
 CA validity and host clocks are unchanged.
+
+[Attempt 11](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-11.json)
+passed initial issuance and secret reads on all three guests, then failed the
+concurrent issuance burst. Its fallback console command used an invalid timeout
+format, leaving the guest assertion unavailable. The cause remains unresolved;
+the same frozen CDS binary passed the local Raft workload with mock attestation.
+The next runner captures each owned guest's console from boot into a private
+1 MiB tail. One writer owns each tail, and its pipe supplies backpressure. It
+keeps a terminal open but sends no keystrokes; capture processes stop with their
+owned guests. Initial workload checks now precede copying replacement disks,
+while every fault still waits for all six disks to be independently verified.
+The workload, request timeouts, image pins, and backend budgets are unchanged.

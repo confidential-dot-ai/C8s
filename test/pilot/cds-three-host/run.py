@@ -25,6 +25,7 @@ from fixtures import NS, OWNER, COMPONENT, SLOT, need
 import guests
 import transfer
 import egress
+import console
 from api import ReadBackoff
 
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
@@ -66,7 +67,7 @@ class Run(metadata.Run):
             self.state['phases'] = []
             self.save()
         need(self.state['backend'] == args.backend, 'backend differs from journal')
-        self.guests = {}; self.tunnels = {}; self.etcd = None
+        self.guests = {}; self.tunnels = {}; self.consoles = {}; self.etcd = None
         self.atomic = self.helpers.atomic_json
 
     def resource_path(self, item): return guests.resource_path(item, self.run)
@@ -91,6 +92,10 @@ class Run(metadata.Run):
                 except Exception as error: failures.append(type(error).__name__+': '+str(error))
         try: super().cleanup()
         except Exception as error: failures.append(type(error).__name__+': '+str(error))
+        for capture in self.consoles.values():
+            try: capture.close()
+            except Exception as error: failures.append(type(error).__name__+': '+str(error))
+        self.consoles = {}
         for row in self.state['resources']:
             if row['item']['kind'] != 'Namespace': continue
             try:
@@ -109,6 +114,8 @@ class Run(metadata.Run):
         super().remove(row)
         if row['item']['kind'] == 'VirtualMachine':
             self.wait_absent(VMI+row['item']['metadata']['name'])
+            capture = self.consoles.pop(row['item']['metadata']['name'], None)
+            if capture: capture.close()
 
     def proxy_kubectl(self, *args):
         return [self.args.kubectl, '--kubeconfig', self.args.kubeconfig, '-n', egress.NAMESPACE, *args]
@@ -214,6 +221,10 @@ class Run(metadata.Run):
         self.state.setdefault('guest_placements', []).append({'slot': slot, 'variant': variant, 'vm_uid': row['uid'],
             'vmi_uid': uid, 'node': vmi['status']['nodeName'], 'node_uid': self.state['nodes'][slot]['uid']})
         self.save()
+        self.current(row)
+        name = vm['metadata']['name']
+        self.consoles[name] = console.Capture([self.args.virtctl, '--kubeconfig', self.args.kubeconfig,
+            '-n', NS, 'console', name, '--timeout=1'], self.directory/(name+'-live-console.log'))
         self.open_tunnel(slot)
 
     def open_tunnel(self, slot):
@@ -234,6 +245,8 @@ class Run(metadata.Run):
 
     def phase(self, agent, operation, target=0, retry_start=False):
         self.live(); row = self.guests[agent]; self.current(row)
+        need(all(self.consoles[r['item']['metadata']['name']].process.poll() is None
+                 for r in self.guests.values()), 'owned read-only console capture exited; inspect private tail')
         need(self.tunnels[agent][0].poll() is None, 'VM tunnel exited')
         q = {'operation': operation, 'target': target}
         if operation == 'init':
@@ -329,18 +342,17 @@ class Run(metadata.Run):
         launch = self.launch(); pending = {}
         for slot in range(3):
             for item in guests.network(self.run, slot, self.state['expires']): self.create(item)
-            for variant in ['a', 'b']:
-                items, vm = self.render_guest(slot, variant, launch); self.populate(items, variant); pending[slot, variant] = vm
-                if variant == 'a':
-                    # Prove startup after the first upload, before spending
-                    # time preparing the other five disks. Faults still wait
-                    # until all three guests and both images are ready.
-                    self.boot_guest(vm, slot, 'a'); self.phase(slot, 'init', slot, retry_start=True)
-                    self.phase(slot, 'startup', slot)
-                    self.phase(slot, 'provision', slot)
+            items, vm = self.render_guest(slot, 'a', launch); self.populate(items, 'a')
+            self.boot_guest(vm, slot, 'a'); self.phase(slot, 'init', slot, retry_start=True)
+            self.phase(slot, 'startup', slot)
+            self.phase(slot, 'provision', slot)
         self.phase(0, 'seed'); self.phase(0, 'roll-safe')
         for slot in [1, 2]: self.phase(slot, 'attach', slot)
         self.phase(0, 'burst')
+        # Establish the unchanged initial workload before copying replacement
+        # disks. Faults still wait for all three independently verified B disks.
+        for slot in range(3):
+            items, vm = self.render_guest(slot, 'b', launch); self.populate(items, 'b'); pending[slot, 'b'] = vm
         # Isolate the actual Raft leader (or one stateless direct-state guest).
         statuses = self.phase(0, 'status')['replicas']
         lost = next((i for i, v in enumerate(statuses) if v['status'].get('state') == 'Leader'), 2) if self.args.backend == 'raft' else 2
@@ -395,22 +407,17 @@ class Run(metadata.Run):
 
     def diagnostics(self):
         super().diagnostics()
-        try:
-            # Read only the serial log/screen of a VMI whose owner UID still
-            # matches the journal. Never send guest keystrokes or commands.
-            self.native.Run.capture_boot_diagnostics(self)
-        except Exception:
-            pass
+        # The live tail already contains the failed phase. Avoid opening a
+        # second console, which could disconnect the active read-only capture.
         for slot, row in self.guests.items():
             try:
                 if self.current(row, absent=True) is None: continue
                 name = row['item']['metadata']['name']
-                # Read a bounded console tail without sending keystrokes.
-                with (self.directory/(name+'-console.log')).open('ab') as log:
-                    p = subprocess.Popen([self.args.virtctl, '--kubeconfig', self.args.kubeconfig, '-n', NS,
-                        'console', name, '--timeout=10s'], stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-                    try: p.wait(timeout=15)
-                    except subprocess.TimeoutExpired: p.terminate(); p.wait(timeout=5)
+                if name in self.consoles: continue
+                capture = console.Capture([self.args.virtctl, '--kubeconfig', self.args.kubeconfig, '-n', NS,
+                    'console', name, '--timeout=1'], self.directory/(name+'-fallback-console.log'))
+                try: time.sleep(5)
+                finally: capture.close()
             except Exception: pass
 
 

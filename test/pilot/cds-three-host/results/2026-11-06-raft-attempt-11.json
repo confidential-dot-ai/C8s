@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 11,
+  "stage": "concurrent-workload-issuance",
+  "runner_commit": "d5fbc56116a208fa3c4c3e799be3f987db541c1b",
+  "image_build": "three-host-image-05",
+  "cds_commit": "d5fbc56116a208fa3c4c3e799be3f987db541c1b",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "chunk_retries": 1,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 13,
+  "failed_phase_receipt_native_tdx_verified": true,
+  "passed_workload_checks": [
+    "genesis and initial secret creation",
+    "cross-replica certificate issuance and secret reads",
+    "all three guests attached to the same mesh CA"
+  ],
+  "finding": "The concurrent issuance burst failed after 12.875 seconds. Initial issuance passed with the bounded leaf backdate. The fallback console command used an invalid timeout format; its output and the unavailable guest display did not establish the underlying assertion. No fault or rolling-upgrade result is claimed.",
+  "follow_up": "Retain bounded read-only console tails from boot and repeat the unchanged native workload. Run the initial workload before copying replacement disks; retain all six disk checks before fault injection.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 41,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
