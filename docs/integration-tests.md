@@ -1,7 +1,7 @@
 # Run the integration tests
 
-Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
-here proves a confidential property. Four harnesses:
+These local harnesses exercise C8s without TEE hardware, so they do not
+prove confidential properties:
 
 - **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
   TLS whose certificates carry TEE evidence.
@@ -12,6 +12,9 @@ here proves a confidential property. Four harnesses:
 
 CI runs them as the Integration, Integration (cluster) and CDS HA jobs; terms
 are defined in [glossary.md](glossary.md).
+
+The Pod runtime lane at the end of this page adds a privileged runtime harness
+to ordinary CI; like the others it proves no hardware property.
 
 Prerequisites:
 
@@ -117,3 +120,30 @@ with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
   `node_exec ctr -n k8s.io images pull` block near the top of `run.sh`.
 - The mock-attestation Deployment is `Recreate` on purpose: two host-network
   pods cannot both bind `:8400` on a single-node cluster.
+
+## Pod runtime CI
+
+Run `bash test/integration/pod-runtime/run.sh` with Go and Docker supporting
+privileged containers. Its check is start authorization, where one offline
+workload executes only after its exact NRI container, sandbox and process
+identity is consumed once. Seven cases reject execution: missing authority,
+policy denial, measurement failure, callback timeout, lost socket, plugin
+disconnect and replay.
+
+The runner extracts digest-pinned RKE2 runtime release binaries for the Docker
+daemon's native architecture and uses the production `c8s-runc`. The check
+isolates the start-permission boundary; a plugin restart within a boot ends the
+Pod identity and is not exercised here.
+
+Measurement registers, CDS transport and credential issuance are fixtures.
+Containerd uses the native snapshotter and cgroupfs. This lane does not issue
+a real Pod certificate, or establish guest-airgap byte equivalence, systemd
+ordering, overlay filesystem behavior or Cloud acceptance.
+
+The runtime lane requires a fresh result receipt and fails when
+prerequisites or required assertions are missing. The runtime lane requires
+`result.json`, bound to the current invocation, plus successful cleanup.
+Evidence includes runtime binary hashes and bounded logs. The lane removes only its owned
+local resources; the runtime container has no host mounts or network access.
+Set `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
+directory.
