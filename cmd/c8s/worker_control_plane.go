@@ -107,6 +107,9 @@ func renderWorkerCluster(ctx context.Context, cfg nodeImageRenderConfig, host st
 	extra := []string{
 		"--set", "kubeStateMetrics.enabled=false",
 		"--set", "hostNamespacePolicy.enabled=false",
+		// The operator beside a workers' control plane is not the chart's
+		// Deployment and has no Pod CVM provider configuration.
+		"--set", "operator.podCVMProvider.enabled=false",
 	}
 	for _, input := range cfg.images() {
 		extra = append(extra, "--set-string", input.valuePath+".pullPolicy=IfNotPresent")

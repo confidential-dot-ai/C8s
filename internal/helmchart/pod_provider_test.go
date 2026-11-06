@@ -52,7 +52,7 @@ func TestPodProviderMountAndPermissionsAreOptIn(t *testing.T) {
 					secret = v.Secret
 				}
 			}
-			if enabled && (secret == nil || secret.SecretName != "pod-launch-config" || secret.DefaultMode == nil || *secret.DefaultMode != 0o440) {
+			if enabled && (secret == nil || secret.SecretName != "pod-launch-config" || secret.DefaultMode == nil || *secret.DefaultMode != 0o440 || secret.Optional == nil || !*secret.Optional) {
 				t.Fatalf("config volume=%+v", secret)
 			}
 			if !enabled && secret != nil {
