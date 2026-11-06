@@ -80,12 +80,19 @@ qualified the bounded native
 [SNP](cds-direct-native-recovery.md) and [TDX](cds-tdx-current-recovery.md)
 recovery paths for this backend. The dedicated
 [metadata service HA qualification](cds-ha-metadata.md) has since passed.
-The [three-host CDS comparison](cds-three-host-qualification.md) has a complete
-Raft baseline. Direct-state CDS has passed its initial workload, isolated-guest
-refusal, majority service, revocation and same-CA recovery. Its full qualification
-remains incomplete after a metadata status-observer failure before the quorum-loss
-refusal phase. Earlier unsuccessful attempts and their network observations are
-retained in that comparison.
+The [three-host CDS comparison](cds-three-host-qualification.md) now has completed
+Raft and direct-state runs, with 60 and 56 required phases respectively, using
+the same guest images, client, workload and deadlines. Both passed native TDX
+startup on three workers, the issuance/release burst, isolated-guest refusal,
+majority service and revocation, observed authority-quorum-loss refusal, and
+recovery with the same CA and replay rejection. All three image replacements
+and image retirement passed, and independent audits confirmed cleanup. The
+direct-state run adds three etcd members and three adapters; etcd uses Raft
+internally. Earlier unsuccessful attempts and network observations are retained.
+This is bounded HA evidence with a synthetic operator-known state key. Combining
+it with hardware-protected key custody and total CDS replica loss is the next
+qualification; the separate native custody results do not establish that
+combined guarantee, production scale or an in-place migration path.
 
 Known prototype limits: binding updates serialize; path creation shares a quota
 counter; the current policy image is reconstructed in private SQLite for each

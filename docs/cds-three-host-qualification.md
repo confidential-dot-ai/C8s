@@ -42,12 +42,29 @@ Only exact owned, expiring fixture resources may be changed. Placement uses both
 worker name and independently observed Node UID, with no control-plane placement
 or host fault. Cleanup uses UID preconditions, ordinary termination and an
 independent read-only absence audit. CI and shared production releases are not
-used. The [completed Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
-passed all 60 phases on three distinct TDX workers, including both faults and
-all three image replacements. The independent cleanup audit confirmed all 47
-resource paths absent. The direct-state comparison has passed its initial
-workload and single-guest isolation, but remains incomplete after the metadata
-status-observer failure described below; no complete direct-state pass is claimed.
+used. The [Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
+and [direct-state comparison](../test/pilot/cds-three-host/results/2026-11-06-direct-three-host.json)
+both completed on three distinct TDX workers with the same guest images, client,
+workload and deadlines. Controller observation corrections and unsuccessful
+attempts are retained below.
+
+| Qualification | Raft | Direct current state |
+| --- | ---: | ---: |
+| Required phases passed | 60/60 | 56/56 |
+| Native TDX guest incarnations across three workers | 6/6 | 6/6 |
+| Burst: 24 certificate issuances/renewals and 24 secret releases | 25.718 s | 26.738 s |
+| Isolated-guest refusal, majority service and revocation | Passed | Passed |
+| Observed authority quorum loss, refusal and recovery | Passed | Passed |
+| All three image replacements, same CA, replay rejection and revocation | Passed | Passed |
+| Signed image retirement applied | Passed | Passed |
+| Owned resources removed / paths independently confirmed absent | 35 / 47 | 63 / 78 |
+
+Raft's four additional phases are three membership admissions and one extra
+leader-status check. The fault mechanisms differ as described below. Timings
+are single observations, not a speedup, capacity or SLO result. This establishes
+the bounded HA behavior of direct-state CDS with the dedicated metadata service.
+The next qualification must combine this service with hardware-protected key
+custody and total CDS replica loss; this run uses the synthetic state key above.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
@@ -79,8 +96,8 @@ test dependency and is not evidence of production collateral-service HA.
 The [collateral preflight](../test/pilot/cds-three-host/results/2026-11-06-collateral-preflight-01.json)
 fetched Intel's revocation list through the owned proxy with end-to-end TLS
 verification. All four resources were removed and independently confirmed
-absent. Native CDS startup subsequently passed on three distinct workers; the
-direct-state comparison remains pending.
+absent. Both completed backend qualifications subsequently passed native CDS
+startup across all six guest incarnations on three distinct workers.
 
 The fixed test-control endpoint allows 30 seconds of clock skew for signed
 requests, with the existing five-minute maximum token lifetime and strict
@@ -234,10 +251,10 @@ was stopped before guest boot or fault injection after that regression was
 confirmed. Its metadata quorum and collateral preflight had passed, showing why
 those checks alone were insufficient. The ordinary cleanup removed all 38 owned
 resources; the independent audit confirmed 42 paths absent. No host networking,
-OVN configuration, route, queue or shared policy was changed. The next cloud
-qualification requires stable worker connectivity, a repeat metadata check and
-the same direct-state workload and deadlines. A production replacement or
-performance comparison is not supported by these incomplete results.
+OVN configuration, route, queue or shared policy was changed. Resuming required
+observed recovery of worker connectivity, a repeat metadata check and the same
+direct-state workload and deadlines. These incomplete attempts alone support
+neither a production replacement nor a performance comparison.
 
 The loss persisted after cleanup: the independent audit finished at 14:09:52 UTC;
 existing probes between 14:13:34 and 14:16:25 lost 15 of 18 pod probes and 3 of
@@ -299,3 +316,24 @@ remain intact. All 37 controller tests and six metadata fixture tests pass.
 The failed run's 60 resources were removed and 72 paths independently confirmed
 absent. One image chunk retried; no workload request did. The CDS binaries,
 workload and deadlines remain unchanged.
+
+[Direct-state attempt 5](../test/pilot/cds-three-host/results/2026-11-06-direct-three-host.json)
+completed all 56 required phases. The burst issued or renewed 24 certificates
+and released 24 secrets in 26.738 seconds. All six full disk hashes matched;
+there were no image-upload or workload retries. Twelve initialization tunnel
+reconnects occurred before dispatch within the unchanged startup budget.
+Single-guest isolation refused a valid release while the majority continued
+serving and applied revocation. The fresh metadata observers then independently
+confirmed all three members had no leader in 5.494 seconds, within the unchanged
+20-second budget. CDS refused a valid release while authority was unavailable.
+Recovery, all three image replacements and final image retirement preserved
+the CA identity, spent-token rejection and revocation. Cleanup removed all 63
+owned resources, and an independent read-only audit confirmed 78 paths absent.
+
+Existing worker-pair probe samples during this run reported no loss. The result
+retains an observation gap on the reverse path; sampled ICMP success does not
+prove continuous connectivity or every CDS/metadata TCP path. The earlier
+network regression still has no confirmed root cause or permanent repair.
+No shared network or host configuration was changed. The completed qualification
+does not erase the earlier failures or qualify production scale, migration,
+mixed-release compatibility, large-object availability or combined key custody.
