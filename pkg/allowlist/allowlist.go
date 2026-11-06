@@ -803,14 +803,16 @@ var hostPortProtocols = []string{
 	"UDP",
 }
 
-// nodeServicePorts are the node's own service ports, which no pod publishes.
+// nodeServicePorts are the ports no pod publishes on the node's address: the
+// node's own services, and the ports a Kubernetes control plane answers on
+// wherever it runs.
 var nodeServicePorts = []int{
 	1019,  // workload inventory (pkg/workloadclaims DigestsPort)
 	2379,  // etcd client
 	2380,  // etcd peer
 	6443,  // Kubernetes API
-	8443,  // credential release
-	9345,  // agent join
+	8443,  // the router's front door, and a CDS by default
+	9345,  // node-join supervisor
 	10250, // kubelet
 }
 

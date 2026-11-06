@@ -1,7 +1,7 @@
 // Package operatorauth implements the operator-credential scheme that
 // authorizes C8s operator requests: CDS allowlist writes (PUT/DELETE under
 // /allowlist), route writes (PUT /routes), secret writes (PUT /secrets/*) and
-// secret explain (GET /secrets-explain/*), and the node's cred-release.
+// secret explain (GET /secrets-explain/*).
 //
 // STOP-GAP DESIGN — pinned public keys. CDS is configured with a set of trusted
 // operator EC public keys. For each write the client mints a short-lived

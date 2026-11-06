@@ -12,8 +12,7 @@ type ChallengeResponse struct {
 }
 
 // NonceRequest is the request body of a nonce-bound evidence endpoint
-// (cred-release /attest, pod-status /v1/evidence): a fresh 32-byte nonce,
-// base64 in JSON.
+// (pod-status /v1/evidence): a fresh 32-byte nonce, base64 in JSON.
 type NonceRequest struct {
 	Nonce []byte `json:"nonce"`
 }

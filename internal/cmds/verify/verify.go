@@ -690,22 +690,12 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// deliberately NOT unioned into the --measurements allowlist: an allowlist
 	// is satisfied by ANY member, so a launch digest from some other pinned
 	// build would pass while RTMR[1]/[2] were pinned against this manifest,
-	// splitting the atomic tuple. MRTD is instead compared exactly, the same
-	// rule get-kubeconfig's gate applies to the same manifest (newOutcome).
-	pins, err := resolveRTMRPins(cfg)
+	// splitting the atomic tuple. MRTD is instead compared exactly (see
+	// newOutcome).
+	pins, err := resolveAndCheckRTMRPins(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// RTMR[3] is the runtime extend chain of a guest whose image the host
-	// chose. Without an image pin the host can boot anything and reproduce the
-	// chain, so a lone RTMR[3] verdict reads like a proof of identity while
-	// proving none — the same reason get-kubeconfig makes the manifest
-	// mandatory. One check for both ways of supplying the pin: a second,
-	// parallel rule is a second place for the requirement to be forgotten.
-	if pins.rtmr3 != nil && pins.image == nil {
-		return nil, fmt.Errorf("%s requires --image-manifest: RTMR[3] records events extended into a guest whose image the untrusted host selects, so pinning it without pinning the image proves nothing about what is running", rtmr3FlagUsed(cfg))
-	}
-
 	if _, err := expectedOperatorKeysDigest(cfg); err != nil {
 		return nil, err
 	}
@@ -899,10 +889,12 @@ func rtmr3FlagUsed(cfg config) string {
 	}
 }
 
-// resolveRTMRPins parses --image-manifest and the RTMR[3] pin. Called exactly
-// once, from buildPolicy, so a bad flag is a usage error and the manifest's
-// three registers can never come from two different reads of the file.
-func resolveRTMRPins(cfg config) (rtmrPins, error) {
+// resolveAndCheckRTMRPins parses --image-manifest and the RTMR[3] pin and
+// applies the rules relating them: the pins it returns are checked, so no
+// caller repeats them. Called exactly once, from buildPolicy, so a bad flag is
+// a usage error and the manifest's three registers can never come from two
+// different reads of the file.
+func resolveAndCheckRTMRPins(cfg config) (rtmrPins, error) {
 	manual, err := refvalues.ParseRegisterPins(cfg.rtmrs)
 	if err != nil {
 		return rtmrPins{}, fmt.Errorf("--rtmr: %w", err)
@@ -960,7 +952,7 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 			return rtmrPins{}, fmt.Errorf("--operator-pkey %s: %w", cfg.operatorPubkey, err)
 		}
 		// The seed is derived by the shared convention package, never
-		// recomputed here: the initrd, cred-release and get-kubeconfig all go
+		// recomputed here: the initrd and internal/launchbinding both go
 		// through runtimemeasure.Seed, and a second implementation of the same
 		// arithmetic is a second thing to drift. It hashes the file bytes
 		// verbatim — the check above only inspects them.
@@ -988,8 +980,8 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 	// RTMR[3] is the opposite: it records events extended inside a guest whose
 	// image the untrusted host selects, so without an image pin the host boots
 	// anything and reproduces the chain. A lone RTMR[3] verdict then reads as
-	// proof of identity while proving none — the same reason get-kubeconfig
-	// makes the manifest mandatory.
+	// proof of identity while proving none, which is why the manifest is
+	// mandatory.
 	if pins.rtmr3 != nil && pins.image == nil {
 		return rtmrPins{}, fmt.Errorf("%s requires --image-manifest: RTMR[3] records events extended into a guest whose image the untrusted host selects, so pinning it without pinning the image proves nothing about what is running", rtmr3FlagUsed(cfg))
 	}
@@ -1582,8 +1574,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		// The manifest's MRTD is compared exactly, not merged into the
 		// allowlist: RTMR[1]/[2] are pinned against THIS manifest, so an MRTD
 		// that merely appears somewhere in --measurements would let a launch
-		// digest from a different build satisfy the tuple. Same rule as
-		// guestverify's Policy.checkIdentity — one manifest, one meaning.
+		// digest from a different build satisfy the tuple: one manifest, one
+		// meaning.
 		// buildPolicy now refuses a manifest and an allowlist in the same run,
 		// so the two compares below cannot both fire on a CLI-built plan; the
 		// exact compare stays exact anyway, because widening it is precisely

@@ -86,9 +86,8 @@ func TestImageManifestPinVerifies(t *testing.T) {
 // The manifest's MRTD is compared exactly and is never unioned into the
 // --measurements allowlist. An allowlist is satisfied by ANY member, so a
 // launch digest from a different build sitting in --measurements would
-// otherwise pass while RTMR[1]/[2] were pinned against this manifest — the
-// tuple split the atomic load exists to prevent, and the same rule
-// get-kubeconfig applies to the same file.
+// otherwise pass while RTMR[1]/[2] were pinned against this manifest, which
+// would split the tuple --image-manifest pins as one.
 //
 // The CLI now refuses the two together outright (see
 // TestMeasurementsWithImageManifestIsAUsageError), so the second half of this
@@ -410,8 +409,7 @@ func TestRTMRPinFlagErrors(t *testing.T) {
 		{"rtmr3 too long", config{expectedRTMR3Hex: strings.Repeat("ab", 64)}, "want 48"},
 		// RTMR[3] records events extended into a guest whose image the
 		// untrusted host chose, so alone it reports "(matched)" while proving
-		// nothing about what booted. get-kubeconfig makes the manifest
-		// mandatory for the same reason.
+		// nothing about what booted, which is why the manifest is mandatory.
 		{"rtmr3 without an image pin", config{expectedRTMR3Hex: testRTMR3}, "requires --image-manifest"},
 		{"rtmr3 with only a measurement allowlist", config{expectedRTMR3Hex: testRTMR3, measurements: []string{testMRTD}}, "requires --image-manifest"},
 		{"manifest missing", config{imageManifest: filepath.Join(t.TempDir(), "absent.json")}, "read image manifest"},
