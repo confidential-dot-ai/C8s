@@ -13,6 +13,8 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // GuestPolicy routes one standalone Pod's egress and authenticated ingress.
@@ -20,7 +22,6 @@ import (
 type GuestPolicy struct {
 	Bridge       string
 	PodAddress   netip.Addr
-	Peers        []Destination
 	IngressPorts []uint16
 }
 
@@ -32,12 +33,11 @@ func (p GuestPolicy) validate() error {
 		return fmt.Errorf("%w: invalid guest Pod address", ErrPolicy)
 	}
 	for _, port := range p.IngressPorts {
-		switch port {
-		case 0, 8443, 15001, 15006, 15021:
+		if port == 0 || port == 8443 || workloadclaims.IsMeshPort(int(port)) {
 			return fmt.Errorf("%w: reserved guest ingress port %d", ErrPolicy, port)
 		}
 	}
-	return validatePeers(p.Peers)
+	return nil
 }
 
 // InstallGuest installs once, or verifies an existing identical installation.
@@ -127,13 +127,6 @@ func buildGuest(p GuestPolicy) []chain {
 			&expr.NAT{Type: expr.NATTypeDestNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: compareRegister},
 		}
 		ingress.rules = append(ingress.rules, rule{name, slices.Concat([]expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{unix.NFPROTO_IPV4})}, matchLocalDestination(), matchTCPPort(port), translate)})
-	}
-	// The guest connects the endpoint to each peer tuple itself (connectbroker);
-	// nothing the Pod sends to one is forwarded, so a Pod whose capture rules are
-	// gone fails to reach its peer rather than reaching it in the clear.
-	for _, peer := range p.Peers {
-		name := fmt.Sprintf("deny-peer-%s-%d", peer.Addr, peer.Port)
-		forward.rules = append(forward.rules, rule{name, withVerdict(slices.Concat(fromPod, matchDestination(peer.Addr), matchTCPPort(peer.Port)), expr.VerdictDrop)})
 	}
 	for _, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
 		name := fmt.Sprintf("pod-egress-%d", protocol)

@@ -200,12 +200,11 @@ its measured admission plugin instead of a container credential client and node
 inventory callback. The guest authenticates CDS against the signed launch
 document's independent server pins, then sends an empty-subject CSR, a fresh
 challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
-bind the boot identity, the assigned and runtime Pod UIDs, the assigned
-workload ID when the pod's manifest carries `confidential.ai/cw`, the sandbox
-ID, a revision, the complete ordered image measurement list and every retained
-admission observation (image, arguments, environment commitments and mounts,
-completed containers included); `pkg/workloadclaims` owns their encoding. The
-report data is:
+bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
+revision, the complete ordered image measurement list and the image digest of
+every retained admission, completed containers included. The claims carry image
+digests only, no argument, environment, mount or role observation;
+`pkg/workloadclaims` owns their encoding. The report data is:
 
 ```text
 SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
@@ -240,21 +239,17 @@ earlier pins. Pod issuance continues to use its separate measured policy.
 The guest publishes complete credential generations to a verified RAM-backed
 volume only the endpoint mounts, read-only. Publication rechecks the retained
 revision, sandbox and packet protection. The revision moves when the history
-gains an observation, the applied policy changes or the sandbox's identity ends.
+gains an admission, the applied policy changes or the sandbox's identity ends.
 Stopping or removing a container does not change it or restart issuance. Renewal
-uses fresh evidence and the current policy. The guest checkpoints complete
-history, boot and sandbox identity, issuer binding and applied policy in
-protected RAM. A completed service restart can restore that state after
-verifying the original task identities, image bindings, namespace rules and
-credential volume. It withdraws the old local generation and requests fresh
-evidence; it never restores start permissions.
+uses fresh evidence and the current policy. The guest holds complete history,
+boot and sandbox identity and applied policy only in the plugin process: a
+plugin restart within the boot ends the Pod identity instead of reconstructing
+them, and no start permission survives it.
 Policy changes invalidate issuance responses obtained under an earlier revision.
 
 Losing retained history or protection ends issuance and removes the published
-credentials. An interrupted state transition also refuses recovery; the
-processes left cannot reconstruct complete history. A copied leaf stays usable
-until expiry, and an abrupt process failure cannot guarantee immediate local
-removal.
+credentials. A copied leaf stays usable until expiry, and an abrupt process
+failure cannot guarantee immediate local removal.
 
 These are ordinary mesh leaves: a relying party sees neither the claims nor the
 profile, and a named leaf records authorization at issuance, not current
@@ -262,14 +257,14 @@ liveness or exclusive assignment. The profile creates no node inventory binding
 and does not enable secret release. Setup is in
 [operator.md](operator.md#authenticated-launch-configuration).
 
-A standalone pod CVM captures only its signed IPv4 TCP peer tuples, and the
-guest alone connects to them: the endpoint asks the guest's connect broker, a
-unix socket in its credential volume named in `C8S_MESH_CONNECT_SOCKET`, for
-each peer connection, and the guest refuses any tuple the launch did not sign.
-The guest forwards nothing the pod itself sends to a peer tuple, so neither a
-peer authentication failure nor the loss of the pod's capture rules turns a
-tuple into plaintext egress. Other IPv4 TCP/UDP traffic, DNS to the guest's
-upstream resolvers included, leaves with the CVM's source address. Pod and
+A standalone pod CVM captures only its signed IPv4 TCP peer tuples: the pod
+network namespace's packet rules, which the guest installs from outside it and
+no container can change (every container lacks `NET_ADMIN`), send the pod's TCP
+to a tuple through the endpoint, and the endpoint dials the peer itself, as a
+member pod's does. The endpoint refuses a peer on a mesh control port before
+any handshake, and the pod CVM provider publishes no endpoint on one. Other
+IPv4 TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves
+with the CVM's source address. Pod and
 guest rules exclude IPv4 link-local and block container-initiated access to
 guest-local services, the endpoint's included. An entry's declared exits and
 the node's platform exits (`mesh.exits`) grant nothing in a pod CVM, whose
