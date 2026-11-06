@@ -34,7 +34,7 @@ fi
     echo "--inside requires the disposable root-owned Docker container"; exit 2;
 }
 . "$TESTS_DIR/lib.sh"
-SCRIPT=$TESTS_DIR/../c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh
+SCRIPT=$TESTS_DIR/../worker/mkosi.extra/usr/local/bin/apparmor-enforce.sh
 [[ -f "$SCRIPT" ]] || { echo "script not found: $SCRIPT"; exit 2; }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

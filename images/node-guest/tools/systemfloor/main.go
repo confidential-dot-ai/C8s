@@ -13,7 +13,7 @@
 //	systemfloor -bundle rke2-images-core.linux-amd64.tar.zst \
 //	    -bundle rke2-images-cilium.linux-amd64.tar.zst \
 //	    -manifest .../server/manifests/nvidia-device-plugin.yaml \
-//	    images/node-guest/c8s/image-policy.yaml.in
+//	    images/node-guest/worker/image-policy.yaml.in
 //
 // exits non-zero naming each container whose digest is stale, with the digest
 // its image has in the inputs.

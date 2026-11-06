@@ -10,9 +10,9 @@ import (
 
 const wrapper = "/usr/local/bin/c8s-runc"
 
-// bakedConfigDir is the profile's containerd directory, the one the CI gate
-// checks.
-const bakedConfigDir = "../../c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
+// bakedConfigDir is the worker profile's containerd directory, the one the CI
+// gate checks.
+const bakedConfigDir = "../../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
 
 // The image as committed must pass: RKE2's own base template and the baked
 // drop-ins.
@@ -30,50 +30,20 @@ func TestBakedConfigWrapsEveryHandler(t *testing.T) {
 	}
 }
 
-// workerConfig is the worker image's baked main config.
-const workerConfig = "../../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml"
+// bakedConfig is the worker image's baked main config, beside its drop-ins.
+const bakedConfig = bakedConfigDir + "/config.toml"
 
-// workerDropIns is a containerd directory holding the drop-ins the worker
-// image stages from the c8s profile (worker/shared).
-func workerDropIns(t *testing.T) string {
-	t.Helper()
-	shared, err := os.ReadFile("../../worker/shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	const prefix = "var/lib/rancher/rke2/agent/etc/containerd/"
-	for _, line := range strings.Split(string(shared), "\n") {
-		name, ok := strings.CutPrefix(strings.TrimSpace(line), prefix+dropInDirName+"/")
-		if !ok {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(bakedConfigDir, dropInDirName, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Join(dir, dropInDirName), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, dropInDirName, name), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
-
-// The worker image as committed must pass: its baked config and the drop-ins
-// it stages; a handler it adds unwrapped fails.
+// The worker image as committed must pass: its baked config and drop-ins; a
+// handler it adds unwrapped fails.
 func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
-	dropIns := workerDropIns(t)
-	cfg, err := effectiveConfig(dropIns, workerConfig, nil)
+	cfg, err := effectiveConfig(bakedConfigDir, bakedConfig, nil)
 	if err != nil {
 		t.Fatalf("effectiveConfig(worker) = %v", err)
 	}
 	if handlers, err := checkHandlers(cfg, wrapper); err != nil || len(handlers) != 1 || handlers[0] != "runc" {
 		t.Fatalf("checkHandlers(worker) = %v, %v; want the runc handler wrapped", handlers, err)
 	}
-	data, err := os.ReadFile(workerConfig)
+	data, err := os.ReadFile(bakedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +52,7 @@ func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
 	if err := os.WriteFile(unwrapped, append(data, extra...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = effectiveConfig(dropIns, unwrapped, nil)
+	cfg, err = effectiveConfig(bakedConfigDir, unwrapped, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

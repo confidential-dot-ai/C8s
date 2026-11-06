@@ -37,8 +37,7 @@ fi
 . "$TESTS_DIR/lib.sh"
 : "${FAIL?tests/lib.sh must count assertions and summarize must exit on a failure}"
 
-EXTRA=/extra
-bash "$TESTS_DIR/stage-worker-extra.sh" "$EXTRA"
+EXTRA=$TESTS_DIR/../worker/mkosi.extra
 UNITS=$EXTRA/etc/systemd/system
 PRESET=usr/lib/systemd/system-preset/50-worker.preset
 

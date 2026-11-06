@@ -295,7 +295,7 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 }
 
 // A measured floor pins a static-pod flag as "<flag>=<placeholder>"
-// (images/node-guest/c8s/image-policy.yaml.in); each preparation gives the
+// (images/node-guest/worker/image-policy.yaml.in); each preparation gives the
 // values of the placeholders its node fills.
 const (
 	NodeNamePlaceholder = "${NODE_NAME}"

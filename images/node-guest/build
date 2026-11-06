@@ -62,8 +62,7 @@
 #                      repo's checkout).
 #   C8S_PROFILE=c8s    build the node image (./c8s) instead of the worker
 #                      image (./worker, the default). The worker takes no
-#                      C8S_DEV. The c8s profile's files listed in
-#                      worker/shared are staged with the worker.
+#                      C8S_DEV.
 #   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
 #                      private half of images/node-guest/module-signing.crt,
 #                      used to sign the NVIDIA modules. Required for GPU
@@ -153,15 +152,6 @@ fi
 bin/confos-fetch-attest-gpu
 if [ -n "${C8S_BINARY:-}" ]; then
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
-fi
-if [ "$C8S_PROFILE" = worker ]; then
-    mapfile -t SHARED < <(grep -Ev '^[[:space:]]*(#|$)' "$IMAGE_DIR/worker/shared")
-    (( ${#SHARED[@]} > 0 )) || { echo "images/node-guest/build: worker/shared lists nothing" >&2; exit 1; }
-    for shared in "${SHARED[@]}"; do
-        install -D -m "$(stat -c %a "$IMAGE_DIR/c8s/mkosi.extra/$shared")" \
-            "$IMAGE_DIR/c8s/mkosi.extra/$shared" "mkosi/base/mkosi.local/mkosi.extra/$shared"
-    done
-    install -m 0644 "$IMAGE_DIR/c8s/image-policy.yaml.in" mkosi/base/mkosi.local/node-floor.yaml.in
 fi
 if [ -n "${C8S_IMAGES_DIR:-}" ]; then
     rm -rf mkosi/base/mkosi.local/core-images

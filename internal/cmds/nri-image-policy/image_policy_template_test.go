@@ -23,7 +23,7 @@ import (
 // substitution, so nothing type-checks it against this package's config
 // struct. Parse the rendered form here so a drift fails in `go test`, not at
 // node boot.
-const nodeImagePolicyTemplate = "../../../images/node-guest/c8s/image-policy.yaml.in"
+const nodeImagePolicyTemplate = "../../../images/node-guest/worker/image-policy.yaml.in"
 
 // The platform images mkosi.sync substitutes, as this test's stand-ins.
 const (

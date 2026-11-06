@@ -55,36 +55,14 @@ func settings(t *testing.T, path string) map[string]string {
 	return found
 }
 
-// baked is the path of the file the worker image bakes at rel: this profile's,
-// or the c8s profile's while shared names it.
+// baked is the path of the file the worker image bakes at rel.
 func baked(t *testing.T, rel string) string {
 	t.Helper()
-	if own := filepath.Join("mkosi.extra", rel); fileExists(own) {
-		return own
+	path := filepath.Join("mkosi.extra", rel)
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("the worker image bakes no %s: %v", rel, err)
 	}
-	if slices.Contains(lines(t, "shared"), rel) {
-		return filepath.Join(c8sProfile, "mkosi.extra", rel)
-	}
-	t.Fatalf("the worker image bakes no %s", rel)
-	return ""
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
-// Each shared file is the c8s profile's, and the worker profile holds no copy
-// whose precedence over it would be undefined.
-func TestSharedFilesAreTheC8sProfiles(t *testing.T) {
-	for _, shared := range lines(t, "shared") {
-		if info, err := os.Stat(filepath.Join(c8sProfile, "mkosi.extra", shared)); err != nil || !info.Mode().IsRegular() {
-			t.Errorf("shared %s is not a file of the c8s profile: %v", shared, err)
-		}
-		if _, err := os.Lstat(filepath.Join("mkosi.extra", shared)); err == nil {
-			t.Errorf("the worker profile also bakes shared %s", shared)
-		}
-	}
+	return path
 }
 
 // The worker image unpacks the RKE2 release and renders with the Helm the
@@ -154,9 +132,6 @@ func TestTheWrapperExecsTheRuntimeTheProfileStages(t *testing.T) {
 // the worker image has or its base provides.
 func TestUnitsNameUnitsTheImageHas(t *testing.T) {
 	units := map[string]bool{"attestation-api.service": true, "systemd-timesyncd.service": true, "systemd-time-wait-sync.service": true, "apparmor.service": true}
-	for _, shared := range lines(t, "shared") {
-		units[filepath.Base(shared)] = true
-	}
 	own, err := filepath.Glob("mkosi.extra/etc/systemd/system/*.service")
 	if err != nil {
 		t.Fatal(err)

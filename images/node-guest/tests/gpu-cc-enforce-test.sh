@@ -9,7 +9,7 @@ set -u
 
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$TESTS_DIR/lib.sh"
-SCRIPT=${GPU_CC_SCRIPT:-"$TESTS_DIR/../c8s/mkosi.extra/usr/local/bin/gpu-cc-enforce.sh"}
+SCRIPT=${GPU_CC_SCRIPT:-"$TESTS_DIR/../worker/mkosi.extra/usr/local/bin/gpu-cc-enforce.sh"}
 [[ -x "$SCRIPT" ]] || { echo "script not found: $SCRIPT"; exit 2; }
 
 WORK=$(mktemp -d)
