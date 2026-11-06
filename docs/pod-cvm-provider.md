@@ -22,13 +22,12 @@ measured Pod image policy; see [the Pod launch contract](operator.md#authenticat
 Use a Pod signing key distinct from the cluster server and agent launch keys.
 
 Before upgrading a provider that wrote records of an earlier shape, stop new
-placements and drain its managed
-Pods using the original provider and Cloud credential. Wait for all old VMs,
-including uncertain allocations, to finish cleanup before replacing the
+placements and drain its managed Pods using the original provider. Wait for all
+old VMs, including uncertain allocations, to finish cleanup before replacing the
 provider. This version reads only its own record version; it reports an older
 record as `ProviderStateUnavailable`, holds its Pod, and does not rewrite the
-record's signed bytes or silently migrate it. Retain the original provider and
-credentials until every old obligation is resolved.
+record's signed bytes or silently migrate it. Retain the original provider until
+every old obligation is resolved.
 
 The operator loads trusted configuration once at startup. Put `config.json` and
 the referenced files in a Secret in the operator's release namespace. Relative
@@ -217,10 +216,12 @@ verification withdraws readiness and advertised endpoints.
 `verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
 of 30 to 86400 seconds. The initial window begins when the provider persists the
 Pod's launch intent, including Cloud provisioning and boot. A fresh, verified
-status projection matching the assigned Pod clears the window. Later loss of
-verification begins another window of the same frozen duration. A valid attested
-`Pending` Pod or a running Pod whose application is unready does not time out on
-this basis.
+status projection matching the assigned Pod clears the window. A later failure
+of the guest itself (refused attestation, a status naming another Pod, a reboot,
+an ended or replaced instance) begins another window of the same frozen
+duration. A Cloud API or node outage does not: the Pod keeps its last status
+with readiness unknown until the outage ends. A valid attested `Pending` Pod or
+a running Pod whose application is unready does not time out on this basis.
 
 At expiry, the provider persists `Failed` with reason `GuestVerificationTimedOut`,
 withdraws readiness and endpoints, and requests termination of that Pod's VM.
@@ -264,16 +265,16 @@ response. The record is retained until deletion is confirmed. An orphan sweep al
 force-deleted Pods and same-name Pods with a new UID. Do not manually remove
 provider records or finalizers to bypass cleanup.
 
-An unresolved create intent older than 24 hours is retained for explicit Cloud
-reconciliation, including its cleanup finalizer. The provider does not blindly
-replay such an old uncertain request.
+A create whose response was lost is resolved, however old, by replaying the
+exact saved request under its idempotency key: Cloud returns the instance it
+created, or creates the one the provider then destroys. Cleanup therefore never
+waits on an unresolved create.
 
 Existing records retain their original launch inputs when configuration changes.
-They also bind the Cloud origin and credential hash. Drain all records with the
-original credential before rotating that credential, changing accounts or
-renaming the provider/node. An expired or replaced token cannot silently adopt
-old records; restore the original valid credential or arrange an explicit
-record migration before removing it.
+Records key on the provider ID and the Pod UID, not on the Cloud credential, so
+the credential can be rotated while records exist; the new credential must reach
+the same Cloud account and instances. Renaming the provider orphans its records:
+drain them first.
 
 Delete managed Pods and wait for their CVMs and records to disappear before
 disabling or uninstalling the provider. Disabling new admission alone does not

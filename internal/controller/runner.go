@@ -192,11 +192,6 @@ func managerOptions(opts Options) ctrl.Options {
 	objects := map[client.Object]cache.ByObject{
 		&corev1.Service{}: {Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue})},
 	}
-	if opts.PodCVMProviderConfig != "" {
-		objects[&corev1.Secret{}] = cache.ByObject{
-			Namespaces: map[string]cache.Config{opts.LeaderElectionNS: {}},
-		}
-	}
 	options := ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsserver.Options{BindAddress: opts.MetricsAddr},
