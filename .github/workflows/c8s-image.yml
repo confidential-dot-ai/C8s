@@ -305,7 +305,7 @@ jobs:
           fi
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           # Pinned: rustc compiles attestation-api, whose bytes ship in the
           # measured rootfs — "stable" drifts between legs across a Rust
@@ -868,7 +868,7 @@ jobs:
           path: confidential-os-builder
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           # Pinned for the same reason as the node image's leg: rustc builds
           # the measured attestation-api and confos's measurement tooling.
