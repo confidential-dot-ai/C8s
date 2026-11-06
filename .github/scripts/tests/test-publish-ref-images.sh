@@ -34,6 +34,7 @@ export PUBLISH_REF_IMAGES_POLL_SECONDS=0 PUBLISH_REF_IMAGES_FIND_ATTEMPTS=2
 #   branch-sha        sha the build branch points at (absent: no branch)
 #   commit-known      present when the commit exists on the remote
 #   present-tags      one "<repository>:<tag>" per line that exists in ghcr
+#   image-publishes-nothing   the image workflow succeeds without publishing
 #   run-conclusion    success|failure for every watched run
 #   runs              created on dispatch; consumed by `gh run list`
 cat >"$fixture_dir/bin/gh" <<'EOF'
@@ -57,9 +58,16 @@ case "$1 $2" in
     workflow=$3
     printf '%s\n' "$workflow" >>"$FAKE_STATE/runs"
     # docker publishes every component tag for the short sha; the image
-    # workflow publishes nothing this fake checks.
+    # workflow publishes both formats of both platforms, unless the fixture
+    # says it published nothing.
     if [ "$workflow" = docker.yml ]; then
       for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$FAKE_STATE/present-tags"; done
+    fi
+    if [ "$workflow" = c8s-image-manual.yml ] && [ ! -e "$FAKE_STATE/image-publishes-nothing" ]; then
+      for p in tdx snp; do
+        echo "node-guest-base:worker-$p-c7cf2f3" >>"$FAKE_STATE/present-tags"
+        echo "node-guest-base:worker-$p-cdi-c7cf2f3" >>"$FAKE_STATE/present-tags"
+      done
     fi ;;
   "run list")
     # One run per dispatched workflow, created "now".
@@ -133,16 +141,26 @@ pass
 
 reset
 touch "$state/commit-known"
-out=$(bash "$script" --sha "$sha" --dev --confos-ref af8cef0e937e4cc300ddd30c85af6ccd8cb9be91)
+out=$(bash "$script" --sha "$sha" --confos-ref af8cef0e937e4cc300ddd30c85af6ccd8cb9be91)
 grep -q 'gh api -X POST repos/confidential-dot-ai/C8s/git/refs -f ref=refs/heads/build/c7cf2f3 -f sha='"$sha" "$calls" || fail "build branch was not created at the commit"
 grep -q 'component tags missing at :c7cf2f3' <<<"$out" || fail "missing components not reported"
 order=$(grep -o 'gh workflow run [a-z0-9.-]*' "$calls" | tr '\n' ' ')
 [ "$order" = "gh workflow run docker.yml gh workflow run c8s-image-manual.yml " ] || fail "dispatch order: $order"
 grep -q 'gh workflow run docker.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3$' "$calls" || fail "docker dispatch did not use the build branch"
-grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3 -f dev=true -f confos_ref=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91$' "$calls" \
+grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3 -f confos_ref=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91$' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
-grep -q 'node-guest-base:rke2-tdx-dev-c7cf2f3$' <<<"$out" || fail "dev artifact tag not printed"
-grep -q 'node-guest-base:rke2-snp-dev-cdi-c7cf2f3$' <<<"$out" || fail "dev CDI tag not printed"
+grep -q 'node-guest-base:worker-tdx-c7cf2f3$' <<<"$out" || fail "artifact tag not printed"
+grep -q 'node-guest-base:worker-snp-cdi-c7cf2f3$' <<<"$out" || fail "CDI tag not printed"
+pass
+
+# --- a successful image run that published nothing is an error ---------------
+
+reset
+touch "$state/commit-known" "$state/image-publishes-nothing"
+printf '%s' "$sha" >"$state/branch-sha"
+for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+expect_failure bash "$script" --sha "$sha" | grep -q 'node-guest-base:worker-tdx-c7cf2f3 is not published' \
+  || fail "an unpublished image tag was reported as published"
 pass
 
 # --- components present: only the image build runs ---------------------------
@@ -155,7 +173,7 @@ out=$(bash "$script" --sha "$sha")
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'workflow run docker.yml' "$calls" || fail "docker dispatched although every tag exists"
 grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3$' "$calls" || fail "production image dispatch differs"
-grep -q 'node-guest-base:rke2-tdx-c7cf2f3$' <<<"$out" || fail "production artifact tag not printed"
+grep -q 'node-guest-base:worker-tdx-c7cf2f3$' <<<"$out" || fail "production artifact tag not printed"
 pass
 
 # --- a failed run fails the script -------------------------------------------

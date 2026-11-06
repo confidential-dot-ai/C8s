@@ -14,10 +14,10 @@
 #
 # WHY: an SNP launch measurement covers initial vCPU state, so the image ships
 # one measured IGVM per supported count and the manifest publishes a digest for
-# each. get-kubeconfig's trust gate accepts any of them, but the e2e lanes only
-# ever boot the cell default, so the other counts are pinned without having been
-# launched. A digest that is wrong for a count nobody boots surfaces as a real
-# node booting fine and then being refused credentials.
+# each. `c8s verify` accepts any of them, but CI only ever boots the cell
+# default, so the other counts are pinned without having been launched. A
+# digest that is wrong for a count nobody boots surfaces as a real node booting
+# fine and then being refused its workloads.
 #
 # WHAT THIS PROVES: that a vCPU count actually boots and attests. cvm-e2e
 # hardcodes CORES per cell, so every other count ships measured IGVMs that
@@ -192,10 +192,10 @@ jobs:
             sleep 10
           done
           [ -n "${H:-}" ] || { echo "::error::attestation-api never answered on $GUEST_IP:8400"; exit 1; }
-          # POST /attest with a fresh nonce as report_data — the same request
-          # get-kubeconfig's gate makes — then read the measurement out of the
-          # verdict. Unpinned on purpose: this lane reports what the hardware
-          # measured, it does not enforce a policy.
+          # POST /attest with a fresh nonce as report_data, then read the
+          # measurement out of `c8s verify`'s verdict below. Unpinned on
+          # purpose: this lane reports what the hardware measured, it does not
+          # enforce a policy.
           nonce=$(head -c 32 /dev/urandom | base64 -w0)
           curl -fsS --max-time 30 -H 'Content-Type: application/json' \
             -d "{\"platform\":\"auto\",\"report_data\":\"$nonce\"}" \
