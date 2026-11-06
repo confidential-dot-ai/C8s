@@ -121,6 +121,8 @@ func routedRunConfig(t *testing.T, port int) config {
 		attestationAPIURL: "http://127.0.0.1:9",
 		readHeaderTimeout: time.Second,
 		tunnelIOTimeout:   defaultTunnelIOTimeout,
+		establishRate:     defaultEstablishRate,
+		establishBurst:    defaultEstablishBurst,
 		attestOff:         true,
 		routing: routingConfig{
 			cdsURL:          "https://127.0.0.1:9",
@@ -140,6 +142,19 @@ func TestRunRejectsNonPositiveTunnelIOTimeout(t *testing.T) {
 	cfg.tunnelIOTimeout = 0
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--tunnel-io-timeout must be positive") {
 		t.Fatalf("run() with --tunnel-io-timeout=0 = %v, want the tunnel-io-timeout error", err)
+	}
+}
+
+func TestRunRejectsNonPositiveEstablishRate(t *testing.T) {
+	for _, zero := range []func(*config){
+		func(c *config) { c.establishRate = 0 },
+		func(c *config) { c.establishBurst = 0 },
+	} {
+		cfg := routedRunConfig(t, freePort(t))
+		zero(&cfg)
+		if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--establish-rate and --establish-burst must be positive") {
+			t.Fatalf("run() = %v, want the establish-rate error", err)
+		}
 	}
 }
 
