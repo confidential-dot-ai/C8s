@@ -11,6 +11,7 @@ package cdsha_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -69,6 +70,20 @@ const (
 	// noAnswer is a replica that answered nothing, which no caller reads as a refusal.
 	noAnswer = 0
 )
+
+// backend is the replica backend every cluster of this run names in its
+// ha.backend; CDSHA_BACKEND picks another, raft by default.
+var backend = cdsconfig.Backend(cmp.Or(os.Getenv("CDSHA_BACKEND"), string(cdsconfig.BackendRaft)))
+
+// raftOnly skips a scenario about Raft's own membership: voter seats,
+// majorities and leadership handoff. Every other scenario is the contract each
+// backend keeps.
+func raftOnly(t *testing.T) {
+	t.Helper()
+	if backend != cdsconfig.BackendRaft {
+		t.Skipf("a scenario of the raft backend, and this run's is %s", backend)
+	}
+}
 
 // nextCDSImage is the CDS image an image roll adds beside the one the replicas run.
 const nextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
@@ -338,6 +353,7 @@ func (c *cluster) configure(size shape) {
 		"nodeCIDRs":    []string{"10.0.0.0/24"},
 		"leafDNSNames": []string{"workload." + clusterID + ".svc"},
 		"ha": map[string]any{
+			"backend":  backend,
 			"replicas": addresses,
 			"voters":   size.voters,
 		},
