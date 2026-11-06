@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "source": "existing pinger logs, bounded ICMP probes, key-redacted IPsec counters and packet-header captures",
+  "simultaneous_probes": [
+    {
+      "source_worker": "poc115-node",
+      "probes": {
+        "host": {
+          "started_at": "Fri Nov  6 14:46:24 UTC 2026",
+          "sent": 30,
+          "received": 30,
+          "avg_rtt_ms": 0.184,
+          "max_rtt_ms": 0.85
+        },
+        "pod": {
+          "started_at": "Fri Nov  6 14:46:25 UTC 2026",
+          "sent": 30,
+          "received": 1,
+          "avg_rtt_ms": 30.823,
+          "max_rtt_ms": 30.823
+        }
+      }
+    },
+    {
+      "source_worker": "poc115-node-2",
+      "probes": {
+        "host": {
+          "started_at": "Fri Nov  6 14:46:23 UTC 2026",
+          "sent": 30,
+          "received": 30,
+          "avg_rtt_ms": 0.223,
+          "max_rtt_ms": 0.912
+        },
+        "pod": {
+          "started_at": "Fri Nov  6 14:46:24 UTC 2026",
+          "sent": 30,
+          "received": 2,
+          "avg_rtt_ms": 46.078,
+          "max_rtt_ms": 91.696
+        }
+      }
+    }
+  ],
+  "esp_headers": {
+    "matched_packets": 160,
+    "maximum_absolute_cross_host_timestamp_difference_ms": 0.372,
+    "limits": "Host timestamps are not an independently calibrated one-way latency measurement; capture covers sampled packets only."
+  },
+  "receive_observations": {
+    "probe_packets_delivered_late_in_batches": true,
+    "precise_queue_or_root_cause_identified": false,
+    "new_xfrm_errors_between_1443_and_1448": 0,
+    "observed_qdisc_drops_or_backlog": 0,
+    "observed_ovs_cpu_pressure": false
+  },
+  "recovery_preflight": {
+    "passed": true,
+    "observed_at": "2026-11-06T15:01:19.055480+00:00",
+    "observations": [
+      {
+        "source": "poc115-node",
+        "destination": "10.48.31.35",
+        "passive_first": "2026-11-06T14:53:16.457850088Z",
+        "passive_last": "2026-11-06T14:59:03.634997386Z",
+        "passive_sent": 93,
+        "passive_lost": 0,
+        "passive_max_avg_ms": 1.57,
+        "active_sent": 60,
+        "active_received": 60,
+        "active_max_ms": 2.681
+      },
+      {
+        "source": "poc115-node-2",
+        "destination": "10.48.31.41",
+        "passive_first": "2026-11-06T14:53:14.311039353Z",
+        "passive_last": "2026-11-06T14:59:04.312004938Z",
+        "passive_sent": 93,
+        "passive_lost": 0,
+        "passive_max_avg_ms": 2.46,
+        "active_sent": 60,
+        "active_received": 60,
+        "active_max_ms": 0.763
+      }
+    ],
+    "shared_configuration_changes": false,
+    "root_cause_resolved": false,
+    "scope": "observed recovery; monitor during the next owned qualification"
+  },
+  "shared_production_changes": false,
+  "test_workload_or_deadline_changes": false,
+  "qualification": "Metadata repeat and full direct-state acceptance must still pass; temporary recovery does not establish a permanent network repair."
+}

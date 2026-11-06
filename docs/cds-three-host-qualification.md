@@ -45,8 +45,8 @@ independent read-only absence audit. CI and shared production releases are not
 used. The [completed Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
 passed all 60 phases on three distinct TDX workers, including both faults and
 all three image replacements. The independent cleanup audit confirmed all 47
-resource paths absent. The direct-state comparison is blocked by the worker
-network regression described below; no direct-state pass is claimed.
+resource paths absent. The direct-state comparison remains incomplete after the
+worker network regression described below; no direct-state pass is claimed.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
@@ -240,5 +240,27 @@ performance comparison is not supported by these incomplete results.
 
 The loss persisted after cleanup: the independent audit finished at 14:09:52 UTC;
 existing probes between 14:13:34 and 14:16:25 lost 15 of 18 pod probes and 3 of
-21 node probes on the pair. This is an active infrastructure blocker, not a
-reason to increase CDS timeouts or mark the direct-state qualification passed.
+21 node probes on the pair. CDS timeouts and qualification requirements remain
+unchanged.
+
+Further [network observations](../test/pilot/cds-three-host/results/2026-11-06-worker-network-recovery.json)
+separated the physical and pod paths: simultaneous host probes received 30 of
+30 replies in each direction, while pod probes received only 1 and 2 of 30.
+Sampled encrypted packet headers matched across both hosts; some decoded probe
+packets reached their destination pods late in batches. These observations do
+not identify the precise queue or establish a root cause. No shared network
+configuration was changed.
+
+The existing pod probes subsequently recorded 93 of 93 replies in each direction
+between approximately 14:53 and 14:59 UTC. Fresh one-second probes then received
+60 of 60 replies in each direction, with maximum RTTs below 3 ms. This observed
+recovery permits another owned qualification with network monitoring; it does
+not establish a permanent repair.
+
+The [repeated metadata qualification](../test/pilot/cds-three-host/results/2026-11-06-ha-metadata-repeat.json)
+passed all 64 independent commits, one winner among 16 conditional contenders,
+both fault scenarios and recovery of all 65 acknowledged records through each
+adapter. An earlier repeat failed an independent-write batch without retaining
+individual outcomes; that failure remains unexplained. The successful repeat
+changed only runner diagnostics. Its 29 resources were removed and 32 paths
+independently confirmed absent before resuming the unchanged direct-state run.
