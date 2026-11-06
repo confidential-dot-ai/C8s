@@ -108,10 +108,8 @@ type Handler struct {
 	clock            clock
 }
 
-// NewHandler builds the release handler from the measured operator pubkey (PEM),
-// the loaded cluster CA and the per-role identities. The pubkey MUST be one a
-// launch-binding check returned (Run reads it through loadMeasuredOperatorKey):
-// NewHandler trusts it as authorized.
+// NewHandler builds the release handler. operatorPubPEM MUST be a key a
+// launch-binding check returned: NewHandler trusts it as authorized.
 func NewHandler(operatorPubPEM []byte, ca *clusterCA, roles Roles) (*Handler, error) {
 	for _, name := range roleNames {
 		if id := roles[name]; id.Org == "" || id.CN == "" || id.TTL <= 0 {

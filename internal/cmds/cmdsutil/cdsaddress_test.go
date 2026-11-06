@@ -154,8 +154,8 @@ func TestCDSURLAddress(t *testing.T) {
 	}
 }
 
-// ValidateHostname takes the literal, lowercase DNS name a certificate or a
-// server block can carry, and nothing an address or a pattern could hide in.
+// A certificate or a server block carries a literal lowercase DNS name, never
+// an address or a pattern.
 func TestValidateHostnameTakesALowercaseDNSNameOnly(t *testing.T) {
 	for _, name := range []string{"api.example.com", "c8s.local", "a-b.example"} {
 		if err := ValidateHostname(name); err != nil {
@@ -172,8 +172,7 @@ func TestValidateHostnameTakesALowercaseDNSNameOnly(t *testing.T) {
 	}
 }
 
-// A node reads an IPv4 address, including ones it may not publish; an
-// IPv4-mapped IPv6 literal is not one.
+// A node reads addresses it may not publish; a mapped IPv6 literal is not one.
 func TestValidateIPv4TakesIPv4Text(t *testing.T) {
 	for _, raw := range []string{"192.0.2.10", "127.0.0.1", "0.0.0.0", "224.0.0.1"} {
 		if err := ValidateIPv4(raw); err != nil {
@@ -187,9 +186,7 @@ func TestValidateIPv4TakesIPv4Text(t *testing.T) {
 	}
 }
 
-// A published or dialled address must be one a peer can reach: loopback,
-// multicast and the unspecified address are refused by the rule that owns
-// routability.
+// A published or dialled address must be one a peer can reach.
 func TestValidateRoutableIPv4PublishesReachableAddressesOnly(t *testing.T) {
 	if err := ValidateRoutableIPv4("192.0.2.10"); err != nil {
 		t.Errorf("ValidateRoutableIPv4(192.0.2.10) = %v", err)

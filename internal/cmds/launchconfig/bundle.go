@@ -190,8 +190,11 @@ func NewBundle(opts BundleOptions) (err error) {
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
-		CDS:                     cmdsutil.CDS{Address: opts.CDS.Address, Measurements: string(pin)},
-		RegistryMirrors:         opts.RegistryMirrors,
+		CDS: cmdsutil.CDS{
+			Address:      opts.CDS.Address,
+			Measurements: string(pin),
+		},
+		RegistryMirrors: opts.RegistryMirrors,
 	}
 	if !opts.Router.Empty() {
 		router := opts.Router

@@ -66,8 +66,7 @@ func TestWatchNodeIP(t *testing.T) {
 	}
 }
 
-// The address a node publishes to its peers follows the host's own route, and
-// an address no peer could dial leaves the node without one.
+// An address no peer could dial leaves the node without a primary address.
 func TestPrimaryIPv4FollowsTheHostRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

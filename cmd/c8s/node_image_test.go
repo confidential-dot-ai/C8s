@@ -829,7 +829,10 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				Image:         bootstrapImage(t, pins),
 				Server:        launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
 				TLSSAN:        "c8s.local",
-				CDS:           cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)},
+				CDS: cmdsutil.CDS{
+					Address:      "192.0.2.50:8443",
+					Measurements: bootstrapCDSPin(t),
+				},
 			}
 			if err := nodeservices.PrepareNode(root, doc); err != nil {
 				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)

@@ -7,48 +7,35 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
 
-// ErrNoCDSAddress marks a document that carries no CDS at all.
 var ErrNoCDSAddress = errors.New("names no <host>:<port> a CDS serves on")
 
 // ClusterVersion counts the pin decrees this cluster's operator has signed.
-// Zero is the version of a cluster whose operator has signed none.
 type ClusterVersion uint64
 
-// CDS is the confidential data service a node's clients reach: where it
-// listens and the measurements that authenticate it. It runs on a
-// confidential VM of its own, so its TEE family is that VM's, not the
-// family of the node reading the document.
+// CDS is the confidential data service a node's clients reach. It runs on a
+// confidential VM of its own, so its TEE family is that VM's.
 type CDS struct {
-	// Address is the <host>:<port> this cluster's CDS serves on, the host a
-	// DNS name its clients resolve or the IPv4 address they dial as it
-	// stands. A pod ruleset admits that port outside the cluster for this
-	// cluster's credential clients.
+	// Address is a DNS name its clients resolve or an IPv4 address they dial.
 	Address string `yaml:"address" json:"address"`
-	// Measurements is one measurements JSON document, as `launch-config new`
-	// and `c8s cds config new` write it: every entry binds the CDS image to
-	// its launch file.
+	// Measurements is a measurements document binding the CDS image to its
+	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
-	// PinFloor is the lowest cluster version this node takes a CDS pin decree
-	// at, so a node launched today never follows a decree the operator signed
-	// before the set this document carries.
+	// PinFloor is the lowest cluster version this node takes a pin decree at.
 	PinFloor ClusterVersion `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
-// CDSEndpoint is a CDS block read: the endpoint a node dials and the pin its
-// clients hold that VM to.
+// CDSEndpoint is an accepted CDS block.
 type CDSEndpoint struct {
-	// Host and Port are the endpoint. A pod ruleset admits Port outside the
-	// cluster for this cluster's credential clients.
 	Host string
+	// Port is what a pod ruleset admits outside the cluster.
 	Port uint16
-	// Pins are the launch identities of the CDS image, every entry bound to
-	// LaunchFile, the configuration that VM runs on.
+	// Pins are launch identities of the CDS image, each bound to LaunchFile.
 	Pins       refvalues.ReferenceValues
 	LaunchFile []byte
 }
 
-// Parse reads the block once: the endpoint a node can dial, and a pin that is
-// an identity for one VM, every entry bound to the exact launch file it boots.
+// Parse requires an endpoint a node can dial and a pin that is one VM's
+// identity.
 func (c CDS) Parse() (CDSEndpoint, error) {
 	if c.Address == "" {
 		return CDSEndpoint{}, fmt.Errorf("cds.address %w", ErrNoCDSAddress)
@@ -57,8 +44,7 @@ func (c CDS) Parse() (CDSEndpoint, error) {
 	if err != nil {
 		return CDSEndpoint{}, fmt.Errorf("cds.address %w", err)
 	}
-	// A host named as an address is held to one a node can dial; a DNS name
-	// resolves to whatever the cluster's resolver answers.
+	// A DNS name resolves to whatever the cluster's resolver answers.
 	if isAddress(host) {
 		if err := ValidateRoutableIPv4(host); err != nil {
 			return CDSEndpoint{}, fmt.Errorf("cds.address %q: %w", host, err)
@@ -72,7 +58,12 @@ func (c CDS) Parse() (CDSEndpoint, error) {
 	if err != nil {
 		return CDSEndpoint{}, fmt.Errorf("cds.measurements: the pin %w", err)
 	}
-	return CDSEndpoint{Host: host, Port: port, Pins: pins, LaunchFile: launchFile}, nil
+	return CDSEndpoint{
+		Host:       host,
+		Port:       port,
+		Pins:       pins,
+		LaunchFile: launchFile,
+	}, nil
 }
 
 // Validate reports what Parse refuses.
@@ -81,8 +72,7 @@ func (c CDS) Validate() error {
 	return err
 }
 
-// Policy is the measurements document a node's clients verify this cluster's
-// CDS with.
+// Policy is the measurements document a node's clients verify CDS with.
 func (e CDSEndpoint) Policy() ([]byte, error) {
 	return refvalues.Format(e.Pins)
 }

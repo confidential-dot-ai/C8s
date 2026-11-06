@@ -13,9 +13,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 )
 
-// stubMeasuredOperatorKey makes the launch-binding check return pub as the key
-// this guest's launch bound: launchbinding keeps the staging path it reads
-// private, so a test says what the check found.
+// stubMeasuredOperatorKey makes the launch-binding check return pub.
 func stubMeasuredOperatorKey(t *testing.T, pub []byte) {
 	t.Helper()
 	stubMeasuredKeyLoader(t, func(context.Context, string, string) ([]byte, error) { return pub, nil })
@@ -34,12 +32,10 @@ func stubMeasuredKeyLoader(t *testing.T, loader measuredKeyLoader) {
 	t.Cleanup(func() { loadMeasuredOperatorKey = orig })
 }
 
-// anyLaunchDigest leaves the verdict's launch digest unset: these tests check
-// the service's own routing, never which image the guest booted.
+// anyLaunchDigest leaves the verdict's launch digest unset.
 const anyLaunchDigest = ""
 
-// stubAttester serves a fake attestation-api on platform, the source of the
-// armTLS serving quote and of the evidence /attest returns.
+// stubAttester serves a fake attestation-api on platform.
 func stubAttester(t *testing.T, platform teetypes.PlatformType) *mockapi.Stub {
 	t.Helper()
 	stub := mockapi.New(t)

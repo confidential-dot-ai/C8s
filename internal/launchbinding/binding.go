@@ -1,8 +1,6 @@
-// Package launchbinding reads what a guest's launch committed to. A measured
-// guest proves its configuration through its own verified self-report: the
-// operator public key the initrd staged off the opkeydata disk, and the launch
-// file the launcher bound, each compared against the binding the report
-// carries. Nothing here trusts a file the host can rewrite after boot.
+// Package launchbinding reads what a guest's launch committed to: the operator
+// public key the initrd staged and the launch file the launcher bound, each
+// compared against the binding the guest's verified self-report carries.
 package launchbinding
 
 import (

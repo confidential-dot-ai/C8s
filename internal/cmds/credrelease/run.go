@@ -1,10 +1,6 @@
-// Package credrelease implements the in-guest credential-release service (B4
-// of the operator-key design). It issues an operator a short-lived kube client
-// certificate, but only to a caller who proves possession of the operator
-// private key whose public half was bound into the CVM's launch identity at
-// launch — giving an external operator
-// console-free, non-TOFU admin access with no pre-shared cluster secret and
-// no trust in the untrusted host.
+// Package credrelease issues an operator a short-lived kube client
+// certificate, to a caller who proves possession of the operator private key
+// this guest's launch bound.
 package credrelease
 
 import (
@@ -70,21 +66,23 @@ func (cfg Config) roles() Roles {
 	}
 }
 
-// measuredKeyLoader reads the operator public key the launch bound, from the
-// local attestation-api and the node's measured-policy journal.
-type measuredKeyLoader func(ctx context.Context, attestationAPIURL, measuredPoliciesFile string) ([]byte, error)
+// measuredKeyLoader reads the operator public key this guest's launch bound.
+type measuredKeyLoader func(
+	ctx context.Context,
+	attestationAPIURL string,
+	measuredPoliciesFile string,
+) ([]byte, error)
 
-// loadMeasuredOperatorKey is a package var so tests can stand in for the
-// launch-binding check: the staging path it reads is private to launchbinding.
+// loadMeasuredOperatorKey is a var so a test can stand in for the
+// launch-binding check.
 var loadMeasuredOperatorKey measuredKeyLoader = launchbinding.LoadMeasuredOperatorKey
 
 // Run loads the measured operator key and cluster CA, then serves the
 // armTLS-protected bootstrap and credential endpoints. It blocks until ctx is done.
 //
 // Startup order matters for the trust story:
-//  1. loadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
-//     matches the launch binding (TDX RTMR[3] / SNP HOSTDATA). Fails closed
-//     if the key was substituted after boot.
+//  1. loadMeasuredOperatorKey — the operator key this guest's launch bound,
+//     failing closed if the key was substituted after boot.
 //  2. loadClusterCA — the cluster client-CA that signs the operator's cert.
 //  3. serve over an armTLS config so the caller can attest this is the real
 //     guest before trusting the returned cert.

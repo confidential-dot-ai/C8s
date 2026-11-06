@@ -76,18 +76,15 @@ func NodeIPChanged(ctx context.Context, err error) error {
 	return err
 }
 
-// PrimaryIPv4 is the routable IPv4 address of the interface the host's own
-// route table selects, which is the address a node registers and publishes.
-// Kubernetes' route-aware selection picks it, so it matches the address the
-// kubelet registers with.
-//
-// The one seam over the host's routes: a test replaces it to place the node
-// on a known address.
-var PrimaryIPv4 = func() (netip.Addr, error) { return routableHostAddress(utilnet.ChooseHostInterface) }
+// PrimaryIPv4 is the address a node registers and publishes: Kubernetes'
+// route-aware selection, so it matches the kubelet's own registration. It is
+// a var so a test can place the node on a known address.
+var PrimaryIPv4 = func() (netip.Addr, error) {
+	return routableHostAddress(utilnet.ChooseHostInterface)
+}
 
-// routableHostAddress is the address choose selects, held to an address a
-// peer can dial: a host whose route leads over IPv6, or over an address no
-// peer can reach, has no primary IPv4 address rather than an unusable one.
+// routableHostAddress refuses what no peer can dial, so a host routed over
+// IPv6 has no primary IPv4 address rather than an unusable one.
 func routableHostAddress(choose func() (net.IP, error)) (netip.Addr, error) {
 	ip, err := choose()
 	if err != nil {

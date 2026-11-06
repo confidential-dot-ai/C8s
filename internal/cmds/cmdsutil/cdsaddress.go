@@ -19,8 +19,7 @@ import (
 // it with FormatCDSAddress (internal/cmds/nri-image-policy) and its clients
 // read it back from workloadclaims.CDSAddressPath.
 
-// The refusals an address or a host name earns, so a caller can name the rule
-// it is testing.
+// Refusals a caller can match on.
 var (
 	ErrNotHostPort     = errors.New("must be <host>:<port>")
 	ErrPortUnserved    = errors.New("no CDS serves on")
@@ -160,22 +159,19 @@ func ValidateHostname(name string) error {
 	return nil
 }
 
-// ValidateIPv4 accepts an IPv4 address, including the loopback and
-// unspecified addresses a node reads but never publishes.
+// ValidateIPv4 accepts an IPv4 address, routable or not.
 func ValidateIPv4(raw string) error {
 	_, err := parseIPv4(raw)
 	return err
 }
 
-// ValidateRoutableIPv4 accepts an IPv4 address a node can publish or dial:
-// global unicast, so loopback, multicast and the unspecified address are
-// refused.
+// ValidateRoutableIPv4 accepts a global-unicast IPv4 address, one a node can
+// publish or dial.
 func ValidateRoutableIPv4(raw string) error {
 	_, err := routableIPv4(raw)
 	return err
 }
 
-// routableIPv4 is raw as an address a peer can dial.
 func routableIPv4(raw string) (netip.Addr, error) {
 	addr, err := parseIPv4(raw)
 	if err != nil {
@@ -187,15 +183,14 @@ func routableIPv4(raw string) (netip.Addr, error) {
 	return addr, nil
 }
 
-// isAddress reports whether host is written as an IP address rather than a
-// name a resolver answers.
+// isAddress reports whether host is written as an IP address, not a name.
 func isAddress(host string) bool {
 	_, err := netip.ParseAddr(host)
 	return err == nil
 }
 
-// parseIPv4 is raw as an IPv4 address. An IPv4-mapped IPv6 literal is not
-// one: the text a document carries is the text a node compares.
+// parseIPv4 refuses an IPv4-mapped IPv6 literal: the text a document carries
+// is the text a node compares.
 func parseIPv4(raw string) (netip.Addr, error) {
 	addr, err := netip.ParseAddr(raw)
 	if err != nil || !addr.Is4() {
