@@ -32,6 +32,10 @@ type Status struct {
 	Voters            []string `json:"voters,omitempty"`
 	NonVoters         []string `json:"non_voters,omitempty"`
 	CAFingerprint     string   `json:"ca_fingerprint,omitempty"`
+	// CAKeyFingerprint names the mesh CA key the cluster issues under, which
+	// a certificate renewal leaves as it is: what an operator keeps to
+	// authenticate a backup of this cluster (backup.go).
+	CAKeyFingerprint string `json:"ca_key_fingerprint,omitempty"`
 	// GenesisCA is the mesh CA a Genesis decree for this replica carries.
 	GenesisCA string `json:"genesis_ca,omitempty"`
 	// Stuck is why this replica stopped applying the log, and Fenced why it
@@ -43,6 +47,12 @@ type Status struct {
 	// (divergence.go).
 	Checkpoint Point  `json:"checkpoint,omitzero"`
 	Divergence string `json:"divergence,omitempty"`
+	// LastBackup is the backup the cluster's leader appended to its board,
+	// and BackupError why its backups are failing. The leader backs the
+	// cluster up, and no other replica answers for the backups
+	// (backupduty.go).
+	LastBackup  *StoredBackup `json:"last_backup,omitempty"`
+	BackupError string        `json:"backup_error,omitempty"`
 }
 
 // Status reports this replica, with no place in Raft until it starts.
@@ -59,6 +69,7 @@ func (n *Node) Status() Status {
 	}
 	if core.Joined() {
 		status.CAFingerprint = certutil.CertFingerprint(core.MeshCACert)
+		status.CAKeyFingerprint = n.sealsUnder()
 	}
 	genesisCA, err := n.GenesisCA()
 	if err != nil {
@@ -80,6 +91,7 @@ func (n *Node) inRaft(status Status) Status {
 	status.Checkpoint = n.fsm.dig.lastCheckpoint()
 	if n.leading() {
 		status.Divergence = n.div.status()
+		status.LastBackup, status.BackupError = n.backups.reported()
 	}
 	status.State = n.raft.Load().State().String()
 	followed := n.following()

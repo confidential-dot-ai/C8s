@@ -34,9 +34,10 @@ c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json || alert
 | `applied` | rising on every replica | one replica that stops rising while the others move |
 | `roll_safe` | `true` on the leader between rolls | `false` while a roll is to go on: runbook 2 |
 | `checkpoint` | `<index>:<digest>`, equal across replicas at one index | different digests at the same index: runbook 9 |
+| `last_backup` | `<version>:<index>` of the newest backup on the board, rising on the leader | a value that stops rising while `applied` moves: the alarm line says what failed |
 
-A replica that does not lead reports `voters`, `non_voters`, `roll_safe` and
-the divergence as `-`: only the leader knows them.
+A replica that does not lead reports `voters`, `non_voters`, `roll_safe`,
+`last_backup` and the divergence as `-`: only the leader knows them.
 
 ## Alarm lines
 
@@ -49,6 +50,7 @@ the divergence as `-`: only the leader knows them.
 | `the member a Recover decree of this cluster names answers that it is carrying the cluster on under it` | that member recovered: two lives of the cluster exist, and this one serves nothing | runbook 7: keep the recovered one, and destroy the VMs of this side |
 | `a member of this cluster may be carrying a recovered cluster of its own` | the cluster reaches that member no more, and it rejoins only as a new member | destroy its VM, or let it rejoin |
 | `the replicas of this cluster hold different state: ...` | the leader compared the checkpoints | runbook 9 |
+| `this cluster's board holds no backup of the state it has now: ...` | the leader could not seal its state or could not append it to the board | the reason names the attempt that failed; the board or the replicated state is at fault |
 | `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait before a planned removal; replace an already removed VM while a serving majority survives: runbook 2 |
 | `the replicas of this cluster take turns answering at one address` | a replica entry resolves to a load-balanced address, or two VMs share one | give every replica its own address: runbook 3 |
 | `this leader's Raft refuses every barrier of its term` | the leader cannot confirm reads | it exits, and another replica takes the cluster over; alert if it repeats |
@@ -64,3 +66,6 @@ the divergence as `-`: only the leader knows them.
   replaced on its own; one that is not means no replica can fill the seat.
 - **An alarm line that repeats for more than an hour.** Nothing above clears
   by waiting that long.
+- **A `last_backup` that has not moved for more than an hour while the cluster
+  takes writes.** A total loss would restore state older than the cluster
+  holds.

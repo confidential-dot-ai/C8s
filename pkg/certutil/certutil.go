@@ -4,6 +4,7 @@ package certutil
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -127,6 +128,17 @@ func GenerateSerial() (*big.Int, error) {
 // certificate bytes (DER or x509.Certificate.Raw).
 func CertFingerprint(raw []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+// KeyFingerprint returns the lowercase hex SHA-256 fingerprint of a public
+// key, taken over its SubjectPublicKeyInfo: one key keeps one fingerprint
+// across every certificate issued for it.
+func KeyFingerprint(key crypto.PublicKey) (string, error) {
+	spki, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(spki)), nil
 }
 
 // EncodeCertPEM encodes DER certificate bytes as a PEM block.
