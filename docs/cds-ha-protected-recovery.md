@@ -75,6 +75,10 @@ replay token's validity are unchanged.
    protection evidence. Revoke again after the positive control.
 8. Clean both ownership journals using ordinary UID-scoped deletion, then perform
    an independent read-only absence audit including VMIs, pods and backing PVs.
+   HA resources use `cloud.confidential.ai/cds-ha-owner`; custody resources use
+   `cloud.confidential.ai/qualification-owner`. The audit checks each journal's
+   exact label and owner, and the source-custodian loss barrier uses the custody
+   label. A surviving launcher under either label prevents a clean result.
 
 The source custody host is excluded from recovery. Metadata survives the CDS
 outage; simultaneous loss of every metadata copy is outside this claim. The
@@ -127,9 +131,23 @@ metadata copy. Hardware custody depends on the approved measured code, firmware,
 attestation collateral and survival of an enrolled custody chip/copy. This fixture
 does not qualify production custody membership, key rotation or image retirement.
 
-The live run remains paused after the earlier fixture's possible network impact.
+The earlier fixture's possible network impact remains part of the qualification
+context.
 The [network follow-up](../test/pilot/cds-three-host/results/2026-11-06-fixture-network-follow-up.json)
 preserves both the user's teardown timeline and the saved pinger timestamps;
 their differing time bases remain unresolved. Resource absence does not exclude
-residual OVN/OVS effects. No new cluster operations, host changes, OVS execution,
-OVN Raft-file reads, CI or shared rollout are part of the local result.
+residual OVN/OVS effects. The resumed native run observes existing pinger logs
+before, during and after its owned fixture, and stops on new packet loss or
+repeated degraded observations. The preflight requires six directed links,
+at least eight samples per link, no loss, a latest sample no older than 90 seconds,
+and no sample mean above 50 ms in the six-minute window. During the run,
+[`NetworkWatch`](../test/pilot/cds-three-host/network_watch.py) stops immediately
+on any observed new lost packet, on two consecutive **fresh** latest samples above
+50 ms for the same link, or on two unavailable/stale observations. Re-reading one
+sample in overlapping windows does not count twice. Log rotation may shorten the
+window while fresh samples continue; all captured window peaks remain evidence.
+These thresholds are qualification guardrails, not a published cluster SLO or
+proof that the fixture has no effect on production traffic.
+A stopped attempt retains its evidence and must
+complete cleanup before a fresh run. Host changes, OVS execution, OVN Raft-file
+reads, CI and a shared rollout are outside this qualification.
