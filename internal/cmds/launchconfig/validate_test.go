@@ -56,6 +56,8 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent token", Server, func(d *Document) { d.RKE2.AgentToken = "short" }, "rke2.agentToken"},
 		{"missing server token", Server, func(d *Document) { d.RKE2.ServerToken = "" }, "rke2.serverToken"},
 		{"server key", Server, func(d *Document) { d.Server.OperatorPublicKey = "not a key" }, "server.operatorPublicKey"},
+		{"pod key on server", Server, func(d *Document) { d.PodOperatorPublicKey = otherPub }, "requires role pod"},
+		{"pod key on agent", Agent, func(d *Document) { d.PodOperatorPublicKey = otherPub }, "requires role pod"},
 		{"agent key", Server, func(d *Document) { d.AgentOperatorPublicKeys = []string{"not a key"} }, "agentOperatorPublicKeys"},
 		{"duplicate agent keys", Server, func(d *Document) {
 			d.AgentOperatorPublicKeys = append(d.AgentOperatorPublicKeys, d.AgentOperatorPublicKeys[0])
@@ -69,9 +71,6 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent without keys", Agent, func(d *Document) { d.AgentOperatorPublicKeys = nil }, "requires agentOperatorPublicKeys"},
 		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "DNS name length"},
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
-		{"workloads carried by the document", Server, func(d *Document) {
-			d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
-		}, "--tenant-workloads"},
 		{"without cds", Server, func(d *Document) { d.CDS = CDS{} }, "cds.address"},
 		{"cds address without port", Server, func(d *Document) { d.CDS.Address = "cds.example.com" }, "must be <host>:<port>"},
 		{"cds ipv6 address", Server, func(d *Document) { d.CDS.Address = "[2001:db8::1]:8443" }, "must be an IPv4 address"},
@@ -450,7 +449,7 @@ func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
 }
 
 func TestRoleValidFollowsRoleTable(t *testing.T) {
-	for _, role := range []Role{Server, Agent} {
+	for _, role := range []Role{Server, Agent, Pod} {
 		if !role.Valid() {
 			t.Errorf("%s has no role table entry", role)
 		}
@@ -460,7 +459,7 @@ func TestRoleValidFollowsRoleTable(t *testing.T) {
 			t.Errorf("%q is accepted as a role", role)
 		}
 	}
-	if len(roles) != 2 {
+	if len(roles) != 3 {
 		t.Errorf("role table has %d entries; give each new role a constant and a case above", len(roles))
 	}
 }

@@ -2,8 +2,8 @@
 
 The fields of the signed `launch.yaml` that a measured node boots from, the
 detached signature beside it, and how both bind into the node's evidence. One
-image serves both node roles; this document is what selects and constrains a
-boot. Why a cluster is run this way is
+image serves both node roles and a standalone Pod role; this document selects
+and constrains the boot. Why a cluster is run this way is
 [operator.md](operator.md#authenticated-launch-configuration).
 
 ## The disk
@@ -37,7 +37,8 @@ nodes trust; `c8s node launch-config add-agent` adds a node later, and
 
 Names below are YAML paths: `image.measurement` is `measurement` under
 `image`, and `image.rtmrs` is a map keyed by register index. The Required
-column names the role that must carry the field.
+column names the node role that must carry the field. Pod-specific rules follow
+the table.
 
 | Field | Required | Holds |
 |---|---|---|
@@ -71,6 +72,30 @@ written in it: they are derived from `image` plus every launch key the
 document names. The CDS — the Certificate Distribution Service, which holds
 policy and signs workload certificates — runs on a confidential VM of its own,
 on the TEE family its pin names, which need not be the one these nodes boot on.
+
+## Pod role
+
+A `role: pod` document uses the same `c8s-launch/v2` signature and CDS pin
+contract. It requires TDX and an independent `podOperatorPublicKey`. Its launch
+key must match that field exactly and differ from `server.operatorPublicKey`.
+The server address and key identify the cluster; `cds.address` and
+`cds.measurements` independently select and authenticate CDS.
+
+A pod document names no pod and carries no allowlist entries or mesh peers; a
+`pod` or `workloads` key is refused. Every boot under it is generic and stages
+no workload authority: one authenticated assignment supplies the Pod, its
+entries and its peers later. The CDS endpoint and launch-file pin are fixed by
+the signed boot document.
+
+A pod document takes no CDS pin decree: its CDS image set is the one
+`--cds-image-policy-file` binds, and its `cds.pinFloor` is zero. The
+assignment retains the generic boot's CDS trust.
+
+Pod documents carry no RKE2 credentials, agent keys, router block or registry
+mirrors. Staging writes the role marker instead of RKE2 configuration. Pod issuance authority
+belongs in the measured CDS configuration, never in a node or Pod launch
+document. See [operator.md](operator.md#pod-cvm) for assignment and runtime
+restrictions.
 
 ## The signature
 
@@ -109,7 +134,8 @@ field instead, which is why this flow is for a measured node image on
    `image.measurement` and every `image.rtmrs` entry against that report.
 5. Authorize the key for the role: a `server` boot requires the launch key to
    be `server.operatorPublicKey` byte for byte; an `agent` boot requires it to
-   appear in `agentOperatorPublicKeys` and to differ from the server's.
+   appear in `agentOperatorPublicKeys` and to differ from the server's. A Pod
+   boot requires the exact `podOperatorPublicKey`, distinct from the server's.
 6. Write the staged artifacts, root-only, under `/run/confos/launch`: the
    document as `config.json`, the launch key and this cluster's node peer
    pins. The node services render the CDS pins from the staged document, for
@@ -117,7 +143,9 @@ field instead, which is why this flow is for a measured node image on
 7. Stage what RKE2 reads: the join tokens, the node password, the role
    fragment under `/etc/rancher/rke2/config.yaml.d/`, and `registries.yaml`
    when the document sets mirrors. The role marker is written last, so a step
-   that fails starts no role.
+   that fails starts no role. A pod boot stages no manifest and no runtime
+   policy, since the assignment renders them and the runtime starts only
+   then; it writes the role marker last and stages no RKE2 configuration.
 
 Missing, unsigned, or inconsistent input leaves RKE2 and the role's services
 down. A role change, a new image, or any other edit means relaunching with
