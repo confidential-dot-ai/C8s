@@ -609,7 +609,6 @@ type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
 	PodUID           string `json:"pod_uid,omitempty"`
-	PodWaiting       bool   `json:"pod_waiting,omitempty"`
 	AllowlistStall   string `json:"allowlist_stall,omitempty"`
 }
 
@@ -626,7 +625,6 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 		}
 		if cfg.plugin.cfg.Pod != nil {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
-			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
 		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {

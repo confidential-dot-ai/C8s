@@ -51,16 +51,10 @@ type config struct {
 // podConfig is the signed identity the guest preparation stages. Runtime UID
 // and sandbox identity come independently from NRI, never from this document.
 type podConfig struct {
-	// Waiting is an unassigned generic boot: no sandbox or container may start.
-	Waiting   bool   `yaml:"waiting,omitempty"`
-	Generic   bool   `yaml:"generic,omitempty"`
-	UID       string `yaml:"uid"`
-	Namespace string `yaml:"namespace"`
-	Name      string `yaml:"name"`
-	// WorkloadID is the signed manifest's confidential.ai/cw annotation, the
-	// tenant identity the broker carries in its claims; "" when it has none.
-	WorkloadID string            `yaml:"workload_id,omitempty"`
-	Images     map[string]string `yaml:"images"`
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -567,8 +561,6 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
-func (c *config) podWaiting() bool { return c.Pod != nil && c.Pod.Waiting }
-
 func (c *config) validatePod() error {
 	if !c.Measure.RTMR3 && c.Pod == nil && c.Mesh.Pod == nil {
 		return nil
@@ -588,19 +580,8 @@ func (c *config) validatePod() error {
 	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
-	if c.Pod.Waiting {
-		if !c.Pod.Generic || c.Pod.UID != "" || c.Pod.Namespace != "" || c.Pod.Name != "" || c.Pod.WorkloadID != "" || len(c.Pod.Images) != 0 || len(c.Mesh.Pod.Peers) != 0 || len(c.Mesh.Pod.IngressPorts) != 0 {
-			return errors.New("a waiting Pod guest must not carry an assigned identity, images or peers")
-		}
-		return nil
-	}
 	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
 		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
-	}
-	if c.Pod.WorkloadID != "" {
-		if err := armtls.ValidateWorkloadID(c.Pod.WorkloadID); err != nil {
-			return fmt.Errorf("the Pod broker cannot carry the signed workload id: %w", err)
-		}
 	}
 	return c.validatePodImages()
 }

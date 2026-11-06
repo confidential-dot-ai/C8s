@@ -119,8 +119,6 @@ type MeshFloor struct {
 	// the kernel, and every workload start requires a live admission permission.
 	// validatePod ties mesh.pod to the pod role's other markers.
 	PodRole bool
-	// PodWaiting denies even pause processes until assignment is committed.
-	PodWaiting bool
 }
 
 // RequireUnreservedIdentity is the one identity verdict the mesh gate and the
@@ -163,9 +161,7 @@ func LoadMeshFloor(configPath string) (MeshFloor, error) {
 	if err != nil {
 		return MeshFloor{}, err
 	}
-	floor := cfg.Mesh.floor()
-	floor.PodWaiting = cfg.podWaiting()
-	return floor, nil
+	return cfg.Mesh.floor(), nil
 }
 
 // floor is the policy as its identity floor.
