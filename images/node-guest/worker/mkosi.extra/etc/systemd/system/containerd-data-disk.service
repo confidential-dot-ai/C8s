@@ -1,10 +1,10 @@
-# Mount /var/lib/rancher/rke2/agent/containerd on a real (non-overlay) filesystem
-# before containerd starts. Its overlay snapshotter cannot stack on overlayfs,
-# and the initrd mounts /var as an overlay (a confos state.d dir: verity
-# lower + tmpfs/scratch-disk upper), so /var/lib/rancher/* is overlayfs by default —
-# containerd's "multiple-lowerdir-check" probe fails when its snapshotter tries
-# to use that as an upperdir. The mount must therefore escape the overlay onto
-# its own FS.
+# Mount /var/lib/containerd, containerd's root, on a real (non-overlay)
+# filesystem before containerd starts. Its overlay snapshotter cannot stack on
+# overlayfs, and the initrd mounts /var as an overlay (a confos state.d dir:
+# verity lower + tmpfs/scratch-disk upper), so /var/lib/* is overlayfs by
+# default — containerd's "multiple-lowerdir-check" probe fails when its
+# snapshotter tries to use that as an upperdir. The mount must therefore
+# escape the overlay onto its own FS.
 #
 # Backing, in preference order:
 #   1. a LABEL=containerd block device → ephemeral, encrypted in-guest with a
@@ -13,11 +13,6 @@
 #      This is what keeps the multi-GiB image cache OUT of guest RAM.
 #   2. no such device → a tmpfs (writes lost on reboot, and counted against guest
 #      memory — attach a LABEL=containerd disk to avoid).
-#
-# Scope is JUST the containerd data dir, NOT the broader /var/lib/rancher: an
-# empty mount there would shadow the baked HelmChartConfig under
-# server/manifests/, the airgap bundles under agent/images/, and the NRI
-# drop-in under agent/etc/containerd/.
 #
 # A oneshot service (not a .mount unit) because the backing choice needs runtime
 # detection + cryptsetup/mkfs, which a static .mount cannot express. RemainAfterExit
@@ -55,7 +50,7 @@ ExecStart=/usr/local/bin/containerd-data-disk.sh
 TimeoutStartSec=180
 SuccessExitStatus=0 1
 # Best-effort unwind on stop; the tmpfs/dm device is torn down at shutdown anyway.
-ExecStop=-/bin/sh -c 'umount /var/lib/rancher/rke2/agent/containerd 2>/dev/null; cryptsetup close containerd 2>/dev/null; true'
+ExecStop=-/bin/sh -c 'umount /var/lib/containerd 2>/dev/null; cryptsetup close containerd 2>/dev/null; true'
 
 [Install]
 WantedBy=local-fs.target

@@ -1,6 +1,7 @@
 #!/bin/bash
-# Back /var/lib/rancher/rke2/agent/containerd with a real (non-overlay) FS before
-# rke2 starts. Run by containerd-data-disk.service. See that unit for the why.
+# Back /var/lib/containerd, containerd's root, with a real (non-overlay) FS
+# before containerd starts. Run by containerd-data-disk.service. See that unit
+# for the why.
 #
 # A LABEL=containerd block device → ephemeral encrypted ext4 (random per-boot key,
 # never persisted). No such device, or any failure on the encrypted path → tmpfs
@@ -24,7 +25,7 @@
 # guarantee (ensure_tmpfs) makes the dir usable even if the disk path fell over.
 set -u
 
-DIR=/var/lib/rancher/rke2/agent/containerd
+DIR=/var/lib/containerd
 SIZE_TMPFS=32G
 # Per cryptsetup/mkfs/mount step. Three steps + the tmpfs fallback must finish
 # under the unit's TimeoutStartSec (180s), or systemd SIGKILLs the script before

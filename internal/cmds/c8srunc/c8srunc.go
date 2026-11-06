@@ -1,5 +1,5 @@
 // Package c8srunc implements c8s-runc, the measured OCI runtime wrapper the
-// node image puts in front of runc.
+// worker image puts in front of runc.
 //
 // containerd's runc shim runs an external binary for every runtime verb and
 // takes its path from the runtime handler's BinaryName option. Pointing that
@@ -49,13 +49,13 @@ const DenyMessage = "c8s-runc: exec is denied on this node: the image is built i
 // Build-time configuration, set with -ldflags -X. Defaults are the production
 // (locked) posture, so an unflagged build is never the permissive one.
 //
-// realRunc is RKE2's, because the wrapper ships only in the RKE2 node image
-// (images/node-guest/worker/mkosi.sync). The chart installs no wrapper on kubeadm
-// or hosted clusters; an image built on another distribution sets this path
-// at build time.
+// realRunc is where the worker image stages the real runtime
+// (images/node-guest/worker/mkosi.sync). The chart installs no wrapper on
+// kubeadm or hosted clusters; an image built on another distribution sets
+// this path at build time.
 var (
 	mode     = ModeLocked
-	realRunc = "/var/lib/rancher/rke2/bin/runc"
+	realRunc = "/usr/lib/c8s/worker/bin/runc"
 )
 
 const meshConfig = nriimagepolicy.DefaultConfigPath
@@ -193,8 +193,12 @@ type globals struct {
 	root      string
 }
 
-// runc's global options, from runc v1.4.0 main.go (the version rancher's
-// hardened-runc ships in the pinned RKE2 release). Values are urfave/cli v1
+// RuncVersion is the runc release the worker profile stages, and the release
+// whose global options the lists below mirror (profile_test.go compares it to
+// the profile's pin).
+const RuncVersion = "v1.4.3"
+
+// runc's global options, from RuncVersion's main.go. Values are urfave/cli v1
 // flags parsed by Go's flag package: `-x`/`--x` are the same, `--x=v` and
 // `--x v` both set a string flag, and a bool flag never consumes the next
 // argument.

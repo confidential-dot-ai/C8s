@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
+	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
 )
@@ -66,7 +68,7 @@ func baked(t *testing.T, rel string) string {
 // installs, and it execs the runtime the profile stages.
 func TestTheWrapperExecsTheRuntimeTheProfileStages(t *testing.T) {
 	sync := settings(t, "mkosi.sync")
-	data, err := os.ReadFile(baked(t, "var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/10-c8s-runc.toml"))
+	data, err := os.ReadFile(baked(t, "etc/containerd/conf.d/10-c8s-runc.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,15 +101,17 @@ func TestTheWrapperExecsTheRuntimeTheProfileStages(t *testing.T) {
 	realRunc := c8srunc.New(io.Discard).RealRunc
 	staged := strings.Fields(strings.Trim(sync["RUNTIME_BINARIES"], "()"))
 	dir, name := path.Split(realRunc)
-	if strings.TrimSuffix(dir, "/") != sync["RKE2_BIN_LINK"] || !slices.Contains(staged, name) {
-		t.Errorf("the wrapper execs %s, which this profile stages as neither of %v under %s", realRunc, staged, sync["RKE2_BIN_LINK"])
+	if strings.TrimSuffix(dir, "/") != sync["RUNTIME_BIN_DIR"] || !slices.Contains(staged, name) {
+		t.Errorf("the wrapper execs %s, which this profile stages as neither of %v under %s", realRunc, staged, sync["RUNTIME_BIN_DIR"])
 	}
 }
 
-// flagOfExecStart is the value the unit's ExecStart gives flag; a flag it leaves out,
-// or gives twice, is a failure rather than an empty string. Only ExecStart is
-// read, so a flag named in a comment cannot answer.
-var execFlagPattern = regexp.MustCompile(`--([a-z0-9-]+)=(\S+)`)
+// flagOfExecStart is the value the unit's ExecStart gives flag, written
+// `--flag=value` or `--flag value`; a flag it leaves out, or gives twice, is a
+// failure rather than an empty string. Only ExecStart is read, so a flag named
+// in a comment cannot answer. A value never starts with a dash, so the flag
+// that follows a switch is not read as its value.
+var execFlagPattern = regexp.MustCompile(`--([a-z0-9-]+)[=\s]+([^-\s]\S*)`)
 
 func flagOfExecStart(t *testing.T, path, flag string) string {
 	t.Helper()
@@ -243,25 +247,175 @@ func TestUnitsNameUnitsTheImageHas(t *testing.T) {
 	}
 }
 
-// The runtime every static pod runs under passes the kubelet's static pod
-// mark into the bundle, where c8s-runc's floor reads it.
-func TestContainerdPassesTheStaticPodMark(t *testing.T) {
-	data, err := os.ReadFile("mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml")
+// containerdConfig is the configuration the image's containerd reads, and
+// conf.d the drop-ins it imports.
+const (
+	containerdConfig  = "etc/containerd/config.toml"
+	containerdDropIns = "etc/containerd/conf.d"
+)
+
+// The versions the profile pins are the ones the rest of the tree is written
+// against: the wrapper's view of runc's command line, and the Kubernetes
+// version the static pods run.
+func TestThePinnedVersionsAreTheOnesTheTreeNames(t *testing.T) {
+	sync := settings(t, "mkosi.sync")
+	if got := sync["RUNC_VERSION"]; got != c8srunc.RuncVersion {
+		t.Errorf("the profile stages runc %s, and the wrapper parses the global options of %s", got, c8srunc.RuncVersion)
+	}
+	proxy, err := os.ReadFile(baked(t, "usr/lib/c8s/worker/static-pods/kube-proxy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cfg struct {
-		Plugins map[string]struct {
-			Containerd struct {
-				Runtimes map[string]struct {
-					PodAnnotations []string `toml:"pod_annotations"`
-				} `toml:"runtimes"`
-			} `toml:"containerd"`
-		} `toml:"plugins"`
+	image := regexp.MustCompile(`image: \S+/kube-proxy:(\S+)@sha256:`).FindSubmatch(proxy)
+	if image == nil {
+		t.Fatal("the kube-proxy static pod names no kube-proxy image pinned by tag and digest")
 	}
+	if got := string(image[1]); got != sync["KUBERNETES_VERSION"] {
+		t.Errorf("kube-proxy runs %s, and the profile stages the kubelet of %s", got, sync["KUBERNETES_VERSION"])
+	}
+}
+
+// bakedContainerd is the worker image's containerd configuration, in the
+// fields the rest of the image names. Every plugin table decodes into one
+// shape; a plugin that holds none of these keys leaves them empty.
+type bakedContainerd struct {
+	Root    string   `toml:"root"`
+	Imports []string `toml:"imports"`
+	Plugins map[string]struct {
+		Address             string `toml:"address"`
+		Snapshotter         string `toml:"snapshotter"`
+		StreamServerAddress string `toml:"stream_server_address"`
+		CNI                 struct {
+			BinDirs []string `toml:"bin_dirs"`
+			ConfDir string   `toml:"conf_dir"`
+		} `toml:"cni"`
+		Containerd struct {
+			Runtimes map[string]struct {
+				PodAnnotations []string `toml:"pod_annotations"`
+			} `toml:"runtimes"`
+		} `toml:"containerd"`
+	} `toml:"plugins"`
+}
+
+// bakedContainerdConfig is the configuration the image's containerd reads.
+func bakedContainerdConfig(t *testing.T) bakedContainerd {
+	t.Helper()
+	data, err := os.ReadFile(baked(t, containerdConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg bakedContainerd
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
+	return cfg
+}
+
+// stateDirs are the directories the profile declares writable under the
+// immutable root, as absolute paths.
+func stateDirs(t *testing.T) []string {
+	t.Helper()
+	var dirs []string
+	for _, line := range lines(t, baked(t, "usr/lib/confai/state.d/60-worker.conf")) {
+		dirs = append(dirs, "/"+strings.Trim(line, "/"))
+	}
+	if len(dirs) == 0 {
+		t.Fatal("the profile declares no writable state")
+	}
+	return dirs
+}
+
+// writableState reports whether dir is one of the declared state directories
+// or lies under one; anything else is read-only on a booted worker.
+func writableState(state []string, dir string) bool {
+	for _, declared := range state {
+		if dir == declared || strings.HasPrefix(dir, declared+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Settings the image's own files rest on are stated in the measured
+// configuration, not inherited from the pinned containerd's defaults.
+func TestTheConfigStatesWhatTheImageRestsOn(t *testing.T) {
+	cfg := bakedContainerdConfig(t)
+	if got := cfg.Plugins["io.containerd.cri.v1.images"].Snapshotter; got != "overlayfs" {
+		t.Errorf("the image snapshotter is %q, and containerd-data-disk.service backs %s because the overlayfs one cannot stack on an overlay", got, cfg.Root)
+	}
+	stream := cfg.Plugins["io.containerd.grpc.v1.cri"].StreamServerAddress
+	if ip := net.ParseIP(stream); ip == nil || !ip.IsLoopback() {
+		t.Errorf("the CRI stream server binds %q, want a loopback address: no exec or port-forward stream may reach a node address", stream)
+	}
+	cni := cfg.Plugins["io.containerd.cri.v1.runtime"].CNI
+	state := stateDirs(t)
+	sync, err := os.ReadFile("mkosi.sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := append(slices.Clone(cni.BinDirs), cni.ConfDir)
+	if len(dirs) != 2 {
+		t.Fatalf("the config names %d CNI directories, want the plugin and the configuration directory", len(dirs))
+	}
+	for _, dir := range dirs {
+		if !writableState(state, dir) {
+			t.Errorf("containerd reads CNI from %q, which the profile does not declare writable (%v); Cilium installs itself there at boot", dir, state)
+		}
+		if !strings.Contains(string(sync), strings.TrimPrefix(dir, "/")) {
+			t.Errorf("containerd reads CNI from %q, which mkosi.sync does not create; the initrd overlays only directories the image bakes", dir)
+		}
+	}
+}
+
+// The runtime's unit, its data disk, the NRI floor and the drop-ins all name
+// one containerd layout.
+func TestOneContainerdLayout(t *testing.T) {
+	cfg := bakedContainerdConfig(t)
+	unit := baked(t, "etc/systemd/system/containerd.service")
+	if got, want := flagOfExecStart(t, unit, "config"), "/"+containerdConfig; got != want {
+		t.Errorf("containerd reads %s, want the config the image bakes at %s", got, want)
+	}
+	if got, want := cfg.Imports, []string{"/" + containerdDropIns + "/*.toml"}; !slices.Equal(got, want) {
+		t.Errorf("the config imports %v, want %v, the drop-ins the image bakes", got, want)
+	}
+	if _, err := os.Stat(filepath.Join("mkosi.extra", containerdDropIns)); err != nil {
+		t.Errorf("the worker image bakes no %s: %v", containerdDropIns, err)
+	}
+	disk := settings(t, baked(t, "usr/local/bin/containerd-data-disk.sh"))["DIR"]
+	if disk == "" {
+		t.Fatal("containerd-data-disk.sh assigns no DIR; the mount and containerd's root cannot be compared")
+	}
+	if cfg.Root != disk {
+		t.Errorf("containerd's root is %s, which containerd-data-disk.sh does not back (it mounts %s)", cfg.Root, disk)
+	}
+	socket := cfg.Plugins["io.containerd.server.v1.grpc"].Address
+	if floor := floorSocket(t); socket != floor {
+		t.Errorf("containerd binds %s, and the NRI floor dials %s", socket, floor)
+	}
+}
+
+// floorSocket is the containerd socket the floor template pins.
+func floorSocket(t *testing.T) string {
+	t.Helper()
+	var template struct {
+		Containerd struct {
+			Socket string `yaml:"socket"`
+		} `yaml:"containerd"`
+	}
+	data, err := os.ReadFile("image-policy.yaml.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(data, &template); err != nil {
+		t.Fatal(err)
+	}
+	return template.Containerd.Socket
+}
+
+// The runtime every static pod runs under passes the kubelet's static pod
+// mark into the bundle, where c8s-runc's floor reads it.
+func TestContainerdPassesTheStaticPodMark(t *testing.T) {
+	cfg := bakedContainerdConfig(t)
 	runc := cfg.Plugins["io.containerd.cri.v1.runtime"].Containerd.Runtimes["runc"]
 	if !slices.Contains(runc.PodAnnotations, "kubernetes.io/config.source") {
 		t.Fatalf("runc pod_annotations = %v, want the kubelet's kubernetes.io/config.source", runc.PodAnnotations)

@@ -10,9 +10,13 @@ import (
 
 const wrapper = "/usr/local/bin/c8s-runc"
 
+// schemaVersion is the config schema the worker image declares, in the main
+// config and in every drop-in.
+const schemaVersion = "version = 4\n"
+
 // bakedConfigDir is the worker profile's containerd directory, the one the CI
 // gate checks.
-const bakedConfigDir = "../../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
+const bakedConfigDir = "../../worker/mkosi.extra/etc/containerd"
 
 // bakedConfig is the worker image's baked main config, beside its drop-ins.
 const bakedConfig = bakedConfigDir + "/config.toml"
@@ -46,7 +50,8 @@ func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
 }
 
 // buildConfigDir is a containerd directory holding the drop-ins and a main
-// config shaped like the image's: the runc handler and the drop-in import.
+// config shaped like the image's: the runc handler, the drop-in import, and
+// one schema version across every file.
 func buildConfigDir(t *testing.T, dropIns map[string]string) (dir, mainConfig string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -55,12 +60,12 @@ func buildConfigDir(t *testing.T, dropIns map[string]string) (dir, mainConfig st
 		t.Fatal(err)
 	}
 	for name, body := range dropIns {
-		if err := os.WriteFile(filepath.Join(dropInDir, name), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dropInDir, name), []byte(schemaVersion+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mainConfig = filepath.Join(dir, "config.toml")
-	body := "version = 3\nimports = [\"" + filepath.Join(dir, dropInDirName, "*.toml") + "\"]\n" +
+	body := schemaVersion + "imports = [\"" + filepath.Join(dir, dropInDirName, "*.toml") + "\"]\n" +
 		"[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"" + runcShim + "\"\n"
 	if err := os.WriteFile(mainConfig, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -94,7 +99,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 			name: "a later drop-in unwrapping the handler is rejected",
 			dropIns: map[string]string{
 				"10-c8s-runc.toml": runcOptions + `BinaryName = "` + wrapper + `"` + "\n",
-				"zz-operator.toml": runcOptions + `BinaryName = "/var/lib/rancher/rke2/bin/runc"` + "\n",
+				"zz-operator.toml": runcOptions + `BinaryName = "/usr/lib/c8s/worker/bin/runc"` + "\n",
 			},
 			wantErr: "want the measured wrapper",
 		},
@@ -135,6 +140,28 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	}
 }
 
+// A drop-in containerd reads against another schema than the main config's
+// sets its keys in tables this check never merges.
+func TestDropInsDeclareTheMainConfigsSchemaVersion(t *testing.T) {
+	const wrapped = "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
+		`BinaryName = "` + wrapper + `"` + "\n"
+	for name, body := range map[string]string{
+		"no version":      wrapped,
+		"another version": "version = 3\n" + wrapped,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, mainConfig := buildConfigDir(t, nil)
+			if err := os.WriteFile(filepath.Join(dir, dropInDirName, "10-c8s-runc.toml"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := effectiveConfig(dir, mainConfig)
+			if err == nil || !strings.Contains(err.Error(), "want 4") {
+				t.Fatalf("effectiveConfig = %v, want a refusal naming the main config's version", err)
+			}
+		})
+	}
+}
+
 func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 	dir, mainConfig := buildConfigDir(t, map[string]string{
 		"10-c8s-runc.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
@@ -155,11 +182,11 @@ func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 // wrapper's BinaryName never reaches containerd or containerd reads a drop-in
 // nothing here checked.
 func TestConfigImportingOtherThanTheMergedDropInsFails(t *testing.T) {
-	const merged = "/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"
+	const merged = "/etc/containerd/conf.d/*.toml"
 	for name, cfg := range map[string]map[string]any{
-		"no imports":        {"version": int64(3)},
+		"no imports":        {"version": int64(4)},
 		"another directory": {"imports": []any{"/etc/containerd/other.d/*.toml"}},
-		"another suffix":    {"imports": []any{"/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.json"}},
+		"another suffix":    {"imports": []any{"/etc/containerd/conf.d/*.json"}},
 		"a second import":   {"imports": []any{merged, "/etc/containerd/other.d/*.toml"}},
 	} {
 		t.Run(name, func(t *testing.T) {

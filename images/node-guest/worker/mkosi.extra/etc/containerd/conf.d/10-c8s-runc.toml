@@ -4,12 +4,10 @@
 # this is the one setting that decides whether a CRI exec request — kubectl
 # exec, an exec probe, a lifecycle hook — reaches runc. The locked image's
 # wrapper denies `runc exec` and passes everything else to the real runtime at
-# /var/lib/rancher/rke2/bin/runc. See c8s internal/cmds/c8srunc.
+# /usr/lib/c8s/worker/bin/runc. See c8s internal/cmds/c8srunc.
 #
-# A drop-in rather than a baked config-v3.toml.tmpl: RKE2's base template
-# already emits this table and the drop-in import, and containerd's TOML
-# parser rejects a file that defines a key twice. containerd merges each
-# import over the main config key by key, so SystemdCgroup from the base
-# survives.
+# containerd merges an import over the main config key by key, so the handler's
+# SystemdCgroup there survives this table.
+version = 4
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
   BinaryName = "/usr/local/bin/c8s-runc"

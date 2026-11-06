@@ -19,8 +19,8 @@
 #      + libnvat into mkosi.local (set ATTEST_GPU_BIN + LIBNVAT; CI builds the
 #      binary with --features nvidia-gpu-attest against a vendored libnvat)
 #   4. confos build           — the worker profile's own mkosi.sync stages the
-#      RKE2 release's runtime binaries, renders with Helm and resolves the
-#      core image digests during this step
+#      pinned runtime binaries, renders with Helm and resolves the core image
+#      digests during this step
 #
 # The final build hits the kernel cache (same fragment fingerprint — the
 # fingerprint hashes the fragment's content, wherever it lives) so it does

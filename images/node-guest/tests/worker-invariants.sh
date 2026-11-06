@@ -28,7 +28,7 @@ BOOT_GATES=(apparmor-enforce.service c8s-modules-latch.service
             scratch-enforce.service gpu-cc-enforce.service
             containerd-data-disk.service models-disk.service)
 # The programs the image bakes: its own boot gates. The build stages the
-# pinned RKE2 runtime binaries beside them.
+# pinned runtime binaries beside them.
 BAKED_PROGRAMS=(apparmor-enforce.sh containerd-data-disk.sh gpu-cc-enforce.sh
                 models-disk.sh scratch-enforce.sh worker-stage.sh)
 
@@ -102,8 +102,7 @@ if [ -n "$later" ]; then
 fi
 
 # A runtime or shim of the image's own would give containerd a handler that
-# reaches no wrapper, whether a drop-in or RKE2's auto-detection names it
-# (k3s pkg/agent/containerd/runtimes.go).
+# reaches no wrapper.
 while IFS= read -r program; do
   holds "${BAKED_PROGRAMS[*]}" "${program##*/}" \
       || fail baked-program "the worker image bakes ${program#"$IMAGE_DIR/worker/"}, which is no boot gate of its own; only the measured wrapper may serve ordinary pods"

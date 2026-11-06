@@ -81,7 +81,7 @@ run_test_case() {
         for path in \
             etc/cni/net.d/05-cilium.conflist \
             opt/cni/bin/cilium-cni etc/nri/conf.d/image-policy.yaml \
-            var/lib/rancher/rke2/agent/containerd/io.containerd.metadata.v1.bolt/meta.db \
+            var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db \
             run/immutable-root-test; do
             path="/sysroot/$path"
             mkdir -p "${path%/*}"

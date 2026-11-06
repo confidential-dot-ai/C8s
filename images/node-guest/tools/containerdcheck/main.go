@@ -8,8 +8,8 @@
 // an alternate runc or an empty BinaryName fails here rather than on a worker.
 //
 //	containerdcheck -wrapper /usr/local/bin/c8s-runc \
-//	    -config-dir images/node-guest/worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd \
-//	    -config images/node-guest/worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml
+//	    -config-dir images/node-guest/worker/mkosi.extra/etc/containerd \
+//	    -config images/node-guest/worker/mkosi.extra/etc/containerd/config.toml
 package main
 
 import (
@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	dropInDirName = "config-v3.toml.d"
+	dropInDirName = "conf.d"
 	// criPlugin is the containerd v2 CRI runtime plugin: the one table the
 	// ordinary-pod handlers live under.
 	criPlugin = "io.containerd.cri.v1.runtime"
@@ -85,6 +85,7 @@ func effectiveConfig(
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", mainConfig, err)
 	}
+	schema := cfg["version"]
 
 	if err := checkImports(cfg); err != nil {
 		return nil, err
@@ -104,9 +105,27 @@ func effectiveConfig(
 		if err := toml.Unmarshal(data, &imported); err != nil {
 			return nil, fmt.Errorf("parse drop-in %s: %w", path, err)
 		}
+		if err := checkSchema(path, imported, schema); err != nil {
+			return nil, err
+		}
 		mergeTablesImportWins(cfg, imported)
 	}
 	return cfg, nil
+}
+
+// checkSchema fails unless the drop-in declares the main config's schema
+// version. containerd reads a drop-in that declares another one, or none at
+// all, against that other schema and migrates it, so the handler options this
+// check merges would not be the tables containerd ends up with.
+func checkSchema(
+	path string,
+	dropIn map[string]any,
+	schema any,
+) error {
+	if got := dropIn["version"]; got != schema {
+		return fmt.Errorf("drop-in %s declares config version %v, want %v, the main config's", path, got, schema)
+	}
+	return nil
 }
 
 // checkImports fails unless the config's one import is the drop-in directory

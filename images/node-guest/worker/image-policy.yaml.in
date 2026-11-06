@@ -471,8 +471,8 @@ mesh:
 
 containerd:
   # INVARIANT: equal to the grpc address the image's containerd config binds
-  # (mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml).
-  socket: "/run/k3s/containerd/containerd.sock"
+  # (mkosi.extra/etc/containerd/config.toml).
+  socket: "/run/containerd/containerd.sock"
   namespace: "k8s.io"
 
 policy:
