@@ -80,7 +80,9 @@ type Wrapper struct {
 	Floor      nriimagepolicy.MeshFloor
 	FloorError error
 	// State reads the real runtime's persisted created-process identity.
-	State        func(context.Context, string, []string) (specs.State, error)
+	State func(context.Context, string, []string) (specs.State, error)
+	// ConsumeStart spends the admission permission bound to the created
+	// process at the gate's socket path; any error denies the start.
 	ConsumeStart func(context.Context, string, podstart.Request) error
 	// ExecGrantDir is where admission records the execs each container is
 	// granted (nriimagepolicy.ExecGrantDir).

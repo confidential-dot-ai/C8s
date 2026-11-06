@@ -68,13 +68,11 @@ container the measured mesh policy covers holds more than the floor:
 - its own PID namespace, no user namespace or id mapping — the packet rules
   match the socket's UID in the initial user namespace — and an identity that is
   neither root nor an id reserved for another role. The plugin's mesh gate
-  applies the same verdict before a container is created, with one exception:
-  a pod CVM runs one pod, so the gate admits root there, since the capability
-  bound is the admission plugin's
+  applies the same verdict before a container is created, and both share one
+  exception: a pod CVM runs one pod, so its floor admits root, since the
+  capability bound is the admission plugin's
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege))
-  and without `SETUID` and `SETGID` root cannot take a reserved socket identity.
-  The wrapper's floor makes no such exception, so a pod CVM container that runs
-  as root is refused at creation;
+  and without `SETUID` and `SETGID` root cannot take a reserved socket identity;
 - a working directory that is not at or below a data or host mount (a
   ConfigMap, Secret, projected or downward API volume, a PVC or CSI volume, or a
   host path), resolved through the image's symlinks; an emptyDir, including the
@@ -90,11 +88,13 @@ create, so a container the plugin's start check never judges — the check the
 runtime skips when the plugin does not answer — holds the default set alone.
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
-the create. The floor is independent of the exec posture above, and leaves the
-exempt namespaces, the pod's own sandbox container and a static pod as the
-measured policy found them. Attachability is refused for every container the
-wrapper creates — a terminal, and a create carrying the container's standard
-input — so an attach session has no way in even there.
+the create, and denies `start` too, on every node, before the wrapper decides
+whether the pod admission below applies. The floor is independent of the exec
+posture above, and leaves the exempt namespaces, the pod's own sandbox
+container and a static pod as the measured policy found them. Attachability is
+refused for every container the wrapper creates — a terminal, and a create
+carrying the container's standard input — so an attach session has no way in
+even there.
 
 A static pod is known by the kubelet's `kubernetes.io/config.source: file`,
 which reaches the bundle only where the node's containerd passes it through
