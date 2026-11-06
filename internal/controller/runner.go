@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,9 +31,11 @@ import (
 	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Options configures the controller-manager runtime.
@@ -56,7 +59,10 @@ type Options struct {
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
 	GetCertImage string
 
-	// AttestationApiURL points at the attestation-api.
+	// AttestationApiURL points at the attestation-api. Empty with
+	// WorkloadClaimsHostDir set defaults to that directory's own socket (the
+	// injected sidecars have no in-cluster service account to fall back to);
+	// empty otherwise means no verification.
 	AttestationApiURL string
 
 	// WebhookConfigName is the MutatingWebhookConfiguration to patch. The pod
@@ -126,10 +132,28 @@ func init() {
 	utilruntime.Must(v1alpha2.AddToScheme(scheme))
 }
 
+// defaultAttestationApiURL derives --attestation-api-url from
+// --workload-claims-host-dir when the flag is unset: the injected c8s-cert
+// sidecar has no in-cluster service account to fall back to, so it needs the
+// node's own socket in the inventory directory it already mounts, named the
+// same way webhook.Config rebases an explicit URL into the sidecar.
+func defaultAttestationApiURL(opts Options) string {
+	if opts.AttestationApiURL != "" || opts.WorkloadClaimsHostDir == "" {
+		return opts.AttestationApiURL
+	}
+	return "unix://" + strings.TrimRight(opts.WorkloadClaimsHostDir, "/") + "/" + filepath.Base(workloadclaims.AttestationAPISocket)
+}
+
 // Run boots the manager and blocks until ctx is cancelled or the manager exits.
 func Run(ctx context.Context, opts Options) error {
 	if opts.WebhookHost != "" && (opts.GetCertImage == "" || opts.MeshImage == "") {
 		return fmt.Errorf("--webhook-host requires --get-cert-image and --mesh-image to serve admission webhooks")
+	}
+	opts.AttestationApiURL = defaultAttestationApiURL(opts)
+	if opts.AttestationApiURL != "" {
+		if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", opts.AttestationApiURL); err != nil {
+			return err
+		}
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
