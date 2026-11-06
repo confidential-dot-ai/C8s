@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -57,6 +58,12 @@ const ExporterHeader = "X-C8s-Exporter"
 // replacing any client value. It pairs a routing-listener request with the
 // attest-lb handshake on the same connection; it is not evidence.
 const ConnectionHeader = "X-C8s-Connection"
+
+// ExpectAllowlistHeader carries, in hex, the allowlist digest a client read
+// from the router stamp it verified. The routing listener refuses a request
+// whose value is not its own router digest, so a client forwarding on a
+// cached verdict learns that the router renewed under another allowlist.
+const ExpectAllowlistHeader = "X-C8s-Expect-Allowlist"
 
 // Binding is what a client verified on an attested handshake: the digest of
 // the manifest it bound, and the allowlist digest of the router stamp on the
@@ -201,15 +208,30 @@ func (p *Proxy) Acquire(client string, recordBytes int64) (release func(), ok bo
 // ServeHTTP routes r by its Host (M1) and the path bytes it arrived with
 // (routes.Table.Select). It drops a client's X-C8s-Exporter: backends trust
 // it as the tunnel's channel binding. A request on a bound connection is
-// routed only while its binding holds.
+// routed only while its binding holds, and one carrying X-C8s-Expect-Allowlist
+// only while that digest is the router's.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del(ExporterHeader)
 	connection := r.Header.Get(ConnectionHeader)
 	r.Header.Del(ConnectionHeader)
+	expected := r.Header.Values(ExpectAllowlistHeader)
+	r.Header.Del(ExpectAllowlistHeader)
 	applied := p.state.Current()
 	if applied == nil {
 		http.Error(w, "routes not applied", http.StatusServiceUnavailable) // A2
 		return
+	}
+	if len(expected) > 0 {
+		if err := p.checkExpected(expected); err != nil {
+			var changed *BindingChangedError
+			if errors.As(err, &changed) {
+				http.Error(w, changed.Code, http.StatusServiceUnavailable)
+			} else {
+				p.log.Warn("router credential unavailable", "error", err)
+				http.Error(w, "backend unavailable", http.StatusBadGateway)
+			}
+			return
+		}
 	}
 	held := p.bindings.Hold(connection)
 	if held != nil {
@@ -288,6 +310,26 @@ func (p *Proxy) checkBinding(
 	}
 	if routerDigest != b.RouterDigest {
 		return &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	}
+	return nil
+}
+
+// checkExpected refreshes the published credential, as checkBinding does, and
+// requires its router digest to equal the one digest in expected. A malformed
+// value or an unstamped router matches nothing.
+func (p *Proxy) checkExpected(expected []string) error {
+	changed := &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	want, err := hex.DecodeString(expected[0])
+	if len(expected) != 1 || err != nil || len(want) != sha256.Size {
+		return changed
+	}
+	if p.transports != nil {
+		if err := p.transports.syncRouterDigest(); err != nil {
+			return err
+		}
+	}
+	if p.transports.RouterDigest() != string(want) {
+		return changed
 	}
 	return nil
 }
