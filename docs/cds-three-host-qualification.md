@@ -48,3 +48,26 @@ The receiver checks every chunk and the assembled archive; the controller then
 checks the complete reconstructed disk. A retry uses a fresh path, and all
 transfer files stay on the owned disposable volume. An upload timeout never
 counts as completion or a backend availability result.
+
+The guest subnet has no general outbound NAT; ordinary Cloud API instances get
+explicit egress mappings. These SDK fixtures use a dedicated, disposable
+`cds-three-host-egress` namespace on the existing default outbound subnet for
+collateral only. Its bounded CONNECT proxy permits Intel PCS/certificate hosts
+and AMD KDS on port 443, rejects nonpublic DNS results, and forwards TLS bytes
+without terminating TLS. Guest verifiers still validate vendor certificates,
+signatures and revocations. Only owned CDS guests may reach the proxy; its route
+remains available during the CDS/metadata partitions. Existing NAT mappings,
+subnet settings and gateway workloads are not modified. The proxy is an extra
+test dependency and is not evidence of production collateral-service HA.
+
+The [collateral preflight](../test/pilot/cds-three-host/results/2026-11-06-collateral-preflight-01.json)
+fetched Intel's revocation list through the owned proxy with end-to-end TLS
+verification. All four resources were removed and independently confirmed
+absent. Native guest startup and the backend comparison remain pending.
+
+The fixed test-control endpoint allows 30 seconds of clock skew for signed
+requests, with the existing five-minute maximum token lifetime and strict
+expiry/replay checks in its actor. This does not change CDS authorization.
+Failed control requests retain safe authentication/clock diagnostics. Startup
+attempts are bounded to 30 seconds within the three-minute startup budget.
+The first guest's startup is checked before the remaining disks are prepared.

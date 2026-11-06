@@ -133,7 +133,7 @@ func run(lp, kp, origin, qp, out string) error {
 		return errors.New("oversized phase reply")
 	}
 	if response.StatusCode != 200 {
-		return fmt.Errorf("phase HTTP %d", response.StatusCode)
+		return fmt.Errorf("phase HTTP %d (guest Date %q; client UTC %s)", response.StatusCode, response.Header.Get("Date"), time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	var result protocol.Reply
 	if e = json.Unmarshal(answer, &result); e != nil {

@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -85,11 +86,16 @@ func TestThreeHostAgent(t *testing.T) {
 		t.Skip("fixed measured image only")
 	}
 	jobs := make(chan threeHostJob, 8)
-	verify := operatorauth.Verifier{Keys: threeHostConfig.OperatorKeys.Keys()}
+	verify := operatorauth.Verifier{Keys: threeHostConfig.OperatorKeys.Keys(), ClockSkew: 30 * time.Second}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /phase", func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
-		if err != nil || strictjson.Validate(body) != nil || verify.Authorize(r, body) != nil {
+		if err != nil || strictjson.Validate(body) != nil {
+			http.Error(w, "invalid phase body", 400)
+			return
+		}
+		if err := verify.Authorize(r, body); err != nil {
+			slog.Warn("fixed phase authorization failed", "error", err)
 			http.Error(w, "unauthorized phase", 401)
 			return
 		}

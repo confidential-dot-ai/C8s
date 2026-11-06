@@ -16,7 +16,9 @@ vcek_ttl_hours = 24
 chain_ttl_hours = 168
 crl_refresh_hours = 6
 tdx_collateral_ttl_hours = 24
-prefetch_chains = ["milan", "genoa"]
+prefetch_chains = []
+prefetch_nras_jwks = false
+require_crl = true
 
 [token]
 enabled = false

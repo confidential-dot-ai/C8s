@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "backend": "raft",
+  "attempt": 5,
+  "stage": "guest-startup-before-cds-workload",
+  "runner_commit": "1094d573fc6b3e1563fef278bd673b8b094bef4d",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 1,
+  "completed_image_uploads": 6,
+  "chunk_retries": 0,
+  "findings": [
+    "The production attestation service could not fetch Intel PCK revocation collateral; CDS refused startup.",
+    "Read-only inspection confirmed that the guest subnet has no general outbound NAT. Normal Cloud API instances receive explicit egress mappings; these SDK fixtures had none.",
+    "The fixed test-control endpoint rejected initial signed requests with HTTP 401; its authentication failure still needs direct diagnosis.",
+    "An early failed VM tunnel left its local client waiting. That exact failed initial client was terminated once to trigger the existing startup retry; no CDS operation was submitted through that failed connection."
+  ],
+  "follow_up": "Qualify an owned vendor-only TLS collateral proxy without modifying production NAT, add control-authentication diagnostics and bounded startup attempts, and verify the first guest before preparing all six disks.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 33,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

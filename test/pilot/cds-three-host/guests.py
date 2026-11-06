@@ -1,12 +1,15 @@
 """Only owned CDS guests and narrowly scoped network resources."""
 import copy
 import re
+import egress
 from fixtures import NS, OWNER, COMPONENT, SLOT, need, selector, meta, dns_rule
 from cloud import resource_path as metadata_path
 
 
 def resource_path(item, run):
     m = item['metadata']; name = m['name']; kind = item['kind']
+    if kind == 'Namespace' or m.get('namespace') == egress.NAMESPACE:
+        return egress.path(item, run)
     suffix = {'VirtualMachine': r'-g[0-2]-[ab]', 'Secret': r'-g[0-2]-[ab]-opkey',
               'Pod': r'-g[0-2]-[ab]-populate', 'PersistentVolumeClaim': r'-g[0-2]-[ab]-root',
               'Service': r'-g[0-2]', 'NetworkPolicy': r'-g[0-2]'}
@@ -26,7 +29,9 @@ def admin(run, expires):
     return {'apiVersion': 'policy.networking.k8s.io/v1alpha1', 'kind': 'AdminNetworkPolicy',
         'metadata': {'name': run, 'labels': {OWNER: run}, 'annotations': {'cds.confidential.ai/cleanup-deadline': expires}},
         'spec': {'priority': 89, 'subject': {'pods': pods}, 'egress': [{'name': 'owned-cds-metadata-only', 'action': 'Pass',
-            'to': [{'pods': pods}], 'ports': [{'portNumber': {'protocol': 'TCP', 'port': p}} for p in (1019, 2379, 2380, 8443, 8444, 9443)]}]}}
+            'to': [{'pods': pods}], 'ports': [{'portNumber': {'protocol': 'TCP', 'port': p}} for p in (1019, 2379, 2380, 8443, 8444, 9443)]},
+            {'name': 'owned-collateral-only', 'action': 'Pass', 'to': [{'pods': egress.destination(run)}],
+             'ports': [{'portNumber': {'protocol': 'TCP', 'port': 3128}}]}]}}
 
 
 def public_collateral():
@@ -46,7 +51,7 @@ def network(run, slot, expires):
     policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy', 'metadata': meta(run, name, 'cds', slot, expires),
         'spec': {'podSelector': selector(run, 'cds', slot), 'policyTypes': ['Ingress', 'Egress'],
             'ingress': [tunnel, {'from': [{'podSelector': selector(run, 'cds')}], 'ports': ports}],
-            'egress': [dns_rule(), public_collateral(), {'to': [{'podSelector': selector(run, 'cds')}], 'ports': ports},
+            'egress': [dns_rule(), egress.rule(run), {'to': [{'podSelector': selector(run, 'cds')}], 'ports': ports},
                        {'to': [{'podSelector': selector(run, 'adapter')}], 'ports': [{'protocol': 'TCP', 'port': 9443}]}]}}
     return [service, policy]
 
@@ -56,7 +61,7 @@ def partition(policy):
     need(p['metadata']['labels'][COMPONENT] == 'cds' and p['spec']['podSelector'] == selector(
         p['metadata']['labels'][OWNER], 'cds', int(p['metadata']['labels'][SLOT])), 'guest policy scope mismatch')
     p['spec']['ingress'] = p['spec']['ingress'][:1]
-    p['spec']['egress'] = [dns_rule(), public_collateral()]
+    p['spec']['egress'] = [dns_rule(), egress.rule(p['metadata']['labels'][OWNER])]
     return p
 
 

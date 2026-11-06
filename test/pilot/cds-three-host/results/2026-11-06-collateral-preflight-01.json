@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "stage": "collateral-egress-preflight",
+  "runner_commit": "6d8750a92de86e72cab4d5ddfbc21e0bd03f70d2",
+  "runner_exit_code": 0,
+  "collateral_proxy_passed": true,
+  "intel_revocation_list_https_status": 200,
+  "end_to_end_tls_verified": true,
+  "response_bytes": 4594,
+  "guests_started": 0,
+  "production_subnet_or_nat_changes": false,
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 4,
+    "owned_resources_remaining": 0
+  },
+  "limitations": [
+    "The preflight exercises the owned proxy from the controller; guest startup and native attestation remain separate checks.",
+    "This qualifies neither collateral-service HA nor any CDS backend behavior."
+  ],
+  "production_ready": false
+}

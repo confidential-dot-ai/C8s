@@ -8,6 +8,7 @@ import secrets
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'cds-ha-metadata'))
 import guests
+import egress
 from fixtures import OWNER, COMPONENT, SLOT, selector
 
 RUN = 'cds-ha-123456789abc'
@@ -28,6 +29,27 @@ class Safety(unittest.TestCase):
         self.assertEqual(rule['to'][0]['pods'], a['spec']['subject']['pods'])
         self.assertEqual(rule['to'][0]['pods']['podSelector'], selector(RUN))
         self.assertNotIn(6443, [p['portNumber']['port'] for p in rule['ports']])
+        collateral = a['spec']['egress'][1]
+        self.assertEqual(collateral['action'], 'Pass')
+        self.assertEqual(collateral['to'], [{'pods': egress.destination(RUN)}])
+        self.assertEqual(collateral['ports'], [{'portNumber': {'protocol': 'TCP', 'port': 3128}}])
+
+    def test_collateral_namespace_and_receiver_are_exclusively_owned(self):
+        node = {'name': 'worker', 'uid': 'node-uid'}
+        items = egress.render(RUN, node, 'example.invalid/tools@sha256:'+'a'*64, 'expiry')
+        for item in items:
+            self.assertEqual(guests.resource_path(item, RUN), egress.path(item, RUN))
+            bad = copy.deepcopy(item); bad['metadata']['labels'][OWNER] = 'foreign'
+            with self.assertRaises(ValueError): guests.resource_path(bad, RUN)
+        namespace, policy, service, proxy = items
+        self.assertEqual(namespace['metadata']['annotations']['ovn.kubernetes.io/logical_switch'], 'cloud-infra')
+        policy['metadata']['annotations']['changed'] = 'only this object'
+        self.assertNotIn('changed', service['metadata']['annotations'])
+        self.assertEqual(policy['spec']['ingress'][0]['from'][0]['podSelector'], selector(RUN, 'cds'))
+        self.assertFalse(proxy['spec']['automountServiceAccountToken'])
+        self.assertTrue(proxy['spec']['securityContext']['runAsNonRoot'])
+        self.assertFalse(any('hostPath' in v for v in proxy['spec']['volumes']))
+        self.assertEqual(proxy['spec']['nodeSelector']['cloud.confidential.ai.node-restriction.kubernetes.io/node-uid'], node['uid'])
 
     def test_partition_retains_only_tunnel_dns_and_public_collateral(self):
         service, p = guests.network(RUN, 1, 'expiry')
@@ -36,6 +58,7 @@ class Safety(unittest.TestCase):
         self.assertEqual(len(isolated['spec']['ingress']), 1)
         self.assertEqual(isolated['spec']['ingress'][0]['ports'], [{'protocol': 'TCP', 'port': 6443}])
         self.assertEqual(len(isolated['spec']['egress']), 2)
+        self.assertEqual(isolated['spec']['egress'][1], egress.rule(RUN))
         self.assertEqual(service['spec']['clusterIP'], 'None')
         self.assertEqual(service['spec']['selector'], p['spec']['podSelector']['matchLabels'])
         p['spec']['podSelector'] = selector('foreign')

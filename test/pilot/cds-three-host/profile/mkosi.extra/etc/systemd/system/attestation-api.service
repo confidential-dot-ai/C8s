@@ -6,6 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HTTPS_PROXY=http://collateral.cds-three-host-egress.svc.cluster.local:3128
+Environment=NO_PROXY=127.0.0.1,localhost
 ExecStart=/usr/local/bin/attestation-api -c /etc/attestation-api/config.toml
 Restart=on-failure
 RestartSec=3

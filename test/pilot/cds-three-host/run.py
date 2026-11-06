@@ -5,12 +5,14 @@ import base64
 import copy
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -22,6 +24,7 @@ import cloud as metadata
 from fixtures import NS, OWNER, COMPONENT, SLOT, need
 import guests
 import transfer
+import egress
 
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
 
@@ -85,6 +88,15 @@ class Run(metadata.Run):
                 except Exception as error: failures.append(type(error).__name__+': '+str(error))
         try: super().cleanup()
         except Exception as error: failures.append(type(error).__name__+': '+str(error))
+        for row in self.state['resources']:
+            if row['item']['kind'] != 'Namespace': continue
+            try:
+                need(all(r.get('deleted') for r in self.state['resources'] if r['item']['metadata'].get('namespace') == egress.NAMESPACE),
+                     'collateral namespace still has uncleaned journal children')
+                code, remaining = self.kube.call('GET', '/api/v1/namespaces/'+egress.NAMESPACE+'/pods', expected=(200, 404))
+                need(code == 404 or not remaining['items'], 'collateral namespace has unrecorded pods')
+                self.remove(row)
+            except Exception as error: failures.append(type(error).__name__+': '+str(error))
         if failures:
             self.state['cleanup_verified'] = False; self.save()
             self.event('guest-cleanup-incomplete', errors=failures)
@@ -94,6 +106,60 @@ class Run(metadata.Run):
         super().remove(row)
         if row['item']['kind'] == 'VirtualMachine':
             self.wait_absent(VMI+row['item']['metadata']['name'])
+
+    def proxy_kubectl(self, *args):
+        return [self.args.kubectl, '--kubeconfig', self.args.kubeconfig, '-n', egress.NAMESPACE, *args]
+
+    def setup_proxy(self):
+        need(self.args.collateral_proxy_binary, 'frozen collateral proxy binary required')
+        _, subnet = self.kube.call('GET', '/apis/kubeovn.io/v1/subnets/cloud-infra')
+        _, guests_subnet = self.kube.call('GET', '/apis/kubeovn.io/v1/subnets/cloud-guests')
+        need(subnet['spec'].get('natOutgoing') is True and subnet['spec'].get('default') is True and
+             subnet['spec'].get('vpc') == guests_subnet['spec'].get('vpc') and
+             any(c['type'] == 'Ready' and c['status'] == 'True' for c in subnet['status']['conditions']),
+             'existing default outbound subnet is unavailable')
+        for item in egress.render(self.run, self.state['nodes'][0], self.args.tools_image, self.state['expires']):
+            row = self.create(item)
+        end = time.monotonic()+120
+        while time.monotonic() < end:
+            live = self.current(row)
+            if any(x.get('state', {}).get('running') for x in live.get('status', {}).get('containerStatuses', [])): break
+            time.sleep(1)
+        else: raise RuntimeError('collateral population container did not start')
+        name = row['item']['metadata']['name']; binary = Path(self.args.collateral_proxy_binary)
+        need(0 < binary.stat().st_size <= transfer.CHUNK, 'bounded collateral binary required')
+        digest = self.native.digest(binary); token = secrets.token_hex(16)
+        class Receiver:
+            def __getattr__(_, key): return getattr(self, key)
+            def kubectl(_, *args): return self.proxy_kubectl(*args)
+        with binary.open('rb') as data:
+            transfer.receive(Receiver(), 'collateral-binary', name,
+                transfer.chunk_receiver(binary.stat().st_size, digest, '/tools/proxy.new', token),
+                '/tools/proxy.new.complete', token, data, 45)
+        self.command('collateral-install', self.proxy_kubectl('exec', name, '--', 'sh', '-ec',
+            'chmod 755 /tools/proxy.new; mv /tools/proxy.new /tools/proxy'))
+        self.ready(row)
+        self.state['collateral_proxy_binary_sha256'] = digest; self.save()
+        with socket.socket() as sock: sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+        log = (self.directory/'collateral-forward.log').open('ab')
+        process = subprocess.Popen(self.proxy_kubectl('port-forward', 'pod/'+name, f'{port}:3128', '--address=127.0.0.1'), stdout=log, stderr=log)
+        self.forwards.append((process, log))
+        end = time.monotonic()+15
+        while time.monotonic() < end:
+            need(process.poll() is None, 'collateral forward exited')
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=.5): break
+            except OSError: time.sleep(.1)
+        else: raise RuntimeError('collateral forward did not listen')
+        connection = http.client.HTTPSConnection('127.0.0.1', port, timeout=20, context=ssl.create_default_context())
+        connection.set_tunnel('api.trustedservices.intel.com', 443)
+        try:
+            connection.request('GET', '/sgx/certification/v4/pckcrl?ca=platform')
+            response = connection.getresponse(); body = response.read(1024*1024+1)
+            need(response.status == 200 and 0 < len(body) <= 1024*1024, 'Intel collateral through owned proxy unavailable')
+        finally: connection.close()
+        self.state['collateral_proxy_passed'] = True
+        self.event('collateral-proxy-tls-check-passed', response_bytes=len(body))
 
     def isolate_guest(self, slot, isolated):
         row = next(r for r in self.state['resources'] if r['item']['kind'] == 'NetworkPolicy' and r['item']['metadata']['name'] == f'{self.run}-g{slot}')
@@ -177,8 +243,12 @@ class Run(metadata.Run):
             request = self.directory/(label+'-request.json'); receipt = self.directory/(label+'-receipt.json')
             self.atomic(request, q)
             try:
+                # A failed early virtctl dial can leave its accepted local
+                # socket open. Bound each initial attempt so that the existing
+                # three-minute startup budget can actually retry its tunnel.
+                attempt_timeout = min(30, max(1, deadline-time.monotonic())) if retry_start else 310
                 self.command(label, [self.args.client, '-launch', str(self.directory/'launch.yaml'), '-key', str(self.directory/'operator.pem'),
-                    '-endpoint', self.tunnels[agent][1], '-request', str(request), '-receipt', str(receipt)], timeout=310)
+                    '-endpoint', self.tunnels[agent][1], '-request', str(request), '-receipt', str(receipt)], timeout=attempt_timeout)
             except Exception:
                 # Retry only failed initial handshakes; a verified result or a
                 # non-idempotent phase is never silently resubmitted.
@@ -252,14 +322,18 @@ class Run(metadata.Run):
             self.create(guests.admin(self.run, self.state['expires']))
         else:
             self.etcd = self.setup()
+        self.setup_proxy()
         launch = self.launch(); pending = {}
         for slot in range(3):
             for item in guests.network(self.run, slot, self.state['expires']): self.create(item)
             for variant in ['a', 'b']:
                 items, vm = self.render_guest(slot, variant, launch); self.populate(items, variant); pending[slot, variant] = vm
-        for slot in range(3):
-            self.boot_guest(pending[slot, 'a'], slot, 'a'); self.phase(slot, 'init', slot, retry_start=True)
-            self.phase(slot, 'provision', slot)
+                if variant == 'a':
+                    # Prove startup after the first upload, before spending
+                    # time preparing the other five disks. Faults still wait
+                    # until all three guests and both images are ready.
+                    self.boot_guest(vm, slot, 'a'); self.phase(slot, 'init', slot, retry_start=True)
+                    self.phase(slot, 'provision', slot)
         self.phase(0, 'seed'); self.phase(0, 'roll-safe')
         for slot in [1, 2]: self.phase(slot, 'attach', slot)
         self.phase(0, 'burst')
@@ -336,10 +410,11 @@ class Run(metadata.Run):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__); p.add_argument('action', choices=['run', 'cleanup', 'audit'])
+    p = argparse.ArgumentParser(description=__doc__); p.add_argument('action', choices=['run', 'cleanup', 'audit', 'egress-check'])
     for name in ['directory', 'kubeconfig', 'kubectl', 'virtctl', 'cloud-helpers', 'tools-image', 'etcd-binary', 'metadata-binary', 'source-tree', 'renderer', 'client', 'image-a', 'image-b']:
         p.add_argument('--'+name, required=True)
     p.add_argument('--backend', required=True, choices=['raft', 'direct-state']); p.add_argument('--nodes', nargs=3, required=True)
+    p.add_argument('--collateral-proxy-binary')
     args = p.parse_args(); args.platform = 'tdx'; os.umask(0o077)
     need(len(set(args.nodes)) == 3, 'distinct workers required')
     run = Run(args)
@@ -352,12 +427,18 @@ def main():
             if row.get('pv'): paths.add('/api/v1/persistentvolumes/'+row['pv']['name'])
             if row['item']['kind'] == 'VirtualMachine': paths.add(VMI+row['item']['metadata']['name'])
         remaining = [path for path in sorted(paths) if run.kube.call('GET', path, expected=(200, 404))[0] != 404]
-        _, pods = run.kube.call('GET', '/api/v1/namespaces/'+NS+'/pods?labelSelector='+urllib.parse.quote(OWNER+'='+run.run))
+        _, pods = run.kube.call('GET', '/api/v1/pods?labelSelector='+urllib.parse.quote(OWNER+'='+run.run))
         remaining += ['owned-pod/'+x['metadata']['name'] for x in pods['items']]
         proof = {'read_only_independent_audit': True, 'resource_paths_checked': len(paths), 'cleanup_verified': not remaining, 'remaining': remaining}
         run.atomic(run.directory/'cleanup-audit.json', proof); need(not remaining, 'owned resources remain'); print('independent cleanup audit passed'); return
     if args.action == 'cleanup': run.cleanup(); return
-    try: run.exercise()
+    try:
+        if args.action == 'egress-check':
+            need(not run.state['resources'], 'fresh egress check required')
+            baseline = run.health(capture=True)
+            run.state['nodes'] = [{'name': n, 'uid': baseline[n]['uid']} for n in args.nodes]; run.save()
+            run.setup_proxy()
+        else: run.exercise()
     except BaseException as e:
         run.event('qualification-failed', failure=type(e).__name__, detail=str(e)); run.diagnostics(); raise
     finally:
