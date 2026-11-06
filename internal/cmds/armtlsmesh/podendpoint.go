@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -54,10 +53,6 @@ type podEndpointConfig struct {
 	// probes are the health-port paths the injector rewrote the pod's
 	// application probes onto, from MeshProbesEnv.
 	probes []string
-	// connectSocket is the guest's connect broker, from MeshConnectSocketEnv.
-	// Set, the guest opens every peer connection and the endpoint dials none
-	// itself; unset, as in a member pod, the endpoint dials its peers.
-	connectSocket string
 }
 
 func newArmtlsMeshCommand() *cobra.Command {
@@ -73,16 +68,11 @@ original destination on one of the pod's own addresses.
 
 Each application probe the injector moved onto the health port is named in
 ${C8S_MESH_PROBES}. The endpoint forwards those paths, and no others, to the
-pod's own addresses, and answers with the application's status code alone.
-
-A guest Pod's endpoint names the guest's connect broker in
-${C8S_MESH_CONNECT_SOCKET}; the guest then opens every peer connection and the
-endpoint dials none itself.`,
+pod's own addresses, and answers with the application's status code alone.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.probes = workloadclaims.SplitMeshProbePaths(os.Getenv(workloadclaims.MeshProbesEnv))
-			cfg.connectSocket = os.Getenv(workloadclaims.MeshConnectSocketEnv)
 			return runPodEndpoint(cmd.Context(), &cfg, podOutboundPort, podInboundPort, podHealthPort)
 		},
 	}
@@ -129,13 +119,6 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 	if err != nil {
 		return nil, err
 	}
-	dialPeer, brokered := dialPeerDirectly, false
-	if socket := c.connectSocket; socket != "" {
-		brokered = true
-		dialPeer = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
-			return connectbroker.Dial(ctx, socket, dst)
-		}
-	}
 	return &podEndpoint{
 		credentials: &credentials{
 			volume: volume,
@@ -143,8 +126,7 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 		},
 		own:         own,
 		origDst:     defaultOrigDstFunc,
-		dialPeer:    dialPeer,
-		brokered:    brokered,
+		dialPeer:    dialPeerDirectly,
 		logger:      logger,
 		bufPool:     newBufPool(),
 		probes:      probes,
@@ -187,11 +169,8 @@ type podEndpoint struct {
 	own         podAddresses
 	origDst     origDstFunc
 	// dialPeer opens the transport to a peer; the armTLS handshake runs on it.
-	// Nil dials directly, as a member pod does.
-	dialPeer func(context.Context, netip.AddrPort) (net.Conn, error)
-	// brokered is set when the guest's connect broker opens peer connections,
-	// whose provider may translate the peer's port.
-	brokered    bool
+	// Nil dials directly.
+	dialPeer    func(context.Context, netip.AddrPort) (net.Conn, error)
 	logger      *slog.Logger
 	bufPool     *bufPool
 	probes      probeTargets
@@ -451,17 +430,12 @@ func (e *podEndpoint) requireDeliverable(dst netip.AddrPort) error {
 }
 
 // requireMeshDestination holds that a captured connection leaves the pod for a
-// peer's application port. A brokered endpoint checks the address alone: the
-// guest's provider may translate any remote port to the peer's application
-// port, and the peer's requireDeliverable still refuses its own mesh ports. An
-// endpoint dialling peers itself refuses the mesh ports before any handshake,
-// since they answer armTLS and never an application.
+// peer's application port. The mesh ports are refused before any handshake,
+// since they answer armTLS and never an application; a pod CVM's provider
+// therefore publishes no peer endpoint on one.
 func (e *podEndpoint) requireMeshDestination(dst netip.AddrPort) error {
 	if err := e.rejectOwnAddress(dst.Addr()); err != nil {
 		return err
-	}
-	if e.brokered {
-		return nil
 	}
 	return e.rejectMeshPort(dst)
 }
@@ -645,7 +619,8 @@ func (e *podEndpoint) dialMesh(ctx context.Context, config *tls.Config, dst neti
 	return conn, nil
 }
 
-// dialPeerDirectly is a member pod's transport: its own captured TCP dial.
+// dialPeerDirectly is the endpoint's transport: its own TCP dial, which the
+// pod's packet rules exempt from capture by its socket owner.
 func dialPeerDirectly(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 	return (&net.Dialer{KeepAlive: podKeepAlive}).DialContext(ctx, "tcp", dst.String())
 }

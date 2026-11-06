@@ -132,27 +132,6 @@ evidence, so it is readable only off a leaf the reader has verified against
 that CA. A self-issued peer's version of this extension is whatever that peer
 chose.
 
-## Assigned workload ID (`…1.8`)
-
-A DER `UTF8String` in the workload-name grammar that `confidential.ai/cw`
-and an allowlist entry use (`[A-Za-z0-9][A-Za-z0-9._-]*`, at most 63 bytes),
-in the one canonical encoding; a duplicate, another ASN.1 type or a value
-outside the grammar is an error, never read as absence. Only the
-[Pod CVM issuance profile](armtls.md#pod-cvm-issuance) stamps it: the pod
-provider signs the manifest's `confidential.ai/cw` annotation into the guest's
-assignment, the guest carries it in the claims its quote binds, and CDS copies
-it from the verified claims. A pod without the annotation gets a leaf without
-the extension. The pod CVM's mesh endpoint admits only peers stamped with its
-own value (`armtls.RequireSameAssignedWorkload`); a relying party that expects
-a tenant refuses a leaf that lacks it rather than treat absence as a wildcard,
-and the chain verifier fails a damaged or duplicated extension for every relying
-party.
-
-It names a tenant, not a policy match: `…1.5` says which allowlist entry the
-containers matched, `…1.8` says which workload the control plane assigned the
-pod to. The two agree when the allowlist entry is named after the workload,
-but nothing in the leaf requires that.
-
 ## Subject, key usage and lifetime
 
 | | Self-issued certificate | CDS-issued leaf |

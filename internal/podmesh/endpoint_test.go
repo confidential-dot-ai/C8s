@@ -11,8 +11,7 @@ import (
 )
 
 // The guest supplies the measured endpoint before every workload, with its
-// read-only memory-backed credential mount, and tells it the connect broker
-// socket.
+// read-only memory-backed credential mount.
 func TestGuestEndpointPrecedesWorkloadsAndOwnsPrivateRAMVolume(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "init"}},
@@ -32,11 +31,8 @@ func TestGuestEndpointPrecedesWorkloadsAndOwnsPrivateRAMVolume(t *testing.T) {
 		t.Fatal("private credentials reached a workload or writable endpoint mount")
 	}
 	probe := pod.Spec.Containers[0].ReadinessProbe.HTTPGet
-	if probe.Port.IntVal != workloadclaims.MeshHealthPort || len(endpoint.Env) != 2 || !slices.Contains(workloadclaims.SplitMeshProbePaths(endpoint.Env[0].Value), probe.Path) {
+	if probe.Port.IntVal != workloadclaims.MeshHealthPort || len(endpoint.Env) != 1 || !slices.Contains(workloadclaims.SplitMeshProbePaths(endpoint.Env[0].Value), probe.Path) {
 		t.Fatalf("probe forwarding = %+v, endpoint env %+v", probe, endpoint.Env)
-	}
-	if endpoint.Env[1].Name != workloadclaims.MeshConnectSocketEnv || endpoint.Env[1].Value != CertDir+"/connect.sock" {
-		t.Fatalf("the endpoint was not told the guest's connect broker: %+v", endpoint.Env)
 	}
 	if *pod.Spec.AutomountServiceAccountToken || *pod.Spec.EnableServiceLinks {
 		t.Fatal("guest inherited node service discovery or credentials")

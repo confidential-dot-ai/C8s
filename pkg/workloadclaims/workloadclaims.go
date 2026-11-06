@@ -189,11 +189,6 @@ const MeshProbeTimeout = 5 * time.Second
 // member pod's endpoint.
 const MeshProbesEnv = "C8S_MESH_PROBES"
 
-// MeshConnectSocketEnv names, to a guest Pod's endpoint, the unix socket its
-// guest connects peers through (internal/podmesh/connectbroker). Unset, as in a
-// member pod, the endpoint dials its peers itself.
-const MeshConnectSocketEnv = "C8S_MESH_CONNECT_SOCKET"
-
 // JoinMeshProbePaths renders the MeshProbesEnv value carrying paths.
 func JoinMeshProbePaths(paths []string) string {
 	return strings.Join(paths, ",")
