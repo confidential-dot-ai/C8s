@@ -15,10 +15,12 @@ Description=Mount the read-only weights disk (serial=confai-models) at /var/lib/
 DefaultDependencies=no
 Conflicts=umount.target
 Before=rke2-server.service rke2-agent.service
-After=systemd-udevd.service
-# Order After=systemd-udevd so udevd has started before we resolve /dev/disk/by-id.
-# NOT a hard Require, and no udev-settle: a dep on the by-id device unit would hang
-# when no disk is attached, breaking the no-op path. The script polls for the serial.
+After=systemd-udevd.service systemd-udev-trigger.service
+# Order After=systemd-udevd so udevd has started before we resolve /dev/disk/by-id,
+# and after the coldplug trigger so the script's `udevadm settle` covers the disks
+# attached at launch. NOT a hard Require, and no udev-settle: a dep on the by-id
+# device unit would hang when no disk is attached, breaking the no-op path. The
+# script polls for the serial.
 
 [Service]
 Type=oneshot
