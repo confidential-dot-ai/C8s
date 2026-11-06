@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
@@ -770,5 +771,45 @@ func TestDeletedPodLeavesWithATerminalPhase(t *testing.T) {
 				t.Fatalf("deleted pod left as %s/%s, want Failed/%s", got.Status.Phase, got.Status.Reason, want)
 			}
 		})
+	}
+}
+
+// No kubelet confirms the deletion of a Pod bound to the virtual node, so the
+// provider removes the object with a zero grace period once its instance is
+// gone. The fake client deletes on finalizer release, which hides this.
+func TestDeletionRemovesThePodWithZeroGrace(t *testing.T) {
+	pod := fixturePod()
+	r, cloud := fixtureReconciler(t, pod)
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	var deleted *client.DeleteOptions
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*corev1.Pod); ok {
+				deleted = &client.DeleteOptions{}
+				deleted.ApplyOptions(opts)
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if deleted.GracePeriodSeconds != nil {
+		t.Fatal("provider ended the Pod before its instance was gone")
+	}
+	cloud.in.Status = "terminated"
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if deleted.GracePeriodSeconds == nil || *deleted.GracePeriodSeconds != 0 {
+		t.Fatalf("Pod deleted with grace %v, want 0", deleted.GracePeriodSeconds)
+	}
+	if deleted.Preconditions == nil || deleted.Preconditions.UID == nil || *deleted.Preconditions.UID != pod.UID {
+		t.Fatal("Pod deletion is not guarded by its UID")
 	}
 }
