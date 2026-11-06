@@ -174,6 +174,50 @@ mode at boot, while the chart value `router.publicTLS.mode` stays `cds`. The
 join tokens are RKE2 enrollment credentials, not C8s identity: the mesh wraps
 neither port `9345` nor `6443`, so a token holder with network access can enroll
 with no C8s evidence.
+c8s node launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
+  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
+This writes a generic `role: pod` document, naming no pod, signed by a separate pod launch key
+keys or `router` block, and no pod, allowlist entries or mesh peers: the guest
+refuses a document that carries any of them. Re-signing it after an edit
+requires the Pod launch key.
+The guest starts only its attested status service: no container runtime,
+admission plugin or kubelet runs until a pod is assigned, so nothing can start a
+sandbox or container before then.
+allowlist entries and mesh peers. The entries are a `c8s.allowlist/v1`
+document, which may be empty. They are the base allowlist, in force before CDS
+responds; the plugin also admits entries fetched from the authenticated CDS. A
+failed initial pull leaves the base in force while polling continues, and a
+failed refresh keeps the last applied CDS policy. Neither source gets a
+node-TCB exemption. The pod role measures started images only and refuses a
+baked configuration that also sets `allowlist.pull.measure_policies`. The launcher must persist those exact signed
+The guest installs the assigned runtime policy, starts containerd, which launches
+the admission plugin with it, waits for the plugin to report the assigned pod
+registered, publishes the manifest and starts the kubelet last, so the kubelet
+never reads a manifest the plugin is not guarding. Startup delays are retried
+within the installation deadline. Assignment recovery never replaces a published
+manifest or policy; it starts the same units again, which is idempotent.
+Assignment state lasts for this boot; a reboot needs a new VM allocation.
+Within that boot, a restart of the admission plugin, including a containerd
+restart that drops its connection, ends the Pod identity: the plugin keeps its
+admission history only in its own process, so it stops the Pod's running
+containers, admits no further start and issues no credentials. It records the
+end on the boot's tmpfs beside its boot marker, so a later plugin of the same
+boot still reports it, and the status service reports the Pod `Failed`,
+whatever the kubelet's own phase; the provider persists that as `Failed` with
+reason `PodIdentityEnded` and stops the Pod. While the plugin cannot be
+reached, the status service answers 503 rather than the kubelet's cached
+status. Allocate a new Pod CVM. While it runs, the plugin keeps the last
+authenticated CDS policy during an outage and refuses older policy versions.
+launcher must retire an unavailable target within its verification budget;
+generic boot itself has no wait deadline.
+instead of RKE2, started by `c8s pod-status` once a pod is assigned, and does
+not require the scratch disk. The kubelet listens on
+the pod. `c8s pod-status` serves guest status over armTLS on `:8443`, and exits
+when it cannot confirm the measured launch key, a register that replays no
+prefix of its journal included. The measurement journal stays inside the guest:
+pod containers get no node credential-client mounts or sandbox-token service.
+The assignment's `meshPeers` list each known destination's exact IPv4 address
+and TCP port; an empty list permits no outbound peer. A signed peer tuple always
 
 ## Operator credentials
 

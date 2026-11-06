@@ -396,3 +396,6 @@ It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
 measure keeps enforcing the policy it holds — at startup, the base allowlist
 alone — and once it reaches the register's per-boot extend cap it takes no
 further policy until it reboots.
+
+it declares fails verification, as does a list the register has not caught up
+with; the guest itself exits when its register does not replay its journal.

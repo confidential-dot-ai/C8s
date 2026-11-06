@@ -117,3 +117,17 @@ with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
   `node_exec ctr -n k8s.io images pull` block near the top of `run.sh`.
 - The mock-attestation Deployment is `Recreate` on purpose: two host-network
   pods cannot both bind `:8400` on a single-node cluster.
+
+this command and requires its check: start authorization, where one offline
+workload executes only after its exact NRI container, sandbox and process
+identity is consumed once. Seven cases reject execution: missing authority,
+policy denial, measurement failure, callback timeout, lost socket, plugin
+disconnect and replay.
+
+The runner extracts digest-pinned RKE2 runtime release binaries for the Docker
+daemon's native architecture and uses the production `c8s-runc`. The check
+isolates the start-permission boundary; a plugin restart within a boot ends the
+Pod identity and is not exercised here.
+The runtime lane requires a fresh result receipt and fails when
+`result.json`, bound to the current invocation, plus successful cleanup.
+Evidence includes runtime binary hashes and bounded logs. The lane removes only its owned

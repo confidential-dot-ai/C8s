@@ -11,10 +11,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"unicode/utf8"
+	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -27,84 +26,25 @@ const (
 // PodClaims is a guest-owned admission snapshot, authenticated by fresh TDX
 // evidence rather than by the TLS private key exported to the mesh container.
 // RuntimeExtensions is the complete ordered image journal for this boot;
-// Containers retains every distinct admission, including exited init jobs.
-// AssignedPodUID is the signed assignment; RuntimePodUID is kubelet's actual
-// static-Pod UID. Neither is substituted for the guest-generated BootID.
-// AssignedWorkloadID is the pod's confidential.ai/cw annotation as the
-// provider signed it, the tenant identity CDS stamps into the leaf
-// (armtls.OIDAssignedWorkloadID); empty when the pod carries none.
+// Containers lists the image digest of every distinct admission, including
+// exited init jobs. The claims carry image digests only: no argument,
+// environment, mount or role observation. AssignedPodUID is the signed
+// assignment; RuntimePodUID is kubelet's actual static-Pod UID. Neither is
+// substituted for the guest-generated BootID.
 type PodClaims struct {
-	Version            int                `json:"version"`
-	BootID             string             `json:"boot_id"`
-	AssignedPodUID     string             `json:"assigned_pod_uid"`
-	AssignedWorkloadID string             `json:"assigned_workload_id,omitempty"`
-	RuntimePodUID      string             `json:"runtime_pod_uid"`
-	SandboxID          string             `json:"sandbox_id"`
-	Revision           uint64             `json:"revision"`
-	RuntimeExtensions  []string           `json:"runtime_extensions"`
-	Containers         []SandboxContainer `json:"containers"`
+	Version           int            `json:"version"`
+	BootID            string         `json:"boot_id"`
+	AssignedPodUID    string         `json:"assigned_pod_uid"`
+	RuntimePodUID     string         `json:"runtime_pod_uid"`
+	SandboxID         string         `json:"sandbox_id"`
+	Revision          uint64         `json:"revision"`
+	RuntimeExtensions []string       `json:"runtime_extensions"`
+	Containers        []PodContainer `json:"containers"`
 }
 
-// The Pod-only adapter preserves named source volumes, which the legacy node
-// callback omits. Host source paths are never serialized. Embedding retains
-// the existing observation field names; the explicit mounts member overrides
-// SandboxContainer.Mounts without emitting duplicate JSON keys.
-type podContainerWire struct {
-	SandboxContainer
-	Mounts []podMountWire `json:"mounts"`
-}
-type podMountWire struct {
-	allowlist.ObservedMount
-	Volume string `json:"volume,omitempty"`
-}
-type podClaimsWire struct {
-	Version            int                `json:"version"`
-	BootID             string             `json:"boot_id"`
-	AssignedPodUID     string             `json:"assigned_pod_uid"`
-	AssignedWorkloadID string             `json:"assigned_workload_id,omitempty"`
-	RuntimePodUID      string             `json:"runtime_pod_uid"`
-	SandboxID          string             `json:"sandbox_id"`
-	Revision           uint64             `json:"revision"`
-	RuntimeExtensions  []string           `json:"runtime_extensions"`
-	Containers         []podContainerWire `json:"containers"`
-}
-
-func podWire(p PodClaims) podClaimsWire {
-	w := podClaimsWire{
-		Version:            p.Version,
-		BootID:             p.BootID,
-		AssignedPodUID:     p.AssignedPodUID,
-		AssignedWorkloadID: p.AssignedWorkloadID,
-		RuntimePodUID:      p.RuntimePodUID,
-		SandboxID:          p.SandboxID,
-		Revision:           p.Revision,
-		RuntimeExtensions:  p.RuntimeExtensions,
-	}
-	for _, c := range p.Containers {
-		mounts := make([]podMountWire, len(c.Mounts))
-		for i, m := range c.Mounts {
-			mounts[i] = podMountWire{ObservedMount: m, Volume: m.Volume}
-		}
-		w.Containers = append(w.Containers, podContainerWire{SandboxContainer: c, Mounts: mounts})
-	}
-	return w
-}
-
-func (w podClaimsWire) claims() PodClaims {
-	p := PodClaims{Version: w.Version, BootID: w.BootID, AssignedPodUID: w.AssignedPodUID, AssignedWorkloadID: w.AssignedWorkloadID, RuntimePodUID: w.RuntimePodUID, SandboxID: w.SandboxID, Revision: w.Revision, RuntimeExtensions: w.RuntimeExtensions}
-	for _, c := range w.Containers {
-		var mounts []allowlist.ObservedMount
-		if c.Mounts != nil {
-			mounts = make([]allowlist.ObservedMount, len(c.Mounts))
-		}
-		for i, m := range c.Mounts {
-			mounts[i] = m.ObservedMount
-			mounts[i].Volume = m.Volume
-		}
-		c.SandboxContainer.Mounts = mounts
-		p.Containers = append(p.Containers, c.SandboxContainer)
-	}
-	return p
+// PodContainer is one admitted container of a pod CVM: its image digest.
+type PodContainer struct {
+	Digest string `json:"digest"`
 }
 
 // InstanceID names one guest boot and runtime sandbox. Its framing is JSON,
@@ -116,37 +56,25 @@ func (p PodClaims) InstanceID() string {
 }
 
 // Canonical returns the sole Pod claims wire encoding: encoding/json's compact
-// struct encoding, with stable field order and lexically ordered map keys.
-// Admissions are sorted bytewise by their compact JSON; the log stays ordered.
-// Invalid or incomplete image history is never repaired by normalization.
+// struct encoding with stable field order. Containers are sorted by digest;
+// the log stays ordered. Invalid or incomplete image history is never
+// repaired by normalization.
 func (p PodClaims) Canonical() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	wire := podWire(p)
-	type keyedContainer struct {
-		key       []byte
-		container podContainerWire
-	}
-	keyed := make([]keyedContainer, len(wire.Containers))
-	for i, c := range wire.Containers {
-		key, _ := json.Marshal(c)
-		keyed[i] = keyedContainer{key: key, container: c}
-	}
-	slices.SortFunc(keyed, func(a, b keyedContainer) int { return bytes.Compare(a.key, b.key) })
-	for i := range keyed {
-		wire.Containers[i] = keyed[i].container
-	}
-	b, err := json.Marshal(wire)
+	containers := slices.Clone(p.Containers)
+	slices.SortFunc(containers, func(a, b PodContainer) int { return strings.Compare(a.Digest, b.Digest) })
+	p.Containers = containers
+	b, err := json.Marshal(p)
 	if err != nil || len(b) > MaxPodClaimsBytes {
 		return nil, fmt.Errorf("invalid or oversized Pod claims")
 	}
 	return b, nil
 }
 
-// DecodePodClaims rejects alternate encodings, unknown fields, duplicate keys,
-// noncanonical nulls and lossy Unicode before hashing the submitted bytes.
-// Env.VariableDigests may be null to report unavailable per-variable evidence.
+// DecodePodClaims rejects alternate encodings, unknown fields, duplicate keys
+// and noncanonical nulls before hashing the submitted bytes.
 func DecodePodClaims(raw []byte) (PodClaims, error) {
 	var p PodClaims
 	if len(raw) > MaxPodClaimsBytes || strictjson.Validate(raw) != nil {
@@ -154,11 +82,9 @@ func DecodePodClaims(raw []byte) (PodClaims, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var wire podClaimsWire
-	if err := dec.Decode(&wire); err != nil {
+	if err := dec.Decode(&p); err != nil {
 		return PodClaims{}, fmt.Errorf("invalid Pod claims fields")
 	}
-	p = wire.claims()
 	canonical, err := p.Canonical()
 	if err != nil {
 		return PodClaims{}, err
@@ -179,9 +105,6 @@ func (p PodClaims) validate() error {
 			return fmt.Errorf("invalid Pod claims identity")
 		}
 	}
-	if p.AssignedWorkloadID != "" && armtls.ValidateWorkloadID(p.AssignedWorkloadID) != nil {
-		return fmt.Errorf("invalid Pod claims workload ID")
-	}
 	if len(p.RuntimeExtensions) == 0 || len(p.RuntimeExtensions) > armtls.MaxRuntimeExtensions || len(p.Containers) == 0 {
 		return fmt.Errorf("pod claims require bounded, nonempty admission history")
 	}
@@ -192,38 +115,17 @@ func (p PodClaims) validate() error {
 		}
 		measured[d] = true
 	}
-	observed, admissions := map[string]bool{}, map[string]bool{}
+	observed := map[string]bool{}
 	for _, c := range p.Containers {
-		if !types.IsCanonicalDigest(c.Digest) || len(c.Argv) == 0 || !c.Env.Valid() || c.Mounts == nil {
-			return fmt.Errorf("incomplete Pod container observation")
+		if !types.IsCanonicalDigest(c.Digest) {
+			return fmt.Errorf("invalid Pod container digest")
 		}
-		if !validPodStrings(c.Role) || !validPodStrings(c.Argv...) {
-			return fmt.Errorf("invalid Pod observation text")
-		}
-		for _, m := range c.Mounts {
-			if !validPodStrings(m.Destination, m.Volume, string(m.Class), string(m.Storage), m.HostSourceDigest, m.Provenance) {
-				return fmt.Errorf("invalid Pod mount observation text")
-			}
-		}
-		if admissions[c.Key()] {
-			return fmt.Errorf("duplicate Pod admission")
-		}
-		admissions[c.Key()] = true
 		observed[c.Digest] = true
 	}
 	if !maps.Equal(measured, observed) {
 		return fmt.Errorf("pod observations disagree with complete measurement journal")
 	}
 	return nil
-}
-
-func validPodStrings(values ...string) bool {
-	for _, value := range values {
-		if !utf8.ValidString(value) {
-			return false
-		}
-	}
-	return true
 }
 
 // PodReportData binds a fresh quote to one CSR and one complete canonical

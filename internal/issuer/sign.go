@@ -100,13 +100,6 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, subjectCN string, serial 
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, workloadExt)
 	}
-	if p.AssignedWorkloadID != "" {
-		assignedExt, err := armtls.MarshalAssignedWorkloadIDExtension(p.AssignedWorkloadID)
-		if err != nil {
-			return nil, "", nil, fmt.Errorf("sign csr: %w", err)
-		}
-		template.ExtraExtensions = append(template.ExtraExtensions, assignedExt)
-	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, c.Cert, p.CSR.PublicKey, c.Key)
 	if err != nil {

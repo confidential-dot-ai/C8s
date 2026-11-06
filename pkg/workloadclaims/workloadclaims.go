@@ -140,12 +140,6 @@ func SplitList(value string) []string {
 	return items
 }
 
-// AnnotationWorkloadID names the workload a pod belongs to: node mode selects a
-// SAN from it (get-cert), a pod CVM carries it as the tenant identity of its
-// credential claims (PodClaims.AssignedWorkloadID). It is control-plane input
-// that a leaf states only where something the relying party trusts signed it.
-const AnnotationWorkloadID = "confidential.ai/cw"
-
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
@@ -168,6 +162,17 @@ const (
 	MeshInboundPort  int32  = 15006
 	MeshHealthPort   int32  = 15021
 )
+
+// AnnotationWorkloadID names the workload a pod belongs to, confidential.ai/cw.
+// It is the allowlist workload name the pod's entries are looked up under, so
+// its grammar is the allowlist's (pkg/workloadname).
+const AnnotationWorkloadID = "confidential.ai/cw"
+
+// IsMeshPort reports whether port is one the mesh endpoint binds: a capture
+// port or the health port. None of them answers an application.
+func IsMeshPort(port int) bool {
+	return port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort)
+}
 
 // MeshProbePrefix is where the endpoint answers an application probe the
 // injector moved onto MeshHealthPort. The rendered path names the port and the
@@ -232,7 +237,7 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	if port < 1 || port > 65535 {
 		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
 	}
-	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+	if IsMeshPort(port) {
 		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
 	}
 	appPath := "/" + path
