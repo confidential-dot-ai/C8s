@@ -1,4 +1,4 @@
-"""Bounded backoff for throttled read-only Kubernetes requests."""
+"""Bounded backoff for transient read-only Kubernetes API failures."""
 import datetime as dt
 import email.utils
 import time
@@ -18,7 +18,7 @@ class ReadBackoff:
             try:
                 return self.opener.open(request, timeout=min(timeout, deadline-self.monotonic()))
             except urllib.error.HTTPError as error:
-                if error.code != 429 or attempt == 3:
+                if error.code not in (429, 502, 503, 504) or attempt == 3:
                     raise
                 delay = 2**attempt
                 hint = error.headers.get('Retry-After', '')

@@ -61,6 +61,13 @@ class APIBackpressure(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError): call()
         self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
 
+    def test_transient_gateway_read_requires_a_later_success(self):
+        for code in [502, 503, 504]:
+            error = urllib.error.HTTPError('https://example.invalid/api', code, 'unavailable', {}, io.BytesIO())
+            opener, pauses, _, call = self.retry([error, 'healthy'])
+            self.assertEqual(call(), 'healthy'); self.assertEqual(opener.calls, 2)
+            self.assertEqual(pauses, [1])
+
 class Safety(unittest.TestCase):
     def test_applied_policy_uses_delivery_wire_field(self):
         import run

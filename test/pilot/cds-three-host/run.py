@@ -447,7 +447,11 @@ def main():
     except BaseException as e:
         run.event('qualification-failed', failure=type(e).__name__, detail=str(e)); run.diagnostics(); raise
     finally:
-        run.cleanup(); run.health()
+        run.cleanup()
+        if 'nodes_before' in run.state and 'vmis_before' in run.state:
+            run.health()
+        else:
+            run.event('health-baseline-unavailable')
 
 
 if __name__ == '__main__': main()

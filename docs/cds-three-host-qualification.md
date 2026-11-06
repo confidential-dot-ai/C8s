@@ -71,8 +71,10 @@ expiry/replay checks in its actor. This does not change CDS authorization.
 Failed control requests retain safe authentication/clock diagnostics. Startup
 attempts are bounded to 30 seconds within the three-minute startup budget.
 The first guest's startup is checked before the remaining disks are prepared.
-Throttled Kubernetes reads use at most four attempts with bounded backoff and
-respect `Retry-After`; writes and other failures are not automatically retried.
+Kubernetes reads returning 429 or transient gateway errors (502/503/504) use at
+most four attempts with bounded backoff and respect `Retry-After`. Writes and
+nontransient failures are not automatically retried. The complete health
+preflight must succeed before resource creation.
 
 Agent attestation alone is not CDS readiness. A separate fixed startup phase
 checks guest DNS, reachability of the owned collateral proxy, and the actual

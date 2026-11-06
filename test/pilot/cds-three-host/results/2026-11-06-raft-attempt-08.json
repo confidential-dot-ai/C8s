@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 8,
+  "stage": "read-only-preflight",
+  "runner_commit": "139ee98f10d1dfaa15a2da80eb7b911f9197b7f8",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "resources_created": 0,
+  "guests_started": 0,
+  "finding": "A Cloud Host health read returned HTTP 503 before any resource creation. A subsequent independent read returned HTTP 200.",
+  "follow_up": "Apply bounded retries only to transient read failures; require the full health preflight to succeed and retain the original failure when no baseline was captured.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 0,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
