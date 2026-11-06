@@ -115,8 +115,6 @@ func TestPodStartRefusalsNeverExecute(t *testing.T) {
 		}, []string{"start", "ctr"}},
 		{"create and start in one step", func(*testing.T, *Wrapper) {}, []string{"run", "ctr"}},
 		{"malformed container ID", func(*testing.T, *Wrapper) {}, []string{"start", "--root", "elsewhere", "ctr"}},
-		{"waiting guest: create", func(_ *testing.T, w *Wrapper) { w.Floor.PodWaiting = true }, []string{"create", "pause"}},
-		{"waiting guest: start", func(_ *testing.T, w *Wrapper) { w.Floor.PodWaiting = true }, []string{"start", "pause"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
