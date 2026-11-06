@@ -259,40 +259,6 @@ echo "==> nri-image-policy installer finished; plugin healthy: $health"
 {{- end }}
 
 {{/*
-Policy-measurement script for a node-as-CVM (--cvm-mode=bare-metal), where the node image bakes the
-plugin binary, its containerd registration and the boot config — base included,
-whose RKE2 system digests only the image build resolves, and the CDS its launch
-staging pins. The policy-measurement switch is the one thing that config cannot
-carry, so the installer patches that key into it and restarts containerd when it
-changes.
-
-Caller dict: .root.
-*/}}
-{{- define "nri-image-policy.measurePoliciesScript" -}}
-{{- $root := .root -}}
-set -eu
-
-echo "==> nri-image-policy policy-measurement installer starting"
-
-# Components read this as $(NODE_IP) (cmdsutil.NodeIPPath) as a non-root
-# user; nri-node-ip.service on earlier node images publishes it 0600.
-if [ -f "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip" ]; then
-  chmod 0644 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip"
-fi
-
-result=$(/usr/local/bin/c8s nri-image-policy set-measure-policies \
-  --config "/host{{ include "nri-image-policy.hostConfigPath" $root }}" \
-  --measure-policies={{ $root.Values.nriImagePolicy.measurePolicies }})
-echo "policy measurement $result"
-
-restart_needed=0
-if [ "$result" = "updated" ]; then
-  restart_needed=1
-fi
-{{ include "nri-image-policy.restartAndWait" (dict "root" $root) }}
-{{- end }}
-
-{{/*
 Boot config (image-policy.yaml). Caller passes a dict with .root. Every plugin
 runs pull mode (polls CDS); allowlist.base is the boot base for CDS and
 any-argv bootstrap digests. Argv-pinned images are admitted by the served seed.

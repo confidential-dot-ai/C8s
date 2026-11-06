@@ -75,9 +75,6 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == setMeasurePoliciesVerb {
-		return runSetMeasurePolicies(os.Stdout, args[1:])
-	}
 	if len(args) > 0 && args[0] == pluginReadyVerb {
 		return runPluginReady(args[1:])
 	}

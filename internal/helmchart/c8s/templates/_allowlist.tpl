@@ -91,15 +91,6 @@
 {{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "imageEnv" (.Values.router.nginx.imageEnv | default dict)) -}}
 {{- end -}}
 {{- end -}}
-{{- /* kube-state-metrics self-entry: an upstream image the chart renders
-       only for a baked node, seeded from its pinned digest like nginx. */ -}}
-{{- if .Values.kubeStateMetrics.enabled -}}
-{{- $ksm := .Values.kubeStateMetrics -}}
-{{- if not $ksm.image.digest -}}
-{{- fail "kubeStateMetrics.image.digest is required: the seeded entry admits that image alone" -}}
-{{- end -}}
-{{- $_ := set $digests $ksm.image.digest (dict "image" (printf "%s@%s" $ksm.image.repository $ksm.image.digest) "entrypoint" $ksm.entrypoint "imageEnv" ($ksm.imageEnv | default dict)) -}}
-{{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
 
@@ -115,7 +106,6 @@
 {{- $templates = append $templates (list "volumed-teardown" "c8s.volumedTeardownPodSpec") -}}
 {{- end -}}
 {{- if .Values.router.enabled -}}{{- $templates = append $templates (list "router" "router.podSpec") -}}{{- end -}}
-{{- if .Values.kubeStateMetrics.enabled -}}{{- $templates = append $templates (list "kube-state-metrics" "kube-state-metrics.podSpec") -}}{{- end -}}
 {{- $pods := list -}}
 {{- range $t := $templates -}}
 {{- $spec := include (index $t 1) $ | fromYaml -}}
@@ -531,7 +521,6 @@
 {{- with get (get $c "image") "digest" -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- end -}}
 {{- with .Values.router.nginx.image.digest -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
-{{- if .Values.kubeStateMetrics.enabled -}}{{- $componentDigests = append $componentDigests (lower .Values.kubeStateMetrics.image.digest) -}}{{- end -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
@@ -804,9 +793,6 @@ null
 {{- $digest := required "nriImagePolicy.image.digest is required (the installer is admitted argv-pinned; a tag cannot be pinned)" $img.digest -}}
 {{- $ref := printf "%s@%s" $img.repository $digest -}}
 {{- $script := include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) -}}
-{{- if .Values.nriImagePolicy.baked -}}
-{{- $script = include "nri-image-policy.measurePoliciesScript" (dict "root" .) -}}
-{{- end -}}
 {{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
 {{- /* Platform setup scripts require host mounts; their executable and script argv stay pinned. */ -}}
 {{- $containers := list -}}
@@ -822,7 +808,7 @@ null
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
 {{- $prepScript := .Files.Get "files/scripts/containerd-prep.sh" -}}
 {{- $prepDigests := dict -}}
-{{- if and (eq .Values.nriImagePolicy.distro "rke2") (not .Values.nriImagePolicy.baked) -}}
+{{- if eq .Values.nriImagePolicy.distro "rke2" -}}
 {{- with .Values.nriImagePolicy.containerdPrep.image -}}
 {{- if .digest -}}{{- $_ := set $prepDigests .digest (printf "%s@%s" .repository .digest) -}}{{- end -}}
 {{- end -}}
@@ -841,7 +827,7 @@ null
 {{- $digests := list -}}
 {{- if and .Values.nriImagePolicy.enabled .Values.nriImagePolicy.image.digest -}}
 {{- $digests = append $digests .Values.nriImagePolicy.image.digest -}}
-{{- if and (eq .Values.nriImagePolicy.distro "rke2") (not .Values.nriImagePolicy.baked) .Values.nriImagePolicy.containerdPrep.image.digest -}}
+{{- if and (eq .Values.nriImagePolicy.distro "rke2") .Values.nriImagePolicy.containerdPrep.image.digest -}}
 {{- $digests = append $digests .Values.nriImagePolicy.containerdPrep.image.digest -}}
 {{- end -}}
 {{- end -}}

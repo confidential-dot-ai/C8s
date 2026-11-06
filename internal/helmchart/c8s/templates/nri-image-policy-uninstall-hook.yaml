@@ -1,7 +1,4 @@
-{{/* Not under .baked: the plugin, its binary and its containerd registration
-     belong to the node image, so removing them would strip a measured node of
-     the admission gate the chart never installed. */}}
-{{- if and .Values.nriImagePolicy.enabled .Values.nriImagePolicy.uninstall.enabled (not .Values.nriImagePolicy.baked) }}
+{{- if and .Values.nriImagePolicy.enabled .Values.nriImagePolicy.uninstall.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

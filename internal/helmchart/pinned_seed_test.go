@@ -150,22 +150,6 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// The node-as-CVM (baked) installer runs the policy-measurement script instead of the
-// install script; the seed must admit exactly that argv from the nri image.
-func TestChartPinnedSeedAdmitsBakedPinsArgv(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.baked=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	seed := renderedSeed(t, out)
-	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	for _, c := range allContainers(&worker) {
-		admitPlatformContainer(t, seed, baseNRIDigest, c)
-	}
-	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", "rm -rf /"})
-}
-
 // On rke2 the installer DaemonSet's containerd-prep initContainer runs the
 // busybox prep image under the prep script; the seed must admit that exact
 // argv and no other from that image.

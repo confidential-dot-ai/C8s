@@ -251,8 +251,8 @@ const defaultPullTimeout = 30 * time.Second
 const NodeIPFile = "node-ip"
 
 // DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, the file set-measure-policies patches, and the
-// measured policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+// resolves for this plugin, and the measured policy the node's runtime
+// wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -308,9 +308,8 @@ func CheckWorkerConfig(data []byte) error {
 	return nil
 }
 
-// parseConfig validates static configuration for the plugin and
-// set-measure-policies.
-// loadConfig completes runtime role bindings before validating them.
+// parseConfig validates static configuration for the plugin. loadConfig
+// completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -540,9 +539,6 @@ func (c *config) validateWorker() error {
 	}
 	if len(c.Mesh.ExemptNamespaces) > 0 {
 		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
-	}
-	if len(c.Mesh.Exits) > 0 {
-		return fmt.Errorf("worker requires no mesh.exits, got %v: a member's connections to them leave the mesh in the clear, for endpoints the control plane chooses", c.Mesh.Exits)
 	}
 	if c.Mesh.CredentialAttestationPort != 0 {
 		return errors.New("worker requires no mesh.credential_attestation_port: its credential clients verify through the node's attestation socket")
