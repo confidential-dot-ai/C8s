@@ -10,6 +10,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 )
 
 // One decree as a replica serves its record of them.
@@ -25,7 +26,7 @@ func TestDecreesPrintsEveryDecreeTheClusterApplied(t *testing.T) {
 	c := newReplicatedCluster(t)
 	o := decreesOptions{}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)},
+		cdsreplica.DecreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)},
 	})
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })
@@ -50,7 +51,7 @@ func TestDecreesRefusesARecordWithoutAnOperatorSignature(t *testing.T) {
 	tampered.Decree.BaseVersion = 99
 	o := decreesOptions{}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{recordOf(tampered, 4)},
+		cdsreplica.DecreesPath: []cdsha.DecreeRecord{recordOf(tampered, 4)},
 	})
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })
@@ -68,7 +69,7 @@ func TestDecreesJSONCarriesTheSignatureCheckOfEveryRecord(t *testing.T) {
 	tampered.Decree.BaseVersion = 99
 	o := decreesOptions{asJSON: true}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{
+		cdsreplica.DecreesPath: []cdsha.DecreeRecord{
 			recordOf(c.pinDecree(t, smp2Digest), 4),
 			recordOf(tampered, 5),
 		},
@@ -91,8 +92,8 @@ func TestDecreesReadsTheFirstReplicaThatAnswers(t *testing.T) {
 	c := newReplicatedCluster(t)
 	o := decreesOptions{}
 	replicas := c.replicasServing(t,
-		map[string]any{statusPath: c.serving("first", 4)},
-		map[string]any{decreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)}},
+		map[string]any{cdsreplica.StatusPath: c.serving("first", 4)},
+		map[string]any{cdsreplica.DecreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)}},
 	)
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })

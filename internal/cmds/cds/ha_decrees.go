@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 )
 
 type decreesOptions struct {
@@ -50,7 +51,7 @@ func (o decreesOptions) run(cmd *cobra.Command) error {
 }
 
 func (o decreesOptions) report(cmd *cobra.Command, c decreeConfig, replicas []replica) error {
-	address, body, err := signedStateOfAnyReplica(cmd.Context(), replicas, decreesPath, maxDecreeRecord)
+	address, body, err := signedStateOfAnyReplica(cmd.Context(), replicas, cdsreplica.DecreesPath, cdsreplica.MaxDecreeRecord)
 	if err != nil {
 		return err
 	}

@@ -49,9 +49,12 @@ type Options struct {
 	Measurements       []string
 	MeasurementsFile   string
 	MeasurementsConfig string
-	Timeout            time.Duration
-	OperatorKey        string
-	Insecure           bool
+	// ImagePolicy is the pin document itself, for a caller that holds it
+	// rather than a file; it is an alternative to MeasurementsConfig.
+	ImagePolicy []byte
+	Timeout     time.Duration
+	OperatorKey string
+	Insecure    bool
 
 	// Verifier verifies endpoint evidence. Nil defaults to LocalVerifier.
 	Verifier PinVerifier
@@ -130,7 +133,7 @@ func (o *Options) endpoint() (*url.URL, error) {
 	}
 	switch u.Scheme {
 	case "http":
-		if o.MeasurementsConfig != "" {
+		if o.imagePolicy().IsSet() {
 			return nil, fmt.Errorf("--image-policy-file requires https; plaintext cannot enforce its endpoint identity")
 		}
 		if !o.Insecure {
@@ -203,9 +206,9 @@ func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
 		if flags := pins.Flags(); len(flags) != 0 {
 			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches CDS, which is pinned to the configuration it runs on: pass --image-policy-file", strings.Join(flags, " and "))
 		}
-		return (cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}).Values()
+		return o.imagePolicy().Values()
 	}
-	source := cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}
+	source := o.imagePolicy()
 	if source.IsSet() {
 		return source.ValuesExcluding(pins)
 	}
@@ -218,10 +221,14 @@ func (o *Options) pinVerifier(pins refvalues.ReferenceValues) PinVerifier {
 	if verify == nil {
 		verify = LocalVerifier{}
 	}
-	if o.MeasurementsConfig == "" {
+	if !o.imagePolicy().IsSet() {
 		return verify
 	}
 	return ImagePinVerifier{Verifier: verify, Images: pins.Images}
+}
+
+func (o *Options) imagePolicy() cmdsutil.ImagePolicySource {
+	return cmdsutil.ImagePolicySource{File: o.MeasurementsConfig, JSON: string(o.ImagePolicy)}
 }
 
 // loadMeasurements combines Measurements and MeasurementsFile into the raw

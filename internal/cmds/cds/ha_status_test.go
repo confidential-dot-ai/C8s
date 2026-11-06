@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
@@ -97,8 +98,8 @@ func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
 	}
 	stuck.Stuck = "its allowlist database failed"
 	replicas := c.replicasServing(t,
-		map[string]any{statusPath: c.serving("first", 7)},
-		map[string]any{statusPath: stuck},
+		map[string]any{cdsreplica.StatusPath: c.serving("first", 7)},
+		map[string]any{cdsreplica.StatusPath: stuck},
 	)
 
 	printed, err := c.reportStatus(t, statusOptions{}, replicas)
@@ -120,7 +121,7 @@ func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
 func TestStatusQuotesWhatAReplicaReports(t *testing.T) {
 	c := newReplicatedCluster(t)
 	forging := c.serving(`first" serving=false version=0 `, 7)
-	replicas := c.replicasServing(t, map[string]any{statusPath: forging})
+	replicas := c.replicasServing(t, map[string]any{cdsreplica.StatusPath: forging})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
 	line := strings.TrimSpace(printed)
@@ -140,8 +141,8 @@ func TestStatusAcceptsReplicasThatHoldOneState(t *testing.T) {
 	leading.State = "Leader"
 	leading.RollSafe = &cdsha.RollSafety{OK: true}
 	replicas := c.replicasServing(t,
-		map[string]any{statusPath: leading},
-		map[string]any{statusPath: c.serving("second", 9)},
+		map[string]any{cdsreplica.StatusPath: leading},
+		map[string]any{cdsreplica.StatusPath: c.serving("second", 9)},
 	)
 
 	printed, err := c.reportStatus(t, statusOptions{}, replicas)
@@ -166,7 +167,7 @@ func TestStatusReportsNoSeatsFromAReplicaThatNamesNone(t *testing.T) {
 			Reason: "this replica holds no cluster",
 		},
 	}
-	replicas := c.replicasServing(t, map[string]any{statusPath: unjoined})
+	replicas := c.replicasServing(t, map[string]any{cdsreplica.StatusPath: unjoined})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
 	if !strings.Contains(printed, "voters=- non_voters=-") {
@@ -182,7 +183,7 @@ func TestStatusReportsTheCheckpointAndADivergence(t *testing.T) {
 		State: cdsha.Digests{}.State,
 	}
 	leading.Divergence = "member second holds another state at log index 12"
-	replicas := c.replicasServing(t, map[string]any{statusPath: leading})
+	replicas := c.replicasServing(t, map[string]any{cdsreplica.StatusPath: leading})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
 	if !strings.Contains(printed, `checkpoint="12:`) {
@@ -199,16 +200,16 @@ func TestStatusRefusesReplicasThatHoldDifferentState(t *testing.T) {
 	otherCA.CAFingerprint = "ca99"
 	for name, served := range map[string][]map[string]any{
 		"another version": {
-			{statusPath: c.serving("first", 7)},
-			{statusPath: c.serving("second", 8)},
+			{cdsreplica.StatusPath: c.serving("first", 7)},
+			{cdsreplica.StatusPath: c.serving("second", 8)},
 		},
 		"another mesh CA": {
-			{statusPath: c.serving("first", 7)},
-			{statusPath: otherCA},
+			{cdsreplica.StatusPath: c.serving("first", 7)},
+			{cdsreplica.StatusPath: otherCA},
 		},
 		"another cluster": {
-			{statusPath: c.serving("first", 7)},
-			{statusPath: cdsha.Status{
+			{cdsreplica.StatusPath: c.serving("first", 7)},
+			{cdsreplica.StatusPath: cdsha.Status{
 				ClusterID: "elsewhere",
 				ID:        "second",
 				Joined:    true,
@@ -226,7 +227,7 @@ func TestStatusRefusesReplicasThatHoldDifferentState(t *testing.T) {
 
 func TestStatusReportsAReplicaThatAnswersNothing(t *testing.T) {
 	c := newReplicatedCluster(t)
-	replicas := append(c.replicasServing(t, map[string]any{statusPath: c.serving("first", 7)}), c.unreachable())
+	replicas := append(c.replicasServing(t, map[string]any{cdsreplica.StatusPath: c.serving("first", 7)}), c.unreachable())
 
 	printed, err := c.reportStatus(t, statusOptions{}, replicas)
 	if err == nil {
@@ -239,7 +240,7 @@ func TestStatusReportsAReplicaThatAnswersNothing(t *testing.T) {
 
 func TestStatusJSONCarriesWhatEveryReplicaAnswered(t *testing.T) {
 	c := newReplicatedCluster(t)
-	replicas := c.replicasServing(t, map[string]any{statusPath: c.serving("first", 7)})
+	replicas := c.replicasServing(t, map[string]any{cdsreplica.StatusPath: c.serving("first", 7)})
 
 	printed, err := c.reportStatus(t, statusOptions{asJSON: true}, replicas)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -58,7 +59,7 @@ func TestPinPolicyWritesThePinDocumentTheDecreeMakes(t *testing.T) {
 		out:       out,
 		decreeOut: decreeOut,
 	}
-	replicas := c.replicasServing(t, map[string]any{pinDecreePath: decreed})
+	replicas := c.replicasServing(t, map[string]any{cdsreplica.PinDecreePath: decreed})
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })
 	if err != nil {
@@ -120,7 +121,7 @@ func TestPinPolicyRefusesADecreeTheConfigurationDoesNotAnswerFor(t *testing.T) {
 		}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			replicas := c.replicasServing(t, map[string]any{pinDecreePath: served})
+			replicas := c.replicasServing(t, map[string]any{cdsreplica.PinDecreePath: served})
 			report := func(cmd *cobra.Command) error { return pinPolicyOptions{}.report(cmd, c.decreed(t), replicas) }
 			if _, err := reading(t, report); err == nil {
 				t.Fatalf("pin-policy took a decree carrying %s as this cluster's", name)

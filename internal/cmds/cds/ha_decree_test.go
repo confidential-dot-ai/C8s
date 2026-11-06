@@ -23,6 +23,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -119,8 +120,8 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 			_, _ = w.Write(body)
 		})
 	}
-	handler.HandleFunc("POST "+decreesPath, func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxReplicaReport))
+	handler.HandleFunc("POST "+cdsreplica.DecreesPath, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, cdsreplica.MaxReport))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -333,7 +334,7 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	c := newOperatorCluster(t)
 	o := c.options(t)
 	o.baseVersion = 0
-	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
+	target := c.replicaServing(t, map[string]any{cdsreplica.StatusPath: c.unjoined()})
 	err := signing(t, func(cmd *cobra.Command) error {
 		return genesisOptions{
 			decreeOptions: o,
@@ -512,8 +513,8 @@ func TestAdmitDecreeTakesItsImagesFromTheAppliedPinDecree(t *testing.T) {
 	o := c.options(t)
 	o.baseVersion = 0
 	applied := c.pinDecree(t, smp2Digest)
-	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
-	serving := c.replicaServing(t, map[string]any{pinDecreePath: applied})
+	target := c.replicaServing(t, map[string]any{cdsreplica.StatusPath: c.unjoined()})
+	serving := c.replicaServing(t, map[string]any{cdsreplica.PinDecreePath: applied})
 	err := signing(t, func(cmd *cobra.Command) error {
 		return admitOptions{decreeOptions: o, target: target, joined: serving.address}.run(cmd)
 	})
@@ -555,8 +556,8 @@ func TestAdmitRefusesWhatTheServingReplicaCannotProve(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o := c.options(t)
 			o.baseVersion = 0
-			target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
-			serving := c.replicaServing(t, map[string]any{pinDecreePath: tc.served})
+			target := c.replicaServing(t, map[string]any{cdsreplica.StatusPath: c.unjoined()})
+			serving := c.replicaServing(t, map[string]any{cdsreplica.PinDecreePath: tc.served})
 			err := signing(t, func(cmd *cobra.Command) error {
 				return admitOptions{decreeOptions: o, target: target, joined: serving.address}.run(cmd)
 			})
@@ -593,35 +594,6 @@ func TestRecoverNeedsTheBreakGlassAcknowledgement(t *testing.T) {
 	}
 	if _, statErr := os.Stat(o.out); statErr == nil {
 		t.Fatal("the refused decree was written anyway")
-	}
-}
-
-// A replica is named as an address, and the port every CDS serves the operator
-// on is the default.
-func TestAReplicaAddressNamesAHostAndAPort(t *testing.T) {
-	for _, tc := range []struct {
-		address string
-		host    string
-		port    uint16
-	}{
-		{"10.0.0.5", "10.0.0.5", replicaPort},
-		{"cds-1.example.org", "cds-1.example.org", replicaPort},
-		{"127.0.0.1:8441", "127.0.0.1", 8441},
-	} {
-		t.Run(tc.address, func(t *testing.T) {
-			host, port, err := splitReplicaAddress(tc.address)
-			if err != nil || host != tc.host || port != tc.port {
-				t.Fatalf("host=%q port=%d error=%v", host, port, err)
-			}
-		})
-	}
-	for _, address := range []string{"10.0.0.5:http", "[::1", "a:b:c"} {
-		if _, _, err := splitReplicaAddress(address); err == nil {
-			t.Fatalf("%q named a replica", address)
-		}
-	}
-	if _, err := resolveReplica(context.Background(), "127.0.0.1:8443"); err != nil {
-		t.Fatalf("a replica at a literal address was refused: %v", err)
 	}
 }
 

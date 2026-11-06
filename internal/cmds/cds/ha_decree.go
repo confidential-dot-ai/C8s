@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -685,7 +686,7 @@ func newAdmitCmd() *cobra.Command {
 			"decree the cluster applied, until the decree expires; each restart of it needs a new decree.",
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindTargetFlags(cmd, &o.target)
-	cmd.Flags().StringVar(&o.joined, "cluster", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica serving the cluster, whose applied pin decree names the images (REQUIRED)")
+	cmd.Flags().StringVar(&o.joined, "cluster", "", "<host>[:"+strconv.Itoa(cdsreplica.Port)+"] of a replica serving the cluster, whose applied pin decree names the images (REQUIRED)")
 	requireFlags(cmd, "cluster")
 	return cmd
 }
@@ -717,7 +718,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 // as the decree the cluster applied. An Admit names only those, so it cannot
 // widen what the cluster already runs.
 func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*cdsdecree.PinDocument, error) {
-	object, _, err := o.servingReplica().answer(ctx, pinDecreePath, maxReplicaReport)
+	object, _, err := o.servingReplica().answer(ctx, cdsreplica.PinDecreePath, cdsreplica.MaxReport)
 	if err != nil {
 		return nil, err
 	}

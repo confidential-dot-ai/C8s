@@ -11,6 +11,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsreplica"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
@@ -53,7 +54,7 @@ func (o pinPolicyOptions) run(cmd *cobra.Command) error {
 }
 
 func (o pinPolicyOptions) report(cmd *cobra.Command, c decreeConfig, replicas []replica) error {
-	address, object, err := signedStateOfAnyReplica(cmd.Context(), replicas, pinDecreePath, maxReplicaReport)
+	address, object, err := signedStateOfAnyReplica(cmd.Context(), replicas, cdsreplica.PinDecreePath, cdsreplica.MaxReport)
 	if err != nil {
 		return err
 	}
