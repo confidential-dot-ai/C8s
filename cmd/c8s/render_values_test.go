@@ -191,40 +191,6 @@ func setCvmModeForTest(t *testing.T, mode string) {
 	t.Cleanup(func() { installCvmMode, installHardwarePlatform = prev, prevPlat })
 }
 
-// buildValueArgs must assume nothing the operator did not pass — like install,
-// an unset --distro (distro == "") emits no distro keys, leaving the chart
-// default to stand; a set --distro configures the NRI installer.
-func TestBuildValueArgsOmitsDistroWhenUnset(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(flagCvmMode, "bare-metal", "")
-	setCvmModeForTest(t, "bare-metal")
-
-	// Isolate the distro logic from the crane digest path (which needs the
-	// binary on PATH); this test is about what the builder assumes, not digests.
-	prev := installResolveDigests
-	installResolveDigests = false
-	defer func() { installResolveDigests = prev }()
-
-	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", "", appendResolvedDigestArgs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slices.ContainsFunc(args, func(a string) bool {
-		return a == "nriImagePolicy.distro=" ||
-			a == "nriImagePolicy.distro=k8s"
-	}) {
-		t.Fatalf("unset distro should emit no distro keys, got %v", args)
-	}
-
-	args, err = buildValueArgs(context.Background(), cmd, "", nil, "main", "rke2", appendResolvedDigestArgs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !slices.Contains(args, "nriImagePolicy.distro=rke2") {
-		t.Fatalf("set distro should plumb the NRI component key, got %v", args)
-	}
-}
-
 // On the no-digest path a numeric or zero-padded image tag (a date or build-id
 // tag) must survive as a string: buildValueArgs emits .tag via --set-string, so
 // coerce never int-coerces it (0640 -> 640 would pin the wrong image).
@@ -238,7 +204,7 @@ func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
 
 	args, err := buildValueArgs(context.Background(), cmd, "",
 		[]c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds"}},
-		"0640", "", appendResolvedDigestArgs)
+		"0640", appendResolvedDigestArgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +239,7 @@ func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
 
 	got, err := buildValueArgs(context.Background(), cmd, "",
 		[]c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds"}},
-		"main", "", stubResolver)
+		"main", stubResolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -378,7 +344,7 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	installHardwarePlatform = "sev-snp"
 	installOperatorKeys = writeTestOperatorKeys(t)
 
-	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", "rke2", appendResolvedDigestArgs)
+	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", appendResolvedDigestArgs)
 	if err != nil {
 		t.Fatalf("buildValueArgs: %v", err)
 	}

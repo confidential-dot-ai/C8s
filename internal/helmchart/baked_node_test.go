@@ -123,7 +123,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 
 func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set-string", "nriImagePolicy.distro=rke2")
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

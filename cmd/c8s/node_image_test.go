@@ -387,30 +387,6 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 	}
 }
 
-// Nothing the measured render carries depends on the host containerd layout:
-// nriImagePolicy.distro configures the admission plugin's installer, which
-// this render leaves to the image. So the same objects come out whatever the
-// value says.
-func TestNodeImageRenderHoldsNoDistroDependentObject(t *testing.T) {
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not installed")
-	}
-	// The worker image build's render: a node-image render with the digests
-	// that build resolves.
-	cfg := workerRenderConfig()
-	rendered := map[string][]byte{}
-	for _, distro := range []string{"k8s", "rke2"} {
-		out, err := renderNodeImageChart(context.Background(), cfg, []string{"--set-string", "nriImagePolicy.distro=" + distro})
-		if err != nil {
-			t.Fatalf("render with distro %s: %v", distro, err)
-		}
-		rendered[distro] = out
-	}
-	if !bytes.Equal(rendered["k8s"], rendered["rke2"]) {
-		t.Error("the measured render differs between containerd layouts, so it carries an object the host distro configures")
-	}
-}
-
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
 		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {

@@ -191,7 +191,7 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 
 // The process check can misread a process tree it was not written for. When
 // the plugin's own health socket still answers, the installer must not restart
-// the runtime (on RKE2, the whole rke2 unit) on the check's word alone.
+// the runtime on the check's word alone.
 func TestChartNriInstallerTrustsHealthSocketOverProcessCheck(t *testing.T) {
 	f := newDeadPluginFixture(t)
 	f.healthAnswers = true

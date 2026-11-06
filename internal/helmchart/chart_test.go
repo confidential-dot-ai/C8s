@@ -3165,63 +3165,57 @@ func TestChartNoRuntimeClassOnRouter(t *testing.T) {
 	}
 }
 
-// TestChartNriImagePolicyDistroSelectsContainerdLayout: nriImagePolicy.distro
-// drives the host containerd directory the installer binds and the patch
-// strategy. The drop-in file path itself is discovered at runtime (the config
-// file name varies), so it is not asserted here — only the dir, mode, restart.
-func TestChartNriImagePolicyDistroSelectsContainerdLayout(t *testing.T) {
+// The installer binds the containerd config directory, socket and restart the
+// chart defaults, and a release that moved them is bound where it says.
+func TestChartNriImagePolicyBindsContainerdLayout(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		distro      string
+		name        string
+		args        []string
 		wantDir     string
-		wantMode    string
+		wantSocket  string
 		wantRestart string
 	}{
 		{
-			distro:      "k8s",
+			name:        "chart defaults",
 			wantDir:     "/etc/containerd",
-			wantMode:    "patch",
+			wantSocket:  "/run/containerd/containerd.sock",
 			wantRestart: "systemctl restart containerd",
 		},
 		{
-			distro:      "rke2",
-			wantDir:     "/var/lib/rancher/rke2/agent/etc/containerd",
-			wantMode:    "dropin",
-			wantRestart: "if systemctl is-active --quiet rke2-server; then systemctl restart rke2-server; else systemctl restart rke2-agent; fi",
+			name: "a containerd configured elsewhere",
+			args: []string{
+				"--set-string", "nriImagePolicy.containerd.configDir=/etc/k0s/containerd.d",
+				"--set-string", "nriImagePolicy.containerd.socket=/run/k0s/containerd.sock",
+				"--set-string", "nriImagePolicy.containerd.restartCommand=systemctl restart k0sworker",
+			},
+			wantDir:     "/etc/k0s/containerd.d",
+			wantSocket:  "/run/k0s/containerd.sock",
+			wantRestart: "systemctl restart k0sworker",
 		},
 	} {
-		t.Run(tc.distro, func(t *testing.T) {
-			out, err := helmTemplate(t, "--set-string", "nriImagePolicy.distro="+tc.distro)
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			for _, name := range []string{"c8s-nri-image-policy-worker"} {
-				ds := renderedDaemonSet(t, out, name)
-				if got := hostPathVolume(t, ds, "host-containerd-config"); got != tc.wantDir {
-					t.Fatalf("%s distro %q: host-containerd-config hostPath = %q, want %q", name, tc.distro, got, tc.wantDir)
-				}
-				script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-				for _, want := range []string{
-					"CONTAINERD_DIR=/host" + tc.wantDir,
-					`CONTAINERD_CONFIG_MODE="` + tc.wantMode + `"`,
-					`RESTART_COMMAND="` + tc.wantRestart + `"`,
-				} {
-					if !strings.Contains(script, want) {
-						t.Fatalf("%s distro %q: install script missing %q\n%s", name, tc.distro, want, script)
-					}
+			ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+			if got := hostPathVolume(t, ds, "host-containerd-config"); got != tc.wantDir {
+				t.Fatalf("host-containerd-config hostPath = %q, want %q", got, tc.wantDir)
+			}
+			script := strings.Join(containerArgs(t, &ds, "install"), "\n")
+			for _, want := range []string{
+				"CONTAINERD_DIR=/host" + tc.wantDir,
+				`RESTART_COMMAND="` + tc.wantRestart + `"`,
+			} {
+				if !strings.Contains(script, want) {
+					t.Fatalf("install script missing %q\n%s", want, script)
 				}
 			}
+			if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Containerd.Socket; got != tc.wantSocket {
+				t.Errorf("boot config containerd socket = %q, want %q", got, tc.wantSocket)
+			}
 		})
-	}
-}
-
-// TestChartNriImagePolicyRejectsUnknownDistro: an unsupported distro must fail
-// the render, not silently fall through to a wrong containerd layout.
-func TestChartNriImagePolicyRejectsUnknownDistro(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set-string", "nriImagePolicy.distro=openshift")
-	if err == nil {
-		t.Fatalf("helm template succeeded for an unknown nriImagePolicy.distro, want failure\n%s", out)
 	}
 }
 
@@ -3229,10 +3223,10 @@ func TestChartNriImagePolicyRejectsUnknownDistro(t *testing.T) {
 // host containerd restart to systemd-run (host PID 1), not run it in this pod's
 // process tree. A restart via `nsenter ... sh -c "$RESTART_COMMAND"` is killed
 // with the pod when containerd bounces, which on a sole control-plane node
-// interrupts the rke2 bootstrap and wedges it.
+// interrupts the cluster bootstrap and wedges it.
 func TestChartNriImagePolicyDetachesContainerdRestart(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set-string", "nriImagePolicy.distro=rke2")
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -3246,66 +3240,6 @@ func TestChartNriImagePolicyDetachesContainerdRestart(t *testing.T) {
 	if strings.Contains(script, `-p -- sh -c "$RESTART_COMMAND"`) {
 		t.Fatalf("install script still runs RESTART_COMMAND in-pod (not detached)\n%s", script)
 	}
-}
-
-// TestChartNriImagePolicyContainerdPrepInitContainer: on rke2 the installer
-// DaemonSet must run a containerd-prep initContainer before `install`, so the
-// drop-in import exists by the time `install` writes its drop-in. On k8s the
-// installer patches config.toml in place, so the prep must be absent.
-func TestChartNriImagePolicyContainerdPrepInitContainer(t *testing.T) {
-	t.Parallel()
-	t.Run("rke2", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set-string", "nriImagePolicy.distro=rke2")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		for _, name := range []string{"c8s-nri-image-policy-worker"} {
-			ds := renderedDaemonSet(t, out, name)
-			names := containerNames(ds.Spec.Template.Spec.InitContainers)
-			prepIdx, installIdx := slices.Index(names, "containerd-prep"), slices.Index(names, "install")
-			if prepIdx < 0 {
-				t.Fatalf("rke2: %s missing containerd-prep initContainer; have %v", name, names)
-			}
-			// initContainers run in order: prep must precede install.
-			if prepIdx > installIdx {
-				t.Fatalf("%s: containerd-prep must run before install; initContainers=%v", name, names)
-			}
-			env := initContainerEnv(t, ds, "containerd-prep")
-			if got := env["HOST_CONTAINERD_DIR"]; got != "/var/lib/rancher/rke2/agent/etc/containerd" {
-				t.Errorf("%s HOST_CONTAINERD_DIR = %q, want the rke2 containerd dir", name, got)
-			}
-		}
-	})
-
-	t.Run("k8s", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set-string", "nriImagePolicy.distro=k8s")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		for _, name := range []string{"c8s-nri-image-policy-worker"} {
-			ds := renderedDaemonSet(t, out, name)
-			if _, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "containerd-prep"); ok {
-				t.Fatalf("k8s: %s must not carry a containerd-prep initContainer", name)
-			}
-		}
-	})
-}
-
-// initContainerEnv returns the env name->value map of a DaemonSet init container.
-func initContainerEnv(t *testing.T, ds appsv1.DaemonSet, name string) map[string]string {
-	t.Helper()
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name != name {
-			continue
-		}
-		env := make(map[string]string, len(c.Env))
-		for _, e := range c.Env {
-			env[e.Name] = e.Value
-		}
-		return env
-	}
-	t.Fatalf("DaemonSet has no init container %q", name)
-	return nil
 }
 
 // hostPathVolume returns the hostPath of the named volume on a DaemonSet.
@@ -3786,8 +3720,8 @@ func TestChartCertDependentPodStrategies(t *testing.T) {
 // TestChartRouterHostPort covers the router.hostPort edge toggle. The default
 // publishes nginx's TLS listener on the node's host port 443 (the in-pod
 // listener stays on the unprivileged nginx.httpsPort). hostPort.enabled=false
-// omits it so the pod schedules where another controller already owns 443
-// (e.g. RKE2's bundled ingress-nginx). A custom host port binds independently
+// omits it so the pod schedules where another controller already owns 443.
+// A custom host port binds independently
 // of the listener port.
 func TestChartRouterHostPort(t *testing.T) {
 	t.Parallel()
@@ -4839,64 +4773,6 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	}
 }
 
-// The nri-image-policy containerd-prep init container (rke2 only) runs busybox,
-// which is not a c8sComponent, so it is never in the derive set. The host plugin
-// enforces every container node-wide, so unless busybox is self-seeded a
-// DaemonSet re-roll self-deadlocks ("image not in allowlist: busybox"). The seed
-// admits it argv-pinned (the prep script verbatim) — never by digest alone, in
-// neither the seed nor the worker's base — and drops the entry on k8s
-// where the init container is not rendered.
-func TestChartAllowlistsContainerdPrepOnRke2(t *testing.T) {
-	t.Parallel()
-	const (
-		prepDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000c1"
-		prepRepo   = "example.test/busybox"
-	)
-	t.Run("rke2: argv-pinned entry present", func(t *testing.T) {
-		out, err := helmTemplate(t,
-			"--set-string", "nriImagePolicy.distro=rke2",
-			"--set-string", "nriImagePolicy.containerdPrep.image.repository="+prepRepo,
-			"--set-string", "nriImagePolicy.containerdPrep.image.digest="+prepDigest,
-		)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		wantRef := prepRepo + "@" + prepDigest
-
-		seed := renderedSeed(t, out)
-		if got := seedLabel(seed, prepDigest); got != wantRef {
-			t.Errorf("containerd-prep seed entry = %q, want %q\nseed: %v", got, wantRef, seed.Workloads)
-		}
-		// The entry admits exactly the rendered init container's argv.
-		worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-		prep, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "containerd-prep")
-		if !ok {
-			t.Fatalf("rke2 render missing the containerd-prep initContainer")
-		}
-		admitArgvs(t, seed, prepDigest, effectiveArgv(prep))
-
-		cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-		if _, ok := baseImages(cfg.Allowlist.Base)[prepDigest]; ok {
-			t.Errorf("worker base carries the busybox prep digest — the argv pin would be bypassed\nfloor: %v", baseImages(cfg.Allowlist.Base))
-		}
-	})
-
-	t.Run("k8s: no self-entry", func(t *testing.T) {
-		out, err := helmTemplate(t,
-			"--set-string", "nriImagePolicy.distro=k8s",
-			"--set-string", "nriImagePolicy.containerdPrep.image.repository="+prepRepo,
-			"--set-string", "nriImagePolicy.containerdPrep.image.digest="+prepDigest,
-		)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		seed := renderedSeed(t, out)
-		if _, ok := seedEntry(seed, prepDigest); ok {
-			t.Errorf("containerd-prep self-entry present on k8s (init container not rendered): %v", seed.Workloads)
-		}
-	})
-}
-
 // installerBootConfig is a typed view of the image-policy.yaml the installer
 // writes. It mirrors the fields of the plugin's own config
 // (internal/cmds/nri-image-policy/config.go, which is unexported) needed by the
@@ -4918,6 +4794,9 @@ type installerBootConfig struct {
 		ExemptNamespaces   []string `yaml:"exempt_namespaces"`
 		ExemptSnapshotPath string   `yaml:"exempt_snapshot_path"`
 	} `yaml:"policy"`
+	Containerd struct {
+		Socket string `yaml:"socket"`
+	} `yaml:"containerd"`
 }
 
 // baseImages indexes a boot config's base allowlist by digest: digest ->
@@ -5521,7 +5400,6 @@ func TestChartVolumedKubeletRoot(t *testing.T) {
 		want string
 	}{
 		{"default", nil, "/var/lib/kubelet"},
-		{"rke2 distro keeps the default", []string{"--set-string", "nriImagePolicy.distro=rke2"}, "/var/lib/kubelet"},
 		{"explicit wins", []string{
 			"--set-string", "volumed.hostPaths.kubeletRoot=/custom/kubelet",
 		}, "/custom/kubelet"},
@@ -6055,6 +5933,7 @@ func TestChartRemovedValuesKeepTheirMigrationMessage(t *testing.T) {
 		{"tee-proxy", "teeProxy.hostPort.enabled=true", "router.hostPort"},
 		{"the baked installer", "nriImagePolicy.baked=true", "nriImagePolicy.enabled=false"},
 		{"kube-state-metrics", "kubeStateMetrics.enabled=true", "kube-state-metrics"},
+		{"the host distro", "nriImagePolicy.distro=rke2", "nriImagePolicy.containerd.configDir"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, "--set", tc.set)

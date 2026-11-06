@@ -23,7 +23,7 @@ import (
 func hostReleaseValuesFile(t *testing.T) string {
 	t.Helper()
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled": true, "distro": "k8s",
+		"enabled":        true,
 		"containerdPrep": map[string]any{"image": map[string]any{"repository": "busybox", "digest": testDigest}},
 	}}
 	data, err := json.Marshal(tree)
@@ -271,8 +271,8 @@ func TestUninstallDeleteCRDsAndNamespace(t *testing.T) {
 }
 
 func TestUninstallHostSweepOnlyUsesChartDefaults(t *testing.T) {
-	// Release already gone: config comes from the embedded chart defaults and
-	// the detected distro, and the helm uninstall step is skipped entirely.
+	// Release already gone: config comes from the embedded chart defaults,
+	// and the helm uninstall step is skipped entirely.
 	s := newUninstallStubs(t, "", "", false)
 	if err := runC8s(t, "uninstall", "--host-sweep-only"); err != nil {
 		t.Fatalf("uninstall --host-sweep-only: %v", err)
@@ -480,8 +480,8 @@ func hostReleaseValuesNRIFile(t *testing.T, imageRef string) string {
 	t.Helper()
 	repo, digest, _ := strings.Cut(imageRef, "@")
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled": true, "distro": "k8s",
-		"image": map[string]any{"repository": repo, "digest": digest},
+		"enabled": true,
+		"image":   map[string]any{"repository": repo, "digest": digest},
 	}}
 	data, err := json.Marshal(tree)
 	if err != nil {

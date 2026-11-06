@@ -34,8 +34,6 @@ func validateOperatorKeysFile(path string) error {
 	return nil
 }
 
-var renderValuesDistro string
-
 // renderValuesCmd emits the resolved Helm values an install would apply, as a
 // values.yaml, without touching a cluster. It runs the same value computation
 // as `c8s install` — resolve each component image tag to its registry digest
@@ -45,9 +43,8 @@ var renderValuesDistro string
 //
 // This is the GitOps seam: a Flux HelmRelease (or any chart consumer) can
 // valuesFrom a bundle produced here instead of recomputing digests and device
-// mappings itself. The cluster-only steps of install are dropped: there is no
-// node-distro autodetection (pass --distro), no pull-secret preflight, and no
-// namespace apply.
+// mappings itself. The cluster-only steps of install are dropped: no
+// pull-secret preflight and no namespace apply.
 //
 // What it does NOT emit: the per-cluster overrides a consumer layers on top
 // (router SAN/LB IP/CORS, nodeSelectors) and anything the chart
@@ -65,10 +62,9 @@ consumer already owns (webhook cert settings, router, nodeSelectors, …) is not
 emitted; layer it in the consuming HelmRelease values.
 
 Use it to feed a GitOps consumer: a Flux HelmRelease can valuesFrom the bundle
-this produces rather than recomputing digests and device mappings. Unlike
-install, the host distro is not autodetected — pass --distro to pin it, or leave
-it unset to keep the chart default. No preflight checks run and no namespace is
-applied. --operator-keys embeds the key file's PEM content as cds.operatorKeys
+this produces rather than recomputing digests and device mappings. No preflight
+checks run and no namespace is applied. --operator-keys embeds the key file's
+PEM content as cds.operatorKeys
 (the chart value is the content itself, never a file path). The chart refuses
 to render without the CDS this cluster trusts (--cds-address and --cds-pin),
 unless the consuming values set cds.address and cds.measurementsConfig, or
@@ -101,15 +97,7 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 			return fmt.Errorf("read chart components: %w", err)
 		}
 
-		// Like install, assume nothing the operator did not ask for: distro is
-		// emitted only when --distro is passed (install autodetects it from the
-		// cluster; render-values has no cluster, so an unset --distro leaves the
-		// chart default to stand, exactly as install's -f path does).
-		distro := ""
-		if cmd.Flags().Changed("distro") {
-			distro = renderValuesDistro
-		}
-		setArgs, err := buildValueArgs(cmd.Context(), cmd, chartPath, components, resolveImageTag(), distro, appendResolvedDigestArgs)
+		setArgs, err := buildValueArgs(cmd.Context(), cmd, chartPath, components, resolveImageTag(), appendResolvedDigestArgs)
 		if err != nil {
 			return err
 		}
@@ -139,13 +127,18 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 type digestResolver func(ctx context.Context, chartPath string, setArgs []string, imageTag string, components []c8sComponent) ([]string, error)
 
 // buildValueArgs assembles the helm --set/--set-string value args shared by
-// install and render-values. distro is passed in (install autodetects it from
-// the cluster; render-values takes it from --distro) so the builder itself
-// never touches a cluster. resolveDigests is injected (see digestResolver). The
-// returned slice is value args only — install prepends the `upgrade --install
-// <release> <chart>` verb and appends -f / wait flags, render-values converts
-// these to a values tree.
-func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, components []c8sComponent, imageTag, distro string, resolveDigests digestResolver) ([]string, error) {
+// install and render-values. resolveDigests is injected (see digestResolver).
+// The returned slice is value args only — install prepends the `upgrade
+// --install <release> <chart>` verb and appends -f / wait flags, render-values
+// converts these to a values tree.
+func buildValueArgs(
+	ctx context.Context,
+	cmd *cobra.Command,
+	chartPath string,
+	components []c8sComponent,
+	imageTag string,
+	resolveDigests digestResolver,
+) ([]string, error) {
 	var setArgs []string
 	// Chart has no default image tags. When digests are resolved (below) they
 	// pin the image and the chart prefers digest over tag, so emitting both is
@@ -160,12 +153,6 @@ func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, c
 		}
 	}
 	setArgs = appendInstallCRDArgs(setArgs, installCRDs)
-	// Empty distro means "don't plumb it" — both commands leave the chart
-	// default to stand: install when -f is given, render-values when --distro
-	// is unset (the values-file / chart owns nriImagePolicy.distro).
-	if distro != "" {
-		setArgs = appendDistroInstallArgs(setArgs, distro)
-	}
 	// --cvm-mode is required and validated in RunE, so always emit the mode's
 	// teeDevices/attestation-api values (and the --hardware-platform propagation).
 	setArgs, err := appendCvmModeInstallArgs(setArgs, installCvmMode, installHardwarePlatform)
@@ -389,11 +376,9 @@ func setListElem(m map[string]any, fullPath, key string, idx int, value any) err
 
 func init() {
 	// render-values reuses the install value flags (same vars, same semantics)
-	// so the two stay in lockstep; it adds --distro in place of install's
-	// cluster autodetection and drops the cluster-only flags (namespace,
+	// so the two stay in lockstep; it drops the cluster-only flags (namespace,
 	// release, wait, values files).
 	renderValuesCmd.Flags().BoolVar(&installCRDs, "install-crds", true, "emit values for chart CRDs (false sets statusMirror.enabled=false, matching install --install-crds=false)")
-	renderValuesCmd.Flags().StringVar(&renderValuesDistro, "distro", "", "host Kubernetes distro (k8s | rke2) — install autodetects this from the cluster; render-values has no cluster, so pass it explicitly when you need it pinned. Unset leaves the chart default")
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, quotes through ConfigFS TSM at /sys/kernel/config). Under --cvm-mode=aks it picks the Azure vTPM evidence shape: sev-snp selects az-snp, tdx selects az-tdx")
