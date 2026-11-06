@@ -45,8 +45,9 @@ independent read-only absence audit. CI and shared production releases are not
 used. The [completed Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
 passed all 60 phases on three distinct TDX workers, including both faults and
 all three image replacements. The independent cleanup audit confirmed all 47
-resource paths absent. The direct-state comparison remains incomplete after the
-worker network regression described below; no direct-state pass is claimed.
+resource paths absent. The direct-state comparison has passed its initial
+workload and single-guest isolation, but remains incomplete after the metadata
+status-observer failure described below; no complete direct-state pass is claimed.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
@@ -264,3 +265,25 @@ adapter. An earlier repeat failed an independent-write batch without retaining
 individual outcomes; that failure remains unexplained. The successful repeat
 changed only runner diagnostics. Its 29 resources were removed and 32 paths
 independently confirmed absent before resuming the unchanged direct-state run.
+
+[Direct-state attempt 3](../test/pilot/cds-three-host/results/2026-11-06-direct-attempt-03.json)
+passed 22 phases, including native startup on all three workers, the 24-issuance /
+24-secret-release burst in 26.910 seconds, isolated-guest refusal, majority
+service and revocation, and recovery with the same CA and replay rejection.
+All six disk hashes matched without upload retries. Quorum-loss observation then
+failed before CDS's refusal phase: the leader logged that it stepped down, but
+one member's status tunnel was unavailable in the subsequent diagnostic and its
+forward log reported a lost connection. Fault-time member responses were not
+retained, so the complete observation failure cannot be reconstructed. No rolling
+replacement was reached. All 60 resources were removed and 72 paths independently
+confirmed absent. One existing probe interval lost three packets; subsequent
+samples, including the fault window, were clean.
+
+Before the next metadata fault, the controller closes its three old status
+tunnels, reopens them against the exact owned Pod UIDs, and verifies a healthy
+three-member view in the original cluster. The unchanged 20-second quorum-loss
+observation budget now retains every sample and requires all three verified
+members to answer with no leader. Unavailable or wrong members cannot satisfy
+that check. Only read-only observation connections change; guest images, client,
+workload, CDS deadlines and fault policy are unchanged. Local regressions cover
+unknown responses, wrong identities, late results and scoped tunnel cleanup.

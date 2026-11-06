@@ -69,6 +69,7 @@ class Run(metadata.Run):
             self.save()
         need(self.state['backend'] == args.backend, 'backend differs from journal')
         self.guests = {}; self.tunnels = {}; self.consoles = {}; self.etcd = None
+        self.metadata_status_forwards = {}; self.metadata_members = {}
         self.atomic = self.helpers.atomic_json
 
     def resource_path(self, item): return guests.resource_path(item, self.run)
@@ -84,6 +85,60 @@ class Run(metadata.Run):
             need(item['metadata']['name'] == self.run, 'foreign admin fixture')
             item = guests.admin(self.run, self.state['expires'])
         return super().create(item)
+
+    def forward(self, row, remote_port):
+        origin = super().forward(row, remote_port)
+        if remote_port == 2379:
+            self.metadata_status_forwards[origin] = self.forwards[-1]
+        return origin
+
+    def refresh_metadata_observers(self):
+        # Image preparation can outlive the API proxy's idle tunnels. Replace
+        # only owned, read-only member observers before injecting the fault.
+        members, policies, urls = self.etcd
+        need(len(members) == len(urls) == 3, 'three owned metadata observers required')
+        for url in urls:
+            handle = self.metadata_status_forwards.pop(url)
+            process, log = handle
+            process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
+            log.close(); self.forwards.remove(handle); self.tls_names.pop(url)
+        urls = [self.forward(row, 2379) for row in members]
+        self.etcd = members, policies, urls
+        status = self.wait_members(urls)
+        identities = [s.get('header', {}).get('member_id') for s in status]
+        need(len(set(identities)) == 3 and all(i not in (None, '', '0') for i in identities) and
+             all(s['header'].get('cluster_id') == self.state['etcd_cluster_id'] for s in status),
+             'refreshed metadata member identity differs')
+        self.metadata_members = dict(zip(urls, identities))
+        self.event('metadata-status-observers-refreshed', members=3)
+
+    def wait_no_leader(self, urls):
+        need(len(urls) == 3 and set(urls) == set(self.metadata_members),
+             'verified metadata observers required')
+        start = time.monotonic(); end = start+20; samples = []
+        while time.monotonic() < end:
+            members = []
+            for slot, url in enumerate(urls):
+                remaining = end-time.monotonic()
+                if remaining <= 0: break
+                code, status = self.request(url, '/v3/maintenance/status', {}, etcd=True,
+                                            timeout=min(8, remaining))
+                status = status if isinstance(status, dict) else {}
+                header = status.get('header', {})
+                header = header if isinstance(header, dict) else {}
+                members.append({'slot': slot, 'http_status': code, 'leader': status.get('leader', '0') if code == 200 else None,
+                                'member_id': header.get('member_id'), 'cluster_id': header.get('cluster_id')})
+            samples.append({'elapsed_seconds': round(time.monotonic()-start, 3), 'members': members})
+            self.atomic(self.directory/'metadata-quorum-loss-samples.json', samples)
+            if time.monotonic() <= end and len(members) == 3 and all(s['http_status'] == 200 and s['leader'] == '0' and
+                    s['member_id'] == self.metadata_members[urls[s['slot']]] and
+                    s['cluster_id'] == self.state['etcd_cluster_id'] for s in members):
+                self.event('metadata-quorum-loss-observed', members=3)
+                return
+            time.sleep(min(.5, max(0, end-time.monotonic())))
+        raise RuntimeError('partition was not independently observed by member status')
 
     def cleanup(self):
         failures = []
@@ -426,6 +481,7 @@ class Run(metadata.Run):
         if not self.etcd: faults.raft_leader(self.phase(0, 'status')['replicas'])
         self.phase(0, 'prepare', 0)
         if self.etcd:
+            self.refresh_metadata_observers()
             try:
                 for row in self.etcd[1][:2]: self.set_policy(row, True)
                 self.wait_no_leader(self.etcd[2])

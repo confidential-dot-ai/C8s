@@ -81,8 +81,11 @@ qualified the bounded native
 recovery paths for this backend. The dedicated
 [metadata service HA qualification](cds-ha-metadata.md) has since passed.
 The [three-host CDS comparison](cds-three-host-qualification.md) has a complete
-Raft baseline; direct-state CDS remains unqualified after an issuance timeout
-overlapping an independently observed worker network regression.
+Raft baseline. Direct-state CDS has passed its initial workload, isolated-guest
+refusal, majority service, revocation and same-CA recovery. Its full qualification
+remains incomplete after a metadata status-observer failure before the quorum-loss
+refusal phase. Earlier unsuccessful attempts and their network observations are
+retained in that comparison.
 
 Known prototype limits: binding updates serialize; path creation shares a quota
 counter; the current policy image is reconstructed in private SQLite for each
