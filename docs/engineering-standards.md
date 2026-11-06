@@ -88,7 +88,8 @@ Rules below apply to both tiers unless marked. Appendix A summarizes what change
   Describe meaningful alternatives briefly. Include validation evidence and
   coverage limits under Review focus, with fewer than ten single-sentence bullets
   across the description.
-- Keep private names, links and evidence out of public PRs, commits and docs.
+- Keep private names, links, evidence and specification IDs out of public PRs,
+  commits, docs, code and tests.
 
 Commit messages have a Conventional Commit title, one or two sentences explaining
 the change's purpose, and fewer than ten single-sentence bullets when needed.
@@ -125,6 +126,8 @@ description; code and user documentation describe the resulting behavior.
 - Write multi-parameter Go function definitions with one parameter per line and a
   trailing comma, then run `gofmt`. Short zero- or one-parameter signatures can
   remain on one line.
+- Spread struct literals, calls and test-table rows with several fields or
+  arguments across lines, one per line.
 - Comments state non-obvious contracts, invariants or constraints. Delete comments
   that restate descriptive names, narrate the code or repeat enforced policy.
   Preserve required API documentation, safety annotations and tool directives.
