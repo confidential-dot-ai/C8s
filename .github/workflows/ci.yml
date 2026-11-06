@@ -13,6 +13,8 @@ on:
       - "Makefile"
       - ".golangci.yml"
       - "internal/helmchart/c8s/**"
+      - "images/node-guest/c8s/mkosi.sync"
+      - "images/node-guest/c8s/image-policy.yaml.in"
       # The integration harness (test/integration) and its mocks
       # (test/mock-*) gate PRs via the Integration job below.
       - "test/**"
@@ -188,6 +190,26 @@ jobs:
 
       - name: Run the cluster integration harness
         run: make test-integration-cluster
+
+  integration-pod-runtime:
+    name: Integration (Pod runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go-c8s
+      - name: Run the Pod runtime admission integration
+        env:
+          C8S_POD_RUNTIME_ARTIFACTS: ${{ runner.temp }}/pod-runtime-artifacts
+        run: make test-integration-pod-runtime
+      - name: Retain runtime integration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-runtime-integration
+          path: ${{ runner.temp }}/pod-runtime-artifacts
+          if-no-files-found: warn
+          retention-days: 7
 
   coverage:
     name: Coverage gate

@@ -516,9 +516,12 @@ exact acceptance or promote stable aliases. The workflow's selected branch
 or tag supplies the image profile, kernel fragments and build pins. For a
 feature build, select that source with `--ref` and supply its matching
 published component SHA as a nonempty `c8s_ref`; this keeps publication on
-commit-scoped tags. An empty `c8s_ref` uses that commit's seven-character SHA
-and retains the existing floating-tag publication behavior. `confos_ref` can
-still override the builder pin for an A/B build.
+commit-scoped tags. Published manual builds reject a `c8s_ref` that is not
+the selected source commit's seven-character short SHA. An empty `c8s_ref`
+uses that short SHA; a manual build never moves the floating tags, which only
+the automatic main publication advances. `confos_ref` can still override the
+builder pin for an A/B build. The summary records both the full image profile
+SHA and the component ref.
 
 To build the images of one commit without pairing it with another commit's
 profile or components, run

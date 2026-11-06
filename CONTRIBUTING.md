@@ -84,6 +84,22 @@ Make sure `make lint` and `make test` pass locally before opening a PR. CI
 additionally runs golangci-lint, a CRD/chart consistency check
 (`make check-crd-chart`), and vulnerability scanning.
 
+On Linux, `make test-podmesh-netns` runs the real namespace transport, guest
+bootstrap and private RAM credential-custody tests. The bootstrap cases use
+production NRI callbacks and real namespaces with simulated runtime metadata,
+measurement registers and credential issuance. The suite requires root (or passwordless
+`sudo`), network/mount namespace capabilities, writable cgroup v2 delegation,
+iptables and nftables. Packages run sequentially because BPF link enumeration
+is global to the kernel.
+CI requires this suite and includes its coverage alongside ordinary tests and
+the kernel dm-verity harness, using the same procedure for the PR and its base.
+
+For Pod runtime changes, also run `make test-integration-pod-runtime`. It needs
+Go and Docker with privileged containers and validates process admission in an
+isolated container. Its result receipt is required. See
+[Pod runtime CI](docs/integration-tests.md#pod-runtime-ci) for the evidence and
+its limits.
+
 ## Pull requests
 
 - **Discuss large changes first.** Open an issue before starting anything
