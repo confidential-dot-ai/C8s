@@ -2,8 +2,9 @@
 
 This opt-in fixture continues after the completed three-worker metadata test.
 It places exactly three CDS guests on distinct qualified TDX compute workers,
-using the production CDS service arguments and pinned production attestation
-binary. Workload private keys stay in their guest. A bounded actor accepts only
+using the production CDS service arguments and a pinned attestation binary
+with the bounded TDX quote worker described below. Workload private keys stay
+in their guest. A bounded actor accepts only
 fixed test phases signed by the measured operator key; the controller verifies
 native TDX armTLS, including the complete image tuple and launch file, before
 sending a phase. No arbitrary commands, paths, quote service or SSH are exposed.
@@ -42,6 +43,16 @@ worker name and independently observed Node UID, with no control-plane placement
 or host fault. Cleanup uses UID preconditions, ordinary termination and an
 independent read-only absence audit. CI and shared production releases are not
 used. Results remain pending until a complete run and cleanup audit are saved.
+
+The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
+pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
+longer than the five-second read lease. It resumes those same incarnations in a
+`finally` block, including after a partial or ambiguous pause failure. Guest
+UID, controller ownership, labels and placement are checked before and after
+each action. No host is paused. Three answered statuses with the same three
+voters and one observed leader are required before each Raft fault. The metadata
+arm uses its dedicated member policies and observes loss of a metadata leader;
+the two fault mechanisms are reported separately.
 
 Image transfer uses short framed chunks to tolerate the API streaming proxy.
 The receiver checks every chunk and the assembled archive; the controller then
@@ -125,3 +136,14 @@ uses a separate attester branch with one hardware worker and a bounded message
 queue, allowing verification to run while quote generation waits. No CDS timeout,
 attestation policy, or workload limit is relaxed. All 29 fixture resource paths
 were independently confirmed absent after this failed attempt.
+
+[Attempt 14](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-14.json)
+passed the native burst: 24 issuances and 24 secret reads in 25.812 seconds with
+the bounded quote worker and unchanged CDS workload/timeouts. Leader isolation
+also passed refusal, majority service, replay rejection and revocation. The
+subsequent intended quorum loss returned HTTP 200. Three voters were confirmed,
+but vote RPCs still appeared during the intended isolation; a policy update
+alone did not establish complete loss of connectivity. This is a failed test,
+not proof of a Raft safety violation. All 32 owned resources were removed and
+41 resource paths independently confirmed absent. The next run uses the
+observable guest pause fault above to establish quorum loss.

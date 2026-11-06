@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 14,
+  "stage": "authority-quorum-loss",
+  "runner_commit": "580afd797e839287e83af25f93c67a453ab6441f",
+  "image_build": "three-host-image-06",
+  "attester_commit": "948a5b3f4bcae6a8879b8f1f1bf89aa9a7bc5d20",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "chunk_retries": 1,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 22,
+  "burst": {
+    "issuances": 24,
+    "secret_releases": 24,
+    "seconds": 25.812260639
+  },
+  "leader_isolation": {
+    "valid_read_refused": true,
+    "majority_served": true,
+    "replay_rejected": true,
+    "revocation_enforced": true,
+    "same_ca_after_healing": true
+  },
+  "finding": "The intended quorum-loss read returned HTTP 200. Three voters were confirmed before fault injection, but a vote RPC was observed during the intended isolation. NetworkPolicy updates alone did not prove complete disconnection; this failed attempt does not establish a Raft safety violation. Rolling replacement was not reached.",
+  "follow_up": "Require an observed three-voter configuration before each Raft fault. For authority quorum loss, pause only the two owned guest VMIs, observe both Paused conditions, exhaust the read lease, require refusal, then resume those same incarnations and verify recovery. Keep the first network-isolation test.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 32,
+    "resource_paths_checked": 41,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

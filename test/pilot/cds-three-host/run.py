@@ -26,6 +26,7 @@ import guests
 import transfer
 import egress
 import console
+import faults
 from api import ReadBackoff
 
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
@@ -180,8 +181,13 @@ class Run(metadata.Run):
                  {'op': 'test', 'path': '/metadata/resourceVersion', 'value': current['metadata']['resourceVersion']},
                  {'op': 'replace', 'path': '/spec/ingress', 'value': target['spec']['ingress']},
                  {'op': 'replace', 'path': '/spec/egress', 'value': target['spec']['egress']}]
-        self.kube.call('PATCH', row['path'], patch, headers={'Content-Type': 'application/json-patch+json'})
+        _, updated = self.kube.call('PATCH', row['path'], patch, headers={'Content-Type': 'application/json-patch+json'})
+        need(updated['metadata']['uid'] == row['uid'] and
+             all(updated['spec'][k] == target['spec'][k] for k in ('podSelector', 'ingress', 'egress')),
+             'guest isolation policy update differs')
         row['isolated'] = isolated; self.save()
+        self.event('guest-isolation-policy-updated', slot=slot, isolated=isolated,
+                   resource_version=updated['metadata']['resourceVersion'])
 
     def render_guest(self, slot, variant, launch):
         node = self.state['nodes'][slot]
@@ -380,7 +386,7 @@ class Run(metadata.Run):
             items, vm = self.render_guest(slot, 'b', launch); self.populate(items, 'b'); pending[slot, 'b'] = vm
         # Isolate the actual Raft leader (or one stateless direct-state guest).
         statuses = self.phase(0, 'status')['replicas']
-        lost = next((i for i, v in enumerate(statuses) if v['status'].get('state') == 'Leader'), 2) if self.args.backend == 'raft' else 2
+        lost = faults.raft_leader(statuses) if self.args.backend == 'raft' else 2
         observer = (lost+1)%3
         self.phase(observer, 'prepare', lost); self.phase(lost, 'prepare', lost)
         self.isolate_guest(lost, True)
@@ -391,23 +397,23 @@ class Run(metadata.Run):
         finally: self.isolate_guest(lost, False)
         self.phase(observer, 'heal'); self.phase(observer, 'roll-safe')
         self.health()
-        # Authority quorum loss. Raft loses two CDS members; current state loses
-        # two dedicated metadata members, with CDS guests otherwise healthy.
+        # A policy update alone does not prove that existing flows stopped.
+        # Pause two owned Raft VMIs and observe both Paused conditions before
+        # exhausting the read lease. Retain their memory for recovery.
+        if not self.etcd: faults.raft_leader(self.phase(0, 'status')['replicas'])
         self.phase(0, 'prepare', 0)
         if self.etcd:
-            for row in self.etcd[1][:2]: self.set_policy(row, True)
-        else:
-            for slot in [1, 2]: self.isolate_guest(slot, True)
-        try:
-            if self.etcd: self.wait_no_leader(self.etcd[2])
-            else: time.sleep(7)
-            self.phase(0, 'refuse', 0)
-        finally:
-            if self.etcd:
+            try:
+                for row in self.etcd[1][:2]: self.set_policy(row, True)
+                self.wait_no_leader(self.etcd[2])
+                self.phase(0, 'refuse', 0)
+            finally:
                 for row in self.etcd[1][:2]: self.set_policy(row, False)
-            else:
-                for slot in [1, 2]: self.isolate_guest(slot, False)
-        if self.etcd: self.wait_members(self.etcd[2])
+            self.wait_members(self.etcd[2])
+        else:
+            with faults.paused_guests(self, [1, 2]):
+                time.sleep(7)
+                self.phase(0, 'refuse', 0)
         self.phase(0, 'heal'); self.phase(0, 'roll-safe')
         self.phase(0, 'overlap'); self.phase(0, 'revoke')
         self.phase(0, 'prepare'); self.phase(0, 'revoked')
