@@ -288,16 +288,18 @@ image build and control-plane render:
 c8s operator \
   --kubeconfig DIR/c8s-operator.kubeconfig \
   --webhook-host '<WEBHOOK_HOST>' \
-  --webhook-config-name c8s-pod-injector \
   --get-cert-image '<GET_CERT_IMAGE>' \
-  --mesh-image '<MESH_IMAGE>' \
-  --workload-claims-host-dir /run/nri-image-policy
+  --mesh-image '<MESH_IMAGE>'
 ```
 
 Replace the placeholders with the webhook host and image references used for
-the render. `/run/nri-image-policy` is the directory on each worker that the
-webhook mounts into workload pods. An external webhook host requires the
-injection images; missing images stop the operator at startup.
+the render. `--webhook-config-name` and `--workload-claims-host-dir` default
+to what a worker control plane always needs: the name `c8s worker
+control-plane render` emits, and the worker image's fixed inventory
+directory, which also holds the attestation-api socket the injected
+c8s-cert sidecar uses with no in-cluster service account to fall back to. An
+external webhook host requires the injection images; missing either stops
+the operator at startup.
 
 The image flags must be the worker image build's, so the router it renders is
 the launch the image's floor pins. Each API server reaches the operator at
