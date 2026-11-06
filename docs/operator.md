@@ -302,6 +302,14 @@ detectable only by pinning the route digest or the operator keys.
   digest. The slower of their `--ca-watch-interval`s, plus half an interval of
   jitter, plus one issuance bounds that; with the watch off it lasts until the
   next scheduled renewal.
+- An allowlist write takes effect on nodes `--allowlist-node-delay` (CDS flag,
+  30s) after it is written. CDS issues certificates under it at once, and
+  router certificates (`--router-cert-ttl`, 20s) last less than that, so any
+  router still serving advertises it before it takes effect. A write replaced
+  before it takes effect never does. When its certificate expires the router
+  retires every backend pool and dials nothing until it renews.
+- With the front door in `cds` mode the serving certificate is the router's
+  mesh certificate, so a client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
   the client attests again

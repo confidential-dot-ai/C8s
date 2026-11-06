@@ -738,6 +738,34 @@ func TestB9DamagedStampRetiresPools(t *testing.T) {
 	}
 }
 
+// TestExpiredRouterLeafRetiresPools: once a leaf a pooled connection
+// presented expires, every pool retires, address backends' too.
+func TestExpiredRouterLeafRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+	}
+	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
+	pooled := f.transports.For(backend)
+	f.transports.mu.Lock()
+	expiry := f.transports.leafExpiry
+	f.transports.mu.Unlock()
+	if expiry.IsZero() {
+		t.Fatal("the dial recorded no leaf expiry")
+	}
+	if f.transports.For(backend) != pooled {
+		t.Fatal("pool retired before the leaf expired")
+	}
+	f.transports.mu.Lock()
+	f.transports.leafExpiry = time.Now().Add(-time.Second)
+	f.transports.mu.Unlock()
+	if f.transports.For(backend) == pooled {
+		t.Fatal("pool outlived the leaf its connections presented, want it retired")
+	}
+}
+
 // TestB10RenewedRouterLeafRetiresPools: once the router's leaf renews under
 // another digest, the next poll retires the workload connection pooled under
 // the old one and keeps the address backend's.

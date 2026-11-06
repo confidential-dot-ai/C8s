@@ -31,6 +31,8 @@ const requestTimeout = 30 * time.Second
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	// query is appended to GET /allowlist.
+	query string
 }
 
 // NewClient creates a new allowlist client.
@@ -41,6 +43,13 @@ func NewClient(baseURL string) Client {
 // NewClientWithHTTP creates a new allowlist client with a custom HTTP client.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{baseURL: strings.TrimRight(baseURL, "/"), httpClient: httpClient}
+}
+
+// ForNodes returns c reading the allowlist in effect on nodes
+// (allowlist.NodeQuery).
+func (c Client) ForNodes() Client {
+	c.query = "?" + allowlist.NodeQuery
+	return c
 }
 
 // Authorizer produces the HTTP Authorization header value for a mutation,
@@ -104,7 +113,7 @@ func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 }
 
 func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Served, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist"+c.query, nil)
 	if err != nil {
 		return Served{}, false, fmt.Errorf("create request: %w", err)
 	}

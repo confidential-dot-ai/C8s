@@ -309,6 +309,17 @@ by that monotone version: a consumer applies a pull only if its version is not
 below the last applied, and a 304 raises the last applied version to the one
 it names.
 
+Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
+sends it over attested TLS to CDS; anything else sending it just gets the
+allowlist in effect. An allowlist write takes effect on nodes
+`--allowlist-node-delay` (30s) after it is written. CDS issues certificates
+under it at once, and router certificates (`--router-cert-ttl`, 20s) last less
+than that, so any router still serving advertises it before it
+takes effect. A write replaced before it takes effect never does. The first
+allowlist takes effect at once. Requests in flight or queued when a write takes
+effect can still reach the new code, and removals wait the delay too. A node image older than this change enforces a
+write at once.
+
 This matters because policy can tighten: narrow `args`, revoke a grant, remove
 an entry. A merge would let a host that withholds an update keep the laxer
 policy live forever; version-gated replacement fails toward the last applied
@@ -323,8 +334,8 @@ namespaces. Those are namespaces a boot config lists as holding platform pods
 the allowlist does not describe, admitted against a digest set the plugin froze
 on its first connect (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
-narrowing an entry stops its containers on every node within one refresh
-interval.
+narrowing an entry stops its containers on every node within
+`--allowlist-node-delay` plus one refresh interval.
 
 ## Bootstrap
 

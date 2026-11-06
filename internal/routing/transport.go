@@ -60,6 +60,9 @@ type Transports struct {
 	// for an unstamped leaf; routerDigestKnown is false until the first read.
 	routerDigest      string
 	routerDigestKnown bool
+	// leafExpiry is the earliest expiry of the router leaves handed to
+	// handshakes since the pools were last retired, zero for none.
+	leafExpiry time.Time
 
 	stamp stampCache
 }
@@ -177,6 +180,12 @@ func (t *Transports) pool(b routes.Backend) pooled {
 	key := backendKey(b)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Pooled connections skip the handshake, so none outlives the leaf it
+	// presented. A new dial reads the published leaf, and an expired one
+	// refuses it.
+	if !t.leafExpiry.IsZero() && !time.Now().Before(t.leafExpiry) {
+		t.retireLocked(false)
+	}
 	if p, ok := t.cache[key]; ok {
 		return p
 	}
@@ -303,6 +312,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
 	}
+	t.presented(cred)
 	return cfg, digest, nil
 }
 
@@ -313,7 +323,21 @@ func (t *Transports) clientCertificate(*tls.CertificateRequestInfo) (*tls.Certif
 	if err != nil {
 		return nil, err
 	}
+	t.presented(cred)
 	return cred.Certificate, nil
+}
+
+// presented records that a handshake presents cred's leaf.
+func (t *Transports) presented(cred MeshCredential) {
+	if cred.Certificate == nil || cred.Certificate.Leaf == nil {
+		return
+	}
+	expiry := cred.Certificate.Leaf.NotAfter
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.leafExpiry.IsZero() || expiry.Before(t.leafExpiry) {
+		t.leafExpiry = expiry
+	}
 }
 
 // meshCAs are the CAs of the published generation.
@@ -458,6 +482,9 @@ func (t *Transports) retireChanged(cred MeshCredential) {
 // retireLocked drops the transports, only the workload ones if workloadOnly,
 // and closes their idle connections. The caller holds t.mu.
 func (t *Transports) retireLocked(workloadOnly bool) {
+	if !workloadOnly {
+		t.leafExpiry = time.Time{}
+	}
 	for key, p := range t.cache {
 		if workloadOnly && !p.workload {
 			continue

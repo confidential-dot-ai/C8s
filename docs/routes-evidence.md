@@ -36,7 +36,12 @@ catches each:
   snapshot that named the match ([armtls.md](armtls.md#matched-workload)) — and
   the evidence binds the stamped leaf that carries it. A router leaf with no
   stamp binds no policy digest and checks the workload name alone; a client
-  pinning the digest sees the stamp missing and fails closed.
+  pinning the digest sees the stamp missing and fails closed. A write takes
+  effect on nodes only after router certificates have rolled over under it
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)),
+  so sessions bound to the old digest get `router_digest_changed` before any
+  node runs code it admits. Requests in flight or queued at that moment can
+  still reach the new code.
 - **Post-handshake update.** A manifest applied after the handshake, or a
   router leaf renewed under another allowlist digest, does not route the
   session — [Session binding](#session-binding).

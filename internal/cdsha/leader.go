@@ -246,7 +246,12 @@ func (n *Node) historyOverItsBound() (over bool, keep int, err error) {
 	if err != nil {
 		return false, 0, err
 	}
-	keep = max(1, min(historyDocuments, withinBytes))
+	// Never past the allowlist in effect on nodes.
+	inEffect, err := n.cfg.Allowlist.InEffectDepth(time.Now())
+	if err != nil {
+		return false, 0, err
+	}
+	keep = max(1, min(historyDocuments, withinBytes), inEffect)
 	return documents > keep, keep, nil
 }
 

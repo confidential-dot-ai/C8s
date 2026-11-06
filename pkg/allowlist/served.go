@@ -9,3 +9,7 @@ const VersionHeader = "X-C8s-Allowlist-Version"
 func EntityTag(digest string) string {
 	return `"` + digest + `"`
 }
+
+// NodeQuery is the query with which a node asks GET /allowlist for the
+// allowlist in effect.
+const NodeQuery = "requester=node"

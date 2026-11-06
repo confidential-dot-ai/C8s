@@ -254,7 +254,10 @@ decided the match, so a client holding the same bytes detects skew. The router
 keeps a route's backend inside its own allowlist by requiring the two stamps to
 carry the same digest, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
-parse ([operator.md](operator.md#route-manifest)).
+parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
+reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),
+shorter than the delay before an allowlist write takes effect on nodes
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
 
 A sandbox goes from unnamed to named at the first renewal after its pod is
 complete. There is no third state, and losing the match costs the pod its name

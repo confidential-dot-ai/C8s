@@ -247,6 +247,10 @@ const (
 	CredentialsRole = "credentials"
 )
 
+// RouterRole is the role of the router's front door. CDS gives a sandbox
+// running one a short-lived leaf.
+const RouterRole = "router"
+
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the CDS address, and the enforcer refuses it in any
 // other container, so a pod cannot reach the CDS with a socket of its own.

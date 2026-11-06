@@ -143,7 +143,7 @@ func Run(args []string) error {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
 		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient).ForNodes()
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
