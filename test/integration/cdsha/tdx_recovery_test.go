@@ -22,22 +22,32 @@ import (
 
 var tdxHardware *snpaccept.TDXHardware
 
-func nativeAcceptance() bool { return snpHardware != nil || tdxHardware != nil }
+func nativeAcceptance() bool {
+	return snpHardware != nil || tdxHardware != nil || threeHostConfig != nil
+}
 func nativeLaunch() []byte {
+	if threeHostConfig != nil {
+		return threeHostLaunch
+	}
 	if tdxHardware != nil {
 		return tdxHardware.Launch
 	}
 	return snpHardware.Launch
 }
 func (c *cluster) hardwareFamily() string {
-	if tdxHardware != nil {
+	if tdxHardware != nil || threeHostConfig != nil {
 		return "tdx"
 	}
 	return "sev-snp"
 }
 func (c *cluster) nativeTDXPins() refvalues.ReferenceValues {
 	c.t.Helper()
-	rv := tdxHardware.Nodes
+	var rv refvalues.ReferenceValues
+	if threeHostConfig != nil {
+		rv = threeHostConfig.Nodes
+	} else {
+		rv = tdxHardware.Nodes
+	}
 	rv.Images = slices.Clone(rv.Images)
 	for i := range rv.Images {
 		rv.Images[i].LaunchFile = slices.Clone(c.config)
@@ -46,7 +56,7 @@ func (c *cluster) nativeTDXPins() refvalues.ReferenceValues {
 }
 func (c *cluster) cdsPinDocument() string {
 	c.t.Helper()
-	if tdxHardware == nil {
+	if tdxHardware == nil && threeHostConfig == nil {
 		return testutil.CDSPinDocument(c.measurement(), string(c.config))
 	}
 	b, err := refvalues.Render(c.nativeTDXPins())

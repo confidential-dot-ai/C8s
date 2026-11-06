@@ -1,0 +1,5 @@
+[Unit]
+Description=Power off only this disposable qualification guest
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

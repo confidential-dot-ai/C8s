@@ -45,6 +45,9 @@ var snpRelay *snpaccept.Relay
 var snpChecks map[string]any
 
 func (c *cluster) measurement() string {
+	if threeHostConfig != nil {
+		return threeHostMeasurement()
+	}
 	if tdxHardware != nil {
 		return tdxMeasurement()
 	}

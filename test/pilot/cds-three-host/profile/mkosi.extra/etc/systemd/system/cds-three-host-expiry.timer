@@ -1,0 +1,8 @@
+[Unit]
+Description=Bound disposable qualification guest lifetime
+[Timer]
+OnBootSec=70min
+AccuracySec=1s
+Unit=cds-three-host-expiry.service
+[Install]
+WantedBy=timers.target

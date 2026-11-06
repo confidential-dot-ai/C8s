@@ -36,7 +36,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-const pilotSandbox = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefabcd"
+var pilotSandbox = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefabcd"
 
 var pilotDigest = "sha256:" + strings.Repeat("22", 32)
 
@@ -387,6 +387,10 @@ func startPilotWorkload(c *cluster, listener net.Listener, host string, cdsImage
 }
 
 func (w *pilotWorkload) setPolicy(grant bool) {
+	w.setPolicyAt(w.c.replicas[0], grant)
+}
+
+func (w *pilotWorkload) setPolicyAt(replica *replica, grant bool) {
 	t := w.c.t
 	t.Helper()
 	secrets := ""
@@ -395,7 +399,7 @@ func (w *pilotWorkload) setPolicy(grant bool) {
 	}
 	body := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"pilot-workload":{"containers":[{"digest":"` + pilotDigest +
 		`","command":{"policy":"exact","argv":["/pilot"]},"args":{"policy":"deny"},"mounts":{"policy":"deny"}}]` + secrets + `}}}`)
-	if code, response := w.c.put(w.c.replicas[0], "/allowlist", body); code != http.StatusNoContent {
+	if code, response := w.c.put(replica, "/allowlist", body); code != http.StatusNoContent {
 		t.Fatalf("set workload grant=%v: HTTP %d %s", grant, code, response)
 	}
 }

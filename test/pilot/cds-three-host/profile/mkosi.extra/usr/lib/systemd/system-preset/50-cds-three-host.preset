@@ -1,0 +1,4 @@
+enable attestation-api.service
+enable cds.service
+enable cds-three-host-agent.service
+enable cds-three-host-expiry.timer

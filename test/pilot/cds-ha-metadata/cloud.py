@@ -138,8 +138,11 @@ class Run:
     def kubectl(self, *args):
         return [self.args.kubectl, '--kubeconfig', self.args.kubeconfig, '-n', NS, *args]
 
+    def resource_path(self, item):
+        return resource_path(item, self.run)
+
     def create(self, item):
-        self.live(); path = resource_path(item, self.run)
+        self.live(); path = self.resource_path(item)
         code, _ = self.kube.call('GET', path, expected=(200, 404)); need(code == 404, 'refusing existing fixture')
         digest = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
         item['metadata'].setdefault('annotations', {})['cds.confidential.ai/intent-sha256'] = digest
@@ -154,7 +157,7 @@ class Run:
         row['uid'] = current['metadata']['uid']; self.save(); return row
 
     def current(self, row, absent=False):
-        need(row['path'] == resource_path(row['item'], self.run), 'foreign journal path')
+        need(row['path'] == self.resource_path(row['item']), 'foreign journal path')
         code, value = self.kube.call('GET', row['path'], expected=(200, 404) if absent else (200,))
         if code == 404:
             return None
@@ -272,7 +275,7 @@ class Run:
         except (OSError, http.client.HTTPException): return 0, None
         finally: connection.close()
 
-    def exercise(self):
+    def setup(self):
         self.live(); need(not self.state['resources'], 'fresh run required; use cleanup for an existing journal')
         need(self.args.source_tree and re.fullmatch(r'[0-9a-f]{40}', self.args.source_tree), 'frozen source tree required')
         baseline = self.health(capture=True)
@@ -318,6 +321,10 @@ class Run:
             if item['kind'] == 'Pod': adapters.append(row)
         for row in adapters: self.ready(row)
         urls = [self.forward(row, 9443) for row in adapters]
+        return et, policies, etcd_urls, status, adapters, urls
+
+    def exercise(self):
+        et, policies, etcd_urls, status, adapters, urls = self.setup()
         self.check_transactions(urls)
         self.health()
         # Isolate the observed leader with only its own policy. The minority

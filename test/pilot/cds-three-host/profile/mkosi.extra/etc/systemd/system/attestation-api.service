@@ -1,0 +1,20 @@
+[Unit]
+Description=TEE Attestation REST API
+Documentation=https://github.com/confidential-dot-ai/attestation-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/attestation-api -c /etc/attestation-api/config.toml
+Restart=on-failure
+RestartSec=3
+# SEV-SNP guests expose /dev/sev-guest; TDX guests expose /dev/tdx_guest
+# (NOTE: kernel uses an underscore — naming differs from the platform
+# string). Allowing both is harmless when one isn't present; the
+# attestation-api binary probes for whichever is available at runtime.
+DeviceAllow=/dev/sev-guest rwm
+DeviceAllow=/dev/tdx_guest rwm
+
+[Install]
+WantedBy=multi-user.target

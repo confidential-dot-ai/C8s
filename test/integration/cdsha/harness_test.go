@@ -134,6 +134,10 @@ func processReadLease() time.Duration {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CDSHA_THREE_HOST") == "1" {
+		threeHostMain(m)
+		return
+	}
 	if os.Getenv("CDSHA_TDX_ACCEPTANCE") == "1" {
 		runTDXTestMain(m)
 		return
@@ -456,6 +460,9 @@ func (c *cluster) start(i int) *replica {
 // attestationAPI runs one attestation-api on this host's loopback, reporting
 // this CDS image and the launch file of this cluster's replicas.
 func (c *cluster) attestationAPI(name, measurement string) string {
+	if threeHostConfig != nil {
+		return "http://127.0.0.1:8400"
+	}
 	c.t.Helper()
 	if nativeAcceptance() {
 		return "http://127.0.0.1:9090"
@@ -581,8 +588,8 @@ func tail(path string) string {
 // the cluster's pin document names, bound to the launch file they boot.
 func (c *cluster) attestedClient(measurement string, alsoAccepted ...string) *http.Client {
 	c.t.Helper()
-	if tdxHardware != nil {
-		if len(alsoAccepted) != 0 || measurement != tdxMeasurement() {
+	if tdxHardware != nil || threeHostConfig != nil {
+		if len(alsoAccepted) != 0 || measurement != c.measurement() {
 			c.t.Fatal("native TDX fixture requires the complete measured tuple")
 		}
 		client, err := armtls.NewVerifyingHTTPClient(armtls.Pins{Images: tdxImagePins(c)}, c.attestationAPI("the operator", measurement))

@@ -1,0 +1,23 @@
+[Unit]
+Description=Fixed disposable three-host CDS qualification agent
+Requires=attestation-api.service
+After=attestation-api.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/confai/operator-pubkey
+StartLimitIntervalSec=0
+
+[Service]
+Environment=CDSHA_THREE_HOST=1
+ExecStart=/usr/local/bin/cds-three-host-agent -test.run=^TestThreeHostAgent$ -test.v
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=cds-three-host
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ReadWritePaths=/run/cds-three-host
+Environment=TMPDIR=/run/cds-three-host
+
+[Install]
+WantedBy=multi-user.target

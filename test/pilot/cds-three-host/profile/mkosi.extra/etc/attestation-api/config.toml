@@ -1,0 +1,31 @@
+# Baked by `confos build --profile attest`. This measured configuration is
+# read-only at runtime; change it at build time.
+
+[server]
+bind = "127.0.0.1:8400"
+
+[server.tls]
+enabled = false
+
+[auth]
+api_keys = []
+
+[certs]
+cache_max_entries = 1024
+vcek_ttl_hours = 24
+chain_ttl_hours = 168
+crl_refresh_hours = 6
+tdx_collateral_ttl_hours = 24
+prefetch_chains = ["milan", "genoa"]
+
+[token]
+enabled = false
+
+[attestation]
+enabled = true
+# `snp` for AMD SEV-SNP guests, `tdx` for Intel TDX guests. The binary
+# probes /dev/sev-guest and /dev/tdx_guest at runtime and only reports
+# the platforms whose device is actually present, so listing both here
+# is safe on either host. `tdx_quote_method = "auto"` (default) tries
+# vsock (QGS) first and falls back to ConfigFS TSM.
+platforms = ["snp", "tdx"]
