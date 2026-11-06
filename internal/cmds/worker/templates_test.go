@@ -10,6 +10,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -140,6 +141,53 @@ func TestWorkerKubeProxyAndCoreDNS(t *testing.T) {
 	}
 	if !strings.Contains(string(corefile), "kubernetes cluster.local") || !strings.Contains(string(corefile), "kubeconfig /var/lib/kubelet/kubeconfig") {
 		t.Fatalf("Corefile serves no cluster.local through the kubelet's kubeconfig:\n%s", corefile)
+	}
+}
+
+// nodeCertificateBinding is the group a binding grants and the role it binds,
+// of the bindings a kubelet's certificates rest on.
+type nodeCertificateBinding struct {
+	group string
+	role  string
+}
+
+// grantsNodeCertificates holds of a binding that lets a node request a
+// certificate or have one approved without an admin.
+func grantsNodeCertificates(b nodeCertificateBinding) bool {
+	return b.group == "system:bootstrappers" ||
+		b.role == "system:node-bootstrapper" ||
+		strings.HasPrefix(b.role, "system:certificates.k8s.io:")
+}
+
+// A worker's kubelet joins with a bootstrap token and rotates the client
+// certificate it gets, so the render binds the three grants that carry it, and
+// binds nothing else a node's certificates rest on.
+func TestWorkerKubeletCertificateBindings(t *testing.T) {
+	objects, err := ControlPlaneObjects(&Document{Kubernetes: Kubernetes{ClusterDNS: "10.53.0.10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]nodeCertificateBinding{
+		"c8s-worker-bootstrap":             {"system:bootstrappers", "system:node-bootstrapper"},
+		"c8s-worker-bootstrap-client-cert": {"system:bootstrappers", "system:certificates.k8s.io:certificatesigningrequests:nodeclient"},
+		"c8s-worker-client-cert-renewal":   {"system:nodes", "system:certificates.k8s.io:certificatesigningrequests:selfnodeclient"},
+	}
+	got := map[string]nodeCertificateBinding{}
+	for _, doc := range strings.Split(string(objects), "\n---\n") {
+		var binding rbacv1.ClusterRoleBinding
+		if err := yaml.Unmarshal([]byte(doc), &binding); err != nil || binding.Kind != "ClusterRoleBinding" {
+			continue
+		}
+		if len(binding.Subjects) != 1 || binding.Subjects[0].Kind != rbacv1.GroupKind {
+			continue
+		}
+		b := nodeCertificateBinding{binding.Subjects[0].Name, binding.RoleRef.Name}
+		if grantsNodeCertificates(b) {
+			got[binding.Name] = b
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("certificate bindings = %v, want %v", got, want)
 	}
 }
 
