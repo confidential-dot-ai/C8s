@@ -193,9 +193,9 @@ type policyConfig struct {
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
-	// denies one on a plugin restart. For the measured node image, where the
-	// plugin is pre-registered and containerd's required_plugins gate means no
-	// container can legitimately predate it. See bootgate.go.
+	// denies one on a plugin restart. For the measured node image, where
+	// containerd's required_plugins gate means no container can legitimately
+	// predate the plugin's first registration. See bootgate.go.
 	FatalExisting bool `yaml:"fatal_existing"`
 	// BootMarkerPath separates the first registration since boot from a plugin
 	// restart. Must be on tmpfs: a marker that survived a reboot would read

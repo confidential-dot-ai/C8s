@@ -1,0 +1,23 @@
+# containerd refuses every container create while this plugin is not
+# registered (required_plugins in nri-image-policy.toml), so systemd runs it
+# and brings it back whenever it exits: containerd launches the plugins in its
+# plugin_path only when it starts itself. The plugin connects to containerd's
+# NRI socket as an external plugin under the name and index containerd
+# requires, and exits when the connection closes, so a containerd restart
+# reconnects it too.
+[Unit]
+Description=nri-image-policy, the admission plugin containerd requires
+After=rke2-role.service worker-stage.service containerd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=NRI_PLUGIN_NAME=nri-image-policy NRI_PLUGIN_IDX=10
+ExecStart=/opt/nri/plugins/10-nri-image-policy
+Restart=always
+RestartSec=1
+# As when containerd launched it: its children inherited this score.
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target

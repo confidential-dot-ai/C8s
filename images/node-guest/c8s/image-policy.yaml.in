@@ -1468,13 +1468,14 @@ policy:
   enforce_existing: true
   deny_missing_annotation: true
   # A container already running when the plugin first registers means one ran
-  # before admission existed — the plugin is pre-registered in containerd's
-  # config and required_plugins blocks creation while it is absent, so in a
-  # valid boot the set is empty. It has already executed by then, so the node
-  # powers off rather than stopping it.
+  # before admission existed — containerd's required_plugins blocks creation
+  # while the plugin is not registered, so in a valid boot the set is empty.
+  # It has already executed by then, so the node powers off rather than
+  # stopping it.
   #
-  # A plugin restart is not that event: containerd stays up and its containers
-  # legitimately predate the new process. The marker below is on tmpfs, so it
+  # A plugin restart is not that event: systemd restarts the plugin
+  # (nri-image-policy.service), and containerd's containers legitimately
+  # predate the new process. The marker below is on tmpfs, so it
   # separates the two, and a restart re-checks what is running against the
   # allowlist instead.
   fatal_existing: true
@@ -1491,6 +1492,5 @@ policy:
 
 logging:
   level: "info"
-  # containerd starts a pre-installed plugin with its standard streams on
-  # /dev/null; journald's socket keeps the denials and audit records.
+  # journald's socket keeps the denials and audit records.
   syslog: "/dev/log"

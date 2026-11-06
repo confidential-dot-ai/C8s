@@ -58,6 +58,19 @@ if grep -qx 'CONFIG_MODULES=y' "$image/kernel/c8s.config"; then
   fi
 fi
 
+# containerd launches its plugin_path only when it starts, so systemd runs the
+# required admission plugin and restarts it whenever it exits, and containerd
+# launches nothing (a second copy would register twice).
+nri_unit="$image/c8s/mkosi.extra/etc/systemd/system/nri-image-policy.service"
+nri_toml="$image/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/nri-image-policy.toml"
+for pin in 'Restart=always' 'StartLimitIntervalSec=0'; do
+  grep -qFx "$pin" "$nri_unit" || { echo "::error::$nri_unit must set $pin"; exit 1; }
+done
+if grep -qF 'plugin_path = "/opt/nri/plugins"' "$nri_toml"; then
+  echo "::error::$nri_toml must not launch /opt/nri/plugins: $nri_unit runs the plugin"
+  exit 1
+fi
+
 # The baked NRI template's only digests are the RKE2 system floor's.
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.

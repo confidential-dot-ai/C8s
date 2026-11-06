@@ -9,6 +9,7 @@ etc/systemd/system/c8s-modules-latch.service
 etc/systemd/system/containerd-data-disk.service
 etc/systemd/system/gpu-cc-enforce.service
 etc/systemd/system/models-disk.service
+etc/systemd/system/nri-image-policy.service
 etc/systemd/system/scratch-enforce.service
 usr/local/bin/apparmor-enforce.sh
 usr/local/bin/containerd-data-disk.sh

@@ -2,6 +2,7 @@
 # profile's, which images/node-guest/build stages for this profile.
 enable worker-stage.service
 enable containerd.service
+enable nri-image-policy.service
 enable kubelet.service
 enable attest-proxy.service
 enable containerd-data-disk.service
