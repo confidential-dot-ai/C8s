@@ -402,7 +402,7 @@ type AttestConfig struct {
 	Timeout           time.Duration
 }
 
-// Report is what pod-attest proves about the pod CVM.
+// Report is what Attest proves about the pod CVM.
 type Report struct {
 	Image           string   `json:"image"`
 	LaunchKeySHA256 string   `json:"launch_key_sha256"`
@@ -419,27 +419,27 @@ var (
 
 // Attest verifies fresh evidence from the pod CVM and its measured digest
 // list, returning the report and the verified channel for further reads.
-func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error) {
+func Attest(ctx context.Context, cfg AttestConfig) (_ *Report, _ *http.Client, err error) {
 	if cfg.Node == "" || cfg.LaunchKeyPubPath == "" || cfg.ImageManifestPath == "" {
-		return nil, nil, errors.New("--node, --launch-key-pub and --image-manifest are required")
+		return nil, nil, errors.New("cfg.Node, cfg.LaunchKeyPubPath and cfg.ImageManifestPath are required")
 	}
 	if cfg.Timeout <= 0 {
-		return nil, nil, errors.New("--timeout must be positive")
+		return nil, nil, errors.New("cfg.Timeout must be positive")
 	}
 	if strings.ContainsAny(cfg.Node, "/?#@") {
-		return nil, nil, fmt.Errorf("--node must be a host or IP, got %q", cfg.Node)
+		return nil, nil, fmt.Errorf("cfg.Node must be a host or IP, got %q", cfg.Node)
 	}
 	expect := make([]string, 0, len(cfg.ExpectDigests))
 	for _, ref := range cfg.ExpectDigests {
 		d, err := runtimemeasure.CanonicalDigest(ref)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--expect-digest: %w", err)
+			return nil, nil, fmt.Errorf("cfg.ExpectDigests: %w", err)
 		}
 		expect = append(expect, d)
 	}
 	pub, err := os.ReadFile(cfg.LaunchKeyPubPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("--launch-key-pub: %w", err)
+		return nil, nil, fmt.Errorf("launch key: %w", err)
 	}
 	// One gate for the channel and the evidence: the image the manifest pins
 	// and the launch key, bound as every c8s verifier binds a node's. The
@@ -452,6 +452,14 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	}
 	exp = exp.WithMeasuredPolicies(nil)
 	client := newClient(exp, cfg.Timeout)
+	// The transport has no idle timeout, so a failed attestation must not
+	// leave its sockets to the retry; client is the pinned clone once the
+	// serving key is fixed.
+	defer func() {
+		if err != nil {
+			client.CloseIdleConnections()
+		}
+	}()
 	base := "https://" + hostPort(cfg.Node)
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -464,9 +472,12 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	if err != nil {
 		return nil, nil, err
 	}
+	unpinned := client
 	if client, err = pinServingKey(client, peer); err != nil {
 		return nil, nil, err
 	}
+	// The unpinned transport served its one request.
+	unpinned.CloseIdleConnections()
 
 	// A container may start between the quote and the list; read the list
 	// on both sides of the quote and retry until they agree.
@@ -616,7 +627,13 @@ func doPeer(ctx context.Context, client *http.Client, method, url string, body [
 		return nil, nil, "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(data)))
+		// The body is peer-controlled; keep only its head in the error.
+		const maxErrBody = 512
+		msg := strings.TrimSpace(string(data))
+		if len(msg) > maxErrBody {
+			msg = msg[:maxErrBody] + "..."
+		}
+		return nil, nil, "", fmt.Errorf("%s: %s", resp.Status, msg)
 	}
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 		return nil, nil, "", errors.New("response did not arrive over TLS")
