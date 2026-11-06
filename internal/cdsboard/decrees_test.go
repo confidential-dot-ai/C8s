@@ -46,7 +46,7 @@ func TestOneCycleReadsTheSignedDecreesTheBoardHolds(t *testing.T) {
 	client := testClient(t, board)
 	holds(board, "decrees/"+testIntent+".json", decreeObject(t, testIntent))
 	holds(board, "decrees/junk.json", []byte("{"))
-	holds(board, "decrees/big.json", bytes.Repeat([]byte("x"), maxDecreeBytes+1))
+	holds(board, "decrees/big.json", bytes.Repeat([]byte("x"), MaxDecreeBytes+1))
 
 	decrees, err := client.Decrees(context.Background())
 

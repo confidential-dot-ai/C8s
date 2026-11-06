@@ -27,6 +27,7 @@ const (
 	statusPath    = "/ha/status"
 	pinDecreePath = "/ha/pins"
 	decreesPath   = "/ha/decrees"
+	restorePath   = "/ha/restore"
 )
 
 // replicaTimeout bounds each read of a replica.
@@ -108,6 +109,12 @@ func (r replica) answer(ctx context.Context, path string, limit int64) ([]byte, 
 // dial resolves a replica to the one address it answers at and builds a client
 // that has verified the endpoint is a CDS of the pinned launch file.
 func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, error) {
+	return r.dialWithin(ctx, replicaTimeout)
+}
+
+// dialWithin is dial with a deadline of its own, for the one request a
+// replica takes longer over than a read of its reports.
+func (r replica) dialWithin(ctx context.Context, timeout time.Duration) (*http.Client, netip.AddrPort, error) {
 	address, err := resolveReplica(ctx, r.address)
 	if err != nil {
 		return nil, netip.AddrPort{}, err
@@ -115,7 +122,7 @@ func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, error)
 	options := cdsconn.Options{
 		URL:                "https://" + address.String(),
 		MeasurementsConfig: r.cdsPin,
-		Timeout:            replicaTimeout,
+		Timeout:            timeout,
 		Verifier:           r.verifier,
 		DirectCDS:          true,
 	}

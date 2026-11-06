@@ -118,6 +118,8 @@ func setField(t *testing.T, d *Decree, name string) {
 		d.RecoverIntent = NewIntentID()
 	case "voters":
 		d.Voters = 3
+	case "state_sha256":
+		d.StateSHA256 = strings.Repeat("cd", sha256.Size)
 	default:
 		t.Fatalf("no value for decree field %q", name)
 	}
@@ -126,6 +128,7 @@ func setField(t *testing.T, d *Decree, name string) {
 func everyKind() []Kind {
 	return []Kind{
 		Genesis,
+		Restore,
 		UpdateMeasurements,
 		SetNodeImages,
 		RotateKey,
@@ -361,6 +364,8 @@ func clearField(t *testing.T, d *Decree, name string) {
 		d.RecoverIntent = ""
 	case "voters":
 		d.Voters = 0
+	case "state_sha256":
+		d.StateSHA256 = ""
 	default:
 		t.Fatalf("no way to clear decree field %q", name)
 	}
