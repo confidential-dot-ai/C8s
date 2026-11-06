@@ -93,8 +93,11 @@ func TestTheAllowlistIsLinearizableAcrossALeaderLoss(t *testing.T) {
 	t.Logf("dropped %d writes of unknown outcome that no read returned", unseen)
 	requireTrafficAfter(t, operations, lost)
 	result, info := porcupine.CheckOperationsVerbose(allowlistRegister, operations, checkFor)
-	if result == porcupine.Ok {
+	switch result {
+	case porcupine.Ok:
 		return
+	case porcupine.Unknown:
+		t.Fatalf("the checker found no verdict on %d operations within %s", len(operations), checkFor)
 	}
 	path := filepath.Join(t.TempDir(), "history.html")
 	if err := porcupine.VisualizePath(allowlistRegister, info, path); err != nil {
