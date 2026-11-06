@@ -37,6 +37,7 @@
 #   node_refuses                     yes/no: a connect from the node to the CDS
 #                                    fails or hangs now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   api_service_name                 the fully qualified DNS name of the cluster's
 #                                    API Service
 #   mesh_restart                     recreate every controller-owned mesh member and wait
@@ -71,9 +72,9 @@
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
 #                                    that is not an operator key
-#   allowlist_get [version]          read the allowlist, naming version in
+#   allowlist_get [tag]              read the allowlist, naming tag in
 #                                    If-None-Match when given; prints
-#                                    "<status> <version>", then the body
+#                                    "<status> <version> <tag>", then the body
 #   cds_read <document> [plain]      read a document of the CDS with no client
 #                                    certificate (mesh-ca, reference-values,
 #                                    operator-key-set, allowlist, readiness),
@@ -217,10 +218,12 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # out of the harness's reach answers unsupported from injected_image. The
 # suite's own images (images/, built by conformance-images.yml) stand in for
 # the logical images CONFORMANCE_IMAGES names, for every backend: tenant-app,
-# Alpine's python with the programs the steps run in it; a backend adds its own.
+# Alpine's python with the programs the steps run in it, and mesh-dialer,
+# busybox with armtls-dial; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
     [tenant-app]=sha256:e1c7fc0eef8212a8a5beaf993ed804e518f80cce32d858c3c7e9c1339bdb3938
+    [mesh-dialer]=sha256:08fad61e68f33b6ee9f1fbd9003d64f23ef9699fe24cb4f82a9450611febdfc2
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
@@ -462,15 +465,20 @@ allowlist_replace() {
     [ "$code" = 204 ] || { echo "backend: PUT /allowlist ($name): HTTP $code: $reply" >&2; return 1; }
 }
 
+# response_header <file> <name>: the value of header name in a curl -D dump.
+response_header() {
+    awk -v name="$2:" 'tolower($1) == name {sub(/\r$/, "", $2); print $2}' "$1"
+}
+
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
     headers="$(mktemp)"
     body="$(mktemp)"
     local -a match=()
-    [ -z "${1:-}" ] || match=(-H "If-None-Match: W/\"$1\"")
+    [ -z "${1:-}" ] || match=(-H "If-None-Match: $1")
     status="$(curl -sSk -o "$body" -D "$headers" -w '%{http_code}' ${match[@]+"${match[@]}"} "$url/allowlist")" || status=000
-    echo "$status $(awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}' "$headers")"
+    echo "$status $(response_header "$headers" x-c8s-allowlist-version) $(response_header "$headers" etag)"
     cat "$body"
     rm -f "$headers" "$body"
 }

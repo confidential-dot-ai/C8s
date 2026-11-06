@@ -799,10 +799,11 @@ runs:
       fi
 
   - name: assert AppArmor runtime confinement and admission
-    if: inputs.exact_image == 'true'
     # c8s-local image invariant, like the cidata tripwire. The probe pod goes
     # through the c8s-operator admission webhook, so run it after the
-    # components converge.
+    # components converge. Runs on every lane, not only the exact-image
+    # acceptance: a regression here otherwise surfaces only after merge, when
+    # the publish is the first run that reaches it.
     # Keep on re-vendor; the source workflow does not ship this script.
     # Its probe image is admitted by a signed allowlist entry.
     shell: bash

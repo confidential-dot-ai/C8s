@@ -22,4 +22,4 @@ enforcer gates the rest of the pod on its start.
 
 The endpoint's startup and readiness probes are HTTP on its health port, with
 every field set, so a stored pod still matches what was rendered. Never
-`exec`: a locked node image denies every runc exec.
+`exec`: a locked node image denies every runc exec it was not granted.

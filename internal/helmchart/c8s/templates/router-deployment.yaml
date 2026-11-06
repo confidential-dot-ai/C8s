@@ -42,7 +42,7 @@ initContainers:
     # nginx's config names the acme cert files, so nginx must not start
     # before the bootstrap placeholder exists; regular containers wait
     # for a native sidecar's startup probe. HTTP, not exec: a locked
-    # node image denies every runc exec, so an exec probe can never pass
+    # node image denies every runc exec it was not granted, so an exec probe can never pass
     # there (internal/cmds/c8srunc). /readyz reports exactly what the
     # probe-file exec reported — both files present and non-empty.
     startupProbe:

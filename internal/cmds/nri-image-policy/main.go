@@ -143,7 +143,7 @@ func Run(args []string) error {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
 		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient).ForNodes()
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
@@ -402,7 +402,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 			} else if wl == nil {
 				err = errInitialAllowlistNil
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
-				version := parseVersion(etag)
+				version := parseVersion(served.Version)
 				args.store.apply(wl, version)
 				args.pull.reached()
 				args.logger.Info("initial allowlist pulled from CDS",
@@ -452,7 +452,8 @@ type pullLoopArgs struct {
 // pulled document, advances the ETag and kills the running containers it no
 // longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched. A
+// forward version arrives. 304 raises the applied version to the one CDS
+// serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
 // once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
@@ -478,15 +479,16 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		if notModified {
+			args.store.raiseAppliedVersion(parseVersion(served.Version))
 			args.pull.reached()
-			args.logger.Debug("pull loop: not modified", "etag", etag)
+			args.logger.Debug("pull loop: not modified", "etag", etag, "version", served.Version)
 			continue
 		}
 		if wl == nil {
 			args.logger.Warn("pull loop fetch returned nil allowlist")
 			continue
 		}
-		version := parseVersion(newETag)
+		version := parseVersion(served.Version)
 		// A rolled-back document is never enforced, so it is not measured.
 		if args.store.rolledBack(version) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
@@ -531,11 +533,11 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	}
 }
 
-// parseVersion extracts the monotone counter N from a weak ETag W/"N" — the CDS
-// mutation counter used for epoch anti-rollback. An unparseable ETag yields 0,
-// which can only be rejected as a rollback once a real version has been applied.
-func parseVersion(etag string) uint64 {
-	n, err := strconv.ParseUint(allowlistclient.VersionFromETag(etag), 10, 64)
+// parseVersion reads the CDS mutation counter a pull was served at, used for
+// epoch anti-rollback. An unparseable version yields 0, which can only be
+// rejected as a rollback once a real version has been applied.
+func parseVersion(version string) uint64 {
+	n, err := strconv.ParseUint(version, 10, 64)
 	if err != nil {
 		return 0
 	}

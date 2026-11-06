@@ -51,6 +51,25 @@ reset_case
 set_paths images/node-guest/c8s/mkosi.conf
 expect_result true
 
+# Anything under mkosi.extra is baked, whatever its suffix.
+reset_case
+set_paths images/node-guest/c8s/mkosi.extra/usr/share/doc/c8s/README.md
+expect_result true
+
+# The worker profile is outside the gate, even its mkosi.extra tree.
+reset_case
+set_paths images/node-guest/worker/mkosi.conf \
+  images/node-guest/worker/mkosi.extra/etc/hostname
+expect_result false
+
+# Beside the image sources but never baked: tests, lint tools, docs.
+reset_case
+set_paths images/node-guest/tests/immutable-root-test.sh \
+  images/node-guest/tools/containerdcheck/main.go \
+  images/node-guest/tools/systemfloor/main_test.go \
+  images/node-guest/README.md
+expect_result false
+
 reset_case
 set_paths .github/actions/setup-mkosi/action.yml
 expect_result true
@@ -61,6 +80,20 @@ expect_result true
 
 reset_case
 jq '.builds["node-image"].confos_ref = "1111111111111111111111111111111111111111"' \
+  "$base_manifest" >"$current_manifest"
+set_paths .github/build-pins.json
+expect_result true
+
+# The tag beside a SHA is not a build input: correcting it rolls nothing.
+reset_case
+jq '.builds["node-image"].confos_tag = "v9.9.9"' \
+  "$base_manifest" >"$current_manifest"
+set_paths .github/build-pins.json
+expect_result false
+
+# The attestation-api digest is: the CDS image fetches those bytes.
+reset_case
+jq '.builds["node-image"].attestation_api_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' \
   "$base_manifest" >"$current_manifest"
 set_paths .github/build-pins.json
 expect_result true

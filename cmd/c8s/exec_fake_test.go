@@ -154,7 +154,7 @@ func resetCLIState(t *testing.T) {
 	installNamespace, installRelease = "c8s-system", "c8s"
 	installValues, installWait, installCRDs = nil, true, true
 	installCertFSGroup = 65532
-	installGetCertRenewInterval = 6 * time.Hour
+	installGetCertRenewInterval = 2 * time.Hour
 	installGetCertRunAsUser, installGetCertRunAsGroup, installGetCertRunAsNonRoot = 65532, 65532, true
 	installCvmMode, installHardwarePlatform = "", "sev-snp"
 	installImagePullSecret, installImageTag = "", ""

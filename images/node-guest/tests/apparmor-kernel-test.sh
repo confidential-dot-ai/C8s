@@ -39,6 +39,14 @@ for _ in $(seq 1 30); do
 done
 case "$state" in running|degraded) ;; *) echo "systemd not ready: $state" >&2; exit 1 ;; esac
 docker cp "$tests_dir/../c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh" "$container:/probe.sh"
+# The container never applies the image's sysctl.d, so bind-mount the drop-in's
+# value over the knob in the container's mount namespace; the script judges it.
+docker cp "$tests_dir/../c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf" "$container:/20-apparmor.conf"
+docker exec "$container" sh -ec '
+    value=$(sed -n "s/^kernel.apparmor_restrict_unprivileged_unconfined *= *//p" /20-apparmor.conf)
+    printf "%s\n" "$value" > /sysctl-unconfined
+    mount --bind /sysctl-unconfined /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined
+'
 # Mount securityfs privately. The probe uses a unique AppArmor namespace so
 # its transient policy cannot replace a policy on the Docker host.
 docker exec "$container" sh -ec '

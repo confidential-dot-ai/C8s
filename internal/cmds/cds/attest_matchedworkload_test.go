@@ -264,6 +264,25 @@ func TestAttest_MatchedWorkload_NamedLeafTTL(t *testing.T) {
 	}
 }
 
+// A sandbox the inventory reports a router-role container in gets the router
+// TTL; the same pod without the role keeps the named one.
+func TestAttest_RouterLeafTTL(t *testing.T) {
+	store := completeAPIStore(t)
+	tune := func(h *AttestHandler) {
+		h.CertTTL = 12 * time.Hour
+		h.NamedCertTTL = 2 * time.Hour
+		h.RouterCertTTL = 20 * time.Second
+	}
+	router := containersView(wlDigestA)
+	router[0].Role = workloadclaims.RouterRole
+	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, router, tune).NotAfter); got > 20*time.Second {
+		t.Fatalf("router leaf expires in %v, want at most 20s", got)
+	}
+	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, containersView(wlDigestA), tune).NotAfter); got < time.Hour {
+		t.Fatalf("non-router leaf expires in %v, want the named ~2h", got)
+	}
+}
+
 // issuer.MaxNamedLeafTTL is a ceiling on the stamp's staleness bound, not a
 // default: NamedCertTTL can only shorten it. A handler configured above it — or
 // with the zero value — must still cap at the ceiling.

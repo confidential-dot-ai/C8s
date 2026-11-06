@@ -129,9 +129,7 @@ func TestReplaceAllEmptyClears(t *testing.T) {
 	}
 }
 
-// A fresh store must start at version "1": CDS clients cache on the derived
-// ETag (W/"1"), so the initial value is part of the API contract, not an
-// implementation detail.
+// A fresh store must start at version "1" (allowlist specification S3).
 func TestInitialVersionIsOne(t *testing.T) {
 	store := openInMemory(t)
 
@@ -158,8 +156,7 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 		t.Fatalf("initial version: got %q, want %q", version, "1")
 	}
 
-	// Version is the ETag the worker pull carries, so it must move in lockstep
-	// with the counter LoadAll reports after a write.
+	// Version() must agree with LoadAll's version even when called first.
 	putEntry(t, allowlist, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, loadVersion, err := store.LoadAll()
 	if err != nil {
@@ -595,10 +592,7 @@ func TestRaiseVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	putEntry(t, allowlist, "web", oneContainerWorkload(mustParseDigest(t, digestA)))
-	before, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := mustHistory(t, store)
 
 	raised, err := store.RaiseVersion(1_800_000_000_000)
 	if err != nil {
@@ -624,7 +618,7 @@ func TestRaiseVersion(t *testing.T) {
 	if len(doc.Workloads) != 1 {
 		t.Fatalf("raising the version changed the document: %v", doc.Workloads)
 	}
-	if after, _ := store.History(); len(after) != len(before) {
+	if after := mustHistory(t, store); len(after) != len(before) {
 		t.Fatalf("raising the version journaled %d entries", len(after)-len(before))
 	}
 }

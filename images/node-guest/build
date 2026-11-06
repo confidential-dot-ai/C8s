@@ -59,6 +59,10 @@
 #                      shares these container inputs between both builds.
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
 #                      repo's checkout).
+#   C8S_PROFILE=worker build the worker image (./worker) instead of the node
+#                      image (./c8s, the default). Requires C8S_BINARY; takes
+#                      neither C8S_DEV nor C8S_IMAGES_DIR. The c8s profile's
+#                      files listed in worker/shared are staged with it.
 #   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
 #                      private half of images/node-guest/module-signing.crt,
 #                      used to sign the NVIDIA modules. Required for GPU
@@ -77,6 +81,15 @@ tdx|snp) ;;
 esac
 [ -n "${C8S_REF:-}" ] \
     || { echo "images/node-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+C8S_PROFILE=${C8S_PROFILE:-c8s}
+case "$C8S_PROFILE" in
+c8s) ;;
+worker)
+    [ -f "${C8S_BINARY:-}" ] && [ "${C8S_DEV:-0}" = 0 ] && [ -z "${C8S_IMAGES_DIR:-}" ] \
+        || { echo "images/node-guest/build: C8S_PROFILE=worker requires C8S_BINARY and takes neither C8S_DEV nor C8S_IMAGES_DIR" >&2; exit 1; }
+    : "${C8S_NAME:=c8s-worker}" ;;
+*)  echo "images/node-guest/build: C8S_PROFILE must be c8s or worker, got '$C8S_PROFILE'" >&2; exit 1 ;;
+esac
 if [ -n "${C8S_IMAGES_DIR:-}" ]; then
     [ -f "${C8S_BINARY:-}" ] || { echo "images/node-guest/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
     C8S_IMAGES_DIR=$(realpath -e -- "$C8S_IMAGES_DIR")
@@ -111,7 +124,7 @@ bash "$IMAGE_DIR/check-apparmor-config.sh" "output/kernel/build/linux-$KVER/.con
 # gpu-cc-enforce runs only at boot, so no PCI hotplug driver may be built.
 ! grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "output/kernel/build/linux-$KVER/.config" \
     || { echo "images/node-guest/build: resolved kernel enables the PCI hotplug symbols above; gpu-cc-enforce would miss a hot-added GPU" >&2; exit 1; }
-PROFILES=(--profile gpu --profile attest-gpu --profile c8s)
+PROFILES=(--profile gpu --profile attest-gpu --profile "$C8S_PROFILE")
 # Fingerprint-gated: the module build must rerun iff the kernel, the fetch
 # script (NVIDIA pins), or the signing cert changed. The kernel manifest
 # covers the kernel side; signatures are deterministic, so a staged tree
@@ -139,6 +152,15 @@ if [ -n "${C8S_BINARY:-}" ]; then
     [ -f "$C8S_BINARY" ] || { echo "images/node-guest/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
 fi
+if [ "$C8S_PROFILE" = worker ]; then
+    mapfile -t SHARED < <(grep -Ev '^[[:space:]]*(#|$)' "$IMAGE_DIR/worker/shared")
+    (( ${#SHARED[@]} > 0 )) || { echo "images/node-guest/build: worker/shared lists nothing" >&2; exit 1; }
+    for shared in "${SHARED[@]}"; do
+        install -D -m "$(stat -c %a "$IMAGE_DIR/c8s/mkosi.extra/$shared")" \
+            "$IMAGE_DIR/c8s/mkosi.extra/$shared" "mkosi/base/mkosi.local/mkosi.extra/$shared"
+    done
+    install -m 0644 "$IMAGE_DIR/c8s/image-policy.yaml.in" mkosi/base/mkosi.local/node-floor.yaml.in
+fi
 if [ -n "${C8S_IMAGES_DIR:-}" ]; then
     rm -rf mkosi/base/mkosi.local/core-images
     mkdir -p mkosi/base/mkosi.local/core-images
@@ -147,7 +169,7 @@ fi
 exec bin/confos build "${C8S_NAME:-c8s}" \
     "${PROFILES[@]}" \
     ${DEV_PROFILE[@]+"${DEV_PROFILE[@]}"} \
-    --profile-dir "$IMAGE_DIR/c8s" \
+    --profile-dir "$IMAGE_DIR/$C8S_PROFILE" \
     --module-signing-cert "$IMAGE_DIR/module-signing.crt" \
     --sync-input "platform=${C8S_PLATFORM}" \
     --sync-input "c8s-ref=${C8S_REF}" \

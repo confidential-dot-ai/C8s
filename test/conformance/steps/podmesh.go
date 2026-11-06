@@ -212,7 +212,7 @@ func resolvesAPIService(ctx context.Context, name string) error {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := w.podExec(p, p.first, "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := w.podExec(p, p.first, "sh", "-c", withExitStatus(script))
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +225,12 @@ func (w *world) exec(p *pod, script string) (*execResult, error) {
 		return nil, fmt.Errorf("exit status of the command in %q: %w", p.name, err)
 	}
 	return &execResult{out: out[:idx], rc: rc}, nil
+}
+
+// withExitStatus appends the line exec reads the exit status from, on a line
+// of its own so a script ending in a heredoc delimiter still closes it.
+func withExitStatus(script string) string {
+	return script + "\necho \"rc=$?\""
 }
 
 // address is the running pod's first address.

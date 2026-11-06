@@ -51,10 +51,13 @@ c8sComponents:
     entrypoint: ["/attestation-api"]
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    ## Released by attestation-rs: the image built from .github/build-pins.json's
-    ## attestation_rs_ref. Bump together with that pin, to
-    ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
-    pinnedDigest: sha256:fb0d98a3f248f6d0f0a8feb8d497fba58d40d775b2db3e9e33d25d3fb283815f
+    ## A copy of .github/build-pins.json's attestation_api_digest: the image
+    ## of attestation_rs_tag (v0.6.0), which also carries the sha-<ref7> name
+    ## of attestation_rs_ref, and the bytes the CDS image stages. pin-watch
+    ## writes both; by hand, after bumping the manifest, run
+    ##   .github/scripts/chart-attestation-api-digest.sh set <attestation_api_digest>
+    ## pin-hygiene fails the PR when the manifest, the tags and this disagree.
+    pinnedDigest: sha256:8d983edc5beb9d56f74adf93c2dac8af8bda58c6bfd681f6ff576254df0dff8a
     ## The injected mesh endpoint: every covered pod runs it, so the node
     ## must admit it whatever else is deployed.
   - valuePath: armtlsMesh.image
@@ -193,18 +196,12 @@ cds:
   ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin
   ## <file>` or `helm --set-file`. Required with address.
   measurementsConfig: ""
-  ## PEM bundle of operator EC public keys (public material, not a secret).
-  ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
-  ## short-lived token signed by one of the matching operator private keys (see
-  ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
-  ## token authorizes one request (allowlist, routes, secrets, including secrets
-  ## explain), and CDS publishes the token of a whole-document upload as that
-  ## document's signature.
-  ## Empty = allowlist writes are rejected (reads are still served), so an
-  ## upgrade that changes a component's shape cannot be published and needs a
-  ## reinstall; adding the keys later is such an upgrade
-  ## (docs/allowlist-and-capabilities.md). Prefer
-  ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
+  ## PEM bundle of operator EC public keys (public material, not a secret) the
+  ## router verifies route manifests under, via --operator-keys-file. Empty =
+  ## the router takes the keys from the verified CDS's GET /operator-keys. CDS
+  ## itself takes its write keys from its measured launch configuration
+  ## (`c8s cds config new --operator-keys`), not from this value. Set it with
+  ## `c8s install --operator-keys <file>` or `helm --set-file`.
   operatorKeys: ""
 
 ## DaemonSet running the attestation-api image from github.com/confidential-dot-ai/attestation-rs.
@@ -255,7 +252,7 @@ attestationApi:
   ##
   ## bare-metal (default): generalized node-as-CVM — our own nodes (self-managed
   ##   TDX/SNP) are themselves confidential VMs exposing a native TEE device
-  ##   (/dev/sev-guest, or /dev/tdx-guest with --hardware-platform tdx); pods run
+  ##   (/dev/sev-guest, or ConfigFS TSM with --hardware-platform tdx); pods run
   ##   as ordinary processes attested via the node's own quote. Cloud-agnostic.
   ## gke: GKE managed confidential VM — also native /dev/sev-guest.
   ## aks: Azure confidential VM — SEV-SNP via the vTPM at /dev/tpm0.
@@ -386,7 +383,8 @@ nriImagePolicy:
     image:
       repository: busybox
       tag: ""
-      digest: "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+      # Resolve busybox:1.38.0 to bump this digest.
+      digest: "sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
       pullPolicy: IfNotPresent
 
   imagePullSecrets: []
@@ -939,6 +937,12 @@ router:
     # or node.baked) and attest.enabled is true, the sidecar also reads the
     # node's measured-policy journal under nriImagePolicy.hostPaths.runtimeDir.
     attestationApiURL: ""
+    # -- attest-pq and attest-lb requests per second each client address may
+    # make, and how many it may make at once (`--establish-rate`,
+    # `--establish-burst`). null keeps the sidecar's defaults (10/s, burst 20).
+    # A baked node renders the chart with these unset, so it runs the defaults.
+    establishRate: null
+    establishBurst: null
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity
     # leaf is a usable credential carrying a matched-workload stamp with

@@ -71,8 +71,14 @@ rewrite_snp_report_data() {
     images/cds-guest/cds/mkosi.conf
 }
 pin_a_separate_attester() {
-  sed -i 's|^ATTESTATION_RS_REF=.*|ATTESTATION_RS_REF=5e6f31cf0f4a90ff347f37f5274437545ef12a7a|' \
+  sed -i 's|^ATTESTATION_API_DIGEST=.*|ATTESTATION_API_DIGEST=sha256:5e6f31cf0f4a90ff347f37f5274437545ef12a7a5e6f31cf0f4a90ff347f37f5|' \
     images/cds-guest/build
+}
+stage_the_tag_instead() {
+  # Resolve a tag on build day instead of staging the pinned digest.
+  # shellcheck disable=SC2016 # Literal sed pattern, not an expansion.
+  sed -i 's|"\$ATTESTATION_API_DIGEST"|"$(resolve_published ghcr.io/confidential-dot-ai/attestation-api sha-c52cd8e)"|' \
+    images/cds-guest/cds/mkosi.sync
 }
 
 if ! run_gate; then
@@ -101,5 +107,7 @@ rejects "a kernel that rewrites the SNP report data" \
   "must put snp_measurement_registers=off" rewrite_snp_report_data
 rejects "an attester pinned apart from the node images" \
   "must flow from images/cds-guest/build" pin_a_separate_attester
+rejects "an attester staged from a tag instead of the pinned digest" \
+  "must flow from images/cds-guest/build" stage_the_tag_instead
 
 echo "$tests cds-image invariant assertions passed"

@@ -25,10 +25,33 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-const (
-	// prepBusyboxDigest is values.yaml's nriImagePolicy.containerdPrep.image.digest.
-	prepBusyboxDigest = "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
-)
+// chartImageDigest reads the digest values.yaml pins for one third-party
+// image, so a bump by pin-watch or through
+// .github/scripts/chart-image-pins.sh set needs no edit here.
+func chartImageDigest(t *testing.T, path ...string) string {
+	t.Helper()
+	raw, err := os.ReadFile("c8s/values.yaml")
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values map[string]any
+	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("parse values.yaml: %v", err)
+	}
+	var node any = values
+	for _, key := range path {
+		m, ok := node.(map[string]any)
+		if !ok {
+			t.Fatalf("values.yaml has no %s", strings.Join(path, "."))
+		}
+		node = m[key]
+	}
+	digest, ok := node.(string)
+	if !ok || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("values.yaml %s is %v, not a digest", strings.Join(path, "."), node)
+	}
+	return digest
+}
 
 // renderedSeed parses the allowlist document out of the rendered CDS seed
 // ConfigMap — the same JSON CDS feeds to pkg/allowlist.ParseJSON at startup.
@@ -158,6 +181,7 @@ func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
 	if !ok {
 		t.Fatalf("rke2 render missing the containerd-prep initContainer")
 	}
+	prepBusyboxDigest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
 	admitPlatformContainer(t, seed, prepBusyboxDigest, prep)
 	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "-c", "rm -rf /"})
 	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "/script/setup"})
@@ -205,7 +229,7 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	for _, digest := range []string{baseNRIDigest, prepBusyboxDigest} {
+	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")} {
 		for name, w := range seed.Workloads {
 			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
 				if c.Digest.String() == digest && c.AnyArgv() {

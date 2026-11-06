@@ -3,6 +3,7 @@ package getkubeconfig
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,6 +76,8 @@ func resolveVMI(ctx context.Context, ref string) (string, error) {
 // vmiAddress returns the guest's first non-empty status interface address. A
 // booting VMI reports no status.interfaces, an empty list, or entries without
 // an ipAddress yet; all of those are "no reported address", not lookup errors.
+// The address is cluster-reported data that ends up in the kubeconfig, so
+// anything but an IP is refused.
 func vmiAddress(vmi *unstructured.Unstructured) (string, error) {
 	ifaces, _, err := unstructured.NestedSlice(vmi.Object, "status", "interfaces")
 	if err != nil {
@@ -85,9 +88,17 @@ func vmiAddress(vmi *unstructured.Unstructured) (string, error) {
 		if !ok {
 			continue
 		}
-		if ip, _ := iface["ipAddress"].(string); ip != "" {
-			return ip, nil
+		ip, _ := iface["ipAddress"].(string)
+		if ip == "" {
+			continue
 		}
+		if net.ParseIP(ip) == nil {
+			if len(ip) > 64 {
+				ip = ip[:64]
+			}
+			return "", fmt.Errorf("guest %s/%s reports address %q, which is not an IP", vmi.GetNamespace(), vmi.GetName(), ip)
+		}
+		return ip, nil
 	}
 	return "", fmt.Errorf("guest %s/%s has no reported address", vmi.GetNamespace(), vmi.GetName())
 }

@@ -23,8 +23,9 @@ import (
 //
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
-// `allowlist_version` is the counter every mutation bumps (the worker pull
-// ETag). The journal tables (journal.go) keep the history of served documents.
+// `allowlist_version` is the counter every mutation bumps (the version nodes
+// refuse to go below). The journal tables (journal.go) keep the history of
+// served documents.
 // `route_manifest` holds the signed route manifest, which shares the database
 // and so its lifetime (route policy C5).
 type Store struct {
@@ -38,6 +39,9 @@ type Store struct {
 	gen uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest
+	// nodeDelay is how long after a write it takes effect on nodes
+	// (InEffect).
+	nodeDelay time.Duration
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -95,7 +99,7 @@ func open(uri string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open allowlist db: %w", err)
 	}
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if _, err := db.Exec(initSQL + journalSQL + hostPrivilegeSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init allowlist schema: %w", err)
 	}
@@ -127,6 +131,21 @@ func requireSpentTokenWindow(db *sql.DB) error {
 	return nil
 }
 
+var errNoHostPrivilegeRecord = errors.New("the database keeps no allowlist host privilege record")
+
+// requireHostPrivilegeRecord refuses a database without the one
+// host_privilege row every write and every history read needs.
+func requireHostPrivilegeRecord(ctx context.Context, conn *sql.Conn) error {
+	var rows int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM host_privilege").Scan(&rows); err != nil {
+		return fmt.Errorf("%w: %w", errNoHostPrivilegeRecord, err)
+	}
+	if rows != 1 {
+		return errNoHostPrivilegeRecord
+	}
+	return nil
+}
+
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
 	if s.db != nil {
@@ -136,7 +155,7 @@ func (s *Store) Close() error {
 }
 
 // LoadAll builds the full allowlist document and returns it with the version
-// string (the ETag). It backs GET /allowlist.
+// string. It backs GET /allowlist.
 func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,8 +226,8 @@ func (s *Store) Contains(digest types.Digest) (bool, error) {
 	return true, nil
 }
 
-// Version returns the current allowlist version counter — the same value the
-// worker pull ETag carries. It is a single-row read, so a caller that must not
+// Version returns the current allowlist version counter — the same value
+// GET /allowlist serves. It is a single-row read, so a caller that must not
 // pay for LoadAll on every request can use it to decide whether a cached
 // document is still current.
 func (s *Store) Version() (string, error) {
@@ -223,16 +242,20 @@ func (s *Store) Version() (string, error) {
 }
 
 // commitTx journals the document tx leaves at the command's time (see
-// publishTx), stores sig as that document's operator signature, commits, and
+// publishTx), stores sig as that document's operator signature, records the
+// host privilege latch grants under that document's digest, commits, and
 // records the mutation for snapshot-cache invalidation. Every write path goes
 // through it. Callers must hold s.mu.
-func (s *Store) commitTx(tx *sql.Tx, sig documentSignature, at time.Time) error {
+func (s *Store) commitTx(tx *sql.Tx, sig documentSignature, latch hostPrivilegeLatch, at time.Time) error {
 	journaled, err := publishTx(tx, at)
 	if err != nil {
 		return fmt.Errorf("journal allowlist: %w", err)
 	}
 	if err := sig.storeTx(tx, journaled); err != nil {
 		return fmt.Errorf("sign allowlist: %w", err)
+	}
+	if err := latch.recordTx(tx, objectDigest(journaled)); err != nil {
+		return fmt.Errorf("record the allowlist host privilege: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -250,8 +273,8 @@ func (s *Store) Generation() uint64 {
 	return s.gen
 }
 
-// bumpVersionTx increments the store version within tx. The version is the
-// worker pull ETag, so it is bumped once per mutation that changes the set.
+// bumpVersionTx increments the store version within tx, once per mutation
+// that changes the set.
 func bumpVersionTx(tx *sql.Tx) error {
 	_, err := tx.Exec(
 		"UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) + 1 AS TEXT)",
@@ -312,12 +335,15 @@ func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at tim
 	if added, err = seedWorkloadsTx(tx, workloads); err != nil {
 		return 0, 0, err
 	}
+	if err := seedDeclaresHostPrivilegeTx(tx, workloads); err != nil {
+		return 0, 0, err
+	}
 	if added+retired > 0 {
 		if err := bumpVersionTx(tx); err != nil {
 			return 0, 0, err
 		}
 	}
-	return added, retired, s.commitTx(tx, documentSignature{}, at)
+	return added, retired, s.commitTx(tx, documentSignature{}, hostPrivilegeLatch{}, at)
 }
 
 // retireReplacedTx deletes every stored entry seed replaces and returns how
@@ -376,13 +402,13 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 		if exists != 0 {
 			continue
 		}
-		entryJSON, err := json.Marshal(w)
+		entry, err := entryJSON(w)
 		if err != nil {
 			return 0, err
 		}
 		res, err := tx.Exec(
 			"INSERT OR IGNORE INTO workload_entry (name, entry_json) VALUES (?, ?)",
-			name, string(entryJSON),
+			name, entry,
 		)
 		if err != nil {
 			return 0, err
@@ -443,6 +469,10 @@ func (s *Store) replaceAll(al *pkgallowlist.Allowlist, write OperatorWrite, at t
 	if err := requireVersionTx(tx, write.Version); err != nil {
 		return err
 	}
+	latch, err := hostPrivilegeLatchTx(tx, al)
+	if err != nil {
+		return err
+	}
 	if err := replaceContentsTx(tx, al); err != nil {
 		return err
 	}
@@ -455,6 +485,7 @@ func (s *Store) replaceAll(al *pkgallowlist.Allowlist, write OperatorWrite, at t
 			token:    write.Signature,
 			document: signed,
 		},
+		latch,
 		at,
 	)
 }
@@ -488,11 +519,11 @@ func replaceContentsTx(tx *sql.Tx, al *pkgallowlist.Allowlist) error {
 		}
 	}
 	for name, w := range al.Workloads {
-		entryJSON, err := json.Marshal(w)
+		entry, err := entryJSON(w)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec("INSERT INTO workload_entry (name, entry_json) VALUES (?, ?)", name, string(entryJSON)); err != nil {
+		if _, err := tx.Exec("INSERT INTO workload_entry (name, entry_json) VALUES (?, ?)", name, entry); err != nil {
 			return err
 		}
 		if err := indexWorkloadTx(tx, name, w); err != nil {
@@ -500,6 +531,12 @@ func replaceContentsTx(tx *sql.Tx, al *pkgallowlist.Allowlist) error {
 		}
 	}
 	return nil
+}
+
+// entryJSON is the canonical JSON of one entry, the bytes workload_entry holds.
+func entryJSON(w pkgallowlist.Workload) (string, error) {
+	entry, err := json.Marshal(w)
+	return string(entry), err
 }
 
 // indexWorkloadTx writes one (digest, name, role) index row per container. A

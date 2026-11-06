@@ -128,4 +128,36 @@ rejects_hotplug "snapshot resolving HOTPLUG_PCI on" \
   "c8s.snapshot must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" config-x86_64-c8s.snapshot
 rejects_hotplug "snapshot resolving acpiphp on" \
   'c8s.snapshot enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_ACPI=y" config-x86_64-c8s.snapshot
+
+# The AppArmor sysctl drop-in must exist with the restriction off, and no
+# later sysctl.d file in the profile or the confos base may set it again.
+sysctl_key=kernel.apparmor_restrict_unprivileged_unconfined
+dropin="$fixture_dir/images/node-guest/c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf"
+cp "$dropin" "$fixture_dir/20-apparmor.conf.orig"
+rejects_sysctl() {
+  local name=$1 expected=$2
+  if run_gate; then fail "$name was accepted"; fi
+  grep -Fq "$expected" "$fixture_dir/output" || {
+    cat "$fixture_dir/output"
+    fail "$name failed for an unrelated reason"
+  }
+  tests=$((tests + 1))
+}
+sed "s/= 0\$/= 1/" "$fixture_dir/20-apparmor.conf.orig" >"$dropin"
+rejects_sysctl "drop-in leaving the restriction on" "20-apparmor.conf must set $sysctl_key = 0"
+rm "$dropin"
+rejects_sysctl "missing drop-in" "20-apparmor.conf must set $sysctl_key = 0"
+cp "$fixture_dir/20-apparmor.conf.orig" "$dropin"
+for later in "$fixture_dir/images/node-guest/c8s/mkosi.extra/etc/sysctl.d/90-rke2.conf" \
+             "$fixture_dir/confos/mkosi/base/mkosi.extra/etc/sysctl.d/99-kspp-hardening.conf"; do
+  mkdir -p "${later%/*}"
+  rm -f "$fixture_dir/later.orig"
+  if [ -f "$later" ]; then cp "$later" "$fixture_dir/later.orig"; fi
+  printf '%s = 1\n' "$sysctl_key" >>"$later"
+  rejects_sysctl "${later##*/} setting the key after the drop-in" "sort after 20-apparmor.conf and set $sysctl_key"
+  grep -Fq "${later##*/}" "$fixture_dir/output" || fail "${later##*/} was not named as the overriding file"
+  if [ -f "$fixture_dir/later.orig" ]; then cp "$fixture_dir/later.orig" "$later"; else rm "$later"; fi
+done
+run_gate || { cat "$fixture_dir/output"; fail "baseline after the sysctl cases was rejected"; }
+tests=$((tests + 1))
 echo "$tests node-image invariant assertions passed"

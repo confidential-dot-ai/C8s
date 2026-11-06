@@ -33,23 +33,6 @@ const (
 	containerTypeSandbox       = "sandbox"
 )
 
-// workloadCapabilities is what a container outside every platform role may
-// hold: the runtime's default set less NET_RAW, SETUID and SETGID, each of
-// which defeats the pod ruleset.
-var workloadCapabilities = []string{
-	"CAP_AUDIT_WRITE",
-	"CAP_CHOWN",
-	"CAP_DAC_OVERRIDE",
-	"CAP_FOWNER",
-	"CAP_FSETID",
-	"CAP_KILL",
-	"CAP_MKNOD",
-	"CAP_NET_BIND_SERVICE",
-	"CAP_SETFCAP",
-	"CAP_SETPCAP",
-	"CAP_SYS_CHROOT",
-}
-
 // kernelFSTypes are the filesystem types a privileged container is given
 // writable (containerd pkg/oci, WithWriteableSysfs and WithWriteableCgroupfs).
 var kernelFSTypes = []string{
@@ -59,34 +42,32 @@ var kernelFSTypes = []string{
 }
 
 // requireFloor refuses a bundle that would start a container of a member pod
-// with privileges the pod's protection cannot survive. A role's container
-// holds no capabilities. Attachability is refused for every container the
-// wrapper creates, whether or not the floor covers it.
-func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+// with privileges the pod's protection cannot survive. Attachability is
+// refused for every container the wrapper creates, whether or not the floor
+// covers it.
+func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor, grantDir string) error {
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
 	}
 	if !floorApplies(spec, containerID, floor) {
 		return nil
 	}
-	if err := floorChecks(spec, floor); err != nil {
+	if err := floorChecks(spec, floor, grantDir, containerID); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil
 }
 
-func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
+func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor, grantDir, containerID string) error {
 	if spec.Process == nil || spec.Linux == nil {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
 	user := spec.Process.User
-	allowed := workloadCapabilities
 	role := ""
 	if bound, reserved := floor.ReservedIDs[user.UID]; reserved {
 		role = bound.Name
-		allowed = nil
 	}
-	if err := requireFloorCapabilities(spec.Process.Capabilities, allowed); err != nil {
+	if err := requireFloorCapabilities(spec.Process.Capabilities, role, grantDir, containerID); err != nil {
 		return err
 	}
 	if err := requireNoNewPrivileges(spec.Process); err != nil {
@@ -206,11 +187,15 @@ func requireNotAttachable(spec *specs.Spec, stdin *os.File) error {
 }
 
 // floorApplies reports a container the floor covers: a pod container — not the
-// sandbox the runtime creates for the pod itself — in a namespace trusted
-// policy does not exempt. A bundle that names no namespace is covered: the
-// floor follows what the node measured, not what a bundle leaves out.
+// sandbox the runtime creates for the pod itself, nor a static pod's, which is
+// never a member — in a namespace trusted policy does not exempt. A bundle
+// that names no namespace is covered: the floor follows what the node
+// measured, not what a bundle leaves out.
+//
+// The kubelet's static pod mark reaches a bundle only where the node's
+// containerd config passes it through (pod_annotations), as a worker's does.
 func floorApplies(spec *specs.Spec, containerID string, floor nriimagepolicy.MeshFloor) bool {
-	if isPodSandbox(spec, containerID) {
+	if isPodSandbox(spec, containerID) || nriimagepolicy.StaticPodAnnotations(spec.Annotations) {
 		return false
 	}
 	return !slices.Contains(floor.ExemptNamespaces, spec.Annotations[annotationSandboxNamespace])
@@ -226,37 +211,65 @@ func isPodSandbox(spec *specs.Spec, containerID string) bool {
 		sandboxID != "" && sandboxID == containerID
 }
 
-// requireFloorCapabilities refuses a capability outside the floor in any of
-// the five sets: one in the bounding set is one an exec can still take. A
-// bundle that names no sets at all is refused rather than read as none.
-func requireFloorCapabilities(held *specs.LinuxCapabilities, allowed []string) error {
+// requireFloorCapabilities refuses a capability a container may not hold: one
+// outside the node's default set that admission did not grant it. Every set
+// counts, bounding included: one there is one an exec can still take. The
+// bundle containerd writes names all five sets; one that names none is
+// refused.
+func requireFloorCapabilities(held *specs.LinuxCapabilities, role, grantDir, containerID string) error {
 	if held == nil {
 		return errors.New("the bundle names no capability sets")
 	}
-	if err := requireCapabilitySet("bounding", held.Bounding, allowed); err != nil {
-		return err
+	names := nriimagepolicy.HeldCapabilities(held)
+	if role != "" {
+		return requireRoleHoldsNone(role, names)
 	}
-	if err := requireCapabilitySet("effective", held.Effective, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("permitted", held.Permitted, allowed); err != nil {
-		return err
-	}
-	if err := requireCapabilitySet("inheritable", held.Inheritable, allowed); err != nil {
-		return err
-	}
-	return requireCapabilitySet("ambient", held.Ambient, allowed)
+	return requireGrantedCapabilities(nriimagepolicy.BeyondDefaultCapabilities(names), grantDir, containerID)
 }
 
-// requireCapabilitySet refuses a capability of one set that the floor does
-// not allow.
-func requireCapabilitySet(name string, held, allowed []string) error {
-	for _, capability := range held {
-		if !slices.Contains(allowed, capability) {
-			return fmt.Errorf("%s capability %s is outside the floor", name, capability)
+// requireRoleHoldsNone refuses any capability of a container on a platform
+// role, whatever an entry declares for its launch.
+func requireRoleHoldsNone(role string, held []string) error {
+	if len(held) == 0 {
+		return nil
+	}
+	return fmt.Errorf("a container of the %s role holds capabilities %s", role, strings.Join(held, ", "))
+}
+
+// requireGrantedCapabilities refuses a capability beyond the node's default
+// set that no entry may declare, and one no declaration admission recorded for
+// this container declares. Admission records the declarations at the check
+// whose failure fails the create, so a container the plugin's start check
+// never judges holds the default set alone.
+func requireGrantedCapabilities(beyond []string, grantDir, containerID string) error {
+	if len(beyond) == 0 {
+		return nil
+	}
+	for _, name := range beyond {
+		if allowlist.UndeclarableCapability(name) {
+			return fmt.Errorf("the container holds capability %s, which no entry may declare", name)
 		}
 	}
-	return nil
+	granted, err := nriimagepolicy.ReadCapabilityGrant(grantDir, containerID)
+	if err != nil {
+		return fmt.Errorf("the container holds capabilities %s and its capability grant is not one admission wrote: %w", strings.Join(beyond, ", "), err)
+	}
+	for _, declared := range granted {
+		if declaresAll(declared, beyond) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the container holds capabilities %s, which no declaration admission granted it declares", strings.Join(beyond, ", "))
+}
+
+// declaresAll reports one declaration naming every capability in beyond.
+func declaresAll(declared, beyond []string) bool {
+	for _, name := range beyond {
+		if !slices.Contains(declared, name) {
+			return false
+		}
+	}
+	return true
 }
 
 // requireNoNewPrivileges requires the bit that bounds what an execve inside
@@ -400,19 +413,26 @@ func readBundle(args []string) (*specs.Spec, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	spec, err := readSpec(dir)
+	return spec, containerID, err
+}
+
+// readSpec reads the OCI configuration in bundle directory dir, with a
+// relative root path resolved against it.
+func readSpec(dir string) (*specs.Spec, error) {
 	path := filepath.Join(dir, "config.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the OCI configuration: %w", err)
+		return nil, fmt.Errorf("read the OCI configuration: %w", err)
 	}
 	var spec specs.Spec
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if spec.Root != nil && !filepath.IsAbs(spec.Root.Path) {
 		spec.Root.Path = filepath.Join(dir, spec.Root.Path)
 	}
-	return &spec, containerID, nil
+	return &spec, nil
 }
 
 // bundleAndID finds the two things the floor needs: the --bundle option's

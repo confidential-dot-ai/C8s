@@ -21,6 +21,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
   [security-model.md](security-model.md).
 - Contributor: [glossary.md](glossary.md),
   [engineering-standards.md](engineering-standards.md),
+  [review-guide.md](review-guide.md),
   [integration-tests.md](integration-tests.md).
 
 ## Pages
@@ -62,4 +63,5 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [../SECURITY.md](../SECURITY.md) | policy | Reporting a vulnerability |
 | **Contributing** | | |
 | [engineering-standards.md](engineering-standards.md) | policy | Engineering standards for this repository |
+| [review-guide.md](review-guide.md) | how-to | Review correctness, security and supporting evidence |
 | [integration-tests.md](integration-tests.md) | how-to | Run the test harnesses |

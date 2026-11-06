@@ -60,9 +60,10 @@ const sessionHeader = "X-C8s-Session"
 // the process holds across all of them.
 const (
 	// Session establishment: one attestation report, one X-Wing encapsulation
-	// and one session per request.
-	establishRateLimit = 10 // requests per second per client
-	establishRateBurst = 20
+	// and one session per request. Defaults for --establish-rate and
+	// --establish-burst.
+	defaultEstablishRate  = 10 // requests per second per client
+	defaultEstablishBurst = 20
 	// One established session's application traffic, charged to the session.
 	sessionRateLimit = 200
 	sessionRateBurst = 400
@@ -217,6 +218,10 @@ type Config struct {
 	// SessionMaxAge is the absolute session lifetime from establishment,
 	// enforced regardless of activity. Defaults to defaultSessionMaxAge.
 	SessionMaxAge time.Duration
+	// EstablishRate and EstablishBurst meter attest-pq and attest-lb per
+	// client. Default to defaultEstablishRate and defaultEstablishBurst.
+	EstablishRate  rate.Limit
+	EstablishBurst int
 	// TunnelIOTimeout is how long reading a tunnel request body, or writing
 	// its sealed response, may make no progress before the handler gives up.
 	// It restarts after every read and every written chunk, so a slow client
@@ -280,12 +285,18 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
+	if cfg.EstablishRate <= 0 {
+		cfg.EstablishRate = defaultEstablishRate
+	}
+	if cfg.EstablishBurst <= 0 {
+		cfg.EstablishBurst = defaultEstablishBurst
+	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
 		routes:           cfg.Routes,
 		measuredPolicies: armtls.NewJournal(cfg.MeasuredPoliciesFile),
-		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
+		establishLimiter: newLimiter(cfg.EstablishRate, cfg.EstablishBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
 		sweepEvery:       sweepInterval,

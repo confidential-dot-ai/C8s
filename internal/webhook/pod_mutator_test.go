@@ -172,8 +172,9 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 	}
 }
 
-// An injected pod that asked for service links is admitted with a warning, so
-// its author learns the variables are gone; the default stays quiet.
+// An injected pod with service links on is admitted with a warning, so its
+// author learns the variables are gone. The API server defaults the field to
+// true, so only an explicit false stays quiet in a cluster.
 func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

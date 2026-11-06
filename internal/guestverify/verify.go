@@ -6,8 +6,11 @@ package guestverify
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"slices"
@@ -179,6 +182,31 @@ func (exp Policy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
 	}
+	if _, err := runtimemeasure.Binding(res); err != nil {
+		return err
+	}
+	err := exp.checkBinding(res)
+	if fp := spkiFingerprint(exp.operatorPubPEM); err != nil && fp != "" {
+		// The quote carries only a digest of the node's key, so the key it
+		// was launched for cannot be named here; the supplied one can.
+		return fmt.Errorf("%w (--operator-key has sha256(SPKI DER) %s; a node launched for another operator key fails here)", err, fp)
+	}
+	return err
+}
+
+// spkiFingerprint is the hex SHA-256 of the PEM key's SPKI DER, or "" when
+// pubPEM is not PEM.
+func spkiFingerprint(pubPEM []byte) string {
+	block, _ := pem.Decode(pubPEM)
+	if block == nil {
+		return ""
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(sum[:])
+}
+
+// checkBinding checks the operator-key binding and the measured chain.
+func (exp Policy) checkBinding(res *teetypes.VerificationResult) error {
 	err := runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
 	if err == nil || exp.policies == nil {
 		return err

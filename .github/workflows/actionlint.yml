@@ -18,8 +18,26 @@ jobs:
       - name: Test pin manifest utility
         run: bash .github/scripts/tests/test-pin-manifest.sh
 
+      - name: Test the release tag resolver
+        run: bash .github/scripts/tests/test-release-pin.sh
+
+      - name: Test the confos mkosi pin reader
+        run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
+
+      - name: Test the ghcr digest resolver
+        run: bash .github/scripts/tests/test-ghcr-digest.sh
+
+      - name: Test the chart attestation-api digest copy
+        run: bash .github/scripts/tests/test-chart-attestation-api-digest.sh
+
+      - name: Test the chart's third-party image pins
+        run: bash .github/scripts/tests/test-chart-image-pins.sh
+
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
+
+      - name: Test the pin-watch PR opener
+        run: bash .github/scripts/tests/test-pin-watch-pr.sh
 
       - name: Test the one-command image publisher
         run: bash .github/scripts/tests/test-publish-ref-images.sh
@@ -67,9 +85,21 @@ jobs:
           shellcheck \
             .github/scripts/calculate-release-version.sh \
             .github/scripts/pin-manifest.sh \
+            .github/scripts/release-pin.sh \
+            .github/scripts/confos-mkosi-pin.sh \
+            .github/scripts/ghcr-digest.sh \
+            .github/scripts/chart-attestation-api-digest.sh \
             .github/scripts/repro-gate-changes \
             .github/scripts/build-gate-images.sh \
             .github/scripts/tests/test-pin-manifest.sh \
+            .github/scripts/tests/test-release-pin.sh \
+            .github/scripts/tests/test-confos-mkosi-pin.sh \
+            .github/scripts/tests/test-ghcr-digest.sh \
+            .github/scripts/tests/test-chart-attestation-api-digest.sh \
+            .github/scripts/chart-image-pins.sh \
+            .github/scripts/tests/test-chart-image-pins.sh \
             .github/scripts/tests/test-repro-gate-changes.sh \
+            .github/scripts/pin-watch-pr.sh \
+            .github/scripts/tests/test-pin-watch-pr.sh \
             .github/scripts/publish-ref-images.sh \
             .github/scripts/tests/test-publish-ref-images.sh

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -33,7 +34,7 @@ signed launch.yaml per node and the client policy that pins the server.
                       'c8s get-kubeconfig --operator-key' and signed CDS writes.
                       Not written with --operator-key: that key stays where it is
   <out>/agent.key     the agent launch key; 'add-agent' reuses it
-  <out>/server.json   C8S_MEASUREMENTS_CONFIG for clients of this cluster
+  <out>/server.json   --image-policy-file for clients of this cluster
   <out>/peers.json    every launch identity CDS admits and serves;
                       'c8s cds verify --served-policy-file'
   <out>/cds-config.yaml  the launch file this cluster's CDS VM boots on
@@ -86,10 +87,7 @@ that file. See docs/operator.md, "Authenticated launch configuration".`,
 	f.StringVar(&opts.CDS.AllowlistSeedPath, "cds-allowlist-seed", "", "the release's allowlist-seed-<platform>.json: the component entries this cluster's CDS serves")
 	f.StringVar(&opts.CDS.TenantWorkloadsPath, "tenant-workloads", "", "optional c8s.allowlist/v1 JSON file of tenant workloads the CDS serves beside the component entries; an entry may not take a component entry's name")
 	cdsconfig.BindReplicaSetFlags(f, "cds-", &opts.CDS.ReplicaSet)
-	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
-	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
-	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
-	f.Int64Var(&opts.Router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
+	BindRouterFlags(f, &opts.Router)
 	f.StringArrayVar(&mirrors, "registry-mirror", nil, "registry=http://ipv4[:port], the mirror containerd pulls that registry through; repeatable, once per registry")
 	f.StringVar(&opts.OperatorKeyPath, "operator-key", "", "existing ECDSA P-256 operator private key PEM to use as the server launch key instead of generating one; it is not copied into the bundle")
 	f.StringVar(&opts.OperatorPubPath, "operator-pubkey", "", "public key PEM --operator-key must match byte for byte, e.g. the one clients pin (c8s keys new --pub-out)")
@@ -106,6 +104,14 @@ that file. See docs/operator.md, "Authenticated launch configuration".`,
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// BindRouterFlags binds the flags a document's router block is drafted from.
+func BindRouterFlags(f *pflag.FlagSet, router *Router) {
+	f.StringArrayVar(&router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
+	f.StringVar(&router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
+	f.StringVar(&router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
+	f.Int64Var(&router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
 }
 
 // parseRegistryMirrors turns repeated registry=endpoint flags into a map and

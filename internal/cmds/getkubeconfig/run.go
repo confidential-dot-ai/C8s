@@ -3,13 +3,9 @@ package getkubeconfig
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"log/slog"
-	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -23,9 +19,6 @@ import (
 
 // Config is the get-kubeconfig client configuration.
 type Config struct {
-	// AttestURL optionally selects a legacy attestation-api /attest endpoint.
-	// Empty uses operator-authenticated attestation over ReleaseBaseURL.
-	AttestURL string
 	// ReleaseBaseURL is the cred-release endpoint base (e.g. https://<node>:8443).
 	ReleaseBaseURL string
 	// APIServerURL is the guest apiserver the kubeconfig points at
@@ -68,9 +61,11 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	// Signed requests must always pass through the armTLS verifier. An HTTP
 	// URL would bypass TLS entirely, even with VerifyConnection installed.
-	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
-	if err != nil || releaseURL.Scheme != "https" || releaseURL.Host == "" || releaseURL.User != nil || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
-		return fmt.Errorf("--release-url must be an absolute HTTPS URL without userinfo, query or fragment")
+	if _, err := parseHTTPSURL("--release-url", cfg.ReleaseBaseURL); err != nil {
+		return err
+	}
+	if _, err := parseHTTPSURL("--apiserver-url", cfg.APIServerURL); err != nil {
+		return err
 	}
 	cfg.ReleaseBaseURL = strings.TrimRight(cfg.ReleaseBaseURL, "/")
 	role, err := credrelease.ParseRole(cfg.Role)
@@ -98,34 +93,9 @@ func Run(ctx context.Context, cfg Config) error {
 	// later workload extends; it cannot replace the fresh report.
 	httpClient := guestverify.NewClient(exp, cfg.Timeout)
 	defer httpClient.CloseIdleConnections()
-	releaseWait := cfg.ReleaseWait
-	var releaseDeadline time.Time // set when the pre-dial spends releaseWait
-	if cfg.AttestURL != "" {
-		var dialErr error
-		if exp.MeasuresPolicies() {
-			// The report comes from elsewhere: record cred-release's list
-			// first. The dial and step 3 share one wait for cred-release.
-			releaseDeadline = time.Now().Add(cfg.ReleaseWait)
-			dialErr = dialRelease(ctx, cfg, releaseURL, exp)
-			if dialErr != nil {
-				slog.Warn("record cred-release measured policies", "error", dialErr)
-			}
-		}
-		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
-		cancel()
-		switch {
-		case !errors.Is(err, guestverify.ErrPoliciesDoNotReplay):
-		case dialErr != nil:
-			err = fmt.Errorf("%w (no list: the dial to cred-release failed: %v)", err, dialErr)
-		default:
-			err = fmt.Errorf("%w (the list from cred-release's certificate may predate the node's latest policy: retry after cred-release reissues its certificate, or omit --attest-url)", err)
-		}
-	} else {
-		err = retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
-			return attestCredentialRelease(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, exp)
-		})
-	}
+	err = retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+		return attestCredentialRelease(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, exp)
+	})
 	if err != nil {
 		return fmt.Errorf("attestation gate: %w", err)
 	}
@@ -145,11 +115,8 @@ func Run(ctx context.Context, cfg Config) error {
 	//    (guestverify.NewClient): the serving cert's embedded quote must bind
 	//    to the cert key AND satisfy the same full measured-identity policy as
 	//    the attest gate, so the host can't MITM the channel.
-	if !releaseDeadline.IsZero() {
-		releaseWait = max(0, time.Until(releaseDeadline))
-	}
 	var resp *credrelease.ReleaseResponse
-	err = retryRefused(ctx, cfg.Timeout, releaseWait, func(stepCtx context.Context) error {
+	err = retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
 		var requestErr error
 		resp, requestErr = requestCredential(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, csrPEM, role)
 		return requestErr
@@ -159,12 +126,25 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 4. Assemble + write the kubeconfig.
-	kc := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	kc, err := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	if err != nil {
+		return fmt.Errorf("build kubeconfig: %w", err)
+	}
 	if err := os.WriteFile(cfg.OutPath, kc, 0o600); err != nil {
 		return fmt.Errorf("write kubeconfig: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (context %q, role %s) — attested: image tuple + operator-key chain verified\n", cfg.OutPath, cfg.ContextName, role)
 	return nil
+}
+
+// parseHTTPSURL parses raw as an absolute HTTPS URL with a host and no
+// userinfo, query or fragment. flag names the source in the error.
+func parseHTTPSURL(flag, raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s must be an absolute HTTPS URL without userinfo, query or fragment", flag)
+	}
+	return u, nil
 }
 
 // publicKeyPEMFromPrivate derives the PKIX PEM public key from an ECDSA
@@ -206,23 +186,3 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 
 // retryRefused retries each cred-release step; tests replace it.
 var retryRefused = httputil.RetryConnectionRefused
-
-// dialRelease completes one armTLS handshake with cred-release, so the
-// verified leaf records its runtime extensions. Each attempt is bounded by
-// cfg.Timeout; cfg.ReleaseWait bounds retries of a refused dial. A failed dial
-// records nothing and leaves the gate to fail closed.
-func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp guestverify.Policy) error {
-	port := releaseURL.Port()
-	if port == "" {
-		port = "443"
-	}
-	dialer := &tls.Dialer{Config: guestverify.TLSConfig(exp)}
-	return retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
-		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
-		if err != nil {
-			// RetryConnectionRefused retries only a refused dial under a URL error.
-			return &url.Error{Op: "Dial", URL: releaseURL.String(), Err: err}
-		}
-		return conn.Close() // the handshake was the point
-	})
-}

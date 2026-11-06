@@ -334,14 +334,15 @@ plugin_start() {
     return 1
 }
 
-# The store does not outlive the container (cds_volatile answers yes): the new
-# one serves the configuration's entries at version 1.
+# cds_serve runs the CDS with --allowlist-persistent=false and its database in
+# the container, which a restart replaces: the new one serves the
+# configuration's entries at version 1.
+cds_volatile() { echo yes; }
 cds_restart() {
     cds_serve
     cds_wait
 }
 
-# The number in the weak entity tag W/"<n>" of GET /allowlist.
 node_containers() { node_exec crictl ps -a -q --image "$2"; }
 
 dispatch "$@"

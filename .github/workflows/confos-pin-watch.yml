@@ -1,15 +1,29 @@
-# Watches the confos source pin the measured builds ride and opens a bump PR
-# when upstream main moves — never merges: each bump rolls a measurement, so a
-# human owns the merge. The attestation-rs pin is held at the manifest's value:
-# its main has broken the attestation-api config and /verify contracts c8s and
-# confos consume, so it moves only in a PR that ports them. The mkosi ref is not
-# watched independently: it is scraped from the target confos commit's own
-# base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep
-# by construction. The canonical data lives in .github/build-pins.json;
+# Watches the confos and attestation-rs source pins the measured builds ride
+# and opens a bump PR when either repository publishes a new release — never
+# merges: each bump rolls a measurement, so a human owns the merge. Releases,
+# not main: images/node-guest/README.md, "Component pins". The mkosi ref is
+# not watched independently: it is scraped from the target confos commit's own
+# base.yml, which keeps MinimumVersion= and the installed mkosi in lockstep by
+# construction. The canonical data lives in .github/build-pins.json;
 # .github/scripts/pin-manifest.sh validates the full schema before updating it.
+# An attestation-rs bump also resolves the release's attestation-api image to
+# its digest (the CDS image's build input) and writes the same digest to the
+# chart's attestationApi pinnedDigest, the host DaemonSet's copy that
+# pin-hygiene holds equal to the manifest.
 #
 # The one measurement domain today is node-image (node rootfs / RTMR + SNP
-# digests); each roll is its own PR.
+# digests); each roll is its own PR, opened by .github/scripts/pin-watch-pr.sh
+# as one GitHub-verified commit, one open PR at a time.
+#
+# A second step watches the chart's third-party image digests
+# (kube-state-metrics, the router's nginx, the containerd-prep busybox: the
+# digests in internal/helmchart/c8s/values.yaml whose Resolve line names a
+# tag, .github/scripts/chart-image-pins.sh) and opens its own PR when a tag
+# names a newer manifest than the pinned digest, as docker.io tags do when
+# their base is rebuilt. Each digest is seeded into the allowlist floor, so a
+# human owns that merge too, and aligns entrypoint/imageEnv when the image's
+# config moved (the PR body says whether it did). The tag itself never moves
+# here: a version bump is a hand edit of the Resolve line.
 #
 # Authentication prefers a short-lived, repository-scoped GitHub App token.
 # Checkout, push, and gh use one credential; an unconfigured App falls back to
@@ -18,7 +32,7 @@ name: confos pin watch
 
 on:
   schedule:
-    - cron: "23 6 * * 1" # weekly; a no-op while the pins match upstream main
+    - cron: "23 6 * * 1" # weekly; a no-op while the pins match the latest releases
   workflow_dispatch: {}
 
 permissions:
@@ -47,118 +61,94 @@ jobs:
           # Persist the same token used by gh so App-created PR updates also
           # trigger CI automatically; github.token remains the fallback.
           token: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
+      - uses: ./.github/actions/setup-crane
       - name: Bump stale pins and open the PR
         env:
           GH_TOKEN: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
           DOMAIN: node-image
         run: |
           set -euo pipefail
-          confos=$(gh api repos/confidential-dot-ai/confidential-os-builder/commits/main --jq .sha)
-          # Held, not watched: see the header.
-          attest=$(jq -er --arg d "$DOMAIN" '.builds[$d].attestation_rs_ref' .github/build-pins.json)
-          mapfile -t mkosi_lines < <(
-            curl -fsSL --retry 3 \
-              "https://raw.githubusercontent.com/confidential-dot-ai/confidential-os-builder/${confos}/.github/workflows/base.yml" |
-              grep -oE 'systemd/mkosi@[0-9a-f]{40} # v[0-9.]+'
-          )
-          if (( ${#mkosi_lines[@]} != 1 )); then
-            echo "::error::expected exactly one mkosi pin in confos base.yml; found ${#mkosi_lines[@]}"
-            exit 1
+          eval "$(bash .github/scripts/pin-manifest.sh export \
+                    --manifest .github/build-pins.json --domain "$DOMAIN" --format github-env)"
+          confos=$CONFOS_REF confos_tag=$CONFOS_TAG
+          attest=$ATTESTATION_RS_REF attest_tag=$ATTESTATION_RS_TAG
+          # Only a release newer than the pinned one moves a pin; the latest
+          # release being an older line, or the pinned one, keeps it.
+          newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/confidential-os-builder --floor "$confos_tag")
+          [ -z "$newer" ] || read -r confos_tag confos <<<"$newer"
+          newer=$(bash .github/scripts/release-pin.sh confidential-dot-ai/attestation-rs --floor "$attest_tag")
+          # The digest follows the release, never a repointed tag: an unmoved
+          # pin keeps the digest it was set with (pin-hygiene checks the tag
+          # still names it). A release whose image attestation-rs has not
+          # named yet fails here, so no manifest points at a missing image.
+          attest_digest=$ATTESTATION_API_DIGEST
+          if [ -n "$newer" ]; then
+            read -r attest_tag attest <<<"$newer"
+            attest_digest=$(bash .github/scripts/ghcr-digest.sh confidential-dot-ai/attestation-api "$attest_tag")
           fi
-          mkosi_line=${mkosi_lines[0]}
+          read -r mkosi_sha mkosi_ver < <(bash .github/scripts/confos-mkosi-pin.sh "$confos")
           out=$(bash .github/scripts/pin-manifest.sh update \
             --manifest .github/build-pins.json \
             --domain "$DOMAIN" \
-            --confos "$confos" --attest "$attest" \
-            --mkosi-sha "$(grep -oE '[0-9a-f]{40}' <<<"$mkosi_line")" \
-            --mkosi-ver "$(grep -oE 'v[0-9.]+$' <<<"$mkosi_line")")
+            --confos "$confos" --confos-tag "$confos_tag" \
+            --attest "$attest" --attest-tag "$attest_tag" \
+            --attest-digest "$attest_digest" \
+            --mkosi-sha "$mkosi_sha" --mkosi-ver "$mkosi_ver")
           echo "$out"
           grep -q '^no-drift$' <<<"$out" && exit 0
-          changes=$(git status --short --untracked-files=all)
-          if [ "$changes" != " M .github/build-pins.json" ]; then
-            echo "::error::pin updater changed an unexpected path"
-            printf '%s\n' "$changes"
-            exit 1
-          fi
-          branch="pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}"
-          title="build(${DOMAIN}): pin-watch bump — confos ${confos:0:7}"
-          open_pr=$(
-            gh pr list --state open --limit 100 \
-              --json headRefName,isCrossRepository,number |
-              jq -r --arg prefix "pin-watch/${DOMAIN}-" \
-                '[.[] | select(.isCrossRepository == false and (.headRefName | startswith($prefix)))][0].number // empty'
-          )
-          if [ -n "$open_pr" ]; then
-            echo "pin-watch PR #$open_pr is already open; leaving its review branch untouched" >> "$GITHUB_STEP_SUMMARY"
+          # The host DaemonSet's copy of the digest moves with the manifest (a
+          # no-op when only confos moved). Both files are staged; the PR
+          # carries whatever changed, and nothing else may have.
+          values=internal/helmchart/c8s/values.yaml
+          bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
+          git add -- .github/build-pins.json "$values"
+          bash .github/scripts/pin-watch-pr.sh \
+            --branch "pin-watch/${DOMAIN}-${confos:0:12}-${attest:0:12}" \
+            --prefix "pin-watch/${DOMAIN}-" \
+            --allow .github/build-pins.json --allow "$values" \
+            --title "build(${DOMAIN}): pin-watch bump — confos ${confos_tag}, attestation-rs ${attest_tag}" \
+            --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\` to the latest releases: confos \`${confos_tag}\` (\`${confos:0:9}\`) with mkosi \`${mkosi_sha:0:9} ${mkosi_ver}\` from that confos commit's base workflow, and attestation-rs \`${attest_tag}\` (\`${attest:0:9}\`, image \`${attest_digest:0:19}…\`, also written to the chart's \`attestationApi\` \`pinnedDigest\`). This rolls the affected measurements; review the release notes and the reproducibility gate before merging. An attestation-rs release that changes the attestation-api config or /verify contract needs the c8s and confos ports added to this PR."
+      - name: Bump rebuilt chart images and open the PR
+        env:
+          GH_TOKEN: ${{ steps.pin-watch-app-token.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          # The previous step's PR lives on its branch; its staged files are
+          # not this PR's.
+          git reset -q --hard
+          values=internal/helmchart/c8s/values.yaml
+          resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")
+          moved=() names=()
+          while read -r repo tag digest current; do
+            [ "$current" != "$digest" ] || continue
+            bash .github/scripts/chart-image-pins.sh set "$repo:$tag" "$current" "$values"
+            names+=("${repo##*/}")
+            moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`")
+          done <<<"$resolved"
+          if [ "${#moved[@]}" -eq 0 ]; then
+            echo "every chart image tag names its pinned digest" >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
-          git add -- .github/build-pins.json
-          test "$(git diff --cached --name-only)" = ".github/build-pins.json"
-          desired_tree=$(git write-tree)
-          base_oid=$(git rev-parse HEAD)
-          base_tree=$(git rev-parse 'HEAD^{tree}')
-
-          remote_oid=
-          remote_tree=
-          if remote_ref=$(git ls-remote --exit-code --heads origin "refs/heads/$branch"); then
-            remote_oid=${remote_ref%%[[:space:]]*}
-            git fetch --no-tags origin \
-              "+refs/heads/$branch:refs/remotes/origin/$branch"
-            remote_tree=$(git rev-parse "${remote_oid}^{tree}")
+          # pin-hygiene fails the PR until each rebuilt image's config matches
+          # the entrypoint/imageEnv seeded beside its digest; say so up front.
+          if mismatch=$(bash .github/scripts/chart-image-pins.sh check "$values" 2>&1 >/dev/null); then
+            configs="Every rebuilt image's config (entrypoint, cmd, env) still matches the \`entrypoint\` and \`imageEnv\` seeded beside its digest."
           else
-            remote_status=$?
-            [ "$remote_status" -eq 2 ] || exit "$remote_status"
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/heads/$branch" -f sha="$base_oid" >/dev/null
-            remote_oid=$base_oid
-            remote_tree=$base_tree
+            configs=$(printf '%s\n' "**An image's config moved; pin-hygiene fails this PR until the block beside its digest is aligned:**" "" '```' "$mismatch" '```')
           fi
-
-          if [ "$remote_tree" = "$desired_tree" ]; then
-            new_oid=$remote_oid
-          else
-            if [ "$remote_tree" != "$base_tree" ]; then
-              # A branch left behind by a pin-watch PR closed without merging
-              # differs from main only in the manifest; anything else on it
-              # is someone's work and stays put.
-              if [ "$(git diff-tree -r --name-only "$base_tree" "$remote_tree")" != ".github/build-pins.json" ]; then
-                echo "::error::candidate branch $branch carries changes beyond .github/build-pins.json; refusing to overwrite it (delete the branch to let pin-watch recreate it)"
-                exit 1
-              fi
-              echo "resetting stale pin-watch branch $branch to $base_oid" >> "$GITHUB_STEP_SUMMARY"
-              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/$branch" \
-                -f sha="$base_oid" -F force=true >/dev/null
-              remote_oid=$base_oid
-            fi
-            mutation=$(cat <<'GRAPHQL'
-          mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $headline: String!, $path: String!, $contents: Base64String!) {
-            createCommitOnBranch(input: {
-              branch: {repositoryNameWithOwner: $repository, branchName: $branch}
-              expectedHeadOid: $expected
-              message: {headline: $headline}
-              fileChanges: {additions: [{path: $path, contents: $contents}]}
-            }) {
-              commit { oid }
-            }
-          }
-          GRAPHQL
-            )
-            commit_json=$(gh api graphql \
-              -f query="$mutation" \
-              -f repository="$GITHUB_REPOSITORY" \
-              -f branch="$branch" \
-              -f expected="$remote_oid" \
-              -f headline="$title" \
-              -f path=.github/build-pins.json \
-              -f contents="$(base64 -w0 .github/build-pins.json)")
-            new_oid=$(jq -er '.data.createCommitOnBranch.commit.oid' <<<"$commit_json")
-          fi
-
-          verified=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${new_oid}" \
-            --jq '.commit.verification.verified')
-          if [ "$verified" != true ]; then
-            echo "::error::GitHub did not verify pin-watch commit $new_oid; refusing to open the PR"
-            exit 1
-          fi
-          gh pr create --head "$branch" --title "$title" --body "Automated \`${DOMAIN}\` pin-set bump in \`.github/build-pins.json\`: confos main \`${confos:0:9}\` and mkosi \`${mkosi_line#systemd/mkosi@}\` from that confos commit's base workflow; attestation-rs stays at \`${attest:0:9}\`. This rolls the affected measurements; review the upstream logs and reproducibility gate before merging."
+          git add -- "$values"
+          joined=$(printf '%s, ' "${names[@]}")
+          body=$(printf '%s\n' \
+            "Automated bump of the chart's third-party image digests in \`$values\`: the tag each digest was resolved from now names a newer manifest." \
+            "" \
+            "${moved[@]}" \
+            "" \
+            "$configs" \
+            "" \
+            "Each digest is seeded into the allowlist floor, so this changes what every node admits; review before merging.")
+          bash .github/scripts/pin-watch-pr.sh \
+            --branch "pin-watch/chart-images-$(git write-tree | cut -c1-12)" \
+            --prefix pin-watch/chart-images- \
+            --allow "$values" \
+            --title "build(chart): pin-watch bump — ${joined%, } rebuilt" \
+            --body "$body"

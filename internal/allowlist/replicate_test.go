@@ -77,13 +77,16 @@ func TestReplicatedStoresConverge(t *testing.T) {
 	if err := st[0].StartJournal(); err != nil {
 		t.Fatal(err)
 	}
-	w := oneContainerWorkload(mustParseDigest(t, digestA))
-	if _, _, err := st[2].SeedWorkloads(map[string]pkgallowlist.Workload{"seeded": w}); err != nil {
+	if _, _, err := st[2].SeedWorkloads(map[string]pkgallowlist.Workload{
+		"seeded": hostBindWorkload(mustParseDigest(t, digestB), "/var/lib/seeded"),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	al := &pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: map[string]pkgallowlist.Workload{"web": w},
+		Schema: pkgallowlist.Schema,
+		Workloads: map[string]pkgallowlist.Workload{
+			"bound": hostBindWorkload(mustParseDigest(t, digestC), "/var/lib/bound"),
+		},
 	}
 	body, err := al.Canonical()
 	if err != nil {
@@ -190,10 +193,7 @@ func TestCommandsAreJournaledAtTheirOwnTime(t *testing.T) {
 			if r := s.Apply(cmd); r.Message != "" {
 				t.Fatalf("%s: %+v", cmd.Op, r)
 			}
-			history, err := s.History()
-			if err != nil {
-				t.Fatal(err)
-			}
+			history := mustHistory(t, s)
 			if got := history[len(history)-1].PublishedAt; !got.Equal(time.UnixMilli(cmd.AtMS).UTC()) {
 				t.Fatalf("%s journaled at %s, want %s", cmd.Op, got, time.UnixMilli(cmd.AtMS).UTC())
 			}

@@ -52,7 +52,15 @@ func (h *Handle) Version() (string, error) {
 	return h.store.Version()
 }
 
-func (h *Handle) History() ([]HistoryEntry, error) {
+func (h *Handle) Served() (body []byte, version string, err error) {
+	return h.store.Served()
+}
+
+func (h *Handle) InEffect(now time.Time) (body []byte, version string, err error) {
+	return h.store.InEffect(now)
+}
+
+func (h *Handle) History() (History, error) {
 	return h.store.History()
 }
 

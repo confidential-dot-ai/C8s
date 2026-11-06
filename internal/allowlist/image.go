@@ -115,6 +115,9 @@ func (s *Store) replaceIfItHolds(ctx context.Context, conn *sql.Conn, content [3
 	if acc.Sum() != content {
 		return fmt.Errorf("%w: it holds %x, and the digest names %x", ErrImageContent, acc.Sum(), content)
 	}
+	if err := requireHostPrivilegeRecord(ctx, conn); err != nil {
+		return fmt.Errorf("restore allowlist: %w", err)
+	}
 	if err := copyDatabase(conn, s.uri); err != nil {
 		return fmt.Errorf("restore allowlist: %w", err)
 	}

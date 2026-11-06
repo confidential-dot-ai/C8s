@@ -14,6 +14,9 @@ grep -qE '(^|,)apparmor(,|$)' /sys/kernel/security/lsm \
     || fail "AppArmor is absent from the active LSM list"
 [ "$(cat /sys/module/apparmor/parameters/enabled)" = Y ] \
     || fail "AppArmor is disabled"
+# etc/sysctl.d/20-apparmor.conf must have won (README, "Workload isolation").
+[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined)" = 0 ] \
+    || fail "apparmor_restrict_unprivileged_unconfined is not 0"
 # This is the exact parser path containerd's host-support check uses.
 [ -x /sbin/apparmor_parser ] || fail "apparmor_parser is missing"
 [ -x /usr/bin/aa-exec ] || fail "aa-exec is missing"

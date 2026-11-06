@@ -25,10 +25,7 @@ func TestPruneHistoryKeepsTheNewest(t *testing.T) {
 	for i := range 10 {
 		putEntry(t, allowlist, fmt.Sprintf("w%d", i), historyWorkload(t, i))
 	}
-	before, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := mustHistory(t, store)
 	if len(before) != 11 { // the start document plus ten writes
 		t.Fatalf("history has %d entries, want 11", len(before))
 	}
@@ -39,10 +36,7 @@ func TestPruneHistoryKeepsTheNewest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := mustHistory(t, store)
 	if len(after) != 4 || after[0].Position != before[7].Position || after[3].Digest != before[10].Digest {
 		t.Fatalf("kept %+v", after)
 	}
@@ -81,14 +75,7 @@ func TestPruneHistoryIsDeterministic(t *testing.T) {
 			t.Fatalf("replica %d: %+v", i, r)
 		}
 	}
-	first, err := stores[0].History()
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := stores[1].History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	first, second := mustHistory(t, stores[0]), mustHistory(t, stores[1])
 	if len(first) != 3 || !reflect.DeepEqual(first, second) {
 		t.Fatalf("replicas differ:\n%v\n%v", first, second)
 	}
@@ -101,10 +88,7 @@ func TestHistoryKeepForBytesAndLiveBytes(t *testing.T) {
 	for i := range 8 {
 		putEntry(t, allowlist, fmt.Sprintf("w%d", i), historyWorkload(t, i))
 	}
-	history, err := store.History()
-	if err != nil {
-		t.Fatal(err)
-	}
+	history := mustHistory(t, store)
 	head, _, err := store.Object(history[len(history)-1].Digest)
 	if err != nil {
 		t.Fatal(err)

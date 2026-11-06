@@ -41,7 +41,8 @@ trap 'rm -rf "$WORK"' EXIT
 export PROBE_CASE=good
 mkdir -p "$WORK/bin" "$WORK/sbin" "$WORK/usr/bin" "$WORK/usr/local/bin" "$WORK/dev" \
     "$WORK/sys/kernel/security/apparmor" \
-    "$WORK/sys/module/apparmor/parameters" "$WORK/proc/self/attr" || exit 2
+    "$WORK/sys/module/apparmor/parameters" "$WORK/proc/self/attr" \
+    "$WORK/proc/sys/kernel" || exit 2
 mknod -m 666 "$WORK/dev/null" c 1 3 || exit 2
 
 # Use the image's real /bin/sh and commands, not a substitute interpreter.
@@ -122,6 +123,7 @@ reset_probe() {
     chmod +x "$WORK/sbin/apparmor_parser" "$WORK/usr/bin/aa-exec" "$WORK/bin/systemctl"
     printf '%s\n' 'lockdown,yama,apparmor,bpf' > "$WORK/sys/kernel/security/lsm"
     printf 'Y\n' > "$WORK/sys/module/apparmor/parameters/enabled"
+    printf '0\n' > "$WORK/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined"
     printf 'Linux test kernel\n' > "$WORK/proc/version"
     : > "$WORK/sys/kernel/security/apparmor/profiles"
     : > "$WORK/parser-calls"
@@ -162,6 +164,20 @@ reset_probe
 printf 'N\n' > "$WORK/sys/module/apparmor/parameters/enabled"
 ok "fails closed" not run_enforce
 ok "names disabled module" stderr_has 'AppArmor is disabled'
+
+# The package default is 1; a kernel without the knob cannot prove either way.
+for state in on absent; do
+    CASE="unconfined restriction $state"
+    reset_probe
+    if [[ $state == on ]]; then
+        printf '1\n' > "$WORK/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined"
+    else
+        rm "$WORK/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined"
+    fi
+    ok "fails closed" not run_enforce
+    ok "names the sysctl" stderr_has 'apparmor_restrict_unprivileged_unconfined is not 0'
+    ok "does not load a profile" test ! -s "$WORK/parser-calls"
+done
 
 for binary in sbin/apparmor_parser usr/bin/aa-exec; do
     CASE="missing ${binary##*/}"

@@ -1,5 +1,6 @@
 # Build pins must stay immutable refs (c8s#264): a branch name or short sha
-# here silently changes what a "pinned" build means.
+# here silently changes what a "pinned" build means. Each source pin also
+# names its release tag; images/node-guest/README.md, "Component pins".
 name: pin hygiene
 on:
   pull_request:
@@ -8,8 +9,15 @@ on:
       - ".github/actions/**"
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
+      - ".github/scripts/release-pin.sh"
+      - ".github/scripts/confos-mkosi-pin.sh"
+      - ".github/scripts/ghcr-digest.sh"
+      - ".github/scripts/chart-attestation-api-digest.sh"
+      - ".github/scripts/chart-image-pins.sh"
+      - "internal/helmchart/c8s/values.yaml"
       - "images/node-guest/c8s/mkosi.sync"
       - "**/Dockerfile"
+      - "**/go.mod"
   workflow_dispatch:
 
 permissions:
@@ -20,11 +28,98 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
+      - uses: ./.github/actions/setup-crane
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           set -euo pipefail
           fail=0
           bash .github/scripts/pin-manifest.sh validate \
             --manifest .github/build-pins.json
+          # attestation-go is consumed at a release, never at a pseudo-version:
+          # its /verify request must match the attestation-rs release the
+          # node and CDS images stage, and only a release names that pairing.
+          pseudo=$(grep -rnE 'confidential-dot-ai/attestation-go v[0-9.]+-(0\.|[0-9]+\.)?[0-9]{14}-[0-9a-f]{12}' \
+                     --include=go.mod . || true)
+          if [ -n "$pseudo" ]; then
+            echo "$pseudo" | while IFS= read -r line; do
+              echo "::error file=${line%%:*}::attestation-go must be required at a release tag, not a pseudo-version: ${line#*:*:}"
+            done
+            fail=1
+          fi
+          # Each pinned SHA is the commit its release tag names in the source
+          # repository today, so an upstream retag fails every PR this runs
+          # on; that is deliberate.
+          eval "$(bash .github/scripts/pin-manifest.sh export \
+                    --manifest .github/build-pins.json --domain node-image --format github-env)"
+          for pin in "confidential-dot-ai/confidential-os-builder CONFOS" \
+                     "confidential-dot-ai/attestation-rs ATTESTATION_RS"; do
+            read -r repo var <<<"$pin"
+            ref_var=${var}_REF tag_var=${var}_TAG
+            pinned=${!ref_var} tag=${!tag_var}
+            if ! resolved=$(bash .github/scripts/release-pin.sh "$repo" "$tag"); then
+              echo "::error file=.github/build-pins.json::$tag_var=$tag does not resolve in $repo"; fail=1
+              continue
+            fi
+            resolved=${resolved#* }
+            if [ "$resolved" != "$pinned" ]; then
+              echo "::error file=.github/build-pins.json::$ref_var=$pinned is not what $repo tag $tag names ($resolved)"; fail=1
+            fi
+          done
+          # The mkosi pin is derived from the confos commit's own base.yml; a
+          # hand-moved confos_ref must carry it along.
+          if derived=$(bash .github/scripts/confos-mkosi-pin.sh "$CONFOS_REF"); then
+            if [ "$derived" != "$MKOSI_REF $MKOSI_VERSION" ]; then
+              echo "::error file=.github/build-pins.json::mkosi_ref/mkosi_version=$MKOSI_REF $MKOSI_VERSION but confos $CONFOS_REF pins mkosi $derived"; fail=1
+            fi
+          else
+            echo "::error file=.github/build-pins.json::could not read the mkosi pin from confos $CONFOS_REF base.yml"; fail=1
+          fi
+          # attestation_api_digest is the attestation-api the CDS image stages
+          # and the host DaemonSet runs (the chart's pinnedDigest, a checked
+          # copy). attestation-rs names that manifest both sha-<ref7> (the
+          # commit CI built) and the release tag; every name must end at it.
+          for image_tag in "$ATTESTATION_RS_TAG" "sha-${ATTESTATION_RS_REF:0:7}"; do
+            if image_digest=$(bash .github/scripts/ghcr-digest.sh confidential-dot-ai/attestation-api "$image_tag"); then
+              if [ "$image_digest" != "$ATTESTATION_API_DIGEST" ]; then
+                echo "::error file=.github/build-pins.json::attestation_api_digest=$ATTESTATION_API_DIGEST but attestation-api:$image_tag is $image_digest"; fail=1
+              fi
+            else
+              echo "::error file=.github/build-pins.json::could not resolve attestation-api:$image_tag"; fail=1
+            fi
+          done
+          values=internal/helmchart/c8s/values.yaml
+          if chart_digest=$(bash .github/scripts/chart-attestation-api-digest.sh get "$values"); then
+            if [ "$chart_digest" != "$ATTESTATION_API_DIGEST" ]; then
+              echo "::error file=$values::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST; run .github/scripts/chart-attestation-api-digest.sh set"; fail=1
+            fi
+          else
+            echo "::error file=$values::could not read the chart's pinnedDigest"; fail=1
+          fi
+          # The chart's third-party images (kube-state-metrics, the router's
+          # nginx, the containerd-prep busybox) are digest-pinned into the
+          # seeded allowlist; the Resolve line above each digest names the tag
+          # it came from. A tag upstream has rebuilt since is a notice, not a
+          # failure: the pinned bytes are still served, and pin-watch proposes
+          # that bump. An unannotated digest, or a digest or tag the registry
+          # no longer serves, fails (the script names it). crane digest is a
+          # HEAD request, outside docker.io's anonymous pull quota.
+          if ! resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values"); then
+            echo "::error file=$values::a third-party image digest is unannotated, or it or its tag is no longer served (chart-image-pins.sh resolve, above)"; fail=1
+          fi
+          while read -r repo tag digest current; do
+            [ -n "$repo" ] && [ "$current" != "$digest" ] || continue
+            echo "::notice file=$values::$repo:$tag now names $current, not the pinned $digest; pin-watch proposes the bump"
+            echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
+          done <<<"$resolved"
+          # Each pinned image's config must match what the seeded entry pins
+          # beside its digest (the argv prefix and the exact env), as `c8s
+          # install --resolve-digests` requires for nginx; kube-state-metrics
+          # is seeded by the node-image render and checked nowhere else. A
+          # block without an entrypoint (busybox) is argv-pinned and skipped.
+          if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
+            echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
+          fi
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/c8s/mkosi.sync; then
             echo "::error file=images/node-guest/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1

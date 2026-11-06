@@ -34,10 +34,10 @@ Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
 name the CDS this cluster trusts and the guest it runs in, and the chart
 refuses to render without them. The address is `<host>:<port>`: a DNS name
 this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
-that authorize allowlist and route writes; without them CDS refuses every
-write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
-prompts — no `--operator-keys`, and a fail-closed policy that would deny the
-platform's own pods. A measured node image boots the same chart, rendered at
+the router verifies route manifests under; without it the router uses the keys
+the pinned CDS serves. CDS takes its own write keys from
+`c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
+policy that would deny the platform's own pods. A measured node image boots the same chart, rendered at
 build time and configured from the signed launch file; `c8s install` refuses a
 cluster
 labelled `confidential.ai/baked=true`.
@@ -302,6 +302,14 @@ detectable only by pinning the route digest or the operator keys.
   digest. The slower of their `--ca-watch-interval`s, plus half an interval of
   jitter, plus one issuance bounds that; with the watch off it lasts until the
   next scheduled renewal.
+- An allowlist write takes effect on nodes `--allowlist-node-delay` (CDS flag,
+  30s) after it is written. CDS issues certificates under it at once, and
+  router certificates (`--router-cert-ttl`, 20s) last less than that, so any
+  router still serving advertises it before it takes effect. A write replaced
+  before it takes effect never does. When its certificate expires the router
+  retires every backend pool and dials nothing until it renews.
+- With the front door in `cds` mode the serving certificate is the router's
+  mesh certificate, so a client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
   the client attests again

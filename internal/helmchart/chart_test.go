@@ -773,7 +773,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
 	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
-	// HTTP (a locked node image denies every runc exec), against
+	// HTTP (a locked node image denies every runc exec it was not granted), against
 	// the proxy's own health listener: the API's loopback bind is not
 	// kubelet-dialable, and this is the evidence path's only liveness signal.
 	for name, probe := range map[string]*corev1.Probe{"readiness": proxy.ReadinessProbe, "liveness": proxy.LivenessProbe} {
@@ -1469,7 +1469,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 }
 
-// The locked node image's measured runtime wrapper denies every runc exec,
+// The locked node image's measured runtime wrapper denies every runc exec it was not granted,
 // and CRI routes exec probes and lifecycle exec hooks through exactly that
 // call (internal/cmds/c8srunc). A C8s-owned exec probe would therefore never
 // pass on such a node — the component would sit in CrashLoop or never go
@@ -2124,6 +2124,13 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		t.Fatalf("helm template (tunnelBudget=64Gi): %v\n%s", err, budgetOut)
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
+
+	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--establish-")
+	rateOut, err := helmTemplate(t, "--set", "router.attest.establishRate=50", "--set", "router.attest.establishBurst=100")
+	if err != nil {
+		t.Fatalf("helm template (establishRate=50, establishBurst=100): %v\n%s", err, rateOut)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, rateOut, "c8s-router", "cds-attest"), "--establish-rate=50", "--establish-burst=100")
 
 	// attest.enabled=false keeps cds-attest for application routing and only
 	// unregisters the attestation endpoints; /readyz stays proxied to it.
@@ -4870,7 +4877,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/armtls-mesh@"+rmD {
 		t.Errorf("bare-metal-mode seed missing armtls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
 	}
-	const nginxD = "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
+	nginxD := chartImageDigest(t, "router", "nginx", "image", "digest")
 	if _, ok := seedEntry(seed, nginxD); !ok {
 		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
 	}

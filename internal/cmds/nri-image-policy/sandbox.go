@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -24,6 +25,67 @@ const (
 	SandboxEnforce sandboxMode = "enforce"
 )
 
+// privilegeSubject is what a host-privilege refusal names in the node's log and
+// its audit record. A sandbox is refused before it has a container or an image.
+type privilegeSubject struct {
+	rule                             string
+	namespace, pod, container, image string
+}
+
+func sandboxSubject(rule string, pod *api.PodSandbox) privilegeSubject {
+	return privilegeSubject{rule: rule, namespace: pod.GetNamespace(), pod: pod.GetName()}
+}
+
+func containerSubject(rule string, pod *api.PodSandbox, ctr *api.Container, imageRef string) privilegeSubject {
+	return privilegeSubject{
+		rule:      rule,
+		namespace: pod.GetNamespace(),
+		pod:       pod.GetName(),
+		container: ctr.GetName(),
+		image:     imageRef,
+	}
+}
+
+func (s privilegeSubject) logAttrs() []any {
+	return []any{
+		"rule", s.rule,
+		"namespace", s.namespace,
+		"pod", s.pod,
+		"container", s.container,
+		"image", s.image,
+	}
+}
+
+// denyPrivilege records a refusal the node enforces.
+func (p *plugin) denyPrivilege(subject privilegeSubject, refusal error) {
+	p.logger.Warn("refusing host privilege outside what an allowlist entry declares",
+		append(subject.logAttrs(), "error", refusal)...)
+	p.audit.Log(audit.Event{
+		Action:    "deny",
+		Reason:    subject.rule,
+		Namespace: subject.namespace,
+		Pod:       subject.pod,
+		Container: subject.container,
+		Image:     subject.image,
+		Error:     refusal.Error(),
+	})
+}
+
+// auditPrivilege records host privilege the sandbox policy's audit mode admits.
+func (p *plugin) auditPrivilege(subject privilegeSubject, refusal error) {
+	p.logger.Warn("admitting host privilege outside what an allowlist entry declares",
+		append(subject.logAttrs(), "sandbox", SandboxAudit, "error", refusal)...)
+	p.audit.Log(audit.Event{
+		Action:    "allow",
+		Reason:    subject.rule,
+		Overrides: refusal.Error(),
+		Namespace: subject.namespace,
+		Pod:       subject.pod,
+		Container: subject.container,
+		Image:     subject.image,
+	})
+}
+
 // sandboxNamespaces are the pod-sandbox namespaces whose ABSENCE from the
 // sandbox OCI spec means the pod shares the node's own. containerd removes the
 // entry rather than pointing it at the host: hostNetwork drops network and uts,
@@ -37,6 +99,9 @@ var sandboxNamespaces = []string{"ipc", "network", "pid", "uts"}
 // pidNamespace is the namespace type a member pod's container must hold on
 // its own (requirePrivatePIDNamespace).
 const pidNamespace = "pid"
+
+// networkNamespace is the namespace type a pod on its own network holds.
+const networkNamespace = "network"
 
 // cgroupNamespace is present on every container containerd creates under
 // unified cgroups and omitted for a privileged one
@@ -54,10 +119,10 @@ var kernelFSTypes = []string{"sysfs", "cgroup"}
 // can complete a node-TCB rule from the record rather than from a re-run.
 //
 // What NRI v0.12.3 does NOT carry is listed in
-// docs/allowlist-and-capabilities.md: Linux capabilities, the privileged flag,
-// no_new_privs, masked and readonly paths, and the AppArmor profile are all in
-// the OCI spec containerd generates but absent from api.LinuxContainer, so this
-// policy infers privilege instead of reading it.
+// docs/allowlist-and-capabilities.md: the privileged flag, no_new_privs,
+// masked and readonly paths, and the AppArmor profile are all in the OCI spec
+// containerd generates but absent from api.LinuxContainer, so this policy
+// infers privilege instead of reading it.
 type sandboxObservation struct {
 	// PodNamespaces is the sandbox's OCI namespace types.
 	PodNamespaces []string
@@ -86,6 +151,27 @@ type sandboxObservation struct {
 	Seccomp string
 }
 
+// hostBindGrant reports whether an allowlist declaration hands this launch the
+// bind m is evidence of; it answers only for the mounts slice it was built from.
+type hostBindGrant interface {
+	grants(m allowlist.ObservedMount) bool
+}
+
+// declaredBindGrant hands a launch the binds an allowlist entry declares for it.
+type declaredBindGrant struct {
+	policy *policyStore
+	launch allowlist.RunningContainer
+}
+
+func (g declaredBindGrant) grants(m allowlist.ObservedMount) bool {
+	return g.policy.grantsHostBind(g.launch, m)
+}
+
+// noBindGrant hands a launch no bind.
+type noBindGrant struct{}
+
+func (noBindGrant) grants(allowlist.ObservedMount) bool { return false }
+
 // observeSandbox reads the host-privilege surface out of the NRI view. A field
 // the runtime did not fill reads as absent, which violations() treats as a
 // violation rather than as consent.
@@ -93,14 +179,14 @@ type sandboxObservation struct {
 // own names the binds this plugin adds itself (sidecarAdjustment); the policy
 // put them there, so it does not hold them against a container. mounts is the
 // container's mount evidence, as mountObserver.Observe returns it. A bind whose
-// evidence nodeRoot accepts carries measured node bytes an allowlist rule
-// pinned at that destination, so it is not a host bind either; nil accepts none.
-// The device nodes, hooks and binds cdi expanded are not observed.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) sandboxObservation {
+// evidence grant accepts is one an allowlist entry hands this launch, so it is
+// not a host bind either. The device nodes, hooks and binds cdi expanded are
+// not observed.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot, cdi),
+		HostBinds:        hostBinds(pod, ctr, own, mounts, grant, cdi),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks(), cdi),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -185,6 +271,12 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 	return out
 }
 
+// nodeNetwork reports whether the pod shares the node's network namespace, read
+// from the absence of the sandbox's own entry as violations() reads it.
+func nodeNetwork(pod *api.PodSandbox) bool {
+	return !slices.Contains(namespaceTypes(pod.GetLinux().GetNamespaces()), networkNamespace)
+}
+
 // hostBinds returns the bind sources the pod does not own. A bind mount is one
 // whose source is an absolute path; the rest name a filesystem type and carry
 // nothing in. Every mount the kubelet and containerd stage for a pod lives
@@ -196,7 +288,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -218,7 +310,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 		if isInjectedNodeMount(pod, ctr, m, own) || cdi.mount(m) {
 			continue
 		}
-		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
+		if grantsBind(src, m.GetDestination(), mounts, grant) {
 			continue
 		}
 		out = append(out, src)
@@ -226,16 +318,16 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 	return out
 }
 
-// nodeRootBind reports whether mounts holds evidence for source at destination
-// and nodeRoot accepts all of it. Keying on the pair, not on the position, keeps
-// a duplicate bind with weaker evidence from riding on an accepted one.
-func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) bool {
+// grantsBind reports whether mounts holds evidence for source at destination
+// and grant accepts all of it. Keying on the pair, not on the position, keeps
+// a duplicate bind with weaker evidence from riding on a granted one.
+func grantsBind(source, destination string, mounts []allowlist.ObservedMount, grant hostBindGrant) bool {
 	found := false
 	for _, m := range mounts {
 		if m.Source != source || m.Destination != destination {
 			continue
 		}
-		if !nodeRoot(m) {
+		if !grant.grants(m) {
 			return false
 		}
 		found = true

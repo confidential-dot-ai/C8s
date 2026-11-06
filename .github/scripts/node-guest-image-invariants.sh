@@ -101,7 +101,7 @@ fi
 # (they would rewrite the resolver address before the pod ruleset sees it),
 # the datapath stays on veth pairs (the mesh gate reads a pod's hooks from
 # inside its namespace), and no exec postStart may render (the sealed image
-# denies every runc exec).
+# denies runc exec but for kube-apiserver's probes).
 cilium_config="$image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml"
 if ! grep -qx 'kind: HelmChartConfig' "$cilium_config" \
    || ! grep -qx '  name: rke2-cilium' "$cilium_config"; then
@@ -126,7 +126,7 @@ if [ "$(grep -A1 -xF '    socketLB:' "$cilium_config" | tail -1)" != '      enab
   exit 1
 fi
 if grep -q postStart "$cilium_config"; then
-  echo "::error::$cilium_config must not render an exec postStart; the sealed image denies every runc exec"
+  echo "::error::$cilium_config must not render an exec postStart; the sealed image denies runc exec"
   exit 1
 fi
 if ! grep -q 'rke2-images-cilium\.linux-amd64\.tar\.zst' "$image/c8s/mkosi.sync" \
@@ -204,8 +204,8 @@ if ! grep -q -- '--sync-input "dev=\${C8S_DEV:-0}"' "$image/build" \
 fi
 
 # The locked image seals post-start exec at the runc boundary: every
-# ordinary pod runs through the measured wrapper, which denies `runc exec`
-# (c8s internal/cmds/c8srunc, docs/node-exec-mode.md). containerdcheck
+# ordinary pod runs through the measured wrapper, which denies `runc exec` but
+# for kube-apiserver's probes (c8s internal/cmds/c8srunc, docs/node-exec-mode.md). containerdcheck
 # renders the effective containerd config and proves the handlers; these
 # checks cover what a rendered config cannot show — that the wrapper the
 # config names is the binary the build installs, and that RKE2's runtime
@@ -241,7 +241,7 @@ done
 # The gate renders RKE2's base template from a vendored copy; an RKE2 bump
 # that changes it must re-vendor, or the gate checks a config the node never
 # has.
-base_tmpl="$image/c8s/containerdcheck/rke2-base-v3.toml.tmpl"
+base_tmpl="$image/tools/containerdcheck/rke2-base-v3.toml.tmpl"
 rke2_version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$image/c8s/mkosi.sync")
 if ! grep -qF "# RKE2_VERSION: $rke2_version" "$base_tmpl"; then
   echo "::error::$base_tmpl is vendored from another RKE2 than $rke2_version; re-vendor ContainerdConfigTemplateV3 from the k3s revision that RKE2 builds against and update its header"
@@ -465,6 +465,28 @@ grep -qE '^\s*apparmor\s*$' "$image/c8s/mkosi.conf" \
   || { echo "::error::$image/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
 grep -qFx 'disable apparmor.service' "$image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \
   || { echo "::error::50-rke2.preset must disable apparmor.service (only the parser is wanted)"; exit 1; }
+# The apparmor package's 10-apparmor.conf turns the unconfined restriction on,
+# which stacks every RuntimeDefault container's profile with unconfined
+# (README, "Workload isolation"). The profile's drop-in turns it off and the
+# boot gate refuses to start RKE2 otherwise, so a dropped drop-in or a later
+# sysctl.d file (profile or pinned confos base) setting the key again would
+# surface only as a node powering itself off at first boot.
+key=kernel.apparmor_restrict_unprivileged_unconfined
+dropin="$image/c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf"
+grep -qE "^$key *= *0$" "$dropin" \
+  || { echo "::error::$dropin must set $key = 0; apparmor-enforce.sh refuses to boot the node without it"; exit 1; }
+grep -qF "/proc/sys/${key//.//}" "$image/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh" \
+  || { echo "::error::apparmor-enforce.sh must assert /proc/sys/${key//.//}; the drop-in and the gate move together"; exit 1; }
+# sysctl.d applies files by basename order across every directory, so any
+# later (or same-named) basename that sets the key wins over the drop-in.
+later=$(find "$image/c8s/mkosi.extra" confos/mkosi -path '*/sysctl.d/*.conf' \
+          -exec grep -lE "^$key *=" {} + 2>/dev/null \
+        | awk -F/ -v name="${dropin##*/}" -v self="$dropin" '$NF >= name && $0 != self' || true)
+if [ -n "$later" ]; then
+  echo "::error::these sysctl.d files sort after ${dropin##*/} and set $key, overriding the drop-in:"
+  echo "$later"
+  exit 1
+fi
 
 # The image renders Kubernetes integration from its staged binary at BUILD
 # time. It must not revive a C8s HelmChart or boot-time values merge.

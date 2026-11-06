@@ -101,7 +101,7 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
@@ -167,7 +167,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			entries, err := os.ReadDir(filepath.Join(root, PublicDir))
@@ -220,10 +220,10 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 
 func TestPrepareAgentRemovesServerOutputs(t *testing.T) {
 	root := prepareRoot(t)
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Prepare(root, document(t, launchconfig.Agent)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Agent)); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range serverOutputNames {
@@ -244,7 +244,7 @@ func TestPrepareRejectsChartFloorNameCollision(t *testing.T) {
 			t.Run(name+"/"+string(role), func(t *testing.T) {
 				root := prepareRoot(t)
 				writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(incoming))
-				if err := Prepare(root, document(t, role)); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
+				if err := PrepareNode(root, document(t, role)); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
 					t.Fatalf("accepted chart replacing system floor: %v", err)
 				}
 			})
@@ -256,7 +256,7 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
 		root := prepareRoot(t)
 		writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(strings.ReplaceAll(seed, "operator", "system")))
-		if err := Prepare(root, document(t, role)); err != nil {
+		if err := PrepareNode(root, document(t, role)); err != nil {
 			t.Fatalf("%s: identical measured floor entry: %v", role, err)
 		}
 		data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
@@ -310,7 +310,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, launchconfig.Server)
 			doc.Router = tc.router
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			for name, want := range tc.want {
@@ -330,7 +330,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	root := prepareRoot(t)
 	doc := document(t, launchconfig.Server)
 	doc.Router = &launchconfig.Router{Hostnames: []string{`a.example.com; return 200 "x"`}}
-	if err := Prepare(root, doc); err == nil {
+	if err := PrepareNode(root, doc); err == nil {
 		t.Fatal("injected hostname was published")
 	}
 	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "hostnames")); !os.IsNotExist(err) {
@@ -346,7 +346,7 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
 	doc := document(t, launchconfig.Server)
 
-	if err := Prepare(root, doc); err != nil {
+	if err := PrepareNode(root, doc); err != nil {
 		t.Fatal(err)
 	}
 
@@ -382,7 +382,7 @@ func TestPrepareRefusesABakedConfigWithoutAMeshPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(floor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err == nil {
 		t.Fatal("staging completed a baked config with no mesh policy")
 	}
 }
@@ -401,7 +401,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor+tc.role))
 
-			if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+			if err := PrepareNode(root, document(t, launchconfig.Server)); err == nil {
 				t.Fatal("staging completed a policy that already binds the credential role")
 			}
 		})
@@ -414,7 +414,7 @@ func TestPrepareKeepsTheMeasuredRoles(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(roleFloor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err != nil {
 		t.Fatal(err)
 	}
 

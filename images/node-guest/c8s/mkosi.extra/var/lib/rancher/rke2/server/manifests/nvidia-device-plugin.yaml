@@ -20,7 +20,8 @@
 # "pthread_create failed: Invalid argument". Instead NVIDIA_DRIVER_ROOT=/ +
 # CONTAINER_DRIVER_ROOT=/driver-root let the plugin's own resolver find the libs.
 #
-# DEVICE_LIST_STRATEGY=cdi-annotations (v0.19.3 does NOT accept cdi-cri).
+# DEVICE_LIST_STRATEGY=cdi-annotations: the devices reach the container as
+# cdi.k8s.io annotations, which nri-image-policy reads.
 # FAIL_ON_INIT_ERROR=false keeps GPU-less boots degraded-nothing.
 #
 # The GSP firmware mounts follow /sys/module/firmware_class/parameters/path,
@@ -61,7 +62,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: nvidia-device-plugin
-          image: nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77
+          image: nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075
           # The image's entrypoint, spelled out because the measured base pins it.
           command: [nvidia-device-plugin]
           env:

@@ -35,7 +35,7 @@ import (
 //	                      get-kubeconfig and signed CDS writes use. Absent
 //	                      when the bundle reuses an operator key
 //	<dir>/agent.key    the one agent launch key this cluster trusts
-//	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
+//	<dir>/server.json     client policy pinning the server (--image-policy-file)
 //	<dir>/peers.json      every launch identity CDS admits and serves
 //	                      (c8s cds verify --served-policy-file)
 //	<dir>/cds-config.yaml the launch file this cluster's CDS VM boots on
@@ -193,7 +193,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		CDS:                     CDS{Address: opts.CDS.Address, Measurements: string(pin)},
 		RegistryMirrors:         opts.RegistryMirrors,
 	}
-	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
+	if !opts.Router.Empty() {
 		router := opts.Router
 		server.Router = &router
 	}

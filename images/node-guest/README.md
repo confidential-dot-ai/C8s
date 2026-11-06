@@ -33,7 +33,7 @@ Layout:
   AddOn so `kubectl exec`, `attach`, `port-forward` and `debug` (ephemeral
   containers) are denied in admission for everyone, the operator included, 
   and routes every ordinary pod through the measured
-  runtime wrapper, which denies `runc exec` outright — see
+  runtime wrapper, which denies `runc exec` but for kube-apiserver's probes — see
   [Post-start exec](#post-start-exec).
   `C8S_DEV=1` skips that AddOn (with the serial autologin), at a different
   measurement.
@@ -391,10 +391,30 @@ fragments pin the complete `CONFIG_LSM` order; the invariant gate checks
 them and the committed snapshot, and `build` checks the actual resolved
 kernel `.config`, including cache hits. Before either RKE2 role starts,
 `apparmor-enforce.service` requires an active AppArmor LSM, an executable
-parser, and a disabled, inactive `apparmor.service`. It loads a temporary
+parser, a disabled, inactive `apparmor.service`, and
+`kernel.apparmor_restrict_unprivileged_unconfined = 0`. It loads a temporary
 profile, verifies its enforce-mode label and a denied read against a
 successful unconfined control, then removes the profile. Failure blocks
 RKE2. The package's stock host profiles are not loaded.
+
+The apparmor package turns that sysctl on in `/usr/lib/sysctl.d/10-apparmor.conf`;
+`c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf` turns it back off. On, it
+makes the kernel stack the profile a task asks for at exec with unconfined
+when the task lacks `CAP_MAC_OVERRIDE` (Linux 6.18.60, upstream
+`08c2f7c8d4b1`). runc has dropped the pod's capabilities by then, so every
+RuntimeDefault container would run as `cri-containerd.apparmor.d//&unconfined`,
+and containerd's `signal` and `ptrace` rules, which name the plain profile as
+the peer, would no longer match a container's own processes. The restriction
+stops an unconfined, unprivileged task from switching into a more permissive
+loaded profile; this image has none to switch into, and container tasks are
+confined by a profile with no `change_profile` rule, so turning it off removes
+nothing here. If a permissive profile is ever loaded on the node, turn it back
+on with that change. The user-namespace restriction from the same package file
+stays on. The invariant gate checks that the drop-in sets the key to 0, that
+`apparmor-enforce.sh` asserts it, and that no sysctl.d file sorting after it in
+the profile or the pinned confos base sets the key again; without that, the
+failure would be a node powering itself off at first boot.
+`tests/apparmor-runtime-test.sh` asserts the plain label.
 
 Containerd selects `cri-containerd.apparmor.d` for non-privileged containers
 with omitted or explicit RuntimeDefault AppArmor settings. It denies mounts
@@ -505,15 +525,16 @@ in a running container, nor a direct call to containerd. The locked image
 points the containerd runc handler's `BinaryName` at `/usr/local/bin/c8s-runc`
 (`mkosi.extra/.../config-v3.toml.d/10-c8s-runc.toml`), a measured wrapper that
 denies `runc exec` and passes every other verb to RKE2's runc. All of those
-paths end in that one call, so all of them fail.
+paths end in that one call, so all of them fail, except RKE2's own probes of
+kube-apiserver.
 
-The consequences for anything running on such a node: an exec probe never
+The consequences for anything else running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
 probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
-probes and never reports Ready. See
+probes, which its measured allowlist entry grants. See
 [docs/node-exec-mode.md](../../docs/node-exec-mode.md) for the wrapper, the build
 gate that proves no handler escapes it, what to do in a new component, and
-what the kube-apiserver's denied probes mean.
+which kube-apiserver probes it allows and why.
 
 ## Refreshing measurements
 
@@ -573,9 +594,48 @@ reviewed commit.
 `.github/build-pins.json` is the canonical source for the measured workflows'
 confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
-therefore change the manifest rather than workflow files. Pin-watch follows
-confos `main` only: the attestation-rs pin moves by hand, in the same PR that
-ports c8s and the confos attest config to that attestation-api.
+therefore change the manifest rather than workflow files. The mkosi pin is
+derived, not chosen: `.github/scripts/confos-mkosi-pin.sh` reads it from the
+pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
+pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
+so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
+is the published attestation-api image of that release: the CDS image fetches
+it by that digest (`images/cds-guest/cds/mkosi.sync`) and the host DaemonSet
+runs it as the chart's `attestationApi` `pinnedDigest`
+(`internal/helmchart/c8s/values.yaml`), a copy that
+`.github/scripts/chart-attestation-api-digest.sh` reads and writes and that
+pin-hygiene holds equal to the manifest. pin-hygiene also resolves
+`attestation-api:<attestation_rs_tag>` and
+`attestation-api:sha-<attestation_rs_ref[0:7]>` with
+`.github/scripts/ghcr-digest.sh` (attestation-rs names one manifest both
+ways) and fails when either names another build, so the host and the guests
+verify with the same attestation-api release. pin-watch resolves the digest of
+a new attestation-rs release and writes the manifest and the chart together.
+
+The chart's three third-party images (kube-state-metrics, the router's nginx,
+the containerd-prep busybox) are digest-pinned in
+`internal/helmchart/c8s/values.yaml` and seeded into the allowlist floor. The
+line above each digest names the tag it was resolved from
+(`# Resolve REPOSITORY:TAG to bump this digest.`), which
+`.github/scripts/chart-image-pins.sh list` reads and `set` rewrites.
+pin-hygiene fails a digest without that line or one the registry no longer
+serves, and notices a tag upstream has rebuilt since; pin-watch's second step
+(`confos-pin-watch.yml`, weekly) proposes that rebuild as its own PR, never a
+version change. A version bump
+is a hand edit of the Resolve line, then `set` with the new tag's digest, then
+the block's `entrypoint` and `imageEnv` aligned with the image's config, which pin-hygiene then checks (`chart-image-pins.sh check`).
+
+The confos and attestation-rs pins are release commits: each `*_ref` SHA is
+what the builds check out, and the `*_tag` beside it is the release that
+names it (`vMAJOR.MINOR.PATCH`). The SHA stays the build input because a tag
+can be repointed; the pin-hygiene workflow resolves each tag in its source
+repository (`.github/scripts/release-pin.sh`) and fails when it no longer
+names the pinned SHA. Pin-watch follows each repository's latest release, not
+its `main`, so an unreleased commit never enters a measured build, and it
+only moves a pin forward: a latest release older than the pinned one is kept
+out. An attestation-rs release that changes the attestation-api config or
+`/verify` contract still needs the c8s and confos ports in the same PR as its
+bump.
 
 Published builds resolve C8s container digests from the registry tag
 `C8S_REF` at build time. The rendered manifests, component seed and measured OCI

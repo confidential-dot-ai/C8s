@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,32 +35,29 @@ type Handler struct {
 // against a different payload). Production wires operatorauth.Verifier.Authorize.
 type WriteAuthorizer func(r *http.Request, body []byte) error
 
-// HandleList handles GET /allowlist: the full allowlist document as canonical
-// JSON. Emits a weak ETag from the store version; a matching If-None-Match
+// HandleList handles GET /allowlist: the document the store serves, tagged
+// with its digest and carrying its version. With pkgallowlist.NodeQuery it is
+// the allowlist in effect on nodes. An If-None-Match naming exactly that tag
 // returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
-	// Every enforcer polls this route on its refresh interval and is current
-	// almost every time, so settle the 304 on the single-row version read
-	// rather than loading every entry under the writers' lock.
-	if match := r.Header.Get("If-None-Match"); match != "" {
-		if version, err := h.Allowlist.Version(); err == nil && match == `W/"`+version+`"` {
-			w.Header().Set("ETag", match)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
+	w.Header().Set("Cache-Control", "no-store")
+	var body []byte
+	var version string
+	var err error
+	if r.URL.RawQuery == pkgallowlist.NodeQuery {
+		body, version, err = h.Allowlist.InEffect(time.Now())
+	} else {
+		body, version, err = h.Allowlist.Served()
 	}
-
-	doc, version, err := h.Allowlist.LoadAll()
 	if err != nil {
 		readFailed(w, err)
 		return
 	}
-
-	w.Header().Set("ETag", `W/"`+version+`"`)
-
-	body, err := doc.Canonical()
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	tag := pkgallowlist.EntityTag(objectDigest(body))
+	w.Header().Set("ETag", tag)
+	w.Header().Set(pkgallowlist.VersionHeader, version)
+	if r.Header.Get("If-None-Match") == tag {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -70,15 +68,15 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 // it in atomically. CDS assigns the new version.
 //
 // If-Match makes the swap conditional on the version: the strong tag "N"
-// matches version N, the N of the ETag W/"N" that GET serves. A refused
-// precondition is 412 and changes nothing. No If-Match, or "*", swaps
+// matches version N, the version GET serves in its VersionHeader. A refused
+// precondition, including "*", is 412 and changes nothing. No If-Match swaps
 // unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	// Before the token is spent: a precondition no version can satisfy is
 	// the operator's mistake, not a write.
 	version, matchable := requiredVersion(r.Header.Get("If-Match"))
 	if !matchable {
-		http.Error(w, `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`, http.StatusPreconditionFailed)
+		http.Error(w, `If-Match takes the strong tag "N" of version N, which GET /allowlist names in `+pkgallowlist.VersionHeader, http.StatusPreconditionFailed)
 		return
 	}
 
@@ -218,17 +216,15 @@ func readFailed(w http.ResponseWriter, err error) {
 }
 
 // HandleHistory handles GET /allowlist/history: every document CDS served,
-// oldest first.
+// oldest first, and the host privilege the allowlist declared.
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
-	entries, err := h.Allowlist.History()
+	history, err := h.Allowlist.History()
 	if err != nil {
 		readFailed(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Entries []HistoryEntry `json:"entries"`
-	}{entries})
+	json.NewEncoder(w).Encode(history)
 }
 
 var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
