@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"math/big"
 	"net/http"
@@ -39,9 +40,15 @@ func (p *capturingProvider) Evidence(_ context.Context, reportData []byte) (json
 	return json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), "snp", "genoa", nil
 }
 
-// writeTestServingLeaf writes a self-signed leaf PEM to a temp file and
-// returns the path plus the cert's exact DER.
+// writeTestServingLeaf writes a currently valid self-signed leaf PEM to a
+// temp file and returns the path plus the cert's exact DER.
 func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
+	t.Helper()
+	now := time.Now()
+	return writeTestServingLeafWithValidity(t, now.Add(-time.Hour), now.Add(time.Hour))
+}
+
+func writeTestServingLeafWithValidity(t *testing.T, notBefore, notAfter time.Time) (path string, der []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -50,8 +57,8 @@ func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "c8s-router.c8s-system.svc"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -62,14 +69,16 @@ func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
 	return path, der
 }
 
-func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile string) (*httptest.Server, *capturingProvider) {
+// newAttestLBServer serves attest-lb in cds mode, where the mesh leaf is the
+// serving leaf and --serving-cert-file is not read.
+func newAttestLBServer(t *testing.T, identity testMeshIdentity) (*httptest.Server, *capturingProvider) {
 	t.Helper()
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      servingCertFile,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -82,8 +91,8 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 
 func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	certPath, servingDER := writeTestServingLeaf(t)
-	ts, prov := newAttestLBServer(t, identity, certPath)
+	servingDER := identity.leaf.Raw
+	ts, prov := newAttestLBServer(t, identity)
 
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
@@ -152,6 +161,146 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if !strings.Contains(b.CDSCertPEM, "CERTIFICATE") {
 		t.Fatalf("bundle carries no mesh chain: %q", b.CDSCertPEM)
 	}
+}
+
+// attest-lb commits the mesh identity leaf in cds mode, whatever
+// --serving-cert-file names, and in acme mode the leaf that file names, only
+// inside its validity window. A refusal requests no evidence.
+func TestAttestLBServingLeafAdmission(t *testing.T) {
+	now := time.Now()
+	meshLeaf := func(_ *testing.T, identity testMeshIdentity) string { return identity.certFile }
+	otherLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeaf(t)
+		return path
+	}
+	// Two hours ahead keeps NotBefore past LeafValiditySkew.
+	futureLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeafWithValidity(t, now.Add(2*time.Hour), now.Add(3*time.Hour))
+		return path
+	}
+	expiredLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return path
+	}
+	// A valid leaf served with an expired intermediate.
+	expiredChain := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeaf(t)
+		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return appendTestPEMBlock(t, path, intermediate)
+	}
+	// tls.crt carries an intermediate that has expired.
+	meshExpiredChain := func(t *testing.T, identity testMeshIdentity) string {
+		_, intermediate := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return appendTestPEMBlock(t, identity.certFile, intermediate)
+	}
+	// tls.crt carries a trailing block that is not a certificate, which nginx
+	// would refuse to load.
+	meshGarbageChain := func(t *testing.T, identity testMeshIdentity) string {
+		return appendTestPEMBlock(t, identity.certFile, []byte("not a certificate"))
+	}
+	// Same subject and key as the mesh leaf, but expired and self-signed.
+	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
+		tmpl := *identity.leaf
+		tmpl.NotBefore, tmpl.NotAfter = now.Add(-2*time.Hour), now.Add(-time.Hour)
+		der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &identity.key.PublicKey, identity.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "expired-mesh.pem")
+		writeTestPEM(t, path, "CERTIFICATE", der)
+		return path
+	}
+	for _, tc := range []struct {
+		name    string
+		mode    types.FrontDoorMode
+		serving func(*testing.T, testMeshIdentity) string
+		wantErr string
+	}{
+		{name: "cds mesh leaf", mode: types.FrontDoorModeCDS, serving: meshLeaf},
+		{name: "cds ignores other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf},
+		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
+		{name: "cds expired chain", mode: types.FrontDoorModeCDS, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "cds malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain, wantErr: types.ErrorCodeBindingUnavailable},
+		{name: "acme ignores the mesh chain", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
+			meshExpiredChain(t, identity)
+			return otherLeaf(t, identity)
+		}},
+		{name: "acme ignores a malformed mesh chain block", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
+			meshGarbageChain(t, identity)
+			return otherLeaf(t, identity)
+		}},
+		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
+		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "acme not-yet-valid leaf", mode: types.FrontDoorModeACME, serving: futureLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := writeTestMeshIdentity(t)
+			servingFile := tc.serving(t, identity)
+			prov := &capturingProvider{}
+			srv := NewServer(Config{
+				Routes:               testRoutes(t),
+				Evidence:             prov,
+				FrontDoorMode:        tc.mode,
+				ServingCertFile:      servingFile,
+				MeshIdentityCertFile: identity.certFile,
+				MeshIdentityKeyFile:  identity.keyFile,
+				MeshIdentityCAFile:   identity.caFile,
+				Bindings:             NewBindings(),
+			})
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+
+			nonce := bytes.Repeat([]byte{0x5a}, 32)
+			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr != "" {
+				if resp.StatusCode != http.StatusServiceUnavailable {
+					resp.Body.Close()
+					t.Fatalf("status = %d, want 503", resp.StatusCode)
+				}
+				if e := decodeErr(t, resp); e.Error != tc.wantErr {
+					t.Fatalf("error code = %q, want %q", e.Error, tc.wantErr)
+				}
+				if prov.lastReportData != nil {
+					t.Fatal("evidence was requested for a rejected serving leaf")
+				}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
+			}
+			servingDER := identity.leaf.Raw
+			if tc.mode == types.FrontDoorModeACME {
+				servingDER = readTestCertDER(t, servingFile)
+			}
+			want, err := overenc.LBTranscriptHash(tc.mode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(prov.lastReportData, want) {
+				t.Fatal("report_data does not commit the served leaf")
+			}
+		})
+	}
+}
+
+// readTestCertDER returns the DER of the first PEM block in path.
+func readTestCertDER(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", path)
+	}
+	return block.Bytes
 }
 
 // A pq-transcript signature must never verify against the lb transcript for
@@ -224,9 +373,19 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 
 func TestAttestLBMissingServingCertFailsClosed(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	// No ServingCertFile: attest-lb must fail closed rather than silently
-	// bind something else.
-	ts, _ := newAttestLBServer(t, identity, "")
+	// No ServingCertFile on an acme front door: attest-lb must fail closed
+	// rather than silently bind something else.
+	srv := NewServer(Config{
+		Routes:               testRoutes(t),
+		Evidence:             &capturingProvider{},
+		FrontDoorMode:        types.FrontDoorModeACME,
+		MeshIdentityCertFile: identity.certFile,
+		MeshIdentityKeyFile:  identity.keyFile,
+		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, 32)))
 	if err != nil {
@@ -242,15 +401,14 @@ func TestAttestLBMissingServingCertFailsClosed(t *testing.T) {
 }
 
 func TestAttestLBMeshIdentityUnavailableFailsClosed(t *testing.T) {
-	// The serving leaf alone is not enough: without a loadable mesh identity
-	// there is nothing to sign the transcript, so the endpoint must 503 rather
-	// than serve an unsigned binding.
+	// Without a loadable mesh identity there is nothing to bind or to sign
+	// the transcript, so the endpoint must 503 rather than serve an unsigned
+	// binding.
 	identity := writeTestMeshIdentity(t)
-	certPath, _ := writeTestServingLeaf(t)
 	if err := os.Remove(identity.certFile); err != nil {
 		t.Fatal(err)
 	}
-	ts, _ := newAttestLBServer(t, identity, certPath)
+	ts, _ := newAttestLBServer(t, identity)
 
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, 32)))
 	if err != nil {
@@ -267,8 +425,7 @@ func TestAttestLBMeshIdentityUnavailableFailsClosed(t *testing.T) {
 
 func TestAttestLBWrongSizeNonce(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	certPath, _ := writeTestServingLeaf(t)
-	ts, _ := newAttestLBServer(t, identity, certPath)
+	ts, _ := newAttestLBServer(t, identity)
 	for _, size := range []int{16, 31, 33} {
 		resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, size)))
 		if err != nil {
@@ -456,4 +613,48 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A malformed block after the leaf in tls.crt only matters to a cds front
+// door's attest-lb: /readyz and attest-pq keep working, and attest-lb answers
+// binding_unavailable rather than binding a leaf nginx will not load.
+func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	appendTestPEMBlock(t, identity.certFile, []byte("not a certificate"))
+	ts, _ := newAttestLBServer(t, identity)
+
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want 200", resp.StatusCode)
+	}
+	ck, err := overenc.GenerateClientKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := fetchBundle(t, ts.URL, ck, bytes.Repeat([]byte{0x5a}, 32)); b.Version != types.BindingAttestPQ {
+		t.Fatalf("attest-pq bundle version = %q, want %q", b.Version, types.BindingAttestPQ)
+	}
+	// The attest-lb refusal itself is the "cds malformed chain block" case of
+	// TestAttestLBServingLeafAdmission.
+}
+
+// appendTestPEMBlock appends der as a CERTIFICATE block to the PEM file at
+// path and returns path.
+func appendTestPEMBlock(t *testing.T, path string, der []byte) string {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

@@ -166,6 +166,15 @@ The two attested handshakes, attest-pq and attest-lb, are
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
 refuse a front door outside mode `cds`, wanting a direct CDS URL.
+In mode `cds` attest-lb binds the mesh identity leaf, which is the leaf nginx
+serves; a mesh leaf or CA outside its validity window is a credential failure,
+503 `binding_unavailable`. In mode `acme` it binds the leaf
+`--serving-cert-file` names and refuses with 503 `serving_leaf_rejected` while
+that leaf is outside its validity window or served with a chain that has
+expired. In mode `cds`, an expired intermediate in `tls.crt` gets
+`serving_leaf_rejected`, and a `tls.crt` chain block that does not parse gets
+503 `binding_unavailable` from attest-lb; `/readyz` and attest-pq are
+unaffected.
 
 ACME issuance covers the names the sidecar is configured with — `router.san` on
 an installed cluster, the launch file's `hostnames` on a baked node — and never
