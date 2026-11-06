@@ -33,14 +33,36 @@ type GuestConfig struct {
 	Changes           <-chan struct{}
 }
 
+func (g GuestConfig) validate() error {
+	endpoint, err := url.Parse(g.CDSURL)
+	if err != nil {
+		return fmt.Errorf("CDSURL: %w", err)
+	}
+	if endpoint.Scheme != "https" || endpoint.Host == "" {
+		return errors.New("CDSURL must be an https URL with a host")
+	}
+	if g.HTTPClient == nil {
+		return errors.New("HTTPClient is required")
+	}
+	if g.VolumeRoot == nil {
+		return errors.New("volume root is required")
+	}
+	if g.Snapshot == nil || g.Commit == nil {
+		return errors.New("snapshot and commit callbacks are required")
+	}
+	if err := armtls.ValidateSandboxID(g.InstanceID); err != nil {
+		return fmt.Errorf("instance ID: %w", err)
+	}
+	return nil
+}
+
 // RunGuest obtains and renews Pod credentials without exporting quote or
 // assertion authority. It reuses the ordinary renewal, CA binding, expiry,
 // policy watch and complete-generation validation. It never resumes an old
 // leaf: only retained guest admission history may authorize a new generation.
 func RunGuest(ctx context.Context, guest GuestConfig) (result error) {
-	endpoint, err := url.Parse(guest.CDSURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || guest.HTTPClient == nil || guest.VolumeRoot == nil || guest.Snapshot == nil || guest.Commit == nil || armtls.ValidateSandboxID(guest.InstanceID) != nil {
-		return fmt.Errorf("incomplete guest credential broker configuration")
+	if err := guest.validate(); err != nil {
+		return fmt.Errorf("guest credential broker: %w", err)
 	}
 	volume := credentialVolume{root: guest.VolumeRoot, leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
 	defer func() { result = errors.Join(result, withdrawGeneration(volume)) }()
