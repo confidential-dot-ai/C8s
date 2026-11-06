@@ -2,9 +2,11 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // meshYAML is the mesh policy every enforcer configuration carries.
@@ -617,5 +620,71 @@ func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
 	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
 		t.Fatal("an unreadable CDS pin was accepted")
+	}
+}
+
+// podRoleConfig is a valid assigned pod-role configuration: the measured
+// endpoint in the base, the pod's own mesh policy and no node exemptions.
+func podRoleConfig(t *testing.T) config {
+	t.Helper()
+	cfg := validConfig()
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	return cfg
+}
+
+// A signed peer or ingress port the guest ruleset would refuse fails at load,
+// not at the first sandbox.
+func TestPodRoleRefusesTuplesTheGuestRulesetWouldRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pod  podMeshPolicy
+		want string
+	}{
+		{"zero ingress port", podMeshPolicy{IngressPorts: []uint16{0}}, "mesh.pod.ingress_ports"},
+		{"mesh ingress port", podMeshPolicy{IngressPorts: []uint16{uint16(workloadclaims.MeshInboundPort)}}, "mesh.pod.ingress_ports"},
+		{"local peer", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:443")}}, "mesh.pod.peers"},
+		{"peer without port", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:0")}}, "mesh.pod.peers"},
+	} {
+		cfg := podRoleConfig(t)
+		cfg.Mesh.Pod = &tc.pod
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	cfg := podRoleConfig(t)
+	cfg.Mesh.Pod = &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:443")}, IngressPorts: []uint16{8080}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid tuples refused: %v", err)
+	}
+}
+
+// The register has no writer besides the plugin's measured launches;
+// The journal lives where its readers look.
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+	cfg := podRoleConfig(t)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one writer: %v", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
+	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
+		t.Fatalf("journal elsewhere than its readers look: %v", err)
 	}
 }
