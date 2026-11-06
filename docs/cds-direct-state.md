@@ -75,9 +75,11 @@ inside a production HA metadata service; CDS is delegating that responsibility.
 
 The local metadata executable uses one per-cluster actor and SQLite with WAL
 journaling and FULL synchronous durability. Its SQLite journal is not a CDS
-application replay protocol. It is **not** replicated metadata HA. Provider HA,
-replica placement, durable independent custody and native SNP/TDX recovery remain
-separate qualification steps.
+application replay protocol. It is **not** replicated metadata HA. Later work
+qualified the bounded native
+[SNP](cds-direct-native-recovery.md) and [TDX](cds-tdx-current-recovery.md)
+recovery paths for this backend; metadata HA and three-host CDS availability
+remain unqualified.
 
 Known prototype limits: binding updates serialize; path creation shares a quota
 counter; the current policy image is reconstructed in private SQLite for each

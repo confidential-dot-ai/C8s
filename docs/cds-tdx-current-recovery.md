@@ -14,7 +14,8 @@ immutable custodian image; the caller cannot supply or replace its image pins.
 The signed quote must match that manifest's MRTD, RTMR1 and RTMR2, the exact
 launch binding in RTMR3, the nonce, and the recipient key. Intel signatures,
 collateral, revocation and the verifier's normal TCB policy are checked. No
-host-supplied clock, alternate root or relaxed TCB option is accepted.
+verification-time override, alternate root or relaxed TCB option is accepted by
+the request API.
 
 The local TDX attestation API uses real ConfigFS quotes and the same full image
 and launch checks. One bounded provider actor owns quote generation; overload
@@ -47,19 +48,34 @@ Secrets and network policies are absent. No worker or shared cloud rollout is
 changed. Raw quotes, collateral, launch bytes and private runner data are kept
 outside the repository; the published result is an explicit summary.
 
-A clean end-to-end runner result is pending for frozen image source `87c4aff8`. Local native-harness
-compilation, the direct-state HTTP/workload regression, custody race tests,
-and all 36 runner checks passed. The first image build stopped because the
-builder's symlink target was absent inside its dedicated container; the retry
-mounts the verified same-source builder explicitly. The failed log is retained.
+The [native result](../test/pilot/cds-sealed-recovery/results/2026-11-06-tdx-current-recovery.json)
+passed end to end on 6 November 2026 with frozen image source `87c4aff8`
+(public equivalent `66c8ed8d`) and runner `a4a0594b` (public equivalent
+`e273e937`). Seven guest instances ran across four qualified workers. Five
+SNP custody guests were independently verified across two chips; both CDS
+phases had independently verified native TDX evidence. Both original workers
+were excluded after every source CDS and custody guest was destroyed.
+
+Approved replacements retained the same CA, rejected the still-valid spent
+token, preserved revocation, and used the original certificate and secret after
+reauthorization. The state key and CA stayed inside the measured guest paths;
+external persistence and the custody handoff carried encrypted material.
+The fixed-image and trusted-metadata limits above still apply.
+
+The runner exited zero. Normal UID-scoped cleanup completed, followed by an
+independent read-only audit of all 32 recorded resource paths with none
+remaining. No unexpected cluster regression was observed. The same runtime
+images were used in the preceding attempt; only the bounded VM-deletion wait
+changed. Local native-harness compilation, the real-process direct-state
+regression, custody race checks, and all 37 runner checks passed.
 
 The [first native attempt](../test/pilot/cds-sealed-recovery/results/2026-11-05-tdx-current-recovery-attempt-01.json)
 passed custody enrollment but stopped before booting CDS on TDX: a read of an
 owned backing volume returned HTTP 500. Cleanup and an independent absence
 audit passed for all 14 recorded paths. The runner now includes HTTP 500 in its
 existing three-attempt retry for unchanged GET requests. Mutation, authorization
-and validation failures retain their previous behavior. All 36 runner checks
-pass, including bounded retries and no mutation retry. The failure is retained;
+and validation failures retain their previous behavior. That fix passed all 36
+runner checks, including bounded retries and no mutation retry. The failure is retained;
 it is not counted as native TDX recovery evidence.
 
 The [second native attempt](../test/pilot/cds-sealed-recovery/results/2026-11-06-tdx-current-recovery-attempt-02.json)

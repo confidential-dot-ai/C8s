@@ -32,9 +32,13 @@ This adapter does not create hardware custody by itself. The capsule wrapping
 and signing keys must remain inside independently controlled, approved TEEs.
 Software tests use a test-held wrapping key. The earlier native SNP custody
 proof and TDX attestation qualification do not automatically qualify this new
-backend or a cross-platform release path. Native SNP/TDX integration, loss of
-the original host, custody upgrades and an HA metadata provider remain separate
-qualification work. No production backend switch is enabled here.
+backend or a cross-platform release path. The subsequent
+[native SNP rehearsal](cds-direct-native-recovery.md) and
+[TDX rehearsal](cds-tdx-current-recovery.md) now cover this backend after total
+source guest loss with the original worker(s) excluded. They use fixed custody
+images and an unreplicated metadata fixture. Custody upgrades and an HA metadata
+provider remain separate qualification work. No production backend switch is
+enabled here.
 
 ## Local result
 

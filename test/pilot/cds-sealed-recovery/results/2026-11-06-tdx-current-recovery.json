@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "source_commit": "87c4aff8d5aedf9d71eceb30dcc9567dc9b7c939",
+  "source_tree": "93958f8de315cc32f43d5a5284c97c3834aca405",
+  "backend": "transactional-current-state",
+  "native_cds_platform": "tdx",
+  "durable_custody_platform": "snp",
+  "native_tdx_sealing_claimed": false,
+  "cross_host_tdx_cds_recovery_passed": true,
+  "distinct_workers": 4,
+  "distinct_guest_instances": 7,
+  "independently_verified_snp_custody_guests": 5,
+  "independently_verified_snp_chips": 2,
+  "independently_verified_tdx_cds_phases": 2,
+  "tdx_full_image_tuple_and_launch_verified": true,
+  "tdx_recipient_pins_baked_into_custodian_image": true,
+  "both_original_workers_excluded_from_recovery": true,
+  "all_source_cds_and_custody_guests_destroyed": true,
+  "same_ca_before_and_after_total_guest_loss": true,
+  "recovery_checks": {
+    "attested_custodian_delegation": true,
+    "authority_reads_current_records": true,
+    "old_leaf_and_secret_positive_control": true,
+    "real_tdx_attestation": true,
+    "revocation_preserved_all_replicas": true,
+    "same_ca_all_replicas": true,
+    "state_key_and_ca_never_exported_as_plaintext": true,
+    "unexpired_replay_rejected_all_replicas": true
+  },
+  "cds_processes_per_cds_guest": 3,
+  "maximum_simultaneous_owned_vms": 2,
+  "vcpu_per_vm": 2,
+  "memory_gib_per_vm": 4,
+  "cleanup": {
+    "uid_scoped": true,
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 32,
+    "owned_resources_remaining": 0,
+    "unexpected_cluster_regression_observed": false,
+    "external_explicit_vm_deletions_observed": 0
+  },
+  "local_validation": {
+    "custody_race_tests_passed": true,
+    "python_runner_checks_passed": 37,
+    "shared_native_harness_compiled": true,
+    "direct_state_workload_regression_passed": true
+  },
+  "limits": [
+    "A surviving enrolled SNP chip and its sealed copy are required; TDX provides no persistent sealing here.",
+    "Three CDS processes share one guest; this does not qualify three-host availability.",
+    "The metadata fixture is unreplicated FULL-synchronous SQLite.",
+    "Whole-database rollback or a dishonest metadata provider is outside the freshness contract.",
+    "Object fixture traffic is not cloud-provider performance evidence.",
+    "Custody image upgrades, retirement, membership and production migration are not qualified."
+  ],
+  "full_acceptance_passed": false,
+  "operator_exclusion_qualified": false,
+  "production_ready": false,
+  "publication": "Explicit selected summary only; no raw quotes, collateral, launch bytes, measurements, identities or private runner data.",
+  "runner_source_commit": "a4a0594b61748d5980577c315e6e44cca456369b",
+  "previous_failed_attempts": [
+    "2026-11-05-tdx-current-recovery-attempt-01.json",
+    "2026-11-06-tdx-current-recovery-attempt-02.json"
+  ],
+  "attempt": 3,
+  "runner_exit_code": 0,
+  "clean_end_to_end_run": true,
+  "runtime_images_identical_to_attempt_02": true,
+  "public_image_source_commit": "66c8ed8dab85c4882433a2201a12b10f3b88273a",
+  "public_runner_source_commit": "e273e93742aee614ebda65fea50a7be82dc1b7e9"
+}
