@@ -412,7 +412,7 @@ class Integrated(Run):
         return ready
 
     def render(self, run, node, uid, launch):
-        expiry = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=45)).replace(microsecond=0).isoformat()
+        expiry = getattr(self.args, 'fixture_expires', None) or (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=45)).replace(microsecond=0).isoformat()
         items = json.loads(self.command(run + "-render-" + launch.stem, [self.args.renderer, "--run", run, "--node", node, "--node-uid", uid, "--launch-file", str(launch), "--expires", expiry, "--tools-image", self.args.tools_image]))["items"]
         need(len(items) == 6, "unexpected fixture resource count")
         check_probe_network_policy(next(i for i in items if i["kind"] == "NetworkPolicy"), run)

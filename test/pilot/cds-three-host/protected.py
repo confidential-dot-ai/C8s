@@ -146,8 +146,8 @@ class Custody(integrated.Integrated):
         self.stop_forward()
         self.remove(self.active)
         self.wait_absent(native.VMI+'/'+self.active['item']['metadata']['name'])
-        owner = self.active['item']['metadata']['labels'][OWNER]
-        _, pods = self.kube.call('GET', '/api/v1/namespaces/'+NS+'/pods?labelSelector='+urllib.parse.quote(OWNER+'='+owner))
+        owner = self.active['item']['metadata']['labels'][native.LABEL]
+        _, pods = self.kube.call('GET', '/api/v1/namespaces/'+native.NS+'/pods?labelSelector='+urllib.parse.quote(native.LABEL+'='+owner))
         need(not pods['items'], 'source custody launcher still present')
         return self.active_uid
 
@@ -199,6 +199,7 @@ class Run(ha.Run):
         custody_args.directory = str(self.directory/'custody')
         Path(custody_args.directory).mkdir(mode=0o700, exist_ok=True)
         custody_args.nodes, custody_args.platform = args.snp_nodes, 'snp'
+        custody_args.fixture_expires = self.state['expires']
         custody_args.image, custody_args.renderer = args.snp_image, args.custody_renderer
         self.custody = Custody(custody_args, self.kube, self.atomic)
 
@@ -339,17 +340,18 @@ class Run(ha.Run):
         need(not failures, 'owned combined cleanup incomplete: '+'; '.join(failures))
 
     def audit(self):
-        paths, owners = set(), {self.run}
+        paths, owners = set(), {(OWNER, self.run)}
         for runner in (self, self.custody):
+            label = OWNER if runner is self else native.LABEL
             for row in runner.state['resources']:
                 path = self.resource_path(row['item']) if runner is self else native.resource_path(row['item'])
                 need(path == row['path'], 'audit journal path differs'); paths.add(path)
-                owners.add(row['item']['metadata']['labels'][OWNER])
+                owners.add((label, row['item']['metadata']['labels'][label]))
                 if row.get('pv'): paths.add('/api/v1/persistentvolumes/'+row['pv']['name'])
                 if row['item']['kind'] == 'VirtualMachine': paths.add(ha.VMI+row['item']['metadata']['name'])
         remaining = [p for p in sorted(paths) if self.kube.call('GET', p, expected=(200, 404))[0] != 404]
-        for owner in sorted(owners):
-            _, pods = self.kube.call('GET', '/api/v1/pods?labelSelector='+urllib.parse.quote(OWNER+'='+owner))
+        for label, owner in sorted(owners):
+            _, pods = self.kube.call('GET', '/api/v1/pods?labelSelector='+urllib.parse.quote(label+'='+owner))
             remaining.extend('owned-pod/'+p['metadata']['name'] for p in pods['items'])
         self.atomic(self.directory/'cleanup-audit.json', {'read_only_independent_audit': True,
             'resource_paths_checked': len(paths), 'cleanup_verified': not remaining, 'remaining': remaining})

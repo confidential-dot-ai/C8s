@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import urllib.parse
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -95,6 +96,57 @@ class ProtectedQualification(unittest.TestCase):
         with patch.object(protected.ha.Run, 'cleanup', side_effect=RuntimeError('HA cleanup pending')):
             with self.assertRaisesRegex(ValueError, 'cleanup incomplete'): runner.cleanup()
         runner.custody.cleanup.assert_called_once()
+
+    def test_custody_stop_checks_its_own_label_and_refuses_a_surviving_launcher(self):
+        for pods in ([], [{'metadata': {'name': 'surviving-launcher'}}]):
+            custody = object.__new__(protected.Custody)
+            owner = 'cds-snp-0123456789ab'
+            custody.active = {'item': {'metadata': {'name': owner,
+                'labels': {protected.native.LABEL: owner}}}}
+            custody.active_uid = 'original-custodian-vmi'
+            custody.stop_forward = custody.remove = custody.wait_absent = Mock()
+            custody.kube = Mock()
+            custody.kube.call.return_value = (200, {'items': pods})
+            if pods:
+                with self.assertRaisesRegex(ValueError, 'launcher still present'): custody.stop()
+            else:
+                self.assertEqual(custody.stop(), 'original-custodian-vmi')
+            query = custody.kube.call.call_args.args[1].split('?', 1)[1]
+            self.assertEqual(urllib.parse.parse_qs(query), {'labelSelector': [protected.native.LABEL+'='+owner]})
+
+    def test_absence_audit_checks_both_labels_vmis_and_backing_volumes(self):
+        for surviving_label in (None, protected.OWNER, protected.native.LABEL):
+            runner = object.__new__(protected.Run)
+            runner.run = 'cds-ha-0123456789ab'
+            runner.directory = Path('/unused')
+            item = protected.guests.admin(runner.run, '2030-01-01T00:00:00Z')
+            runner.state = {'resources': [{'item': item, 'path': runner.resource_path(item)}]}
+            owner = 'cds-snp-0123456789ab'
+            vm = {'kind': 'VirtualMachine', 'metadata': {'name': owner, 'namespace': protected.native.NS,
+                'labels': {protected.native.LABEL: owner}}}
+            claim = {'kind': 'PersistentVolumeClaim', 'metadata': {'name': owner+'-root',
+                'namespace': protected.native.NS, 'labels': {protected.native.LABEL: owner}}}
+            runner.custody = SimpleNamespace(state={'resources': [
+                {'item': vm, 'path': protected.native.resource_path(vm)},
+                {'item': claim, 'path': protected.native.resource_path(claim), 'pv': {'name': 'owned-volume'}}]})
+            runner.atomic = Mock(); runner.kube = Mock()
+            selectors = []
+            def read(method, path, **kwargs):
+                self.assertEqual(method, 'GET')
+                if '/pods?' not in path: return 404, {}
+                selector = urllib.parse.parse_qs(path.split('?', 1)[1])['labelSelector'][0]
+                selectors.append(selector)
+                pods = [{'metadata': {'name': 'surviving-launcher'}}] if selector.startswith(str(surviving_label)+'=') else []
+                return 200, {'items': pods}
+            runner.kube.call.side_effect = read
+            if surviving_label:
+                with self.assertRaisesRegex(ValueError, 'resources remain'): runner.audit()
+            else: runner.audit()
+            self.assertEqual(set(selectors), {protected.OWNER+'='+runner.run, protected.native.LABEL+'='+owner})
+            paths = {c.args[1] for c in runner.kube.call.call_args_list}
+            self.assertIn(protected.ha.VMI+owner, paths)
+            self.assertIn('/api/v1/persistentvolumes/owned-volume', paths)
+            self.assertEqual(runner.atomic.call_args.args[1]['cleanup_verified'], surviving_label is None)
 
 
 if __name__ == '__main__': unittest.main()

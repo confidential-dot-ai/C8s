@@ -47,6 +47,9 @@ verification clock or plaintext custody input is added.
 three-host runner and reuses its placement, attested client, fault and cleanup
 checks. It requires three qualified TDX workers and two distinct SNP custody
 workers; control-plane placement remains prohibited.
+Both resource journals use the combined fixture's existing 75-minute cleanup
+deadline. The custody guest's 45-minute per-boot shutdown timer and the live
+replay token's validity are unchanged.
 
 1. Start three dedicated etcd members and three metadata adapters.
 2. Enroll the hardware authority on one SNP chip, then seal a recoverable copy
