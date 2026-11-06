@@ -286,12 +286,35 @@ func filterStatuses(statuses []corev1.ContainerStatus, containers []corev1.Conta
 	return out
 }
 
+// statusMessages gives each provider status reason a fixed message. The
+// message never carries error text or guest data.
+var statusMessages = map[string]string{
+	"PodCVMOptInRequired":      "The Pod lacks the Pod CVM opt-in annotation",
+	"LaunchRefused":            "The provider refused to launch the Pod",
+	"ProviderNodeUnavailable":  "The provider does not own its virtual node",
+	"FrozenPodChanged":         "The Pod specification differs from its launch",
+	"AllocationPending":        "Waiting for a Pod CVM allocation",
+	"CloudUnavailable":         "The cloud API is unavailable",
+	"InstanceStarting":         "The Pod CVM instance is starting",
+	"EndpointsPending":         "Waiting for the Pod CVM endpoints",
+	"AttestationUnavailable":   "The Pod CVM status attestation is unavailable",
+	"GuestStatusRefused":       "The Pod CVM status does not match the Pod",
+	"AssignmentPending":        "Waiting for the Pod CVM to accept its assignment",
+	"InstanceEnded":            "The Pod CVM instance ended",
+	"InstanceGone":             "The Pod CVM instance no longer exists",
+	"InstanceIdentityMismatch": "The cloud instance differs from the launch",
+	"GuestRebooted":            "The Pod CVM rebooted",
+	"UnexpectedAssignedGuest":  "The Pod CVM reports a Pod it was not assigned",
+	verificationTimeoutReason:  "The Pod CVM was not verified in time",
+}
+
 func unknownStatus(pod *corev1.Pod, reason string, now time.Time) corev1.PodStatus {
 	out := *pod.Status.DeepCopy()
 	if out.Phase == "" {
 		out.Phase = corev1.PodPending
 	}
 	out.Reason = reason
+	out.Message = statusMessages[reason]
 	for _, t := range []corev1.PodConditionType{corev1.PodReady, corev1.ContainersReady} {
 		condition := corev1.PodCondition{Type: t, Status: corev1.ConditionUnknown, Reason: reason, LastTransitionTime: metav1.NewTime(now)}
 		found := false

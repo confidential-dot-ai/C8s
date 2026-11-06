@@ -2,7 +2,6 @@ package podprovider
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,11 +32,11 @@ func TestStatusTransitionsRecordOneEventEach(t *testing.T) {
 		change func()
 		want   string
 	}{
-		{func() {}, "Normal InstanceStarting"},
+		{func() {}, "Normal InstanceStarting The Pod CVM instance is starting"},
 		{func() {}, ""},
-		{func() { cloud.in.Status = "running" }, "Normal PodCVMVerified"},
+		{func() { cloud.in.Status = "running" }, "Normal PodCVMVerified The Pod CVM reports verified status"},
 		{func() { phase = corev1.PodRunning }, ""},
-		{func() { cloud.in.Boot.Count = 2 }, "Warning GuestRebooted"},
+		{func() { cloud.in.Boot.Count = 2 }, "Warning GuestRebooted The Pod CVM rebooted"},
 		{func() { cloud.in.Status = "terminated" }, ""},
 	}
 	for i, step := range steps {
@@ -45,9 +44,13 @@ func TestStatusTransitionsRecordOneEventEach(t *testing.T) {
 		if err := reconcile(t, r, pod); err != nil {
 			t.Fatal(err)
 		}
+		status := getPod(t, r, pod).Status
+		if status.Message != statusMessages[status.Reason] {
+			t.Fatalf("step %d: reason %q has message %q", i, status.Reason, status.Message)
+		}
 		select {
 		case got := <-recorder.Events:
-			if step.want == "" || !strings.HasPrefix(got, step.want) {
+			if got != step.want {
 				t.Fatalf("step %d: event %q, want %q", i, got, step.want)
 			}
 		default:
