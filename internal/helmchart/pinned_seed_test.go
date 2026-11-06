@@ -1,8 +1,7 @@
 // Tests for the chart's argv-pinned seed entries (c8s.argvPinnedEntries):
-// platform images that carry a shell — the nri-image-policy installer image
-// and the rke2 busybox use (containerd-prep) — must be
-// admitted by the served allowlist only under their exact expected argv,
-// never by digest alone. The boot config's base is digest-only
+// platform images that carry a shell — the nri-image-policy installer image —
+// must be admitted by the served allowlist only under their exact expected
+// argv, never by digest alone. The boot config's base is digest-only
 // admission, so it must not carry any of them either.
 package helmchart
 
@@ -150,51 +149,50 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// On rke2 the installer DaemonSet's containerd-prep initContainer runs the
-// busybox prep image under the prep script; the seed must admit that exact
-// argv and no other from that image.
-func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
+// Where no release pinned the installer image, `c8s uninstall` sweeps in the
+// chart's busybox. The served seed is then the only document admitting that
+// pod, under the sweep script and its pause and nothing else.
+func TestChartPinnedSeedAdmitsTheSweepImage(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.distro=rke2")
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.enabled=false",
+		"--set-string", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	prep, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "containerd-prep")
-	if !ok {
-		t.Fatalf("rke2 render missing the containerd-prep initContainer")
+	digest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
+	script, err := os.ReadFile(filepath.Join("c8s", "files", "scripts", "host-sweep.sh"))
+	if err != nil {
+		t.Fatalf("read host-sweep.sh: %v", err)
 	}
-	prepBusyboxDigest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
-	admitPlatformContainer(t, seed, prepBusyboxDigest, prep)
-	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "-c", "rm -rf /"})
-	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "/script/setup"})
+	admitArgvs(t, seed, digest, []string{"/bin/sh", "-c", strings.TrimRight(string(script), "\n") + "\n"})
+	admitArgvs(t, seed, digest, []string{"/bin/sleep", "2147483647"})
+	denyArgvs(t, seed, digest, []string{"/bin/sh", "-c", "rm -rf /"})
+	denyArgvs(t, seed, digest, []string{"/bin/sleep", "infinity"})
 }
 
 // base is digest-only admission — carrying an argv-pinned image there
 // would bypass the pin. Neither the installer image nor any busybox may
-// appear, in either the k8s or the rke2 shape.
+// appear.
 func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{
-		nil,
-		{"--set", "nriImagePolicy.distro=rke2"},
-	} {
-		out, err := helmTemplate(t, args...)
-		if err != nil {
-			t.Fatalf("helm template %v: %v\n%s", args, err, out)
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	if len(baseImages(cfg.Allowlist.Base)) == 0 {
+		t.Fatal("base must stay non-empty (pull bootstrap)")
+	}
+	for digest, image := range baseImages(cfg.Allowlist.Base) {
+		if digest == baseNRIDigest {
+			t.Error("installer image self-allowed in base: the argv pin would be bypassed")
 		}
-		cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-		if len(baseImages(cfg.Allowlist.Base)) == 0 {
-			t.Fatalf("base must stay non-empty (pull bootstrap): %v", args)
-		}
-		for digest, image := range baseImages(cfg.Allowlist.Base) {
-			if digest == baseNRIDigest {
-				t.Errorf("installer image self-allowed in base (%v): the argv pin would be bypassed", args)
-			}
-			if strings.Contains(image, "busybox") {
-				t.Errorf("busybox %s in base (%v): admits any command line on any pod", digest, args)
-			}
+		if strings.Contains(image, "busybox") {
+			t.Errorf("busybox %s in base: admits any command line on any pod", digest)
 		}
 	}
 }
@@ -205,10 +203,7 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 // thing between the pin and a silent any-argv shadow.
 func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.distro=rke2",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-	)
+	out, err := helmTemplate(t, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

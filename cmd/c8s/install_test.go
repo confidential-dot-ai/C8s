@@ -983,125 +983,23 @@ func TestCheckImagePullSecret(t *testing.T) {
 	}
 }
 
-func TestAppendDistroInstallArgsSetsNRI(t *testing.T) {
-	for _, distro := range []string{"k8s", "rke2"} {
-		t.Run(distro, func(t *testing.T) {
-			got := appendDistroInstallArgs([]string{"upgrade"}, distro)
-			assertArgsEqual(t, got, []string{
-				"upgrade",
-				"--set-string", "nriImagePolicy.distro=" + distro,
-			})
-		})
-	}
-}
-
-// classifyDistroNodes splits "name\tkubeletVersion" lines by the "+rke2"
-// build-metadata suffix RKE2's kubelet build carries. Anything else (vanilla
-// upstream, k3s, future distros) lands in the "other" bucket — detection
-// only owns the rke2 vs not-rke2 split.
-func TestClassifyDistroNodesByKubeletVersionSuffix(t *testing.T) {
-	lines := []string{
+// The only distro signal kubectl can see is the build metadata a bundled
+// kubelet stamps onto its version. A node reporting none is upstream's as far
+// as the install can tell, and one reporting no version at all is skipped.
+func TestBundledKubeletNodes(t *testing.T) {
+	got := bundledKubeletNodes([]string{
 		"node-a\tv1.29.5+rke2r1",
-		"node-b\tv1.29.5",        // vanilla upstream
-		"node-c\tv1.30.1+rke2r2", // newer RKE2 build
-		"node-d\tv1.30.0+k3s1",   // k3s lands in "other"
-		"",                       // a trailing blank line from kubectl is ignored
-		"malformed-no-tab",       // a line with no tab can't be classified, ignored
-	}
-	rke2, other := classifyDistroNodes(lines)
-	wantRke2 := []string{"node-a", "node-c"}
-	wantOther := []string{"node-b", "node-d"}
-	if !reflect.DeepEqual(rke2, wantRke2) {
-		t.Errorf("rke2 nodes = %v, want %v", rke2, wantRke2)
-	}
-	if !reflect.DeepEqual(other, wantOther) {
-		t.Errorf("other nodes = %v, want %v", other, wantOther)
-	}
-}
-
-// chooseDistro powers distro detection: the kubelet classification must map to
-// the distro value the chart needs.
-func TestChooseDistroHomogeneousClusters(t *testing.T) {
-	got, err := chooseDistro([]string{"node-a", "node-b"}, nil)
-	if err != nil || got != "rke2" {
-		t.Errorf("all-RKE2 cluster: got (%q, %v), want (rke2, nil)", got, err)
-	}
-	got, err = chooseDistro(nil, []string{"node-a", "node-b"})
-	if err != nil || got != "k8s" {
-		t.Errorf("vanilla cluster: got (%q, %v), want (k8s, nil)", got, err)
-	}
-	// No classifiable nodes: fall back to the chart default rather than fail
-	// an install on which nothing could schedule anyway.
-	got, err = chooseDistro(nil, nil)
-	if err != nil || got != "k8s" {
-		t.Errorf("no classifiable nodes: got (%q, %v), want (k8s, nil)", got, err)
-	}
-}
-
-// A mixed cluster has no single right distro — the installers patch a
-// distro-specific containerd path on every selected node — so detection must
-// demand explicit per-component values via -f instead of guessing.
-func TestChooseDistroRejectsMixedClusters(t *testing.T) {
-	_, err := chooseDistro([]string{"rke2-node"}, []string{"vanilla-node"})
-	if err == nil {
-		t.Fatal("mixed cluster: want error, got nil")
-	}
-	for _, want := range []string{"nriImagePolicy.distro", "rke2-node", "vanilla-node"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q (should name the fix and both node sets)", err.Error(), want)
-		}
-	}
-}
-
-// A -f file suppresses distro auto-detection only when it actually sets a
-// distro; passing -f for any other value must leave detection in force (the
-// bug: any -f used to silently drop the CLI to the chart's k8s default).
-func TestValuesFilesSetDistro(t *testing.T) {
-	write := func(t *testing.T, body string) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "values.yaml")
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatalf("write values: %v", err)
-		}
-		return p
-	}
-	for _, tc := range []struct {
-		name string
-		body string
-		want bool
-	}{
-		{"nri distro set", "nriImagePolicy:\n  distro: rke2\n", true},
-		{"unrelated value only", "router:\n  enabled: false\n", false},
-		{"distro key absent under section", "nriImagePolicy:\n  enabled: true\n", false},
-		{"empty distro string is not a choice", "nriImagePolicy:\n  distro: \"\"\n", false},
-		{"empty file", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := valuesFilesSetDistro([]string{write(t, tc.body)})
-			if err != nil {
-				t.Fatalf("valuesFilesSetDistro: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("valuesFilesSetDistro(%q) = %v, want %v", tc.body, got, tc.want)
-			}
-		})
-	}
-
-	t.Run("no files means detect", func(t *testing.T) {
-		got, err := valuesFilesSetDistro(nil)
-		if err != nil || got {
-			t.Errorf("valuesFilesSetDistro(nil) = (%v, %v), want (false, nil)", got, err)
-		}
+		"node-b\tv1.29.5",
+		"node-c\tv1.30.0+k3s1",
+		"",
+		"malformed-no-tab",
 	})
-
-	t.Run("one of several files sets it", func(t *testing.T) {
-		a := write(t, "router:\n  enabled: false\n")
-		b := write(t, "nriImagePolicy:\n  distro: rke2\n")
-		got, err := valuesFilesSetDistro([]string{a, b})
-		if err != nil || !got {
-			t.Errorf("valuesFilesSetDistro(two files) = (%v, %v), want (true, nil)", got, err)
-		}
-	})
+	if want := []string{"node-a", "node-c"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("bundledKubeletNodes = %v, want %v", got, want)
+	}
+	if got := bundledKubeletNodes(nil); got != nil {
+		t.Errorf("bundledKubeletNodes(nil) = %v, want none", got)
+	}
 }
 
 func TestRouterHostPort(t *testing.T) {
@@ -1164,17 +1062,10 @@ func TestHostPortConflict(t *testing.T) {
 	}{
 		{
 			name:        "single node, ingress holds 443",
-			pods:        []corev1.Pod{pod("kube-system", "rke2-ingress-nginx-abc", "node-a", 443)},
+			pods:        []corev1.Pod{pod("kube-system", "ingress-nginx-controller-abc", "node-a", 443)},
 			nodes:       []string{"node-a"},
 			wantBlocked: true,
-			wantHolder:  "kube-system/rke2-ingress-nginx-abc",
-		},
-		{
-			name:        "single node, traefik holds 443 (rke2 v1.36+ default ingress)",
-			pods:        []corev1.Pod{pod("kube-system", "rke2-traefik-abc", "node-a", 443)},
-			nodes:       []string{"node-a"},
-			wantBlocked: true,
-			wantHolder:  "kube-system/rke2-traefik-abc",
+			wantHolder:  "kube-system/ingress-nginx-controller-abc",
 		},
 		{
 			name: "two nodes, ingress on both",
@@ -1723,19 +1614,6 @@ func assertArgsEqual(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
 		}
-	}
-}
-
-func TestValuesFilesSetDistroErrorPaths(t *testing.T) {
-	if _, err := valuesFilesSetDistro([]string{filepath.Join(t.TempDir(), "missing.yaml")}); err == nil {
-		t.Fatal("want the read error surfaced")
-	}
-	bad := filepath.Join(t.TempDir(), "bad.yaml")
-	if err := os.WriteFile(bad, []byte("\t"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := valuesFilesSetDistro([]string{bad}); err == nil {
-		t.Fatal("want the parse error surfaced")
 	}
 }
 

@@ -59,29 +59,6 @@ spec:
                       {{- toYaml .values | nindent 22 }}
                   {{- end }}
       initContainers:
-        {{- if eq .Values.nriImagePolicy.distro "rke2" }}
-        - name: containerd-prep
-          image: {{ include "c8s-common.image" .Values.nriImagePolicy.containerdPrep.image }}
-          imagePullPolicy: {{ .Values.nriImagePolicy.containerdPrep.image.pullPolicy }}
-          securityContext:
-            privileged: true
-          env:
-            - name: HOST_CONTAINERD_DIR
-              value: {{ include "nri-image-policy.containerdConfigDir" . | quote }}
-            # The literal RKE2 base-config include, written verbatim into a
-            # freshly created config template. Escaped so Helm emits it as-is.
-            - name: BASE_DIRECTIVE
-              value: '{{ "{{ template \"base\" . }}" }}'
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-{{ .Files.Get "files/scripts/containerd-prep.sh" | replace "$" "$$" | indent 14 }}
-          volumeMounts:
-            - name: host-containerd-config
-              mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
-          resources:
-            {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
-        {{- end }}
         # Each script's argv is pinned in the seed as the runtime receives it,
         # and the install script embeds component argv that may hold $(NAME),
         # so every $ is escaped against the kubelet's expansion.

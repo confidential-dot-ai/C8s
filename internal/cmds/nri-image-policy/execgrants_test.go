@@ -49,7 +49,7 @@ func TestExecGrantFollowsTheMeasuredBase(t *testing.T) {
 	argv := []string{"kube-apiserver"}
 	p := execsPlugin(t, argv)
 	ctr := &api.Container{Id: grantContainerID, PodSandboxId: "pod", Args: argv}
-	// A host-network pod, like RKE2's static pods: outside the mesh gates.
+	// A host-network pod, like the control plane's static pods: outside the mesh gates.
 	pod := makePod("default", "pod")
 
 	p.recordDigest(pod, ctr, pushDigestB, []allowlist.ObservedMount{})

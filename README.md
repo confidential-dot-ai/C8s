@@ -119,7 +119,7 @@ that satisfy its admission, image, and network policies.
   no special client, via [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js).
 
 - **One-command install.** `c8s install --cvm-mode=<shape>` brings all of this
-  to an existing cluster (vanilla Kubernetes or RKE2, including AKS
+  to an existing cluster running upstream containerd (including AKS
   confidential node pools, where both SEV-SNP and Intel TDX attest through the
   Azure vTPM).
 
@@ -168,7 +168,8 @@ provisioning guides is at
 
 ### Prerequisites
 
-- A Kubernetes cluster (vanilla or RKE2) with platform-admin permissions.
+- A Kubernetes cluster running upstream containerd, with platform-admin
+  permissions.
 - SEV-SNP / TDX confidential VMs as nodes for node-as-CVM
   (see the [first-cluster tutorial](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster)).
   Node kernels must expose the selected TEE attestation interface and support

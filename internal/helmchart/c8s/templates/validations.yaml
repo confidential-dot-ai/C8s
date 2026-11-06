@@ -22,6 +22,17 @@
 {{- if hasKey $nri "baked" -}}
 {{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.baked is set, but the installer has one shape: a measured image carries the plugin, its containerd registration and its config. Set nriImagePolicy.enabled=false on such a cluster (`c8s install --cvm-mode=bare-metal` does) and drop the baked key." -}}
 {{- end -}}
+{{- /*
+  The same for the host distro: the installer targets the upstream containerd
+  layout, and a release carrying the RKE2 value would keep rendering against
+  /etc/containerd with no sign that it stopped selecting anything. The plugin's
+  own sandbox-mount baseline is compiled for containerd's directories
+  (internal/cmds/nri-image-policy/mounts.go), so the values below move the
+  config the installer writes, not the layout a node may have.
+*/ -}}
+{{- if hasKey $nri "distro" -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.distro is set, but the installer targets one host layout: upstream containerd, whose config directory, socket and restart are nriImagePolicy.containerd.configDir, .socket and .restartCommand. A node whose containerd keeps its state elsewhere is unsupported — the plugin admits sandbox mounts under /var/lib/containerd and /run/containerd. Drop the distro key." -}}
+{{- end -}}
 {{- if hasKey .Values "kubeStateMetrics" -}}
 {{- fail "VALIDATION_ERROR kind=removed_component: kubeStateMetrics.* values are set, but kube-state-metrics was removed with the node guest image, whose measured mesh policy named its Service as every member pod's exit. Deploy it from its own chart outside this release, and drop the kubeStateMetrics block." -}}
 {{- end -}}

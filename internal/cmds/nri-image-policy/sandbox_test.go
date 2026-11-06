@@ -51,8 +51,8 @@ func sandboxedContainer() *api.Container {
 			{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
 			{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "relatime", "ro"}},
 			{Destination: "/etc/hosts", Type: "bind", Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Options: []string{"rbind", "rprivate", "rw"}},
-			{Destination: "/etc/resolv.conf", Type: "bind", Source: "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/resolv.conf"},
-			{Destination: "/dev/shm", Type: "bind", Source: "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/shm"},
+			{Destination: "/etc/resolv.conf", Type: "bind", Source: "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/resolv.conf"},
+			{Destination: "/dev/shm", Type: "bind", Source: "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/shm"},
 			{Destination: "/var/run/secrets/kubernetes.io/serviceaccount", Type: "bind", Source: "/var/lib/kubelet/pods/" + testPodUID + "/volumes/kubernetes.io~projected/kube-api-access"},
 		},
 		Linux: &api.LinuxContainer{
@@ -322,7 +322,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts = append(c.Mounts, &api.Mount{
 					Destination: "/sandboxes",
 					Type:        "bind",
-					Source:      "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/..",
+					Source:      "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/" + testSandboxID + "/..",
 				})
 			},
 			want: "host path bind mount",

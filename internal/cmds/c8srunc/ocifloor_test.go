@@ -764,7 +764,7 @@ func TestFloorRefusesAWorkingDirOnSuppliedContent(t *testing.T) {
 		{name: "an unclean path onto a data mount", cwd: "/app/../mnt/c8s-data/config/", wants: "mount at /mnt/c8s-data/config"},
 		{name: "a relative link onto a data mount", cwd: "/data", wants: "mount at /mnt/c8s-data/config"},
 		{name: "an emptyDir", cwd: "/app/cache", mount: bind("/app/cache", pod+"kubernetes.io~empty-dir/cache")},
-		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
+		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
 		{name: "a kernel filesystem", cwd: "/tmp", mount: specs.Mount{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs"}},
 		{name: "a host mount", cwd: "/srv", mount: bind("/srv", "/srv/data"), wants: "mount at /srv"},
 		{name: "another pod's emptyDir", cwd: "/app/cache", mount: bind("/app/cache", "/var/lib/kubelet/pods/other/volumes/kubernetes.io~empty-dir/cache"), wants: "mount at /app/cache"},

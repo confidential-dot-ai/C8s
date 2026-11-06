@@ -66,8 +66,6 @@ spec:
               value: {{ include "nri-image-policy.hostCDSPinPath" . | quote }}
             - name: HOST_CONTAINERD_DIR
               value: {{ include "nri-image-policy.containerdConfigDir" . | quote }}
-            - name: CONTAINERD_CONFIG_MODE
-              value: {{ include "nri-image-policy.containerdConfigMode" . | quote }}
             - name: HOST_CACHE_DIR
               value: {{ .Values.nriImagePolicy.hostPaths.cacheDir | quote }}
             - name: HOST_HEALTH_SOCKET

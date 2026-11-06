@@ -26,13 +26,12 @@ which is why the steps are ordered this way
 ## 1. Render the new release's CDS seed
 
 Render from the values the upgrade will apply, or the entries you publish are
-not the ones its pods need — the same flags and `-f` file, plus the `--distro`
-`c8s install` detects for itself:
+not the ones its pods need — the same flags and `-f` file:
 
 ```sh
 CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
 c8s render-values --cvm-mode=<CVM_MODE> --hardware-platform=<HW_PLATFORM> \
-  --distro <DISTRO> --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
+  --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
   --operator-keys c8s-operator-pub.pem > computed.yaml
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
 helm template c8s ./c8s --namespace c8s-system -f values.yaml -f computed.yaml \
@@ -43,8 +42,7 @@ c8s allowlist lint seed.json
 
 The lint prints `ok: no findings`. `<CVM_MODE>` (`bare-metal`, `gke`, `aks`),
 `<HW_PLATFORM>` (`sev-snp`, `tdx`) and `<X.Y.Z>`, the version without its
-leading `v`, are as you install; `<DISTRO>` is `k8s` or `rke2`, and its wrong
-value renames the plugin's entry.
+leading `v`, are as you install.
 
 ## 2. Note what each node's admission plugin enforces
 
@@ -91,9 +89,9 @@ the seed raises it by the number of entries in the file.
 A version at or below a node's means CDS restarted since that node last pulled,
 so its counter started from the seed again. Repeat step 3 until `list` passes
 the highest number from step 2. A node that stays higher takes nothing until its
-plugin restarts: restart containerd there (on RKE2 the active `rke2-server` or
-`rke2-agent` unit), one node at a time, having published every entry its pods
-need, since on that first pull the plugin kills what the new document does not
+plugin restarts: restart containerd there, one node at a time, having
+published every entry its pods need, since on that first pull the plugin
+kills what the new document does not
 admit. Repeat step 2 until every node reports a version at or above this one.
 
 ## 5. Run the upgrade
