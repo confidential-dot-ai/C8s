@@ -17,7 +17,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -25,13 +24,9 @@ import (
 
 func guestTestClaims(t *testing.T) workloadclaims.PodClaims {
 	t.Helper()
-	env, err := allowlist.ObserveEnv(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	d := "sha256:" + strings.Repeat("a", 64)
 	return workloadclaims.PodClaims{Version: 1, BootID: strings.Repeat("b", 64), AssignedPodUID: "assigned", RuntimePodUID: "runtime", SandboxID: "sandbox", Revision: 1,
-		RuntimeExtensions: []string{d}, Containers: []workloadclaims.SandboxContainer{{Digest: d, Argv: []string{"/app"}, Env: env, Mounts: []allowlist.ObservedMount{}}}}
+		RuntimeExtensions: []string{d}, Containers: []workloadclaims.PodContainer{{Digest: d}}}
 }
 
 func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
