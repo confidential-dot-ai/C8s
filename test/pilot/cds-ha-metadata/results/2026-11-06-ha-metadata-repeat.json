@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "attempt": 4,
+  "runner_commit": "91acc7f423282c3d5b1aa8adf8c98f2016d6fff0",
+  "metadata_source_commit": "d0bbce129ef19b856b38530c6dd94b7afeb22be3",
+  "metadata_source_tree": "5a2cf509364cc0b31835d5d71f18732ca20347e2",
+  "etcd_version": "3.7.3",
+  "distinct_compute_workers": 3,
+  "metadata_members": 3,
+  "stateless_adapters": 3,
+  "transaction_batch_http_status_counts": {
+    "conditional-race": {
+      "204": 1,
+      "412": 15
+    },
+    "independent": {
+      "204": 64
+    }
+  },
+  "independent_commits": 64,
+  "conditional_race_winners": 1,
+  "partitioned_member_refused_current_read": true,
+  "majority_served_acknowledged_state_during_partition": true,
+  "quorum_loss_failed_closed": true,
+  "acknowledged_records_verified_per_adapter": 65,
+  "adapters_verified": 3,
+  "acknowledged_state_preserved": true,
+  "runner_exit_code": 0,
+  "metadata_ha_passed": true,
+  "cleanup": {
+    "owned_resources_removed": 29,
+    "independent_read_only_audit_passed": true,
+    "paths_checked": 32,
+    "checked_at": "2026-11-06T15:17:22.154641+00:00",
+    "owned_resources_remaining": 0
+  },
+  "runtime_workload_concurrency_or_deadline_changes": false,
+  "shared_production_changes": false,
+  "ci_used": false,
+  "limits": [
+    "Earlier repeat attempt03 failed an independent-write batch and its exact outcomes remain unknown.",
+    "Observed worker-network recovery does not establish a permanent network repair.",
+    "This metadata result alone does not qualify native CDS failover, rolling replacement, operator exclusion, tenant-scale isolation, or production readiness."
+  ],
+  "production_ready": false
+}

@@ -83,3 +83,12 @@ every status, elapsed time and transport-error type before asserting a batch's
 result. Its workload, concurrency, deadlines and single-send rule are unchanged;
 eight local fixture tests pass, including preservation of uncertain outcomes
 without retry and stopping after a failed conditional race.
+
+The [fourth run](../test/pilot/cds-ha-metadata/results/2026-11-06-ha-metadata-repeat.json)
+passed with the same runtime binaries, workload and deadlines: all 64 independent
+commits returned 204, and the race returned one 204 and fifteen 412 responses.
+Minority refusal, majority service, quorum-loss refusal and recovery passed;
+each adapter returned all 65 acknowledged records. All 29 resources were removed
+and 32 paths independently confirmed absent. The preceding failed repeat remains
+unexplained; this successful run qualifies resuming the separate CDS acceptance,
+not a claim that the infrastructure regression has been permanently repaired.
