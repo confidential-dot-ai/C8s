@@ -230,23 +230,42 @@ class Run:
         raise RuntimeError('owned pod readiness timed out')
 
     def forward(self, row, remote_port):
-        self.current(row)
-        with socket.socket() as s:
-            s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
         name = row['item']['metadata']['name']
-        log = (self.directory/(name+f'-{remote_port}-forward.log')).open('ab')
-        p = subprocess.Popen(self.kubectl('port-forward', 'pod/'+name, f'{port}:{remote_port}', '--address=127.0.0.1'), stdout=log, stderr=log)
-        self.forwards.append((p, log))
-        end = time.monotonic()+15
-        while time.monotonic() < end:
-            need(p.poll() is None, 'owned port-forward exited')
+        path = self.directory/(name+f'-{remote_port}-forward.log')
+        for attempt in range(3):
+            self.current(row)  # Revalidate ownership/UID before every new tunnel.
+            with socket.socket() as s:
+                s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
+            log = path.open('ab'); offset = log.tell()
             try:
-                with socket.create_connection(('127.0.0.1', port), timeout=.5):
-                    origin = f'https://127.0.0.1:{port}'
-                    service = name if remote_port == 2379 else self.run+'-api'
-                    self.tls_names[origin] = f'{service}.{NS}.svc.cluster.local'
-                    return origin
-            except OSError: time.sleep(.1)
+                p = subprocess.Popen(self.kubectl('port-forward', 'pod/'+name, f'{port}:{remote_port}', '--address=127.0.0.1'), stdout=log, stderr=log)
+            except BaseException:
+                log.close(); raise
+            handle = (p, log); self.forwards.append(handle)
+            end = time.monotonic()+15
+            while time.monotonic() < end and p.poll() is None:
+                try:
+                    with socket.create_connection(('127.0.0.1', port), timeout=.5):
+                        origin = f'https://127.0.0.1:{port}'
+                        service = name if remote_port == 2379 else self.run+'-api'
+                        self.tls_names[origin] = f'{service}.{NS}.svc.cluster.local'
+                        return origin
+                except OSError: time.sleep(.1)
+            timed_out = p.poll() is None
+            p.terminate()
+            try: p.wait(timeout=5)
+            except subprocess.TimeoutExpired: p.kill(); p.wait()
+            log.close(); self.forwards.remove(handle)
+            with path.open('rb') as errors:
+                errors.seek(offset); detail = errors.read(16384).decode(errors='replace')
+            permanent = any(x in detail for x in ('Forbidden', 'Unauthorized', 'NotFound'))
+            transient = timed_out or any(x in detail for x in ('InternalError', 'ServiceUnavailable',
+                'TooManyRequests', 'TLS handshake timeout', 'i/o timeout', 'connection reset by peer', 'EOF'))
+            need(not permanent and transient, 'owned port-forward exited')
+            if attempt < 2:
+                # No application request is sent until this method returns.
+                self.event('owned-forward-retry', attempt=attempt+1, pod=name, remote_port=remote_port)
+                time.sleep(attempt+1)
         raise RuntimeError('owned forward did not listen')
 
     def set_policy(self, row, isolated):

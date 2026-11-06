@@ -88,6 +88,10 @@ replica memory, not loss of every compute host or every trust root.
 The controller retains bounded transport retries only where non-dispatch is
 known or initialization is idempotent. It never resubmits an uncertain workload,
 custody batch or metadata commit. Failed or partial cleanup retains its journals.
+Read-only metadata tunnel setup allows at most three 15-second startup attempts
+for transient failures. Each attempt revalidates the owned pod's UID, and a
+failed local process is stopped and reaped before retrying. Access denial and
+ownership changes fail immediately; no CDS request is sent during tunnel setup.
 The run cannot be resumed as a passing experiment; use a new directory after
 cleanup. `cleanup` and `audit` support the retained directory.
 

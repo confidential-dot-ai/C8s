@@ -1,5 +1,8 @@
 import copy
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import Mock, MagicMock, patch
 
 from fixtures import COMPONENT, NS, OWNER, render, partition, selector
 from cloud import Run, resource_path
@@ -90,6 +93,61 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(delete['propagationPolicy'], 'Foreground')
         self.assertNotIn('gracePeriodSeconds', delete)
         self.assertTrue(row['deleted'])
+
+
+class ForwardTests(unittest.TestCase):
+    def exercise(self, errors, replaced=False, timeout=False):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = object.__new__(Run); runner.directory = Path(directory); runner.run = RUN
+            runner.forwards = []; runner.tls_names = {}; runner.event = Mock()
+            runner.current = Mock(side_effect=[{}, ValueError('replaced UID')] if replaced else None)
+            runner.kubectl = lambda *args: list(args)
+            row = {'item': {'metadata': {'name': RUN+'-a0'}}}
+            processes, logs = [], []
+            def spawn(*args, **kwargs):
+                message = errors[len(processes)]
+                p = Mock(); p.poll.return_value = None if message is None or timeout else 1
+                kwargs['stdout'].write((message or '').encode()); kwargs['stdout'].flush()
+                processes.append(p); logs.append(kwargs['stdout']); return p
+            tick = iter(range(0, 1000, 20))
+            with patch('cloud.subprocess.Popen', side_effect=spawn), patch('cloud.socket.socket') as sock, \
+                    patch('cloud.socket.create_connection', return_value=MagicMock()), patch('cloud.time.sleep'), \
+                    patch('cloud.time.monotonic', side_effect=(lambda: next(tick)) if timeout else None) as clock:
+                if not timeout: clock.return_value = 1
+                sock.return_value.__enter__.return_value.getsockname.return_value = ('127.0.0.1', 12345)
+                try:
+                    value = runner.forward(row, 9443)
+                except (RuntimeError, ValueError) as error:
+                    value = error
+            for p, log in zip(processes, logs):
+                if log.closed:
+                    p.terminate.assert_called_once(); p.wait.assert_called_once()
+            for _, log in runner.forwards: log.close()
+            return runner, processes, value
+
+    def test_internal_error_retries_only_after_reaping_and_rechecking_uid(self):
+        r, processes, value = self.exercise(['Error from server (InternalError)', None])
+        self.assertEqual(value, 'https://127.0.0.1:12345')
+        self.assertEqual(r.current.call_count, 2)
+        self.assertEqual(len(r.forwards), 1)
+        self.assertIs(r.forwards[0][0], processes[1])
+        processes[1].terminate.assert_not_called()
+        self.assertEqual(r.tls_names[value], RUN+'-api.'+NS+'.svc.cluster.local')
+
+    def test_permanent_denial_is_not_retried(self):
+        r, processes, value = self.exercise(['Error from server (Forbidden)'])
+        self.assertIsInstance(value, ValueError)
+        self.assertEqual(len(processes), 1); self.assertEqual(r.forwards, [])
+
+    def test_replaced_uid_prevents_second_tunnel(self):
+        r, processes, value = self.exercise(['Error from server (InternalError)'], replaced=True)
+        self.assertEqual(str(value), 'replaced UID')
+        self.assertEqual(len(processes), 1); self.assertEqual(r.forwards, [])
+
+    def test_startup_timeouts_are_bounded_and_every_process_is_reaped(self):
+        r, processes, value = self.exercise([None]*3, timeout=True)
+        self.assertIsInstance(value, RuntimeError)
+        self.assertEqual(len(processes), 3); self.assertEqual(r.forwards, [])
 
 
 if __name__ == '__main__': unittest.main()
