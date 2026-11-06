@@ -22,6 +22,7 @@ import sys
 import tarfile
 import time
 import urllib.parse
+from typing import NamedTuple
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -34,6 +35,15 @@ KINDS = {'Pod': ('v1', 'pods'), 'Service': ('v1', 'services'), 'Secret': ('v1', 
          'PersistentVolumeClaim': ('v1', 'persistentvolumeclaims'),
          'NetworkPolicy': ('networking.k8s.io/v1', 'networkpolicies'),
          'AdminNetworkPolicy': ('policy.networking.k8s.io/v1alpha1', 'adminnetworkpolicies')}
+
+
+class MetadataSetup(NamedTuple):
+    members: list
+    policies: list
+    etcd_urls: list
+    member_status: list
+    adapters: list
+    adapter_urls: list
 
 
 def load_module(name, path):
@@ -321,7 +331,7 @@ class Run:
             if item['kind'] == 'Pod': adapters.append(row)
         for row in adapters: self.ready(row)
         urls = [self.forward(row, 9443) for row in adapters]
-        return et, policies, etcd_urls, status, adapters, urls
+        return MetadataSetup(et, policies, etcd_urls, status, adapters, urls)
 
     def exercise(self):
         et, policies, etcd_urls, status, adapters, urls = self.setup()

@@ -95,7 +95,7 @@ class Run(metadata.Run):
     def refresh_metadata_observers(self):
         # Image preparation can outlive the API proxy's idle tunnels. Replace
         # only owned, read-only member observers before injecting the fault.
-        members, policies, urls = self.etcd
+        members, urls = self.etcd.members, self.etcd.etcd_urls
         need(len(members) == len(urls) == 3, 'three owned metadata observers required')
         for url in urls:
             handle = self.metadata_status_forwards.pop(url)
@@ -105,13 +105,14 @@ class Run(metadata.Run):
             except subprocess.TimeoutExpired: process.kill(); process.wait()
             log.close(); self.forwards.remove(handle); self.tls_names.pop(url)
         urls = [self.forward(row, 2379) for row in members]
-        self.etcd = members, policies, urls
+        self.etcd = self.etcd._replace(etcd_urls=urls)
         status = self.wait_members(urls)
         identities = [s.get('header', {}).get('member_id') for s in status]
         need(len(set(identities)) == 3 and all(i not in (None, '', '0') for i in identities) and
              all(s['header'].get('cluster_id') == self.state['etcd_cluster_id'] for s in status),
              'refreshed metadata member identity differs')
         self.metadata_members = dict(zip(urls, identities))
+        self.etcd = self.etcd._replace(member_status=status)
         self.event('metadata-status-observers-refreshed', members=3)
 
     def wait_no_leader(self, urls):

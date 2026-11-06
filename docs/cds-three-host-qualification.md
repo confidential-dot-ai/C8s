@@ -287,3 +287,15 @@ members to answer with no leader. Unavailable or wrong members cannot satisfy
 that check. Only read-only observation connections change; guest images, client,
 workload, CDS deadlines and fault policy are unchanged. Local regressions cover
 unknown responses, wrong identities, late results and scoped tunnel cleanup.
+
+[Direct-state attempt 4](../test/pilot/cds-three-host/results/2026-11-06-direct-attempt-04.json)
+again passed those 22 phases and the burst, this time in 26.649 seconds. It then
+exposed a controller regression before the metadata fault: the observer refresh
+unpacked metadata setup's six fields as three. Its unit fixture had made the
+same incorrect assumption. The setup now returns a named record, and the
+regression executes the real setup method before refreshing observers, replacing
+only infrastructure effects. Adapter handles and all other setup fields must
+remain intact. All 37 controller tests and six metadata fixture tests pass.
+The failed run's 60 resources were removed and 72 paths independently confirmed
+absent. One image chunk retried; no workload request did. The CDS binaries,
+workload and deadlines remain unchanged.

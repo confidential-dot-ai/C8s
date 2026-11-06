@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "direct-state",
+  "attempt": 4,
+  "source": {
+    "runner_commit": "b554fc8063657e08b11a8370090d1c087cf3c1d5",
+    "image_build": "three-host-image-06",
+    "agent_commit": "139ee98f10d1dfaa15a2da80eb7b911f9197b7f8",
+    "cloud_backend": "direct-state",
+    "no_ci": true,
+    "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+    "client_sha256": "4463e1a26f63682d9cacf8e157e3a551583d5c4105fe7f88288dfb72d2944e59",
+    "cds_commit": "d5fbc56116a208fa3c4c3e799be3f987db541c1b",
+    "attester_commit": "948a5b3f4bcae6a8879b8f1f1bf89aa9a7bc5d20",
+    "metadata_prerequisite": "ha-metadata-cloud-04",
+    "observer_correction": "fresh read-only metadata status tunnels before fault; retained member samples within original observation budget"
+  },
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "passed_phases": 22,
+  "distinct_native_tdx_workers": 3,
+  "startup_checks_passed": 3,
+  "verified_full_disk_hashes": 6,
+  "image_chunk_retries": 1,
+  "initial_handshake_retries": 6,
+  "workload_retries": 0,
+  "burst": {
+    "issuances": 24,
+    "secret_releases": 24,
+    "seconds": 26.648643217
+  },
+  "completed_checks": [
+    "shared_CA_and_initial_issuance",
+    "live_spent_token_rejection",
+    "cross_replica_attachment",
+    "workload_burst",
+    "isolated_guest_refused_valid_release",
+    "majority_service_and_revocation_during_isolation",
+    "same_CA_and_replay_rejection_after_healing"
+  ],
+  "failure": {
+    "time": "2026-11-06T16:54:35.183104+00:00",
+    "stage": "controller_metadata_observer_refresh",
+    "detail": "too many values to unpack (expected 3)",
+    "metadata_quorum_fault_injected": false,
+    "cds_quorum_loss_refusal_phase_started": false,
+    "rolling_replacements_started": false
+  },
+  "diagnostic_evidence": {
+    "cause": "The new controller refresh unpacked the six-field metadata setup result into three variables. Its original unit fixture also supplied only three fields.",
+    "correction": "Named setup fields and a regression that executes the real setup method before refresh; infrastructure effects alone are replaced.",
+    "backend_failure_established": false
+  },
+  "network_samples_during_run": [
+    {
+      "direction": "poc115-node_to_poc115-node-2",
+      "unique_samples": 208,
+      "first": "2026-11-06T16:13:37.548546610Z",
+      "last": "2026-11-06T16:53:49.618088983Z",
+      "probes": 624,
+      "lost": 0,
+      "max_sample_mean_ms": 100.07,
+      "loss_intervals": []
+    },
+    {
+      "direction": "poc115-node-2_to_poc115-node",
+      "unique_samples": 207,
+      "first": "2026-11-06T16:13:44.629132513Z",
+      "last": "2026-11-06T16:53:52.972509286Z",
+      "probes": 621,
+      "lost": 0,
+      "max_sample_mean_ms": 18.24,
+      "loss_intervals": []
+    }
+  ],
+  "cleanup": {
+    "runner_verified": true,
+    "owned_resources_removed": 60,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 72,
+    "owned_resources_remaining": 0
+  },
+  "runtime_workload_or_deadline_changes": false,
+  "shared_production_changes": false,
+  "ci_used": false,
+  "limits": [
+    "Quorum-loss refusal, full recovery, rolling replacements and image retirement did not complete.",
+    "Network ICMP samples do not establish every CDS or metadata TCP path.",
+    "The state key is synthetic and operator-known; combined HA and hardware key custody is unqualified."
+  ],
+  "production_ready": false,
+  "external_vm_lifecycle_observations": {
+    "declared_stops": 0,
+    "declared_deletions": 3
+  }
+}

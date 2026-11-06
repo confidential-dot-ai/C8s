@@ -1,7 +1,9 @@
 import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -77,33 +79,62 @@ class MetadataObservers(unittest.TestCase):
             return 200, self.status(url)
         self.observe(response, False)
 
-    def test_refresh_closes_only_old_metadata_tunnels_and_requires_healthy_members(self):
+    def test_real_setup_result_refresh_preserves_adapters_and_replaces_only_observers(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = self.runner(directory)
-            old = {url: (Mock(), io.StringIO()) for url in runner.metadata_members}
-            adapter = (Mock(), io.StringIO())
-            runner.metadata_status_forwards = old.copy()
-            runner.forwards = [*old.values(), adapter]
-            runner.tls_names = {url: url for url in old}
-            rows = [object() for _ in range(3)]; policies = [object()]
-            runner.etcd = rows, policies, list(old)
-            opened = []
-            def forward(row, port):
-                self.assertEqual(port, 2379)
-                # The production forward validates the exact owned Pod UID.
-                opened.append(row)
-                self.assertTrue(all(p.terminate.called and log.closed for p, log in old.values()))
-                return 'fresh'+str(rows.index(row))
-            runner.forward = forward
-            runner.wait_members = lambda urls: [self.status(url) for url in urls]
-            runner.refresh_metadata_observers()
-            self.assertEqual(opened, rows)
-            self.assertEqual(runner.etcd, (rows, policies, ['fresh0', 'fresh1', 'fresh2']))
-            self.assertEqual(runner.metadata_members, {f'fresh{i}': f'member{i}' for i in range(3)})
-            self.assertEqual(runner.forwards, [adapter])
-            adapter[0].terminate.assert_not_called()
-            self.assertFalse(adapter[1].closed)
-            runner.event.assert_called_once_with('metadata-status-observers-refreshed', members=3)
+            binary = runner.directory/'fixture-binary'; binary.write_bytes(b'fixture')
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            runner.run = 'cds-ha-0123456789ab'
+            runner.args = SimpleNamespace(source_tree='a'*40, nodes=['worker-'+str(i) for i in range(3)],
+                tools_image='example.invalid/tools@sha256:'+'a'*64, etcd_binary=str(binary), metadata_binary=str(binary))
+            runner.state = {'resources': [], 'expires': '2099-01-01T00:00:00Z'}
+            runner.live = runner.save = lambda: None
+            runner.health = lambda **_: {name: {'uid': '00000000-0000-0000-0000-00000000000'+str(i)}
+                                       for i, name in enumerate(runner.args.nodes)}
+            runner.kube = Mock()
+            runner.kube.call.return_value = (200, {'items': [
+                {'metadata': {'name': 'cloud-project-boundaries'}, 'spec': {'priority': 90}}]})
+            def create(item):
+                row = {'item': item, 'uid': item['metadata']['name']+'-uid'}
+                runner.state['resources'].append(row)
+                return row
+            runner.create = create; runner.ready = lambda row: row; runner.remove = lambda row: None
+            runner.kubectl = lambda *args: list(args)
+            runner.command = lambda name, *args, **kwargs: (
+                f'{digest}  /data/bin/etcd\n{digest}  /data/bin/metadata\n'.encode()
+                if name.endswith('-hash') else b'')
+            runner.metadata_status_forwards = {}; runner.forwards = []; runner.tls_names = {}
+            identities = {}
+            def forward(self, row, port):
+                origin = 'https://127.0.0.1:'+str(10000+len(identities))
+                identities[origin] = 'member'+row['item']['metadata']['labels'][run.SLOT]
+                self.forwards.append((Mock(), io.StringIO()))
+                self.tls_names[origin] = row['item']['metadata']['name']
+                return origin
+            runner.wait_members = lambda urls: [{'header': {'cluster_id': '123', 'member_id': identities[url]},
+                                                 'leader': 'member0'} for url in urls]
+            cert = {'tls.crt': b'cert', 'tls.key': b'key'}
+            certificates = {'etcd_ca': b'ca', 'members': [cert]*3, 'adapters': [cert]*3, 'client': cert}
+            # Run the actual setup method and the actual Run.forward override.
+            # Replace only infrastructure effects, not the setup result shape.
+            with patch.object(run.metadata, 'certificates', return_value=certificates), \
+                 patch.object(run.metadata.Run, 'forward', forward):
+                original = runner.setup(); runner.etcd = original
+                old = list(runner.metadata_status_forwards.values())
+                adapters = [handle for handle in runner.forwards if handle not in old]
+                runner.refresh_metadata_observers()
+            self.assertEqual(len(original), 6)
+            for field in ('members', 'policies', 'adapters', 'adapter_urls'):
+                self.assertIs(getattr(runner.etcd, field), getattr(original, field))
+            self.assertTrue(set(runner.etcd.etcd_urls).isdisjoint(original.etcd_urls))
+            self.assertEqual(set(runner.metadata_status_forwards), set(runner.etcd.etcd_urls))
+            self.assertEqual(len(runner.forwards), 6)
+            for process, log in old:
+                process.terminate.assert_called_once(); self.assertTrue(log.closed)
+            self.assertEqual(len(adapters), 3)
+            for process, log in adapters:
+                process.terminate.assert_not_called(); self.assertFalse(log.closed)
+            runner.event.assert_any_call('metadata-status-observers-refreshed', members=3)
 
 
 if __name__ == '__main__': unittest.main()
