@@ -181,9 +181,14 @@ A pod CVM boots the same image as one pod, with no RKE2. It is TDX only: the pod
 role measures each container image it starts into RTMR[3], and SNP has no
 register a guest can extend after launch, so an SNP image manifest is refused at
 signing and in the guest. Cloud launches a pod CVM from a Pod manifest through
-its API or console with this guest contract; the manual commands below use the
-same contract. A Kubernetes-side provider that schedules annotated Pods onto
-Cloud is deferred.
+its API or console with this guest contract. For automatic placement from
+Kubernetes, enable the optional [Pod CVM provider](pod-cvm-provider.md): it
+signs the scheduler-assigned Pod, launches its Cloud VM, projects attested
+status and owns cleanup. The provider requires explicit `cdsAddress` and
+`cdsImagePolicyFile` configuration, plus a guest image and Cloud launch
+contract accepting `c8s-launch/v2`. Follow its [configuration and upgrade
+requirements](pod-cvm-provider.md#platform-configuration). The manual commands
+below use the same guest contract.
 
 ```sh
 c8s node launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
@@ -205,27 +210,9 @@ keys or `router` block, and no pod, allowlist entries or mesh peers: the guest
 refuses a document that carries any of them. Re-signing it after an edit
 requires the Pod launch key.
 
-When supplied, `workloads.json` holds a `c8s.allowlist/v1` document; its entries
-may be empty. It is the base allowlist, in force before CDS responds; the plugin
-also admits entries fetched from the authenticated CDS. A failed initial pull
-leaves the base in force while polling continues, and a failed refresh keeps the
-last applied CDS policy. Neither source gets a node-TCB exemption. The pod role
-measures started images only and refuses a baked configuration that also sets
-`allowlist.pull.measure_policies`.
-
-For generic boot, use `--generic --name` and omit `--pod-manifest`, `--workloads`
-and `--mesh-peer`:
-
-```sh
-c8s node launch-config new-pod --generic --name warm-1 \
-  --out warm1 --cluster-id demo --image-manifest manifest.json \
-  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
-  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
-```
-
-The guest starts its runtime and attested
-status service with no static manifest. Admission refuses every sandbox and
-container, including pause and the mesh endpoint, until assignment.
+The guest starts only its attested status service: no container runtime,
+admission plugin or kubelet runs until a pod is assigned, so nothing can start a
+sandbox or container before then.
 
 The launcher first verifies fresh guest evidence and an empty measured list,
 then fetches `GET /v1/assign/nonce` and signs one `POST /v1/assign` with the Pod
