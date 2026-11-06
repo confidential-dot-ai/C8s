@@ -9,6 +9,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -88,6 +89,26 @@ type meshPolicy struct {
 type podMeshPolicy struct {
 	Peers        []netip.AddrPort `yaml:"peers"`
 	IngressPorts []uint16         `yaml:"ingress_ports"`
+}
+
+// validate applies the guest ruleset's limits at load, so a tuple the
+// ruleset would refuse fails startup rather than every container.
+func (p podMeshPolicy) validate() error {
+	peers := make([]string, len(p.Peers))
+	for i, peer := range p.Peers {
+		peers[i] = peer.String()
+	}
+	if _, err := podmesh.ParseMeshPeers(peers); err != nil {
+		return fmt.Errorf("mesh.pod.peers: %w", err)
+	}
+	// The ports the guest ruleset refuses: none, the status service's and
+	// the mesh endpoint's.
+	for _, port := range p.IngressPorts {
+		if port == 0 || port == uint16(workloadclaims.PodStatusPort) || workloadclaims.IsMeshPort(int(port)) {
+			return fmt.Errorf("mesh.pod.ingress_ports: port %d is reserved for the guest's own services", port)
+		}
+	}
+	return nil
 }
 
 type capturePorts struct {

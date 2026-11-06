@@ -35,7 +35,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -180,7 +179,6 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		cancel()
 		workers.Wait()
 	}()
-	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(cdsPins); err != nil {
@@ -242,7 +240,6 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
-			apply:       applyPolicy,
 			measure:     measure,
 			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
@@ -284,7 +281,6 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 			runPullLoop(ctx, pullLoopArgs{
 				client:   wlClient,
 				store:    store,
-				apply:    applyPolicy,
 				measure:  measure,
 				pull:     pull,
 				interval: cfg.Allowlist.Pull.Interval,
@@ -388,7 +384,6 @@ func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS n
 }
 
 type pullArgs struct {
-	apply       func(context.Context, *allowlist.Allowlist, uint64) error
 	client      allowlistclient.Client
 	store       *policyStore
 	measure     func(digest string) error // nil measures nothing
@@ -428,11 +423,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 				err = errInitialAllowlistNil
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(served.Version)
-				if args.apply != nil {
-					err = args.apply(ctx, wl, version)
-				} else {
-					args.store.apply(wl, version)
-				}
+				args.store.apply(wl, version)
 				if err == nil {
 					args.pull.reached()
 					args.logger.Info("initial allowlist pulled from CDS",
@@ -466,7 +457,6 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 }
 
 type pullLoopArgs struct {
-	apply    func(context.Context, *allowlist.Allowlist, uint64) error
 	client   allowlistclient.Client
 	store    *policyStore
 	measure  func(digest string) error // nil measures nothing
@@ -552,15 +542,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			}
 			continue
 		}
-		if args.apply != nil {
-			if err := args.apply(ctx, wl, version); err != nil {
-				args.pull.failed(err)
-				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
-				continue
-			}
-		} else {
-			args.store.apply(wl, version)
-		}
+		args.store.apply(wl, version)
 		args.pull.reached()
 		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
@@ -569,9 +551,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
-		if args.apply == nil {
-			args.killRevoked(ctx)
-		}
+		args.killRevoked(ctx)
 	}
 }
 

@@ -510,18 +510,6 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	return nil
 }
 
-// assignedPodSandbox refuses a sandbox on a Pod guest that is not the
-// assigned Pod's.
-func (p *plugin) assignedPodSandbox(pod *api.PodSandbox) error {
-	if !p.cfg.podRole() {
-		return nil
-	}
-	if pod.GetUid() == "" || pod.GetId() == "" || pod.GetName() != p.cfg.Pod.Name || pod.GetNamespace() != p.cfg.Pod.Namespace {
-		return errors.New("pod sandbox does not match its assignment")
-	}
-	return nil
-}
-
 // RemovePodSandbox evicts a removed pod sandbox (and its containers) from the
 // inventory and the mesh gate.
 func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) (result error) {
@@ -651,10 +639,6 @@ func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allow
 	return newMountObserver(p.mountStorage, p.nodeMounts()).Observe(pod, ctr)
 }
 
-// resolveDigest returns the canonical store digest for imageRef using the same
-// path checkImagePhase admits on: the inline digest if present, else the containerd
-// content store. Empty on an unresolvable or absent reference. Quiet — the
-// callers that need an audit trail (checkImagePhase) do their own logging.
 // imageDigest returns imageRef's digest, resolving a tag through containerd.
 // It returns "" without error when imageRef is empty or resolves to no digest.
 func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, error) {
@@ -668,6 +652,10 @@ func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, erro
 	return extractDigest(resolved), nil
 }
 
+// resolveDigest returns the canonical store digest for imageRef using the same
+// path checkImagePhase admits on: the inline digest if present, else the containerd
+// content store. Empty on an unresolvable or absent reference. Quiet — the
+// callers that need an audit trail (checkImagePhase) do their own logging.
 func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if d := extractDigest(imageRef); d != "" {
 		return d
@@ -1456,8 +1444,15 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
 		}
-		imageRef := c.ctr.GetAnnotations()[annotationImageName]
-		verdict, denial := p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
+		// The same image admission matched: on a Pod guest the staged pin,
+		// not an alias the CRI annotation may have moved since.
+		imageRef, err := p.containerImage(c.pod, c.ctr)
+		verdict, denial := verdictDeny, ""
+		if err == nil {
+			verdict, denial = p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
+		} else {
+			denial = err.Error()
+		}
 		if verdict != verdictDeny {
 			continue
 		}
@@ -1484,29 +1479,6 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	}
 	log.Warn("killed a denied running container")
 	return true
-}
-
-// stopPodContainers stops every running container a plugin restart found on a
-// Pod guest. The identity has ended, so no start of the Pod is admitted again;
-// stopping what already runs lets the kubelet report the Pod's containers
-// terminated instead of leaving a Pod that runs but can never renew its
-// credentials. Failures are logged: a container that stays up is still refused
-// every later start and issuance.
-func (p *plugin) stopPodContainers(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
-	if !p.cfg.podRole() {
-		return
-	}
-	podByID := podsByID(pods)
-	for _, ctr := range ctrs {
-		if ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
-			continue
-		}
-		pod := podByID[ctr.GetPodSandboxId()]
-		if pod == nil {
-			pod = &api.PodSandbox{Id: ctr.GetPodSandboxId()}
-		}
-		p.killRunning(ctx, pod, ctr, "pod identity ended by a plugin restart within this boot")
-	}
 }
 
 // RunDeferredCheck recovers and checks the pods/containers that were seen

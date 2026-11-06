@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -642,6 +643,32 @@ func podRoleConfig(t *testing.T) config {
 	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
 	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
 	return cfg
+}
+
+// A signed peer or ingress port the guest ruleset would refuse fails at load,
+// not at the first sandbox.
+func TestPodRoleRefusesTuplesTheGuestRulesetWouldRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pod  podMeshPolicy
+		want string
+	}{
+		{"zero ingress port", podMeshPolicy{IngressPorts: []uint16{0}}, "mesh.pod.ingress_ports"},
+		{"mesh ingress port", podMeshPolicy{IngressPorts: []uint16{uint16(workloadclaims.MeshInboundPort)}}, "mesh.pod.ingress_ports"},
+		{"local peer", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:443")}}, "mesh.pod.peers"},
+		{"peer without port", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:0")}}, "mesh.pod.peers"},
+	} {
+		cfg := podRoleConfig(t)
+		cfg.Mesh.Pod = &tc.pod
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	cfg := podRoleConfig(t)
+	cfg.Mesh.Pod = &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:443")}, IngressPorts: []uint16{8080}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid tuples refused: %v", err)
+	}
 }
 
 // The register has no writer besides the plugin's measured launches;

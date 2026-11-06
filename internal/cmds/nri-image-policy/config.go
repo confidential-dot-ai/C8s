@@ -583,6 +583,9 @@ func (c *config) validatePod() error {
 	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
 		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
 	}
+	if err := c.Mesh.Pod.validate(); err != nil {
+		return err
+	}
 	return c.validatePodImages()
 }
 
