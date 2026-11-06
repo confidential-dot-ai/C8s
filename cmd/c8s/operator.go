@@ -36,6 +36,8 @@ configurations' own.`,
 			WebhookConfigName:       webhookConfigName,
 			WebhookServiceName:      webhookServiceName,
 			WebhookServiceNamespace: webhookServiceNamespace,
+			WebhookHost:             webhookHost,
+			Kubeconfig:              kubeconfig,
 			CertFSGroup:             certFSGroup,
 			CertRenewInterval:       certRenewInterval,
 			WorkloadClaimsHostDir:   workloadClaimsHostDir,
@@ -55,6 +57,8 @@ var (
 	webhookConfigName       string
 	webhookServiceName      string
 	webhookServiceNamespace string
+	webhookHost             string
+	kubeconfig              string
 	excludeNamespaces       []string
 	certFSGroup             int64
 	certRenewInterval       time.Duration
@@ -75,6 +79,8 @@ func init() {
 	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "", "MutatingWebhookConfiguration to patch caBundle; the pod validator's configuration is named beside it (empty = skip)")
 	operatorCmd.Flags().StringVar(&webhookServiceName, "webhook-service-name", "", "webhook Service name (defaults to c8s)")
 	operatorCmd.Flags().StringVar(&webhookServiceNamespace, "webhook-service-namespace", "", "webhook Service namespace (defaults to --leader-election-namespace)")
+	operatorCmd.Flags().StringVar(&webhookHost, "webhook-host", "", "host the API server reaches the webhook at from outside the cluster; requires --get-cert-image and --mesh-image; the serving certificate names it and the webhook binds it, in place of the Service")
+	operatorCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "the cluster's kubeconfig file (empty = the in-cluster service account)")
 	operatorCmd.Flags().Int64Var(&certFSGroup, "cert-fs-group", 65532, "fsGroup applied to injected pods when unset (-1 disables mutation)")
 	operatorCmd.Flags().DurationVar(&certRenewInterval, "get-cert-renew-interval", 2*time.Hour, "renewal interval for injected workload certificates")
 	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM), required for injected c8s-cert; NRI mounts it so get-cert redeems a sandbox token there (docs/armtls.md)")

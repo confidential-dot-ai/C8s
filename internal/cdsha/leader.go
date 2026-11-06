@@ -75,10 +75,16 @@ func (n *Node) applyDecree(signed cdsdecree.Signed) (Delivered, error) {
 	return Delivered{Intent: intent, Version: res.Decree.Version}, nil
 }
 
-// refuses is why this leader does not put a decree on the log: a pin set that
-// would leave the cluster without a majority of voters to lead it. Everything
-// else a decree must satisfy is the state machine's to judge.
+// refuses is why this leader does not put a decree on the log: a node image
+// set other than a Genesis's with an entry binding no launch, or a pin set
+// that would leave the cluster without a majority of voters to lead it.
+// Everything else a decree must satisfy is the state machine's to judge.
 func (n *Node) refuses(d cdsdecree.Decree) error {
+	if d.NodePins != nil && d.Kind != cdsdecree.Genesis {
+		if err := d.NodePins.RequireLaunchBindings(); err != nil {
+			return err
+		}
+	}
 	if d.Kind != cdsdecree.UpdateMeasurements {
 		return nil
 	}
@@ -240,7 +246,12 @@ func (n *Node) historyOverItsBound() (over bool, keep int, err error) {
 	if err != nil {
 		return false, 0, err
 	}
-	keep = max(1, min(historyDocuments, withinBytes))
+	// Never past the allowlist in effect on nodes.
+	inEffect, err := n.cfg.Allowlist.InEffectDepth(time.Now())
+	if err != nil {
+		return false, 0, err
+	}
+	keep = max(1, min(historyDocuments, withinBytes), inEffect)
 	return documents > keep, keep, nil
 }
 

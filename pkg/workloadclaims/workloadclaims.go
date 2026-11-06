@@ -119,6 +119,27 @@ const CDSAddressPath = "/run/c8s/cds-address"
 // it.
 const AnnotationInjected = "confidential.ai/c8s-injected"
 
+// AnnotationSecrets, when it names at least one secret, adds the secret
+// fetcher and mounts the memory-backed SecretsVolumeName emptyDir read-only
+// into every container at SecretDir, unless the container already mounts it.
+const (
+	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	SecretsVolumeName = "c8s-secrets"
+	SecretDir         = "/run/c8s/secrets"
+)
+
+// SplitList returns the trimmed, non-blank items of a comma-separated
+// annotation value such as AnnotationSecrets.
+func SplitList(value string) []string {
+	var items []string
+	for _, part := range strings.Split(value, ",") {
+		if item := strings.TrimSpace(part); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
@@ -225,6 +246,10 @@ const (
 	MeshRole        = "mesh"
 	CredentialsRole = "credentials"
 )
+
+// RouterRole is the role of the router's front door. CDS gives a sandbox
+// running one a short-lived leaf.
+const RouterRole = "router"
 
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the CDS address, and the enforcer refuses it in any

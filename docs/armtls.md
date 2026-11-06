@@ -76,6 +76,14 @@ kernel, and RTMR[2], holding the command line that carries the dm-verity root
 hash. A measurement covers boot state, so runtime compromise inside a measured
 node is out of scope.
 
+A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
+`ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
+the key was not generated in that TEE) and `ErrPolicyViolation` (a pin not met).
+An attestation-api refusal of the evidence (a 400, 415 or 422 in its JSON
+envelope) maps to `ErrInvalidReport` and is terminal, as does an unset
+attestation-api URL; every other status, a non-JSON body and transport errors
+stay unwrapped, as retryable or as a verifier deployment fault.
+
 ## CDS issuance
 
 CDS is the only component that signs leaves. Its mesh CA is a P-384 key
@@ -246,7 +254,10 @@ decided the match, so a client holding the same bytes detects skew. The router
 keeps a route's backend inside its own allowlist by requiring the two stamps to
 carry the same digest, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
-parse ([operator.md](operator.md#route-manifest)).
+parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
+reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),
+shorter than the delay before an allowlist write takes effect on nodes
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
 
 A sandbox goes from unnamed to named at the first renewal after its pod is
 complete. There is no third state, and losing the match costs the pod its name

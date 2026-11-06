@@ -233,6 +233,11 @@ func (r *clusterCDS) awaitServing(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-r.ended:
+			// A cancelled context ends the member's loop too; the
+			// cancellation is the cause.
+			if stopping := ctx.Err(); stopping != nil {
+				return stopping
+			}
 			return errors.New("cds-ha: this replica's loop ended before it joined its cluster")
 		case <-asking.C:
 		}

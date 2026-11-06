@@ -46,7 +46,13 @@ func fetchServedMeasurements(ctx context.Context, base, serverName, wantCertSHA2
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("read /measurements: %w", err)
 	}
-	return refvalues.ParseRendered(body)
+	served, err := refvalues.ParseRendered(body)
+	if err != nil && ctx.Err() != nil {
+		// A cancelled context can end the body with a clean EOF before the
+		// transport reports the cancellation; the cancellation is the cause.
+		return refvalues.ReferenceValues{}, fmt.Errorf("read /measurements: %w", ctx.Err())
+	}
+	return served, err
 }
 
 // checkServedMeasurements compares the served set against --served-policy-file.

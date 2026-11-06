@@ -23,7 +23,7 @@
 # reference and the digest systemfloor reports for it (the bundles are in
 # mkosi.pkgcache/c8s after a build), adding an entry for an image the node
 # now runs as a container:
-#   go run ./images/node-guest/c8s/systemfloor \
+#   go run ./images/node-guest/tools/systemfloor \
 #     -bundle <core bundle> -bundle <cilium bundle> \
 #     -manifest images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     images/node-guest/c8s/image-policy.yaml.in

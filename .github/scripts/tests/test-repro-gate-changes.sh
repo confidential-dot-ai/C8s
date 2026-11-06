@@ -51,6 +51,25 @@ reset_case
 set_paths images/node-guest/c8s/mkosi.conf
 expect_result true
 
+# Anything under mkosi.extra is baked, whatever its suffix.
+reset_case
+set_paths images/node-guest/c8s/mkosi.extra/usr/share/doc/c8s/README.md
+expect_result true
+
+# The worker profile is outside the gate, even its mkosi.extra tree.
+reset_case
+set_paths images/node-guest/worker/mkosi.conf \
+  images/node-guest/worker/mkosi.extra/etc/hostname
+expect_result false
+
+# Beside the image sources but never baked: tests, lint tools, docs.
+reset_case
+set_paths images/node-guest/tests/immutable-root-test.sh \
+  images/node-guest/tools/containerdcheck/main.go \
+  images/node-guest/tools/systemfloor/main_test.go \
+  images/node-guest/README.md
+expect_result false
+
 reset_case
 set_paths .github/actions/setup-mkosi/action.yml
 expect_result true

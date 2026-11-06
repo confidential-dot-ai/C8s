@@ -307,8 +307,8 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	cfg.ReleaseBaseURL = release.URL
 
 	err := Run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "not bound to the expected anchor") {
-		t.Fatalf("want an anchor-binding refusal, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not bound to the expected launch binding") {
+		t.Fatalf("want a launch-binding refusal, got %v", err)
 	}
 	if n := releaseHits.Load(); n != 0 {
 		t.Fatalf("cred-release hits = %d, want 0 (Run must stop at the trust gate)", n)

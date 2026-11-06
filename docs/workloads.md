@@ -188,12 +188,12 @@ Nothing confirms the key until a pod runs; the plaintext then appears at
 ## 6. Grant the paths in the entry
 
 A secret or volume key reaches a pod only if its containers match an entry
-granting the path, so re-derive the entry with the grants and the sidecar
-mounts. `mounts.json` maps container name to mount policy:
+granting the path, so re-derive the entry with the grants and the volume
+mounts. `derive` adds the secrets mount itself; `mounts.json` maps container
+name to the other mounts:
 
 ```json
 {"<CONTAINER>": {"policy": "exact", "rules": [
-  {"destination": "/run/c8s/secrets", "kind": "emptyDir"},
   {"destination": "/mnt/c8s-data/c8s-volumes/weights", "kind": "data"}
 ]}}
 ```

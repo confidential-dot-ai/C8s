@@ -73,7 +73,7 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 	if staged.CDS.Address != "cds.example.org:8443" {
 		t.Fatalf("staged CDS endpoint = %s", staged.CDS.Address)
 	}
-	port, err := staged.CDSPort()
+	port, err := staged.CDS.Port()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 // it for the clients that verify CDS.
 func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 	t.Helper()
-	data, err := d.CDSPolicy()
+	data, err := d.CDS.Policy()
 	if err != nil {
 		t.Fatal(err)
 	}

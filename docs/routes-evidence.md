@@ -36,7 +36,12 @@ catches each:
   snapshot that named the match ([armtls.md](armtls.md#matched-workload)) — and
   the evidence binds the stamped leaf that carries it. A router leaf with no
   stamp binds no policy digest and checks the workload name alone; a client
-  pinning the digest sees the stamp missing and fails closed.
+  pinning the digest sees the stamp missing and fails closed. A write takes
+  effect on nodes only after router certificates have rolled over under it
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)),
+  so sessions bound to the old digest get `router_digest_changed` before any
+  node runs code it admits. Requests in flight or queued at that moment can
+  still reach the new code.
 - **Post-handshake update.** A manifest applied after the handshake, or a
   router leaf renewed under another allowlist digest, does not route the
   session — [Session binding](#session-binding).
@@ -55,8 +60,11 @@ them: `route_digest_changed` once another manifest is applied,
 digest, and `binding_expired` once an attest-lb connection has carried no
 request for two minutes. The client attests again: the first refusal ends an
 attest-pq session, whose later requests get 401 `channel_error`, while an
-attest-lb connection keeps answering 503. The check runs as a request is
-admitted, so a response already streaming runs to its end.
+attest-lb connection keeps answering 503. Each bound request reads the published
+router credential before forwarding, including when reusing a backend connection.
+An unreadable credential blocks forwarding with 502 while retaining the binding;
+an attest-pq request receives that 502 inside its encrypted response. The check
+runs as a request is admitted, so a response already streaming runs to its end.
 
 A renewal of the router's certificate reaches new connections only: nginx
 reads it on each TLS handshake and resumes no TLS session. A handshake on an

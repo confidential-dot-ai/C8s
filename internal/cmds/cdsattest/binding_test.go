@@ -109,6 +109,40 @@ func TestTunnelRefusesAChangedBinding(t *testing.T) {
 	}
 }
 
+func TestTunnelRetainsItsSessionWhenRouterCredentialsAreUnreadable(t *testing.T) {
+	rs := newRoutedServer(t)
+	rs.apply(t, 1, time.Hour)
+	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
+	req := types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusOK {
+		t.Fatalf("initial tunnel response = %d, want 200", resp.Status)
+	}
+	<-rs.lastHost
+
+	pointer := filepath.Join(rs.meshDir, "current")
+	generation, err := os.Readlink(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusBadGateway {
+		t.Fatalf("encrypted response with unreadable credentials = %d, want 502", resp.Status)
+	}
+	if len(rs.lastHost) != 0 {
+		t.Fatal("request with unreadable credentials reached the backend")
+	}
+
+	if err := os.Symlink(generation, pointer); err != nil {
+		t.Fatal(err)
+	}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusOK {
+		t.Fatalf("same session after restoring credentials = %d, want 200", resp.Status)
+	}
+	<-rs.lastHost
+}
+
 // attestLB runs attest-lb on connection, sending no connection header when
 // connection is empty, and returns the response.
 func attestLB(t *testing.T, base, connection string) *http.Response {

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -39,9 +40,10 @@ const ServingTLSTTL = 30 * 24 * time.Hour
 const WebhookCATTL = 10 * 365 * 24 * time.Hour
 
 // BootstrapServingCert mints a webhook serving cert from the mesh CA and
-// writes it into certDir. Hostnames must include every DNS name the API
-// server might use to reach the webhook Service; at minimum the in-cluster
-// Service DNS. Passing an empty certDir uses DefaultCertDir.
+// writes it into certDir. Hostnames must include every name the API server
+// might use to reach the webhook: the in-cluster Service DNS, or the host its
+// URL names, an IP address among them. Passing an empty certDir uses
+// DefaultCertDir.
 func BootstrapServingCert(ca *issuer.CA, hostnames []string, certDir string) error {
 	if ca == nil {
 		return fmt.Errorf("ca is nil")
@@ -53,11 +55,15 @@ func BootstrapServingCert(ca *issuer.CA, hostnames []string, certDir string) err
 		certDir = DefaultCertDir
 	}
 
-	res, err := ca.Issue(issuer.Request{
-		CommonName: hostnames[0],
-		DNSNames:   hostnames,
-		TTL:        ServingTLSTTL,
-	})
+	req := issuer.Request{CommonName: hostnames[0], TTL: ServingTLSTTL}
+	for _, host := range hostnames {
+		if ip := net.ParseIP(host); ip != nil {
+			req.IPAddresses = append(req.IPAddresses, ip)
+		} else {
+			req.DNSNames = append(req.DNSNames, host)
+		}
+	}
+	res, err := ca.Issue(req)
 	if err != nil {
 		return fmt.Errorf("issue webhook serving cert: %w", err)
 	}

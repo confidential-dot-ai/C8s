@@ -64,6 +64,13 @@ allowlist:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
+            # RKE2's exec startup, liveness and readiness probes of this
+            # container (rancher/rke2 pkg/podtemplate/spec.go, APIServer), the
+            # only commands the locked runtime wrapper starts in it
+            # (c8s docs/node-exec-mode.md, "Granted execs").
+            execs:
+              - ["kubectl", "get", "--server=https://localhost:6443/", "--client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", "--client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", "--certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt", "--raw=/livez"]
+              - ["kubectl", "get", "--server=https://localhost:6443/", "--client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", "--client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", "--certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt", "--raw=/readyz"]
             command: {policy: exact, argv: ["kube-apiserver"]}
             args:
               policy: exact
@@ -726,7 +733,7 @@ allowlist:
                 BOOTSTRAP: {exact: "true"}
                 CHART: {exact: ""}
                 CHART_NAMESPACE: {exact: "kube-system"}
-                CONFIG_HASH: {exact: "782319E7FE222AA2112A65AC8178D28B78EA2BEAA2CF319EDF8B74C9C5F5E39"}
+                CONFIG_HASH: {exact: "8DA0232A8AA379BDB1581F5C33332588CF4C8E422CEBD744A636E90E9EADC91"}
                 EXPECTED_RELEASE_REVISION: {exact: "0"}
                 FAILURE_POLICY: {exact: "reinstall"}
                 FORCE_CONFLICTS: {exact: "true"}
@@ -955,8 +962,8 @@ allowlist:
       # GPU nodes, from the baked server/manifests/nvidia-device-plugin.yaml.
       nvidia-device-plugin:
         containers:
-          - digest: "sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
-            image: "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
+          - digest: "sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075"
+            image: "nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075"
             command: {policy: exact, argv: ["nvidia-device-plugin"]}
             args: {policy: deny}
             mounts:

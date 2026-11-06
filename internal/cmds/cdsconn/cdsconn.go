@@ -71,7 +71,7 @@ type Options struct {
 func BindFlags(pf *pflag.FlagSet, o *Options) {
 	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
 	if o.DirectCDS {
-		urlHelp = "direct CDS base URL, the <host>:<port> an install was given as --cds-address (required); a router front door does not relay this API"
+		urlHelp = "direct CDS base URL, https://<host>:<port> using the install's --cds-address (required); a router front door does not relay this API"
 	} else {
 		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin")
 		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")

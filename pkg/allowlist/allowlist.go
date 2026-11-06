@@ -73,6 +73,9 @@ type Workload struct {
 	// HostPorts are the ports a pod this entry matches publishes on the node's
 	// own address; like a secrets grant they belong to the whole entry.
 	HostPorts HostPortList `json:"hostPorts,omitempty" yaml:"hostPorts,omitempty"`
+	// StaticPod marks a kubelet static pod's entry. YAML-only, like
+	// Container.Role: only a measured boot config sets it.
+	StaticPod bool `json:"-" yaml:"staticPod,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
@@ -152,13 +155,18 @@ func (l *HostPortList) UnmarshalJSON(data []byte) error {
 // policy. It is YAML-only: a document on the wire carries no role, so a role
 // comes from a measured boot config and nothing a CDS serves can claim one.
 type Container struct {
-	Digest  types.Digest `json:"digest" yaml:"digest"`
-	Image   string       `json:"image,omitempty" yaml:"image,omitempty"`
-	Role    string       `json:"-" yaml:"role,omitempty"`
-	Command ArgvPolicy   `json:"command" yaml:"command"`
-	Args    ArgvPolicy   `json:"args" yaml:"args"`
-	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`
-	Env     EnvPolicy    `json:"env" yaml:"env,omitempty"`
+	Digest types.Digest `json:"digest" yaml:"digest"`
+	Image  string       `json:"image,omitempty" yaml:"image,omitempty"`
+	Role   string       `json:"-" yaml:"role,omitempty"`
+	// Execs are the exact commands a runtime wrapper may start in a running
+	// container of these bytes, beside the one it was created with. YAML-only,
+	// like Role: only a measured boot config grants one, and the JSON ingest
+	// rejects it.
+	Execs   [][]string  `json:"-" yaml:"execs,omitempty"`
+	Command ArgvPolicy  `json:"command" yaml:"command"`
+	Args    ArgvPolicy  `json:"args" yaml:"args"`
+	Mounts  MountPolicy `json:"mounts" yaml:"mounts,omitempty"`
+	Env     EnvPolicy   `json:"env" yaml:"env,omitempty"`
 	// Capabilities are what these bytes may hold beyond the node's default set.
 	Capabilities CapabilityList `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
@@ -393,6 +401,7 @@ var (
 	errGrantUnpinnedMounts        = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
 	errHostPortsUnpinnedLaunch    = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errCapabilitiesUnpinnedLaunch = fmt.Errorf("declared capabilities need every container to pin its launch: command, args and mounts not any, and env constrained")
+	errStaticPodDeclaresGrants    = fmt.Errorf("a static pod's entry grants no host ports or capabilities, so it may declare none")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -516,6 +525,10 @@ func (w Workload) DeclaresHostPrivilege() bool {
 
 func (w Workload) declaresHostPorts() bool {
 	return len(w.HostPorts) > 0
+}
+
+func (w Workload) declaresHostPortsOrCapabilities() bool {
+	return w.declaresHostPorts() || slices.ContainsFunc(w.containers(), Container.declaresAnyCapability)
 }
 
 func (c Container) declaresHostPrivilege() bool {
@@ -697,6 +710,9 @@ func (a *Allowlist) normalize(strict bool) error {
 				"name", name, "error", err)
 			w.dropDeclaredCapabilities()
 		}
+		if w.StaticPod && w.declaresHostPortsOrCapabilities() {
+			return fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
+		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
@@ -862,6 +878,15 @@ var DefaultCapabilities = []string{
 	"SYS_CHROOT",
 }
 
+// UndeclarableCapability reports a capability no container may hold: one the
+// default set does not hold and no entry may declare, spelled with no CAP_
+// prefix. NET_ADMIN, NET_RAW, SETUID and SETGID are the names today; each
+// rewrites the pod's packet rules or takes an id trusted policy reserves for a
+// platform role.
+func UndeclarableCapability(name string) bool {
+	return !slices.Contains(DefaultCapabilities, name) && !slices.Contains(declarableCapabilities, name)
+}
+
 // declarableCapabilities are the Linux capabilities outside the container
 // runtime's default set, less NET_ADMIN, NET_RAW, SETUID and SETGID, spelled as
 // a pod spec spells them: no CAP_ prefix.
@@ -950,6 +975,11 @@ func normalizeContainers(workload, field string, cs []Container) error {
 		c := &cs[i]
 		if c.Digest.String() == "" {
 			return fmt.Errorf("workload %q %s[%d]: digest is required", workload, field, i)
+		}
+		for j, argv := range c.Execs {
+			if len(argv) == 0 || argv[0] == "" {
+				return fmt.Errorf("workload %q %s %s execs[%d]: a command needs an executable", workload, field, c.Digest, j)
+			}
 		}
 		for _, constraint := range c.constraints() {
 			if policyField, err := constraint.normalize(); err != nil {

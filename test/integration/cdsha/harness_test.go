@@ -15,6 +15,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha512"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -99,13 +100,15 @@ var (
 	nextNodeImages      = nodeImagesCertifying(nextNodeImage)
 )
 
-// A node pin document, as `ha decree node-images --nodes` reads one.
+// A node pin document, as `ha decree node-images --nodes` reads one, each
+// image bound to the launch file its nodes boot.
 func nodeImagesCertifying(images ...nodeImage) string {
+	launched := sha512.Sum384([]byte("schemaVersion: c8s-worker/v1\n"))
 	entries := make([]string, 0, len(images))
 	for _, image := range images {
-		entries = append(entries, fmt.Sprintf(`{"name":%q,"mrtd":%q}`, image.name, image.mrtd))
+		entries = append(entries, fmt.Sprintf(`{"name":%q,"mrtd":%q,"launch_file_digest":"%x"}`, image.name, image.mrtd, launched))
 	}
-	return `{"schema_version":"1","tee":"tdx","measurements":[` + strings.Join(entries, ",") + `]}`
+	return `{"schema_version":"2","tee":"tdx","measurements":[` + strings.Join(entries, ",") + `]}`
 }
 
 const seededWorkload = "attestation-api"

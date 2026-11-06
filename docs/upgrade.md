@@ -11,9 +11,9 @@ which is why the steps are ordered this way
 
 ## Prerequisites
 
-- The operator private key you installed with, and `cds.operatorKeys` already
-  set: CDS takes no write without pinned keys, and adding them later is itself
-  such an upgrade.
+- The operator private key matching the public keys in the CDS's measured
+  configuration (`c8s cds config new --operator-keys`): CDS takes no write
+  signed under any other key.
 - The new release's `c8s` CLI, plus `helm`, `kubectl`, `crane`, `yq`, and
   `curl` on each node.
 - The `-f` values file and flags you installed with

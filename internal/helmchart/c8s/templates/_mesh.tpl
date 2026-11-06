@@ -39,7 +39,7 @@ of the pod on this container's start. Caller nindents into initContainers.
         - ALL
     seccompProfile:
       type: RuntimeDefault
-  {{- /* HTTP, never exec: a locked node image denies every runc exec, and an
+  {{- /* HTTP, never exec: a locked node image denies every runc exec it was not granted, and an
          exec probe would run another process inside the mesh role. Every
          field is set, so a stored pod still matches what was rendered;
          startup reports initialization, readiness adds usable credentials and

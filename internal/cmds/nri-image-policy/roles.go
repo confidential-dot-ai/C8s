@@ -27,7 +27,7 @@ const (
 	CredentialRole = workloadclaims.CredentialsRole
 	// routerRole answers the cluster's external traffic on ports of its own,
 	// in the router's namespace.
-	routerRole = "router"
+	routerRole = workloadclaims.RouterRole
 	// acmeRole is the one role of that namespace whose sockets leave the
 	// cluster in the clear.
 	acmeRole = "acme"

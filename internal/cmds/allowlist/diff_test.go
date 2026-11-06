@@ -2,6 +2,8 @@ package allowlist
 
 import (
 	"bytes"
+	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -104,5 +106,117 @@ func TestPrintDiffOrdersMapEntries(t *testing.T) {
 		if out.String() != want {
 			t.Fatalf("diff output = %q, want %q", out.String(), want)
 		}
+	}
+}
+
+func TestDiffEntrySecrets(t *testing.T) {
+	grant := func(read ...string) *pkgallowlist.SecretsPolicy {
+		return &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: read}
+	}
+	tests := []struct {
+		name     string
+		live     *pkgallowlist.SecretsPolicy
+		desired  *pkgallowlist.SecretsPolicy
+		wantFrom string
+		wantTo   string
+	}{
+		{name: "both deny", live: nil, desired: nil},
+		{name: "same grant", live: grant("db/*"), desired: grant("db/*")},
+		{name: "grant added", live: nil, desired: grant("db/*"), wantFrom: "deny", wantTo: `allow read=["db/*"]`},
+		{name: "grant removed", live: grant("db/*"), desired: nil, wantFrom: `allow read=["db/*"]`, wantTo: "deny"},
+		{name: "read widened", live: grant("db/a"), desired: grant("db/a", "db/b"), wantFrom: `allow read=["db/a"]`, wantTo: `allow read=["db/a" "db/b"]`},
+		{name: "comma inside a path", live: grant("db/a,db/b"), desired: grant("db/a", "db/b"), wantFrom: `allow read=["db/a,db/b"]`, wantTo: `allow read=["db/a" "db/b"]`},
+		{
+			name:     "write added",
+			live:     grant("db/a"),
+			desired:  &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"db/a"}, Write: []string{"db/a"}},
+			wantFrom: `allow read=["db/a"]`,
+			wantTo:   `allow read=["db/a"] write=["db/a"]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := pkgallowlist.Container{Digest: mustDigest(t, digB)}
+			ed := diffEntry(
+				pkgallowlist.Workload{Containers: []pkgallowlist.Container{c}, Secrets: tt.live},
+				pkgallowlist.Workload{Containers: []pkgallowlist.Container{c}, Secrets: tt.desired},
+			)
+			if tt.wantTo == "" {
+				if !ed.empty() {
+					t.Fatalf("diffEntry = %+v, want empty", ed)
+				}
+				return
+			}
+			if ed.empty() || ed.Secrets == nil {
+				t.Fatalf("diffEntry = %+v, want a secrets change", ed)
+			}
+			if ed.Secrets.From != tt.wantFrom || ed.Secrets.To != tt.wantTo {
+				t.Errorf("secrets = %q -> %q, want %q -> %q", ed.Secrets.From, ed.Secrets.To, tt.wantFrom, tt.wantTo)
+			}
+		})
+	}
+}
+
+func TestDiffEntryEgressAndHostPorts(t *testing.T) {
+	exit := func(cidr string, port uint16) pkgallowlist.Egress {
+		return pkgallowlist.Egress{CIDR: netip.MustParsePrefix(cidr), Port: port}
+	}
+	tcp := func(host, container int) pkgallowlist.HostPort {
+		return pkgallowlist.HostPort{Protocol: "TCP", HostPort: host, ContainerPort: container}
+	}
+	tests := []struct {
+		name          string
+		live, desired pkgallowlist.Workload
+		wantEgress    *changedEntry
+		wantHostPorts *changedEntry
+		wantText      string
+	}{
+		{
+			name:    "unchanged",
+			live:    pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("10.0.0.1/32", 443)}, HostPorts: pkgallowlist.HostPortList{tcp(8080, 80)}},
+			desired: pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("10.0.0.1/32", 443)}, HostPorts: pkgallowlist.HostPortList{tcp(8080, 80)}},
+		},
+		{
+			name:       "egress added",
+			desired:    pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("10.0.0.1/32", 443)}},
+			wantEgress: &changedEntry{From: "none", To: "10.0.0.1/32:443"},
+			wantText:   "    egress: none -> 10.0.0.1/32:443\n",
+		},
+		{
+			name:       "egress port changed",
+			live:       pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("2001:db8::/48", 443)}},
+			desired:    pkgallowlist.Workload{Egress: pkgallowlist.EgressList{exit("2001:db8::/48", 8443)}},
+			wantEgress: &changedEntry{From: "[2001:db8::/48]:443", To: "[2001:db8::/48]:8443"},
+			wantText:   "    egress: [2001:db8::/48]:443 -> [2001:db8::/48]:8443\n",
+		},
+		{
+			name:          "host port removed",
+			live:          pkgallowlist.Workload{HostPorts: pkgallowlist.HostPortList{tcp(8080, 80), tcp(8443, 443)}},
+			desired:       pkgallowlist.Workload{HostPorts: pkgallowlist.HostPortList{tcp(8080, 80)}},
+			wantHostPorts: &changedEntry{From: "TCP/8080:80 TCP/8443:443", To: "TCP/8080:80"},
+			wantText:      "    hostPorts: TCP/8080:80 TCP/8443:443 -> TCP/8080:80\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := pkgallowlist.Container{Digest: mustDigest(t, digB)}
+			tt.live.Containers = []pkgallowlist.Container{c}
+			tt.desired.Containers = []pkgallowlist.Container{c}
+			ed := diffEntry(tt.live, tt.desired)
+			if got, want := ed.empty(), tt.wantEgress == nil && tt.wantHostPorts == nil; got != want {
+				t.Fatalf("diffEntry(...).empty() = %v, want %v (%+v)", got, want, ed)
+			}
+			if !reflect.DeepEqual(ed.Egress, tt.wantEgress) {
+				t.Errorf("diffEntry(...).Egress = %+v, want %+v", ed.Egress, tt.wantEgress)
+			}
+			if !reflect.DeepEqual(ed.HostPorts, tt.wantHostPorts) {
+				t.Errorf("diffEntry(...).HostPorts = %+v, want %+v", ed.HostPorts, tt.wantHostPorts)
+			}
+			var buf bytes.Buffer
+			printEntryDiff(&buf, ed)
+			if buf.String() != tt.wantText {
+				t.Errorf("printEntryDiff = %q, want %q", buf.String(), tt.wantText)
+			}
+		})
 	}
 }

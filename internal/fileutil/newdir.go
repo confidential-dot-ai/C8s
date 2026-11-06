@@ -29,21 +29,27 @@ func WriteNewDir(dir string, mode os.FileMode, files []NewFile) error {
 
 func writeAll(dir string, files []NewFile) error {
 	for _, file := range files {
-		if err := writeNew(filepath.Join(dir, file.Name), file.Data, file.Mode); err != nil {
+		if err := WriteNew(filepath.Join(dir, file.Name), file.Data, file.Mode); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeNew(path string, data []byte, mode os.FileMode) error {
+// WriteNew writes data to path, which must not exist. A failed write removes
+// path again.
+func WriteNew(path string, data []byte, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(path)
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	return f.Close()
+	return nil
 }

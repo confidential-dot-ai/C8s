@@ -184,9 +184,9 @@ func TestPolicyStoreTrustsFirstVersionAfterRestart(t *testing.T) {
 
 // --- pull loop ---
 
-// flippingHandler serves a canonical allowlist body per version with a weak
-// ETag, honoring If-None-Match with a 304. idx advances after each 200 so a
-// test can script a version sequence.
+// flippingHandler serves a canonical allowlist body per version as CDS does,
+// tagged with its digest, honoring If-None-Match with a 304. idx advances
+// after each 200 so a test can script a version sequence.
 type flippingHandler struct {
 	mu         sync.Mutex
 	versions   []string          // sequence of versions to serve
@@ -207,13 +207,13 @@ func (f *flippingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version := f.versions[f.idx]
-	etag := `W/"` + version + `"`
+	etag := servedTag(f.bodyByV[version])
+	w.Header().Set("ETag", etag)
+	w.Header().Set(allowlist.VersionHeader, version)
 	if r.Header.Get("If-None-Match") == etag {
-		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(f.bodyByV[version])
 	if f.idx < len(f.versions)-1 {
@@ -273,9 +273,10 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 }
 
 func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
 	srv := httptest.NewServer(&flippingHandler{
 		versions: []string{"1"},
-		bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		bodyByV:  map[string][]byte{"1": body},
 	})
 	defer srv.Close()
 
@@ -296,7 +297,7 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
-			etag:     `W/"1"`,
+			etag:     servedTag(body),
 			logger:   discardLogger(),
 
 			killRevoked: func(context.Context) {},
@@ -308,6 +309,59 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if store.current() != before {
 		t.Fatal("304 ticks should leave the snapshot pointer unchanged")
+	}
+
+	cancel()
+	<-done
+}
+
+// A 304 at a higher version keeps the index and raises the applied version,
+// so a write that moved the version without changing the bytes still raises
+// the version a rollback is judged against.
+func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	srv := httptest.NewServer(&flippingHandler{
+		versions: []string{"5"},
+		bodyByV:  map[string][]byte{"5": body},
+	})
+	defer srv.Close()
+
+	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
+	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-1"}), 1)
+	index := store.current().index
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		runPullLoop(ctx, pullLoopArgs{
+			pull:     quietPull(),
+			client:   client,
+			store:    store,
+			interval: 10 * time.Millisecond,
+			timeout:  time.Second,
+			etag:     servedTag(body),
+			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+		})
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for store.current().version != 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("applied version = %d after 304s at version 5, want 5", store.current().version)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if store.current().index != index {
+		t.Fatal("a 304 rebuilt the index")
+	}
+	if !store.rolledBack(4) {
+		t.Fatal("version 4 is not a rollback after the 304 at version 5")
 	}
 
 	cancel()
@@ -334,7 +388,7 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
-			etag:     `W/"5"`,
+			etag:     servedTag(canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))),
 			logger:   discardLogger(),
 
 			killRevoked: func(context.Context) {},
@@ -467,7 +521,8 @@ func TestPullInitialSucceedsAfterTransientFailures(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		w.Header().Set("ETag", `W/"1"`)
+		w.Header().Set("ETag", servedTag(body))
+		w.Header().Set(allowlist.VersionHeader, "1")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 	}))
@@ -490,8 +545,8 @@ func TestPullInitialSucceedsAfterTransientFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success after retries, got %v", err)
 	}
-	if etag != `W/"1"` {
-		t.Fatalf("etag = %q, want W/\"1\"", etag)
+	if etag != servedTag(body) {
+		t.Fatalf("etag = %q, want %s", etag, servedTag(body))
 	}
 	if !admitsDigest(store, pushDigestB) {
 		t.Fatal("store missing pulled entry")
@@ -629,21 +684,19 @@ func TestPullInitialCancelledMidRetry(t *testing.T) {
 	}
 }
 
-// TestParseVersion covers the ETag counter extraction used for anti-rollback.
+// TestParseVersion covers the counter extraction used for anti-rollback.
 func TestParseVersion(t *testing.T) {
 	for _, tc := range []struct {
-		etag string
-		want uint64
+		version string
+		want    uint64
 	}{
-		{`W/"5"`, 5},
-		// CDS only emits weak ETags; anything else is not a version.
-		{`"7"`, 0},
-		{"12", 0},
+		{"5", 5},
 		{"", 0},
-		{`W/"not-a-number"`, 0},
+		{`W/"5"`, 0},
+		{"not-a-number", 0},
 	} {
-		if got := parseVersion(tc.etag); got != tc.want {
-			t.Errorf("parseVersion(%q) = %d, want %d", tc.etag, got, tc.want)
+		if got := parseVersion(tc.version); got != tc.want {
+			t.Errorf("parseVersion(%q) = %d, want %d", tc.version, got, tc.want)
 		}
 	}
 }
@@ -651,6 +704,11 @@ func TestParseVersion(t *testing.T) {
 func servedDigest(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// servedTag is the ETag CDS serves body under.
+func servedTag(body []byte) string {
+	return allowlist.EntityTag(servedDigest(body))
 }
 
 // The initial pull measures the served digest before applying it, and does

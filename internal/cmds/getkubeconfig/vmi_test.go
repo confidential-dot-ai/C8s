@@ -68,6 +68,36 @@ func TestVMIAddress(t *testing.T) {
 			want: "10.42.0.201",
 		},
 		{
+			name: "IPv6 address",
+			status: map[string]any{"interfaces": []any{
+				map[string]any{"ipAddress": "fd00::5"},
+			}},
+			want: "fd00::5",
+		},
+		{
+			// Fail closed: a bad first address is not skipped for a later one.
+			name: "injected YAML is refused",
+			status: map[string]any{"interfaces": []any{
+				map[string]any{"ipAddress": "10.0.0.5\n    insecure-skip-tls-verify: true"},
+				map[string]any{"ipAddress": "10.42.0.201"},
+			}},
+			wantErr: `guest confai-images/mn-server reports address "10.0.0.5\n    insecure-skip-tls-verify: true", which is not an IP`,
+		},
+		{
+			name: "hostname is refused",
+			status: map[string]any{"interfaces": []any{
+				map[string]any{"ipAddress": "evil.example"},
+			}},
+			wantErr: "which is not an IP",
+		},
+		{
+			name: "long value is truncated",
+			status: map[string]any{"interfaces": []any{
+				map[string]any{"ipAddress": strings.Repeat("a", 64) + "TAIL"},
+			}},
+			wantErr: `"` + strings.Repeat("a", 64) + `", which is not an IP`,
+		},
+		{
 			name:    "no status",
 			status:  nil,
 			wantErr: "no reported address",
@@ -160,6 +190,16 @@ func TestResolveVMI(t *testing.T) {
 		_, err := resolveVMI(context.Background(), "absent-cvm")
 		if err == nil || !strings.Contains(err.Error(), "get virtualmachineinstance confai-images/absent-cvm") {
 			t.Fatalf("want wrapped get error, got %v", err)
+		}
+	})
+
+	t.Run("injected address is refused", func(t *testing.T) {
+		fakeVMIClient(t, "confai-images", vmiWithStatus(map[string]any{
+			"interfaces": []any{map[string]any{"ipAddress": "10.0.0.5\n    insecure-skip-tls-verify: true"}},
+		}))
+		got, err := resolveVMIAddress(context.Background(), "mn-server")
+		if err == nil || !strings.Contains(err.Error(), "mn-server") || !strings.Contains(err.Error(), "not an IP") {
+			t.Fatalf("resolveVMIAddress = %q, %v; want refusal naming the VMI", got, err)
 		}
 	})
 

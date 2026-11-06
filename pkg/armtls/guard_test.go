@@ -87,9 +87,9 @@ func rawReportFieldReads(t *testing.T, root string) []string {
 	return hits
 }
 
-// Every producer that can self-sign a TDX certificate or attest names the
-// node's measured-policy journal, so none silently omits the list a peer
-// replays RTMR[3] with.
+// Every producer config literal that can self-sign a TDX certificate or
+// attest names the node's measured-policy journal, so none silently omits the
+// list a peer replays RTMR[3] with.
 func TestProducersNameTheJournal(t *testing.T) {
 	if hits := producersWithoutJournal(t, moduleRoot(t)); len(hits) > 0 {
 		t.Fatalf("producers must set MeasuredPoliciesFile:\n  %s", strings.Join(hits, "\n  "))
@@ -121,9 +121,11 @@ func TestProducersWithoutJournalFires(t *testing.T) {
 	}
 }
 
-// producersWithoutJournal lists the producer configs under root that leave
-// out MeasuredPoliciesFile: armTLS configs that self-sign (they set
+// producersWithoutJournal lists the producer config literals under root that
+// leave out MeasuredPoliciesFile: armTLS configs that self-sign (they key
 // AttestFunc), and the CDS and sandbox-digests clients, which always attest.
+// It reads keyed composite literals only: a field assigned after the literal
+// is not seen, either way.
 func producersWithoutJournal(t *testing.T, root string) []string {
 	t.Helper()
 	var hits []string

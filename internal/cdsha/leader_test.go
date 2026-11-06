@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha512"
 	"slices"
 	"strings"
 	"testing"
@@ -197,6 +198,33 @@ func TestADecreeNoOperatorKeySignedIsNotTaken(t *testing.T) {
 
 	if core := leader.node.fsm.ClusterState(); core.Version != version {
 		t.Fatalf("the cluster moved to version %d", core.Version)
+	}
+}
+
+// A posted node image set is refused before it reaches the log while an entry
+// binds no launch, and taken once every entry binds one.
+func TestAPostedNodeImageSetBindsTheLaunchOfEveryEntry(t *testing.T) {
+	c := newLiveCluster(t)
+	c.genesis(1)
+	leader := c.leader()
+	version := leader.node.fsm.ClusterState().Version
+	unbound := nodeImagesBoundTo(t, nil, 0x44)
+	decree := c.fixture(leader).decree(cdsdecree.SetNodeImages)
+	decree.NodePins = unbound
+
+	delivered := c.posted(leader, c.signDecree(decree))
+	if !strings.Contains(delivered.Refused, "binds no launch") {
+		t.Fatalf("the cluster answered %+v, want the unbound entry refused", delivered)
+	}
+	if core := leader.node.fsm.ClusterState(); core.Version != version {
+		t.Fatalf("the cluster moved to version %d", core.Version)
+	}
+
+	launched := sha512.Sum384([]byte("schemaVersion: c8s-worker/v1\n"))
+	decree.IntentID = cdsdecree.NewIntentID()
+	decree.NodePins = nodeImagesBoundTo(t, launched[:], 0x44)
+	if delivered := c.posted(leader, c.signDecree(decree)); delivered.Refused != "" || delivered.Version != version+1 {
+		t.Fatalf("the cluster answered %+v, want the bound set applied at version %d", delivered, version+1)
 	}
 }
 

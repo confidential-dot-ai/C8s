@@ -26,21 +26,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          # The diff step reads only the PR merge commit and its parents.
+          fetch-depth: 2
       - id: diff
         env:
           PR: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then
             image=true
           else
+            # HEAD is GitHub's PR merge commit; diff against its first parent.
+            # The event's base sha can move past it (base force-pushed after
+            # the merge was cached) and would charge the PR with the base's gains.
+            git rev-parse --verify -q HEAD^2 >/dev/null
+            base=$(git rev-parse HEAD^1)
             base_manifest="$RUNNER_TEMP/base-build-pins.json"
             changed_paths="$RUNNER_TEMP/changed-paths"
-            git cat-file -e "${BASE_SHA}^{commit}"
-            git show "${BASE_SHA}:.github/build-pins.json" >"$base_manifest"
-            git diff --name-only -z "$BASE_SHA" HEAD -- >"$changed_paths"
+            git show "${base}:.github/build-pins.json" >"$base_manifest"
+            git diff --name-only -z "$base" HEAD -- >"$changed_paths"
             result=$(bash .github/scripts/repro-gate-changes \
               .github/build-pins.json "$base_manifest" "$changed_paths")
             image=$(sed -n 's/^image=//p' <<<"$result")

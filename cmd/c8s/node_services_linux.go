@@ -25,7 +25,7 @@ func init() {
 		if err != nil {
 			return err
 		}
-		return nodeservices.Prepare("", doc)
+		return nodeservices.PrepareNode("", doc)
 	}})
 	cmd.AddCommand(&cobra.Command{Use: "node-ip", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		doc, err := staged()

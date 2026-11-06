@@ -42,6 +42,20 @@ main() {
         .github/workflows/image-repro-gate.yml)
         image=true
         ;;
+      images/node-guest/c8s/mkosi.extra/*)
+        # Copied into the image whole; no exemption below may reach it.
+        image=true
+        ;;
+      images/node-guest/worker/*)
+        # The worker profile is built locally only; the gate builds and
+        # compares the c8s profile. Files flow from c8s into worker, never back.
+        ;;
+      images/node-guest/tests/* | \
+        images/node-guest/tools/* | \
+        images/node-guest/*.md | \
+        images/node-guest/*_test.go)
+        # Tests, lint tools and docs beside the image sources; never baked.
+        ;;
       images/node-guest/* | \
         .github/workflows/c8s-image.yml | \
         .github/workflows/c8s-image-publish.yml)
