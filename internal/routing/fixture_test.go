@@ -387,7 +387,7 @@ func newFixture(t testing.TB) *fixture {
 	}
 	f.identity = identity
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil))})
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil)), Now: f.clock.Now})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: newFakeBindings(nil), Timeout: 10 * time.Second})
 	return f
 }

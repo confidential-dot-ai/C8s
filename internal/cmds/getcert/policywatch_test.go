@@ -310,7 +310,7 @@ func stubIssueCountingPolls(t *testing.T, ca *testCA, cds *fakeAllowlist, fail f
 func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	const pending = 300 * time.Millisecond
 	old := policyRenewDelayFn
-	policyRenewDelayFn = func(time.Duration, time.Duration) time.Duration { return pending }
+	policyRenewDelayFn = func(config, time.Duration) time.Duration { return pending }
 	t.Cleanup(func() { policyRenewDelayFn = old })
 
 	cds := &fakeAllowlist{}
@@ -480,6 +480,7 @@ func TestPolicyRenewDelay(t *testing.T) {
 	tests := []struct {
 		name      string
 		interval  time.Duration
+		immediate bool
 		remaining time.Duration
 		max       time.Duration
 	}{
@@ -487,11 +488,13 @@ func TestPolicyRenewDelay(t *testing.T) {
 		{name: "clamped to the scheduled renewal", interval: time.Minute, remaining: 5 * time.Second, max: 5 * time.Second},
 		{name: "overdue renewal", interval: time.Minute, remaining: -time.Second, max: 0},
 		{name: "sub-2ns interval", interval: 1, remaining: time.Hour, max: 0},
+		{name: "no spread for the router", interval: time.Hour, immediate: true, remaining: time.Hour, max: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cfg := config{CAWatchInterval: tt.interval, PolicyRenewImmediately: tt.immediate}
 			for range 1000 {
-				if got := policyRenewDelay(tt.interval, tt.remaining); got < 0 || got > tt.max {
+				if got := policyRenewDelay(cfg, tt.remaining); got < 0 || got > tt.max {
 					t.Fatalf("policyRenewDelay(%v, %v) = %v, want in [0, %v]", tt.interval, tt.remaining, got, tt.max)
 				}
 			}

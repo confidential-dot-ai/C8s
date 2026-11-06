@@ -291,17 +291,26 @@ detectable only by pinning the route digest or the operator keys.
   gets 404. The router's own paths are never routed by the manifest.
 - A workload backend is dialed as a mesh client: the peer must present a leaf
   chaining to the mesh CA, carrying that route's workload name, stamped under
-  the same allowlist digest as the router's own leaf. A failed handshake is
-  502 — `backend_digest_mismatch` when the two digests differ — and no backend
-  is reached in plaintext. A router whose own leaf carries no stamp binds no
-  policy digest and checks the name alone.
-- The router and its backends renew on their own schedules, so after an
-  allowlist write a workload route refuses requests until both carry the new
-  digest: 502 `backend_digest_mismatch` while a backend lags, 503
-  `router_digest_changed` while the router's own pools still hold its previous
-  digest. The slower of their `--ca-watch-interval`s, plus half an interval of
-  jitter, plus one issuance bounds that; with the watch off it lasts until the
-  next scheduled renewal.
+  the allowlist digest of the router's own leaf or the one it held immediately
+  before. A failed handshake is 502 — `backend_digest_mismatch` when the
+  digests differ — and no backend is reached in plaintext. A router whose own
+  leaf carries no stamp binds no policy digest and checks the name alone.
+- After an allowlist write the router renews as soon as its watch sees CDS
+  serving a document its own leaf does not name, without the delay that
+  spreads a fleet's policy renewals, so it takes the new digest ahead of the
+  backends it routes to. One issuance bounds that; with its watch off it waits
+  for the next scheduled renewal. Its attested sessions are refused with 503
+  `router_digest_changed` meanwhile, and each client attests again.
+- A workload backend still stamped under the digest the router held
+  immediately before its current one is routed to for as long as that
+  backend's own renewal takes: its `--ca-watch-interval`, the half interval it
+  spreads policy renewals over, and one issuance — two minutes on the injected
+  `c8s-cert` sidecar's default watch. Each node enforces every allowlist it
+  pulls on the containers running there, so a backend that still answers is
+  one the current document admits.
+- Past that bound, and for every other digest, a workload route is 502
+  `backend_digest_mismatch`. A backend that renews before the router does is
+  refused the same way until the router's own renewal lands.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
   the client attests again

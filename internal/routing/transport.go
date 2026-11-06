@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
@@ -34,6 +35,9 @@ type TransportConfig struct {
 	// Logger reports a router leaf whose stamp does not parse, once per leaf.
 	// nil uses slog.Default.
 	Logger *slog.Logger
+	// Now is the clock the acceptance of a backend lagging the router's
+	// allowlist digest is bounded by. Nil means time.Now.
+	Now func() time.Time
 }
 
 // routerLeaf hands one generation's leaf to a mesh handshake. Renewal is
@@ -51,6 +55,7 @@ func (l routerLeaf) Provision(context.Context) (*tls.Certificate, time.Duration,
 // It is safe for concurrent use.
 type Transports struct {
 	cfg TransportConfig
+	now func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]pooled
@@ -60,8 +65,19 @@ type Transports struct {
 	// for an unstamped leaf; routerDigestKnown is false until the first read.
 	routerDigest      string
 	routerDigestKnown bool
+	// previous is the digest routerDigest replaced, while a backend may still
+	// carry it.
+	previous previousStamp
 
 	stamp stampCache
+}
+
+// previousStamp is the allowlist digest the router held immediately before its
+// current one and the instant it stops being accepted from a workload
+// backend. The zero value accepts nothing.
+type previousStamp struct {
+	digest   string
+	deadline time.Time
 }
 
 // pooled is a cached transport, whether it reaches a workload backend, and
@@ -153,7 +169,11 @@ func NewTransports(cfg TransportConfig) *Transports {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	t := &Transports{cfg: cfg, cache: map[string]pooled{}}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	t := &Transports{cfg: cfg, now: now, cache: map[string]pooled{}}
 	t.stamp.log = cfg.Logger
 	return t
 }
@@ -298,7 +318,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload, digest),
+		AcceptPeer:   acceptWorkload(workload, digest, t.acceptedPrevious()),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
@@ -326,10 +346,14 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 }
 
 // acceptWorkload fails the handshake unless the peer the chain path
-// authenticated is the workload the signed route names (B1), stamped under
-// the router's own allowlist digest (B8). A leaf CDS stamped no workload on
+// authenticated is the workload the signed route names (B1), stamped under an
+// allowlist digest the router admits (B8). A leaf CDS stamped no workload on
 // names none, and is refused with the rest.
-func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
+func acceptWorkload(
+	workload string,
+	routerDigest []byte,
+	previous string,
+) func(armtls.Peer) error {
 	router := "with no router allowlist digest"
 	if routerDigest != nil {
 		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
@@ -344,11 +368,27 @@ func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) erro
 		if routerDigest == nil {
 			return nil // B9: an unstamped router binds no policy digest
 		}
-		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
+		if !admitsDigest(peer.AllowlistDigest, routerDigest, previous) {
 			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
 		}
 		return nil
 	}
+}
+
+// admitsDigest reports whether a backend stamped under digest is stamped
+// under the router's own allowlist snapshot, or under the one the router held
+// immediately before it, which a backend carries until its own renewal (B8).
+// The node enforces the current allowlist on what runs there, so a backend
+// still answering is one the current document admits.
+func admitsDigest(
+	digest []byte,
+	routerDigest []byte,
+	previous string,
+) bool {
+	if bytes.Equal(digest, routerDigest) {
+		return true
+	}
+	return previous != "" && string(digest) == previous
 }
 
 // refuseMeshAnchor fails an address backend whose verified chain holds a
@@ -445,14 +485,47 @@ func (t *Transports) retireChanged(cred MeshCredential) {
 	t.routerDigestKnown = true
 	if caDigest != t.caDigest {
 		t.caDigest = caDigest
-		t.routerDigest = string(routerDigest)
+		t.takeRouterDigestLocked(string(routerDigest))
 		t.retireLocked(false)
 		return
 	}
 	if string(routerDigest) != t.routerDigest {
-		t.routerDigest = string(routerDigest)
+		t.takeRouterDigestLocked(string(routerDigest))
 		t.retireLocked(true)
 	}
+}
+
+// takeRouterDigestLocked records digest as the router's own. The stamped
+// digest it replaces is accepted from a workload backend until that backend's
+// own renewal is due (B8). The caller holds t.mu.
+func (t *Transports) takeRouterDigestLocked(digest string) {
+	if digest == t.routerDigest {
+		return
+	}
+	replaced := t.routerDigest
+	t.routerDigest = digest
+	t.previous = previousStamp{}
+	if stampedDigest(replaced) {
+		t.previous = previousStamp{digest: replaced, deadline: t.now().Add(getcert.PolicyRenewLag)}
+	}
+}
+
+// stampedDigest reports whether digest is one a backend leaf can carry: an
+// unstamped router tracks the empty digest, and a damaged stamp
+// damagedRouterStamp.
+func stampedDigest(digest string) bool {
+	return digest != "" && digest != damagedRouterStamp
+}
+
+// acceptedPrevious is the digest the router held immediately before its own
+// while a backend may still carry it, and "" once that bound has passed.
+func (t *Transports) acceptedPrevious() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.now().Before(t.previous.deadline) {
+		return t.previous.digest
+	}
+	return ""
 }
 
 // retireLocked drops the transports, only the workload ones if workloadOnly,

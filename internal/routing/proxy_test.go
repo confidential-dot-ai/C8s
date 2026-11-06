@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -765,6 +766,8 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
+	// Past the bound on the backend's own renewal (backend_lag_test.go).
+	f.clock.Advance(getcert.PolicyRenewLag)
 	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendDigestMismatch) {
 		t.Fatalf("GET / after the router renewed under another digest = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusBadGateway, backendDigestMismatch)
 	}

@@ -63,6 +63,7 @@ type config struct {
 	InitialRetryInterval   time.Duration
 	ContinueOnInitialError bool
 	CAWatchInterval        time.Duration
+	PolicyRenewImmediately bool
 	DiscoveryOutPath       string
 	DiscoveryCDSCertURL    string
 	DiscoveryMeshCAURL     string
@@ -151,6 +152,7 @@ consumers that read that volume.`,
 	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", defaultInitialRetryInterval, "Delay between in-process retries of the first certificate request. A refusal from CDS or the node inventory (403) or a CDS rate limit (429) backs off from here, doubling with jitter up to 5m")
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
+	flags.BoolVar(&cfg.PolicyRenewImmediately, "policy-renew-immediately", false, "Renew the moment the watch finds CDS serving an allowlist the leaf's stamp does not name, without the delay that spreads a fleet's policy renewals. The router runs with it, so a route's backends lag its allowlist digest instead of leading it")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
@@ -488,7 +490,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if !stale {
 				continue
 			}
-			delay := policyRenewDelayFn(cfg.CAWatchInterval, time.Until(renewDue))
+			delay := policyRenewDelayFn(cfg, time.Until(renewDue))
 			if served == stamp.AllowlistVersion {
 				slog.Warn("cds serves different allowlist bytes at the version the stamp names, renewing", "stamped_version", stamp.AllowlistVersion, "delay", delay)
 			} else {
@@ -569,6 +571,17 @@ const (
 	defaultRenewJitterPercent = 20
 
 	defaultCDSWatchInterval = time.Minute
+
+	// issuanceAllowance is how long one renewal takes: an attestation report
+	// and the CDS round trip that signs it.
+	issuanceAllowance = 30 * time.Second
+
+	// PolicyRenewLag bounds how long after an allowlist write a pod on the
+	// default watch still presents a leaf stamped under the previous
+	// allowlist: one watch interval to notice the write, the spread it waits
+	// out, and one issuance. The router serves a backend lagging that far
+	// behind its own allowlist digest (internal/routing).
+	PolicyRenewLag = defaultCDSWatchInterval + defaultCDSWatchInterval/2 + issuanceAllowance
 )
 
 // renewalRetryBase is the first delay after a failed renewal; consecutive
@@ -1190,9 +1203,16 @@ var policyRenewDelayFn = policyRenewDelay
 
 // policyRenewDelay spreads a fleet's policy-change renewals over half a watch
 // interval so one allowlist write does not land every pod on CDS at once. It
-// never postpones a renewal already due sooner.
-func policyRenewDelay(interval, remaining time.Duration) time.Duration {
-	delay := time.Duration(mrand.Int64N(int64(interval/2) + 1))
+// never postpones a renewal already due sooner, and --policy-renew-immediately
+// waives the spread.
+func policyRenewDelay(
+	cfg config,
+	remaining time.Duration,
+) time.Duration {
+	if cfg.PolicyRenewImmediately {
+		return 0
+	}
+	delay := time.Duration(mrand.Int64N(int64(cfg.CAWatchInterval/2) + 1))
 	return max(0, min(delay, remaining))
 }
 

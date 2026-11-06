@@ -33,8 +33,10 @@ catches each:
 - **Policy redefinition.** An allowlist write can redefine an entry, so a pod
   running other code earns the same workload name. The router takes a workload
   backend only under the allowlist digest stamped on its own leaf — the policy
-  snapshot that named the match ([armtls.md](armtls.md#matched-workload)) — and
-  the evidence binds the stamped leaf that carries it. A router leaf with no
+  snapshot that named the match ([armtls.md](armtls.md#matched-workload)) — or
+  under the digest it held immediately before, for the two minutes a backend's
+  own renewal takes ([operator.md](operator.md#route-manifest)); the evidence
+  binds the stamped leaf that carries the current one. A router leaf with no
   stamp binds no policy digest and checks the workload name alone; a client
   pinning the digest sees the stamp missing and fails closed.
 - **Post-handshake update.** A manifest applied after the handshake, or a

@@ -103,6 +103,9 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		// the /.well-known/mesh-ca.pem discovery endpoint serves the dead CA
 		// until the next scheduled renewal.
 		"--ca-watch-interval=1m",
+		// The router renews on an allowlist change ahead of the backends it
+		// routes to, which lag it by their own watch.
+		"--policy-renew-immediately",
 	)
 	if cert.RestartPolicy == nil || *cert.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("c8s-cert restartPolicy = %v, want Always", cert.RestartPolicy)

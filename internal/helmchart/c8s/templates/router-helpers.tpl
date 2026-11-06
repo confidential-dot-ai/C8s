@@ -483,6 +483,9 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 {{- end }}
 {{- with .Values.router.certProvisioning.caWatchInterval }}
 - --ca-watch-interval={{ . }}
+{{- /* INVARIANT: the router's backends lag its allowlist digest, never lead
+       it, so it renews on a policy change without the fleet spread. */}}
+- --policy-renew-immediately
 {{- end }}
 {{- if .Values.router.certProvisioning.verbose }}
 - --verbose

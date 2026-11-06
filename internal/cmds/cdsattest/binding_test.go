@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -781,12 +782,13 @@ func TestHandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
 	}
 	<-rs.lastHost
 
-	// The backend stays stamped under the old digest: a fresh dial fails B8,
-	// a pooled connection would not.
+	// The backend stays stamped under the old digest, past the bound on its
+	// own renewal: a fresh dial fails B8, a pooled connection would not.
 	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
 		t.Fatalf("attest-lb with the renewed leaf = %q, want success", code)
 	}
+	rs.clock.Advance(getcert.PolicyRenewLag)
 	if status, body := routedGet(t, listener.URL, ""); status != http.StatusBadGateway || !strings.Contains(body, "backend_digest_mismatch") {
 		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}

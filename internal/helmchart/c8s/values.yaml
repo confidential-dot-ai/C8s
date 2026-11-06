@@ -892,8 +892,8 @@ router:
     #      router.attest.expectedWorkload), the allowlist policy CDS serves no
     #      longer matches the snapshot stamped in the leaf, which strict
     #      clients reject, and that the router requires of every workload
-    #      backend (502 `backend_digest_mismatch` until both match): renews
-    #      after up to half an interval of jitter.
+    #      backend: renews immediately, so the backends it routes to lag its
+    #      digest rather than lead it (docs/operator.md, route manifest).
     #    Without it both last until the next scheduled renewal. "0" disables
     #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"
