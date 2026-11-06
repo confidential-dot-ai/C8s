@@ -14,17 +14,9 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// stageMeasuredOperatorKey writes pubPEM to the (test-overridden) staging path.
-// The binding itself comes from the verified self-report, so a caller that
-// needs Run to get past the anchor check also needs an attester serving
-// tdxBinding(pubPEM); tests that expect a refusal do not.
-func stageMeasuredOperatorKey(t *testing.T, pubPEM []byte) {
-	t.Helper()
-	stageOperatorPubkey(t, pubPEM)
-}
 
 // freshOperatorPubPEM generates a fresh ECDSA keypair and returns the PKIX
 // public-key PEM the initrd would stage.
@@ -41,20 +33,17 @@ func freshOperatorPubPEM(t *testing.T) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
-// runnableConfig stages a measured operator key, on-disk CAs, and a fake
+// runnableConfig supplies a measured operator key, on-disk CAs, and a fake
 // attestation-api, returning a Config Run can fully start from.
 func runnableConfig(t *testing.T) Config {
 	t.Helper()
-	pub := freshOperatorPubPEM(t)
-	stageMeasuredOperatorKey(t, pub)
+	stubMeasuredOperatorKey(t, freshOperatorPubPEM(t))
 	dir := t.TempDir()
 	clientCert, clientKey, _ := namedCA(t, dir, "client-ca")
 	serverCert, _, _ := namedCA(t, dir, "server-ca")
-	// The anchor check reads the binding from a verified self-report, so the
-	// attester must serve the register this key implies.
 	return Config{
 		ListenAddr:        "127.0.0.1:0",
-		AttestationAPIURL: attester(t, teetypes.PlatformTDX, tdxBinding(pub)),
+		AttestationAPIURL: stubAttester(t, teetypes.PlatformTDX).URL(),
 		Platform:          "tdx",
 		ClientCACert:      clientCert,
 		ClientCAKey:       clientKey,
@@ -69,8 +58,7 @@ func runnableConfig(t *testing.T) Config {
 }
 
 // TestRunStartupErrors walks Run's fail-closed startup ladder: missing
-// platform, unmeasured key, unreadable CA, non-ECDSA key, and a dead
-// attestation-api at warm-up.
+// platform, unmeasured key, unreadable CA, and a non-ECDSA key.
 func TestRunStartupErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -89,16 +77,16 @@ func TestRunStartupErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "operator key not staged",
+			name: "no measured operator key",
 			cfg: func(t *testing.T) Config {
-				stageOperatorPubkey(t, nil) // staging path exists, file does not
+				stubMeasuredOperatorKeyError(t, launchbinding.ErrNoOperatorKey)
 				return Config{Platform: "tdx"}
 			},
 		},
 		{
 			name: "cluster CA unreadable",
 			cfg: func(t *testing.T) Config {
-				stageMeasuredOperatorKey(t, freshOperatorPubPEM(t))
+				stubMeasuredOperatorKey(t, freshOperatorPubPEM(t))
 				missing := filepath.Join(t.TempDir(), "missing")
 				return Config{Platform: "tdx", ClientCACert: missing, ClientCAKey: missing, ServerCACert: missing}
 			},
@@ -108,15 +96,7 @@ func TestRunStartupErrors(t *testing.T) {
 			cfg: func(t *testing.T) Config {
 				cfg := runnableConfig(t)
 				// Measured (RTMR matches) but unusable for operatorauth.
-				stageMeasuredOperatorKey(t, []byte("measured but not a key"))
-				return cfg
-			},
-		},
-		{
-			name: "attestation-api down at warm-up",
-			cfg: func(t *testing.T) Config {
-				cfg := runnableConfig(t)
-				cfg.AttestationAPIURL = "http://127.0.0.1:1" // nothing listens
+				stubMeasuredOperatorKey(t, []byte("measured but not a key"))
 				return cfg
 			},
 		},

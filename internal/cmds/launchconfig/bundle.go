@@ -190,8 +190,11 @@ func NewBundle(opts BundleOptions) (err error) {
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
-		CDS:                     CDS{Address: opts.CDS.Address, Measurements: string(pin)},
-		RegistryMirrors:         opts.RegistryMirrors,
+		CDS: cmdsutil.CDS{
+			Address:      opts.CDS.Address,
+			Measurements: string(pin),
+		},
+		RegistryMirrors: opts.RegistryMirrors,
 	}
 	if !opts.Router.Empty() {
 		router := opts.Router
@@ -308,7 +311,7 @@ func AddAgent(o AgentOptions) (err error) {
 
 // The CDS the server document names, held to the pin decree's images where
 // the operator named one.
-func agentCDS(dir, decreePath string, served CDS) (CDS, error) {
+func agentCDS(dir, decreePath string, served cmdsutil.CDS) (cmdsutil.CDS, error) {
 	if decreePath == "" {
 		return served, nil
 	}

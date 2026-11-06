@@ -1,3 +1,6 @@
+// Package credrelease issues an operator a short-lived kube client
+// certificate, to a caller who proves possession of the operator private key
+// this guest's launch bound.
 package credrelease
 
 import (
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
@@ -62,13 +66,23 @@ func (cfg Config) roles() Roles {
 	}
 }
 
+// measuredKeyLoader reads the operator public key this guest's launch bound.
+type measuredKeyLoader func(
+	ctx context.Context,
+	attestationAPIURL string,
+	measuredPoliciesFile string,
+) ([]byte, error)
+
+// loadMeasuredOperatorKey is a var so a test can stand in for the
+// launch-binding check.
+var loadMeasuredOperatorKey measuredKeyLoader = launchbinding.LoadMeasuredOperatorKey
+
 // Run loads the measured operator key and cluster CA, then serves the
 // armTLS-protected bootstrap and credential endpoints. It blocks until ctx is done.
 //
 // Startup order matters for the trust story:
-//  1. LoadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
-//     matches the launch binding (TDX RTMR[3] / SNP HOSTDATA). Fails closed
-//     if the key was substituted after boot.
+//  1. loadMeasuredOperatorKey — the operator key this guest's launch bound,
+//     failing closed if the key was substituted after boot.
 //  2. loadClusterCA — the cluster client-CA that signs the operator's cert.
 //  3. serve over an armTLS config so the caller can attest this is the real
 //     guest before trusting the returned cert.
@@ -86,7 +100,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	cfg.Platform = family.String()
 
-	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
+	operatorPub, err := loadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return fmt.Errorf("load measured operator key: %w", err)
 	}

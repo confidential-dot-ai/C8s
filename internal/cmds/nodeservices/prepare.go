@@ -30,7 +30,7 @@ import (
 type FloorInputs struct {
 	// CDS is where the plugin pulls from and the credential role dials; its
 	// pin is published as cds.json.
-	CDS launchconfig.CDS
+	CDS cmdsutil.CDS
 	// ClusterRanges, when given, are the cluster's pod and Service ranges,
 	// the mesh policy's cluster_ranges; none keeps the baked ones.
 	ClusterRanges []string
@@ -75,7 +75,11 @@ func PrepareNode(rootDir string, d *launchconfig.Document) error {
 // mount them read-only.
 func Prepare(rootDir string, in FloorInputs) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	cds, err := in.CDS.Policy()
+	endpoint, err := in.CDS.Parse()
+	if err != nil {
+		return err
+	}
+	cds, err := endpoint.Policy()
 	if err != nil {
 		return err
 	}
@@ -122,10 +126,6 @@ func Prepare(rootDir string, in FloorInputs) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	port, err := in.CDS.Port()
-	if err != nil {
-		return err
-	}
 	pull["url"] = cmdsutil.CDSURL(in.CDS.Address)
 	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
 	pull["cds_pin_floor"] = in.CDS.PinFloor
@@ -137,7 +137,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	if err := appendCredentialRole(policy, port); err != nil {
+	if err := appendCredentialRole(policy, endpoint.Port); err != nil {
 		return err
 	}
 	if err := setClusterRanges(policy, in.ClusterRanges); err != nil {
@@ -470,7 +470,7 @@ func RouterOutputs(r *launchconfig.Router) (map[string][]byte, error) {
 	// The document was validated; check the hostnames again, so no path can
 	// publish an injectable file.
 	for _, name := range router.Hostnames {
-		if err := launchconfig.ValidateHostname(name); err != nil {
+		if err := cmdsutil.ValidateHostname(name); err != nil {
 			return nil, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
@@ -498,7 +498,7 @@ func RouterOutputs(r *launchconfig.Router) (map[string][]byte, error) {
 // returns the files they publish. It writes nothing: Prepare publishes only
 // after every input has been validated.
 func serverOutputs(d *launchconfig.Document) (map[string][]byte, error) {
-	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
+	if err := cmdsutil.ValidateHostname(d.TLSSAN); err != nil {
 		return nil, fmt.Errorf("staged TLS SAN: %w", err)
 	}
 	pub := []byte(d.Server.OperatorPublicKey)

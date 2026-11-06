@@ -13,6 +13,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // decreedCDS holds a node's CDS to the images the applied pin decree names,
@@ -20,40 +21,40 @@ import (
 // set. The bundle's configuration names the cluster and the keys a decree for
 // it is signed with, so another cluster's decree is refused here, not at a
 // node.
-func decreedCDS(dir, decreePath, address string) (CDS, error) {
+func decreedCDS(dir, decreePath, address string) (cmdsutil.CDS, error) {
 	launchFile, err := readBounded(filepath.Join(dir, cdsconfig.ConfigFile), MaxDocumentSize)
 	if err != nil {
-		return CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
 	}
 	cluster, err := cdsconfig.Parse(launchFile)
 	if err != nil {
-		return CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("bundle CDS configuration: %w", err)
 	}
 	object, err := readBounded(decreePath, MaxDocumentSize)
 	if err != nil {
-		return CDS{}, fmt.Errorf("pin decree: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("pin decree: %w", err)
 	}
 	applied, err := cdsdecree.Parse(object)
 	if err != nil {
-		return CDS{}, fmt.Errorf("pin decree: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("pin decree: %w", err)
 	}
 	if err := cdsdecree.Verify(applied, cluster.OperatorKeys.Keys(), cluster.ClusterID); err != nil {
-		return CDS{}, fmt.Errorf("pin decree: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("pin decree: %w", err)
 	}
 	if applied.Decree.CDSPins == nil {
-		return CDS{}, fmt.Errorf("pin decree: a %s decree pins no CDS image", applied.Decree.Kind)
+		return cmdsutil.CDS{}, fmt.Errorf("pin decree: a %s decree pins no CDS image", applied.Decree.Kind)
 	}
 	pins, err := applied.Decree.CDSPins.WithLaunchFile(launchFile)
 	if err != nil {
-		return CDS{}, fmt.Errorf("pin decree: %w", err)
+		return cmdsutil.CDS{}, fmt.Errorf("pin decree: %w", err)
 	}
 	document, err := refvalues.Format(pins)
 	if err != nil {
-		return CDS{}, err
+		return cmdsutil.CDS{}, err
 	}
-	return CDS{
+	return cmdsutil.CDS{
 		Address:      address,
 		Measurements: string(document),
-		PinFloor:     applied.Decree.AppliesAt(),
+		PinFloor:     cmdsutil.ClusterVersion(applied.Decree.AppliesAt()),
 	}, nil
 }

@@ -1,11 +1,7 @@
-// Package credrelease implements the in-guest credential-release service (B4
-// of the operator-key design). It issues an operator a short-lived kube client
-// certificate, but only to a caller who proves possession of the operator
-// private key whose public half was bound into the CVM's launch identity at
-// launch — giving an external operator
-// console-free, non-TOFU admin access with no pre-shared cluster secret and
-// no trust in the untrusted host.
-package credrelease
+// Package launchbinding reads what a guest's launch committed to: the operator
+// public key the initrd staged and the launch file the launcher bound, each
+// compared against the binding the guest's verified self-report carries.
+package launchbinding
 
 import (
 	"context"

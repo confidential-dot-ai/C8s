@@ -73,12 +73,12 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 	if staged.CDS.Address != "cds.example.org:8443" {
 		t.Fatalf("staged CDS endpoint = %s", staged.CDS.Address)
 	}
-	port, err := staged.CDS.Port()
+	endpoint, err := staged.CDS.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if port != 8443 {
-		t.Fatalf("staged CDS port = %d", port)
+	if endpoint.Port != 8443 {
+		t.Fatalf("staged CDS port = %d", endpoint.Port)
 	}
 	cds := stagedCDSPolicy(t, staged)
 	if cds.Family != teetypes.FamilySNP || len(cds.Images) != 2 {
@@ -102,15 +102,11 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 // it for the clients that verify CDS.
 func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 	t.Helper()
-	data, err := d.CDS.Policy()
+	endpoint, err := d.CDS.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := refvalues.Parse(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pins
+	return endpoint.Pins
 }
 
 // The floor travels in the signed document: a node launched after an image

@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -828,7 +829,10 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				Image:         bootstrapImage(t, pins),
 				Server:        launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
 				TLSSAN:        "c8s.local",
-				CDS:           launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)},
+				CDS: cmdsutil.CDS{
+					Address:      "192.0.2.50:8443",
+					Measurements: bootstrapCDSPin(t),
+				},
 			}
 			if err := nodeservices.PrepareNode(root, doc); err != nil {
 				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)

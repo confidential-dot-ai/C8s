@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
@@ -86,13 +86,12 @@ func stageVerified(cfg Config, v *Verified) error {
 	if doc.Role == Server && doc.Server.Address == "" {
 		address := doc.Node.IP
 		if address == "" {
-			var err error
-			address, err = PrimaryIPv4()
+			addr, err := cmdsutil.PrimaryIPv4()
 			if err != nil {
 				return fmt.Errorf("resolve server address: %w", err)
 			}
-		}
-		if err := ValidateIPv4(address, true); err != nil {
+			address = addr.String()
+		} else if err := cmdsutil.ValidateRoutableIPv4(address); err != nil {
 			return fmt.Errorf("resolved server address: %w", err)
 		}
 		doc.Server.Address = address
@@ -186,17 +185,4 @@ func rke2Fragment(doc *Document) roleFragment {
 		out.Server = "https://" + doc.Server.Address + ":9345"
 	}
 	return out
-}
-
-// chooseHostInterface is a package var so tests can fake the host's routes.
-var chooseHostInterface = utilnet.ChooseHostInterface
-
-// PrimaryIPv4 uses Kubernetes' route-aware host-address selection, so the
-// address published to agents matches the node's own RKE2 registration.
-func PrimaryIPv4() (string, error) {
-	ip, err := chooseHostInterface()
-	if err != nil {
-		return "", err
-	}
-	return ip.String(), nil
 }

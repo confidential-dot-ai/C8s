@@ -2,83 +2,11 @@ package launchconfig
 
 import (
 	"fmt"
-	"net/netip"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
-
-// CDS is the confidential data service a node's clients reach: where it
-// listens and the measurements that authenticate it. It runs on a
-// confidential VM of its own, so its TEE family is that VM's, not the
-// family of the node reading the document.
-type CDS struct {
-	// Address is the <host>:<port> this cluster's CDS serves on, the host a
-	// DNS name its clients resolve or the IPv4 address they dial as it
-	// stands. A pod ruleset admits that port outside the cluster for this
-	// cluster's credential clients.
-	Address string `yaml:"address" json:"address"`
-	// Measurements is one measurements JSON document, as `launch-config new`
-	// and `c8s cds config new` write it: every entry binds the CDS image to
-	// its launch file.
-	Measurements string `yaml:"measurements" json:"measurements"`
-	// PinFloor is the lowest cluster version this node takes a CDS pin decree
-	// at, so a node launched today never follows a decree the operator signed
-	// before the set this document carries.
-	PinFloor uint64 `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
-}
-
-// Port is the port this cluster's CDS serves on, which is what a pod
-// ruleset admits outside the cluster for its credential clients. A document
-// naming its CDS by address holds that address to one a node can dial.
-func (c CDS) Port() (uint16, error) {
-	host, port, err := cmdsutil.SplitCDSAddress(c.Address)
-	if err != nil {
-		return 0, fmt.Errorf("cds.address %w", err)
-	}
-	if address, err := netip.ParseAddr(host); err == nil {
-		if err := ValidateRoutableIPv4(address); err != nil {
-			return 0, fmt.Errorf("cds.address %q: %w", host, err)
-		}
-	}
-	return port, nil
-}
-
-// Policy is the measurements document a node's clients verify this
-// cluster's CDS with.
-func (c CDS) Policy() ([]byte, error) {
-	pins, err := refvalues.Parse([]byte(c.Measurements))
-	if err != nil {
-		return nil, err
-	}
-	return refvalues.Format(pins)
-}
-
-// validate requires the endpoint this cluster's clients dial and a pin that
-// is an identity for one VM: every entry bound to the exact launch file it
-// boots.
-func (c CDS) validate() error {
-	if _, err := c.Port(); err != nil {
-		return err
-	}
-	_, err := c.LaunchFile()
-	return err
-}
-
-// LaunchFile is the CDS configuration every entry of the pin binds.
-func (c CDS) LaunchFile() ([]byte, error) {
-	pins, err := refvalues.Parse([]byte(c.Measurements))
-	if err != nil {
-		return nil, fmt.Errorf("cds.measurements: %w", err)
-	}
-	file, err := cmdsutil.CDSLaunchFile(pins)
-	if err != nil {
-		return nil, fmt.Errorf("cds.measurements: the pin %w", err)
-	}
-	return file, nil
-}
 
 // The cluster's pod and service ranges, which a node subnet may not reach
 // into.

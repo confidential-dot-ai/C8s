@@ -11,10 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -22,9 +23,6 @@ import (
 // stagedLaunchFile is where the measured initrd stages the launch file,
 // read-only, once its digest matched the launch's init data.
 const stagedLaunchFile = "/run/confai/operator-pubkey"
-
-// primaryIPv4 is a package var so tests can fake the host's routes.
-var primaryIPv4 = launchconfig.PrimaryIPv4
 
 // workerImageMarker is the file a worker image bakes; no other image runs
 // stage.
@@ -111,8 +109,8 @@ func stageDocument(ctx context.Context, rootDir, documentPath, tokenPath, attest
 	if err != nil {
 		return err
 	}
-	err = credrelease.VerifyLaunchBinding(ctx, attestationAPIURL, filepath.Join(rootDir, armtls.NodeJournal), data)
-	if errors.Is(err, credrelease.ErrLaunchFileNotBound) {
+	err = launchbinding.VerifyLaunchBinding(ctx, attestationAPIURL, filepath.Join(rootDir, armtls.NodeJournal), data)
+	if errors.Is(err, launchbinding.ErrLaunchFileNotBound) {
 		return fmt.Errorf("--document %s is not the document this worker launched with: %w", documentPath, err)
 	}
 	if err != nil {
@@ -136,10 +134,11 @@ func writeOutputs(rootDir string, doc *Document, token string) error {
 	if err != nil {
 		return err
 	}
-	address, err := primaryIPv4()
+	primary, err := cmdsutil.PrimaryIPv4()
 	if err != nil {
 		return fmt.Errorf("resolve node address: %w", err)
 	}
+	address := primary.String()
 	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address)
 	if err != nil {
 		return err

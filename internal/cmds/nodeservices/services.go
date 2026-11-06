@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
@@ -32,9 +33,6 @@ func validateRole(d *launchconfig.Document) error {
 	return nil
 }
 
-// primaryIPv4 is a package var so tests can fake the host's routes.
-var primaryIPv4 = launchconfig.PrimaryIPv4
-
 // PublishNodeIP selects the same address as RKE2, including an explicit
 // authenticated node.ip. RootDir only rebases the fixed output for tests.
 func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
@@ -43,10 +41,11 @@ func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 	}
 	address := d.Node.IP
 	if address == "" {
-		var err error
-		if address, err = primaryIPv4(); err != nil {
+		addr, err := cmdsutil.PrimaryIPv4()
+		if err != nil {
 			return fmt.Errorf("resolve node address: %w", err)
 		}
+		address = addr.String()
 	}
 	return PublishNodeAddress(rootDir, address)
 }
@@ -63,7 +62,7 @@ func ClearNodeIP(rootDir string) error {
 // PublishNodeAddress publishes address, a routable IPv4, as the address the
 // node's NRI inventory advertises.
 func PublishNodeAddress(rootDir, address string) error {
-	if err := launchconfig.ValidateIPv4(address, true); err != nil {
+	if err := cmdsutil.ValidateRoutableIPv4(address); err != nil {
 		return fmt.Errorf("node inventory requires a routable IPv4 address")
 	}
 	dst := filepath.Join(rootDir, nodeIPPath)

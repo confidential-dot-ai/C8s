@@ -202,12 +202,8 @@ func TestRunServesAuthenticatedBootstrap(t *testing.T) {
 	for _, platform := range []teetypes.PlatformType{teetypes.PlatformTDX, teetypes.PlatformSNP} {
 		t.Run(string(platform), func(t *testing.T) {
 			signer, pub := newOperatorAuth(t)
-			stageMeasuredOperatorKey(t, pub)
-			binding := tdxBinding(pub)
-			if platform == teetypes.PlatformSNP {
-				binding = snpBinding(pub)
-			}
-			stub := stubAttester(t, selfReport{platform: platform, binding: binding})
+			stubMeasuredOperatorKey(t, pub)
+			stub := stubAttester(t, platform)
 			dir := t.TempDir()
 			clientCert, clientKey, _ := namedCA(t, dir, "client-ca")
 			serverCert, _, _ := namedCA(t, dir, "server-ca")
@@ -307,11 +303,15 @@ func TestAttestCarriesMeasuredPolicies(t *testing.T) {
 	}{
 		{name: "journal", journal: p + "\n", want: []string{p}},
 		{name: "no journal"},
-		{name: "journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1)},
+		{name: "journal over the cap", journal: journalOfDistinctDigests(armtls.MaxRuntimeExtensions + 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, signer := newAttestHandler(t)
-			h.measuredPolicies = armtls.NewJournal(writeJournal(t, tc.journal))
+			journal := missingJournalPath(t)
+			if tc.journal != "" {
+				journal = writeJournal(t, tc.journal)
+			}
+			h.measuredPolicies = armtls.NewJournal(journal)
 			h.attester = evidenceGeneratorFunc(func(context.Context, []byte) (teetypes.AttestationEvidence, error) {
 				return teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{}`)}, nil
 			})

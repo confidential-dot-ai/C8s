@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -111,7 +112,7 @@ func oneNodeDocument(t *testing.T, role launchconfig.Role) launchconfig.Document
 			IP:   "10.0.0.2",
 		},
 		RKE2: launchconfig.RKE2{AgentToken: agentJoinToken},
-		CDS: launchconfig.CDS{
+		CDS: cmdsutil.CDS{
 			Address:      "192.0.2.50:8443",
 			Measurements: cdsMeasurements(t),
 		},
