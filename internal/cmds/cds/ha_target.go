@@ -94,11 +94,11 @@ func holdsAVote(reported cdsha.Status) bool {
 }
 
 func (r replica) answer(ctx context.Context, path string, limit int64) ([]byte, netip.AddrPort, error) {
-	client, address, err := r.dial(ctx)
+	client, address, base, err := r.dial(ctx)
 	if err != nil {
 		return nil, netip.AddrPort{}, err
 	}
-	body, err := replicaAnswer(ctx, client, address, path, limit)
+	body, err := replicaAnswer(ctx, client, base, path, limit)
 	if err != nil {
 		return nil, netip.AddrPort{}, err
 	}
@@ -106,14 +106,19 @@ func (r replica) answer(ctx context.Context, path string, limit int64) ([]byte, 
 }
 
 // dial resolves a replica to the one address it answers at and builds a client
-// that has verified the endpoint is a CDS of the pinned launch file.
-func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, error) {
+// that has verified the endpoint is a CDS of the pinned launch file. base is
+// the URL every request to the replica takes.
+func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, string, error) {
 	address, err := resolveReplica(ctx, r.address)
 	if err != nil {
-		return nil, netip.AddrPort{}, err
+		return nil, netip.AddrPort{}, "", err
+	}
+	base, err := replicaBase(r.address, address)
+	if err != nil {
+		return nil, netip.AddrPort{}, "", err
 	}
 	options := cdsconn.Options{
-		URL:                "https://" + address.String(),
+		URL:                base,
 		MeasurementsConfig: r.cdsPin,
 		Timeout:            replicaTimeout,
 		Verifier:           r.verifier,
@@ -121,9 +126,24 @@ func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, error)
 	}
 	client, err := options.HTTPClient(ctx)
 	if err != nil {
-		return nil, netip.AddrPort{}, fmt.Errorf("%s: %w", r.address, err)
+		return nil, netip.AddrPort{}, "", fmt.Errorf("%s: %w", r.address, err)
 	}
-	return client, address, nil
+	return client, address, base, nil
+}
+
+// replicaBase is the URL a replica is reached at. A DNS name stays in it, so
+// TLS carries the name as SNI and a passthrough front door shared by several
+// replicas routes the connection to this one. armTLS still authenticates the
+// replica by its evidence, never by the name.
+func replicaBase(entry string, address netip.AddrPort) (string, error) {
+	host, port, err := splitReplicaAddress(entry)
+	if err != nil {
+		return "", err
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "https://" + address.String(), nil
+	}
+	return "https://" + net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
 // resolveReplica is the address one replica answers at. A decree names the
@@ -186,22 +206,27 @@ func (r replica) postDecree(ctx context.Context, signed cdsdecree.Signed) (cdsha
 	if err != nil {
 		return cdsha.Delivered{}, "", err
 	}
-	client, address, err := r.dial(ctx)
+	client, address, base, err := r.dial(ctx)
 	if err != nil {
 		return cdsha.Delivered{}, "", err
 	}
-	delivered, err := postedDecree(ctx, client, address, object)
+	delivered, err := postedDecree(ctx, client, base, object)
 	if err != nil {
 		return cdsha.Delivered{}, "", fmt.Errorf("%s: %w", address, err)
 	}
 	return delivered, address.String(), nil
 }
 
-func postedDecree(ctx context.Context, client *http.Client, address netip.AddrPort, object []byte) (cdsha.Delivered, error) {
+func postedDecree(
+	ctx context.Context,
+	client *http.Client,
+	base string,
+	object []byte,
+) (cdsha.Delivered, error) {
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://"+address.String()+decreesPath,
+		base+decreesPath,
 		bytes.NewReader(object),
 	)
 	if err != nil {
@@ -227,8 +252,14 @@ func postedDecree(ctx context.Context, client *http.Client, address netip.AddrPo
 	return delivered, nil
 }
 
-func replicaAnswer(ctx context.Context, client *http.Client, address netip.AddrPort, path string, limit int64) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+address.String()+path, nil)
+func replicaAnswer(
+	ctx context.Context,
+	client *http.Client,
+	base string,
+	path string,
+	limit int64,
+) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return nil, err
 	}

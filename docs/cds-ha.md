@@ -71,6 +71,13 @@ alarm when two members answer at one address.
 The ports are fixed. Clients and the operator reach a replica on 8443, and the
 replicas reach each other on 8444.
 
+The `ha` commands reach a name that resolves to one address by that name, so
+the TLS handshake carries it as SNI. Replicas can then sit behind one TLS
+passthrough front door that routes each name to its replica, and the operator
+still tells them apart. armTLS authenticates a replica by its evidence, never
+by the name. A name that resolves to several addresses is reached at each of
+them, as before.
+
 A node names its cluster's CDS by one `cds.address`. Several replicas behind
 that one name, or a load balancer in front of them, is what makes a client's
 request survive the loss of a replica: ordinary DNS resolution and the
