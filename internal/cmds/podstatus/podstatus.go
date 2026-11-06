@@ -204,7 +204,9 @@ type ServeConfig struct {
 }
 
 // Serve confirms the measured launch key, reads the signed pod UID and
-// serves until ctx is done.
+// serves until ctx is done. Every failure to confirm the key exits, a register
+// that replays no prefix of the journal included: a client that verifies the
+// guest then sees a connection failure rather than a failed verification.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -219,8 +221,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if doc.Role != launchconfig.Pod {
 		return fmt.Errorf("staged launch configuration is not a pod")
 	}
-	if err := checkMeasuredLaunchKey(ctx, cfg); err != nil {
-		return err
+	if _, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath); err != nil {
+		return fmt.Errorf("load measured launch key: %w", err)
 	}
 	api := attestclient.NewClient("")
 	pods := kubeletPods(cfg.KubeletURL, cfg.KubeletCert)
@@ -245,30 +247,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Logger:               slog.Default(),
 		MeasuredPoliciesFile: cfg.JournalPath,
 	})
-}
-
-// checkMeasuredLaunchKey fails closed when the staged pod key cannot be
-// confirmed as the launch-bound one. The register holds the key's seed plus
-// whatever this guest's own journal lists, so a restart after containers were
-// measured still passes.
-//
-// A register that replays no prefix of the journal is the one failure the
-// service runs through: the plugin admits nothing for the rest of the boot
-// and the assignment route refuses every request, both without this check,
-// while a client that verifies the guest proves the divergence from its
-// certificate or fresh quote. A guest that exited instead would look to that
-// client like one still booting.
-func checkMeasuredLaunchKey(ctx context.Context, cfg ServeConfig) error {
-	_, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, credrelease.ErrRegisterDoesNotReplay):
-		slog.Error("measured history does not replay the register; serving so that verifying clients observe it", "error", err)
-		return nil
-	default:
-		return fmt.Errorf("load measured launch key: %w", err)
-	}
 }
 
 // kubeletPods reads the loopback kubelet. Its serving certificate is
