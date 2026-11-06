@@ -235,6 +235,37 @@ func (s *threeHostState) phase(q protocol.Request, out map[string]any) {
 	switch q.Operation {
 	case "init":
 		out["initialized"] = true
+	case "startup":
+		// Agent armTLS is independent of CDS startup. Check the actual guest
+		// route and CDS's attested status before preparing further disks.
+		const proxy = "collateral.cds-three-host-egress.svc.cluster.local"
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		addresses, err := net.DefaultResolver.LookupHost(ctx, proxy)
+		out["collateral_dns_answers"] = len(addresses)
+		if err != nil {
+			out["collateral_dns_error"] = err.Error()
+			t.Fatal("guest cannot resolve owned collateral service")
+		}
+		transport := &http.Transport{}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		req, err := http.NewRequestWithContext(ctx, "GET", "http://"+proxy+":3128/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			out["collateral_health_error"] = err.Error()
+			t.Fatal("guest cannot reach owned collateral service")
+		}
+		response.Body.Close()
+		out["collateral_health_status"] = response.StatusCode
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatal("owned collateral service is not healthy")
+		}
+		c.awaitStatus(target)
+		out["native_cds_status_verified"] = true
 	case "status":
 		statuses := make([]any, 0, 3)
 		for _, r := range c.replicas {

@@ -25,7 +25,7 @@ func (q Request) Valid() bool {
 	switch q.Operation {
 	case "init":
 		return len(q.OperatorKey) > 0 && len(q.OperatorKey) < 4096 && len(q.Provision) < 8192
-	case "status", "provision", "seed", "attach", "burst", "prepare", "refuse", "survive", "heal", "revoke", "revoked", "overlap", "admit", "retire", "roll-safe":
+	case "startup", "status", "provision", "seed", "attach", "burst", "prepare", "refuse", "survive", "heal", "revoke", "revoked", "overlap", "admit", "retire", "roll-safe":
 		return len(q.OperatorKey) == 0 && len(q.Provision) == 0
 	}
 	return false

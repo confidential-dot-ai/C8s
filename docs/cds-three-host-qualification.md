@@ -73,3 +73,9 @@ attempts are bounded to 30 seconds within the three-minute startup budget.
 The first guest's startup is checked before the remaining disks are prepared.
 Throttled Kubernetes reads use at most four attempts with bounded backoff and
 respect `Retry-After`; writes and other failures are not automatically retried.
+
+Agent attestation alone is not CDS readiness. A separate fixed startup phase
+checks guest DNS, reachability of the owned collateral proxy, and the actual
+CDS service's attested status before more disks are prepared. The image explicitly
+routes `cluster.local` to DHCP-provided DNS. Transfers use 8 MiB frames, at most
+three fresh-path attempts with backoff, and retain failed receiver byte counts.

@@ -336,6 +336,7 @@ class Run(metadata.Run):
                     # time preparing the other five disks. Faults still wait
                     # until all three guests and both images are ready.
                     self.boot_guest(vm, slot, 'a'); self.phase(slot, 'init', slot, retry_start=True)
+                    self.phase(slot, 'startup', slot)
                     self.phase(slot, 'provision', slot)
         self.phase(0, 'seed'); self.phase(0, 'roll-safe')
         for slot in [1, 2]: self.phase(slot, 'attach', slot)
@@ -378,6 +379,7 @@ class Run(metadata.Run):
             self.phase(observer, 'prepare', slot); self.phase(observer, 'roll-safe', slot)
             old = self.guests[slot]; self.tunnels[slot][0].terminate(); self.remove(old)
             self.boot_guest(pending[slot, 'b'], slot, 'b'); self.phase(slot, 'init', slot, retry_start=True)
+            self.phase(slot, 'startup', slot)
             self.phase(observer, 'provision', slot)
             # Current-state replicas recover after attested provisioning; only
             # the Raft control has membership admission.

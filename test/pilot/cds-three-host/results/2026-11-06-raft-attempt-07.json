@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 7,
+  "stage": "disk-preparation-and-startup",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 1,
+  "completed_image_uploads": 2,
+  "native_tdx_agent_initialization_passed": true,
+  "native_cds_readiness_proved": false,
+  "findings": [
+    "The first guest accepted a signed test-agent request after native TDX image and launch verification.",
+    "A chunk on the third disk upload did not publish completion within either bounded attempt.",
+    "Guest logs showed that CDS still refused startup because Intel collateral could not be fetched. Controller-side proxy reachability and agent attestation did not prove the guest's CDS service was ready."
+  ],
+  "follow_up": "Check guest DNS, proxy reachability and native CDS status before further uploads; explicitly route cluster.local to DNS; retain failed transfer byte counts and use smaller frames with bounded backoff.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 23,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false,
+  "runner_commit": "b1fd589befe1c48aa3a3437ce13df855a6c092fa"
+}

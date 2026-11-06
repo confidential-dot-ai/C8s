@@ -7,7 +7,11 @@ import subprocess
 import tempfile
 import time
 
-CHUNK = 16 * 1024 * 1024
+CHUNK = 8 * 1024 * 1024
+
+
+class ReceiverFailed(RuntimeError):
+    pass
 
 
 def chunk_receiver(size, digest, path, token):
@@ -42,6 +46,8 @@ def receive(run, name, pod, argv, marker, token, data, seconds):
             deadline = time.monotonic()+seconds
             while time.monotonic() < deadline:
                 run.live()
+                if process.poll() not in (None, 0):
+                    raise ReceiverFailed('framed receiver exited unsuccessfully; inspect private stderr')
                 try:
                     value = run.command(name+'-completion', run.kubectl('exec', pod, '--', 'sh', '-c',
                         'if [ -f "$1" ]; then cat "$1"; fi', 'completion', marker), timeout=15)
@@ -54,6 +60,16 @@ def receive(run, name, pod, argv, marker, token, data, seconds):
                     raise ValueError('unexpected image transfer token')
                 time.sleep(2)
             raise TimeoutError('framed image receiver completion timed out')
+        except (TimeoutError, ReceiverFailed):
+            # Retain the observed byte count without reading image contents.
+            # A delayed receiver can only touch this attempt's unique path.
+            if data is not None and marker.endswith('.complete'):
+                try:
+                    run.command(name+'-progress', run.kubectl('exec', pod, '--', 'sh', '-c',
+                        'if [ -f "$1" ]; then wc -c < "$1"; fi', 'progress', marker.removesuffix('.complete')), timeout=10)
+                except (RuntimeError, subprocess.TimeoutExpired):
+                    pass
+            raise
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -72,7 +88,7 @@ def upload(run, pod, archive, destination):
     with archive.open('rb') as source:
         while data := source.read(CHUNK):
             digest.update(data)
-            for attempt in range(2):
+            for attempt in range(3):
                 run.live()
                 if time.monotonic() >= deadline:
                     raise TimeoutError('bounded image transfer deadline reached')
@@ -84,9 +100,10 @@ def upload(run, pod, archive, destination):
                     try:
                         receive(run, name, pod, chunk_receiver(len(data), hashlib.sha256(data).hexdigest(), path, token),
                             path+'.complete', token, framed, min(45, deadline-time.monotonic()))
-                    except TimeoutError:
-                        if attempt: raise
+                    except (TimeoutError, ReceiverFailed):
+                        if attempt == 2: raise
                         run.event('image-chunk-retry', chunk=len(parts))
+                        time.sleep(2**(attempt+1))
                         continue
                 parts.append(path)
                 break

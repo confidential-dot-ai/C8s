@@ -1,0 +1,12 @@
+[Match]
+Type=ether
+Kind=!dummy
+
+[Network]
+DHCP=yes
+# systemd-resolved treats .local specially unless explicitly routed to DNS.
+# These owned guests use the cluster's service names for CDS and collateral.
+Domains=~cluster.local
+
+[DHCPv4]
+UseDomains=true
