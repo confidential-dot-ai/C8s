@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "direct-state",
+  "attempt": 2,
+  "stage": "first-image-population",
+  "disposition": "stopped_before_guest_boot_for_independent_network_regression",
+  "stop_time": "2026-11-06T14:07:04.233416+00:00",
+  "runner_commit": "f1f6102af7d004a6b1eb79975bcce1828e4e31ad",
+  "image_build": "three-host-image-06",
+  "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+  "runner_exit_code": -2,
+  "three_guest_cds_passed": false,
+  "completed_verified_phases": 0,
+  "native_cds_startup_checks_passed": 0,
+  "faults_injected": false,
+  "initial_metadata_quorum_ready": true,
+  "finding": "Stopped with SIGTERM to the exact owned runner after independent existing OVN probes showed continuing severe loss on the worker pair. The normal signal handler retained diagnostics and ran ordinary cleanup. This is not a second CDS workload failure or a pass.",
+  "network_evidence": "2026-11-06-worker-network-observations.json",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 38,
+    "resource_paths_checked": 42,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

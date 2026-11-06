@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "source": "existing kube-ovn-pinger logs, read-only",
+  "source_worker": "poc115-node",
+  "destination_worker": "poc115-node-2",
+  "first_observed_pod_loss_utc": "13:43:53",
+  "observations": {
+    "raft_baseline:node": {
+      "first_observation_utc": "12:38:00",
+      "last_observation_utc": "13:22:53",
+      "samples": 232,
+      "probes_sent": 696,
+      "probes_lost": 0,
+      "maximum_reported_average_rtt_ms": 1.57
+    },
+    "raft_baseline:pod": {
+      "first_observation_utc": "12:38:08",
+      "last_observation_utc": "13:22:49",
+      "samples": 231,
+      "probes_sent": 693,
+      "probes_lost": 0,
+      "maximum_reported_average_rtt_ms": 1.73
+    },
+    "first_direct_failure:pod": {
+      "first_observation_utc": "13:43:06",
+      "last_observation_utc": "13:48:44",
+      "samples": 18,
+      "probes_sent": 54,
+      "probes_lost": 41,
+      "maximum_reported_average_rtt_ms": 19.65
+    },
+    "first_direct_failure:node": {
+      "first_observation_utc": "13:43:09",
+      "last_observation_utc": "13:48:53",
+      "samples": 18,
+      "probes_sent": 54,
+      "probes_lost": 3,
+      "maximum_reported_average_rtt_ms": 17045.33
+    },
+    "before_stopping_second_direct_run:node": {
+      "first_observation_utc": "14:00:15",
+      "last_observation_utc": "14:05:10",
+      "samples": 13,
+      "probes_sent": 39,
+      "probes_lost": 0,
+      "maximum_reported_average_rtt_ms": 24987.64
+    },
+    "before_stopping_second_direct_run:pod": {
+      "first_observation_utc": "14:00:23",
+      "last_observation_utc": "14:05:19",
+      "samples": 13,
+      "probes_sent": 39,
+      "probes_lost": 38,
+      "maximum_reported_average_rtt_ms": 38.55
+    }
+  },
+  "reciprocal_loss_observed": true,
+  "node_ready_and_pressure_conditions_normal_after_first_failure": true,
+  "captured_metadata_container_restarts": 0,
+  "read_only_queue_snapshot": {
+    "both_workers": [
+      "mq",
+      "noqueue",
+      "pfifo_fast"
+    ],
+    "nonzero_backlog_lines": 0,
+    "nonzero_drop_lines": 0
+  },
+  "peer_node_routes_use_physical_interface": "ens121np0 via each worker gateway",
+  "root_cause_established": false,
+  "shared_production_changes": false,
+  "limits": [
+    "Existing ICMP probes use different pods and may use different subnets/paths from CDS.",
+    "Concurrent etcd peer timeouts and certificate-issuance timeout overlap the network regression; causation is not fully established.",
+    "Node readiness, a common metadata leader, and TCP readiness alone did not establish suitability for this comparison.",
+    "No host, interface, queue, route, OVN or shared policy setting was changed."
+  ],
+  "resumption": "Restore stable worker-to-worker connectivity, repeat metadata health qualification, then run the unchanged direct-state acceptance before recommending a replacement.",
+  "post_cleanup_observations": {
+    "independent_cleanup_audit_time": "2026-11-06T14:09:52.833299+00:00",
+    "observation_start": "2026-11-06T14:13:34.845760+00:00",
+    "observation_end": "2026-11-06T14:16:25.281429+00:00",
+    "observations": {
+      "node": {
+        "samples": 7,
+        "sent": 21,
+        "lost": 3,
+        "max_avg_rtt_ms": 28938.93
+      },
+      "pod": {
+        "samples": 6,
+        "sent": 18,
+        "lost": 15,
+        "max_avg_rtt_ms": 222.88
+      }
+    }
+  },
+  "regression_persisted_after_all_test_resources_removed": true
+}

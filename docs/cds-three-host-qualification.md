@@ -45,7 +45,8 @@ independent read-only absence audit. CI and shared production releases are not
 used. The [completed Raft baseline](../test/pilot/cds-three-host/results/2026-11-06-raft-three-host.json)
 passed all 60 phases on three distinct TDX workers, including both faults and
 all three image replacements. The independent cleanup audit confirmed all 47
-resource paths absent. The direct-state comparison remains pending.
+resource paths absent. The direct-state comparison is blocked by the worker
+network regression described below; no direct-state pass is claimed.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits
@@ -215,3 +216,29 @@ burst was reached. All 51 resources were removed and 60 paths independently
 confirmed absent. Failure diagnostics now reconnect existing owned consoles and
 capture bounded, fixed CDS status reads and metadata member statuses before
 cleanup. These probes cannot replay a failed workload or change its result.
+
+Read-only [network observations](../test/pilot/cds-three-host/results/2026-11-06-worker-network-observations.json)
+found a new regression on the `poc115-node` / `poc115-node-2` pair. The existing
+OVN pinger recorded no losses in 693 pod probes during the successful Raft
+window, then 41 losses in 54 probes around the direct-state failure and 38 in
+39 recent probes. Reciprocal probes also lost packets. Node probes reported
+individual sample averages exceeding 17 seconds. Both nodes still reported
+Ready; their inspected queue counters had no drops or backlog. Peer-node routes
+used the physical interfaces and their gateways. These observations establish
+a network regression overlapping the failure, not its complete root cause.
+ICMP probes and CDS use different workloads and may use different subnet paths.
+
+[Direct-state attempt 2](../test/pilot/cds-three-host/results/2026-11-06-direct-attempt-02.json)
+was stopped before guest boot or fault injection after that regression was
+confirmed. Its metadata quorum and collateral preflight had passed, showing why
+those checks alone were insufficient. The ordinary cleanup removed all 38 owned
+resources; the independent audit confirmed 42 paths absent. No host networking,
+OVN configuration, route, queue or shared policy was changed. The next cloud
+qualification requires stable worker connectivity, a repeat metadata check and
+the same direct-state workload and deadlines. A production replacement or
+performance comparison is not supported by these incomplete results.
+
+The loss persisted after cleanup: the independent audit finished at 14:09:52 UTC;
+existing probes between 14:13:34 and 14:16:25 lost 15 of 18 pod probes and 3 of
+21 node probes on the pair. This is an active infrastructure blocker, not a
+reason to increase CDS timeouts or mark the direct-state qualification passed.

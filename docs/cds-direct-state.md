@@ -78,8 +78,11 @@ journaling and FULL synchronous durability. Its SQLite journal is not a CDS
 application replay protocol. It is **not** replicated metadata HA. Later work
 qualified the bounded native
 [SNP](cds-direct-native-recovery.md) and [TDX](cds-tdx-current-recovery.md)
-recovery paths for this backend; metadata HA and three-host CDS availability
-remain unqualified.
+recovery paths for this backend. The dedicated
+[metadata service HA qualification](cds-ha-metadata.md) has since passed.
+The [three-host CDS comparison](cds-three-host-qualification.md) has a complete
+Raft baseline; direct-state CDS remains unqualified after an issuance timeout
+overlapping an independently observed worker network regression.
 
 Known prototype limits: binding updates serialize; path creation shares a quota
 counter; the current policy image is reconstructed in private SQLite for each
