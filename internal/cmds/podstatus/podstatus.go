@@ -113,16 +113,24 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
 	uid := h.UID
+	// The UID check is free and the kubelet read is not (up to 4 MiB, 5 s):
+	// an unassigned guest answers 404 without the round trip.
+	if uid == "" {
+		http.Error(w, "Pod is not assigned", http.StatusNotFound)
+		return
+	}
 	pods, err := h.Pods(r.Context())
 	if err != nil {
 		http.Error(w, "kubelet unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if uid == "" {
-		http.Error(w, "Pod is not assigned", http.StatusNotFound)
+	pod, err := findPod(pods, uid)
+	if errors.Is(err, errKubeletBody) {
+		// A body that does not parse is the kubelet's fault, not a pod that
+		// is still starting; a poller must not wait on it.
+		http.Error(w, "kubelet reply unreadable", http.StatusBadGateway)
 		return
 	}
-	pod, err := findPod(pods, uid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -179,10 +187,13 @@ func writeJSON(w http.ResponseWriter, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// errKubeletBody marks a kubelet reply that does not decode as a pod list.
+var errKubeletBody = errors.New("decode kubelet pods")
+
 func findPod(body []byte, uid string) (*corev1.Pod, error) {
 	var list corev1.PodList
 	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("decode kubelet pods: %w", err)
+		return nil, fmt.Errorf("%w: %w", errKubeletBody, err)
 	}
 	for i := range list.Items {
 		if string(list.Items[i].UID) == uid {

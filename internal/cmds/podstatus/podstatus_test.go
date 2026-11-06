@@ -57,9 +57,19 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown uid: %d", rec.Code)
 	}
+	h.Pods = func(context.Context) ([]byte, error) { return []byte(pods[:len(pods)/2]), nil }
+	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusBadGateway || strings.Contains(rec.Body.String(), "unexpected") {
+		t.Fatalf("truncated kubelet body: %d %s", rec.Code, rec.Body)
+	}
 	h.Pods = func(context.Context) ([]byte, error) { return nil, errors.New("down") }
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("kubelet down: %d", rec.Code)
+	}
+	calls := 0
+	h.UID = ""
+	h.Pods = func(context.Context) ([]byte, error) { calls++; return []byte(pods), nil }
+	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusNotFound || calls != 0 {
+		t.Fatalf("unassigned: %d after %d kubelet reads", rec.Code, calls)
 	}
 	if rec := serve(h, http.MethodPost, PodPath); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST: %d", rec.Code)
