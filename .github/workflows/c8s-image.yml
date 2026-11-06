@@ -747,14 +747,14 @@ jobs:
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          # A c8s_ref build repoints only its own commit-scoped tags; the
-          # floating tags keep tracking main builds, and only move when the
-          # rootfs changed. A beta build never moves them.
-          CDI_TAGS="${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
-          ORAS_TAGS="${VARIANT},${VARIANT}-${SHORT_SHA}"
-          if [ -n "$C8S_REF_INPUT" ] || [ "$ROOTFS_UNCHANGED" = true ] || [ "$HEAD_BRANCH" = beta ]; then
-            CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
-            ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
+          CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
+          ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
+          # Only automatic main publication advances the floating tags, as the
+          # CDS image's push does, and only when the rootfs changed. Manual,
+          # c8s_ref and beta builds retain their exact commit-scoped tags.
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$HEAD_BRANCH" = main ] && [ -z "$C8S_REF_INPUT" ] && [ "$ROOTFS_UNCHANGED" != true ]; then
+            CDI_TAGS="${VARIANT}-cdi,$CDI_TAGS"
+            ORAS_TAGS="${VARIANT},$ORAS_TAGS"
           fi
           # CDI first, oras artifact last: the change-check reads the oras tag,
           # so a partial failure re-publishes everything next run.

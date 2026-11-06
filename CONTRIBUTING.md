@@ -95,10 +95,10 @@ CI requires this suite and includes its coverage alongside ordinary tests and
 the kernel dm-verity harness, using the same procedure for the PR and its base.
 
 For Pod runtime changes, also run `make test-integration-pod-runtime`. It needs
-Python 3 and Docker with privileged containers and validates process admission
-in an isolated container. Its result receipt is required. See
-[Pod scheduler and runtime CI](docs/integration-tests.md#pod-scheduler-and-runtime-ci)
-for the evidence and its limits.
+Go and Docker with privileged containers and validates process admission in an
+isolated container. Its result receipt is required. See
+[Pod runtime CI](docs/integration-tests.md#pod-runtime-ci) for the evidence and
+its limits.
 
 ## Pull requests
 
