@@ -193,6 +193,11 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 	defer target.Close()
 	for _, tc := range []string{"redirect", "malformed", "oversized", "truncated", "headers", "body", "cancel"} {
 		t.Run(tc, func(t *testing.T) {
+			// The body cases hold the response open until the test ends, not
+			// until the request context ends: a handler that returns once the
+			// client cancels would finish the chunked body cleanly, and the
+			// client could then read an empty body instead of its cancellation.
+			hold := make(chan struct{})
 			srv, connections := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
 				switch tc {
 				case "redirect":
@@ -209,9 +214,10 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 				default:
 					w.WriteHeader(http.StatusOK)
 					w.(http.Flusher).Flush()
-					<-r.Context().Done()
+					<-hold
 				}
 			})
+			t.Cleanup(func() { close(hold) })
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			a, err := openCDSAttempt(ctx, config{url: srv.URL, timeout: time.Second}, leafTrust{})
