@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,7 +31,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -717,26 +715,9 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 	}
 }
 
-// bootstrapImage is the launch document's view of the image the staged peer
-// policy pins.
-func bootstrapImage(t *testing.T, pins refvalues.ReferenceValues) launchconfig.Image {
-	t.Helper()
-	image := launchconfig.Image{
-		Platform:    string(pins.Family.DefaultPlatform()),
-		Measurement: hex.EncodeToString(pins.Images[0].Digest),
-	}
-	if len(pins.Images[0].Registers) > 0 {
-		image.RTMRs = map[int]string{}
-		for index, value := range pins.Images[0].Registers {
-			image.RTMRs[index] = hex.EncodeToString(value)
-		}
-	}
-	return image
-}
-
-// bootstrapCDSPin is the pin `c8s launch-config new` writes into every node
-// document, built the way that command builds it: this cluster's CDS
-// configuration, bound to the launch digests of the image its VM boots.
+// bootstrapCDSPin is the pin `c8s cds config new` writes, built the way that
+// command builds it: this cluster's CDS configuration, bound to the launch
+// digests of the image its VM boots.
 func bootstrapCDSPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -789,96 +770,66 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 	} {
 		floor = bytes.ReplaceAll(floor, []byte(placeholder), []byte(value))
 	}
-	pins, err := refvalues.Load(filepath.Join("..", "..", "internal", "testdata", "node-identities.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if platform == "sev-snp" {
-		pins.Family = teetypes.FamilySNP
-		for i := range pins.Images {
-			pins.Images[i].Registers = nil
-		}
-	}
-	peers, err := refvalues.Format(pins)
-	if err != nil {
-		t.Fatal(err)
-	}
 	components, err := pkgallowlist.ParseJSON(seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-		t.Run("bootstrap-"+string(role), func(t *testing.T) {
-			root := t.TempDir()
-			for name, data := range map[string][]byte{
-				"usr/lib/c8s/image-policy.yaml":               floor,
-				"usr/lib/c8s/allowlist-seed.json":             seed,
-				filepath.Join(launchconfig.Dir, "peers.json"): peers,
-			} {
-				path := filepath.Join(root, name)
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, data, 0600); err != nil {
-					t.Fatal(err)
-				}
+	root := t.TempDir()
+	for name, data := range map[string][]byte{
+		"usr/lib/c8s/image-policy.yaml":   floor,
+		"usr/lib/c8s/allowlist-seed.json": seed,
+	} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cds := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)}
+	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{CDS: cds}); err != nil {
+		t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
+	}
+	prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read as the plugin reads it: YAML-only fields (role, node,
+	// serviceLinks) do not survive a JSON round trip.
+	var policy struct {
+		Allowlist struct {
+			Base pkgallowlist.Allowlist `yaml:"base"`
+		} `yaml:"allowlist"`
+	}
+	if err := yamlv3.Unmarshal(prepared, &policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.Allowlist.Base.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	assertLocalPathDenied(t, &policy.Allowlist.Base)
+	for name, workload := range components.Workloads {
+		got := policy.Allowlist.Base.Workloads[name]
+		// YAML omits empty initContainers; treat nil and [] identically.
+		if len(got.InitContainers) == 0 {
+			got.InitContainers = nil
+		}
+		if len(workload.InitContainers) == 0 {
+			workload.InitContainers = nil
+		}
+		if !reflect.DeepEqual(got, workload) {
+			t.Errorf("bootstrap floor lost or changed chart workload %s: got %#v, want %#v", name, got, workload)
+		}
+	}
+	// The node exempts host binds only for a launch a base entry pins, so
+	// every seed container that names a host mount must pin its whole launch.
+	for name, workload := range components.Workloads {
+		for _, c := range slices.Concat(workload.InitContainers, workload.Containers) {
+			if slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return r.Kind == pkgallowlist.MountHost }) && !c.LaunchPinned() {
+				t.Errorf("seed workload %s holds a host mount without pinning its launch: %+v", name, c)
 			}
-			doc := &launchconfig.Document{
-				SchemaVersion: launchconfig.SchemaVersion,
-				Role:          role,
-				Image:         bootstrapImage(t, pins),
-				Server:        launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
-				TLSSAN:        "c8s.local",
-				CDS: cmdsutil.CDS{
-					Address:      "192.0.2.50:8443",
-					Measurements: bootstrapCDSPin(t),
-				},
-			}
-			if err := nodeservices.PrepareNode(root, doc); err != nil {
-				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
-			}
-			prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Read as the plugin reads it: YAML-only fields (role, node,
-			// serviceLinks) do not survive a JSON round trip.
-			var policy struct {
-				Allowlist struct {
-					Base pkgallowlist.Allowlist `yaml:"base"`
-				} `yaml:"allowlist"`
-			}
-			if err := yamlv3.Unmarshal(prepared, &policy); err != nil {
-				t.Fatal(err)
-			}
-			if err := policy.Allowlist.Base.Normalize(); err != nil {
-				t.Fatal(err)
-			}
-			assertLocalPathDenied(t, &policy.Allowlist.Base)
-			for name, workload := range components.Workloads {
-				got := policy.Allowlist.Base.Workloads[name]
-				// YAML omits empty initContainers; treat nil and [] identically.
-				if len(got.InitContainers) == 0 {
-					got.InitContainers = nil
-				}
-				if len(workload.InitContainers) == 0 {
-					workload.InitContainers = nil
-				}
-				if !reflect.DeepEqual(got, workload) {
-					t.Errorf("bootstrap floor lost or changed chart workload %s: got %#v, want %#v", name, got, workload)
-				}
-			}
-			// The node exempts host binds only for a launch a base entry
-			// pins, so every seed container that names a host mount must pin
-			// its whole launch.
-			for name, workload := range components.Workloads {
-				for _, c := range slices.Concat(workload.InitContainers, workload.Containers) {
-					if slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return r.Kind == pkgallowlist.MountHost }) && !c.LaunchPinned() {
-						t.Errorf("seed workload %s holds a host mount without pinning its launch: %+v", name, c)
-					}
-				}
-			}
-		})
+		}
 	}
 }
 

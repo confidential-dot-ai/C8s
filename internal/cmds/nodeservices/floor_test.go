@@ -3,16 +3,21 @@ package nodeservices
 import (
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
+
+// floorValues are the placeholder values a staging gives a floor: this node's
+// name, and no advertise address, which passes no flag.
+func floorValues() map[string]string {
+	return map[string]string{NodeNamePlaceholder: "n1", nodeAdvertiseAddressPlaceholder: DropFlag}
+}
 
 func TestFillingRefusesAPlaceholderTheFloorDoesNotDefine(t *testing.T) {
 	for _, element := range []string{"${NODE_NAME}", "--hostname-override=n-${NODE_NAME}", "--hostname-override=${NODE}"} {
 		base := &allowlist.Allowlist{Workloads: map[string]allowlist.Workload{"w": {Containers: []allowlist.Container{{
 			Args: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{element}},
 		}}}}}
-		if err := fillNodeValues(base, nodeValues(launchconfig.Node{Name: "n1"})); err == nil {
+		if err := bindPlaceholderFlags(base, floorValues()); err == nil {
 			t.Errorf("filled %q", element)
 		}
 	}
@@ -25,11 +30,11 @@ func TestFillingRefusesAPlaceholderWithoutAValue(t *testing.T) {
 		base := &allowlist.Allowlist{Workloads: map[string]allowlist.Workload{"w": {Containers: []allowlist.Container{{
 			Args: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{element}},
 		}}}}}
-		if err := fillNodeValues(base, nil); err == nil {
+		if err := bindPlaceholderFlags(base, nil); err == nil {
 			t.Errorf("left %q unfilled", element)
 		}
 	}
-	if err := fillNodeValues(&allowlist.Allowlist{}, map[string]string{"${API_SERVER}": "a"}); err == nil {
+	if err := bindPlaceholderFlags(&allowlist.Allowlist{}, map[string]string{"${API_SERVER}": "a"}); err == nil {
 		t.Error("accepted a value for a placeholder no floor names")
 	}
 }
@@ -40,7 +45,7 @@ func TestFillingKeepsAScriptsOwnVariables(t *testing.T) {
 	base := &allowlist.Allowlist{Workloads: map[string]allowlist.Workload{"w": {Containers: []allowlist.Container{{
 		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"bash", "-ec", script}},
 	}}}}}
-	if err := fillNodeValues(base, nodeValues(launchconfig.Node{Name: "n1"})); err != nil {
+	if err := bindPlaceholderFlags(base, floorValues()); err != nil {
 		t.Fatal(err)
 	}
 	if got := base.Workloads["w"].Containers[0].Command.Argv[2]; got != script {
