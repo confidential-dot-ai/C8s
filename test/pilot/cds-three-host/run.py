@@ -260,7 +260,7 @@ class Run(metadata.Run):
                 self.event('console-reconnected', guest=name)
 
     def open_tunnel(self, slot):
-        row = self.guests[slot]; self.current(row)
+        row = self.guests[slot]; faults.current_guest(self, slot)
         if slot in self.tunnels:
             process = self.tunnels[slot][0]; process.terminate()
             try: process.wait(timeout=5)
@@ -283,7 +283,8 @@ class Run(metadata.Run):
         if operation == 'init':
             q['operator_key'] = base64.b64encode((self.directory/'operator.pem').read_bytes()).decode()
             if self.args.backend != 'raft': q['provision'] = json.loads((self.directory/'provision.json').read_text())
-        deadline = time.monotonic()+(180 if retry_start else 0)
+        deadline = time.monotonic()+(180 if retry_start else 310)
+        tunnel_restarts = 0
         while True:
             label = f'{len(self.state["phases"]):03}-{operation}-g{agent}'
             self.state['phases'].append({'label': label, 'operation': operation, 'agent': agent, 'target': target, 'passed': False}); self.save()
@@ -293,12 +294,29 @@ class Run(metadata.Run):
                 # A failed early virtctl dial can leave its accepted local
                 # socket open. Bound each initial attempt so that the existing
                 # three-minute startup budget can actually retry its tunnel.
-                attempt_timeout = min(30, max(1, deadline-time.monotonic())) if retry_start else 310
-                self.command(label, [self.args.client, '-launch', str(self.directory/'launch.yaml'), '-key', str(self.directory/'operator.pem'),
-                    '-endpoint', self.tunnels[agent][1], '-request', str(request), '-receipt', str(receipt)], timeout=attempt_timeout)
+                attempt_timeout = min(30 if retry_start else 310, max(1, deadline-time.monotonic()))
+                argv = [self.args.client, '-launch', str(self.directory/'launch.yaml'), '-key', str(self.directory/'operator.pem'),
+                        '-endpoint', self.tunnels[agent][1], '-request', str(request), '-receipt', str(receipt)]
+                with (self.directory/(label+'.stderr')).open('wb') as err:
+                    completed = subprocess.run(argv, stdout=subprocess.PIPE, stderr=err, timeout=attempt_timeout)
+                (self.directory/(label+'.stdout')).write_bytes(completed.stdout)
+                self.state['phases'][-1]['client_exit_code'] = completed.returncode
+                self.save()
+                need(completed.returncode == 0, label+' failed; inspect private log')
             except Exception:
-                # Retry only failed initial handshakes; a verified result or a
-                # non-idempotent phase is never silently resubmitted.
+                # Exit 75 is emitted only for a typed TLS timeout before HTTP
+                # dispatch. Replace the broken virtctl listener before retrying;
+                # one restart shares the original phase deadline.
+                if self.state['phases'][-1].get('client_exit_code') == 75 and not receipt.exists():
+                    self.state['phases'][-1]['not_dispatched'] = True; self.save()
+                    if tunnel_restarts == 0 and time.monotonic() < deadline:
+                        tunnel_restarts += 1
+                        self.event('guest-control-tunnel-restart', operation=operation, agent=agent)
+                        self.open_tunnel(agent)
+                        time.sleep(3); continue
+                    raise
+                # Initialization is idempotent. No other uncertain phase or
+                # verified assertion failure is resubmitted.
                 if not retry_start or receipt.exists() or time.monotonic() >= deadline: raise
                 self.open_tunnel(agent)
                 time.sleep(3); continue

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,51 +15,74 @@ import (
 	"time"
 )
 
-func TestOnlyTimedOutTLSBeforeDispatchCanRetry(t *testing.T) {
+func TestTLSFailureClassificationNeverDispatchesOrRetries(t *testing.T) {
 	for _, scenario := range []struct {
-		name                                      string
-		failure                                   error
-		persistent                                bool
-		wantHandshakes, wantRequests, wantRetries int32
+		name    string
+		failure error
+		code    int
 	}{
-		{"transient_verifier_deadline", fmt.Errorf("verification transport: %w", context.DeadlineExceeded), false, 2, 1, 1},
-		{"persistent_verifier_deadline", context.DeadlineExceeded, true, 2, 0, 1},
-		{"rejected_attestation", errors.New("unapproved image"), true, 1, 0, 0},
+		{"verifier_deadline", fmt.Errorf("verification transport: %w", context.DeadlineExceeded), 75},
+		{"rejected_attestation", errors.New("unapproved image"), 1},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			var handshakes, requests atomic.Int32
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				body, _ := io.ReadAll(r.Body)
-				if string(body) != "fixed phase" || r.Header.Get("Authorization") != "unchanged authorization" {
-					t.Error("phase body or authorization changed")
-				}
-				w.WriteHeader(204)
-			}))
+			server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
 			defer server.Close()
 			client := server.Client()
-			transport := client.Transport.(*http.Transport)
-			transport.TLSClientConfig.VerifyConnection = func(tls.ConnectionState) error {
-				if handshakes.Add(1) == 1 || scenario.persistent {
-					return scenario.failure
-				}
-				return nil
+			client.Transport.(*http.Transport).TLSClientConfig.VerifyConnection = func(tls.ConnectionState) error {
+				handshakes.Add(1)
+				return scenario.failure
 			}
 			req, _ := http.NewRequestWithContext(t.Context(), "POST", server.URL, strings.NewReader("fixed phase"))
-			req.Header.Set("Authorization", "unchanged authorization")
-			response, retries, err := sendPhase(client, req)
+			response, err := sendPhase(client, req)
 			if response != nil {
 				response.Body.Close()
 			}
-			if (err == nil) != (scenario.wantRequests == 1) || handshakes.Load() != scenario.wantHandshakes ||
-				requests.Load() != scenario.wantRequests || int32(retries) != scenario.wantRetries {
-				t.Fatalf("err=%v handshakes=%d requests=%d retries=%d", err, handshakes.Load(), requests.Load(), retries)
+			if err == nil || exitCode(err) != scenario.code || handshakes.Load() != 1 || requests.Load() != 0 {
+				t.Fatalf("err=%v handshakes=%d requests=%d", err, handshakes.Load(), requests.Load())
 			}
 		})
 	}
 }
 
-func TestDeadlineAfterDispatchNeverResubmitsPhase(t *testing.T) {
+func TestStalledTunnelHasBoundedPredispatchFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Model virtctl accepting a connection while its upstream websocket
+		// has failed: consume ClientHello but never answer the TLS handshake.
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	client := &http.Client{Transport: &http.Transport{TLSHandshakeTimeout: 30 * time.Millisecond}}
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", "https://"+listener.Addr().String(), strings.NewReader("fixed phase"))
+	response, err := sendPhase(client, req)
+	if response != nil {
+		response.Body.Close()
+	}
+	if err == nil || exitCode(err) != 75 || ctx.Err() != nil {
+		t.Fatalf("stalled TLS was not distinguished before overall deadline: %v", err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("failed TLS connection was not closed")
+	}
+}
+
+func TestDeadlineAfterDispatchNeverAllowsRetry(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -69,11 +93,11 @@ func TestDeadlineAfterDispatchNeverResubmitsPhase(t *testing.T) {
 	client := server.Client()
 	client.Transport.(*http.Transport).ResponseHeaderTimeout = 30 * time.Millisecond
 	req, _ := http.NewRequestWithContext(t.Context(), "POST", server.URL, strings.NewReader("fixed phase"))
-	response, retries, err := sendPhase(client, req)
+	response, err := sendPhase(client, req)
 	if response != nil {
 		response.Body.Close()
 	}
-	if err == nil || requests.Load() != 1 || retries != 0 {
-		t.Fatalf("dispatched request retried: err=%v requests=%d retries=%d", err, requests.Load(), retries)
+	if err == nil || exitCode(err) != 1 || requests.Load() != 1 {
+		t.Fatalf("dispatched request allowed retry: err=%v requests=%d", err, requests.Load())
 	}
 }

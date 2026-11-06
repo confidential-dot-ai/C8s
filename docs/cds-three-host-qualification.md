@@ -152,8 +152,21 @@ observable guest pause fault above to establish quorum loss.
 stopped before dispatching the burst: host-side native attestation verification
 hit its deadline during the control TLS handshake. Three guests had passed
 startup, seeding and attachment. No fault was injected, and all 29 resource
-paths were independently confirmed absent. The host client now permits one
-retry only when its TLS handshake reports a deadline and no HTTP headers were
-written. Attestation or pin rejection and all failures after dispatch remain
-fatal. Both attempts share the original overall deadline, and successful
-receipts record the retry count. Guest binaries and workload limits are unchanged.
+paths were independently confirmed absent. This exposed the need to distinguish
+a failed control handshake from an uncertain dispatched phase.
+
+[Attempt 16](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-16.json)
+passed 39 phases: the native burst, leader isolation, majority service, replay
+rejection, revocation, observed two-guest pause, quorum-loss refusal, recovery
+and the first rolling image replacement. The next preparation phase could not
+start after the Kubernetes websocket proxy returned HTTP 503; `virtctl` left
+its local socket open and the control handshake stalled until the overall
+deadline. All 43 resource paths were independently confirmed absent.
+
+The pilot client now bounds TLS handshakes to 15 seconds and returns a dedicated
+exit status only for a TLS timeout before HTTP headers were written. The runner
+revalidates the owned VM/VMI incarnation, replaces that tunnel, and retries once
+within the original phase deadline. It records the failed attempt and restart.
+Attestation or pin rejection, a returned receipt, and failures after dispatch
+remain fatal. Local tests cover the stalled-listener case and prevent uncertain
+phase replay. Guest binaries and workload limits are unchanged.

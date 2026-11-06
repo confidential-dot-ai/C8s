@@ -35,7 +35,7 @@ func main() {
 	flag.Parse()
 	if err := run(*launch, *key, *endpoint, *request, *receipt); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 func read(path string, limit int64) ([]byte, error) {
@@ -122,7 +122,7 @@ func run(lp, kp, origin, qp, out string) error {
 	}
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
-	response, handshakeRetries, e := sendPhase(client, req)
+	response, e := sendPhase(client, req)
 	if e != nil {
 		return e
 	}
@@ -144,7 +144,7 @@ func run(lp, kp, origin, qp, out string) error {
 	if result.Operation != q.Operation {
 		return errors.New("phase mismatch")
 	}
-	receipt := map[string]any{"native_tdx_armtls_verified": true, "image_and_launch_verified": true, "result": result, "pre_dispatch_handshake_retries": handshakeRetries, "production_ready": false, "operator_exclusion_qualified": false}
+	receipt := map[string]any{"native_tdx_armtls_verified": true, "image_and_launch_verified": true, "result": result, "production_ready": false, "operator_exclusion_qualified": false}
 	b, e := json.MarshalIndent(receipt, "", "  ")
 	if e != nil {
 		return e
@@ -175,6 +175,7 @@ func phaseTimeout(client *http.Client, budget time.Duration) error {
 		return errors.New("explicit verified HTTP transport and phase budget required")
 	}
 	transport.ResponseHeaderTimeout = budget
+	transport.TLSHandshakeTimeout = min(15*time.Second, budget)
 	client.Timeout = budget
 	return nil
 }

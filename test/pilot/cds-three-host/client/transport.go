@@ -4,46 +4,43 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"sync/atomic"
-	"time"
 )
 
-// sendPhase permits one retry only when TLS itself times out before any HTTP
-// headers were written. A phase is never retried after dispatch or after an
-// attestation/pin rejection. Both attempts share the original overall deadline.
-func sendPhase(client *http.Client, request *http.Request) (*http.Response, int, error) {
-	for attempt := 0; ; attempt++ {
-		var handshakeTimeout, wroteHeaders atomic.Bool
-		trace := &httptrace.ClientTrace{
-			TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
-				handshakeTimeout.Store(errors.Is(err, context.DeadlineExceeded))
-			},
-			WroteHeaders: func() { wroteHeaders.Store(true) },
-		}
-		req := request.Clone(httptrace.WithClientTrace(request.Context(), trace))
-		if attempt > 0 {
-			body, err := request.GetBody()
-			if err != nil {
-				return nil, attempt, err
-			}
-			req.Body = body
-		}
-		response, err := client.Do(req)
-		if err == nil || attempt == 1 || !handshakeTimeout.Load() || wroteHeaders.Load() ||
-			request.Context().Err() != nil || request.GetBody == nil {
-			return response, attempt, err
-		}
-		if response != nil {
-			response.Body.Close()
-		}
-		pause := time.NewTimer(time.Second)
-		select {
-		case <-request.Context().Done():
-			pause.Stop()
-			return nil, attempt, request.Context().Err()
-		case <-pause.C:
-		}
+// The controller may replace its broken tunnel only for this typed failure.
+// An arbitrary peer error string cannot select the dedicated exit status.
+type notDispatched struct{ error }
+
+func (e *notDispatched) Unwrap() error { return e.error }
+
+func exitCode(err error) int {
+	var absent *notDispatched
+	if errors.As(err, &absent) {
+		return 75
 	}
+	return 1
+}
+
+// sendPhase makes one attempt. Only a TLS timeout before any HTTP headers were
+// written permits the controller to replace the tunnel and retry once. There is
+// no retry within the broken listener, nor after dispatch or pin rejection.
+func sendPhase(client *http.Client, request *http.Request) (*http.Response, error) {
+	var handshakeTimeout, wroteHeaders atomic.Bool
+	trace := &httptrace.ClientTrace{
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			var timeout net.Error
+			handshakeTimeout.Store(errors.Is(err, context.DeadlineExceeded) ||
+				(errors.As(err, &timeout) && timeout.Timeout()))
+		},
+		WroteHeaders: func() { wroteHeaders.Store(true) },
+	}
+	req := request.Clone(httptrace.WithClientTrace(request.Context(), trace))
+	response, err := client.Do(req)
+	if err != nil && handshakeTimeout.Load() && !wroteHeaders.Load() && request.Context().Err() == nil {
+		return response, &notDispatched{err}
+	}
+	return response, err
 }

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 16,
+  "stage": "control-tunnel-before-second-rolling-replacement",
+  "runner_commit": "1a081164c0b5306b679c63c10ef6528b2b3c77d1",
+  "image_build": "three-host-image-06",
+  "client_commit": "1a081164c0b5306b679c63c10ef6528b2b3c77d1",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "replacement_guests_started": 1,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "chunk_retries": 0,
+  "native_cds_startup_checks_passed": 4,
+  "completed_verified_phases": 39,
+  "burst": {
+    "issuances": 24,
+    "secret_releases": 24,
+    "seconds": 25.666502399
+  },
+  "verified_scenarios": {
+    "leader_isolation_refused_valid_read": true,
+    "majority_served": true,
+    "revocation_during_failover": true,
+    "two_owned_vmis_observed_paused": true,
+    "quorum_loss_refused_valid_read": true,
+    "same_incarnations_resumed": true,
+    "recovery_same_ca_and_replay_rejected": true,
+    "first_rolling_image_replacement_preserved_identity_replay_and_revocation": true
+  },
+  "finding": "The Kubernetes websocket proxy returned HTTP 503 while opening the control tunnel for the next prepare phase. virtctl left the accepted local socket open, so the TLS handshake stalled until the overall deadline. No second replacement result is claimed.",
+  "follow_up": "Bound control TLS to 15 seconds. Emit a dedicated exit code only for TLS timeout before headers. Revalidate the owned VM/VMI, replace the tunnel and permit one retry within the original phase deadline. Never retry a returned receipt, attestation rejection or uncertain dispatched phase.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 33,
+    "resource_paths_checked": 43,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
