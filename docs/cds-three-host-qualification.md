@@ -81,3 +81,6 @@ checks guest DNS, reachability of the owned collateral proxy, and the actual
 CDS service's attested status before more disks are prepared. The image explicitly
 routes `cluster.local` to DHCP-provided DNS. Transfers use 8 MiB frames, at most
 three fresh-path attempts with backoff, and retain failed receiver byte counts.
+The fixed phase client uses a five-minute header and overall response budget:
+genesis and recovery may legitimately wait longer than the standard armTLS
+client's ten-second header timeout. Its verified TLS transport is retained.

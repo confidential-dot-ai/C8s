@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 9,
+  "stage": "genesis-phase-receipt",
+  "runner_commit": "eff1f369d812ae6a50be20ba7e90d6540a936f36",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "chunk_retries": 0,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 9,
+  "finding": "The local test-control client inherited a 10-second response-header timeout. It timed out during the multi-step genesis phase before receiving a verified phase result. Guest diagnostics showed the three-member Raft cluster forming, but no completed workload or fault result is claimed.",
+  "follow_up": "Use the same bounded five-minute budget for test-control headers and the complete phase, preserving the verified TLS transport. Reuse the measured guest images.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 41,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

@@ -107,7 +107,9 @@ func run(lp, kp, origin, qp, out string) error {
 		return e
 	}
 	defer client.CloseIdleConnections()
-	client.Timeout = 5 * time.Minute
+	if e = phaseTimeout(client, 5*time.Minute); e != nil {
+		return e
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	req, e := http.NewRequestWithContext(ctx, "POST", origin+"/phase", bytes.NewReader(body))
@@ -164,6 +166,19 @@ func run(lp, kp, origin, qp, out string) error {
 	}
 	return nil
 }
+
+// A phase can wait for genesis, election or recovery before returning headers.
+// Keep the verified TLS transport and bound the complete operation consistently.
+func phaseTimeout(client *http.Client, budget time.Duration) error {
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || budget <= 0 {
+		return errors.New("explicit verified HTTP transport and phase budget required")
+	}
+	transport.ResponseHeaderTimeout = budget
+	client.Timeout = budget
+	return nil
+}
+
 func verifyTDX(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" || r.URL.Path != "/verify" {
 		http.NotFound(w, r)
