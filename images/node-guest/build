@@ -60,10 +60,10 @@
 #                      shares these container inputs between both builds.
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
 #                      repo's checkout).
-#   C8S_PROFILE=c8s    build the node image (./c8s) instead of the worker
-#                      image (./worker, the default). The worker takes no
-#                      C8S_DEV. The c8s profile's files listed in
-#                      worker/shared are staged with the worker.
+#   C8S_PROFILE=worker build the worker image (./worker) instead of the node
+#                      image (./c8s, the default). Takes no C8S_DEV. The c8s
+#                      profile's files listed in worker/shared are staged
+#                      with it.
 #   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
 #                      private half of images/node-guest/module-signing.crt,
 #                      used to sign the NVIDIA modules. Required for GPU
@@ -84,7 +84,7 @@ esac
     || { echo "images/node-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
 [ -z "${C8S_BINARY:-}" ] || [ -f "$C8S_BINARY" ] \
     || { echo "images/node-guest/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
-C8S_PROFILE=${C8S_PROFILE:-worker}
+C8S_PROFILE=${C8S_PROFILE:-c8s}
 case "$C8S_PROFILE" in
 c8s) ;;
 worker)
