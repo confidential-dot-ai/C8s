@@ -12,31 +12,23 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
-// PodSpec names the pod a pod-role boot runs. Manifest is a v1 Pod in YAML
-// or JSON; its metadata must repeat UID, Namespace and Name so the identity
-// the provider reports and the pod kubelet runs cannot diverge. WorkloadID is
-// the manifest's confidential.ai/cw annotation, the tenant identity the guest
-// carries in its credential claims; empty when the manifest has none.
+// PodSpec names the pod assigned to a pod-role boot. Manifest is a v1 Pod in
+// YAML or JSON; its metadata must repeat UID, Namespace and Name so the
+// identity the provider reports and the pod kubelet runs cannot diverge.
 type PodSpec struct {
-	UID        string   `yaml:"uid" json:"uid"`
-	Namespace  string   `yaml:"namespace" json:"namespace"`
-	Name       string   `yaml:"name" json:"name"`
-	WorkloadID string   `yaml:"workloadID,omitempty" json:"workloadID,omitempty"`
-	Manifest   string   `yaml:"manifest" json:"manifest"`
-	MeshPeers  []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
-}
-
-// podWorkloadID is the workload ID a pod manifest names, "" when it names none.
-func podWorkloadID(pod *corev1.Pod) string {
-	return pod.Annotations[workloadclaims.AnnotationWorkloadID]
+	UID       string   `yaml:"uid" json:"uid"`
+	Namespace string   `yaml:"namespace" json:"namespace"`
+	Name      string   `yaml:"name" json:"name"`
+	Manifest  string   `yaml:"manifest" json:"manifest"`
+	MeshPeers []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
 }
 
 // validate is defence in depth: NRI's sandbox policy is the enforcement
-// point. It refuses what the pod role can never need, so a bad document
+// point. It refuses what the pod role can never need, so a bad assignment
 // fails at signing time instead of at container start.
 func (p *PodSpec) validate() error {
 	if p.UID == "" || len(p.UID) > 128 || len(validation.IsDNS1123Subdomain(p.UID)) != 0 {
@@ -55,9 +47,6 @@ func (p *PodSpec) validate() error {
 	if string(pod.UID) != p.UID || pod.Namespace != p.Namespace || pod.Name != p.Name {
 		return fmt.Errorf("pod.manifest metadata must match pod.uid, pod.namespace and pod.name")
 	}
-	if podWorkloadID(pod) != p.WorkloadID {
-		return fmt.Errorf("pod.workloadID must equal the manifest's %s annotation", workloadclaims.AnnotationWorkloadID)
-	}
 	if err := ValidatePodSpec(pod); err != nil {
 		return err
 	}
@@ -71,15 +60,13 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 	if pod == nil || len(pod.Spec.Containers) == 0 {
 		return errors.New("pod.manifest must have containers")
 	}
-	// The workload ID travels into the leaf as an extension with a fixed
-	// grammar, so a manifest naming one the leaf cannot carry fails here.
-	if id := podWorkloadID(pod); id != "" {
-		if err := armtls.ValidateWorkloadID(id); err != nil {
-			return fmt.Errorf("pod.manifest %s annotation: %w", workloadclaims.AnnotationWorkloadID, err)
-		}
-	}
 	if err := podmesh.ValidateWorkloadPod(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
+	}
+	// The annotation, when present, is the allowlist workload name the pod's
+	// entries are looked up under; an unusable name fails here, not at admission.
+	if id, present := pod.Annotations[workloadclaims.AnnotationWorkloadID]; present && (!workloadname.ValidGrammar(id) || len(id) > workloadname.MaxLen) {
+		return fmt.Errorf("pod.manifest %s annotation %q is not a valid workload name", workloadclaims.AnnotationWorkloadID, id)
 	}
 	if _, err := podmesh.IngressPorts(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)

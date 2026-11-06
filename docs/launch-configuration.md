@@ -81,27 +81,21 @@ key must match that field exactly and differ from `server.operatorPublicKey`.
 The server address and key identify the cluster; `cds.address` and
 `cds.measurements` independently select and authenticate CDS.
 
-A static launch includes a `pod` block with UID, namespace, name, signed manifest
-and optional `meshPeers`. Its base `workloads` policy is optional and may be
-empty. A generic launch omits both blocks and stages no workload authority;
-one authenticated assignment supplies the Pod later. The CDS endpoint and
-launch-file pin are fixed by the signed boot document in both cases.
+A pod document names no pod and carries no allowlist entries or mesh peers; a
+`pod` or `workloads` key is refused. Every boot under it is generic and stages
+no workload authority: one authenticated assignment supplies the Pod, its
+entries and its peers later. The CDS endpoint and launch-file pin are fixed by
+the signed boot document.
 
-After an HA CDS image roll, pass the applied decree written by
-`c8s cds ha pin-policy --decree-out` to
-`c8s launch-config new-pod --cds-pin-decree <file>`. The generator verifies its
-signature, cluster and launch-file digest against the exact CDS configuration
-bound by `--cds-image-policy-file`. The signed Pod document then carries the
-complete decreed image set and its minimum version (`cds.pinFloor`), so an older
-signed decree cannot restore a retired image. Static and generic Pods use the
-same check; a later assignment retains the generic boot's CDS trust and floor.
+A pod document takes no CDS pin decree: its CDS image set is the one
+`--cds-image-policy-file` binds, and its `cds.pinFloor` is zero. The
+assignment retains the generic boot's CDS trust.
 
 Pod documents carry no RKE2 credentials, agent keys or router block. Staging
-writes private Pod runtime inputs and the role marker instead of RKE2
-configuration. Node documents cannot carry Pod fields or a base `workloads`
-policy. Pod issuance authority belongs in the measured CDS configuration,
-never in a node or Pod launch document. See
-[operator.md](operator.md#pod-cvm) for assignment and runtime restrictions.
+writes the role marker instead of RKE2 configuration. Pod issuance authority
+belongs in the measured CDS configuration, never in a node or Pod launch
+document. See [operator.md](operator.md#pod-cvm) for assignment and runtime
+restrictions.
 
 ## The signature
 
@@ -149,9 +143,9 @@ field instead, which is why this flow is for a measured node image on
 7. Stage what RKE2 reads: the join tokens, the node password, the role
    fragment under `/etc/rancher/rke2/config.yaml.d/`, and `registries.yaml`
    when the document sets mirrors. The role marker is written last, so a step
-   that fails starts no role. A static Pod boot stages its manifest and private
-   runtime inputs; a generic boot stages only the inputs needed to wait for
-   assignment. Both write the role marker last and stage no RKE2 configuration.
+   that fails starts no role. A pod boot stages no manifest and no runtime
+   policy, since the assignment renders them and the runtime starts only
+   then; it writes the role marker last and stages no RKE2 configuration.
 
 Missing, unsigned, or inconsistent input leaves RKE2 and the role's services
 down. A role change, a new image, or any other edit means relaunching with
