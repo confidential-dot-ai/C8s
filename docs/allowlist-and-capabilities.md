@@ -255,7 +255,14 @@ and read-only flag) that expansion produces. Any other device node or hook, a
 device of another kind, and a device that no spec or two specs define stay
 violations, and so does a spec that changed between containerd's read and the
 plugin's. The container still needs an allowlist entry, and the CDI bind mounts
-still have to match that entry's mount policy.
+still have to match that entry's mount policy. An entry pinning the launch the
+injection leaves — the variables the spec sets, the binds it adds — declares
+capabilities for it like any other entry, recorded at the create for the
+runtime wrapper's floor
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)). A device an NRI
+adjustment asks for instead is resolved by the runtime after the plugin has
+answered, so its device nodes, hooks and binds reach the container with nothing
+to attribute them to, and the container is refused.
 
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the
