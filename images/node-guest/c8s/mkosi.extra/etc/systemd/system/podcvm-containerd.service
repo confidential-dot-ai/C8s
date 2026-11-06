@@ -19,6 +19,10 @@ ExecStartPre=/bin/ln -sfn /usr/lib/c8s/pod-runtime/bin /var/lib/rancher/rke2/bin
 ExecStartPre=/usr/bin/networkctl reload
 ExecStart=/var/lib/rancher/rke2/bin/containerd --config /usr/lib/c8s/pod-runtime/containerd.toml
 ExecStartPost=/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io images import /usr/lib/c8s/pod-runtime/pause.tar
+# The measured mesh endpoint from the airgap archive node-services prepare
+# selected, imported and pinned as RKE2 imports agent/images on a node, so
+# the endpoint's IfNotPresent pull finds it and image GC keeps it.
+ExecStartPost=/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io images import --all-platforms --label io.cri-containerd.pinned=pinned /run/c8s-pod/mesh-image.tar
 Delegate=yes
 KillMode=process
 LimitNOFILE=1048576

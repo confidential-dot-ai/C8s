@@ -40,6 +40,28 @@ func TestPodRoleUsesPreparedCNI(t *testing.T) {
 	}
 }
 
+// The pod role has no RKE2 to import agent/images, so podcvm-containerd
+// imports the mesh endpoint archive node-services prepare links, as RKE2
+// imports on a node (all platforms, pinned), before kubelet can start.
+func TestPodRoleImportsTheMeshEndpointBeforeKubelet(t *testing.T) {
+	unit := func(name string) string {
+		data, err := os.ReadFile("../../c8s/mkosi.extra/etc/systemd/system/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	const want = "ExecStartPost=/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io " +
+		"images import --all-platforms --label io.cri-containerd.pinned=pinned /run/c8s-pod/mesh-image.tar\n"
+	if containerd := unit("podcvm-containerd.service"); !strings.Contains(containerd, "Type=notify\n") || !strings.Contains(containerd, want) {
+		t.Fatalf("podcvm-containerd.service does not import the mesh endpoint archive as a start step:\n%s", containerd)
+	}
+	kubelet := unit("podcvm-kubelet.service")
+	if !strings.Contains(kubelet, "Requires=podcvm-containerd.service\n") || !strings.Contains(kubelet, "After=podcvm-containerd.service\n") {
+		t.Fatal("podcvm-kubelet.service must start after podcvm-containerd's imports")
+	}
+}
+
 // podRoleConfig is the pod role's hand-written containerd config.
 const podRoleConfig = "../../c8s/mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml"
 

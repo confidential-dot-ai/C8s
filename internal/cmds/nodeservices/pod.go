@@ -1,13 +1,19 @@
 package nodeservices
 
 import (
+	"archive/tar"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/distribution/reference"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -29,14 +35,21 @@ const (
 	podKubeletEnvPath  = PodDir + "/kubelet.env"
 	podUnmanagedLinks  = "/run/systemd/network/10-podcvm-unmanaged.network"
 	podUnmanagedConfig = "[Match]\nName=veth* c8spod*\n\n[Link]\nUnmanaged=yes\n"
+	// podMeshArchivePath links to the airgap archive that holds the measured
+	// mesh endpoint image; podcvm-containerd imports it before kubelet starts.
+	podMeshArchivePath = PodDir + "/mesh-image.tar"
+	// airgapImagesDir holds the archives airgap-images.sh preserves, which
+	// RKE2 imports on a node.
+	airgapImagesDir = "/var/lib/rancher/rke2/agent/images"
 )
 
 // PodRuntime is fully validated runtime policy plus the assigned manifest.
 // Rendering writes nothing, so assignment can validate before committing its record.
 type PodRuntime struct {
-	UID      string
-	Policy   []byte
-	Manifest []byte
+	UID       string
+	Policy    []byte
+	Manifest  []byte
+	MeshImage string
 }
 
 // RenderPodRuntime applies the measured floor to an assigned pod: the generic
@@ -126,7 +139,7 @@ func RenderPodRuntime(rootDir string, d *launchconfig.AssignedPod) (PodRuntime, 
 		return PodRuntime{}, err
 	}
 
-	return PodRuntime{UID: d.Pod.UID, Policy: policyData, Manifest: manifest}, nil
+	return PodRuntime{UID: d.Pod.UID, Policy: policyData, Manifest: manifest, MeshImage: image}, nil
 }
 
 func renderPodManifest(spec *launchconfig.PodSpec, image string) ([]byte, map[string]string, error) {
@@ -164,6 +177,20 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err != nil {
 		return err
 	}
+	// The mesh endpoint image is baked into the floor, so its archive can be
+	// staged before any pod is assigned.
+	_, a, err := loadFloor(rootDir)
+	if err != nil {
+		return err
+	}
+	_, image, err := podMeshBase(a["base"])
+	if err != nil {
+		return err
+	}
+	archive, err := podMeshArchive(rootDir, image)
+	if err != nil {
+		return err
+	}
 
 	if err := publishPublic(path(PublicDir), outputs); err != nil {
 		return err
@@ -187,7 +214,80 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 			return err
 		}
 	}
-	return nil
+	if err := os.Remove(path(podMeshArchivePath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Symlink(archive, path(podMeshArchivePath))
+}
+
+// podMeshArchive returns the airgap archive whose OCI index names the measured
+// mesh endpoint image at its pinned digest. The archive is part of the
+// measured image, and containerd checks every blob against its digest on
+// import, so the pod pulls nothing for its endpoint.
+func podMeshArchive(rootDir, image string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", fmt.Errorf("mesh endpoint image: %w", err)
+	}
+	canonical, ok := named.(reference.Canonical)
+	if !ok {
+		return "", fmt.Errorf("mesh endpoint image %s is not pinned by digest", image)
+	}
+	paths, err := filepath.Glob(filepath.Join(rootDir, airgapImagesDir, "c8s-*.tar"))
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	for _, p := range paths {
+		index, err := archiveIndex(p)
+		if err != nil {
+			return "", fmt.Errorf("airgap archive %s: %w", filepath.Base(p), err)
+		}
+		for _, m := range index.Manifests {
+			name, err := reference.ParseNormalizedNamed(m.Annotations[imageNameAnnotation])
+			if err == nil && name.String() == canonical.String() {
+				if m.Digest != canonical.Digest() {
+					return "", fmt.Errorf("airgap archive %s holds %s at digest %s", filepath.Base(p), image, m.Digest)
+				}
+				found = append(found, filepath.Join(airgapImagesDir, filepath.Base(p)))
+				break
+			}
+		}
+	}
+	if len(found) != 1 {
+		return "", fmt.Errorf("want one airgap archive holding mesh endpoint image %s, found %d", image, len(found))
+	}
+	return found[0], nil
+}
+
+// imageNameAnnotation is the name containerd gives an image it imports.
+const imageNameAnnotation = "io.containerd.image.name"
+
+// archiveIndex reads the OCI index of an image layout archive.
+func archiveIndex(path string) (*ocispec.Index, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := tar.NewReader(f)
+	for {
+		h, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("no index.json")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if h.Name != "index.json" {
+			continue
+		}
+		var index ocispec.Index
+		if err := json.NewDecoder(r).Decode(&index); err != nil {
+			return nil, fmt.Errorf("index.json: %w", err)
+		}
+		return &index, nil
+	}
 }
 
 // podImagePins binds every runtime container name to its signed or baked image.

@@ -278,7 +278,9 @@ prefix of its journal included. The measurement journal stays inside the guest:
 pod containers get no node credential-client mounts or sandbox-token service.
 
 Every pod gets the image's measured mesh endpoint as its first native init
-sidecar; do not supply a platform sidecar in the manifest. The guest keeps the
+sidecar; do not supply a platform sidecar in the manifest. The guest imports
+the endpoint image from the archive the disk image carries, so starting the
+pod pulls no platform image. The guest keeps the
 baked mesh policy with the endpoint role alone and no exempt namespace, so the
 privilege floor covers every container, and admission requires that policy and
 verified packet capture. A guest-owned broker obtains the endpoint's TLS
