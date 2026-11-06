@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/time/rate"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -38,6 +39,8 @@ type config struct {
 	sessionMaxAge     time.Duration
 	readHeaderTimeout time.Duration
 	tunnelIOTimeout   time.Duration
+	establishRate     float64
+	establishBurst    int
 
 	// Launch-driven inputs (node image): each file overrides its flag.
 	frontDoorModeFile   string
@@ -85,6 +88,8 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.sessionMaxAge, "session-max-age", defaultSessionMaxAge, "absolute session lifetime: a session's keys retire this long after establishment, however busy it is")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", 5*time.Second, "HTTP read-header timeout")
 	f.DurationVar(&cfg.tunnelIOTimeout, "tunnel-io-timeout", defaultTunnelIOTimeout, "how long a tunnel upload, or its sealed response download, may make no progress")
+	f.Float64Var(&cfg.establishRate, "establish-rate", defaultEstablishRate, "attest-pq and attest-lb requests per second each client address may make")
+	f.IntVar(&cfg.establishBurst, "establish-burst", defaultEstablishBurst, "attest-pq and attest-lb requests a client address may make at once before --establish-rate applies")
 	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
 	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
 	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes")
@@ -124,6 +129,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
+	}
+	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
+		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
 	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
 	if err != nil {
@@ -175,6 +183,8 @@ func run(ctx context.Context, cfg config) error {
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
 		TunnelIOTimeout:        cfg.tunnelIOTimeout,
+		EstablishRate:          rate.Limit(cfg.establishRate),
+		EstablishBurst:         cfg.establishBurst,
 		DisableAttestEndpoints: cfg.attestOff,
 	}
 	srv := NewServer(srvCfg)

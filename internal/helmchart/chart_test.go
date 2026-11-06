@@ -2125,6 +2125,13 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
 
+	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--establish-")
+	rateOut, err := helmTemplate(t, "--set", "router.attest.establishRate=50", "--set", "router.attest.establishBurst=100")
+	if err != nil {
+		t.Fatalf("helm template (establishRate=50, establishBurst=100): %v\n%s", err, rateOut)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, rateOut, "c8s-router", "cds-attest"), "--establish-rate=50", "--establish-burst=100")
+
 	// attest.enabled=false keeps cds-attest for application routing and only
 	// unregisters the attestation endpoints; /readyz stays proxied to it.
 	offOut, err := helmTemplate(t, "--set", "router.attest.enabled=false")

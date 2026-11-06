@@ -258,6 +258,20 @@
           "properties": {
             "attestationApiURL": {},
             "enabled": {},
+            "establishBurst": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "establishRate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "exclusiveMinimum": 0
+            },
             "expectedWorkload": {
               "type": [
                 "string",

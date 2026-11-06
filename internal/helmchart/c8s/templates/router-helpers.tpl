@@ -510,6 +510,12 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 {{- $args = concat $args (list (printf "--platform=%v" $v.attest.platform) (printf "--generation=%v" $v.attest.generation)) -}}
 {{- $args = append $args (printf "--attestation-api-url=%s" (default (include "c8s.attestationApiURL" $root) $v.attest.attestationApiURL)) -}}
+{{- with $v.attest.establishRate -}}
+{{- $args = append $args (printf "--establish-rate=%v" .) -}}
+{{- end -}}
+{{- with $v.attest.establishBurst -}}
+{{- $args = append $args (printf "--establish-burst=%v" .) -}}
+{{- end -}}
 {{- /* attest-lb needs a TEE-held serving key (cds, acme); webpki's
        host-visible Secret key stays attest-pq-only. */ -}}
 {{- if $launchDriven -}}

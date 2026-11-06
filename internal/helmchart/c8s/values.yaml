@@ -937,6 +937,12 @@ router:
     # or node.baked) and attest.enabled is true, the sidecar also reads the
     # node's measured-policy journal under nriImagePolicy.hostPaths.runtimeDir.
     attestationApiURL: ""
+    # -- attest-pq and attest-lb requests per second each client address may
+    # make, and how many it may make at once (`--establish-rate`,
+    # `--establish-burst`). null keeps the sidecar's defaults (10/s, burst 20).
+    # A baked node renders the chart with these unset, so it runs the defaults.
+    establishRate: null
+    establishBurst: null
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity
     # leaf is a usable credential carrying a matched-workload stamp with
