@@ -94,7 +94,7 @@ func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Ser
 }
 
 // routerHandler answers the front-door routes the client uses: the discovery
-// document, the proxied allowlist read, and a workload write.
+// document, the proxied allowlist read, and an allowlist write.
 func routerHandler(doc []byte) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+DefaultPath, func(w http.ResponseWriter, _ *http.Request) {
@@ -105,7 +105,7 @@ func routerHandler(doc []byte) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
 	})
-	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("PUT /allowlist", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
@@ -543,8 +543,8 @@ func TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses(t *testi
 
 	writes := []string{"web", "api"}
 	for _, name := range writes {
-		req, err := http.NewRequest(http.MethodPut, lb.URL+"/allowlist/workloads/"+name,
-			strings.NewReader(`{"containers":[]}`))
+		req, err := http.NewRequest(http.MethodPut, lb.URL+"/allowlist",
+			strings.NewReader(`{"schema":"c8s.allowlist/v1","workloads":{"`+name+`":{"containers":[]}}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -703,7 +703,7 @@ func TestNewVerifiedHTTPClient_ThroughARenewingRouter(t *testing.T) {
 			if tc.method == http.MethodPut {
 				body = putBody
 			}
-			err = send(hc, tc.method, router.URL+"/allowlist/workloads/web", body)
+			err = send(hc, tc.method, router.URL+"/allowlist", body)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("want an error containing %q, got: %v", tc.wantErr, err)
@@ -749,7 +749,7 @@ func TestNewVerifiedHTTPClient_DoesNotResendAReceivedWrite(t *testing.T) {
 		t.Fatalf("NewVerifiedHTTPClient: %v", err)
 	}
 
-	if err := send(hc, http.MethodPut, router.URL+"/allowlist/workloads/web", `{"label":"v2"}`); err == nil {
+	if err := send(hc, http.MethodPut, router.URL+"/allowlist", `{"label":"v2"}`); err == nil {
 		t.Fatal("want the PUT whose connection dropped to fail")
 	}
 	if n := puts.Load(); n != 1 {

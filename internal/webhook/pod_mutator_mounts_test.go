@@ -36,14 +36,14 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	out, err := exec.Command("helm", "template", "c8s", "../helmchart/c8s",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
-		"--show-only", "templates/cds.yaml",
+		"--show-only", "templates/allowlist-seed.yaml",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		"--set-string", "cds.measurements[0]="+strings.Repeat("ab", 48),
+		"--set-string", "cds.address=10.9.9.9:8443",
+		"--set-file", "cds.measurementsConfig=../testdata/cds-pin.json",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.digest="+chartMeshDigest,
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
@@ -53,7 +53,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	}
 	for _, doc := range strings.Split(string(out), "\n---\n") {
 		var cm corev1.ConfigMap
-		if err := yaml.Unmarshal([]byte(doc), &cm); err != nil || cm.Name != "c8s-cds-allowlist-seed" {
+		if err := yaml.Unmarshal([]byte(doc), &cm); err != nil || cm.Name != "c8s-allowlist-seed" {
 			continue
 		}
 		seed, err := allowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

@@ -58,9 +58,9 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 // client rather than an error.
 func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	o := Options{
-		URL:          "https://" + closedAddr(t),
-		Measurements: []string{strings.Repeat("ab", 48)},
-		Timeout:      time.Second,
+		URL:                "https://" + closedAddr(t),
+		MeasurementsConfig: testutil.CDSPinFile(t),
+		Timeout:            time.Second,
 		Verifier: testutil.VerifierStub(func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 			return nil, nil
 		}),
@@ -242,23 +242,28 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 	}
 }
 
-// An https CDS with no --measurements is attested but not identified: armTLS
-// proves the peer is a TEE, not that it is the CDS this operator meant, so
-// minting a token names the flag that pins it rather than the transport
-// refusal a request would hit.
+// An unpinned https endpoint is attested but not identified: armTLS proves the
+// peer is a TEE, not that it is the endpoint this operator meant, so minting a
+// token names the flag that pins it rather than the transport refusal a
+// request would hit.
 func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	key := writeTestKey(t)
 
 	o := Options{URL: "https://cds.example:8443", OperatorKey: key}
 	_, err := o.Signer()
-	if err == nil || !strings.Contains(err.Error(), "unpinned CDS") {
-		t.Fatalf("err = %v, want a refusal naming the unpinned CDS", err)
+	if err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
+		t.Fatalf("err = %v, want a refusal naming the unpinned endpoint", err)
 	}
-	if !strings.Contains(err.Error(), "--measurements") {
+	if !strings.Contains(err.Error(), "--image-policy-file") {
 		t.Errorf("the refusal must name the flag that fixes it, got %q", err)
 	}
 
-	// Pinned by either flag.
+	// Pinned by any of the three.
+	o.MeasurementsConfig = testutil.CDSPinFile(t)
+	if _, err := o.Signer(); err != nil {
+		t.Fatalf("--image-policy-file should satisfy the pin, got %v", err)
+	}
+	o.MeasurementsConfig = ""
 	o.Measurements = []string{strings.Repeat("ab", 48)}
 	if _, err := o.Signer(); err != nil {
 		t.Fatalf("--measurements should satisfy the pin, got %v", err)
@@ -275,6 +280,44 @@ func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	o.URL = "http://cds.example:8080"
 	if _, err := o.Signer(); err != nil {
 		t.Fatalf("plaintext must fall through to the HTTPClient refusal, got %v", err)
+	}
+}
+
+// A command that only ever reaches CDS holds it to the configuration it runs
+// on, before any network: its image alone would admit any CDS VM, and a flat
+// digest names only an image.
+func TestHTTPClientRequiresALaunchBoundPinForADirectCDS(t *testing.T) {
+	unbound := filepath.Join(t.TempDir(), "unbound.json")
+	document := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	if err := os.WriteFile(unbound, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, o := range map[string]Options{
+		"image only":  {URL: "https://cds.example:8443", MeasurementsConfig: unbound, DirectCDS: true},
+		"flat digest": {URL: "https://cds.example:8443", Measurements: []string{strings.Repeat("ab", 48)}, DirectCDS: true},
+		"digest file": {URL: "https://cds.example:8443", MeasurementsFile: writeMeasurementsFile(t, strings.Repeat("cd", 48)), DirectCDS: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o.Timeout = time.Second
+			if err := o.CheckEndpoint(); err == nil {
+				t.Fatal("a pin that is not one CDS VM's identity was accepted")
+			}
+		})
+	}
+}
+
+// A command that only ever reaches CDS takes the pin document and nothing
+// else: a flat digest names an image, and CDS is not pinned by one.
+func TestDirectCDSTakesNoFlatPins(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	BindFlags(fs, &Options{DirectCDS: true})
+	for _, name := range []string{"measurements", "measurements-file"} {
+		if fs.Lookup(name) != nil {
+			t.Errorf("a direct-CDS command exposes --%s", name)
+		}
+	}
+	if fs.Lookup("image-policy-file") == nil {
+		t.Error("a direct-CDS command exposes no pin document flag")
 	}
 }
 

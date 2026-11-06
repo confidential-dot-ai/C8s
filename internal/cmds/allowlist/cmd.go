@@ -5,8 +5,8 @@
 //
 // Reads (list, get, export, diff, lint, inspect-image) are unauthenticated.
 // Writes (add, apply, edit, delete, upload) are authorized by an operator EC
-// private key whose public key CDS pins (cds --operator-keys); the CLI mints a
-// short-lived, body-bound token per write via pkg/operatorauth.
+// private key whose public key CDS pins ('c8s cds config new --operator-keys');
+// the CLI mints a short-lived, body-bound token per write via pkg/operatorauth.
 package allowlist
 
 import (
@@ -23,9 +23,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// Required image-label substrings for deployments with a chart-managed attestation API.
+// Required image-label substrings for deployments with a chart-managed
+// attestation API. CDS is not among them: it runs outside the cluster, so no
+// entry of the cluster's allowlist admits it.
 var defaultRequiredComponents = []string{
-	"cds",
 	"armtls-mesh",
 	"nri-image-policy",
 	"attestation-api",
@@ -60,8 +61,8 @@ Reads (list, get, export, diff, lint, inspect-image) are unauthenticated. Writes
 (add, apply, edit, delete, upload) are signed with an operator EC private key
 you supply to THIS CLI via --operator-key
 (or C8S_OPERATOR_KEY). The private key never leaves the CLI — it signs a
-short-lived token that CDS verifies against the operator public keys it was
-configured to pin separately (cds --operator-keys, set by 'c8s install
+short-lived token that CDS verifies against the operator public keys it
+pins in its measured launch configuration ('c8s cds config new
 --operator-keys').
 
 The default chart publishes /allowlist through router. Point --url at that

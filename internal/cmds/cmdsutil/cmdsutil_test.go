@@ -262,3 +262,18 @@ func TestExpandNodeIP(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestConfirmAcceptsOnlyYes(t *testing.T) {
+	for answer, want := range map[string]bool{
+		"y\n": true, "yes\n": true, " YES \n": true, "Y": true,
+		"n\n": false, "\n": false, "": false, "yes please\n": false, "sure\n": false,
+	} {
+		var prompt strings.Builder
+		if got := Confirm(strings.NewReader(answer), &prompt, "sign it?"); got != want {
+			t.Errorf("Confirm(%q) = %v, want %v", answer, got, want)
+		}
+		if prompt.String() != "sign it? [y/N] " {
+			t.Errorf("prompt = %q", prompt.String())
+		}
+	}
+}

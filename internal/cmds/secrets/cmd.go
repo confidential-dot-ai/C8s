@@ -2,7 +2,7 @@
 // store.
 //
 // Writes are authorized by an operator EC private key whose public key CDS pins
-// (cds --operator-keys) — the same credential that signs an allowlist mutation,
+// ('c8s cds config new --operator-keys') — the same credential that signs an allowlist mutation,
 // and the same key the `secrets` grants in that allowlist are rooted in. The
 // private key never leaves the CLI: it signs a short-lived token bound to the
 // method, path, and body of one request.

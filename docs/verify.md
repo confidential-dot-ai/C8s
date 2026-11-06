@@ -16,8 +16,8 @@ Guarantee: [Anyone can verify it](guarantees.md#anyone-can-verify-it).
 Prerequisites:
 
 - The `c8s` binary of the release the cluster runs ([releases.md](releases.md)).
-- HTTPS to the router, and to CDS, which the chart publishes on its own node
-  port (`30808`): the front door relays neither CDS endpoint used here.
+- HTTPS to the router, and to CDS at the address the install named with
+  `--cds-address`: the front door relays neither CDS endpoint used here.
 - Outbound HTTPS to `kdsintf.amd.com` for AMD endorsement certificates
   evidence does not carry inline.
 - The measurements you accept, from the operator or from the image build.
@@ -56,13 +56,14 @@ refuses `--mesh-ca`, `--sandbox-id`, `--workload` and `--allowlist`. Read the
 bundle from CDS:
 
 ```sh
-c8s cds ca --url https://<NODE>:30808 --measurements <NODE_MEASUREMENT> --out mesh-ca.pem
+c8s cds ca --url https://<CDS_ADDRESS> --image-policy-file cds-pin.json --out mesh-ca.pem
 ```
 
-`<NODE>` is a node address, `30808` the chart's default CDS node port, and
-`<NODE_MEASUREMENT>` a pin from the table. The certificate SHA-256 digests
-print on stderr; record them: a measurement identifies the image, not the
-instance, and a CDS restart replaces the bundle.
+`<CDS_ADDRESS>` is the `<host>:<port>` the install named with `--cds-address`,
+and `cds-pin.json` the document it named with `--cds-pin`, which pins the guest
+CDS runs. These commands take that document and no launch digest of their own.
+The certificate SHA-256 digests print on stderr; record them: a CDS restart
+replaces the bundle.
 
 ## Derive the pins yourself
 
@@ -103,11 +104,13 @@ ok: tdx, 1 image(s)
 The two register pins are RTMR[1] and RTMR[2], so the file pins the guest
 kernel and rootfs, not the firmware alone. An SNP image has no registers and
 contributes one entry per vCPU count. Pass the file as `--image-policy-file`
-wherever this page uses `--measurements`; against CDS it also checks the set
-CDS says it enforces:
+wherever this page uses `--measurements`; against CDS, name the node
+identities it serves with `--served-policy-file` to check the set CDS says it
+enforces:
 
 ```sh
-c8s cds verify https://<NODE>:30808 --image-policy-file measurements.json
+c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json \
+    --served-policy-file measurements.json
 ```
 
 Deriving reads what the build measured; it does not rebuild the image.
@@ -128,7 +131,7 @@ not WebPKI.
 c8s verify https://<ROUTER_HOST> --kind lb --mode attest-lb \
     --measurements <NODE_MEASUREMENT> --mesh-ca mesh-ca.pem \
     --route-digest <ROUTE_DIGEST>
-c8s cds verify https://<NODE>:30808 --measurements <NODE_MEASUREMENT>
+c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json
 ```
 
 `<ROUTER_HOST>` is the router's public host and `<ROUTE_DIGEST>` a digest from
@@ -194,7 +197,7 @@ Get a digest from the operator who wrote the manifest, from a manifest file
 with `c8s routes digest FILE`, or from CDS, which refuses an unpinned endpoint:
 
 ```sh
-c8s routes show --url https://<NODE>:30808 --measurements <NODE_MEASUREMENT>
+c8s routes show --url https://<CDS_ADDRESS> --image-policy-file cds-pin.json
 ```
 
 [releases.md](releases.md) shows which commit a release tag names.

@@ -132,7 +132,7 @@ func recordingCDS(t *testing.T) (url string, methods *[]string) {
 		mu.Unlock()
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"1"`)
+			w.Header().Set(pkgallowlist.VersionHeader, "1")
 			w.Write(body)
 			return
 		}
@@ -164,14 +164,14 @@ func TestMissingComponents(t *testing.T) {
 		t.Fatalf("expected no missing components, got %v", got)
 	}
 
-	partial := map[string]string{digA: "registry/c8s/cds@" + digA}
+	partial := map[string]string{digA: "registry/c8s/armtls-mesh@" + digA}
 	got := missingComponents(partial, defaultRequiredComponents)
 	if len(got) != len(defaultRequiredComponents)-1 {
-		t.Fatalf("expected all but cds missing, got %v", got)
+		t.Fatalf("expected all but armtls-mesh missing, got %v", got)
 	}
 	for _, c := range got {
-		if c == "cds" {
-			t.Fatal("cds should not be reported missing")
+		if c == "armtls-mesh" {
+			t.Fatal("armtls-mesh should not be reported missing")
 		}
 	}
 }
@@ -357,9 +357,9 @@ func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("pinned builds", func(t *testing.T) {
+	t.Run("pinned by the CDS document", func(t *testing.T) {
 		o := base
-		o.Measurements = []string{strings.Repeat("ab", 48)}
+		o.MeasurementsConfig = testutil.CDSPinFile(t)
 		if _, err := o.client(context.Background()); err != nil {
 			t.Fatalf("client: %v", err)
 		}
@@ -426,8 +426,8 @@ Reads (list, get, export, diff, lint, inspect-image) are unauthenticated. Writes
 (add, apply, edit, delete, upload) are signed with an operator EC private key
 you supply to THIS CLI via --operator-key
 (or C8S_OPERATOR_KEY). The private key never leaves the CLI — it signs a
-short-lived token that CDS verifies against the operator public keys it was
-configured to pin separately (cds --operator-keys, set by 'c8s install
+short-lived token that CDS verifies against the operator public keys it
+pins in its measured launch configuration ('c8s cds config new
 --operator-keys').
 
 The default chart publishes /allowlist through router. Point --url at that
@@ -444,7 +444,7 @@ allowlist").`
 
 	wantFlags := map[string]string{
 		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; an https --url requires a pin",
+		"measurements": "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)

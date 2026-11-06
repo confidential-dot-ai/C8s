@@ -14,10 +14,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +29,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -84,11 +89,37 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 		w.Write(doc)
 	})
 	mux.HandleFunc("GET /allowlist", seededAllowlistHandler(t))
-	// The operator signature is CDS's to check; the front door only relays.
-	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, r *http.Request) {
+	// A whole-document write, conditional on the served version, writes the
+	// entries it adds, changes or drops relative to the served document. The
+	// operator signature is CDS's to check; the front door only relays.
+	seeded := seededAllowlist(t)
+	mux.HandleFunc("PUT /allowlist", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-Match") != `"1"` {
+			http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		doc, err := pkgallowlist.ParseJSON(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 		written.mu.Lock()
-		written.names[r.PathValue("name")] = true
-		written.mu.Unlock()
+		defer written.mu.Unlock()
+		for name, entry := range doc.Workloads {
+			if old, ok := seeded.Workloads[name]; !ok || !reflect.DeepEqual(old, entry) {
+				written.names[name] = true
+			}
+		}
+		for name := range seeded.Workloads {
+			if _, ok := doc.Workloads[name]; !ok {
+				written.names[name] = true
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -99,9 +130,9 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 	return srv, written
 }
 
-// seededAllowlistHandler serves a canonical allowlist (one entry admitting
-// digA) as CDS's read endpoint would.
-func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
+// seededAllowlist is the document seededAllowlistHandler serves, parsed as a
+// write path parses it.
+func seededAllowlist(t *testing.T) *pkgallowlist.Allowlist {
 	t.Helper()
 	al := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
@@ -111,9 +142,25 @@ func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
 	if err != nil {
 		t.Fatalf("canonical: %v", err)
 	}
+	parsed, err := pkgallowlist.ParseJSON(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return parsed
+}
+
+// seededAllowlistHandler serves a canonical allowlist (one entry admitting
+// digA) as CDS's read endpoint would.
+func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	al := seededAllowlist(t)
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `W/"1"`)
+		w.Header().Set(pkgallowlist.VersionHeader, "1")
 		w.Write(body)
 	}
 }
@@ -128,6 +175,34 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 		match := true
 		return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
 	}
+}
+
+// boundCDSVerify approves the fixture's evidence as this cluster's CDS: one
+// launch digest, bound to the launch file writeCDSPin names.
+func boundCDSVerify(measurement []byte) localverify.VerifyFunc {
+	return func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
+		result, err := approvingVerify(measurement)(ctx, platform, evidence, p)
+		if err != nil {
+			return nil, err
+		}
+		result.Platform = teetypes.PlatformSNP
+		result.Claims.LaunchDigest = hex.EncodeToString(measurement)
+		binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+		result.Claims.InitData = binding[:]
+		return result, nil
+	}
+}
+
+// writeCDSPin stages the pin a direct CDS URL requires: the measurement bound
+// to the exact launch file that CDS runs on.
+func writeCDSPin(t *testing.T, measurement []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	document := testutil.CDSPinDocument(hex.EncodeToString(measurement), testutil.CDSLaunchFile)
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // runCmdWith executes the allowlist command with an injected evidence verifier.
@@ -270,8 +345,8 @@ func TestWritesThroughARenewingRouter(t *testing.T) {
 	})
 }
 
-// armtlsCDSServer stands in for a port-forwarded CDS: a TLS server whose
-// serving cert DOES carry the armTLS extension (an embedded az-snp envelope),
+// armtlsCDSServer stands in for the cluster's CDS VM: a TLS server whose
+// serving cert DOES carry the armTLS extension (an embedded SNP envelope),
 // serving the allowlist read handler and no discovery document.
 func armtlsCDSServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -282,7 +357,7 @@ func armtlsCDSServer(t *testing.T) *httptest.Server {
 	}
 	att := &armtls.Attestation{
 		Family: armtls.TEETypeSEVSNP,
-		Report: []byte(`{"platform":"az-snp","evidence":{"hcl_report":"fake"}}`),
+		Report: []byte(`{"platform":"snp","evidence":{"report":"fake"}}`),
 	}
 	der, err := armtls.CreateAttestedCert(key, att, nil)
 	if err != nil {
@@ -310,18 +385,18 @@ func TestListDirectARMTLS(t *testing.T) {
 	var sawVerify bool
 	verify := func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
 		sawVerify = true
-		if platform != string(teetypes.PlatformAzSNP) {
-			t.Fatalf("platform = %q, want az-snp", platform)
+		if platform != string(teetypes.PlatformSNP) {
+			t.Fatalf("platform = %q, want sev-snp", platform)
 		}
 		if len(p.ExpectedReportData) != sha512.Size384 {
 			t.Fatalf("expected_report_data is %d bytes, want the unpadded %d-byte cert-key anchor", len(p.ExpectedReportData), sha512.Size384)
 		}
-		return approvingVerify(measurement)(ctx, platform, evidence, p)
+		return boundCDSVerify(measurement)(ctx, platform, evidence, p)
 	}
 
 	out, errOut, err := runCmdWith(verify, "list",
 		"--url", cds.URL,
-		"--measurements", hex.EncodeToString(measurement),
+		"--image-policy-file", writeCDSPin(t, measurement),
 	)
 	if err != nil {
 		t.Fatalf("list against a direct armTLS CDS failed: %v (stderr: %s)", err, errOut)
@@ -341,9 +416,9 @@ func TestListDirectARMTLSFailsClosed(t *testing.T) {
 	reported := bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)
 	cds := armtlsCDSServer(t)
 
-	_, _, err := runCmdWith(approvingVerify(reported), "list",
+	_, _, err := runCmdWith(boundCDSVerify(reported), "list",
 		"--url", cds.URL,
-		"--measurements", hex.EncodeToString(pinned),
+		"--image-policy-file", writeCDSPin(t, pinned),
 	)
 	if err == nil {
 		t.Fatal("expected a measurement mismatch to fail the command")

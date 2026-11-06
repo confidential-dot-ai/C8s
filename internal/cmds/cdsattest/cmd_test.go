@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -109,10 +110,6 @@ func TestRunRequiresCDSURL(t *testing.T) {
 	}
 }
 
-// testCDSMeasurement is the launch measurement these tests pin the polled CDS
-// to, since armTLS refuses an unpinned endpoint.
-const testCDSMeasurement = "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
-
 // routedRunConfig is a config run accepts with the attestation endpoints off,
 // polling a CDS that cannot be reached.
 func routedRunConfig(t *testing.T, port int) config {
@@ -127,7 +124,7 @@ func routedRunConfig(t *testing.T, port int) config {
 		attestOff:         true,
 		routing: routingConfig{
 			cdsURL:          "https://127.0.0.1:9",
-			cdsMeasurements: []string{testCDSMeasurement},
+			imagePolicyFile: testutil.CDSPinFile(t),
 			launchKeysFile:  filepath.Join(t.TempDir(), "absent"),
 			pollInterval:    time.Hour,
 			backendTimeout:  time.Hour,

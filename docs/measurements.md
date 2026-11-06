@@ -62,8 +62,9 @@ extend(d) = SHA-384( register ‖ SHA-384("sha256:<hex>") )
 Policies are measured only on TDX and only where the node plugin has
 `measure_policies` on: the chart value `nriImagePolicy.measurePolicies`, which
 the chart refuses unless it also deploys the node's attestation-api, so not on
-the lane that bakes it. The measurer seeds its journal from the staged launch
-key, so a node without one applies no pulled allowlist while the setting is on
+the lane that bakes it, or on every worker, whose image turns it on. The
+measurer seeds its journal from the staged launch key, a worker's document on a
+worker, so a node without one applies no pulled allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
 Each policy digest is SHA-256 of the exact allowlist bytes served by CDS, the
@@ -109,10 +110,11 @@ A measurements config pins whole images: each entry is one image matched as a
 tuple, so a digest from one build cannot be paired with registers from another.
 Every component that dials a pinned CDS takes it as `--image-policy-file`:
 `c8s verify`, the client commands (`c8s cds`, `c8s allowlist`, `c8s secrets`,
-`c8s routes`, `c8s volume`), `c8s install`, CDS itself, and the sidecars C8s
-injects — among them get-cert, which fetches a pod's certificate. Some also
-accept `--image-policy-json`, the same document inline; `c8s get-kubeconfig`
-pins its node with `--image-manifest`.
+`c8s routes`, `c8s volume`), CDS itself, and the sidecars C8s
+injects — among them get-cert, which fetches a pod's certificate. `c8s install`
+takes the same document as `--cds-pin`. Some also accept
+`--image-policy-json`, the same document inline; `c8s get-kubeconfig` pins its
+node with `--image-manifest`.
 
 ```json
 {
@@ -130,7 +132,7 @@ pins its node with `--image-manifest`.
 
 | Field | Rule |
 |---|---|
-| `schema_version` | Exactly `"1"`. |
+| `schema_version` | Exactly `"1"`, or `"2"` for a document pinning a launch file. |
 | `tee` | The TEE family: `sev-snp` or `tdx`, which is what `derive` writes. A platform tag such as `snp` or `az-tdx` normalizes to its family. One file covers one family. |
 | `measurements` | At least one entry. Two entries may not pin the same tuple. |
 | `name` | Required, unique in the file, and diagnostic only: nothing matches on it. |
@@ -138,13 +140,15 @@ pins its node with `--image-manifest`.
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
+| `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
+| `launch_file_digest` | Optional, schema 2 only: the digest of the configuration file the guest was launched with, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
 
-`c8s install --image-policy-file` also refuses an `approver_key` entry and
-per-image register differences: the chart carries one digest list and one
-register map to every in-cluster verifier. CDS renders the set it enforces at
-`/measurements`, which `c8s verify --kind cds` compares against your file. To
+`c8s install --cds-pin` takes such a document whole: the chart carries it to
+every in-cluster verifier as a file. CDS renders the set it enforces at
+`/measurements`, which `c8s verify --kind cds --served-policy-file` compares
+against the node identities you expect it to serve. To
 build a config from an image build, see
 [verify.md](verify.md#derive-the-pins-yourself).

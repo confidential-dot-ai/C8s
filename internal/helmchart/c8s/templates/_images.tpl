@@ -20,16 +20,6 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "c8s.cdsImage" -}}
-{{- if .Values.cds.image.digest -}}
-{{ .Values.cds.image.repository }}@{{ .Values.cds.image.digest }}
-{{- else if .Values.cds.image.tag -}}
-{{ .Values.cds.image.repository }}:{{ .Values.cds.image.tag }}
-{{- else -}}
-{{ fail "cds.image.tag or cds.image.digest must be set" }}
-{{- end -}}
-{{- end -}}
-
 {{- define "c8s.imagePullSecrets" -}}
 {{- $secrets := .local | default .root.Values.imagePullSecrets | default list -}}
 {{- with .root.Values.imagePullSecret -}}

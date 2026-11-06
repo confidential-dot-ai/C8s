@@ -1,0 +1,16 @@
+# Presets are applied at image build time. The gate units are the c8s
+# profile's, which images/node-guest/build stages for this profile.
+enable worker-stage.service
+enable containerd.service
+enable kubelet.service
+enable attest-proxy.service
+enable containerd-data-disk.service
+enable models-disk.service
+enable scratch-enforce.service
+enable c8s-modules-latch.service
+enable apparmor-enforce.service
+enable gpu-cc-enforce.service
+enable systemd-timesyncd.service
+enable systemd-time-wait-sync.service
+# As in the c8s profile: the package's stock host profiles are not wanted.
+disable apparmor.service

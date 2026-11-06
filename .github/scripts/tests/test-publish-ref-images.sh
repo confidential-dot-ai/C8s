@@ -45,8 +45,8 @@ case "$1 $2" in
   "api repos/"*)
     path=$2
     case "$path" in
-      */git/commits/*) [ -e "$FAKE_STATE/commit-known" ] || { echo "Not Found" >&2; exit 1; } ; echo "${path##*/}" ;;
-      */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "Not Found" >&2; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
+      */git/commits/*) [ -e "$FAKE_STATE/commit-known" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; echo "${path##*/}" ;;
+      */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
       *) echo "unexpected api path $path" >&2; exit 1 ;;
     esac ;;
   "api -X")

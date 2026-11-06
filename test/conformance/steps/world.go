@@ -24,16 +24,17 @@ type world struct {
 	// the scenario.
 	entries map[string]*entry
 	// bases holds, per scenario name, the name an entry is written under instead.
-	bases    map[string]string
-	written  map[string]bool
-	removed  map[string]json.RawMessage
-	api      cdsAPIState
-	cds      cdsState
-	issuance issuanceState
-	podMesh  podMeshState
-	secrets  secretsState
-	router   routerState
-	routes   routesState
+	bases      map[string]string
+	written    map[string]bool
+	removed    map[string]json.RawMessage
+	api        cdsAPIState
+	cds        cdsState
+	issuance   issuanceState
+	podMesh    podMeshState
+	peerVerify peerVerifyState
+	secrets    secretsState
+	router     routerState
+	routes     routesState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -50,9 +51,6 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
-	// cdsInstance is the CDS pod a seed-change sentence found serving, for
-	// the sentence that says it did not restart.
-	cdsInstance string
 }
 
 type pod struct {
@@ -160,6 +158,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerRequester(sc)
 		registerNode(sc)
 		registerPodMesh(sc)
+		registerPeerVerify(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
 		registerRoutes(sc)

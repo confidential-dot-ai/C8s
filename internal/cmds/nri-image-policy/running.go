@@ -33,6 +33,16 @@ func (r *runningContainers) remove(containerID string) {
 	delete(r.byID, containerID)
 }
 
+// contains reports whether a container has started and not since stopped. It is
+// the current liveness recovery reads, unlike the registration snapshot, which
+// does not see a container that started after it was taken.
+func (r *runningContainers) contains(containerID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.byID[containerID]
+	return ok
+}
+
 // list returns a copy, so callers check and kill without holding the lock.
 func (r *runningContainers) list() []runningContainer {
 	r.mu.Lock()

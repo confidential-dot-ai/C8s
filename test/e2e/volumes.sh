@@ -20,7 +20,8 @@
 # Needs kubectl pointed at a cluster with C8s installed with --volumes, `c8s`
 # and `crane` on PATH, the volume devices already attached to E2E_VOL_NODE
 # (serials c8s-vol-<name>), and:
-#   C8S_MEASUREMENTS    launch measurement pinning the CDS endpoint
+#   C8S_CDS_URL         the cluster's CDS, as its launch names it
+#   C8S_CDS_PIN         the pin document binding that CDS to its configuration
 #   C8S_OPERATOR_KEY    path to the operator EC key PEM pinned on CDS
 #   E2E_VOL_NODE        node name the volume devices are attached to
 #   E2E_VOL_IMM_ESCROW  escrow (key blob) file of the pre-built immutable volume
@@ -38,13 +39,13 @@
 #                       (default 65534). The immutable source must be readable
 #                       and the mutable source root writable by this identity;
 #                       c8s volume create --source preserves those modes.
-#   E2E_CDS_LOCAL_PORT  local port for the CDS port-forward (default 18443)
 #   E2E_MESH_CA         path to a pinned mesh CA bundle (default: read from the
 #                       router pod, which serves the live CA on its cert volume)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-: "${C8S_MEASUREMENTS:?pins the launch measurement of the CDS endpoint}"
+: "${C8S_CDS_URL:?the CDS the launch of this cluster names}"
+: "${C8S_CDS_PIN:?the pin document binding that CDS to its configuration}"
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
 : "${E2E_VOL_NODE:?node the c8s-vol-* devices are attached to}"
 : "${E2E_VOL_IMM_ESCROW:?escrow blob of the pre-built immutable volume}"
@@ -55,7 +56,6 @@ BUSYBOX=${E2E_BUSYBOX:-busybox:1.36}
 IMM=${E2E_VOL_IMM_NAME:-imm}
 MUT=${E2E_VOL_MUT_NAME:-mut}
 MARKER=${E2E_VOL_MUT_MARKER:-c8s-e2e-mut-proof}
-CDS_PORT=${E2E_CDS_LOCAL_PORT:-18443}
 VOL_UID=${E2E_VOL_UID:-65534}
 
 [[ "$VOL_UID" =~ ^[1-9][0-9]*$ ]] \
@@ -85,7 +85,7 @@ writer_script="until grep -q '$mut_crypt_mount_line' /proc/mounts; do sleep 1; d
 
 PF_PODS=""
 cleanup() {
-  for p in $PF_PODS ${PF_CDS:-}; do kill "$p" 2>/dev/null || true; done
+  for p in $PF_PODS; do kill "$p" 2>/dev/null || true; done
   if cw_namespace_owned "$ns"; then
     kubectl delete namespace "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     al delete "$READER" "$WRITER" >/dev/null 2>&1 || true
@@ -95,19 +95,11 @@ cleanup() {
 trap cleanup EXIT
 cw_namespace "$ns"
 
-# Every CDS call goes over a port-forward: router fronts /allowlist but not
-# /secrets, and the armTLS client verifies attestation rather than PKI
-# hostnames, so one channel serves both APIs (README.md "Operator access").
-kubectl -n c8s-system port-forward svc/c8s-cds "$CDS_PORT:8443" >/dev/null 2>&1 &
-PF_CDS=$!
-CDS_UP=""
-for _ in $(seq 1 30); do
-  curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$CDS_PORT/healthz" && { CDS_UP=1; break; }
-  sleep 1
-done
-[ -n "$CDS_UP" ] || fail "CDS port-forward never came up"
-
-c8s_conn() { c8s "$@" --url "https://127.0.0.1:$CDS_PORT" --measurements "$C8S_MEASUREMENTS"; }
+# Every CDS call goes straight to the CDS the cluster trusts: the router fronts
+# /allowlist but not /secrets, and the armTLS client verifies attestation
+# rather than PKI hostnames, so one channel serves both APIs (README.md
+# "Operator access").
+c8s_conn() { c8s "$@" --url "$C8S_CDS_URL" --image-policy-file "$C8S_CDS_PIN"; }
 al() { c8s_conn allowlist "$@"; }
 
 # serve <pod> <local-port> — wait Ready, port-forward, and answer curl_poll.

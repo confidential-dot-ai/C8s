@@ -14,7 +14,12 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-const testDigest = "sha256:" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+const (
+	testDigest = "sha256:" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	// testTag and otherTag stand for the ETags of two served documents.
+	testTag  = `"sha256:` + "1111111111111111111111111111111111111111111111111111111111111111" + `"`
+	otherTag = `"sha256:` + "2222222222222222222222222222222222222222222222222222222222222222" + `"`
+)
 
 type stubAuth struct{}
 
@@ -25,7 +30,8 @@ func (stubAuth) Authorization(method, path string, body []byte) (string, error) 
 func TestList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `W/"7"`)
+		w.Header().Set("ETag", testTag)
+		w.Header().Set(allowlist.VersionHeader, "7")
 		io.WriteString(w, `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
 	}))
 	defer srv.Close()
@@ -54,7 +60,7 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `W/"4"`)
+		w.Header().Set("ETag", testTag)
 		w.Write(body)
 	}))
 	defer srv.Close()
@@ -70,8 +76,8 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 	if want := "sha256:" + hex.EncodeToString(sum); served.Digest != want {
 		t.Errorf("FetchServed().Digest = %s, want %s", served.Digest, want)
 	}
-	if served.ETag != `W/"4"` || served.Allowlist == nil {
-		t.Errorf("FetchServed() = %+v, want ETag W/\"4\" and an allowlist", served)
+	if served.ETag != testTag || served.Allowlist == nil {
+		t.Errorf("FetchServed() = %+v, want ETag %s and an allowlist", served, testTag)
 	}
 }
 
@@ -97,9 +103,12 @@ func TestFetchServedDigestsExactBytes(t *testing.T) {
 	}
 }
 
+// A 304 still names the version CDS serves the held document at.
 func TestFetchNotModified(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("If-None-Match") == `W/"3"` {
+		if r.Header.Get("If-None-Match") == testTag {
+			w.Header().Set("ETag", testTag)
+			w.Header().Set(allowlist.VersionHeader, "9")
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -107,9 +116,12 @@ func TestFetchNotModified(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, notModified, err := NewClient(srv.URL).Fetch(context.Background(), `W/"3"`)
+	served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), testTag)
 	if err != nil || !notModified {
 		t.Fatalf("expected notModified, got nm=%v err=%v", notModified, err)
+	}
+	if served.Version != "9" || served.Allowlist != nil {
+		t.Fatalf("FetchServed() = %+v, want version 9 and no allowlist", served)
 	}
 }
 
@@ -124,14 +136,14 @@ func TestFetchServedStatus(t *testing.T) {
 		wantErr         bool
 	}{
 		{name: "304", status: http.StatusNotModified, wantNotModified: true},
-		{name: "200", status: http.StatusOK, etag: `W/"8"`, wantETag: `W/"8"`},
+		{name: "200", status: http.StatusOK, etag: otherTag, wantETag: otherTag},
 		{name: "5xx", status: http.StatusInternalServerError, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if got := r.Header.Get("If-None-Match"); got != `W/"7"` {
-					t.Errorf("If-None-Match = %q, want W/\"7\"", got)
+				if got := r.Header.Get("If-None-Match"); got != testTag {
+					t.Errorf("If-None-Match = %q, want %s", got, testTag)
 				}
 				if tt.etag != "" {
 					w.Header().Set("ETag", tt.etag)
@@ -144,7 +156,7 @@ func TestFetchServedStatus(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), `W/"7"`)
+			served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), testTag)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FetchServed() error = %v, want error %v", err, tt.wantErr)
 			}
@@ -155,79 +167,77 @@ func TestFetchServedStatus(t *testing.T) {
 	}
 }
 
-func TestVersionFromETag(t *testing.T) {
+// A CDS names the version in its version header; one released before the
+// header names it only in its ETag W/"N".
+func TestServedVersion(t *testing.T) {
 	tests := []struct {
-		name string
-		etag string
-		want string
+		name    string
+		version string
+		etag    string
+		want    string
 	}{
-		{name: "weak", etag: `W/"7"`, want: "7"},
-		{name: "strong", etag: `"7"`, want: ""},
-		{name: "empty weak", etag: `W/""`, want: ""},
-		{name: "missing", etag: "", want: ""},
-		{name: "unclosed", etag: `W/"7`, want: ""},
+		{name: "header", version: "7", etag: testTag, want: "7"},
+		{name: "header over a weak ETag", version: "7", etag: `W/"6"`, want: "7"},
+		{name: "weak ETag without header", etag: `W/"7"`, want: "7"},
+		{name: "digest ETag without header", etag: testTag, want: ""},
+		{name: "empty weak ETag", etag: `W/""`, want: ""},
+		{name: "unclosed weak ETag", etag: `W/"7`, want: ""},
+		{name: "neither", want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := VersionFromETag(tt.etag); got != tt.want {
-				t.Errorf("VersionFromETag(%q) = %q, want %q", tt.etag, got, tt.want)
+			h := http.Header{}
+			if tt.version != "" {
+				h.Set(allowlist.VersionHeader, tt.version)
+			}
+			if tt.etag != "" {
+				h.Set("ETag", tt.etag)
+			}
+			if got := servedVersion(h); got != tt.want {
+				t.Errorf("servedVersion(%v) = %q, want %q", h, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestPutWorkloadBindsBody(t *testing.T) {
-	var gotPath, gotMethod string
+func TestReplaceAllBindsBody(t *testing.T) {
+	var gotPath, gotMethod, gotContentType string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod = r.URL.Path, r.Method
+		gotContentType = r.Header.Get("Content-Type")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
-	wl := allowlist.Workload{Containers: []allowlist.Container{{
-		Digest:  mustDigest(t, testDigest),
-		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
-		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
-	}}}
-	if err := NewClient(srv.URL).PutWorkload(context.Background(), "my-app", wl, stubAuth{}); err != nil {
+	al := &allowlist.Allowlist{
+		Schema: allowlist.Schema,
+		Workloads: map[string]allowlist.Workload{"my-app": {Containers: []allowlist.Container{{
+			Digest:  mustDigest(t, testDigest),
+			Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+			Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		}}}},
+	}
+	if err := NewClient(srv.URL).ReplaceAll(context.Background(), al, "", stubAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPut {
 		t.Fatalf("method = %q", gotMethod)
 	}
-	if gotPath != "/allowlist/workloads/my-app" {
+	if gotPath != "/allowlist" {
 		t.Fatalf("path = %q", gotPath)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("Content-Type = %q", gotContentType)
 	}
 	if !strings.Contains(string(gotBody), testDigest) {
 		t.Fatalf("body missing digest: %s", gotBody)
 	}
 }
 
-func TestDeleteWorkloadOmitsContentType(t *testing.T) {
-	var gotContentType string
-	var seen bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = true
-		gotContentType = r.Header.Get("Content-Type")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	if err := NewClient(srv.URL).DeleteWorkload(context.Background(), "my-app", stubAuth{}); err != nil {
-		t.Fatal(err)
-	}
-	if !seen {
-		t.Fatal("request never sent")
-	}
-	if gotContentType != "" {
-		t.Fatalf("bodyless request should not set Content-Type, got %q", gotContentType)
-	}
-}
-
 func TestMutateRejectsNilAuthorizer(t *testing.T) {
-	err := NewClient("http://x").DeleteWorkload(context.Background(), "my-app", nil)
+	err := NewClient("http://x").ReplaceAll(context.Background(), &allowlist.Allowlist{Schema: allowlist.Schema}, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "nil Authorizer") {
 		t.Fatalf("expected nil-authorizer error, got %v", err)
 	}

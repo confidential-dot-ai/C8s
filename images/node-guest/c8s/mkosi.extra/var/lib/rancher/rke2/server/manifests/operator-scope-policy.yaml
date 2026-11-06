@@ -1,0 +1,84 @@
+# Keeps the baked guards out of reach of every credential cred-release issues.
+# Any principal in a `c8s:` group (c8s:node-operators, c8s:log-readers) is
+# denied, in admission and regardless of RBAC, every write that could disable
+# a guard or reach the host:
+#   - anything in the privileged namespaces: kube-system and
+#     c8s-system (labelled
+#     privileged for the baked operator) and c8s-router (labelled privileged
+#     for the router role, whose pods may serve ports of their own), where a
+#     pod, a HelmChart, a service-account token secret or an edited DaemonSet
+#     is root on the node; operators may delete core router Pods;
+#   - cluster-scoped RBAC, admission policies and webhooks, HelmChart/Addon
+#     CRs (helm-controller applies them with full authority),
+#     CustomResourceDefinitions (deleting one cascade-deletes every object of
+#     that kind, the HelmCharts and Cilium policies included), storage
+#     classes and PersistentVolumes (a hostPath or nodePath volume escapes
+#     restricted PodSecurity through a PVC), API registration, CSR approval,
+#     Node objects;
+#   - the kubelet-proxy subresources (nodes/proxy, pods/proxy,
+#     services/proxy) that reach the kubelet's exec endpoint without a
+#     pods/exec admission check.
+# Service addresses are guarded for every principal, not only c8s:* ones:
+# spec.externalIPs by kube-apiserver's DenyServiceExternalIPs plugin
+# (etc/rancher/rke2/config.yaml), the platform's static ClusterIP band by
+# confos-service-address (service-address-policy.yaml).
+# cred-release-rbac.yaml already omits all of this from the operator role;
+# this policy is the second, independent layer so neither an RBAC mistake
+# nor a tenant RoleBinding the operator writes can widen it. The match
+# condition selects c8s:* principals once: every other principal (system
+# components, the rke2 admin kubeconfig) leaves before any validation runs,
+# and no validation can forget the principal test. Total by construction:
+# every optional field read is guarded with has(), so failurePolicy Fail
+# cannot deny on an evaluation error (a match-condition error would deny
+# too). cred-release.service waits for both objects and proves the deny path
+# with a server-side dry-run before it serves (psa-ready.sh).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: confos-operator-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE", "CONNECT"]
+        resources: ["*/*"]
+  matchConditions:
+    - name: from-cred-release
+      expression: "(has(request.userInfo.groups) ? request.userInfo.groups : []).exists(g, g.startsWith('c8s:'))"
+  variables:
+    - name: ns
+      expression: "has(request.namespace) ? request.namespace : ''"
+    - name: sub
+      expression: "has(request.subResource) ? request.subResource : ''"
+    - name: routerPodDeletion
+      expression: >-
+        has(request.userInfo.groups) && 'c8s:node-operators' in request.userInfo.groups &&
+        has(request.operation) && request.operation == 'DELETE' &&
+        variables.ns == 'c8s-router' && request.resource.group == '' &&
+        request.resource.resource == 'pods' && variables.sub == '' &&
+        oldObject != null && has(oldObject.metadata) && oldObject.metadata != null &&
+        has(oldObject.metadata.namespace) && oldObject.metadata.namespace == 'c8s-router' &&
+        has(oldObject.metadata.name) && oldObject.metadata.name != null && oldObject.metadata.name != ''
+  validations:
+    - expression: "!(variables.ns in ['kube-system', 'c8s-system', 'c8s-router']) || variables.routerPodDeletion"
+      message: "c8s credentials may not write in privileged namespaces except operator deletion of core Pods in c8s-router"
+    - expression: >-
+        !(request.resource.group in ['admissionregistration.k8s.io', 'apiextensions.k8s.io', 'helm.cattle.io', 'k3s.cattle.io', 'storage.k8s.io', 'apiregistration.k8s.io', 'certificates.k8s.io'])
+      message: "c8s credentials may not write admission policies, CustomResourceDefinitions, HelmCharts, storage classes, API registrations or certificate requests"
+    - expression: "!(request.resource.group == 'rbac.authorization.k8s.io' && request.resource.resource in ['clusterroles', 'clusterrolebindings'])"
+      message: "c8s credentials may not write cluster-scoped RBAC"
+    - expression: "!(request.resource.group == '' && request.resource.resource in ['persistentvolumes', 'nodes'])"
+      message: "c8s credentials may not write PersistentVolumes or Nodes"
+    - expression: "!(request.resource.group == '' && request.resource.resource in ['nodes', 'pods', 'services'] && variables.sub == 'proxy')"
+      message: "c8s credentials may not use the proxy subresources"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: confos-operator-scope
+spec:
+  policyName: confos-operator-scope
+  validationActions:
+    - Deny

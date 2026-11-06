@@ -16,24 +16,41 @@ set -euo pipefail
 
 : "${CHART_DIR:?CHART_DIR must be set}"
 
+# The CDS this release names: a VM outside the cluster, pinned by a document
+# the operator passes as a file.
+cds_pin=$(mktemp)
+trap 'rm -f "$cds_pin"' EXIT
+cat > "$cds_pin" <<'CDS_PIN'
+{
+  "schema_version": "2",
+  "tee": "sev-snp",
+  "measurements": [
+    {
+      "name": "cds",
+      "measurement": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+      "launch_file": "clusterID: ci\n"
+    }
+  ]
+}
+CDS_PIN
+
 # Shared --set flags for every check below. The digests are well-formed but
 # arbitrary sha256 placeholders (lint/template only need them to parse).
 common_set=(
   --set image.tag=ci
   --set attestationApi.image.tag=ci
-  --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
-  --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
   # The default policy mode is fail-closed, which requires every digest-pinned
   # C8s component to be covered in the allowlist floor or the plugin would deny
   # it on its own node. deriveComponents auto-covers the C8s images from their
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
-  # The chart refuses to render a release that pins no CDS guest identity.
-  --set-string cds.measurements[0]=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+  # The chart refuses to render a release that names no CDS.
+  --set-string cds.address=10.9.9.9:8443
+  --set-file "cds.measurementsConfig=$cds_pin"
   # A mesh policy needs the resolver a member pod may reach, and the router's
   # egress exception needs this cluster's pod and Service ranges. kind's
   # cluster DNS and the kubeadm defaults are the representative values.

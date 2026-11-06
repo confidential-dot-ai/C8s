@@ -2,7 +2,7 @@ package helmchart
 
 import "testing"
 
-const serviceAddressPolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/service-address-policy.yaml"
+const serviceAddressPolicyPath = "../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/service-address-policy.yaml"
 
 // Member pods' packet filters let the resolver and the kube-state-metrics
 // exit through by address, so no Service outside kube-system may take an
@@ -38,7 +38,7 @@ func TestServiceAddressPolicy(t *testing.T) {
 		{"system:masters keeps the band", masters, "default", svc(map[string]any{"clusterIP": "10.53.0.1"}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := scopeRequest{tc.groups, tc.namespace, "", "services", ""}
+			r := scopeRequest{groups: tc.groups, namespace: tc.namespace, resource: "services", operation: "CREATE"}
 			if got := evalOperatorScopeObject(t, vap, r, tc.object); got != tc.want {
 				t.Errorf("admitted = %v, want %v", got, tc.want)
 			}

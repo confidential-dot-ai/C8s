@@ -150,6 +150,59 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal str
 	return pub, nil
 }
 
+// VerifyMeasuredLaunchFile confirms this guest's launch bound launchFile byte
+// for byte, and returns the TEE family the verified report proves. The file is
+// NOT itself measured, only its digest, so a host that swapped it post-boot
+// produces a mismatch.
+//
+// A guest whose launch file is its whole configuration runs no workload
+// measurer, so the binding must equal the bare anchor: an extension beyond it
+// means an unexpected measurer ran.
+func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, launchFile []byte) (teetypes.Family, error) {
+	var noWorkloadDigests []string
+	report, err := verifiedSelfReport(ctx, attestationAPIURL)
+	if err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	if err := runtimemeasure.VerifyBinding(report, launchFile, noWorkloadDigests); err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	family := report.Platform.Family()
+	if family == teetypes.FamilyUnknown {
+		return teetypes.FamilyUnknown, fmt.Errorf("the verified report names platform %q, which routes to no TEE family", report.Platform)
+	}
+	return family, nil
+}
+
+// VerifyLaunchBinding confirms this guest's verified self-report binds
+// launchFile's digest under the reported TEE family's launch-file hash,
+// followed by a prefix of the allowlist policies in the measured-policy
+// journal, as verifyNodeBinding replays them. A binding it compares and finds
+// different is ErrLaunchFileNotBound; a report that carries no binding is not.
+func VerifyLaunchBinding(ctx context.Context, attestationAPIURL, journal string, launchFile []byte) error {
+	report, err := verifiedSelfReport(ctx, attestationAPIURL)
+	if err != nil {
+		return err
+	}
+	if _, err := runtimemeasure.Binding(report); err != nil {
+		return fmt.Errorf("this guest's self-report: %w", err)
+	}
+	digest, err := runtimemeasure.LaunchFileDigest(report.Platform.Family(), launchFile)
+	if err != nil {
+		return err
+	}
+	return matchJournalPrefix(journal, func(policies []string) error {
+		if _, err := runtimemeasure.MatchLaunchFileDigestPrefix(report, digest, policies); err != nil {
+			return fmt.Errorf("%w: %w", ErrLaunchFileNotBound, err)
+		}
+		return nil
+	})
+}
+
+// ErrLaunchFileNotBound marks a launch binding that does not commit the
+// launch file.
+var ErrLaunchFileNotBound = errors.New("the launch binding does not commit the launch file")
+
 // MeasuredIdentity separates the verified guest image from the operator-key
 // binding result. Non-operator boots still need Image to pin peer nodes, so
 // a missing key must not discard a verified image. OperatorKeyErr distinguishes
@@ -194,6 +247,17 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, jour
 // the report does not. A journal over armtls.MaxRuntimeExtensions fails, as it
 // does at every verifier.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
+	return matchJournalPrefix(journal, func(policies []string) error {
+		_, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies)
+		return err
+	})
+}
+
+// matchJournalPrefix runs match, a binding check replaying a prefix of the
+// given policies, on the allowlist policies in the measured-policy journal.
+func matchJournalPrefix(journal string, match func(policies []string) error) error {
+	// INVARIANT: the journal is read after the caller fetched the report, so it
+	// covers every extend the report reflects.
 	var policies []string
 	if journal != "" {
 		var err error
@@ -202,11 +266,9 @@ func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journ
 		}
 		slog.Info("measured-policy journal", "path", journal, "policies", len(policies))
 	}
-	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
-		if len(policies) == 0 {
-			return err
-		}
+	err := match(policies)
+	if err != nil && len(policies) > 0 {
 		return fmt.Errorf("binding replays no prefix of the %d measured policies in %s: %w", len(policies), journal, err)
 	}
-	return nil
+	return err
 }

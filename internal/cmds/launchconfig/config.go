@@ -30,12 +30,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 const (
-	SchemaVersion            = "c8s-launch/v1"
+	SchemaVersion            = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -127,8 +127,11 @@ type Document struct {
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
-	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
-	// its existing wire schema avoids an independent YAML policy language.
+	// CDS is the confidential data service this cluster's nodes trust.
+	CDS CDS `yaml:"cds" json:"cds"`
+
+	// Workloads is refused: a cluster's workload entries belong in the CDS
+	// configuration, which the generator writes.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
 
 	// Router is the server's front door. A baked image cannot know it at
@@ -169,6 +172,11 @@ func (r Router) RequestBodyLimit() int64 {
 	return r.MaxRequestBodyBytes
 }
 
+// Empty reports whether the block sets no field.
+func (r Router) Empty() bool {
+	return len(r.Hostnames) == 0 && r.ACMEEmail == "" && r.ACMEDirectoryURL == "" && r.MaxRequestBodyBytes == 0
+}
+
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
 func ValidateHostname(name string) error {
 	if len(name) > 253 {
@@ -187,7 +195,8 @@ func ValidateHostname(name string) error {
 
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
-func (r *Router) validate() error {
+// Validate accepts a router block the baked router can serve.
+func (r Router) Validate() error {
 	if len(r.Hostnames) > maxRouterHostnames {
 		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
 	}
@@ -232,35 +241,42 @@ type Image struct {
 	RTMRs       map[int]string `yaml:"rtmrs,omitempty" json:"rtmrs,omitempty"`
 }
 
-// imagePlatform keeps each TEE's register rules in one place, so the shared
+// imagePlatform names the TEE family a launch tag selects, so the shared
 // verify, validate and policy paths ask the platform instead of testing for
-// "tdx" inline. Adding a platform means adding an entry, not new branches.
+// "tdx" inline.
 type imagePlatform struct {
 	family teetypes.Family
-	// validateRegisters rejects a register map that does not match what this
-	// platform measures. Its error names the platform's own rule.
-	validateRegisters func(rtmrs map[int]string) error
 }
 
 var imagePlatforms = map[string]imagePlatform{
-	"tdx": {
-		family: teetypes.FamilyTDX,
-		validateRegisters: func(rtmrs map[int]string) error {
-			if len(rtmrs) != 2 || !registerHex(rtmrs[1]) || !registerHex(rtmrs[2]) {
-				return fmt.Errorf("TDX image must pin exactly RTMR[1] and RTMR[2]")
-			}
-			return nil
-		},
-	},
-	"snp": {
-		family: teetypes.FamilySNP,
-		validateRegisters: func(rtmrs map[int]string) error {
-			if len(rtmrs) != 0 {
-				return fmt.Errorf("SNP image cannot carry RTMR pins")
-			}
-			return nil
-		},
-	},
+	"tdx": {family: teetypes.FamilyTDX},
+	"snp": {family: teetypes.FamilySNP},
+}
+
+// validateRegisters refuses a register map that is not the set this platform's
+// guests are identified by.
+func (p imagePlatform) validateRegisters(rtmrs map[int]string) error {
+	identifying, _ := armtls.ImageRegisters(p.family)
+	if len(rtmrs) != len(identifying) {
+		return fmt.Errorf("a %s image pins %s", p.family, registerRule(identifying))
+	}
+	for _, index := range identifying {
+		if !registerHex(rtmrs[index]) {
+			return fmt.Errorf("image.rtmrs[%d] must be 96 lowercase hex characters", index)
+		}
+	}
+	return nil
+}
+
+func registerRule(identifying []int) string {
+	if len(identifying) == 0 {
+		return "no RTMRs"
+	}
+	names := make([]string, 0, len(identifying))
+	for _, index := range identifying {
+		names = append(names, fmt.Sprintf("RTMR[%d]", index))
+	}
+	return "exactly " + strings.Join(names, " and ")
 }
 
 // platform resolves the document's launch tag. Callers reach it only after
@@ -327,7 +343,6 @@ type Verified struct {
 	document    Document
 	operatorPub []byte
 	pins        refvalues.ReferenceValues
-	cdsPins     refvalues.ReferenceValues
 }
 
 // Verify checks the signature before parsing host input and compares all image
@@ -402,8 +417,9 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 		return nil, err
 	}
 	return &Verified{
-		document: *doc, operatorPub: pub, pins: pins,
-		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]},
+		document:    *doc,
+		operatorPub: pub,
+		pins:        pins,
 	}, nil
 }
 
@@ -412,6 +428,12 @@ var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
+	}
+	if err := d.CDS.validate(); err != nil {
+		return err
+	}
+	if d.Workloads != "" {
+		return fmt.Errorf("workloads is not a node's to apply: give the cluster's tenant entries to `c8s launch-config new --tenant-workloads`, which writes them into the CDS configuration")
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
@@ -515,16 +537,8 @@ func (d *Document) validate() error {
 		if !rules.router {
 			return fmt.Errorf("router is server-only")
 		}
-		if err := d.Router.validate(); err != nil {
+		if err := d.Router.Validate(); err != nil {
 			return err
-		}
-	}
-	if d.Workloads != "" {
-		if !json.Valid([]byte(d.Workloads)) {
-			return fmt.Errorf("workloads must contain one valid JSON document")
-		}
-		if _, err := allowlist.ParseJSON([]byte(d.Workloads)); err != nil {
-			return fmt.Errorf("workloads: %w", err)
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
@@ -610,7 +624,18 @@ func ValidateIPv4(raw string, routable bool) error {
 	if err != nil || !addr.Is4() {
 		return fmt.Errorf("must be an IPv4 address")
 	}
-	if routable && !addr.IsGlobalUnicast() {
+	if !routable {
+		return nil
+	}
+	return ValidateRoutableIPv4(addr)
+}
+
+// ValidateRoutableIPv4 accepts an IPv4 address a node can publish or dial.
+func ValidateRoutableIPv4(addr netip.Addr) error {
+	if !addr.Is4() {
+		return fmt.Errorf("must be an IPv4 address")
+	}
+	if !addr.IsGlobalUnicast() {
 		return fmt.Errorf("must be a unicast IPv4 address")
 	}
 	return nil
@@ -639,22 +664,32 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// referenceValues pins this document's image under every launch key it names.
 func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
-	platform, ok := d.Image.platform()
+	return peerPolicy(d.Image, append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...))
+}
+
+// peerPolicy pins image under every launch key a cluster admits: the server's
+// key first, every later key an agent's.
+func peerPolicy(image Image, launchKeys []string) (refvalues.ReferenceValues, error) {
+	platform, ok := image.platform()
 	if !ok {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
-	for i, pub := range keys {
+	for i, pub := range launchKeys {
 		name := "server"
 		if i > 0 {
 			name = fmt.Sprintf("agent-%d", i)
 		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
-		if len(d.Image.RTMRs) > 0 {
-			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
-			for idx, digest := range d.Image.RTMRs {
+		entry := remote.ImagePin{
+			Name:   name,
+			Digest: mustDecodeHex(image.Measurement),
+			Anchor: []byte(pub),
+		}
+		if len(image.RTMRs) > 0 {
+			entry.Registers = make(map[int][]byte, len(image.RTMRs))
+			for idx, digest := range image.RTMRs {
 				entry.Registers[idx] = mustDecodeHex(digest)
 			}
 		}
@@ -666,25 +701,6 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, err
 	}
 	return refvalues.Parse(data)
-}
-
-// cdsPort is the image's fixed CDS node port.
-const cdsPort = 30808
-
-// CDSURL is derived from the signed server address and the image's fixed port.
-func (d *Document) CDSURL() string {
-	return "https://" + net.JoinHostPort(d.Server.Address, strconv.Itoa(cdsPort))
-}
-
-// CDSAddrPort is that same endpoint as an address and port, which is what a
-// pod ruleset names as a destination. A signed address that is not one fails
-// here rather than in the node's packet rules.
-func (d *Document) CDSAddrPort() (netip.AddrPort, error) {
-	addr, err := netip.ParseAddr(d.Server.Address)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("staged server address %q: %w", d.Server.Address, err)
-	}
-	return netip.AddrPortFrom(addr, cdsPort), nil
 }
 
 // LoadStaged reads a root-owned boot artifact produced by Stage. It is not an

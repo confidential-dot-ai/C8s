@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-const bakedManifestsDir = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/"
+const bakedManifestsDir = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/"
 
 // The node image's own manifests run under base entries that pin their whole
 // launch, environment included: each container, launched as the kubelet and

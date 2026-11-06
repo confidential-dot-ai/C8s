@@ -64,7 +64,9 @@ func variableEvidenceBytes(names iter.Seq[string]) int {
 
 // ObserveEnv validates before canonicalizing: duplicate names and malformed
 // entries must not disappear into a map and later satisfy a constrained grant.
-// Errors contain no environment names or values.
+// A name repeated with the same value is one variable whichever entry the
+// process reads; a name repeated with different values is refused. Errors
+// name at most a variable, never a value.
 func ObserveEnv(entries []string) (*EnvObservation, error) {
 	values := make(map[string]string, len(entries))
 	for _, entry := range entries {
@@ -72,8 +74,8 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 		if !ok || !validEnvPair(name, value) {
 			return nil, fmt.Errorf("malformed OCI environment")
 		}
-		if _, exists := values[name]; exists {
-			return nil, fmt.Errorf("duplicate OCI environment name")
+		if seen, exists := values[name]; exists && seen != value {
+			return nil, fmt.Errorf("OCI environment sets %s twice with different values", name)
 		}
 		values[name] = value
 	}

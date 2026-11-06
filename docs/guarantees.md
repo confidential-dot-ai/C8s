@@ -14,8 +14,8 @@ confidential VM — one whose memory the CPU encrypts and whose launch state the
 hardware measures — and nowhere the host can read them in the clear.
 
 It covers what C8s itself holds: the secret store and the mesh CA of CDS — the
-Certificate Distribution Service, the one in-cluster pod holding C8s policy and
-signing pod certificates — plus each pod's private key and volume plaintext,
+Certificate Distribution Service, the VM outside the cluster holding C8s policy
+and signing pod certificates — plus each pod's private key and volume plaintext,
 none of them a Kubernetes object. A volume's ciphertext does sit on host
 storage, so a key that leaks opens every copy of it the host kept, and a
 `--mutable` volume carries no integrity tree.
@@ -57,7 +57,8 @@ policy keeps host namespaces away from tenant pods
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
-  devices, hooks, and sysctls outside its own measured components.
+  devices, hooks, sysctls, and capabilities beyond its default set outside its
+  own measured components.
 
 All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
@@ -98,18 +99,22 @@ A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
 
 On a measured node image no interface starts a new process in a running
 container or hands one host privilege — for any principal, including the holder
-of the operator credential C8s releases.
+of the operator credential C8s releases. The exception is an exact command the
+measured base allowlist grants a container: anyone who reaches the runtime can
+start that command, and only that one. The release image grants one pair,
+RKE2's `/livez` and `/readyz` checks in kube-apiserver.
 
 Two independent layers close it: the API server denies `pods/exec`,
 `pods/attach`, `pods/portforward`, and `pods/ephemeralcontainers`, and the
 measured `c8s-runc` wrapper denies the `exec` verb under the runtime, where a
-CRI call, an exec probe, or a lifecycle hook lands. The release node image
-carries both; a development build (`C8S_DEV=1`) carries neither and has its own
-measurement, so exec posture is what a verifier pins. `gke` and `aks` keep the
-ordinary exec path
+CRI call, an exec probe, or a lifecycle hook lands, letting through only
+granted commands ([node-exec-mode.md](node-exec-mode.md#granted-execs)). The
+release node image carries both; a development build (`C8S_DEV=1`) carries
+neither and has its own measurement, so exec posture is what a verifier pins.
+`gke` and `aks` keep the ordinary exec path
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
-- **Privilege floor**: the capabilities, `no_new_privs`, namespace, and
+- **Privilege floor**: the capability, `no_new_privs`, namespace, and
   privileged-mark limits `c8s-runc` enforces on every container of a member pod
   outside the node's own exempt namespaces; the pod sandbox keeps the
   privileges the runtime gave it —
@@ -134,7 +139,8 @@ the digest of the manifest it applied into the attested handshakes a TEE-held
 front door offers (`cds`, `acme`; a `webpki` one offers attest-pq alone), so a
 session routes by the two digests that handshake bound — the manifest's and the
 router's own allowlist digest — and nothing else.
-CDS's own API is reachable separately, by default on node port `30808`.
+CDS's own API is reachable separately, at the address the install named with
+`--cds-address`.
 
 - **Route manifest**: the operator-signed hosts, paths, and backends CDS
   stores — [operator.md](operator.md#route-manifest).

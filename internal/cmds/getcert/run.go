@@ -35,6 +35,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -46,8 +47,6 @@ import (
 // config holds all CLI configuration for get-cert.
 type config struct {
 	CDSURL                 string
-	CDSMeasurements        string
-	CDSRTMRs               string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
 	AttestationApiURL      string
@@ -136,10 +135,8 @@ consumers that read that volume.`,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification; required unless the node or --image-policy-file pins CDS")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -187,8 +184,8 @@ func setupLogging(verbose bool) {
 
 // newCDSClient builds the attest and allowlist clients over one armTLS-pinned
 // HTTP client, so the policy watch trusts CDS exactly as issuance does.
-func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, error) {
-	httpClient, err := cdsHTTPClient(cfg)
+func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
+	httpClient, err := cdsHTTPClient(ctx, cfg)
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
@@ -197,7 +194,7 @@ func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, erro
 	return client, allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
 }
 
-func cdsHTTPClient(cfg config) (*http.Client, error) {
+func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.CDSURL)
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
@@ -211,29 +208,28 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := cdsPins(cfg)
+	pins, err := cdsPins(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
 	return client, nil
 }
 
-func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
+	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
-		},
-		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
+		})
 	if err != nil {
-		return armtls.Pins{}, err
+		return nil, err
 	}
 	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return armtls.Pins(policy), nil
+	return pins, nil
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
@@ -251,12 +247,12 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(endpoint)
+		cfg.CDSURL = cmdsutil.CDSURL(address)
 	}
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
@@ -288,14 +284,14 @@ func run(cfg config) error {
 	}
 	slog.Debug("credential volume validated")
 
-	client, policyClient, err := newCDSClient(cfg)
-	if err != nil {
-		return err
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
+
+	client, policyClient, err := newCDSClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {
@@ -425,10 +421,6 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	}
 	// policyRenewPending debounces the policy watch until the timer fires.
 	var policyRenewPending bool
-	// policyVersion is the If-None-Match version: the stamp's, advanced to any
-	// served version whose bytes still match it, so a no-op allowlist write
-	// costs one 200 rather than one per tick until the next re-issue.
-	policyVersion := stampedPolicyVersion(publishedLeaf(creds.current))
 
 	var cdsWatchC <-chan time.Time
 	if cfg.CAWatchInterval > 0 {
@@ -488,18 +480,17 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if err != nil || stamp == nil {
 				continue
 			}
-			served, stale, err := stampedPolicyStale(operationCtx, policyClient, policyVersion, stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(operationCtx, policyClient, stamp.AllowlistDigest)
 			if err != nil {
 				slog.Warn("allowlist policy check failed", "error", err)
 				continue
 			}
 			if !stale {
-				policyVersion = served
 				continue
 			}
 			delay := policyRenewDelayFn(cfg.CAWatchInterval, time.Until(renewDue))
-			if served == policyVersion {
-				slog.Warn("cds serves different allowlist bytes at a version that matched the stamp, renewing", "stamped_version", stamp.AllowlistVersion, "matched_version", policyVersion, "delay", delay)
+			if served == stamp.AllowlistVersion {
+				slog.Warn("cds serves different allowlist bytes at the version the stamp names, renewing", "stamped_version", stamp.AllowlistVersion, "delay", delay)
 			} else {
 				slog.Info("cds serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", served, "delay", delay)
 			}
@@ -538,7 +529,6 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			}
 			failures = 0
 			warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
-			policyVersion = stampedPolicyVersion(publishedLeaf(creds.current))
 			if isNamedLeaf(cfg, creds.current) {
 				unnamedRuns = 0
 			} else {
@@ -594,7 +584,7 @@ var renewalRetryBase = 15 * time.Second
 // the previous CA certificate expires. That second bound is also what
 // keeps a leaf from expiring exactly as its renewal fires: CDS caps a named
 // leaf at issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on
-// the flag alone — which the chart sets to the same value — would reset the
+// the flag alone — which the chart sets below that cap — would reset the
 // timer after issuance, drift later every cycle, and leave a single failed
 // renewal on a dead generation for a full interval.
 //
@@ -1181,39 +1171,18 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 }
 
 // stampedPolicyStale reports whether the allowlist CDS serves differs from the
-// stamped digest, and the served version. It sends version as If-None-Match, a
-// version already known to serve the stamped bytes. Strict clients decide on
-// the digest and read the version only for diagnostics, so a version bump with
-// identical bytes needs no renewal. A 304 settles on CDS's version counter
-// alone, so bytes that diverge at an unchanged counter (a restored database)
-// are not seen here; the CA watch covers a CDS restart. The fetch rides the
-// armTLS-verified client, like servedCAStale's.
-func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, version string, digest []byte) (string, bool, error) {
-	served, notModified, err := client.FetchServed(ctx, `W/"`+version+`"`)
+// stamped bytes, and the version it serves them at. It sends the stamped
+// digest's tag as If-None-Match, so an allowlist whose bytes are unchanged
+// costs a 304 however its version moves. The fetch rides the armTLS-verified
+// client, like servedCAStale's.
+func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, digest []byte) (servedVersion string, stale bool, err error) {
+	stamped := "sha256:" + hex.EncodeToString(digest)
+	served, notModified, err := client.FetchServed(ctx, pkgallowlist.EntityTag(stamped))
 	if err != nil {
 		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
 	}
-	if notModified {
-		return version, false, nil
-	}
-	servedVersion := allowlistclient.VersionFromETag(served.ETag)
-	if servedVersion == "" {
-		return "", false, fmt.Errorf("fetch allowlist from cds: ETag %q is not a weak ETag W/\"N\"", served.ETag)
-	}
-	return servedVersion, served.Digest != "sha256:"+hex.EncodeToString(digest), nil
-}
-
-// stampedPolicyVersion is the allowlist version leaf's stamp names, or "" when
-// leaf is nil or unnamed.
-func stampedPolicyVersion(leaf *x509.Certificate) string {
-	if leaf == nil {
-		return ""
-	}
-	stamp, err := armtls.MatchedWorkloadFromCert(leaf)
-	if err != nil || stamp == nil {
-		return ""
-	}
-	return stamp.AllowlistVersion
+	stale = !notModified && served.Digest != stamped
+	return served.Version, stale, nil
 }
 
 // policyRenewDelayFn is a var so the debounce test can hold a renewal pending.

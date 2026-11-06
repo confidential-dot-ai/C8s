@@ -51,13 +51,13 @@ run)
 kernel)
   # Older base revisions have no verity harness. Keep the same measurement
   # procedure for head and base without inventing tests on the older tree.
-  if [ ! -f node-guest-image/tests/mount-verity-test.sh ]; then
+  if [ ! -f images/node-guest/tests/mount-verity-test.sh ]; then
     echo "no kernel verity harness on this revision"
     exit 0
   fi
   # A base revision's own harness may predate the coverage argument; this
   # script's harness drives the base revision's test binary instead.
-  harness="$(cd "$(dirname "$0")/.." && pwd)/node-guest-image/tests/mount-verity-test.sh"
+  harness="$(cd "$(dirname "$0")/.." && pwd)/images/node-guest/tests/mount-verity-test.sh"
   [ -s "$profile" ] || { echo "run ordinary coverage first" >&2; exit 1; }
   kernel_scratch=$(mktemp -d)
   trap 'rm -rf "$kernel_scratch"' EXIT

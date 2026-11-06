@@ -2,6 +2,7 @@ package nodeservices
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -27,13 +29,32 @@ func testPins(t *testing.T) refvalues.ReferenceValues {
 	return pins
 }
 
+// document is a staged launch configuration of the node image the staged
+// peer policy pins, under the server launch key that policy anchors.
 func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	t.Helper()
-	pins := testPins(t)
-	return &launchconfig.Document{Role: role, Image: launchconfig.Image{Platform: "tdx"}, Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)}, TLSSAN: "c8s.local"}
+	server := testPins(t).Images[0]
+	return &launchconfig.Document{
+		SchemaVersion: launchconfig.SchemaVersion, Role: role,
+		CDS: launchconfig.CDS{
+			Address:      "cds.example.org:8443",
+			Measurements: string(externalCDSPin(t)),
+			PinFloor:     9,
+		},
+		Image: launchconfig.Image{
+			Platform:    "tdx",
+			Measurement: hex.EncodeToString(server.Digest),
+			RTMRs: map[int]string{
+				1: hex.EncodeToString(server.Registers[1]),
+				2: hex.EncodeToString(server.Registers[2]),
+			},
+		},
+		Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(server.Anchor)},
+		TLSSAN: "c8s.local",
+	}
 }
 
-const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\n    cds_measurements: []\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
+const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
 const seed = `{"schema":"c8s.allowlist/v1","workloads":{"operator":{"containers":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 
 func writeInput(t *testing.T, root, name string, data []byte) {
@@ -53,17 +74,11 @@ func prepareRoot(t *testing.T) string {
 	for name, data := range map[string]string{"image-policy.yaml": meshFloor, "allowlist-seed.json": seed} {
 		writeInput(t, root, "/usr/lib/c8s/"+name, []byte(data))
 	}
-	pins := testPins(t)
-	for _, name := range []string{"peers.json", "cds.json"} {
-		if name == "cds.json" {
-			pins.Images = pins.Images[:1]
-		}
-		data, err := refvalues.Format(pins)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeInput(t, root, launchDir+name, data)
+	peers, err := refvalues.Format(testPins(t))
+	if err != nil {
+		t.Fatal(err)
 	}
+	writeInput(t, root, launchDir+"peers.json", peers)
 	writeInput(t, root, launchDir+"config.json", []byte(`{"rke2":{"serverToken":"SECRET-SERVER-TOKEN","agentToken":"SECRET-AGENT-TOKEN"}}`))
 	return root
 }
@@ -86,7 +101,7 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
@@ -113,57 +128,14 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 			}
 			pull := ga["pull"].(map[string]any)
-			if pull["url"] != doc.CDSURL() || pull["cds_measurements_config"] != launchDir+"cds.json" || pull["timeout"] != "30s" {
+			if pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
 			}
-			if _, exists := pull["cds_measurements"]; exists {
-				t.Fatal("flat pins retained")
-			}
-			_, err = os.Stat(filepath.Join(root, PublicDir, "allowlist-seed.json"))
-			if role == launchconfig.Agent && !os.IsNotExist(err) {
-				t.Fatal("agent received server seed")
-			}
-			if role == launchconfig.Server && err != nil {
-				t.Fatal(err)
+			// The floor must arrive as the number the enforcer reads.
+			if floor := publishedPinFloor(t, pull); floor != doc.CDS.PinFloor {
+				t.Fatalf("pull cds_pin_floor = %d, want the launch document's %d", floor, doc.CDS.PinFloor)
 			}
 		})
-	}
-}
-
-func TestPrepareCannotReplaceBakedWorkload(t *testing.T) {
-	root := prepareRoot(t)
-	doc := document(t, launchconfig.Server)
-	doc.Workloads = seed
-	if err := Prepare(root, doc); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
-		t.Fatalf("got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir, "allowlist-seed.json")); !os.IsNotExist(err) {
-		t.Fatal("published rejected seed")
-	}
-
-	doc.Workloads = strings.ReplaceAll(strings.ReplaceAll(seed, "operator", "application"), strings.Repeat("a", 64), strings.Repeat("b", 64))
-	if err := Prepare(root, doc); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(root, PublicDir, "allowlist-seed.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	merged, err := allowlist.ParseJSON(data)
-	if err != nil || len(merged.Workloads) != 2 {
-		t.Fatalf("merged policy: %v %v", merged, err)
-	}
-	data, err = os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var policy map[string]any
-	if err := yaml.Unmarshal(data, &policy); err != nil {
-		t.Fatal(err)
-	}
-	base := basePolicy(t, policy["allowlist"].(map[string]any)["base"])
-	if _, exists := base.Workloads["application"]; exists {
-		t.Fatal("signed tenant workload entered the unconditional bootstrap base")
 	}
 }
 
@@ -195,7 +167,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			entries, err := os.ReadDir(filepath.Join(root, PublicDir))
@@ -219,7 +191,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			}
 			want := []string{"cds.json", "peers.json"}
 			if role == launchconfig.Server {
-				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
+				want = []string{"cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
 				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
 					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
 					if err != nil || string(data) != expected {
@@ -230,15 +202,13 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			if !reflect.DeepEqual(names, want) {
 				t.Fatalf("public files = %v, want %v", names, want)
 			}
-			for _, name := range []string{"peers.json", "cds.json"} {
-				original, err := os.ReadFile(filepath.Join(root, launchDir, name))
-				if err != nil {
-					t.Fatal(err)
-				}
-				public, err := os.ReadFile(filepath.Join(root, PublicDir, name))
-				if err != nil || !bytes.Equal(original, public) {
-					t.Fatalf("changed authenticated %s: %v", name, err)
-				}
+			original, err := os.ReadFile(filepath.Join(root, launchDir, "peers.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			public, err := os.ReadFile(filepath.Join(root, PublicDir, "peers.json"))
+			if err != nil || !bytes.Equal(original, public) {
+				t.Fatalf("changed authenticated peers.json: %v", err)
 			}
 			private, err := os.Stat(filepath.Join(root, launchDir, "config.json"))
 			if err != nil || private.Mode().Perm() != 0600 {
@@ -250,10 +220,10 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 
 func TestPrepareAgentRemovesServerOutputs(t *testing.T) {
 	root := prepareRoot(t)
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Prepare(root, document(t, launchconfig.Agent)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Agent)); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range serverOutputNames {
@@ -274,7 +244,7 @@ func TestPrepareRejectsChartFloorNameCollision(t *testing.T) {
 			t.Run(name+"/"+string(role), func(t *testing.T) {
 				root := prepareRoot(t)
 				writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(incoming))
-				if err := Prepare(root, document(t, role)); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
+				if err := PrepareNode(root, document(t, role)); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
 					t.Fatalf("accepted chart replacing system floor: %v", err)
 				}
 			})
@@ -286,7 +256,7 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
 		root := prepareRoot(t)
 		writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(strings.ReplaceAll(seed, "operator", "system")))
-		if err := Prepare(root, document(t, role)); err != nil {
+		if err := PrepareNode(root, document(t, role)); err != nil {
 			t.Fatalf("%s: identical measured floor entry: %v", role, err)
 		}
 		data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
@@ -340,7 +310,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			root := prepareRoot(t)
 			doc := document(t, launchconfig.Server)
 			doc.Router = tc.router
-			if err := Prepare(root, doc); err != nil {
+			if err := PrepareNode(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			for name, want := range tc.want {
@@ -360,7 +330,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	root := prepareRoot(t)
 	doc := document(t, launchconfig.Server)
 	doc.Router = &launchconfig.Router{Hostnames: []string{`a.example.com; return 200 "x"`}}
-	if err := Prepare(root, doc); err == nil {
+	if err := PrepareNode(root, doc); err == nil {
 		t.Fatal("injected hostname was published")
 	}
 	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "hostnames")); !os.IsNotExist(err) {
@@ -376,7 +346,7 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
 	doc := document(t, launchconfig.Server)
 
-	if err := Prepare(root, doc); err != nil {
+	if err := PrepareNode(root, doc); err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,8 +372,8 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
 		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
 	}
-	if want := []string{"192.0.2.10:30808"}; !reflect.DeepEqual(credentials.Destinations, want) {
-		t.Errorf("credential destinations = %v, want this cluster's CDS %v", credentials.Destinations, want)
+	if credentials.Port != 8443 {
+		t.Errorf("credential role port = %d, want the port this cluster's CDS serves on", credentials.Port)
 	}
 }
 
@@ -412,7 +382,7 @@ func TestPrepareRefusesABakedConfigWithoutAMeshPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(floor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err == nil {
 		t.Fatal("staging completed a baked config with no mesh policy")
 	}
 }
@@ -431,7 +401,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor+tc.role))
 
-			if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+			if err := PrepareNode(root, document(t, launchconfig.Server)); err == nil {
 				t.Fatal("staging completed a policy that already binds the credential role")
 			}
 		})
@@ -444,7 +414,7 @@ func TestPrepareKeepsTheMeasuredRoles(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(roleFloor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	if err := PrepareNode(root, document(t, launchconfig.Server)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -518,9 +488,9 @@ type stagedCapture struct {
 }
 
 type stagedRole struct {
-	Name         string   `yaml:"name"`
-	UID          uint32   `yaml:"uid"`
-	Destinations []string `yaml:"destinations"`
+	Name string `yaml:"name"`
+	UID  uint32 `yaml:"uid"`
+	Port uint16 `yaml:"port"`
 }
 
 // meshPolicy is the measured mesh policy a baked config carries: its own role
@@ -536,3 +506,19 @@ const meshPolicy = `mesh:
 
 // meshFloor is the baked config of a node, as the image always writes one.
 const meshFloor = floor + meshPolicy
+
+// publishedPinFloor is the floor the enforcer reads out of the pull section.
+func publishedPinFloor(t *testing.T, pull map[string]any) uint64 {
+	t.Helper()
+	data, err := yaml.Marshal(pull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		PinFloor uint64 `yaml:"cds_pin_floor"`
+	}
+	if err := yaml.Unmarshal(data, &read); err != nil {
+		t.Fatal(err)
+	}
+	return read.PinFloor
+}

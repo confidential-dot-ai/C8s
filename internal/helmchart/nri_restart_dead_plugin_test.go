@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// deadPluginFixture runs the baked pins script (which ends in the same
+// deadPluginFixture runs the baked policy-measurement script (which ends in the same
 // restartAndWait tail as the full installer) against stubs: the c8s binary,
 // nsenter and curl are replaced, and /host is a temp dir.
 type deadPluginFixture struct {
@@ -33,7 +33,7 @@ func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 
 	dir := t.TempDir()
 	f := &deadPluginFixture{
-		script: filepath.Join(dir, "pins.sh"),
+		script: filepath.Join(dir, "measure-policies.sh"),
 		root:   filepath.Join(dir, "host"),
 		log:    filepath.Join(dir, "calls.log"),
 	}
@@ -52,7 +52,7 @@ func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 		}
 	}
 	stub("c8s", `case "$2" in
-set-cds-pins) echo "$PINS_RESULT" ;;
+set-measure-policies) echo "$MEASURE_RESULT" ;;
 plugin-ready) exit "$PLUGIN_CHECK_RC" ;;
 esac`)
 	stub("nsenter", "exit 0")
@@ -71,7 +71,7 @@ printf 'ok [http 200]'`)
 	return f
 }
 
-func (f *deadPluginFixture) run(t *testing.T, pins string, checkRC int) (string, []string) {
+func (f *deadPluginFixture) run(t *testing.T, outcome string, checkRC int) (string, []string) {
 	t.Helper()
 	_ = os.Remove(f.log)
 	cmd := exec.Command("/bin/sh", f.script)
@@ -79,7 +79,7 @@ func (f *deadPluginFixture) run(t *testing.T, pins string, checkRC int) (string,
 	if f.healthAnswers {
 		guardRC = 0
 	}
-	cmd.Env = append(os.Environ(), "PINS_RESULT="+pins, fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC), fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC))
+	cmd.Env = append(os.Environ(), "MEASURE_RESULT="+outcome, fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC), fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("script failed: %v\n%s", err, out)
@@ -118,10 +118,10 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 	// Pins changed: the restart is already due, the check is skipped.
 	_, calls = f.run(t, "updated", 1)
 	if !calledWith(calls, "nsenter") || calledWith(calls, "c8s nri-image-policy plugin-ready") {
-		t.Errorf("pins update: calls %q, want a restart without the plugin check", calls)
+		t.Errorf("switch update: calls %q, want a restart without the plugin check", calls)
 	}
 	if _, err := os.Stat(stamp); err == nil {
-		t.Error("a pins restart wrote the dead-plugin stamp")
+		t.Error("a switch-update restart wrote the dead-plugin stamp")
 	}
 
 	// Plugin dead: restart once and stamp it.

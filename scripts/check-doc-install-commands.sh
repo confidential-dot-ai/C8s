@@ -26,9 +26,34 @@ done
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The doc commands reference operator-pub.pem relative to the working dir.
+# The operator key the CDS configuration below carries.
 openssl ecparam -genkey -name prime256v1 -noout -out "$work/operator.key" 2>/dev/null
 openssl ec -in "$work/operator.key" -pubout -out "$work/operator-pub.pem" 2>/dev/null
+
+# The CDS the documented install names: this release's own generator writes
+# the configuration and the pin binding it, so the install parses the document
+# the documented flow produces. The launch digest is a placeholder and the
+# component seed is empty: no report is verified here, and what the CDS serves
+# is checked after cluster contact.
+placeholder_launch_digest=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+printf '{"snp_variants":[{"smp":1,"measurement":{"snp_launch_digest":"%s","algorithm":"sha384"}}]}' \
+  "$placeholder_launch_digest" > "$work/cds-image-manifest.json"
+printf '{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"%s"}]}' \
+  "$placeholder_launch_digest" > "$work/node-pins.json"
+printf '{"schema":"c8s.allowlist/v1","workloads":{}}' > "$work/allowlist-seed.json"
+c8s cds config new --out "$work/cds" \
+  --cluster-id docs \
+  --operator-keys "$work/operator-pub.pem" \
+  --allowlist-seed "$work/allowlist-seed.json" \
+  --node-pins "$work/node-pins.json" \
+  --node-cidr 10.0.0.0/24 \
+  --pod-cidr 10.244.0.0/16 \
+  --service-cidr 10.96.0.0/16 \
+  --image-manifest "$work/cds-image-manifest.json" \
+  --platform sev-snp \
+  --vcpus 1 >/dev/null
+# The doc commands read the pin from the working directory.
+cp "$work/cds/cds-pin.json" "$work/cds-pin.json"
 
 # A server that refuses instantly, so cluster contact fails fast and
 # deterministically.

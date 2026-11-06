@@ -41,7 +41,7 @@ set -euo pipefail
 
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
-# The repositories node-guest-image/c8s/mkosi.sync resolves at C8S_REF.
+# The repositories images/node-guest/c8s/mkosi.sync resolves at C8S_REF.
 components=(c8s-operator nri-image-policy cds armtls-mesh)
 image_repo=node-guest-base
 docker_workflow=docker.yml
@@ -104,7 +104,12 @@ commit_exists() {
 }
 
 branch_sha() {
-  gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha 2>/dev/null || true
+  # gh api prints the error body on stdout and exits non-zero; only a
+  # successful lookup may print, or a missing branch reads as "exists".
+  local out
+  if out=$(gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha 2>/dev/null); then
+    printf '%s\n' "$out"
+  fi
 }
 
 ensure_branch() {

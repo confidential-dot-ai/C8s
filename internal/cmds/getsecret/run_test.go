@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // TestPrepareOutDir: the "must be memory-backed" invariant on --out-dir is
@@ -70,15 +71,16 @@ func TestParseSecretSpec(t *testing.T) {
 func validConfig(t *testing.T) config {
 	t.Helper()
 	return config{
-		CDSURL:            "https://cds.example",
-		AttestationApiURL: "http://127.0.0.1:8080",
-		Attempts:          3,
-		RetryInterval:     time.Second,
-		RequestTimeout:    time.Second,
-		InventoryTimeout:  time.Second,
-		Secrets:           []secretRequest{{Name: "DB", Path: "/api/db"}},
-		OutDir:            t.TempDir(),
-		FileMode:          "0640",
+		CDSURL:                 "https://cds.example",
+		AttestationApiURL:      "http://127.0.0.1:8080",
+		MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile),
+		Attempts:               3,
+		RetryInterval:          time.Second,
+		RequestTimeout:         time.Second,
+		InventoryTimeout:       time.Second,
+		Secrets:                []secretRequest{{Name: "DB", Path: "/api/db"}},
+		OutDir:                 t.TempDir(),
+		FileMode:               "0640",
 	}
 }
 
@@ -324,12 +326,12 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// A malformed RTMR pin is a typo in rendered config; pinning nothing is not
-// an acceptable fallback for it.
-func TestRunRejectsBadRTMRs(t *testing.T) {
+// A pin that is not one CDS VM's identity is a typo in rendered config;
+// pinning nothing is not an acceptable fallback for it.
+func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.RTMRs = []string{"nope"}
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--rtmrs") {
-		t.Fatalf("err = %v, want an RTMR-parse failure", err)
+	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}
 }

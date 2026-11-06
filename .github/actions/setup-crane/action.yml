@@ -1,0 +1,26 @@
+name: setup-crane
+description: >
+  Install the crane CLI (github.com/google/go-containerregistry) from its
+  release tarball, verified against a pinned SHA-256, and put it on PATH. The
+  same release the metal lanes build with `go install`.
+
+runs:
+  using: composite
+  steps:
+    - name: Install crane (checksum-pinned)
+      shell: bash
+      env:
+        VERSION: v0.21.6
+        # SHA256 from the release's checksums.txt (Linux_x86_64).
+        SHA256: 7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435
+      run: |
+        set -euo pipefail
+        : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+        : "${GITHUB_PATH:?GITHUB_PATH is required}"
+        dir=$(mktemp -d -- "$RUNNER_TEMP/crane.XXXXXX")
+        curl -fsSL --retry 3 -o "$dir/crane.tar.gz" \
+          "https://github.com/google/go-containerregistry/releases/download/$VERSION/go-containerregistry_Linux_x86_64.tar.gz"
+        echo "$SHA256  $dir/crane.tar.gz" | sha256sum -c -
+        tar -xzf "$dir/crane.tar.gz" -C "$dir" crane
+        echo "$dir" >>"$GITHUB_PATH"
+        "$dir/crane" version

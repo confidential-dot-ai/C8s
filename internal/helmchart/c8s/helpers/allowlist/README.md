@@ -4,10 +4,10 @@ Source: [templates/_allowlist.tpl](../../templates/_allowlist.tpl).
 [All helpers](../README.md).
 
 `c8s.components` resolves `Values.c8sComponents` into a JSON list of
-`{name, image, enabled, cdsExempt, argvPinned, entrypoint}` records. `valuePath` selects the image object;
+`{name, image, enabled, argvPinned, entrypoint}` records. `valuePath` selects the image object;
 `enabledPath` selects its boolean gate, with an empty path enabling the component;
 `entrypoint` is the argv prefix every container running the image starts with.
-`c8s.entrypoint` takes `(dict "root" $ "valuePath" "cds.image")` and returns
+`c8s.entrypoint` takes `(dict "root" $ "valuePath" "image")` and returns
 that entrypoint as JSON; each component container renders it as its
 `command`, so the argv never depends on the image's ENTRYPOINT or CMD.
 The derived name is the component's `valuePath`. `c8s.valueAtPath` takes
@@ -17,14 +17,13 @@ object, so scalar booleans must be handled as text here.
 
 The component inventory drives both allowlist derivation and the coverage guard
 in [validations.yaml](../../templates/validations.yaml); `c8s install` also reads
-it from chart values. CDS is exempt from that guard because its self-entry is
-seeded independently. Components marked `argvPinned` are covered by argv-pinned
+it from chart values. Components marked `argvPinned` are covered by argv-pinned
 seed entries and excluded from component derivation.
 
 `c8s.imageAllowlist` returns a digest-to-`{image, entrypoint}` map containing enabled,
 digest-pinned components when `bootstrapAllowlist.deriveComponents` is true,
-plus the CDS self-entry and enabled router nginx. Nginx is independently versioned
-and derives from its own image values (`router.nginx.entrypoint`). A derived
+plus enabled router nginx. Nginx is independently versioned and derives from
+its own image values (`router.nginx.entrypoint`). A derived
 component without an entrypoint fails the render. `c8s.componentShapes` turns
 each such image into its allowlist containers; see
 [Component shapes](#component-shapes). Argv-pinned components and RKE2
@@ -191,7 +190,7 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | `nriImagePolicy.enabled` | Install script (pins script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+| NRI installer | `nriImagePolicy.enabled` | Install script (policy-measurement script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 | NRI containerd-prep | NRI enabled, RKE2, and not baked | Containerd-prep script |
 | Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
 

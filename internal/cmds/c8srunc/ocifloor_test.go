@@ -13,6 +13,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 const (
@@ -32,9 +33,18 @@ func testFloor() nriimagepolicy.MeshFloor {
 	}
 }
 
+// bundleCapabilities spells capability names the way a bundle carries them.
+func bundleCapabilities(names ...string) []string {
+	held := make([]string, 0, len(names))
+	for _, name := range names {
+		held = append(held, "CAP_"+name)
+	}
+	return held
+}
+
 // workloadBundle is the OCI configuration containerd writes for an ordinary
-// member-pod container: the runtime's default capabilities less the three the
-// floor removes, a non-root non-reserved user, and its own namespaces.
+// member-pod container: the node's default capabilities, a non-root
+// non-reserved user and its own namespaces.
 func workloadBundle() *specs.Spec {
 	return &specs.Spec{
 		Annotations: map[string]string{
@@ -47,13 +57,15 @@ func workloadBundle() *specs.Spec {
 				UID: testWorkloadUID,
 				GID: testWorkloadUID,
 			},
+			Cwd:             "/",
 			NoNewPrivileges: true,
 			Capabilities: &specs.LinuxCapabilities{
-				Bounding:  append([]string{}, workloadCapabilities...),
-				Effective: append([]string{}, workloadCapabilities...),
-				Permitted: append([]string{}, workloadCapabilities...),
+				Bounding:  bundleCapabilities(allowlist.DefaultCapabilities...),
+				Effective: bundleCapabilities(allowlist.DefaultCapabilities...),
+				Permitted: bundleCapabilities(allowlist.DefaultCapabilities...),
 			},
 		},
+		Root: &specs.Root{Path: "/run/containerd/bundle/rootfs"},
 		Mounts: []specs.Mount{
 			{
 				Destination: "/sys",
@@ -103,44 +115,33 @@ func TestFloorRefusals(t *testing.T) {
 	}{
 		{name: "an ordinary container"},
 		{
+			name: "a capability an entry may declare, with no grant for this container",
+			bundle: func(s *specs.Spec) {
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
+			},
+			wants: "capabilities SYS_ADMIN",
+		},
+		{
 			name: "CAP_NET_ADMIN",
 			bundle: func(s *specs.Spec) {
 				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_NET_ADMIN")
 			},
-			wants: "effective capability CAP_NET_ADMIN",
+			wants: "capability NET_ADMIN, which no entry may declare",
 		},
 		{
-			name: "CAP_NET_RAW",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Permitted = append(s.Process.Capabilities.Permitted, "CAP_NET_RAW")
-			},
-			wants: "permitted capability CAP_NET_RAW",
+			name:   "CAP_SETUID in the inheritable set",
+			bundle: func(s *specs.Spec) { s.Process.Capabilities.Inheritable = []string{"CAP_SETUID"} },
+			wants:  "capability SETUID, which no entry may declare",
 		},
 		{
-			name: "CAP_SYS_ADMIN in the bounding set alone",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Bounding = append(s.Process.Capabilities.Bounding, "CAP_SYS_ADMIN")
-			},
-			wants: "bounding capability CAP_SYS_ADMIN",
+			name:   "CAP_BPF in the ambient set",
+			bundle: func(s *specs.Spec) { s.Process.Capabilities.Ambient = []string{"CAP_BPF"} },
+			wants:  "capabilities BPF",
 		},
 		{
-			name: "CAP_BPF",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_BPF")
-			},
-			wants: "capability CAP_BPF",
-		},
-		{
-			name: "CAP_SETUID",
-			bundle: func(s *specs.Spec) {
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SETUID")
-			},
-			wants: "capability CAP_SETUID",
-		},
-		{
-			name:   "CAP_SETGID in the ambient set",
-			bundle: func(s *specs.Spec) { s.Process.Capabilities.Ambient = []string{"CAP_SETGID"} },
-			wants:  "ambient capability CAP_SETGID",
+			name:   "no capability sets at all",
+			bundle: func(s *specs.Spec) { s.Process.Capabilities = nil },
+			wants:  "no capability sets",
 		},
 		{
 			name:   "no_new_privs unset",
@@ -181,11 +182,6 @@ func TestFloorRefusals(t *testing.T) {
 			wants: "cgroup2 is mounted writable",
 		},
 		{
-			name:   "no capability sets at all",
-			bundle: func(s *specs.Spec) { s.Process.Capabilities = nil },
-			wants:  "no capability sets",
-		},
-		{
 			name: "host PID namespace",
 			bundle: func(s *specs.Spec) {
 				s.Linux.Namespaces = slices.DeleteFunc(s.Linux.Namespaces, func(ns specs.LinuxNamespace) bool {
@@ -213,9 +209,9 @@ func TestFloorRefusals(t *testing.T) {
 				// Only the sandbox's own bundle carries its id as its own
 				// container id; a workload claiming the type is still covered.
 				s.Annotations[annotationContainerType] = containerTypeSandbox
-				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
+				s.Process.NoNewPrivileges = false
 			},
-			wants: "effective capability CAP_SYS_ADMIN",
+			wants: "no_new_privs is not set",
 		},
 		{
 			name: "a user namespace",
@@ -273,7 +269,7 @@ func TestFloorRefusals(t *testing.T) {
 				s.Process.User.UID = testMeshUID
 				s.Process.User.GID = testMeshUID
 			},
-			wants: "capability",
+			wants: "a container of the mesh role holds capabilities",
 		},
 		{
 			name: "a bundle without a process",
@@ -288,7 +284,7 @@ func TestFloorRefusals(t *testing.T) {
 			if tc.bundle != nil {
 				tc.bundle(bundle)
 			}
-			err := requireFloor(bundle, "ctr", nil, testFloor())
+			err := requireFloor(bundle, "ctr", nil, testFloor(), "")
 			switch {
 			case tc.wants == "" && err != nil:
 				t.Fatalf("the floor refused an ordinary container: %v", err)
@@ -302,6 +298,45 @@ func TestFloorRefusals(t *testing.T) {
 	}
 }
 
+// A capability beyond the node's default set needs a declaration admission
+// recorded for that container before the create.
+func TestFloorHoldsCapabilitiesToTheGrant(t *testing.T) {
+	const (
+		granted = "3f1c4e4f1e3a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+		other   = "aa1c4e4f1e3a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+	)
+	dir := t.TempDir()
+	record := filepath.Join(dir, granted)
+	if err := os.WriteFile(record, []byte(`{"capabilities":[["SYS_ADMIN"],["NET_ADMIN"]]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundle := workloadBundle()
+	bundle.Process.Capabilities.Effective = append(bundle.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
+	if err := requireFloor(bundle, granted, nil, testFloor(), dir); err != nil {
+		t.Fatalf("a granted capability was refused: %v", err)
+	}
+	if err := requireFloor(bundle, other, nil, testFloor(), dir); err == nil {
+		t.Fatal("a container with no record of its own kept SYS_ADMIN")
+	}
+	bundle.Process.Capabilities.Bounding = append(bundle.Process.Capabilities.Bounding, "CAP_BPF")
+	err := requireFloor(bundle, granted, nil, testFloor(), dir)
+	if err == nil || !strings.Contains(err.Error(), "capabilities BPF, SYS_ADMIN") {
+		t.Fatalf("capabilities no one declaration grants were admitted: %v", err)
+	}
+	bundle.Process.Capabilities.Bounding = bundleCapabilities(allowlist.DefaultCapabilities...)
+	bundle.Process.Capabilities.Effective = append(bundle.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+	if err := requireFloor(bundle, granted, nil, testFloor(), dir); err == nil {
+		t.Fatal("a record naming NET_ADMIN granted it")
+	}
+	bundle.Process.Capabilities.Effective = bundleCapabilities(append(allowlist.DefaultCapabilities, "SYS_ADMIN")...)
+	if err := os.Chmod(record, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireFloor(bundle, granted, nil, testFloor(), dir); err == nil {
+		t.Fatal("a record anyone could write was read as admission's")
+	}
+}
+
 // A role's container holds no capabilities, whichever role it is.
 func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
 	for _, uid := range []uint32{testMeshUID, testRouterUID} {
@@ -311,40 +346,62 @@ func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
 			GID: uid,
 		}
 		bundle.Process.Capabilities = &specs.LinuxCapabilities{}
-		if err := requireFloor(bundle, "ctr", nil, testFloor()); err != nil {
+		if err := requireFloor(bundle, "ctr", nil, testFloor(), ""); err != nil {
 			t.Fatalf("the role at uid %d was refused with no capability: %v", uid, err)
 		}
 		bundle.Process.Capabilities.Effective = []string{"CAP_NET_BIND_SERVICE"}
-		if err := requireFloor(bundle, "ctr", nil, testFloor()); err == nil {
+		if err := requireFloor(bundle, "ctr", nil, testFloor(), ""); err == nil {
 			t.Fatalf("the role at uid %d kept a capability", uid)
 		}
 	}
 }
 
-// Trusted policy names the namespaces that host no member pods, and the pod's
-// own sandbox container is the runtime's: both keep what they are given.
+// Trusted policy names the namespaces that host no member pods, a static pod is
+// the node's own, and the pod's own sandbox container is the runtime's: each
+// keeps what it is given.
 func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	cilium := workloadBundle()
 	cilium.Annotations[annotationSandboxNamespace] = "kube-system"
 	cilium.Process.User = specs.User{}
 	cilium.Process.NoNewPrivileges = false
 	cilium.Process.Capabilities.Effective = append(cilium.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
-	if err := requireFloor(cilium, "ctr", nil, testFloor()); err != nil {
+	if err := requireFloor(cilium, "ctr", nil, testFloor(), ""); err != nil {
 		t.Fatalf("an exempt namespace's container was refused: %v", err)
 	}
 
 	pause := workloadBundle()
 	pause.Annotations[annotationContainerType] = containerTypeSandbox
+	pause.Process.User = specs.User{}
+	pause.Process.NoNewPrivileges = false
 	pause.Process.Capabilities.Effective = append(pause.Process.Capabilities.Effective, "CAP_NET_RAW", "CAP_SETUID")
-	if err := requireFloor(pause, "sandbox-1", nil, testFloor()); err != nil {
+	if err := requireFloor(pause, "sandbox-1", nil, testFloor(), ""); err != nil {
 		t.Fatalf("the pod's own sandbox container was refused: %v", err)
+	}
+
+	// A static pod is the node's own: its privileged container, in a
+	// namespace the policy does not exempt, keeps what it is given.
+	static := workloadBundle()
+	static.Annotations["kubernetes.io/config.source"] = "file"
+	static.Process.User = specs.User{}
+	static.Process.NoNewPrivileges = false
+	static.Linux.Resources.Devices = []specs.LinuxDeviceCgroup{{Allow: true, Access: "rwm"}}
+	if err := requireFloor(static, "ctr", nil, testFloor(), ""); err != nil {
+		t.Fatalf("a static pod's container was refused: %v", err)
+	}
+	for _, source := range []string{"api", ""} {
+		apiPod := workloadBundle()
+		apiPod.Annotations["kubernetes.io/config.source"] = source
+		apiPod.Process.NoNewPrivileges = false
+		if err := requireFloor(apiPod, "ctr", nil, testFloor(), ""); err == nil {
+			t.Fatalf("a container of a pod from source %q escaped the floor", source)
+		}
 	}
 
 	// A container of a pod in no namespace is covered, not exempt.
 	unnamed := workloadBundle()
 	delete(unnamed.Annotations, annotationSandboxNamespace)
 	unnamed.Process.NoNewPrivileges = false
-	if err := requireFloor(unnamed, "ctr", nil, testFloor()); err == nil {
+	if err := requireFloor(unnamed, "ctr", nil, testFloor(), ""); err == nil {
 		t.Fatal("a container naming no namespace escaped the floor")
 	}
 }
@@ -383,12 +440,12 @@ func TestNoContainerIsCreatedAttachable(t *testing.T) {
 		t.Run(tc.name+" with a terminal", func(t *testing.T) {
 			bundle := tc.bundle()
 			bundle.Process.Terminal = true
-			if err := requireFloor(bundle, tc.containerID, nil, testFloor()); err == nil {
+			if err := requireFloor(bundle, tc.containerID, nil, testFloor(), ""); err == nil {
 				t.Fatalf("%s was created with a terminal", tc.name)
 			}
 		})
 		t.Run(tc.name+" carrying standard input", func(t *testing.T) {
-			if err := requireFloor(tc.bundle(), tc.containerID, pipeRead, testFloor()); err == nil {
+			if err := requireFloor(tc.bundle(), tc.containerID, pipeRead, testFloor(), ""); err == nil {
 				t.Fatalf("%s was created with the container's standard input", tc.name)
 			}
 		})
@@ -462,7 +519,7 @@ func floorWrapper(rec *recorder, stderr *bytes.Buffer, configPath string) Wrappe
 // the floor, whichever way runc was told where that bundle is.
 func TestCreateIsGatedOnTheBundle(t *testing.T) {
 	privileged := workloadBundle()
-	privileged.Process.Capabilities.Effective = append(privileged.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+	privileged.Mounts[0].Options = []string{"nosuid", "noexec", "nodev"}
 	for _, tc := range []struct {
 		name string
 		args func(bundle string) []string
@@ -529,11 +586,11 @@ func TestCreateIsGatedOnTheBundle(t *testing.T) {
 	if rec.called || code != exitDenied {
 		t.Fatalf("a privileged bundle reached the real runtime (code %d)", code)
 	}
-	if !strings.Contains(stderr.String(), "CAP_NET_ADMIN") {
-		t.Fatalf("stderr = %q, want the refused capability named", stderr.String())
+	if !strings.Contains(stderr.String(), "sysfs is mounted writable") {
+		t.Fatalf("stderr = %q, want the refused privilege named", stderr.String())
 	}
 	logged, err := os.ReadFile(logPath)
-	if err != nil || !strings.Contains(string(logged), "CAP_NET_ADMIN") {
+	if err != nil || !strings.Contains(string(logged), "sysfs is mounted writable") {
 		t.Fatalf("runc log = %q (%v), want the denial", string(logged), err)
 	}
 }
@@ -584,7 +641,7 @@ func TestFloorRefusesACreateCarryingStdin(t *testing.T) {
 		pipeRead.Close()
 		pipeWrite.Close()
 	})
-	if err := requireFloor(workloadBundle(), "ctr", pipeRead, testFloor()); err == nil {
+	if err := requireFloor(workloadBundle(), "ctr", pipeRead, testFloor(), ""); err == nil {
 		t.Fatal("a create carrying the container's standard input was admitted")
 	}
 
@@ -593,7 +650,7 @@ func TestFloorRefusesACreateCarryingStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { null.Close() })
-	if err := requireFloor(workloadBundle(), "ctr", null, testFloor()); err != nil {
+	if err := requireFloor(workloadBundle(), "ctr", null, testFloor(), ""); err != nil {
 		t.Fatalf("a create with the null device on its standard input was refused: %v", err)
 	}
 }
@@ -656,7 +713,7 @@ func TestFloorDeviceWildcardSemantics(t *testing.T) {
 							Minor:  minor,
 							Access: access,
 						})
-						err := requireFloor(bundle, "ctr", nil, testFloor())
+						err := requireFloor(bundle, "ctr", nil, testFloor(), "")
 						if deviceType == "" || deviceType == "a" {
 							if err == nil || !strings.Contains(err.Error(), "allows every device") {
 								t.Fatalf("requireFloor = %v, want every-device refusal", err)
@@ -669,4 +726,80 @@ func TestFloorDeviceWildcardSemantics(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestFloorRefusesAWorkingDirOnSuppliedContent keeps the working directory off
+// data and host mounts: a pinned interpreter launch resolves its first module
+// path against it.
+func TestFloorRefusesAWorkingDirOnSuppliedContent(t *testing.T) {
+	const pod = "/var/lib/kubelet/pods/pod-uid/volumes/"
+	root := t.TempDir()
+	for _, dir := range []string{"run", "app", "mnt/c8s-data"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"var-run": "/run",
+		"data":    "mnt/c8s-data/config",
+		"loop":    "loop",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		cwd    string
+		mount  specs.Mount
+		noRoot bool
+		wants  string
+	}{
+		{name: "the image root", cwd: "/"},
+		{name: "the parent of a data mount", cwd: "/mnt/c8s-data"},
+		{name: "a data mount", cwd: "/mnt/c8s-data/config", wants: "data or host mount at /mnt/c8s-data/config"},
+		{name: "below a data mount", cwd: "/mnt/c8s-data/config/pkg", wants: "mount at /mnt/c8s-data/config"},
+		{name: "an unclean path onto a data mount", cwd: "/app/../mnt/c8s-data/config/", wants: "mount at /mnt/c8s-data/config"},
+		{name: "a relative link onto a data mount", cwd: "/data", wants: "mount at /mnt/c8s-data/config"},
+		{name: "an emptyDir", cwd: "/app/cache", mount: bind("/app/cache", pod+"kubernetes.io~empty-dir/cache")},
+		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
+		{name: "a kernel filesystem", cwd: "/tmp", mount: specs.Mount{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs"}},
+		{name: "a host mount", cwd: "/srv", mount: bind("/srv", "/srv/data"), wants: "mount at /srv"},
+		{name: "another pod's emptyDir", cwd: "/app/cache", mount: bind("/app/cache", "/var/lib/kubelet/pods/other/volumes/kubernetes.io~empty-dir/cache"), wants: "mount at /app/cache"},
+		{name: "a volume placeholder", cwd: "/app/vol", mount: bind("/app/vol", pod+"kubernetes.io~empty-dir/c8s-volume-app"), wants: "mount at /app/vol"},
+		{name: "an absolute link onto a host mount", cwd: "/var-run/x", mount: bind("/run/x", "/srv/x"), wants: "mount at /run/x"},
+		{name: "a host mount named through a link", cwd: "/run/x", mount: bind("/var-run/x", "/srv/x"), wants: "mount at /run/x"},
+		{name: "a link loop", cwd: "/loop", wants: "too many levels"},
+		{name: "a relative working directory", cwd: "app", wants: "not absolute"},
+		{name: "no root filesystem", cwd: "/", noRoot: true, wants: "no root filesystem"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := workloadBundle()
+			bundle.Annotations[annotationSandboxUID] = "pod-uid"
+			bundle.Annotations[annotationContainerName] = "main"
+			bundle.Root.Path = root
+			if tc.noRoot {
+				bundle.Root = nil
+			}
+			bundle.Process.Cwd = tc.cwd
+			bundle.Mounts = append(bundle.Mounts, bind("/mnt/c8s-data/config", pod+"kubernetes.io~configmap/config"))
+			if tc.mount.Destination != "" {
+				bundle.Mounts = append(bundle.Mounts, tc.mount)
+			}
+			err := requireFloor(bundle, "ctr", nil, testFloor(), "")
+			if tc.wants == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.wants)
+			}
+		})
+	}
+}
+
+func bind(destination, source string) specs.Mount {
+	return specs.Mount{Destination: destination, Type: "bind", Source: source, Options: []string{"rbind", "ro"}}
 }

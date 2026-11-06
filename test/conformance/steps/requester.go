@@ -261,7 +261,7 @@ func (w *world) relay(r *requester, method, route string, body []byte, socket st
 		}
 		url := "http://localhost"
 		if socket == "" {
-			if url, err = w.requesterCDSURL(); err != nil {
+			if url, err = w.be.call("cds_pod_url"); err != nil {
 				return err
 			}
 		}
@@ -598,6 +598,16 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 	if r.challenge == nil {
 		return fmt.Errorf("%q holds no challenge", name)
 	}
+	// A CSR carrying the requester's own address, with IP SAN binding on,
+	// is signed only when the CDS observes that address as the request
+	// source. A backend where it does not (the CDS sits outside the cluster
+	// behind pod-egress masquerade, or the requester is forced to be a mesh
+	// member whose requests leave from the backend) cannot run this.
+	if r.csr == csrOwnIP && w.issuance.sanBinding {
+		if _, err := w.be.call("requester_source_is_own_address"); err != nil {
+			return err
+		}
+	}
 	csrPEM, err := w.buildCSR(r)
 	if err != nil {
 		return err
@@ -641,16 +651,6 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 		return err
 	}
 	return w.attest(r, body)
-}
-
-// requesterCDSURL is where a requester outside the mesh dials the CDS: the
-// address an injected client dials, unless IP SAN binding needs the
-// requester's own address as the request's source.
-func (w *world) requesterCDSURL() (string, error) {
-	if w.issuance.sourceBound {
-		return w.be.call("cds_service_url")
-	}
-	return w.be.call("cds_pod_url")
 }
 
 // attest sends an attest body and records what the CDS answered.

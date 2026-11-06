@@ -1,6 +1,6 @@
 {
-  "sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": {
-    "image": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
+  "sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075": {
+    "image": "nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075",
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox",
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",

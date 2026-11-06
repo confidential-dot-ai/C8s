@@ -7,7 +7,13 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
+
+type storageFunc func(string) allowlist.MountStorage
+
+func (f storageFunc) Inspect(source string) allowlist.MountStorage { return f(source) }
 
 // revocationPlugin enforces on running containers, with pushDigestA in a
 // served allowlist and pushDigestC in the base. Its containerd records kills.
@@ -99,21 +105,33 @@ func TestSynchronizeTracksRunningContainersOfReportedPods(t *testing.T) {
 func TestStartAdmittedJustBeforeARevocationIsKilled(t *testing.T) {
 	p, store, killed := revocationPlugin(enforcing)
 	p.inventory = newAdmissionInventory("/proc")
+	served := anyAllowlist(map[string]string{pushDigestA: "image-a"})
+	for name, w := range served.Workloads {
+		w.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyAny}
+		served.Workloads[name] = w
+	}
+	store.apply(served, 1)
 	pod := makePod("default", "pod")
-	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo:tag")
+	pod.Uid = "uid"
+	ctr := makeCtrWithImageArgs(pod.Id, "app", "registry/repo@"+pushDigestA, []string{"/app"})
+	ctr.Mounts = []*api.Mount{{Destination: "/scratch", Source: kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/scratch", Type: "bind"}}
 	admitted, release := make(chan struct{}), make(chan struct{})
-	var resolves atomic.Int32
-	p.containerd.(*fakeContainerd).resolve = func(context.Context, string) (string, error) {
-		if resolves.Add(1) == 2 { // the inventory record of the admitted start
+	var inspects atomic.Int32
+	p.mountStorage = storageFunc(func(string) allowlist.MountStorage {
+		if inspects.Add(1) == 2 { // the inventory record of the admitted start
 			close(admitted)
 			<-release
 		}
-		return pushDigestA, nil
-	}
+		return allowlist.MountMemory
+	})
 	started := make(chan error)
 	go func() { started <- p.StartContainer(context.Background(), pod, ctr) }()
 
-	<-admitted
+	select {
+	case <-admitted:
+	case err := <-started:
+		t.Fatalf("start returned before recording: %v (inspects %d)", err, inspects.Load())
+	}
 	store.apply(anyAllowlist(map[string]string{pushDigestB: "image-b"}), 2)
 	p.KillRevoked(context.Background())
 	close(release)

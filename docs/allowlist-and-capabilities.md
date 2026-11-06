@@ -18,6 +18,14 @@ reference, the entry name, or the container name; every one of them keys on the
 digest. The entry name is load-bearing elsewhere: it is stamped on a matching
 pod's certificate and is the `confidential.ai/cw` annotation's value.
 
+A pod admitted by the served allowlist must name its image by digest
+(`name@sha256:...`): a tag is resolved when the node checks it, not bound to the
+image the runtime starts, so a tag reference is refused with `image must be
+referenced by digest`. Only the base allowlist keeps tags, for the images the
+node image carries, and so do pods in mesh-exempt platform namespaces, which
+never receive workload traffic. A worker keeps no tags: its registry is its
+control plane's.
+
 ## The model
 
 One entry declares init and main containers. Each container pins a digest with
@@ -57,17 +65,17 @@ pull lands only the base allowlist admits — the entries the plugin carries in
 its own boot config ([Bootstrap](#bootstrap)); `nriImagePolicy.policy.mode:
 audit` admits anyway and logs denials.
 
-CDS — the Certificate Distribution Service, the one in-cluster pod that serves
-this policy and signs each pod's certificate — checks again when it issues a
-pod's certificate: it asks that pod's own admission inventory which images the
-sandbox runs and requires every reported digest to be allowlisted, against one
-atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is membership,
-not the whole entry, because issuance lands mid-lifecycle, where the running set
-is a subset of what the pod declares; when the set does match exactly one entry,
-CDS stamps the leaf with its name ([armtls.md](armtls.md#matched-workload)).
-Neither point gates a combination of images, since the plugin sees one container
-at a time: secret release is where a whole entry is required
-([secrets.md](secrets.md)).
+CDS — the Certificate Distribution Service, the VM outside the cluster that
+serves this policy and signs each pod's certificate — checks again when it
+issues a pod's certificate: it asks that pod's own admission inventory which
+images the sandbox runs and requires every reported digest to be allowlisted,
+against one atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is
+membership, not the whole entry, because issuance lands mid-lifecycle, where the
+running set is a subset of what the pod declares; when the set does match
+exactly one entry, CDS stamps the leaf with its name
+([armtls.md](armtls.md#matched-workload)). Neither point gates a combination of
+images, since the plugin sees one container at a time: secret release is where a
+whole entry is required ([secrets.md](secrets.md)).
 
 ## What a launch policy constrains
 
@@ -126,11 +134,57 @@ pid, or uts namespace; a bind mount whose source the pod does not own; a device
 node, a CDI device, or a host network device; an OCI hook; a container sysctl;
 or the marks of a privileged container, which are no cgroup namespace or a
 writable `sysfs` or `cgroupfs`. Privilege is inferred, not read: the runtime
-view carries no capabilities, privileged flag, `no_new_privs`, masked paths, or
-AppArmor profile, and an unobservable namespace reads as a violation, so a pod
-or container spec the plugin cannot see is denied rather than assumed safe. The
+view carries no privileged flag, `no_new_privs`, masked paths, or AppArmor
+profile, and an unobservable namespace reads as a violation, so a pod or
+container spec the plugin cannot see is denied rather than assumed safe. The
 kubelet event names the violated rules; the whole observation stays in the
 node's own log.
+
+A host bind is set aside when an allowlist declaration hands it to that launch:
+one that pins the launch (command, args and mounts not `any`, the environment
+constrained), admits that launch whole, and names the bind in its `exact` mount
+policy — a `host` rule by source and access mode, a `nodeRootFile` rule also by
+node-root provenance. The base and a served document both grant, and one
+declaration has to grant the bind on its own; `mounts: any` grants nothing.
+Only that bind is set aside: every other violation still denies the container,
+and a writable `host` rule grants write access to the node path it names.
+
+A pod's host ports are the one host privilege the exemption below never
+excuses: the node's own pods take the node's network, so a published port is
+the pod's own doing. NRI carries no port mapping, so the plugin reads the
+mappings containerd recorded for the sandbox, checked against the pod's name,
+namespace and UID. Unless an entry declares every one of them, the sandbox is
+refused before a container of it exists and containerd takes the port mappings
+down with it. A container of such a pod then runs only under an entry that
+declares those mappings and admits its launch; the mesh and credential clients
+the node injects into a member pod are not held to it, as no entry declares
+them. A record the plugin cannot read, one that puts the sandbox on the node's
+network where NRI shows its own, and a mapping bound to a single node address
+each refuse the pod; a sandbox containerd no longer has decides nothing about a
+container already running. A pod on the node's network maps no host port of its
+own: the kubelet records its container ports as host ports there, which name
+the node's.
+
+A container's capabilities are read, not inferred: the runtime view carries
+none, so the plugin reads the OCI spec containerd stored for the container.
+Every capability in the spec's five sets — bounding, effective, permitted,
+inheritable and ambient — has to be in the node's default set (the container
+runtime's default less `NET_RAW`, `SETUID` and `SETGID`) or declared by the
+entry that admits the whole launch. A container on a platform role holds none,
+whatever an entry declares. A spec the plugin cannot read, one describing no
+process, and one naming no capability sets each refuse the container, whatever
+the sandbox policy mode; a container containerd no longer has decides nothing
+about one already running. A pod in a namespace the measured mesh policy
+exempts keeps the capabilities the runtime gave it, as it does under the
+runtime wrapper's floor
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)), and so does a
+worker's static pod whose launch a base entry pins.
+
+The measured runtime wrapper holds the same containers to the same bound at
+the create, for the containers its floor covers and whatever the plugin's
+state: beyond the node's default set, a container holds only the capabilities
+the plugin recorded for its launch at the check whose failure fails the create
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 
 The chart renders this policy off on every lane it installs
 (`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
@@ -162,12 +216,33 @@ cases, and nothing more:
 - any other pod only under an entry that pins the launch: command, args and
   mounts not `any`, and the environment constrained.
 
+A worker ([launch-configuration.md](launch-configuration.md#worker-documents))
+answers to a control plane outside its TEE. That control plane writes every
+API pod's spec and can read the values in the static pods' launches, so a
+worker's measured config (`worker: true`) narrows both cases:
+
+- a static pod is exempt only under an entry that pins its launch;
+- no other pod is exempt. An API pod holds the host binds, host ports and
+  capabilities an entry declares for its launch, as the router does, and no
+  other host privilege. A static pod's entry, which the worker's floor marks
+  `staticPod: true`, grants no host bind, host port or capability, and a
+  boot config whose static-pod entry declares host ports or capabilities is
+  refused.
+
+A worker's config also names no mesh-exempt namespace, so the mesh protects
+every API pod with its own network namespace wherever the control plane puts
+it; a static pod is the node's own and is never a member, on any node. It
+names no mesh exits, since a member's connections to one leave the mesh in
+the clear for endpoints the control plane chooses, and no credential
+attestation port: its credential clients verify through the node's
+attestation socket.
+
 An open entry admits its image, and the pod is sandboxed like any other, the
 host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
 operator run with the host network, so their entries pin every launch the
 node runs, environment included.
 
-GPU devices are the one exception outside the node TCB. containerd applies the
+GPU devices are set aside outside the node TCB too. containerd applies the
 edits of the CDI devices a container requests (the CRI `CDIDevices` field or a
 `cdi.k8s.io/` annotation) before the plugin sees the spec, so they arrive as
 plain device nodes, hooks, and bind mounts. For devices of the kinds
@@ -180,7 +255,14 @@ and read-only flag) that expansion produces. Any other device node or hook, a
 device of another kind, and a device that no spec or two specs define stay
 violations, and so does a spec that changed between containerd's read and the
 plugin's. The container still needs an allowlist entry, and the CDI bind mounts
-still have to match that entry's mount policy.
+still have to match that entry's mount policy. An entry pinning the launch the
+injection leaves — the variables the spec sets, the binds it adds — declares
+capabilities for it like any other entry, recorded at the create for the
+runtime wrapper's floor
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)). A device an NRI
+adjustment asks for instead is resolved by the runtime after the plugin has
+answered, so its device nodes, hooks and binds reach the container with nothing
+to attribute them to, and the container is refused.
 
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the
@@ -188,6 +270,9 @@ argv and the exact mount table that invocation is given, so a pod's own
 container running the same invocation with mounts of its choosing holds no role
 ([secrets.md](secrets.md)). What this policy cannot see, the runtime wrapper
 reads from the container's bundle ([node-exec-mode.md](node-exec-mode.md)).
+A base entry may also list `execs`, the exact commands the wrapper lets
+through into a running container of its bytes, YAML-only for the same reason
+([node-exec-mode.md](node-exec-mode.md#granted-execs)).
 
 ## Writing policy
 
@@ -200,12 +285,40 @@ captured token cannot be replayed against another method, path, or body, and
 each token authorizes one request, so it cannot be replayed at all (CDS answers
 a replay with 409).
 
+`PUT /allowlist` is the one write: it carries the whole document, and the token
+that authorized it is that document's signature ([below](#allowlist-history)).
+It takes `If-Match: "N"`, the strong tag of version N, the version that
+`GET /allowlist` serves in `X-C8s-Allowlist-Version`: CDS replaces the document
+only while the version is still N and answers 412 otherwise, leaving the
+allowlist unchanged.
+A write without `If-Match` replaces the document unconditionally.
+
+`c8s allowlist add`, `apply`, `edit` and `delete` read the live document, make
+their change to it, and write it back under the version they read; on a 412
+they re-read, print what the other write changed, and make the change to the
+newer document, for a bounded number of attempts. `upload` instead fails,
+since its file is the whole document: run it again to see the new diff.
+
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
-default) and refreshes when the version — the ETag counter — changes. The
-document swaps wholesale, gated by that monotone version: a consumer applies a
-pull only if its version is not below the last applied.
+default) and refreshes when the document changes: CDS tags it with its digest,
+`"sha256:<hex>"`, and sends its version in `X-C8s-Allowlist-Version`, and the
+response carries `Cache-Control: no-store`. The document swaps wholesale, gated
+by that monotone version: a consumer applies a pull only if its version is not
+below the last applied, and a 304 raises the last applied version to the one
+it names.
+
+Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
+sends it over attested TLS to CDS; anything else sending it just gets the
+allowlist in effect. An allowlist write takes effect on nodes
+`--allowlist-node-delay` (30s) after it is written. CDS issues certificates
+under it at once, and router certificates (`--router-cert-ttl`, 20s) last less
+than that, so any router still serving advertises it before it
+takes effect. A write replaced before it takes effect never does. The first
+allowlist takes effect at once. Requests in flight or queued when a write takes
+effect can still reach the new code, and removals wait the delay too. A node image older than this change enforces a
+write at once.
 
 This matters because policy can tighten: narrow `args`, revoke a grant, remove
 an entry. A merge would let a host that withholds an update keep the laxer
@@ -221,14 +334,8 @@ namespaces. Those are namespaces a boot config lists as holding platform pods
 the allowlist does not describe, admitted against a digest set the plugin froze
 on its first connect (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
-narrowing an entry stops its containers on every node within one refresh
-interval.
-
-One upgrade can stop on this. CDS is recreated rather than rolled — the old pod
-stops before the new one starts — so it cannot publish its own new shape. The
-chart refuses an upgrade that changes CDS's image, command line, or mounts
-until the running enforcers admit it, naming the seed entry to publish and the
-`cds.publishedShape` value that confirms it ([upgrade.md](upgrade.md)).
+narrowing an entry stops its containers on every node within
+`--allowlist-node-delay` plus one refresh interval.
 
 ## Bootstrap
 
@@ -239,18 +346,19 @@ before CDS is reachable and a failed pull never drops it. The chart renders it
 from `nriImagePolicy.bootstrapAllowlist`; a measured node image merges it at
 boot from the file it bakes at `/usr/lib/c8s/allowlist-seed.json`.
 
-The CDS seed is the document CDS seeds its store from at start. The chart
-renders it into a ConfigMap from the resolved component digests, its argv-pinned
-platform entries, and `nriImagePolicy.bootstrapAllowlist.workloads`; a measured
-node image publishes it from that same baked file, plus the workloads its signed
-launch configuration carries. Each component entry's name carries its image and
-the digests of its policy, so an image bump or a configuration change adds an
-entry beside the old one. Seeding adds every name the store lacks and retires
-the chart-generated shapes its seed replaces, leaving an operator entry under
-any other name untouched: an operator edit survives a CDS restart, while a
-deleted entry returns on the next start for as long as the chart renders it. A
-chart-managed CDS reads the seed once, at start; a measured node image's CDS
-rereads its file every 30 seconds and seeds it again when it changed.
+The CDS seed is the component entries this release needs served. The chart
+renders them into a ConfigMap from the resolved component digests, its
+argv-pinned platform entries, and
+`nriImagePolicy.bootstrapAllowlist.workloads`;
+`c8s install --allowlist-seed-out` writes the same document for
+`c8s cds config new`, which merges it with the operator's tenant workloads
+into the configuration the CDS VM boots on. Each component entry's name
+carries its image and the digests of its policy, so an image bump or a
+configuration change adds an entry beside the old one. Seeding runs once, at
+start: it adds every name the store lacks and retires the chart-generated
+shapes its seed replaces, leaving an operator entry under any other name
+untouched, so an operator edit survives until the CDS VM restarts and a
+deleted entry returns then for as long as the configuration carries it.
 
 ## Allowlist history
 
@@ -261,13 +369,31 @@ differs from the head. A policy digest is `sha256:<hex>` of the exact bytes
 
 | Route | Returns |
 |---|---|
-| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/history` | `{"hostPrivilege":{"declaredBySeed","firstOperatorGrant"},"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
 | `GET /allowlist/objects/sha256/<hex>` | the exact bytes of a document in the history |
 | `GET /allowlist/objects/sha256/<hex>/signature` | its operator signature as `text/plain`; 404 when unsigned |
 
-A document's signature is the write token of a `PUT /allowlist` whose body is
-exactly its canonical bytes, so `c8s allowlist upload` signs what it writes
-while a per-workload write signs nothing.
+A document's signature is the write token of the `PUT /allowlist` whose body is
+exactly its canonical bytes, stored in the same write, so a signed write never
+serves its document unsigned. Every operator write is a whole-document write,
+so every served document carries the operator's signature except the ones
+seeding produces: the seed carries no operator token. A body that is not
+exactly the canonical bytes replaces the document but stores no signature.
+`apply`, `add`, `edit` and `delete` write the whole resulting document — the
+live entries with their change made — so the operator key signs every entry in
+it, not only the ones the command names: read the diff the command prints
+before confirming it.
+
+`hostPrivilege` reports the host privilege the allowlist declared: an entry
+declares it with `hostPorts`, a container `capabilities`, or a `host` mount
+rule — a `nodeRootFile` rule names a measured node-image file and declares
+none. `declaredBySeed` is whether the measured seed this CDS booted on
+declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
+first operator write that served a declaration the document it replaced did
+not serve, and is `null` until one does; a write that moves a declaration to
+another entry name grants nothing, and no later write clears the record. Both
+last as long as the store: a CDS restart that starts from an empty database
+reports its seed again and no grant.
 
 ## Measured policy history
 
@@ -277,7 +403,9 @@ it, so a verifier can replay what the node enforced since boot: proof of what it
 enforced, not that it was acceptable. A document the node fails to measure is
 not applied. How the register is seeded, journalled, and replayed is
 [measurements.md](measurements.md#policy-history). Set
-`nriImagePolicy.measurePolicies: true` to turn measuring on.
+`nriImagePolicy.measurePolicies: true` to turn measuring on. A worker always
+measures: its image's policy turns it on, and `c8s worker stage` refuses one
+that does not.
 
 It is off by default because checks that expect the bare seed reject a node
 that measures: armTLS verifiers built before runtime extensions, a pin on one

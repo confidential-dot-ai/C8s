@@ -86,14 +86,14 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
-	// Pin a measurement the stub does not report, so the request fails after
+	// Pin a node image the stub does not report, so the request fails after
 	// the sandbox token has been verified.
-	h.Measurements = map[string]bool{"00": true}
+	h.NodeImages = certifying(imagePin(t, "node-next", otherLaunchDigest))
 	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code == http.StatusOK {
-		t.Fatal("expected the measurement gate to refuse issuance")
+		t.Fatal("expected the node image gate to refuse issuance")
 	}
 	if len(binder.calls) != 0 {
 		t.Fatalf("Record called %d times for a failed issuance, want 0", len(binder.calls))
@@ -103,7 +103,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10)
+	ledger := sandboxledger.New(time.Hour, 10).Local()
 	h.SandboxBindings = ledger
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
@@ -129,9 +129,10 @@ func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 func TestAttest_SigningFailureDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10)
+	ledger := sandboxledger.New(time.Hour, 10).Local()
 	h.SandboxBindings = ledger
-	h.MeshCA.Current().CA.Key = nil
+	signing, _ := h.MeshCA.Current()
+	signing.CA.Key = nil
 	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))

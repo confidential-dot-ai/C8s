@@ -25,10 +25,12 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
         ]},
         "env": {"policy": "match", "variables": {
           "HOSTNAME": {"present": true},
-          "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}}
+          "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}},
+        "capabilities": ["SYS_PTRACE"]
       }],
       "secrets": {"policy": "allow", "read": ["/tenant-a/**"]},
-      "egress": [{"cidr": "203.0.113.7/32", "port": 443}]
+      "egress": [{"cidr": "203.0.113.7/32", "port": 443}],
+      "hostPorts": [{"protocol": "TCP", "hostPort": 9443, "containerPort": 8000}]
     }
   }
 }
@@ -128,6 +130,19 @@ logs `node-root provenance unavailable` at startup. Lint allows a
 `nodeRootFile` rule on a pinned search path, where a `data` or `host` rule is
 an error.
 
+## `capabilities`
+
+The capabilities a container may hold beyond the node's default set, named as a
+pod spec names them: the kernel's constant without the `CAP_` prefix, such as
+`SYS_PTRACE`. A declarable name is a Linux capability outside the container
+runtime's default set, less `NET_ADMIN`, `NET_RAW`, `SETUID` and `SETGID`,
+which rewrite the pod's mesh ruleset or take a platform role's reserved
+identity. Every name is declarable and is listed once. An entry declaring a
+capability pins every container's launch: `command`, `args` and `mounts` not
+`any`, and `env` constrained. A node holds a container to its default set plus
+what the entry admitting its whole launch declares, and a container on a
+platform role to none.
+
 ## `secrets`
 
 `allow` or `deny` only; there is no `any`. An `allow` grant needs at least one
@@ -148,6 +163,20 @@ not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
 egress pins its launch as a grant does, and a node refuses one that overlaps a
 cluster range, its own address, the resolver, or CDS.
+
+## `hostPorts`
+
+The ports a pod this entry claims publishes on the node's own address. A
+mapping has exactly the members `protocol` (`TCP`, `UDP`, or `SCTP`, spelled as
+a pod spec spells it), `hostPort`, and `containerPort`, both between 1 and
+65535. A protocol and host port pair is listed once; the same host port on two
+protocols is two mappings. The node's own service ports are refused: 1019 (the
+workload inventory), 2379 and 2380 (etcd), 6443 (the Kubernetes API), 8443
+(credential release), 9345 (the agent join endpoint), and 10250 (the kubelet).
+An entry with host ports pins every container's launch: `command`, `args` and
+`mounts` not `any`, and `env` constrained. A node refuses a pod publishing a
+mapping no entry declares, and a container of such a pod unless the entry
+declaring its mappings admits that launch.
 
 ## Matching
 
@@ -187,7 +216,11 @@ Reads are unauthenticated; writes are signed with the operator key from
 `deny`), `--label`, and `--secret-read`. A policy file maps container names to
 policies and must cover every init and main container the entry declares.
 `derive` reads an unset command or args from the image config with `crane`, and
-drops the containers C8s injects.
+drops the containers C8s injects. For a pod that sets
+`confidential.ai/c8s-secrets`, it adds the secrets mount the webhook injects to
+each `deny` or `exact` policy: an `emptyDir` rule at `/run/c8s/secrets`, or
+wherever the container already mounts the volume (`data` for a `subPath`
+mount).
 
 `apply`, `upload`, and `edit` show a diff before they write. `apply` and
 `upload` lint the whole document first, and `add` checks its one entry against

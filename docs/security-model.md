@@ -28,7 +28,7 @@ of its own.
   refuses a pin set naming no guest before any request, and an issuance binds a
   single-use challenge into the report ([armtls.md](armtls.md#cds-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
-- **Relaunch a node with other settings**: the `c8s-launch/v1` document is
+- **Relaunch a node with other settings**: the `c8s-launch/v2` document is
   signed over its exact bytes and the launch key's public half binds into its
   evidence ([launch-configuration.md](launch-configuration.md),
   [operator.md](operator.md#authenticated-launch-configuration));
@@ -85,7 +85,7 @@ releases: it can create any pod and edit every object that credential reaches.
   [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
   [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
 - **Issue a workload certificate**: only CDS — the Certificate Distribution
-  Service, the one in-cluster pod holding C8s policy — signs leaves, and its
+  Service, the VM outside the cluster holding C8s policy — signs leaves, and its
   mesh CA key lives only in process memory, never in a Kubernetes Secret
   ([armtls.md](armtls.md#cds-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
@@ -144,10 +144,13 @@ separate nodes and volume workloads need single-tenant ones.
 
 ## A compromised workload
 
-- **Break out to the node**: on a measured node the privilege floor bounds
-  capabilities, keeps `no_new_privs` set, and refuses user namespaces and the
-  privileged marks; the chart lanes have only the chart's cluster policy
-  ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor));
+- **Break out to the node**: on a measured node admission bounds a container's
+  capabilities to the node's default set and what its entry declares, and the
+  privilege floor holds the create to that same bound, keeps
+  `no_new_privs` set and refuses user namespaces and the privileged marks; the
+  chart lanes have only the chart's cluster policy
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege),
+  [node-exec-mode.md](node-exec-mode.md#the-privilege-floor));
   [No privileged way in](guarantees.md#no-privileged-way-in).
 - **Keep its name after running foreign code**: the inventory report is a
   high-water mark over every container ever admitted in that sandbox, so the

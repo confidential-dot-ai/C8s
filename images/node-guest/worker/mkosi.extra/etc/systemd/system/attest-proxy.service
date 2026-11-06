@@ -1,0 +1,24 @@
+# As the node image's: the attestation API on the socket pods mount.
+[Unit]
+Description=Local workload access to the measured hardware attester
+Requires=worker-stage.service attestation-api.service
+After=worker-stage.service attestation-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/c8s attest-proxy \
+    --socket=/run/nri-image-policy/attestation-api.sock \
+    --socket-gid=65532 \
+    --upstream=http://127.0.0.1:8400
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+# Only to chgrp its socket to --socket-gid.
+CapabilityBoundingSet=CAP_CHOWN
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -30,14 +31,17 @@ import (
 // ApproveAll reports.
 const TestMeasurement = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// ApproveAll is a verifier that accepts any evidence as an AzSNP report at
-// TestMeasurement, so a test exercises what a command does with a verified
-// endpoint.
+// ApproveAll is a verifier that accepts any evidence as this cluster's CDS VM:
+// an SNP report at TestMeasurement, launched with CDSLaunchFile, which is what
+// CDSPinDocument pins. A test then exercises what a command does with a
+// verified endpoint.
 func ApproveAll() VerifierStub {
 	return func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 		match := true
-		result := &teetypes.VerificationResult{Platform: teetypes.PlatformAzSNP, SignatureValid: true, ReportDataMatch: &match}
+		result := &teetypes.VerificationResult{Platform: teetypes.PlatformSNP, SignatureValid: true, ReportDataMatch: &match}
 		result.Claims.LaunchDigest = TestMeasurement
+		binding := runtimemeasure.HostData([]byte(CDSLaunchFile))
+		result.Claims.InitData = binding[:]
 		return result, nil
 	}
 }
@@ -85,8 +89,8 @@ func ARMTLSServingCert(t testing.TB) tls.Certificate {
 		t.Fatal(err)
 	}
 	embedded, err := json.Marshal(teetypes.AttestationEvidence{
-		Platform: teetypes.PlatformAzSNP,
-		Evidence: json.RawMessage(`{"hcl_report":"fake"}`),
+		Platform: teetypes.PlatformSNP,
+		Evidence: json.RawMessage(`{"report":"fake"}`),
 	})
 	if err != nil {
 		t.Fatal(err)

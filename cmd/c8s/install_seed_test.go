@@ -22,6 +22,18 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
+// chartCDSArgs point a rendered release at a placeholder CDS outside the
+// cluster: the chart refuses a release that names none.
+func chartCDSArgs(t *testing.T) []string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
+	if err := os.WriteFile(path, []byte(pin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"--set-string", "cds.address=10.9.9.9:8443", "--set-file", "cds.measurementsConfig=" + path}
+}
+
 // TestSeedWorkloadsMatchesTheChart: the seed install checks adoptions
 // against is the one the chart renders, less its entries that pin args, and in
 // that seed the entry install writes names the adopted pod alone.
@@ -79,6 +91,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			set = append(set, chartCDSArgs(t)...)
 			set = append(set, adoptArgs...)
 			values, err := effectiveValues(ctx, chart, set)
 			if err != nil {
@@ -127,13 +140,13 @@ func checkSeedModel(t *testing.T, model map[string]pkgallowlist.Workload, render
 // renderedSeed is the allowlist seed the chart renders with set.
 func renderedSeed(t *testing.T, chart string, set []string) *pkgallowlist.Allowlist {
 	t.Helper()
-	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--set-string", "cds.measurements[0]=" + strings.Repeat("ab", 48)}, set...)
+	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system"}, set...)
 	out, err := exec.Command("helm", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	var cm corev1.ConfigMap
-	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["ConfigMap/c8s-cds-allowlist-seed"], &cm); err != nil {
+	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["c8s-system/ConfigMap/c8s-allowlist-seed"], &cm); err != nil {
 		t.Fatal(err)
 	}
 	al, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

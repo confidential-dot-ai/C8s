@@ -68,18 +68,26 @@ func cdiGPUContainer() *api.Container {
 		{Path: "/usr/bin/nvidia-cdi-hook", Args: []string{"nvidia-cdi-hook", "create-symlinks", "--link", "../card1::/dev/dri/by-path/pci-0000:01:00.0-card"}},
 		{Path: "/usr/bin/nvidia-cdi-hook", Args: []string{"nvidia-cdi-hook", "update-ldcache", "--folder", "/usr/lib/x86_64-linux-gnu"}, Env: []string{"NVIDIA_CTK_DEBUG=false"}},
 	}}
-	ctr.Mounts = append(ctr.Mounts, &api.Mount{
-		Destination: "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05", Type: "bind",
-		Source:  "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
-		Options: []string{"ro", "nosuid", "nodev", "rbind", "rprivate"},
-	})
+	ctr.Mounts = append(ctr.Mounts, gpuDriverBind())
 	return ctr
+}
+
+// libcudaPath is the driver file the GPU spec's common edits bind read-only.
+const libcudaPath = "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05"
+
+// gpuDriverBind is that bind as containerd leaves it in the container.
+func gpuDriverBind() *api.Mount {
+	return &api.Mount{
+		Destination: libcudaPath, Type: "bind",
+		Options: []string{"ro", "nosuid", "nodev", "rbind", "rprivate"},
+		Source:  libcudaPath,
+	}
 }
 
 func cdiViolations(t *testing.T, ctr *api.Container, dirs []string) []string {
 	t.Helper()
 	cdi, _ := expandCDI(ctr, dirs)
-	return observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, nil, cdi).violations()
+	return observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, noBindGrant{}, cdi).violations()
 }
 
 func TestCDIExpansionSetsAsideExactlyTheRequestedDevices(t *testing.T) {

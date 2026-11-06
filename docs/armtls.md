@@ -73,8 +73,16 @@ warning instead ([verify.md](verify.md)). On TDX the launch measurement is the
 MRTD, which covers the firmware alone, so pins identify guest code only with two
 of the guest's runtime measurement registers pinned too: RTMR[1], holding the
 kernel, and RTMR[2], holding the command line that carries the dm-verity root
-hash (`c8s install --rtmrs`). A measurement covers boot state, so runtime
-compromise inside a measured node is out of scope.
+hash. A measurement covers boot state, so runtime compromise inside a measured
+node is out of scope.
+
+A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
+`ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
+the key was not generated in that TEE) and `ErrPolicyViolation` (a pin not met).
+An attestation-api refusal of the evidence (a 400, 415 or 422 in its JSON
+envelope) maps to `ErrInvalidReport` and is terminal, as does an unset
+attestation-api URL; every other status, a non-JSON body and transport errors
+stay unwrapped, as retryable or as a verifier deployment fault.
 
 ## CDS issuance
 
@@ -207,10 +215,10 @@ digest of the requester's key, the CDS challenge for this issuance, and the IP
 of the node serving port 1019. Nothing get-cert sends names its pod, and it
 reports no images of its own. The token carries no credential for its signing
 key: CDS resolves that key by dialing `/identity` at the named address, which
-must be a routable unicast IP literal inside the operator's node bound
-(`--sandbox-inventory-cidr`, else the live node list; an empty bound refuses
-every token). CDS then verifies the token and asks `/digests/{id}`, where every
-image reported must be in the allowlist — the operator policy of workload
+must be a routable unicast IP literal inside the operator's node bound (the CDS
+configuration's `nodeCIDRs`; an empty bound refuses every token). CDS then
+verifies the token and asks `/digests/{id}`, where every image reported must be
+in the allowlist — the operator policy of workload
 entries CDS serves and every node enforces — and an empty answer is refused.
 
 Issuance gates on membership, not on a whole workload entry
@@ -246,7 +254,10 @@ decided the match, so a client holding the same bytes detects skew. The router
 keeps a route's backend inside its own allowlist by requiring the two stamps to
 carry the same digest, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
-parse ([operator.md](operator.md#route-manifest)).
+parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
+reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),
+shorter than the delay before an allowlist write takes effect on nodes
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
 
 A sandbox goes from unnamed to named at the first renewal after its pod is
 complete. There is no third state, and losing the match costs the pod its name

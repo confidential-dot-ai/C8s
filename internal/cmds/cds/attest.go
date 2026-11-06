@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -31,33 +32,23 @@ import (
 // AttestHandler serves POST /attest by verifying TEE evidence and signing the
 // requester's CSR in-process.
 //
-// THREAT MODEL: the measurement check is the only thing standing between an
+// THREAT MODEL: the node image check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements admits no flat-pinned caller.
+// they choose. A set that names no node image admits nobody.
 type AttestHandler struct {
-	Challenges        *attestation.ChallengeStore
+	Challenges        attestation.Challenges
 	AttestationClient remote.Client
-	MeshCA            *issuer.MeshCA
+	MeshCA            meshCA
 	CertTTL           time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf when Images is empty.
-	Measurements map[string]bool
-
-	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
-	// launch digest (MRTD) covers the TDVF firmware alone, so without these a
-	// host can boot the pinned firmware with a substituted kernel and rootfs
-	// and still be issued a leaf. Enforced only against TDX-shaped evidence;
-	// SNP evidence is unaffected (kernel-hashes folds the guest image into
-	// its launch digest). Empty = no RTMR pinning.
-	RTMRs map[int][]byte
-
-	// Images binds each node image to an authorized launch key.
-	Images []remote.ImagePin
+	// NodeImages are the node images permitted to obtain a signed leaf, each
+	// matched as one entry: its launch digest with the registers measured from
+	// the same build. Read per request, so the set in force decides.
+	NodeImages armtls.PinSource
 
 	// Policy enforces SAN/CN constraints on the CSR before signing. Without
 	// this, an attestation-passing workload could mint a leaf for any
@@ -87,6 +78,13 @@ type AttestHandler struct {
 	// Never applied to membership-only leaves.
 	NamedCertTTL time.Duration
 
+	// RouterCertTTL caps the TTL of a leaf for a sandbox the inventory reports
+	// a router-role container in. It is shorter than the delay before an
+	// allowlist write takes effect on nodes, so every router renews under it
+	// first.
+	// Zero leaves router leaves uncapped.
+	RouterCertTTL time.Duration
+
 	// SandboxDigests resolves a sandbox's inventory: its signing key and what
 	// the sandbox is running, over mutually-attested armTLS to a privileged
 	// port. nil rejects any request carrying a sandbox token, for the same
@@ -97,7 +95,7 @@ type AttestHandler struct {
 	// operator's node CIDRs. Empty rejects any request carrying a sandbox
 	// token: without it a workload could point CDS at its own pod IP and
 	// answer as the inventory.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	// SandboxBindings records which inventory vouched for a sandbox, so a
 	// later decision about that sandbox asks the same one rather than one the
@@ -192,9 +190,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
+	verifyReq := remote.NewVerifyRequestNoToken(req.Evidence, &remote.VerifyParams{
 		ExpectedReportData: expectedReportData[:sha512.Size384],
-	}, false)
+	})
 	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
 	if err != nil {
 		status, code, msg := classifyVerifyError(err)
@@ -204,25 +202,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
-	if len(h.Images) > 0 {
-		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
-			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
-			return
-		}
-	} else {
-		if !h.Measurements[launchDigest] {
-			slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-			return
-		}
-		if req.Evidence.Platform.HasRegisters() {
-			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
-				slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed")
-				return
-			}
-		}
+	if err := h.matchPinnedNodeImage(verifyResp, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
+		slog.Warn("node identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
+		return
 	}
 
 	policy := h.Policy
@@ -240,7 +223,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// actually running (once), load one atomic policy snapshot, gate issuance
 	// on membership, and resolve the matched-workload stamp from the same two
 	// answers. The requester never gets a say in either.
-	matched, err := h.resolveSandboxWorkload(ctx, sandbox)
+	matched, router, err := h.resolveSandboxWorkload(ctx, sandbox)
 	if err != nil {
 		// The detail stays in the log. A requester picks both the sandbox ID and
 		// the address CDS just dialled, so echoing what happened there would
@@ -282,8 +265,16 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
+	if router && h.RouterCertTTL > 0 {
+		ttl = min(ttl, h.RouterCertTTL)
+	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
-	signing := h.MeshCA.Current()
+	signing, issuing := h.MeshCA.Current()
+	if !issuing {
+		// A replica that stopped serving between the gate and the signature.
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		return
+	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
@@ -336,6 +327,16 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }
 
+// matchPinnedNodeImage holds the verified evidence to one node image this CDS
+// certifies, judging the platform and extensions the caller claims.
+func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
+	images := h.NodeImages.Current().Images
+	if len(images) == 0 {
+		return errors.New("this CDS certifies no node image")
+	}
+	return armtls.EnforceImages(verified, images, claimedPlatform, claimedExtensions)
+}
+
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,
 // so an issuance record can be matched against a leaf in hand.
 func serialHex(serial *big.Int) string {
@@ -356,7 +357,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if h.SandboxDigests == nil {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this CDS cannot reach an inventory to verify it")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but the inventory callback has no node addresses to bound it")
 	}
 	var token workloadclaims.SignedSandboxToken
@@ -431,23 +432,23 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 // or allowlist store, a malformed digests view, or a non-allowlisted image is
 // fail-closed — CDS cannot establish what the pod runs, or has established
 // that it should not run, and it never stamps from stale cached state.
-func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, error) {
+func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (matched *armtls.MatchedWorkload, router bool, err error) {
 	if sandbox.SandboxID == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	if h.AllowlistStore == nil {
-		return nil, fmt.Errorf("sandbox token presented but this CDS has no allowlist to check it against")
+		return nil, false, fmt.Errorf("sandbox token presented but this CDS has no allowlist to check it against")
 	}
 	if h.SandboxDigests == nil {
-		return nil, fmt.Errorf("sandbox token presented but this CDS cannot reach the inventory for its digests")
+		return nil, false, fmt.Errorf("sandbox token presented but this CDS cannot reach the inventory for its digests")
 	}
 	resp, err := h.SandboxDigests.FetchSandbox(ctx, sandbox.InventoryHost, sandbox.SandboxID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
+		return nil, false, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if len(resp.Digests) == 0 {
@@ -455,21 +456,24 @@ func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workl
 		// and looping over it would pass the gate vacuously. A sandbox always
 		// runs at least the sidecar that is asking, so an empty answer means
 		// the inventory is still syncing (or is lying), both of which must wait.
-		return nil, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
+		return nil, false, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
 	}
 	membership := make(map[string]struct{}, len(resp.Digests))
 	for _, d := range resp.Digests {
 		digest, err := types.ParseDigest(d)
 		if err != nil {
-			return nil, fmt.Errorf("container digest %q: %w", d, err)
+			return nil, false, fmt.Errorf("container digest %q: %w", d, err)
 		}
 		if !snapshot.Contains(digest.String()) {
-			return nil, fmt.Errorf("container image %s is not allowlisted", digest)
+			return nil, false, fmt.Errorf("container image %s is not allowlisted", digest)
 		}
 		membership[digest.String()] = struct{}{}
 	}
 
-	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), nil
+	router = slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
+		return c.Role == workloadclaims.RouterRole
+	})
+	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), router, nil
 }
 
 // policySnapshot returns the one immutable snapshot this issuance decides
