@@ -257,7 +257,9 @@ type ServeConfig struct {
 // Serve confirms the measured launch key, reads the signed pod UID and
 // serves until ctx is done. Every failure to confirm the key exits, a register
 // that replays no prefix of the journal included: a client that verifies the
-// guest then sees a connection failure rather than a failed verification.
+// guest then sees a connection failure rather than a failed verification. The
+// key confirmed here is the one every assignment's signature is checked
+// against; no request triggers another attestation.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -272,8 +274,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if doc.Role != launchconfig.Pod {
 		return fmt.Errorf("staged launch configuration is not a pod")
 	}
-	if _, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath); err != nil {
+	launchKeyPEM, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
+	if err != nil {
 		return fmt.Errorf("load measured launch key: %w", err)
+	}
+	launchKey, err := assignmentPublicKey(launchKeyPEM)
+	if err != nil {
+		return fmt.Errorf("measured launch key: %w", err)
 	}
 	api := attestclient.NewClient("")
 	pods := kubeletPods(cfg.KubeletURL, cfg.KubeletCert)
@@ -283,13 +290,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	defer store.Close()
 	runtime := guestAssignmentRuntime{journal: cfg.JournalPath}
-	boundKey := func(ctx context.Context) (*ecdsa.PublicKey, error) {
-		pub, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
-		if err != nil {
-			return nil, err
-		}
-		return assignmentPublicKey(pub)
-	}
+	boundKey := func(context.Context) (*ecdsa.PublicKey, error) { return launchKey, nil }
 	assignment, err := newAssignmentService(ctx, doc, store, boundKey,
 		func(d *launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 			return nodeservices.RenderPodRuntime("", d)
