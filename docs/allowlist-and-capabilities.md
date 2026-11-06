@@ -304,10 +304,10 @@ it names.
 
 Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
 sends it over attested TLS to CDS; anything else sending it just gets the
-allowlist in effect. An allowlist write takes
-effect on nodes `--allowlist-node-delay` (30s) after it is written. CDS issues
-certificates under it at once, and router certificates (`--router-cert-ttl`,
-20s) last less than that, so any router still serving advertises it before it
+allowlist in effect. An allowlist write takes effect on nodes
+`--allowlist-node-delay` (30s) after it is written. CDS issues certificates
+under it at once, and router certificates (`--router-cert-ttl`, 20s) last less
+than that, so any router still serving advertises it before it
 takes effect. A write replaced before it takes effect never does. The first
 allowlist takes effect at once. Requests in flight or queued when a write takes
 effect can still reach the new code, and removals wait the delay too. A node image older than this change enforces a
