@@ -125,40 +125,26 @@ with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
 
 Run `make test-integration-pod-runtime` with Go and Docker supporting
 privileged containers. The existing `Integration (Pod runtime)` CI job invokes
-this command and requires all three checks:
+this command and requires its check: start authorization, where one offline
+workload executes only after its exact NRI container, sandbox and process
+identity is consumed once. Seven cases reject execution: missing authority,
+policy denial, measurement failure, callback timeout, lost socket, plugin
+disconnect and replay.
 
-1. Start authorization: one offline workload executes only after its exact NRI
-   container, sandbox and process identity is consumed once. Seven cases reject
-   execution: missing authority, policy denial, measurement failure, callback
-   timeout, lost socket, plugin disconnect and replay.
-2. Production NRI recovery: separate containerd and full plugin processes restart
-   while the original sandbox and task remain alive. The test verifies the task's
-   actual cgroup/process identity, complete admission history including a removed
-   same-image workload, unchanged measurements and credential identity, and refusal
-   of old permissions. Missing, malformed and interrupted recovery state must
-   refuse startup.
-3. Standalone kubelet recovery: the real kubelet owns a static Pod with a mesh
-   sidecar and application. Restarting kubelet, containerd and the full plugin must
-   preserve the staged manifest/configuration, Pod UID, running task identities,
-   complete claims and measurements. The kubelet's `/pods` response is checked
-   against its serving certificate and the actual containerd tasks.
-
-The runner extracts digest-pinned RKE2 runtime/kubelet and CNI release binaries
-for the Docker daemon's native architecture. It uses the production `c8s-runc`,
-full NRI callbacks for recovery, real namespace protection, and memory-backed
-recovery/credential volumes. The first check isolates the start-permission
-boundary; the recovery checks use the complete configured plugin.
+The runner extracts digest-pinned RKE2 runtime release binaries for the Docker
+daemon's native architecture and uses the production `c8s-runc`. The check
+isolates the start-permission boundary; a plugin restart within a boot ends the
+Pod identity and is not exercised here.
 
 Measurement registers, CDS transport and credential issuance are fixtures.
 Containerd uses the native snapshotter and cgroupfs. This lane does not issue
 a real Pod certificate, or establish guest-airgap byte equivalence, systemd
 ordering, overlay filesystem behavior or Cloud acceptance.
 
-The runtime lane requires fresh result receipts and fails when
+The runtime lane requires a fresh result receipt and fails when
 prerequisites or required assertions are missing. The runtime lane requires
-`result.json`, `recovery-result.json` and `kubelet-recovery-result.json`, each bound
-to the current invocation, plus successful cleanup. Evidence includes runtime,
-kubelet and CNI binary hashes and bounded logs. The lane removes only its owned
+`result.json`, bound to the current invocation, plus successful cleanup.
+Evidence includes runtime binary hashes and bounded logs. The lane removes only its owned
 local resources; the runtime container has no host mounts or network access.
 Set `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
 directory. CI retains those artifacts for seven days.
