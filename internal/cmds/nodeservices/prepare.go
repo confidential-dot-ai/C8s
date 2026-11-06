@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -415,72 +414,6 @@ var publicOutputNames = append([]string{CDSOutput, "operator-pubkey", "tls-san"}
 
 // CDSOutput is the CDS pin Prepare publishes under PublicDir.
 const CDSOutput = "cds.json"
-
-// RouterTLSSnippetDir is where the node image installs tls-cds.conf and
-// tls-acme.conf and the baked router mounts them; router/tls.conf includes the
-// one the front-door mode selects. The chart's router.bakedNginxDir must equal
-// it.
-const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
-
-// line renders an optional single-line value: empty stays empty.
-func line(s string) []byte {
-	if s == "" {
-		return []byte{}
-	}
-	return []byte(s + "\n")
-}
-
-// The router's public inputs. Staging writes every one of them, empty where
-// the document sets nothing, so the router pod never waits on a file.
-const (
-	routerTLSOutput           = "router/tls.conf"
-	routerHostnamesOutput     = "router/hostnames"
-	routerACMEEmailOutput     = "router/acme-email"
-	routerACMEDirectoryOutput = "router/acme-directory-url"
-	routerModeOutput          = "router/front-door-mode"
-	routerRequestBodyOutput   = "router/request-body.conf"
-)
-
-// routerOutputNames are those files, the set both RouterOutputs writes and
-// staging clears.
-var routerOutputNames = []string{
-	routerTLSOutput,
-	routerHostnamesOutput,
-	routerACMEEmailOutput,
-	routerACMEDirectoryOutput,
-	routerModeOutput,
-	routerRequestBodyOutput,
-}
-
-// RouterOutputs are the router's public inputs from router, a document's
-// router block; the zero block is a document that sets none.
-func RouterOutputs(router launchconfig.Router) (map[string][]byte, error) {
-	// The document was validated; check the hostnames again, so no path can
-	// publish an injectable file.
-	for _, name := range router.Hostnames {
-		if err := cmdsutil.ValidateHostname(name); err != nil {
-			return nil, fmt.Errorf("staged router hostname: %w", err)
-		}
-	}
-	mode := "cds"
-	if len(router.Hostnames) > 0 {
-		mode = "acme"
-	}
-	hostnames := []byte{}
-	for _, name := range router.Hostnames {
-		hostnames = append(hostnames, name+"\n"...)
-	}
-	return map[string][]byte{
-		// nginx includes this in its server block to pick the certificate.
-		routerTLSOutput:           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
-		routerHostnamesOutput:     hostnames,
-		routerACMEEmailOutput:     line(router.ACMEEmail),
-		routerACMEDirectoryOutput: line(router.ACMEDirectoryURL),
-		routerModeOutput:          []byte(mode + "\n"),
-		// nginx includes this in its application location.
-		routerRequestBodyOutput: []byte(fmt.Sprintf("client_max_body_size %d;\n", router.RequestBodyLimit())),
-	}, nil
-}
 
 // removeOutputs removes the named outputs from the public directory, trying
 // every one.

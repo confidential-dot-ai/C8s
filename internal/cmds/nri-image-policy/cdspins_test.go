@@ -62,8 +62,8 @@ func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 
 // The copy the enforcer mounts is readable by the identity that reads it and
 // writable by nobody else: a baked node stages its own CDS identities where
-// only root can read them (internal/cmds/launchconfig), and the injected
-// clients run as the credentials UID.
+// only root can read them, and the injected clients run as the credentials
+// UID.
 func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	renderInTempDir(t)
 	rootOnly := testCDSPinFile(t)

@@ -17,19 +17,6 @@ func parseTree(t *testing.T, data string) *yaml.Node {
 
 // A key a document does not write and a key written as something else are
 // both absent: a caller reading presence must not see a zero value as one.
-func TestPathPresent(t *testing.T) {
-	tree := parseTree(t, "rke2:\n  agentToken: a\nrole: server\n")
-	if !PathPresent(tree, "rke2", "agentToken") {
-		t.Error("present nested key not found")
-	}
-	if PathPresent(tree, "rke2", "serverToken") {
-		t.Error("absent nested key reported present")
-	}
-	if PathPresent(tree, "role", "nested") {
-		t.Error("descended into a scalar")
-	}
-}
-
 func TestMappingPathRefusesWhatItCannotPatch(t *testing.T) {
 	tree := parseTree(t, "allowlist:\n  pull:\n    url: https://cds:8443\n  base: a\n")
 	if _, err := MappingPath(tree.Content[0], "allowlist", "pull"); err != nil {

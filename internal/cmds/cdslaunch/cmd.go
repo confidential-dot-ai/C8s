@@ -86,7 +86,7 @@ fix the cluster for its life.`,
 	f.StringArrayVar(&opts.leafDNSNames, "leaf-dns-name", nil, "literal DNS SAN a leaf may carry; repeatable")
 	f.StringArrayVar(&opts.leafDNSPatterns, "leaf-dns-pattern", nil,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
-	cdsconfig.BindReplicaSetFlags(f, "", &opts.ha)
+	cdsconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
