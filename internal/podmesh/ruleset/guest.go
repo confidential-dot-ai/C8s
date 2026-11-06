@@ -33,7 +33,7 @@ func (p GuestPolicy) validate() error {
 		return fmt.Errorf("%w: invalid guest Pod address", ErrPolicy)
 	}
 	for _, port := range p.IngressPorts {
-		if port == 0 || port == 8443 || workloadclaims.IsMeshPort(int(port)) {
+		if port == 0 || port == uint16(workloadclaims.PodStatusPort) || workloadclaims.IsMeshPort(int(port)) {
 			return fmt.Errorf("%w: reserved guest ingress port %d", ErrPolicy, port)
 		}
 	}
@@ -105,7 +105,7 @@ func buildGuest(p GuestPolicy) []chain {
 	input := chain{name: "guest-input", kind: nftables.ChainTypeFilter, hook: *nftables.ChainHookInput,
 		priority: *nftables.ChainPriorityFilter, policy: nftables.ChainPolicyAccept,
 		rules: []rule{
-			{"probe-replies", withVerdict(slices.Concat(fromPod, matchTCPSourcePort(15021), matchCtState(ctStateEstablished), matchCtReply()), expr.VerdictAccept)},
+			{"probe-replies", withVerdict(slices.Concat(fromPod, matchTCPSourcePort(uint16(workloadclaims.MeshHealthPort)), matchCtState(ctStateEstablished), matchCtReply()), expr.VerdictAccept)},
 			{"deny-pod-to-guest", withVerdict(matchInterface(expr.MetaKeyIIFNAME, p.Bridge), expr.VerdictDrop)},
 		}}
 	forward := denyChain("guest-forward", *nftables.ChainHookForward, []rule{

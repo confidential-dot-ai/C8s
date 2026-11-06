@@ -187,6 +187,12 @@ func isMeshPort(port int32) bool {
 		port == workloadclaims.MeshHealthPort
 }
 
+// isReservedPort reports whether a pod container may not declare port: the
+// endpoint's ports and the guest's status port.
+func isReservedPort(port int32) bool {
+	return port == workloadclaims.PodStatusPort || isMeshPort(port)
+}
+
 // WorkloadContainers are the pod's own containers, in the order their
 // probes are rendered. A platform container's probes are the injector's.
 func WorkloadContainers(pod *corev1.Pod) []*corev1.Container {

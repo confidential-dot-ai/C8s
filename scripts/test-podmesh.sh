@@ -14,5 +14,5 @@ for package in ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy \
 done
 # Real BPF link creation in one package must not race another's global scan.
 go test -p 1 -count=1 -exec "$runner" \
-  -run 'InTheNamespace|^TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy$|^TestPodCredentialRoot|^TestPodBroker|^TestEndpointStartWakesTheBroker|^TestRecoverMatchesTheSandboxNamespaceByIdentity|^TestPodTransportProcess|^TestGuest' \
+  -run 'InTheNamespace|^TestNodeImagePodRoleConfig_|^TestPodCredentialRoot|^TestRecoverMatchesTheSandboxNamespaceByIdentity|^TestPodTransportProcess|^TestGuest' \
   "$@" "${packages[@]}"

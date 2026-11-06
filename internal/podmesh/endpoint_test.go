@@ -39,6 +39,17 @@ func TestGuestEndpointPrecedesWorkloadsAndOwnsPrivateRAMVolume(t *testing.T) {
 	}
 }
 
+// A container port on the guest status port or a mesh port is refused before
+// the guest installs any rule.
+func TestGuestRefusesPlatformPortsOnWorkloadContainers(t *testing.T) {
+	for _, port := range []int32{workloadclaims.PodStatusPort, workloadclaims.MeshOutboundPort, workloadclaims.MeshInboundPort, workloadclaims.MeshHealthPort} {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Ports: []corev1.ContainerPort{{ContainerPort: port}}}}}}
+		if err := InjectEndpoint(pod, "measured"); err == nil {
+			t.Fatalf("port %d passed validation", port)
+		}
+	}
+}
+
 // A probe naming a host would make the kubelet reach a guest service.
 func TestGuestProbeCannotAskKubeletToReachAGuestService(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Host: "127.0.0.1", Path: "/attest", Port: intstr.FromInt32(8080)}}}}}}}

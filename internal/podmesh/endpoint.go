@@ -82,8 +82,8 @@ func ValidateWorkloadPod(pod *corev1.Pod) error {
 			}
 		}
 		for _, p := range c.Ports {
-			if isMeshPort(p.ContainerPort) {
-				return fmt.Errorf("container %q port %d is reserved for the mesh", c.Name, p.ContainerPort)
+			if isReservedPort(p.ContainerPort) {
+				return fmt.Errorf("container %q port %d is reserved for the platform", c.Name, p.ContainerPort)
 			}
 		}
 	}
