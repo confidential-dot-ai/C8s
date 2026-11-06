@@ -7,8 +7,9 @@ import (
 
 // Inputs is everything one cluster's CDS VM is configured with. Both
 // generators (`c8s cds config new` and `c8s launch-config new`) fill it, so
-// either one's configuration is built and checked the same way. Each embedded
-// policy is the exact bytes its own parser reads.
+// either one's configuration is built and checked the same way; a field a
+// generator has no flag for stays zero, and what it enables stays off. Each
+// embedded policy is the exact bytes its own parser reads.
 type Inputs struct {
 	ClusterID string
 	// OperatorKeys authorize policy writes.
@@ -19,6 +20,9 @@ type Inputs struct {
 	TenantWorkloads []byte
 	// Nodes is the measurements document pinning the nodes CDS admits.
 	Nodes []byte
+	// PodImagePolicy optionally pins Pod identities separately from Nodes.
+	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
+	PodImagePolicy []byte
 	// NodeCIDRs are the subnets CDS may dial a sandbox inventory in;
 	// ClusterCIDRs are the pod and service ranges they may not reach into.
 	NodeCIDRs    []string
@@ -50,6 +54,7 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		OperatorKeys:    in.OperatorKeys,
 		Workloads:       workloads,
 		Nodes:           in.Nodes,
+		PodImagePolicy:  in.PodImagePolicy,
 		NodeCIDRs:       in.NodeCIDRs,
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,
