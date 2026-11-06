@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 12,
+  "stage": "console-liveness-before-third-guest-init",
+  "runner_commit": "de4ca978e77a690e495f5a2fa35b6b0c6ab12437",
+  "image_build": "three-host-image-05",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 3,
+  "chunk_retries": 0,
+  "native_cds_startup_checks_passed": 2,
+  "completed_verified_phases": 6,
+  "finding": "The runner stopped because an earlier read-only console stream had exited before the third guest init. Its final transport message was websocket close 1006; the last guest output preceded that message by several minutes. The bounded console captured boot and agent output correctly. No workload or fault result is claimed.",
+  "follow_up": "Reconnect read-only console streams before a phase with VM/VMI UID checks, bounded attempts and a fresh connection acknowledgment; retain the same bounded private tail with explicit output-gap markers. Workload and service timeouts are unchanged.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 29,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

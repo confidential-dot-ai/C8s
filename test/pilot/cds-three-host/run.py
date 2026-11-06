@@ -221,11 +221,37 @@ class Run(metadata.Run):
         self.state.setdefault('guest_placements', []).append({'slot': slot, 'variant': variant, 'vm_uid': row['uid'],
             'vmi_uid': uid, 'node': vmi['status']['nodeName'], 'node_uid': self.state['nodes'][slot]['uid']})
         self.save()
-        self.current(row)
-        name = vm['metadata']['name']
-        self.consoles[name] = console.Capture([self.args.virtctl, '--kubeconfig', self.args.kubeconfig,
-            '-n', NS, 'console', name, '--timeout=1'], self.directory/(name+'-live-console.log'))
+        self.start_console(row)
         self.open_tunnel(slot)
+
+    def start_console(self, row, resume=False):
+        self.current(row)
+        name = row['item']['metadata']['name']
+        _, vmi = self.kube.call('GET', VMI+name)
+        expected = next(p['vmi_uid'] for p in self.state['guest_placements'] if p['vm_uid'] == row['uid'])
+        need(vmi['metadata']['uid'] == expected, 'console guest identity changed')
+        for attempt in range(2):
+            capture = console.Capture([self.args.virtctl, '--kubeconfig', self.args.kubeconfig,
+                '-n', NS, 'console', name, '--timeout=1'], self.directory/(name+'-live-console.log'), resume=resume or attempt > 0)
+            self.consoles[name] = capture
+            try:
+                capture.wait_connected()
+                return
+            except RuntimeError:
+                capture.close(); self.consoles.pop(name)
+                if attempt == 1: raise
+                self.current(row)
+                _, again = self.kube.call('GET', VMI+name)
+                need(again['metadata']['uid'] == expected, 'console guest identity changed')
+
+    def ensure_consoles(self):
+        for row in self.guests.values():
+            name = row['item']['metadata']['name']
+            capture = self.consoles[name]
+            if capture.process.poll() is not None:
+                capture.close(); self.consoles.pop(name)
+                self.start_console(row, resume=True)
+                self.event('console-reconnected', guest=name)
 
     def open_tunnel(self, slot):
         row = self.guests[slot]; self.current(row)
@@ -245,8 +271,7 @@ class Run(metadata.Run):
 
     def phase(self, agent, operation, target=0, retry_start=False):
         self.live(); row = self.guests[agent]; self.current(row)
-        need(all(self.consoles[r['item']['metadata']['name']].process.poll() is None
-                 for r in self.guests.values()), 'owned read-only console capture exited; inspect private tail')
+        self.ensure_consoles()
         need(self.tunnels[agent][0].poll() is None, 'VM tunnel exited')
         q = {'operation': operation, 'target': target}
         if operation == 'init':

@@ -35,6 +35,38 @@ class ConsoleCapture(unittest.TestCase):
             self.assertNotIn(b'input received', path.read_bytes())
             self.assertFalse(capture.writer.is_alive())
 
+    def test_reconnect_retains_tail_but_requires_a_new_handshake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'console.log'
+            first = Capture([sys.executable, '-u', '-c',
+                "print('Successfully connected to old console'); print('previous failure')"], path, limit=1024)
+            first.wait_connected(); first.process.wait(timeout=5); first.close()
+            waiting = Capture([sys.executable, '-u', '-c',
+                "import time; print('still connecting'); time.sleep(60)"], path, limit=1024, resume=True)
+            try:
+                with self.assertRaises(RuntimeError): waiting.wait_connected(timeout=.05)
+            finally:
+                waiting.close()
+            last = Capture([sys.executable, '-u', '-c',
+                "print('Successfully connected to new console'); print('new failure')"], path, limit=1024, resume=True)
+            last.wait_connected(); last.process.wait(timeout=5); last.close()
+            tail = path.read_bytes()
+            self.assertLessEqual(len(tail), 1024)
+            self.assertIn(b'previous failure', tail)
+            self.assertIn(b'output may have a gap', tail)
+            self.assertIn(b'new failure', tail)
+
+    def test_console_cannot_follow_a_different_guest_uid(self):
+        import run
+        runner = object.__new__(run.Run)
+        runner.current = lambda row: None
+        runner.state = {'guest_placements': [{'vm_uid': 'owned-vm', 'vmi_uid': 'owned-guest'}]}
+        class API:
+            def call(self, *args): return 200, {'metadata': {'uid': 'replacement-guest'}}
+        runner.kube = API()
+        with self.assertRaisesRegex(ValueError, 'guest identity changed'):
+            runner.start_console({'uid': 'owned-vm', 'item': {'metadata': {'name': 'owned-test'}}})
+
 
 if __name__ == '__main__':
     unittest.main()

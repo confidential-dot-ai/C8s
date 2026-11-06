@@ -106,3 +106,11 @@ keeps a terminal open but sends no keystrokes; capture processes stop with their
 owned guests. Initial workload checks now precede copying replacement disks,
 while every fault still waits for all six disks to be independently verified.
 The workload, request timeouts, image pins, and backend budgets are unchanged.
+
+[Attempt 12](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-12.json)
+stopped at the runner's console-liveness guard after a quiet console stream
+disconnected; no workload or fault result was reached. Capture now reconnects
+before a phase, revalidating both VM and guest UIDs and waiting for a new
+connection acknowledgment. Two attempts are allowed per reconnect. It retains
+the same bounded tail, explicitly marks possible output gaps, and cannot treat
+an old connection message as proof of a new connection.
