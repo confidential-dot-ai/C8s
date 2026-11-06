@@ -37,9 +37,18 @@ type metadataFixture struct {
 	delayNS   atomic.Int64
 	dropNext  atomic.Bool
 	dropped   atomic.Uint64
+	// Immutable endpoint list plus atomic routing state for the local HA fixture.
+	// Requests are dispatched once: a failed or ambiguous write is never retried.
+	upstreams []string
+	disabled  atomic.Uint32
+	next      atomic.Uint64
 }
 
 func attachMetadata(t *testing.T, f *objectFixture) {
+	attachMetadataWithBackend(t, f, nil)
+}
+
+func attachMetadataWithBackend(t *testing.T, f *objectFixture, backend []string) {
 	t.Helper()
 	m := &metadataFixture{owner: &cluster{t: t}, namespace: f.config.Prefix}
 	proxy := httptest.NewTLSServer(http.HandlerFunc(m.serve))
@@ -67,7 +76,11 @@ func attachMetadata(t *testing.T, f *objectFixture) {
 	}
 	port := freePort(t)
 	m.upstream = fmt.Sprintf("https://127.0.0.1:%d", port)
-	m.args = []string{"--listen", fmt.Sprintf("127.0.0.1:%d", port), "--db", filepath.Join(dir, "state.db"), "--namespace", m.namespace, "--token-file", tokenFile, "--tls-cert", certFile, "--tls-key", keyFile}
+	m.args = []string{"--listen", fmt.Sprintf("127.0.0.1:%d", port), "--namespace", m.namespace, "--token-file", tokenFile, "--tls-cert", certFile, "--tls-key", keyFile}
+	if len(backend) == 0 {
+		backend = []string{"--db", filepath.Join(dir, "state.db")}
+	}
+	m.args = append(m.args, backend...)
 	m.restart()
 	// Preserve the object server's trust anchor as well as the metadata proxy's.
 	var roots []byte
@@ -142,7 +155,24 @@ func (m *metadataFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	request, err := http.NewRequestWithContext(r.Context(), r.Method, m.upstream+r.URL.RequestURI(), r.Body)
+	upstream := m.upstream
+	if len(m.upstreams) != 0 {
+		upstream = ""
+		start := int(m.next.Add(1) % uint64(len(m.upstreams)))
+		disabled := m.disabled.Load()
+		for n := range len(m.upstreams) {
+			i := (start + n) % len(m.upstreams)
+			if disabled&(1<<i) == 0 {
+				upstream = m.upstreams[i]
+				break
+			}
+		}
+		if upstream == "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	}
+	request, err := http.NewRequestWithContext(r.Context(), r.Method, upstream+r.URL.RequestURI(), r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		return

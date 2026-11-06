@@ -19,26 +19,28 @@ import (
 )
 
 type Request struct {
-	Operation       string          `json:"operation"`
-	Nonce           []byte          `json:"nonce"`
-	Measurement     string          `json:"measurement"`
-	Parameters      Parameters      `json:"parameters"`
-	Collateral      Collateral      `json:"collateral,omitempty"`
-	IntelCollateral IntelCollateral `json:"intel_collateral,omitempty"`
-	OperatorKey     []byte          `json:"operator_key,omitempty"`
-	Custody         *CustodyRequest `json:"custody,omitempty"`
-	Copy            *CustodyCopy    `json:"copy,omitempty"`
+	Operation       string              `json:"operation"`
+	Nonce           []byte              `json:"nonce"`
+	Measurement     string              `json:"measurement"`
+	Parameters      Parameters          `json:"parameters"`
+	Collateral      Collateral          `json:"collateral,omitempty"`
+	IntelCollateral IntelCollateral     `json:"intel_collateral,omitempty"`
+	OperatorKey     []byte              `json:"operator_key,omitempty"`
+	Custody         *CustodyRequest     `json:"custody,omitempty"`
+	Custodies       []TDXCustodyRequest `json:"custodies,omitempty"`
+	Copy            *CustodyCopy        `json:"copy,omitempty"`
 }
 type Result struct {
-	Operation  string              `json:"operation"`
-	Passed     bool                `json:"passed"`
-	Launch     []byte              `json:"launch,omitempty"`
-	Parameters Parameters          `json:"parameters"`
-	Checks     map[string]any      `json:"checks,omitempty"`
-	Error      string              `json:"error,omitempty"`
-	Derivation *DerivationIdentity `json:"derivation,omitempty"`
-	Custody    *CustodyGrant       `json:"custody,omitempty"`
-	Copy       *CustodyCopy        `json:"copy,omitempty"`
+	Operation     string              `json:"operation"`
+	Passed        bool                `json:"passed"`
+	Launch        []byte              `json:"launch,omitempty"`
+	Parameters    Parameters          `json:"parameters"`
+	Checks        map[string]any      `json:"checks,omitempty"`
+	Error         string              `json:"error,omitempty"`
+	Derivation    *DerivationIdentity `json:"derivation,omitempty"`
+	Custody       *CustodyGrant       `json:"custody,omitempty"`
+	CustodyGrants []*CustodyGrant     `json:"custody_grants,omitempty"`
+	Copy          *CustodyCopy        `json:"copy,omitempty"`
 }
 type Reply struct {
 	Result Result `json:"result"`
@@ -70,10 +72,7 @@ func decodeHTTP(w http.ResponseWriter, r *http.Request, v any, limit int64) erro
 // storage relay stays available while that phase runs. No remote path accepts
 // executable code, file paths, process arguments, or plaintext custody keys.
 func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) error {
-	valid := func(q Request) bool {
-		return (q.Operation == "enroll" || q.Operation == "delegate" || q.Operation == "copy" || q.Operation == "seed" || q.Operation == "recover") && (q.Copy == nil || q.Operation == "delegate")
-	}
-	return servePhases(ctx, h, false, valid, func(q Request, relay *Relay) Result {
+	return servePhases(ctx, h, false, validSNPPhase, func(q Request, relay *Relay) Result {
 		var out Result
 		p := q.Parameters
 		if q.Operation == "enroll" {
@@ -81,14 +80,23 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 		}
 		var identity *DerivationIdentity
 		var identityErr error
-		if q.Operation == "delegate" && q.Copy != nil {
+		delegating := q.Operation == "delegate" || q.Operation == "delegate-three"
+		if delegating && q.Copy != nil {
 			identity, identityErr = h.CopyIdentity(ctx, *q.Copy)
-		} else if q.Operation == "enroll" || q.Operation == "delegate" {
+		} else if q.Operation == "enroll" || delegating {
 			identity, identityErr = h.PublicIdentity(ctx, p)
 		}
 		if q.Operation == "enroll" {
 			launch, p, err := h.Enroll(ctx)
 			out = Result{Operation: q.Operation, Passed: err == nil, Launch: launch, Parameters: p}
+			if err != nil {
+				out.Error = err.Error()
+			}
+		} else if q.Operation == "delegate-three" {
+			grants, err := delegateThree(q.Custodies, func(r TDXCustodyRequest) (*CustodyGrant, error) {
+				return h.DelegateTDX(ctx, p, q.Copy, &r.Recipient, r.Collateral)
+			})
+			out = Result{Operation: q.Operation, Passed: err == nil, CustodyGrants: grants, Parameters: p}
 			if err != nil {
 				out.Error = err.Error()
 			}
@@ -131,7 +139,7 @@ func Serve(ctx context.Context, h *Hardware, run func(Request, *Relay) Result) e
 // remain exclusively in the SNP custodian, with no key upload or software root.
 func ServeTDX(ctx context.Context, h *TDXHardware, run func(Request, *Relay) Result) error {
 	return servePhases(ctx, h, true, func(q Request) bool {
-		return (q.Operation == "seed" || q.Operation == "recover") && q.Copy == nil && q.Custody == nil
+		return (q.Operation == "seed" || q.Operation == "recover") && q.Copy == nil && q.Custody == nil && len(q.Custodies) == 0
 	}, run)
 }
 
@@ -152,7 +160,7 @@ func servePhases(ctx context.Context, h phaseReporter, inspect bool, valid func(
 		// it cannot enroll, derive, upload, or release any key material.
 		mux.HandleFunc("POST /v1/inspect", func(w http.ResponseWriter, r *http.Request) {
 			var q Request
-			if decodeHTTP(w, r, &q, 4096) != nil || q.Operation != "inspect" || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || len(q.OperatorKey) != 0 || len(q.Collateral) != 0 || len(q.IntelCollateral) != 0 || q.Copy != nil || q.Custody != nil || q.Parameters != (Parameters{}) {
+			if decodeHTTP(w, r, &q, 4096) != nil || q.Operation != "inspect" || len(q.Nonce) != 32 || bytes.Equal(q.Nonce, make([]byte, 32)) || h.CheckMeasurement(q.Measurement) != nil || len(q.OperatorKey) != 0 || len(q.Collateral) != 0 || len(q.IntelCollateral) != 0 || q.Copy != nil || q.Custody != nil || len(q.Custodies) != 0 || q.Parameters != (Parameters{}) {
 				http.Error(w, "bounded public inspection required", 400)
 				return
 			}

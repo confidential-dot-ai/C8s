@@ -9,6 +9,7 @@ type Request struct {
 	Target      int             `json:"target"`
 	OperatorKey []byte          `json:"operator_key,omitempty"`
 	Provision   json.RawMessage `json:"provision,omitempty"`
+	Custody     json.RawMessage `json:"custody,omitempty"`
 }
 
 type Reply struct {
@@ -24,9 +25,12 @@ func (q Request) Valid() bool {
 	}
 	switch q.Operation {
 	case "init":
-		return len(q.OperatorKey) > 0 && len(q.OperatorKey) < 4096 && len(q.Provision) < 8192
-	case "startup", "status", "provision", "seed", "attach", "burst", "prepare", "refuse", "survive", "heal", "revoke", "revoked", "overlap", "admit", "retire", "roll-safe":
-		return len(q.OperatorKey) == 0 && len(q.Provision) == 0
+		return len(q.OperatorKey) > 0 && len(q.OperatorKey) < 4096 && len(q.Provision) < 8192 && len(q.Custody) == 0
+	case "custody-accept":
+		return len(q.OperatorKey) == 0 && len(q.Provision) == 0 && len(q.Custody) > 0 && len(q.Custody) < 8192
+	case "startup", "status", "provision", "seed", "attach", "burst", "prepare", "refuse", "survive", "heal", "revoke", "revoked", "overlap", "admit", "retire", "roll-safe",
+		"custody-request", "recovery-enroll", "recovery-restore", "recovery-genesis", "recovery-checkpoint", "recovery-check", "recovery-refuse":
+		return len(q.OperatorKey) == 0 && len(q.Provision) == 0 && len(q.Custody) == 0
 	}
 	return false
 }

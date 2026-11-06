@@ -51,8 +51,8 @@ func threeHostMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	if threeHostConfig.HA == nil || len(threeHostConfig.HA.Replicas) != 3 || threeHostConfig.Nodes.Family != "tdx" || len(threeHostConfig.Nodes.Images) != 2 {
-		panic("three replicas and two complete TDX image tuples required")
+	if threeHostConfig.HA == nil || len(threeHostConfig.HA.Replicas) != 3 || threeHostConfig.Nodes.Family != "tdx" || len(threeHostConfig.Nodes.Images) < 1 || len(threeHostConfig.Nodes.Images) > 2 {
+		panic("three replicas and one or two complete TDX image tuples required")
 	}
 	for _, p := range threeHostConfig.Nodes.Images {
 		if len(p.Registers[1]) != 48 || len(p.Registers[2]) != 48 {
@@ -69,6 +69,7 @@ type threeHostJob struct {
 	reply         chan protocol.Reply
 }
 type threeHostState struct {
+	protected  *threeHostProtected
 	c          *cluster
 	w          *pilotWorkload
 	ca         string
@@ -192,6 +193,7 @@ func TestThreeHostAgent(t *testing.T) {
 				}
 				pilotSandbox = hex.EncodeToString(sandbox[:])
 				s.w = startPilotWorkload(s.c, ln, host)
+				s.setupProtected(t, job.q.Target)
 			}
 			if s.c == nil {
 				job.reply <- out
@@ -205,6 +207,9 @@ func TestThreeHostAgent(t *testing.T) {
 }
 
 func (s *threeHostState) phase(q protocol.Request, out map[string]any) {
+	if s.protected != nil && s.protectedPhase(q, out) {
+		return
+	}
 	c, w, t := s.c, s.w, s.c.t
 	c.client.CloseIdleConnections()
 	target := c.replicas[q.Target]
@@ -278,28 +283,32 @@ func (s *threeHostState) phase(q protocol.Request, out map[string]any) {
 			c.provisionObjects(target)
 		}
 	case "seed":
-		// The initial CDS admission set contains image A. Node/workload inventory
-		// pins cover A and B so their rolling replacement is independently trusted.
-		initial := c.nativeTDXPins()
-		initial.Images = initial.Images[:1]
-		pinBytes, err := refvalues.Render(initial)
-		if err != nil {
-			t.Fatal(err)
+		if s.protected == nil {
+			// The initial CDS admission set contains image A. Node/workload inventory
+			// pins cover A and B so their rolling replacement is independently trusted.
+			initial := c.nativeTDXPins()
+			initial.Images = initial.Images[:1]
+			pinBytes, err := refvalues.Render(initial)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pins, err := cdsdecree.NewPinDocument(pinBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nodesBytes, err := refvalues.Render(threeHostConfig.Nodes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nodes, err := cdsdecree.NewNodeImages(nodesBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := c.awaitStatus(target)
+			c.decree(target, cdsdecree.Decree{ClusterID: c.id(), IntentID: cdsdecree.NewIntentID(), Kind: cdsdecree.Genesis, ExpiresAt: time.Now().Add(time.Hour), CDSPins: pins, NodePins: nodes, TargetMember: status.ID, TargetAddress: target.host + ":8443", IssuedAtMS: time.Now().UnixMilli(), GenesisCA: status.GenesisCA})
+		} else if c.awaitStatus(target).Version == 0 {
+			t.Fatal("protected Genesis must commit before provisioning other replicas")
 		}
-		pins, err := cdsdecree.NewPinDocument(pinBytes)
-		if err != nil {
-			t.Fatal(err)
-		}
-		nodesBytes, err := refvalues.Render(threeHostConfig.Nodes)
-		if err != nil {
-			t.Fatal(err)
-		}
-		nodes, err := cdsdecree.NewNodeImages(nodesBytes)
-		if err != nil {
-			t.Fatal(err)
-		}
-		status := c.awaitStatus(target)
-		c.decree(target, cdsdecree.Decree{ClusterID: c.id(), IntentID: cdsdecree.NewIntentID(), Kind: cdsdecree.Genesis, ExpiresAt: time.Now().Add(time.Hour), CDSPins: pins, NodePins: nodes, TargetMember: status.ID, TargetAddress: target.host + ":8443", IssuedAtMS: time.Now().UnixMilli(), GenesisCA: status.GenesisCA})
 		c.waitServing(2 * time.Minute)
 		c.replaceAllowlist(target, "pilot-warmup")
 		w.setPolicy(true)

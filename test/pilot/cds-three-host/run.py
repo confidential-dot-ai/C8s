@@ -331,11 +331,14 @@ class Run(metadata.Run):
         # after an early guest dial fails while leaving its process alive.
         time.sleep(.3); need(process.poll() is None, 'VM tunnel exited')
 
-    def phase(self, agent, operation, target=0, retry_start=False):
+    def phase(self, agent, operation, target=0, retry_start=False, custody=None):
         self.live(); row = self.guests[agent]; self.current(row)
         self.ensure_consoles()
         need(self.tunnels[agent][0].poll() is None, 'VM tunnel exited')
         q = {'operation': operation, 'target': target}
+        if custody is not None:
+            need(operation == 'custody-accept', 'custody is accepted only by its fixed phase')
+            q['custody'] = custody
         if operation == 'init':
             q['operator_key'] = base64.b64encode((self.directory/'operator.pem').read_bytes()).decode()
             if self.args.backend != 'raft': q['provision'] = json.loads((self.directory/'provision.json').read_text())
@@ -408,8 +411,7 @@ class Run(metadata.Run):
         need(self.state['images']['a']['disk_sha256'] != self.state['images']['b']['disk_sha256'], 'distinct measured images required')
         self.save()
 
-    def launch(self):
-        import yaml
+    def launch_config(self):
         self.command('operator-key', ['openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', str(self.directory/'operator.pem')])
         pub = self.command('operator-public', ['openssl', 'ec', '-in', str(self.directory/'operator.pem'), '-pubout']).decode()
         _, namespace = self.kube.call('GET', '/api/v1/namespaces/'+NS)
@@ -422,10 +424,14 @@ class Run(metadata.Run):
         images = []
         for v in ['a', 'b']:
             td = self.state['images'][v]['pins']; images.append({'name': 'guest-'+v, 'mrtd': td['mrtd'], 'rtmr': [None, td['rtmr1'], td['rtmr2'], None]})
-        config = {'schemaVersion': 'c8s-cds/v1', 'clusterID': self.run, 'operatorPublicKeys': pub,
+        return {'schemaVersion': 'c8s-cds/v1', 'clusterID': self.run, 'operatorPublicKeys': pub,
             'workloads': json.dumps({'schema': 'c8s.allowlist/v1', 'workloads': {'attestation-api': {'containers': [{'digest': 'sha256:'+'11'*32, 'command': {'policy': 'any'}, 'args': {'policy': 'any'}}]}}}),
             'nodes': json.dumps({'schema_version': '1', 'tee': 'tdx', 'measurements': images}), 'nodeCIDRs': cidrs,
             'ha': {'replicas': [f'{self.run}-g{i}.{NS}.svc.cluster.local' for i in range(3)], 'voters': 3}}
+
+    def launch(self):
+        import yaml
+        config = self.launch_config()
         if self.args.backend != 'raft':
             key = secrets.token_bytes(32); origin = f'https://{self.run}-api.{NS}.svc.cluster.local:9443'
             config['ha']['objectWALPilot'] = {'bucket': 'inline-only', 'region': 'fixture', 'prefix': self.run, 'endpoint': origin,

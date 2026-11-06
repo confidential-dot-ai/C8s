@@ -65,6 +65,8 @@ are single observations, not a speedup, capacity or SLO result. This establishes
 the bounded HA behavior of direct-state CDS with the dedicated metadata service.
 The next qualification must combine this service with hardware-protected key
 custody and total CDS replica loss; this run uses the synthetic state key above.
+The [combined acceptance fixture](cds-ha-protected-recovery.md) now exercises that
+composition locally with software custody; its native combined result is pending.
 
 The first guest fault uses the owned NetworkPolicy. The Raft quorum-loss fault
 pauses the two owned guest VMIs, observes their `Paused` conditions, then waits

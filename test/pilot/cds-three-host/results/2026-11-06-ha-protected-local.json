@@ -1,0 +1,112 @@
+{
+  "changed_code_sha256": {
+    "internal/metadataha/etcd_integration_test.go": "26908906d1949d383277b2718ae4adabcd2f205e2f00fe3bf1359bff64edb47c",
+    "internal/testutil/etcdtest/cluster.go": "7641677f11dff8e5428358f7c18daa72607ca62387ef895769792571abb0232b",
+    "test/integration/cdsha/current_recovery_test.go": "d77e28273f5e66cefa4fa120e876d03f258c7c3c41cb395310501e7d0a5f76f7",
+    "test/integration/cdsha/ha_current_recovery_test.go": "d7a06323a88a18a4791da21db15e2b1016654489773fe1e3ae01c45cb8e23276",
+    "test/integration/cdsha/metadata_test.go": "26fc5a12937427c6f7b9d078cf15f15efcf0947beb8db97a65b5a001d18bf9a9",
+    "test/integration/cdsha/recovery_test.go": "3aa5668904afc9849dab9371c91f0eda5d68d02e77168b37bee96d661b9896ec",
+    "test/integration/cdsha/three_host_recovery_test.go": "f287c0bcc5d3df6d3f30a46585d293041fbd338bf2f70439908534986e320c39",
+    "test/integration/cdsha/three_host_test.go": "80df4518a3f5c94f3495263772b9ad6bd863985baa671e9b29cd4f41aa10b813",
+    "test/pilot/cds-sealed-recovery/snpaccept/batch.go": "c60aec0de7992088c2a9104bc1ba06717bb9634c8b45f9269627bd1b0900ee2c",
+    "test/pilot/cds-sealed-recovery/snpaccept/batch_test.go": "6af44691a1dfb5da0f0d6864c012aa9c26b5809a8619a511fa220d93a4399407",
+    "test/pilot/cds-sealed-recovery/snpaccept/service.go": "d0bb5b3b45bce0f26a320ea93d925a1695795342a21f29d8e63a226ac664a36a",
+    "test/pilot/cds-three-host/client/main.go": "ac71d58b455ae3c94510a11f261330ed023cd14d68b343a84b16b38897987bc9",
+    "test/pilot/cds-three-host/protected.py": "ec299425676c330ba28bb59f2d51d171b71d7c0c2d3cf941a43cd5d414f5451c",
+    "test/pilot/cds-three-host/protocol/protocol.go": "198ec070b23b878ae18eaaa99d70d081e8116606958ccf18f88d44adde8f9d70",
+    "test/pilot/cds-three-host/protocol/protocol_test.go": "bc33a0b50d5ce38b26b5897155049bdc2cc9a2543ae005f02772595b1beb5c6f",
+    "test/pilot/cds-three-host/recovery/records.go": "0530e9f2ebfdea221c7cad262048417b6a85c4f1db0e71aff038aab996d75830",
+    "test/pilot/cds-three-host/recovery/records_test.go": "f90628bf0c411f4bc07fb56fa3946897c167e23b9aa4f9ccfd9c4f6bf2525269",
+    "test/pilot/cds-three-host/run.py": "42fe62d8cd19159adef00427957ffc8c9af78060103d1e78d4e20586af5cba3a",
+    "test/pilot/cds-three-host/test_protected.py": "fa1df83c363749d0bcfa67e20a683c2666b29a0ac097e823963165c323bc3a7c"
+  },
+  "checks": {
+    "acknowledged_revocation_preserved": true,
+    "all_metadata_adapters_restarted": true,
+    "all_original_cds_processes_exited": true,
+    "authority_refused_release_without_quorum": true,
+    "encrypted_native_agent_witness_path_exercised_locally": true,
+    "fresh_cds_database_paths": true,
+    "metadata_leader_and_adapter_failure": true,
+    "original_committed_registration_and_encrypted_capsule": true,
+    "original_leaf_and_secret_after_explicit_reauthorization": true,
+    "previous_incarnation_grant_refused": true,
+    "revocation_acknowledged_during_failure": true,
+    "same_ca_after_total_cds_loss": true,
+    "unexpired_spent_token_rejected": true
+  },
+  "ci_used": false,
+  "cloud_operations_this_qualification": 0,
+  "date_utc": "2026-11-06",
+  "environment": {
+    "attestation": "mock",
+    "cds_release_processes": true,
+    "cds_replicas": 3,
+    "comparison_rate_and_burst": 10000,
+    "custody_root": "software fixture",
+    "etcd": "3.7.3",
+    "etcd_members": 3,
+    "go": "1.27.3",
+    "metadata_adapters": 3
+  },
+  "integration_binary_sha256": {
+    "c8s": "cf878024f8f47e205f6b639240a67a1374550ea97373c41ecb242a79b55f0816",
+    "cds-metadata-pilot": "fd18333fb2ce0755fd289871db3eecc11b8f2545cee870d9e4549f6c761e70ec",
+    "mock-attestation": "0e501c41ac293ef54587e286347f14787807e6ea66812a7d743e0434c8dc7093"
+  },
+  "limitations": [
+    "Software-root local pass does not establish hardware operator exclusion.",
+    "Native combined qualification remains pending; previous separate HA and hardware results are not compositional proof.",
+    "CDS has no Raft participant in this arm, but the HA metadata fixture uses etcd/Raft.",
+    "Metadata survives total CDS replica loss and remains the trusted freshness authority.",
+    "No throughput, latency SLO, multi-tenant capacity, mixed-image upgrade, large-object, or loss-of-all-trust-roots claim."
+  ],
+  "local_combined_passed": true,
+  "native_combined_passed": false,
+  "native_pending": [
+    "build new measured TDX and SNP images; bake the TDX recipient manifest into the custody image",
+    "review fixture lifecycle/network impact before any live run",
+    "run protected.py with three TDX workers, two SNP custody chips and real HA metadata",
+    "independently verify native receipts, original CA, live replay rejection and revocation after all-loss barrier",
+    "UID-scoped cleanup and independent absence audit of both journals"
+  ],
+  "prepared_native_binary_sha256": {
+    "cds-acceptance-agent": "9c11ec73aaab98949fa03162462d895bd66c9b81b277e98fd6b367b12eae74a4",
+    "cds-custody-verifier": "e3df2efb48df92068aa549b988aeb6140a8e69ac593f852a1300edc54c698c09",
+    "cds-three-host-client": "276c3b910f0421e8c24d309f4022d3c5e54df22c1fb796b9ca55d079b6a6b267"
+  },
+  "production_ready": false,
+  "qualification": "combined HA and protected recovery: local composition",
+  "schema_version": 1,
+  "shared_rollout": false,
+  "source_base_commit": "240c7456beb2f22cd643e9b507d474b7e6fc5c46",
+  "source_base_tree": "53293b01801a465fd22b2d974267d0bcae456ef9",
+  "validation": {
+    "combined_local_seconds": 14.69,
+    "combined_with_race_seconds": 17.41,
+    "existing_crash_and_protected_recovery_regressions_passed": 2,
+    "python_custody_controller_tests_passed": 37,
+    "python_ha_controller_tests_passed": 42,
+    "python_metadata_controller_tests_passed": 6,
+    "python_protected_final_tests_passed": 5,
+    "race_packages_passed": [
+      "internal/cdsrecovery",
+      "test/pilot/cds-sealed-recovery/snpaccept",
+      "test/pilot/cds-three-host/recovery",
+      "test/pilot/cds-three-host/protocol",
+      "test/pilot/cds-three-host/client"
+    ],
+    "race_scope": "Go integration harness and recovery/custody/protocol/client packages; CDS child processes are release binaries",
+    "real_etcd_transaction_integration_tests_passed": 2,
+    "retained_local_log_sha256": {
+      "controller-tests-02.log": "30ecdb81200d62170629c1fda3dfba8ca143733a5deb67dc92047bf1ca93afe6",
+      "custody-controller-tests.log": "fa3c68bfdd1f1c602c6aabdfaba0ce93e12645a709f6ccaad824f78746133c16",
+      "integration-final.log": "0dac04998f77dfddaddb12c4e9cd813f476987da1b38589dc8bfddc86c166d7e",
+      "integration-race.log": "9e2cccf767c79693fe43a54c6d382f6168e51ca15f875496587656e57f9c9212",
+      "metadata-controller-tests.log": "c418962c4899b3473581bd485aa671740eb0d0b056df9ad3bc0b0738b2574870",
+      "metadata-custody-tests.log": "8c71f7a5b43dea7cca870087209e9fcafee04019c41a978df86a0f9d4562980e",
+      "protected-controller-final.log": "d0b546d803800b2739a3b7c053bef6496f793143ac24d479452e7a27cacd1447",
+      "race-tests.log": "72fcb4e9ad5d7f243e0025106fd3b75bc4b607d5b240a46051fe65513404abf6"
+    }
+  }
+}

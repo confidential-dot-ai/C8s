@@ -67,8 +67,8 @@ func run(lp, kp, origin, qp, out string) error {
 	if e != nil {
 		return e
 	}
-	if cfg.Nodes.Family != "tdx" || len(cfg.Nodes.Images) != 2 {
-		return errors.New("two independent TDX image tuples required")
+	if cfg.Nodes.Family != "tdx" || len(cfg.Nodes.Images) < 1 || len(cfg.Nodes.Images) > 2 {
+		return errors.New("one or two independent TDX image tuples required")
 	}
 	for i := range cfg.Nodes.Images {
 		cfg.Nodes.Images[i].LaunchFile = launch

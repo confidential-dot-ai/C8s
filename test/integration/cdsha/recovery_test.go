@@ -31,6 +31,7 @@ import (
 // protection. The relay payload contains only
 // ciphertext and storage credentials. Tests run sequentially on fixed ports.
 type recoveryFixture struct {
+	lifetime  context.Context // Parent agent lifetime, when a grant spans fixed phases.
 	key       []byte
 	signer    ed25519.PrivateKey
 	verifier  string
@@ -44,6 +45,13 @@ type recoveryFixture struct {
 	capsule       cdsrecovery.Capsule
 	closeReplay   func()
 	last          map[int][]byte
+}
+
+func (f *recoveryFixture) context(c *cluster) context.Context {
+	if f.lifetime != nil {
+		return f.lifetime
+	}
+	return c.t.Context()
 }
 
 func protectRecovery(t *testing.T, f *objectFixture) {
