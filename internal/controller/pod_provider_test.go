@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/confidential-dot-ai/c8s/internal/podprovider"
@@ -49,5 +52,21 @@ func TestPodProviderSetupRequiresTrustedNamespaceAndWebhooks(t *testing.T) {
 				t.Fatalf("load=%t setup=%t", loaded, registered)
 			}
 		})
+	}
+}
+
+func TestPodProviderWithoutInstalledConfigurationIsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	missing := Options{PodCVMProviderConfig: filepath.Join(dir, "absent", "config.json")}
+	if got := withPresentPodCVMProvider(missing, logr.Discard()); got.PodCVMProviderConfig != "" {
+		t.Fatalf("absent configuration kept the provider enabled: %q", got.PodCVMProviderConfig)
+	}
+	// An invalid file stays configured, so setupPodCVMProvider fails on it.
+	present := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(present, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := withPresentPodCVMProvider(Options{PodCVMProviderConfig: present}, logr.Discard()); got.PodCVMProviderConfig != present {
+		t.Fatal("present configuration was dropped")
 	}
 }

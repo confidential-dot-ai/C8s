@@ -97,6 +97,8 @@ volumes:
     secret:
       secretName: {{ required "operator.podCVMProvider.existingSecret is required when the provider is enabled" .Values.operator.podCVMProvider.existingSecret | quote }}
       defaultMode: 0440
+      # The operator runs without the provider until this Secret exists.
+      optional: true
   {{- end }}
 {{- end -}}
 

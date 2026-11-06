@@ -293,3 +293,106 @@ func TestOperatorScopeRouterRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestOperatorScopePodCVMProviderSetup(t *testing.T) {
+	t.Parallel()
+	vap, _ := loadImagePolicy(t, operatorScopePolicyPath, "confos-operator-scope")
+	operatorLabels := func() map[string]any {
+		return map[string]any{"app.kubernetes.io/name": "c8s-operator", "app.kubernetes.io/instance": "c8s", "app.kubernetes.io/component": "operator"}
+	}
+	pod := func(namespace string, labels map[string]any) map[string]any {
+		return map[string]any{"metadata": map[string]any{"namespace": namespace, "name": "c8s-operator-1", "labels": labels}}
+	}
+	secret := func(name string, typ any) map[string]any {
+		out := map[string]any{"metadata": map[string]any{"namespace": "c8s-system", "name": name}}
+		if typ != nil {
+			out["type"] = typ
+		}
+		return out
+	}
+	operators := []string{"system:authenticated", "c8s:node-operators"}
+	write := scopeRequest{groups: operators, namespace: "c8s-system", resource: "secrets", operation: "CREATE", name: "pod-cvm-provider"}
+	for _, tc := range []struct {
+		name   string
+		change func(*scopeRequest)
+		object map[string]any
+		want   bool
+	}{
+		{"create", func(r *scopeRequest) {}, secret("pod-cvm-provider", nil), true},
+		{"create Opaque", func(r *scopeRequest) {}, secret("pod-cvm-provider", "Opaque"), true},
+		{"create without request name", func(r *scopeRequest) { r.name = "" }, secret("pod-cvm-provider", nil), true},
+		{"update", func(r *scopeRequest) { r.operation = "UPDATE" }, secret("pod-cvm-provider", "Opaque"), true},
+		{"delete", func(r *scopeRequest) { r.operation = "DELETE" }, nil, true},
+		{"create token Secret", func(r *scopeRequest) {}, secret("pod-cvm-provider", "kubernetes.io/service-account-token"), false},
+		{"update to another type", func(r *scopeRequest) { r.operation = "UPDATE" }, secret("pod-cvm-provider", "kubernetes.io/tls"), false},
+		{"create another name", func(r *scopeRequest) { r.name = "other" }, secret("other", nil), false},
+		{"create named object under the provider's request name", func(r *scopeRequest) {}, secret("other", nil), false},
+		{"update another name", func(r *scopeRequest) { r.operation = "UPDATE"; r.name = "other" }, secret("other", nil), false},
+		{"update another request name", func(r *scopeRequest) { r.operation = "UPDATE"; r.name = "other" }, secret("pod-cvm-provider", nil), false},
+		{"delete another name", func(r *scopeRequest) { r.operation = "DELETE"; r.name = "other" }, nil, false},
+		{"collection delete", func(r *scopeRequest) { r.operation = "DELETE"; r.name = "" }, nil, false},
+		{"connect", func(r *scopeRequest) { r.operation = "CONNECT" }, nil, false},
+		{"kube-system", func(r *scopeRequest) { r.namespace = "kube-system" }, secret("pod-cvm-provider", nil), false},
+		{"c8s-router", func(r *scopeRequest) { r.namespace = "c8s-router" }, secret("pod-cvm-provider", nil), false},
+		{"configmap of that name", func(r *scopeRequest) { r.resource = "configmaps" }, secret("pod-cvm-provider", nil), false},
+		{"custom secrets", func(r *scopeRequest) { r.group = "example.com" }, secret("pod-cvm-provider", nil), false},
+		{"log reader", func(r *scopeRequest) { r.groups = []string{"c8s:log-readers"} }, secret("pod-cvm-provider", nil), false},
+	} {
+		t.Run("secret "+tc.name, func(t *testing.T) {
+			r := write
+			tc.change(&r)
+			if got := evalOperatorScopeObject(t, vap, r, tc.object); got != tc.want {
+				t.Errorf("admitted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	restart := scopeRequest{groups: operators, namespace: "c8s-system", resource: "pods", operation: "DELETE", name: "c8s-operator-1", oldObject: pod("c8s-system", operatorLabels())}
+	for _, tc := range []struct {
+		name   string
+		change func(*scopeRequest)
+		want   bool
+	}{
+		{"operator Pod", func(r *scopeRequest) {}, true},
+		{"collection deletion by selector", func(r *scopeRequest) { r.name = "" }, true},
+		{"another c8s-system Pod", func(r *scopeRequest) {
+			r.oldObject = pod("c8s-system", map[string]any{"app.kubernetes.io/name": "nri-image-policy"})
+		}, false},
+		{"unlabelled Pod", func(r *scopeRequest) { r.oldObject = pod("c8s-system", nil) }, false},
+		{"another release", func(r *scopeRequest) {
+			labels := operatorLabels()
+			labels["app.kubernetes.io/instance"] = "other"
+			r.oldObject = pod("c8s-system", labels)
+		}, false},
+		{"missing component", func(r *scopeRequest) {
+			labels := operatorLabels()
+			delete(labels, "app.kubernetes.io/component")
+			r.oldObject = pod("c8s-system", labels)
+		}, false},
+		{"kube-system with operator labels", func(r *scopeRequest) {
+			r.namespace = "kube-system"
+			r.oldObject = pod("kube-system", operatorLabels())
+		}, false},
+		{"wrong stored namespace", func(r *scopeRequest) { r.oldObject = pod("tenant", operatorLabels()) }, false},
+		{"missing old object", func(r *scopeRequest) { r.oldObject = nil }, false},
+		{"eviction", func(r *scopeRequest) { r.operation = "CREATE"; r.sub = "eviction" }, false},
+		{"exec", func(r *scopeRequest) { r.operation = "CONNECT"; r.sub = "exec" }, false},
+		{"pod update", func(r *scopeRequest) { r.operation = "UPDATE" }, false},
+		{"deployment patch", func(r *scopeRequest) {
+			r.group = "apps"
+			r.resource = "deployments"
+			r.operation = "UPDATE"
+			r.name = "c8s-operator"
+		}, false},
+		{"deployment delete", func(r *scopeRequest) { r.group = "apps"; r.resource = "deployments"; r.name = "c8s-operator" }, false},
+		{"replicaset delete", func(r *scopeRequest) { r.group = "apps"; r.resource = "replicasets" }, false},
+		{"log reader", func(r *scopeRequest) { r.groups = []string{"c8s:log-readers"} }, false},
+	} {
+		t.Run("restart "+tc.name, func(t *testing.T) {
+			r := restart
+			tc.change(&r)
+			if got := evalOperatorScope(t, vap, r); got != tc.want {
+				t.Errorf("admitted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
