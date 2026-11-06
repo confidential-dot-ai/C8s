@@ -73,6 +73,26 @@ type ContainerTerminated struct {
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 }
 
+// failIdentityEnded projects the status of a pod whose identity the admission
+// plugin ended within this boot as failed. The plugin stopped the pod's
+// containers and admits no more, but a kubelet under restartPolicy Always
+// keeps recreating them, so the kubelet's phase alone may never turn
+// terminal; the projection does, so the provider stops the pod. A status the
+// kubelet already reports terminal stands. The projection carries no reason:
+// the provider names one of its own.
+func failIdentityEnded(p PodProjection) PodProjection {
+	if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		return p
+	}
+	p.Status.Phase = corev1.PodFailed
+	for i := range p.Status.Conditions {
+		if t := p.Status.Conditions[i].Type; t == corev1.PodReady || t == corev1.ContainersReady {
+			p.Status.Conditions[i].Status = corev1.ConditionFalse
+		}
+	}
+	return p
+}
+
 // ProjectPod builds the /v1/pod response from the kubelet's pod object.
 func ProjectPod(pod *corev1.Pod) PodProjection {
 	out := PodProjection{

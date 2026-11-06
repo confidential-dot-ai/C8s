@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/json"
@@ -28,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -74,13 +76,17 @@ type Measurements struct {
 
 // Handler serves the pod-status routes.
 type Handler struct {
-	UID string
+	assignment *assignmentService
 	// Pods returns the kubelet's /pods body.
 	Pods func(ctx context.Context) ([]byte, error)
 	// Journal is the RTMR[3] journal file.
 	Journal string
 	// Evidence returns an evidence envelope bound to reportData (48 bytes).
 	Evidence func(ctx context.Context, reportData []byte) ([]byte, error)
+	// IdentityEnded reports whether the admission plugin ended the pod
+	// identity for this boot; nil never does. An ended identity is projected
+	// as failed, and a plugin that cannot answer makes the status unavailable.
+	IdentityEnded func(ctx context.Context) (bool, error)
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +103,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodPost) {
 			h.serveEvidence(w, r)
 		}
+	case AssignNoncePath:
+		if allow(w, r, http.MethodGet) {
+			if h.assignment == nil {
+				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
+			} else {
+				h.assignment.serveNonce(w, r)
+			}
+		}
+	case AssignPath:
+		if allow(w, r, http.MethodPost) {
+			if h.assignment == nil {
+				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
+			} else {
+				h.assignment.serveAssign(w, r)
+			}
+		}
 	default:
 		http.NotFound(w, r)
 	}
@@ -112,12 +134,26 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 }
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
-	uid := h.UID
-	// The UID check is free and the kubelet read is not (up to 4 MiB, 5 s):
-	// an unassigned guest answers 404 without the round trip.
+	var uid string
+	if h.assignment != nil {
+		uid = h.assignment.assignedUID()
+	}
+	// No kubelet runs before an assignment is recorded, so the assignment is
+	// checked first: an unassigned guest answers 404, an assigned one whose
+	// kubelet is not up yet 503.
 	if uid == "" {
 		http.Error(w, "Pod is not assigned", http.StatusNotFound)
 		return
+	}
+	ended := false
+	if h.IdentityEnded != nil {
+		var err error
+		if ended, err = h.IdentityEnded(r.Context()); err != nil {
+			// The kubelet's cached status cannot stand in for the admission
+			// plugin: without its answer the pod may be running unguarded.
+			http.Error(w, "pod admission unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	pods, err := h.Pods(r.Context())
 	if err != nil {
@@ -135,7 +171,11 @@ func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, ProjectPod(pod))
+	projection := ProjectPod(pod)
+	if ended {
+		projection = failIdentityEnded(projection)
+	}
+	writeJSON(w, projection)
 }
 
 // serveMeasurements reads the journal as the serving cert does, so both list
@@ -217,7 +257,9 @@ type ServeConfig struct {
 // Serve confirms the measured launch key, reads the signed pod UID and
 // serves until ctx is done. Every failure to confirm the key exits, a register
 // that replays no prefix of the journal included: a client that verifies the
-// guest then sees a connection failure rather than a failed verification.
+// guest then sees a connection failure rather than a failed verification. The
+// key confirmed here is the one every assignment's signature is checked
+// against; no request triggers another attestation.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -232,14 +274,40 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if doc.Role != launchconfig.Pod {
 		return fmt.Errorf("staged launch configuration is not a pod")
 	}
-	if _, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath); err != nil {
+	launchKeyPEM, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
+	if err != nil {
 		return fmt.Errorf("load measured launch key: %w", err)
+	}
+	launchKey, err := assignmentPublicKey(launchKeyPEM)
+	if err != nil {
+		return fmt.Errorf("measured launch key: %w", err)
 	}
 	api := attestclient.NewClient("")
 	pods := kubeletPods(cfg.KubeletURL, cfg.KubeletCert)
+	store, err := openAssignmentStore()
+	if err != nil {
+		return fmt.Errorf("open assignment state: %w", err)
+	}
+	defer store.Close()
+	runtime := guestAssignmentRuntime{journal: cfg.JournalPath}
+	boundKey := func(context.Context) (*ecdsa.PublicKey, error) { return launchKey, nil }
+	assignment, err := newAssignmentService(ctx, doc, store, boundKey,
+		func(d *launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
+			return nodeservices.RenderPodRuntime("", d)
+		},
+		runtime.available, runtime.apply)
+	if err != nil {
+		return fmt.Errorf("recover Pod assignment: %w", err)
+	}
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); assignment.run(ctx) }()
+	// Stop the installer before releasing the assignment store's lifetime lock.
+	defer func() { cancel(); <-workerDone }()
 	h := Handler{
-		Pods:    pods,
-		Journal: cfg.JournalPath,
+		assignment:    assignment,
+		Pods:          pods,
+		Journal:       cfg.JournalPath,
+		IdentityEnded: podIdentityEnded,
 		Evidence: func(ctx context.Context, reportData []byte) ([]byte, error) {
 			resp, err := api.GenerateEvidenceContext(ctx, cfg.AttestationAPIURL, reportData)
 			if err != nil {
