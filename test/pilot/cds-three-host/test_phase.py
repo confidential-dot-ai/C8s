@@ -11,11 +11,11 @@ import run
 
 
 class PhaseDispatch(unittest.TestCase):
-    def attempt(self, codes, *, premature_receipt=False):
+    def attempt(self, codes, *, premature_receipt=False, operation='prepare'):
         runner = object.__new__(run.Run)
         runner.live = runner.save = runner.current = runner.ensure_consoles = Mock()
         runner.guests = {0: {}}; runner.state = {'phases': []}
-        runner.args = SimpleNamespace(client='frozen-client')
+        runner.args = SimpleNamespace(client='frozen-client', backend='raft')
         process = Mock(); process.poll.return_value = None
         runner.tunnels = {0: (process, 'https://127.0.0.1:1001')}
         endpoints = []; notices = []; restarts = []
@@ -35,9 +35,10 @@ class PhaseDispatch(unittest.TestCase):
             return subprocess.CompletedProcess(argv, code, stdout=b'')
         with tempfile.TemporaryDirectory() as directory:
             runner.directory = Path(directory)
+            (runner.directory/'operator.pem').write_text('synthetic test operator key')
             with patch('run.subprocess.run', side_effect=execute), patch('run.time.sleep'):
                 error = None
-                try: runner.phase(0, 'prepare', 1)
+                try: runner.phase(0, operation, 1, retry_start=operation == 'init')
                 except Exception as e: error = e
         return runner, endpoints, restarts, error
 
@@ -54,6 +55,12 @@ class PhaseDispatch(unittest.TestCase):
         self.assertIsInstance(error, ValueError)
         self.assertEqual(len(endpoints), 2); self.assertEqual(restarts, [0])
         self.assertFalse(any(p['passed'] for p in r.state['phases']))
+
+    def test_idempotent_initialization_keeps_its_startup_window(self):
+        r, endpoints, restarts, error = self.attempt([75, 75, 0], operation='init')
+        self.assertIsNone(error)
+        self.assertEqual(len(endpoints), 3); self.assertEqual(restarts, [0, 0])
+        self.assertTrue(r.state['phases'][-1]['passed'])
 
     def test_unknown_failure_or_receipt_never_allows_retry(self):
         for code, receipt in [(1, False), (75, True), (subprocess.TimeoutExpired('client', 1), False)]:

@@ -165,8 +165,16 @@ deadline. All 43 resource paths were independently confirmed absent.
 
 The pilot client now bounds TLS handshakes to 15 seconds and returns a dedicated
 exit status only for a TLS timeout before HTTP headers were written. The runner
-revalidates the owned VM/VMI incarnation, replaces that tunnel, and retries once
-within the original phase deadline. It records the failed attempt and restart.
-Attestation or pin rejection, a returned receipt, and failures after dispatch
-remain fatal. Local tests cover the stalled-listener case and prevent uncertain
-phase replay. Guest binaries and workload limits are unchanged.
+revalidates the owned VM/VMI incarnation, replaces that tunnel, and retries a
+workload phase once within its original deadline. It records the failed attempt
+and restart. A workload phase is never retried after attestation or pin rejection,
+a returned receipt, or an uncertain dispatch. Idempotent initialization retains
+its existing three-minute startup window, with three-second reconnect backoff
+and no retry of a returned receipt. Local tests cover the stalled listener,
+the startup window and prevention of uncertain phase replay.
+
+[Attempt 17](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-17.json)
+exposed a runner regression: applying the one-retry cap to initialization cut
+boot readiness short after two 15-second TLS deadlines. No CDS startup or
+backend result is claimed. The correction restores only the existing idempotent
+startup window; guest binaries, workload retries and workload limits are unchanged.

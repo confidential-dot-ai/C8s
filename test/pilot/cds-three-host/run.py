@@ -309,7 +309,7 @@ class Run(metadata.Run):
                 # one restart shares the original phase deadline.
                 if self.state['phases'][-1].get('client_exit_code') == 75 and not receipt.exists():
                     self.state['phases'][-1]['not_dispatched'] = True; self.save()
-                    if tunnel_restarts == 0 and time.monotonic() < deadline:
+                    if (retry_start or tunnel_restarts == 0) and time.monotonic() < deadline:
                         tunnel_restarts += 1
                         self.event('guest-control-tunnel-restart', operation=operation, agent=agent)
                         self.open_tunnel(agent)

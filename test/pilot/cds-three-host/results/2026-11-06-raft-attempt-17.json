@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 17,
+  "stage": "initial-guest-boot-readiness",
+  "runner_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+  "image_build": "three-host-image-06",
+  "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_booted": 1,
+  "native_cds_startup_checks_passed": 0,
+  "completed_verified_phases": 0,
+  "completed_and_hash_verified_disk_uploads": 1,
+  "finding": "The one-retry control rule was incorrectly applied to idempotent initialization. Two typed TLS deadlines before HTTP dispatch stopped startup while the guest was still booting, before the existing three-minute startup window elapsed. This is a runner regression, not a CDS result.",
+  "follow_up": "Restore the original bounded startup window only for idempotent init. Preserve one tunnel restart for workload phases and fail on uncertain dispatch or a returned receipt. The new regression test requires initialization to survive multiple pre-dispatch deadlines.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 11,
+    "resource_paths_checked": 13,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
