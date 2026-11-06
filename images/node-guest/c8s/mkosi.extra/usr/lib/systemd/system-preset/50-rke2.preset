@@ -15,6 +15,8 @@ enable c8s-modules-latch.service
 enable rke2-role.service
 enable rke2-server.service
 enable rke2-agent.service
+# Pod role, gated on /run/confos/role-pod: the status service alone starts at
+# boot; it starts podcvm-containerd and podcvm-kubelet once a pod is assigned.
 enable systemd-timesyncd.service
 # Makes time-sync.target block until the clock is actually synchronised,
 # which gpu-cc-enforce now orders after (NRAS JWT nbf).
