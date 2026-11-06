@@ -268,7 +268,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
 	if apierrors.IsNotFound(err) {
-		return ctrl.Result{}, r.releaseFinalizer(ctx, pod, nil)
+		return ctrl.Result{}, r.finishDeletion(ctx, pod, nil)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -277,9 +277,9 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	if err != nil || !done {
 		return ctrl.Result{RequeueAfter: pollInterval}, err
 	}
-	// Remove the finalizer before deleting the record. A crash between them
+	// Finish the Pod before deleting the record. A crash between them
 	// leaves an orphan record the sweep can safely collect.
-	if err := r.releaseFinalizer(ctx, pod, rec); err != nil {
+	if err := r.finishDeletion(ctx, pod, rec); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
@@ -296,6 +296,18 @@ func terminalStatus(pod *corev1.Pod, rec *record, now time.Time) corev1.PodStatu
 		return pod.Status
 	}
 	return failedStatus(pod, instanceDestroyedReason, now)
+}
+
+// finishDeletion does the kubelet's part once the Pod's instance is gone: it
+// publishes the terminal phase, releases the finalizer and removes the Pod
+// object with a zero grace period. No kubelet runs for the virtual node, so
+// nothing else ends a terminating Pod bound to it.
+func (r *Reconciler) finishDeletion(ctx context.Context, pod *corev1.Pod, rec *record) error {
+	if err := r.releaseFinalizer(ctx, pod, rec); err != nil {
+		return err
+	}
+	uid := pod.UID
+	return client.IgnoreNotFound(r.client.Delete(ctx, pod, client.GracePeriodSeconds(0), client.Preconditions{UID: &uid}))
 }
 
 func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod, rec *record) error {
