@@ -1,5 +1,8 @@
 # Pod role only: containerd without RKE2, on the paths RKE2 uses, so the
 # baked c8s-runc and NRI drop-ins and the containerd data disk apply unchanged.
+# Not enabled: pod-status starts it once a pod is assigned and its runtime
+# policy is installed, so containerd launches the admission plugin with the
+# assigned pod's policy and never a generic one.
 [Unit]
 Description=Pod-role containerd
 ConditionPathExists=/run/confos/role-pod
@@ -20,6 +23,3 @@ Delegate=yes
 KillMode=process
 LimitNOFILE=1048576
 TimeoutStartSec=120
-
-[Install]
-WantedBy=multi-user.target

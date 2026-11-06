@@ -186,15 +186,13 @@ same contract. A Kubernetes-side provider that schedules annotated Pods onto
 Cloud is deferred.
 
 ```sh
-c8s node launch-config new-pod --out pod1 --cluster-id demo \
+c8s node launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
   --image-manifest manifest.json \
   --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
-  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json \
-  --mesh-peer 10.0.0.20:8080 \
-  --pod-manifest pod.json --workloads workloads.json
+  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
 ```
 
-This writes a `role: pod` document signed by a separate pod launch key
+This writes a generic `role: pod` document, naming no pod, signed by a separate pod launch key
 (`pod1/pod.key`, or an existing key passed with `--launch-key`), recorded in
 `podOperatorPublicKey`; the initrd binds its exact bytes, and workload
 measurements extend that key's seed. `--server-public-key` is the server's
@@ -203,7 +201,9 @@ differ. `--server-address` is the server's reachable IPv4 address. These fields
 identify the cluster/server; CDS uses the separate `--cds-address` endpoint
 and the exact image/launch-file policy in `--cds-image-policy-file`.
 The signed document carries both CDS values, no RKE2 join credentials, agent
-keys or `router` block. Re-signing it after an edit requires the Pod launch key.
+keys or `router` block, and no pod, allowlist entries or mesh peers: the guest
+refuses a document that carries any of them. Re-signing it after an edit
+requires the Pod launch key.
 
 When supplied, `workloads.json` holds a `c8s.allowlist/v1` document; its entries
 may be empty. It is the base allowlist, in force before CDS responds; the plugin
@@ -230,7 +230,13 @@ container, including pause and the mesh endpoint, until assignment.
 The launcher first verifies fresh guest evidence and an empty measured list,
 then fetches `GET /v1/assign/nonce` and signs one `POST /v1/assign` with the Pod
 launch key. The signature binds the verified serving key, nonce, manifest,
-allowlist entries and mesh peers. The launcher must persist those exact signed
+allowlist entries and mesh peers. The entries are a `c8s.allowlist/v1`
+document, which may be empty. They are the base allowlist, in force before CDS
+responds; the plugin also admits entries fetched from the authenticated CDS. A
+failed initial pull leaves the base in force while polling continues, and a
+failed refresh keeps the last applied CDS policy. Neither source gets a
+node-TCB exemption. The pod role measures started images only and refuses a
+baked configuration that also sets `allowlist.pull.measure_policies`. The launcher must persist those exact signed
 bytes before sending them. A lost reply requires recovery of the same intent;
 it does not authorize signing for a different serving key or assigning another
 VM. The client API separates `Prepare` from `Send` for this boundary.
@@ -238,33 +244,32 @@ VM. The client API separates `Prepare` from `Send` for this boundary.
 Acceptance records the signed assignment in root-only guest RAM before changing
 policy or publishing its manifest. Status-service restarts recover this record,
 even if the serving key rotates, and refuse further assignments with HTTP 409.
-The guest installs policy into an empty runtime, restarts containerd and kubelet,
-waits for assigned admission and empty kubelet and container inventories to become
-available, then publishes the manifest last. Startup delays are retried within the
-installation deadline without restarting the services again. Assignment
-recovery never replaces a published manifest or restarts a runtime that already
-ran it. Assignment state lasts for this boot; a reboot needs a new VM allocation.
+The guest installs the assigned runtime policy, starts containerd, which launches
+the admission plugin with it, waits for the plugin to report the assigned pod
+registered, publishes the manifest and starts the kubelet last, so the kubelet
+never reads a manifest the plugin is not guarding. Startup delays are retried
+within the installation deadline. Assignment recovery never replaces a published
+manifest or policy; it starts the same units again, which is idempotent.
+Assignment state lasts for this boot; a reboot needs a new VM allocation.
 
-Within that boot, restarting kubelet, containerd or the admission plugin retains
-the original sandbox, assignment, complete admission history, workload identity
-and issuing CA. Leaf certificates and keys may rotate. The guest stores recovery
-state in protected RAM before authorizing a start. Recovery verifies the live
-tasks, image bindings, packet protection and
-credential volume, then obtains fresh credentials under the retained issuer
-binding. It also retains the last authenticated CDS policy during an outage and
-refuses older policy versions. Start permissions from the old process are never
-reused.
-
-An interrupted admission transition, lost history, changed protection or a
-replaced sandbox prevents recovery for that boot. Allocate a new Pod CVM in
-those cases; deleting the retained state does not authorize another assignment.
+Within that boot, a restart of the admission plugin, including a containerd
+restart that drops its connection, ends the Pod identity: the plugin keeps its
+admission history only in its own process, so it stops the Pod's running
+containers, admits no further start and issues no credentials. It records the
+end on the boot's tmpfs beside its boot marker, so a later plugin of the same
+boot still reports it, and the status service reports the Pod `Failed`,
+whatever the kubelet's own phase; the provider persists that as `Failed` with
+reason `PodIdentityEnded` and stops the Pod. While the plugin cannot be
+reached, the status service answers 503 rather than the kubelet's cached
+status. Allocate a new Pod CVM. While it runs, the plugin keeps the last
+authenticated CDS policy during an outage and refuses older policy versions.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
 The service keeps at most 256 unused nonces, oldest first; issuing one more
 discards the oldest, and an assignment under a discarded nonce is refused as
 not issued. A launcher that loses its nonce this way obtains a fresh one. The
-launcher must retire an unavailable target within its verification budget. Warm capacity is opt-in; generic boot itself has no wait
-deadline.
+launcher must retire an unavailable target within its verification budget;
+generic boot itself has no wait deadline.
 
 The pod manifest requires `metadata.uid` and a canonical SHA-256 digest on every
 init and application image; the guest stages these pins by container name
@@ -276,15 +281,14 @@ CVM runs this one pod, and the runtime's
 [privilege floor](node-exec-mode.md#the-privilege-floor) still bounds
 capabilities and grants neither `SETUID` nor `SETGID`. The image runs
 containerd and a standalone kubelet (`podcvm-containerd`, `podcvm-kubelet`)
-instead of RKE2 and does not require the scratch disk. The kubelet listens on
+instead of RKE2, started by `c8s pod-status` once a pod is assigned, and does
+not require the scratch disk. The kubelet listens on
 loopback only, and sets `makeIPTablesUtilChains: false`: the admission plugin
 owns the guest's packet rules, and a kubelet utility chain would make it refuse
-the pod. `c8s pod-status` serves guest status over armTLS on `:8443`, and keeps
-serving when the register stops replaying its journal: admission and assignment
-are already closed, and a client that verifies the guest proves the divergence
-from the certificate or a fresh quote, where a silent guest would look like one
-still booting. The measurement journal stays inside the guest: pod containers get no node
-credential-client mounts or sandbox-token service.
+the pod. `c8s pod-status` serves guest status over armTLS on `:8443`, and exits
+when it cannot confirm the measured launch key, a register that replays no
+prefix of its journal included. The measurement journal stays inside the guest:
+pod containers get no node credential-client mounts or sandbox-token service.
 
 Every pod gets the image's measured mesh endpoint as its first native init
 sidecar; do not supply a platform sidecar in the manifest. The guest keeps the
@@ -312,8 +316,8 @@ certificate; a workload name requires a unique match of the complete retained
 history, including exited init containers. This profile does not authorize
 secret release ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
 
-Repeat `--mesh-peer` for each known destination's exact IPv4 address and TCP
-port; an empty list permits no outbound peer. A signed peer tuple always
+The assignment's `meshPeers` list each known destination's exact IPv4 address
+and TCP port; an empty list permits no outbound peer. A signed peer tuple always
 requires mesh authentication and never falls back to plaintext; a different
 port on the same IP is an ordinary destination. To expose an application,
 declare its TCP `containerPort` in the signed manifest and map Cloud's

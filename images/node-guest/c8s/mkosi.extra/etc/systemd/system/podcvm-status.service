@@ -3,7 +3,7 @@
 Description=Pod-role attested pod status on :8443
 ConditionPathExists=/run/confos/role-pod
 Requires=rke2-role.service attestation-api.service
-After=rke2-role.service attestation-api.service attest-proxy.service podcvm-kubelet.service
+After=rke2-role.service attestation-api.service attest-proxy.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -17,7 +17,9 @@ ProtectHome=yes
 ProtectSystem=strict
 ReadOnlyPaths=/etc/confai /run/confos/launch
 # Assignment state and manifests survive this service's restart in guest RAM.
-# The generated NRI policy is installed before restarting the empty runtime.
+# The assignment installs the NRI policy, then starts podcvm-containerd and,
+# once the plugin reports the pod registered, publishes the manifest and
+# starts podcvm-kubelet.
 ReadWritePaths=/run/c8s-pod /etc/nri/conf.d
 
 [Install]
