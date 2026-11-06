@@ -195,6 +195,7 @@ func run(cfg config) error {
 			MeshCA:            mesh,
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
+			RouterCertTTL:     cfg.routerCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
@@ -450,6 +451,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.namedCertTTL > issuer.MaxNamedLeafTTL {
 		return fmt.Errorf("--named-cert-ttl must not exceed %v (issuer.MaxNamedLeafTTL, the documented stale-identity bound); it can only shorten that ceiling", issuer.MaxNamedLeafTTL)
+	}
+	if cfg.routerCertTTL <= 0 || cfg.routerCertTTL >= cfg.allowlistNodeDelay {
+		return fmt.Errorf("--router-cert-ttl (%v) must be positive and shorter than --allowlist-node-delay (%v)", cfg.routerCertTTL, cfg.allowlistNodeDelay)
 	}
 	if cfg.maxRequestSize <= 0 {
 		return fmt.Errorf("--max-request-size must be positive")

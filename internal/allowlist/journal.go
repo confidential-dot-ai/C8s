@@ -83,6 +83,67 @@ func (s *Store) Served() (body []byte, version string, err error) {
 	return body, version, nil
 }
 
+// ServedToNodes returns what Served returns to a node: the newest document
+// that survived the node delay. A document survived when it stayed the
+// newest for at least the delay, or when it is the database's first, so a
+// fresh cluster's nodes enforce its seed at once. Pruning keeps the newest
+// survivor (NodeServedDepth), so one always exists.
+func (s *Store) ServedToNodes(now time.Time) (body []byte, version string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version, digest, _, err := s.nodeServed(now)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&body); err != nil {
+		return nil, "", fmt.Errorf("read the allowlist served to nodes: %w", err)
+	}
+	return body, version, nil
+}
+
+// NodeServedDepth is how many of the newest history entries reach the one
+// ServedToNodes serves at now, which pruning must keep.
+func (s *Store) NodeServedDepth(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _, depth, err := s.nodeServed(now)
+	return depth, err
+}
+
+// SetNodeDelay sets how long a document must stay the newest before nodes
+// are served it (ServedToNodes). Zero serves nodes the newest.
+func (s *Store) SetNodeDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeDelay = d
+}
+
+// nodeServed walks the history from the newest entry to the first that
+// survived the node delay. Callers must hold s.mu.
+func (s *Store) nodeServed(now time.Time) (version, digest string, depth int, err error) {
+	rows, err := s.db.Query("SELECT position, version, digest, published_at_ms FROM journal_event ORDER BY position DESC")
+	if err != nil {
+		return "", "", 0, fmt.Errorf("read the allowlist history: %w", err)
+	}
+	defer rows.Close()
+	supersededMS := now.UnixMilli()
+	for rows.Next() {
+		var position, publishedMS int64
+		if err := rows.Scan(&position, &version, &digest, &publishedMS); err != nil {
+			return "", "", 0, err
+		}
+		depth++
+		if position == 1 || supersededMS-publishedMS >= s.nodeDelay.Milliseconds() {
+			return version, digest, depth, nil
+		}
+		supersededMS = publishedMS
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", 0, err
+	}
+	return "", "", 0, errors.New("no document in the allowlist history survived the node delay")
+}
+
 // startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls

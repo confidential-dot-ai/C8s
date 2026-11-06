@@ -246,7 +246,12 @@ func (n *Node) historyOverItsBound() (over bool, keep int, err error) {
 	if err != nil {
 		return false, 0, err
 	}
-	keep = max(1, min(historyDocuments, withinBytes))
+	// Never past the document nodes are served.
+	nodeServed, err := n.cfg.Allowlist.NodeServedDepth(time.Now())
+	if err != nil {
+		return false, 0, err
+	}
+	keep = max(1, min(historyDocuments, withinBytes), nodeServed)
 	return documents > keep, keep, nil
 }
 

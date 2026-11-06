@@ -78,6 +78,12 @@ type AttestHandler struct {
 	// Never applied to membership-only leaves.
 	NamedCertTTL time.Duration
 
+	// RouterCertTTL caps the TTL of a leaf for a sandbox the inventory reports
+	// a router-role container in. It is shorter than the node delay of a new
+	// allowlist, so every router renews under it before nodes enforce it.
+	// Zero leaves router leaves uncapped.
+	RouterCertTTL time.Duration
+
 	// SandboxDigests resolves a sandbox's inventory: its signing key and what
 	// the sandbox is running, over mutually-attested armTLS to a privileged
 	// port. nil rejects any request carrying a sandbox token, for the same
@@ -216,7 +222,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// actually running (once), load one atomic policy snapshot, gate issuance
 	// on membership, and resolve the matched-workload stamp from the same two
 	// answers. The requester never gets a say in either.
-	matched, err := h.resolveSandboxWorkload(ctx, sandbox)
+	matched, router, err := h.resolveSandboxWorkload(ctx, sandbox)
 	if err != nil {
 		// The detail stays in the log. A requester picks both the sandbox ID and
 		// the address CDS just dialled, so echoing what happened there would
@@ -257,6 +263,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			namedTTL = h.NamedCertTTL
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
+	}
+	if router && h.RouterCertTTL > 0 {
+		ttl = min(ttl, h.RouterCertTTL)
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing, issuing := h.MeshCA.Current()
@@ -422,23 +431,23 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 // or allowlist store, a malformed digests view, or a non-allowlisted image is
 // fail-closed — CDS cannot establish what the pod runs, or has established
 // that it should not run, and it never stamps from stale cached state.
-func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, error) {
+func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (matched *armtls.MatchedWorkload, router bool, err error) {
 	if sandbox.SandboxID == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	if h.AllowlistStore == nil {
-		return nil, fmt.Errorf("sandbox token presented but this CDS has no allowlist to check it against")
+		return nil, false, fmt.Errorf("sandbox token presented but this CDS has no allowlist to check it against")
 	}
 	if h.SandboxDigests == nil {
-		return nil, fmt.Errorf("sandbox token presented but this CDS cannot reach the inventory for its digests")
+		return nil, false, fmt.Errorf("sandbox token presented but this CDS cannot reach the inventory for its digests")
 	}
 	resp, err := h.SandboxDigests.FetchSandbox(ctx, sandbox.InventoryHost, sandbox.SandboxID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
+		return nil, false, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if len(resp.Digests) == 0 {
@@ -446,21 +455,24 @@ func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workl
 		// and looping over it would pass the gate vacuously. A sandbox always
 		// runs at least the sidecar that is asking, so an empty answer means
 		// the inventory is still syncing (or is lying), both of which must wait.
-		return nil, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
+		return nil, false, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
 	}
 	membership := make(map[string]struct{}, len(resp.Digests))
 	for _, d := range resp.Digests {
 		digest, err := types.ParseDigest(d)
 		if err != nil {
-			return nil, fmt.Errorf("container digest %q: %w", d, err)
+			return nil, false, fmt.Errorf("container digest %q: %w", d, err)
 		}
 		if !snapshot.Contains(digest.String()) {
-			return nil, fmt.Errorf("container image %s is not allowlisted", digest)
+			return nil, false, fmt.Errorf("container image %s is not allowlisted", digest)
 		}
 		membership[digest.String()] = struct{}{}
 	}
 
-	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), nil
+	router = slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
+		return c.Role == workloadclaims.RouterRole
+	})
+	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), router, nil
 }
 
 // policySnapshot returns the one immutable snapshot this issuance decides

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -35,11 +36,19 @@ type Handler struct {
 type WriteAuthorizer func(r *http.Request, body []byte) error
 
 // HandleList handles GET /allowlist: the document the store serves, tagged
-// with its digest and carrying its version. An If-None-Match naming exactly
-// that tag returns 304.
+// with its digest and carrying its version. With pkgallowlist.NodeQuery it is
+// the document served to nodes. An If-None-Match naming exactly that tag
+// returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	body, version, err := h.Allowlist.Served()
+	var body []byte
+	var version string
+	var err error
+	if r.URL.RawQuery == pkgallowlist.NodeQuery {
+		body, version, err = h.Allowlist.ServedToNodes(time.Now())
+	} else {
+		body, version, err = h.Allowlist.Served()
+	}
 	if err != nil {
 		readFailed(w, err)
 		return

@@ -39,6 +39,9 @@ type Store struct {
 	gen uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest
+	// nodeDelay is how long a document is the newest before nodes are
+	// served it (ServedToNodes).
+	nodeDelay time.Duration
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.

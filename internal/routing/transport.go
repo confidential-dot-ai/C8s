@@ -60,6 +60,9 @@ type Transports struct {
 	// for an unstamped leaf; routerDigestKnown is false until the first read.
 	routerDigest      string
 	routerDigestKnown bool
+	// leafExpiry is the earliest expiry of the router leaves handed to
+	// handshakes since the pools were last retired, zero for none.
+	leafExpiry time.Time
 
 	stamp stampCache
 }
@@ -71,10 +74,6 @@ type pooled struct {
 	workload     bool
 	routerDigest string
 }
-
-// errBackendDigestMismatch fails a workload handshake whose leaf was stamped
-// under another allowlist than the router's (B8).
-var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
 
 // damagedRouterStamp is the tracked digest of a leaf whose stamp fails to
 // parse: shorter than any real digest and never empty.
@@ -177,6 +176,12 @@ func (t *Transports) pool(b routes.Backend) pooled {
 	key := backendKey(b)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Pooled connections skip the handshake, so none outlives the leaf it
+	// presented. A new dial reads the published leaf, and an expired one
+	// refuses it.
+	if !t.leafExpiry.IsZero() && !time.Now().Before(t.leafExpiry) {
+		t.retireLocked(false)
+	}
 	if p, ok := t.cache[key]; ok {
 		return p
 	}
@@ -298,11 +303,12 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload, digest),
+		AcceptPeer:   acceptWorkload(workload),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
 	}
+	t.presented(cred)
 	return cfg, digest, nil
 }
 
@@ -313,7 +319,21 @@ func (t *Transports) clientCertificate(*tls.CertificateRequestInfo) (*tls.Certif
 	if err != nil {
 		return nil, err
 	}
+	t.presented(cred)
 	return cred.Certificate, nil
+}
+
+// presented records that a handshake presents cred's leaf.
+func (t *Transports) presented(cred MeshCredential) {
+	if cred.Certificate == nil || cred.Certificate.Leaf == nil {
+		return
+	}
+	expiry := cred.Certificate.Leaf.NotAfter
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.leafExpiry.IsZero() || expiry.Before(t.leafExpiry) {
+		t.leafExpiry = expiry
+	}
 }
 
 // meshCAs are the CAs of the published generation.
@@ -326,26 +346,12 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 }
 
 // acceptWorkload fails the handshake unless the peer the chain path
-// authenticated is the workload the signed route names (B1), stamped under
-// the router's own allowlist digest (B8). A leaf CDS stamped no workload on
-// names none, and is refused with the rest.
-func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
-	router := "with no router allowlist digest"
-	if routerDigest != nil {
-		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
-	}
+// authenticated is the workload the signed route names (B1). A leaf CDS
+// stamped no workload on names none, and is refused with the rest.
+func acceptWorkload(workload string) func(armtls.Peer) error {
 	return func(peer armtls.Peer) error {
-		if peer.WorkloadName == "" {
-			return fmt.Errorf("routing: backend leaf carries no matched-workload stamp and no allowlist digest, and this route names %q %s", workload, router)
-		}
 		if peer.WorkloadName != workload {
-			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q %s", peer.WorkloadName, peer.AllowlistDigest, workload, router)
-		}
-		if routerDigest == nil {
-			return nil // B9: an unstamped router binds no policy digest
-		}
-		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
-			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
+			return fmt.Errorf("routing: backend leaf names workload %q, and this route names %q", peer.WorkloadName, workload)
 		}
 		return nil
 	}
@@ -458,6 +464,9 @@ func (t *Transports) retireChanged(cred MeshCredential) {
 // retireLocked drops the transports, only the workload ones if workloadOnly,
 // and closes their idle connections. The caller holds t.mu.
 func (t *Transports) retireLocked(workloadOnly bool) {
+	if !workloadOnly {
+		t.leafExpiry = time.Time{}
+	}
 	for key, p := range t.cache {
 		if workloadOnly && !p.workload {
 			continue

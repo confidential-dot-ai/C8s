@@ -56,6 +56,10 @@ func (h *Handle) Served() (body []byte, version string, err error) {
 	return h.store.Served()
 }
 
+func (h *Handle) ServedToNodes(now time.Time) (body []byte, version string, err error) {
+	return h.store.ServedToNodes(now)
+}
+
 func (h *Handle) History() (History, error) {
 	return h.store.History()
 }
