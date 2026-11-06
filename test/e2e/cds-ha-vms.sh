@@ -12,9 +12,10 @@
 # Env: NS, CDS_VM (the lane's CDS VM, whose spec every replica is cloned
 # from), VM (the lane's node CVM, deleted for the host's capacity),
 # CDS_IMAGE_MANIFEST, SMP (the vCPU count that image is launched with),
-# NODE_CIDR, CDS_ALLOWLIST_SEED (the release's allowlist-seed-snp.json) and
-# CDS_NODE_PINS (the node identities the cluster certifies, as a launch
-# bundle's peers.json).
+# NODE_CIDR, CDS_ALLOWLIST_SEED (the allowlist-seed.json 'c8s node-image
+# render' wrote at the worker image's release digests) and CDS_NODE_PINS (a
+# measurements document naming the node launch identities this cluster
+# starts out certifying, the 'c8s cds config new --node-pins' input).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=test/e2e/lib.sh

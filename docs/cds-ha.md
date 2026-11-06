@@ -49,8 +49,7 @@ cluster; the log rules afterwards.
 The CDS images a replica may run are not in the file at all: the Genesis
 decree carries the first set, and a `pins` decree replaces it.
 
-`c8s cds config new --replica ... --voters 3` writes the file, and `c8s node
-launch-config new` writes the same under `--cds-replica` and `--cds-voters`. A
+`c8s cds config new --replica ... --voters 3` writes the file. A
 file with no `--replica` runs one CDS, which is the deployment
 [operator.md](operator.md) describes.
 
@@ -96,8 +95,7 @@ applied is `c8s cds ha decrees`, read over the same channel.
 
 `genesis`, `recover` and `admit` are posted to the replica their `--target`
 names, which holds the decree until it acts on it. `--out` writes the signed
-decree to a file as well, which is what `launch-config add-agent
---pin-decree` reads.
+decree to a file as well.
 
 | Decree | What it does |
 |---|---|

@@ -78,27 +78,27 @@ Fetch the manifest layer of the image you intend to accept:
 
 ```sh
 IMAGE=ghcr.io/confidential-dot-ai/node-guest-base
-mkdir rke2-tdx
-LAYER=$(oras manifest fetch "$IMAGE:rke2-tdx-<RELEASE_TAG>" | jq -er \
+mkdir worker-tdx
+LAYER=$(oras manifest fetch "$IMAGE:worker-tdx-<RELEASE_TAG>" | jq -er \
   '[.layers[] | select(.annotations["org.opencontainers.image.title"]
      == "manifest.json")][0].digest')
-oras blob fetch "$IMAGE@$LAYER" --output rke2-tdx/manifest.json
+oras blob fetch "$IMAGE@$LAYER" --output worker-tdx/manifest.json
 ```
 
 `<RELEASE_TAG>` is the release the cluster runs; the platform tag is
-`rke2-tdx` or `rke2-snp`. The `-cdi` image is the same disk in another format,
-so derive from these tags for it too. Derive the config and read back what it
-pins:
+`worker-tdx` or `worker-snp`. The `-cdi` image is the same disk in another
+format, so derive from these tags for it too. Derive the config and read back
+what it pins:
 
 ```sh
-c8s measurements derive --tee tdx --out measurements.json rke2-tdx
+c8s measurements derive --tee tdx --out measurements.json worker-tdx
 c8s measurements lint measurements.json
 ```
 
 ```text
-rke2-tdx: 1 tdx entry from rke2-tdx/manifest.json
+worker-tdx: 1 tdx entry from worker-tdx/manifest.json
 ok: tdx, 1 image(s)
-  rke2-tdx: 2 register pin(s)
+  worker-tdx: 2 register pin(s)
 ```
 
 The two register pins are RTMR[1] and RTMR[2], so the file pins the guest

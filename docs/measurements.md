@@ -17,7 +17,7 @@ byte concatenation.
 | Report field | Holds | Pinned with |
 |---|---|---|
 | `MEASUREMENT` | The launch digest: SHA-384 over the guest's initial memory and vCPU state. | `--measurements`, config `measurement` |
-| `HOST_DATA` | 32 bytes the launcher commits at launch. On a measured node image, SHA-256 of the launch key's exact PEM bytes; all zero when a guest is launched for no key. | `c8s verify --init-data`, config `approver_key` |
+| `HOST_DATA` | 32 bytes the launcher commits at launch. On a measured node image, SHA-256 of the exact bytes of the launch file the guest booted with; all zero when the launcher committed none. | `c8s verify --init-data`, config `launch_file` |
 | `REPORT_DATA` | 64 bytes the guest chooses: `SHA-384(PKIX-DER(pubkey) ‖ challenge)`, zero-padded. The challenge slot is empty outside an issuance. | Derived by the verifier from the peer's key; `--expected-report-data` sets it for a saved evidence file |
 
 The launch digest covers the initial state of every vCPU, so one image build
@@ -37,7 +37,7 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 | `RTMR[0]` | TD HOB and VMM ACPI tables. It varies with the VM's vCPU and memory shape, so nothing pins it. | — |
 | `RTMR[1]` | The guest kernel. | `--rtmr 1=<HEX>`, `--image-manifest`, config `rtmr[1]` |
 | `RTMR[2]` | The kernel command line, which carries the dm-verity root hash of the read-only root. | `--rtmr 2=<HEX>`, `--image-manifest`, config `rtmr[2]` |
-| `RTMR[3]` | The launch key the node was started for, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy` or `--trust-operator` then judge the replayed policies |
+| `RTMR[3]` | The launch file the node was started with, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy` or `--trust-operator` then judge the replayed policies |
 | `REPORTDATA` | As SEV-SNP's `REPORT_DATA`. | Derived by the verifier |
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
@@ -49,13 +49,13 @@ RTMR[2] from one build.
 RTMR[3] is extended by software inside the guest, so on its own it says nothing
 about which image booted: pin it only together with an image, which is why
 `--rtmr 3=` and `--operator-pkey` both require `--image-manifest`. The register
-holds a chain: the seed the measured initrd extends from the node's launch key,
-then one event per image a node's workload measurer extended, in first-extend
-order (`c8s get-kubeconfig --workload-image` names them; the C8s node image
-runs no such measurer), then one per allowlist policy the node applied.
+holds a chain: the seed the measured initrd extends from the node's launch
+file, then one event per image a node's workload measurer extended, in
+first-extend order (the C8s node image runs no such measurer), then one per
+allowlist policy the node applied.
 
 ```text
-seed      = SHA-384( 0x00 * 48 ‖ SHA-384(launch key PEM bytes) )
+seed      = SHA-384( 0x00 * 48 ‖ SHA-384(launch file bytes) )
 extend(d) = SHA-384( register ‖ SHA-384("sha256:<hex>") )
 ```
 
@@ -63,8 +63,8 @@ Policies are measured only on TDX and only where the node plugin has
 `measure_policies` on: the chart value `nriImagePolicy.measurePolicies`, which
 the chart refuses unless it also deploys the node's attestation-api, so not on
 the lane that bakes it, or on every worker, whose image turns it on. The
-measurer seeds its journal from the staged launch key, a worker's document on a
-worker, so a node without one applies no pulled allowlist while the setting is on
+measurer seeds its journal from the staged document, so a node without one
+applies no pulled allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
 Each policy digest is SHA-256 of the exact allowlist bytes served by CDS, the
@@ -98,10 +98,9 @@ accounted for, the policies are not ([verify.md](verify.md)).
   and `--init-data` pins vTPM PCR[8] rather than `HOST_DATA`. C8s pins no other
   PCR.
 
-The launch-key binding is `bare-metal` only: only the measured node image
-commits a launch key, and on the managed lanes the cloud's own stack owns the
-field or register that would carry it. So `c8s node launch-config` and
-`c8s get-kubeconfig` are `bare-metal` commands
+The launch binding is `bare-metal` only: only the measured node image commits
+its launch file, and on the managed lanes the cloud's own stack owns the field
+or register that would carry it
 ([launch-configuration.md](launch-configuration.md)).
 
 ## The measurements config
@@ -113,8 +112,7 @@ Every component that dials a pinned CDS takes it as `--image-policy-file`:
 `c8s routes`, `c8s volume`), CDS itself, and the sidecars C8s
 injects — among them get-cert, which fetches a pod's certificate. `c8s install`
 takes the same document as `--cds-pin`. Some also accept
-`--image-policy-json`, the same document inline; `c8s get-kubeconfig` pins its
-node with `--image-manifest`.
+`--image-policy-json`, the same document inline.
 
 ```json
 {
@@ -122,7 +120,7 @@ node with `--image-manifest`.
   "tee": "tdx",
   "measurements": [
     {
-      "name": "rke2-tdx",
+      "name": "worker-tdx",
       "mrtd": "<96_HEX>",
       "rtmr": [null, "<96_HEX>", "<96_HEX>", null]
     }
@@ -139,7 +137,7 @@ node with `--image-manifest`.
 | `measurement` | SEV-SNP only and required there: the launch digest, 96 lowercase hex. |
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
-| `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
+| `approver_key` | Optional: a launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP. |
 | `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
 | `launch_file_digest` | Optional, schema 2 only: the digest of the configuration file the guest was launched with, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
 
