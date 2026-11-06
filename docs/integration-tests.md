@@ -123,9 +123,8 @@ with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
 
 ## Pod runtime CI
 
-Run `make test-integration-pod-runtime` with Go and Docker supporting
-privileged containers. The existing `Integration (Pod runtime)` CI job invokes
-this command and requires its check: start authorization, where one offline
+Run `bash test/integration/pod-runtime/run.sh` with Go and Docker supporting
+privileged containers. Its check is start authorization, where one offline
 workload executes only after its exact NRI container, sandbox and process
 identity is consumed once. Seven cases reject execution: missing authority,
 policy denial, measurement failure, callback timeout, lost socket, plugin
@@ -147,4 +146,4 @@ prerequisites or required assertions are missing. The runtime lane requires
 Evidence includes runtime binary hashes and bounded logs. The lane removes only its owned
 local resources; the runtime container has no host mounts or network access.
 Set `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
-directory. CI retains those artifacts for seven days.
+directory.
