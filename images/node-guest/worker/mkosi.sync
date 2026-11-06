@@ -18,7 +18,7 @@
 #
 # The RKE2 and Helm pins equal the c8s profile's (profile_test.go).
 set -euo pipefail
-# A FATAL inside a command substitution ends the sync.
+# A FATAL inside v=$(f) ends the sync; inside an argument or a local it does not.
 shopt -s inherit_errexit
 
 STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
@@ -126,42 +126,91 @@ amd64_manifest() {
     esac
 }
 
+# layer_blob <repo> <manifest> <index>: that layer of the image, fetched once
+# into TMP beside the list of its members (<blob>.list). Any layer but a gzip
+# tar naming its members without ./ fails.
+layer_blob() {
+    local media digest blob
+    media=$(echo "$2" | jq -r ".layers[$3].mediaType")
+    digest=$(echo "$2" | jq -r ".layers[$3].digest")
+    [ "$media" = application/vnd.oci.image.layer.v1.tar+gzip ] \
+        || fail "layer $digest of $1 is $media, not a gzip tar"
+    blob="$TMP/layer-${digest#sha256:}"
+    if [ ! -f "$blob.list" ]; then
+        oras blob fetch --output "$blob" "$1@$digest"
+        tar -tzf "$blob" > "$blob.list" || fail "cannot list layer $digest of $1"
+        if grep -q '^\./' "$blob.list"; then
+            fail "layer $digest of $1 names its members with ./"
+        fi
+    fi
+    echo "$blob"
+}
+
+# hides <list> <path>: whether a layer with these members hides path in the
+# layers below it: a whiteout of path or of a directory above it, an opaque
+# directory above it, a non-directory where a directory above it was, or path
+# as a directory.
+hides() {
+    local dir="" rest=$2 name
+    while :; do
+        name=${rest%%/*}
+        if grep -qFx -e "$dir.wh.$name" -e "$dir.wh..wh..opq" "$1"; then
+            return 0
+        fi
+        if [ "$rest" = "$name" ]; then
+            grep -qFx -- "$dir$name/" "$1"
+            return
+        fi
+        if grep -qFx -- "$dir$name" "$1"; then
+            return 0
+        fi
+        dir="$dir$name/"
+        rest=${rest#*/}
+    done
+}
+
+# image_file <repo> <manifest> <path>: path from the newest layer carrying it,
+# extracted under TMP. A newer layer that hides path fails.
+image_file() {
+    local i blob dir
+    i=$(echo "$2" | jq '.layers | length')
+    while [ "$i" -gt 0 ]; do
+        i=$((i - 1))
+        blob=$(layer_blob "$1" "$2" "$i")
+        if grep -qFx -- "$3" "$blob.list"; then
+            dir=$(mktemp -d -p "$TMP")
+            tar -xzf "$blob" -C "$dir" -- "$3" || fail "cannot extract $3 from $1"
+            echo "$dir/$3"
+            return
+        fi
+        if hides "$blob.list" "$3"; then
+            fail "a layer of $1 hides $3"
+        fi
+    done
+    fail "no $3 in $1"
+}
+
 # stage_c8s_binary <repo> <digest>: install the binary repo@digest runs as the
-# NRI plugin, cached by that digest. usr/local/bin is the only tree read out of
-# the image, from the newest layer carrying it: the plugin's symlink and its
-# target are written together.
+# NRI plugin, cached by that digest. The plugin is that binary or one symlink
+# to it.
 stage_c8s_binary() {
     local cache="$CACHE_DIR/nri-image-policy-${2#sha256:}"
-    local rootfs="$TMP/plugin-image" manifest root plugin target layer
+    local manifest plugin=usr/local/bin/nri-image-policy file link target
     if [ ! -f "$cache" ]; then
         manifest=$(amd64_manifest "$1" "$2")
-        rm -rf "$rootfs"
-        mkdir -p "$rootfs"
-        for layer in $(echo "$manifest" | jq -r '[.layers[].digest] | reverse | .[]'); do
-            oras blob fetch --output "$TMP/layer.tar.gz" "$1@$layer"
-            if tar -xzf "$TMP/layer.tar.gz" -C "$rootfs" usr/local/bin; then
-                break
-            fi
-            rm -f "$TMP/layer.tar.gz"
-        done
-        plugin="$rootfs/usr/local/bin/nri-image-policy"
-        [ -L "$plugin" ] || [ -f "$plugin" ] || fail "no usr/local/bin/nri-image-policy in $1@$2"
-        target=$plugin
-        if [ -L "$plugin" ]; then
-            target=$(readlink "$plugin")
-            case "$target" in
-                /*) target="$rootfs$target" ;;
-                *)  target="$(dirname "$plugin")/$target" ;;
+        file=$(image_file "$1" "$manifest" "$plugin")
+        if [ -L "$file" ]; then
+            link=$(readlink "$file")
+            case "$link" in
+                /*) target=$link ;;
+                *)  target="/${plugin%/*}/$link" ;;
             esac
-            root=$(realpath -m -- "$rootfs")
-            target=$(realpath -m -- "$target")
-            case "$target" in
-                "$root"/*) ;;
-                *) fail "the plugin of $1@$2 links out of the image: $(readlink "$plugin")" ;;
-            esac
+            # Lexically, inside the image: ".." stops at its root.
+            target=$(realpath -ms -- "$target")
+            file=$(image_file "$1" "$manifest" "${target#/}")
         fi
-        [ -f "$target" ] || fail "the plugin of $1@$2 is no regular file"
-        install -D -m 0755 "$target" "$cache"
+        [ -f "$file" ] && [ ! -L "$file" ] || fail "the plugin of $1@$2 is no regular file"
+        install -D -m 0755 "$file" "$cache"
     fi
     install -D -m 0755 "$cache" "$C8S"
 }
@@ -173,7 +222,8 @@ MESH_DIGEST=$(digest "$MESH_REPO")
 # Before the long fetches below, so an unpublished ref fails early.
 if [ "$C8S_SOURCE" = plugin ]; then
     NRI_REPO="$C8S_REGISTRY/nri-image-policy"
-    stage_c8s_binary "$NRI_REPO" "$(digest "$NRI_REPO")"
+    NRI_DIGEST=$(digest "$NRI_REPO")
+    stage_c8s_binary "$NRI_REPO" "$NRI_DIGEST"
 fi
 
 # --- 1. Runtime binaries from the rke2-runtime image's one layer ----------
