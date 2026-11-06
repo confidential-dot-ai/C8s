@@ -155,7 +155,12 @@ func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := seed.BuildIndex()
-	hostMount := []pkgallowlist.ObservedMount{{Source: "/", Destination: "/host", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown}}
+	hostMount := []pkgallowlist.ObservedMount{{
+		Source:      "/",
+		Destination: "/host",
+		Class:       pkgallowlist.MountHost,
+		Storage:     pkgallowlist.MountUnknown,
+	}}
 	for _, tc := range []struct {
 		name   string
 		argv   []string
@@ -166,7 +171,12 @@ func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
 		{"with host mount", wantArgv, hostMount, false},
 		{"other script", []string{"/bin/sh", "-c", wantArgv[2] + "; sh"}, []pkgallowlist.ObservedMount{}, false},
 	} {
-		if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: tc.mounts}); got != tc.want {
+		container := pkgallowlist.RunningContainer{
+			Digest: baseNRIDigest,
+			Argv:   tc.argv,
+			Mounts: tc.mounts,
+		}
+		if got := idx.AdmitsContainer(container); got != tc.want {
 			t.Errorf("seed admits %s = %v, want %v", tc.name, got, tc.want)
 		}
 	}

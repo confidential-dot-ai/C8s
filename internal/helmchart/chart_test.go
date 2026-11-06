@@ -6261,9 +6261,19 @@ func TestChartSweepMountAdmission(t *testing.T) {
 	} {
 		mounts := []pkgallowlist.ObservedMount{}
 		if tc.hostMount {
-			mounts = append(mounts, pkgallowlist.ObservedMount{Source: "/", Destination: "/host", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
+			mounts = append(mounts, pkgallowlist.ObservedMount{
+				Source:      "/",
+				Destination: "/host",
+				Class:       pkgallowlist.MountHost,
+				Storage:     pkgallowlist.MountUnknown,
+			})
 		}
-		if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: mounts}); got != tc.want {
+		container := pkgallowlist.RunningContainer{
+			Digest: baseNRIDigest,
+			Argv:   tc.argv,
+			Mounts: mounts,
+		}
+		if got := idx.AdmitsContainer(container); got != tc.want {
 			t.Errorf("%s admitted=%v, want %v", tc.name, got, tc.want)
 		}
 	}

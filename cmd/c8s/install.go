@@ -1509,9 +1509,8 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		)
 	}
 	// bare-metal: the measured image carries host attestation-api and
-	// nri-image-policy with its own containerd registration and config.
-	// Re-rendering them duplicates the measured pair, and the installer would
-	// write a second plugin config over the measured one.
+	// nri-image-policy, so rendering them again would duplicate the measured
+	// pair and write a second plugin config.
 	if measuredImageCarriesAttestationAndPlugin {
 		helmArgs = append(helmArgs,
 			"--set", "attestationApi.enabled=false",

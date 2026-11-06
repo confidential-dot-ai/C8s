@@ -94,7 +94,11 @@ printf 'ok [http 200]'`)
 	return f
 }
 
-func (f *deadPluginFixture) run(t *testing.T, restartNeeded bool, checkRC int) (string, []string) {
+func (f *deadPluginFixture) run(
+	t *testing.T,
+	restartNeeded bool,
+	checkRC int,
+) (string, []string) {
 	t.Helper()
 	_ = os.Remove(f.log)
 	cmd := exec.Command("/bin/sh", f.script)
@@ -106,7 +110,11 @@ func (f *deadPluginFixture) run(t *testing.T, restartNeeded bool, checkRC int) (
 	if restartNeeded {
 		needed = 1
 	}
-	cmd.Env = append(os.Environ(), fmt.Sprintf("RESTART_NEEDED=%d", needed), fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC), fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC))
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("RESTART_NEEDED=%d", needed),
+		fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC),
+		fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC),
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("script failed: %v\n%s", err, out)
