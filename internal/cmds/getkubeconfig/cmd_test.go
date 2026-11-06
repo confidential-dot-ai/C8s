@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 )
 
@@ -147,10 +147,9 @@ func TestNewCmdEndToEnd(t *testing.T) {
 		{"log-reader", []string{"--role", "log-reader"}, credrelease.RoleLogReader},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
+			env, _, _ := newBootstrapEnv(t, teetypes.PlatformTDX, nil)
 
 			err := execCmd(t, append([]string{
-				"--attest-url", env.attestURL,
 				"--release-url", env.releaseURL,
 				"--apiserver-url", "https://node:6443",
 				"--operator-key", env.keyPath,

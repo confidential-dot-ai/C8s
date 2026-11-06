@@ -30,11 +30,9 @@ func NewCmd() *cobra.Command {
 			"on TDX the image tuple (MRTD, RTMR[1], RTMR[2]) plus the RTMR[3] chain\n" +
 			"seeded by the operator's key and extended by the expected workload\n" +
 			"images, then by a prefix of the allowlist policies the node lists\n" +
-			"(accepted as far as they replay; with --attest-url the list comes from\n" +
-			"cred-release's certificate and may lag a new policy until it is\n" +
-			"reissued); on SEV-SNP the pinned per-SMP launch digest plus the\n" +
-			"operator-key HOSTDATA binding. It then exchanges a CSR for a\n" +
-			"kube client cert over the cred-release endpoint, valid for its\n" +
+			"(accepted as far as they replay); on SEV-SNP the pinned per-SMP\n" +
+			"launch digest plus the operator-key HOSTDATA binding. It then\n" +
+			"exchanges a CSR for a kube client cert over the cred-release endpoint, valid for its\n" +
 			"--cert-ttl, or --log-cert-ttl for a log-reader (both default 7 days),\n" +
 			"and writes a kubeconfig. Fresh attestation uses the authenticated armTLS release\n" +
 			"endpoint; the guest raw attester can remain on loopback. Verification\n" +
@@ -51,7 +49,6 @@ func NewCmd() *cobra.Command {
 			// --vmi resolves a KubeVirt guest to the address --node would have
 			// been given; --node <host> fills the release and apiserver URLs
 			// with standard ports. Explicit URLs override these defaults.
-			// --attest-url selects a separate legacy attestation endpoint.
 			if vmi != "" {
 				ctx, cancel := context.WithTimeout(cmd.Context(), cfg.Timeout)
 				defer cancel()
@@ -82,7 +79,6 @@ func NewCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&node, "node", "", "guest host/IP; fills --release-url/--apiserver-url with standard ports (8443/6443)")
 	f.StringVar(&vmi, "vmi", "", "guest as KubeVirt VMI [namespace/]name; resolves its address through the current kubeconfig and uses it as --node (namespace defaults to the kubeconfig context's)")
-	f.StringVar(&cfg.AttestURL, "attest-url", "", "optional legacy attestation-api /attest URL; default: operator-authenticated attestation over --release-url")
 	f.StringVar(&cfg.ReleaseBaseURL, "release-url", "", "cred-release HTTPS base URL (overrides --node)")
 	f.StringVar(&cfg.APIServerURL, "apiserver-url", "", "apiserver HTTPS URL for the kubeconfig (overrides --node)")
 	f.StringVar(&cfg.OperatorKeyPath, "operator-key", "", "operator ECDSA private key PEM (its public half is bound into RTMR[3]) (required)")

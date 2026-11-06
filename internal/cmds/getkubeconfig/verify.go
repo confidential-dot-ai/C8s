@@ -10,58 +10,12 @@
 package getkubeconfig
 
 import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 )
 
-// attestAndVerify fetches a nonce-bound quote from the guest's
-// attestation-api, verifies it in-process (HW chain + report_data freshness),
-// and enforces the full measured-identity policy. It proves: genuine TDX +
-// the pinned guest image booted + the node trusts the operator's key and ran
-// exactly the expected workload extends. Returns nil on success.
-func attestAndVerify(ctx context.Context, attestURL string, exp guestverify.Policy) error {
-	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("nonce: %w", err)
-	}
-
-	evidence, err := postAttest(ctx, attestURL, nonce)
-	if err != nil {
-		return fmt.Errorf("attest: %w", err)
-	}
-
-	_, err = guestverify.VerifyEvidence(evidence, nonce, exp)
-	return err
-}
-
-// postAttest sends the nonce to POST /attest and returns the raw evidence body
-// (the self-describing {platform, evidence} envelope attestation-go consumes).
-//
-// report_data goes to /attest base64-encoded (what the attestation-api
-// decodes); attestation-go compares the same raw bytes. Matches confai's
-// verify.
-func postAttest(ctx context.Context, attestURL string, nonce []byte) ([]byte, error) {
-	body, _ := json.Marshal(map[string]string{
-		"platform":    "auto",
-		"report_data": base64.StdEncoding.EncodeToString(nonce),
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, attestURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return readAttestationResponse(http.DefaultClient, req)
-}
-
-// readAttestationResponse bounds the evidence envelope on both bootstrap paths.
+// readAttestationResponse reads the evidence envelope, bounded.
 func readAttestationResponse(client *http.Client, req *http.Request) ([]byte, error) {
 	resp, err := client.Do(req)
 	if err != nil {

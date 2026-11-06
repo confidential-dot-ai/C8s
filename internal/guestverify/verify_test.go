@@ -1,8 +1,10 @@
 package guestverify
 
 import (
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"slices"
 	"strings"
@@ -67,6 +69,20 @@ func TestCheckMeasuredIdentityNoRTMR3Claim(t *testing.T) {
 	err := exp.checkIdentity(res)
 	if err == nil || !strings.Contains(err.Error(), "no rtmr_3") {
 		t.Fatalf("want no-rtmr_3 error, got %v", err)
+	}
+}
+
+// A node launched for another operator key is refused with the supplied key's
+// fingerprint, so the operator can tell which key they used.
+func TestCheckIdentityNamesSuppliedKey(t *testing.T) {
+	pub := operatorPub(t)
+	exp := testPolicy(t, pub)
+	res := verifiedResultFor(testPolicy(t, operatorPub(t)))
+	block, _ := pem.Decode(pub)
+	sum := sha256.Sum256(block.Bytes)
+	err := exp.checkIdentity(res)
+	if err == nil || !strings.Contains(err.Error(), "sha256(SPKI DER) "+hex.EncodeToString(sum[:])) {
+		t.Fatalf("checkIdentity = %v, want the supplied key's fingerprint", err)
 	}
 }
 
@@ -193,10 +209,6 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 			err := e.checkIdentity(res)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("checkIdentity = %v, want error %v", err, tc.wantErr)
-			}
-			// Only Run knows where the list came from, so the error gives no advice.
-			if err != nil && strings.Contains(err.Error(), "--attest-url") {
-				t.Errorf("checkIdentity = %v, want no advice about --attest-url", err)
 			}
 		})
 	}
