@@ -27,7 +27,7 @@ import (
 // enforcement use the production code.
 func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh func(*teetypes.VerificationResult)) (testEnv, <-chan []byte, *atomic.Int32) {
 	t.Helper()
-	env := newTestEnv(t, "", http.StatusOK, goodRelease)
+	env := newTestEnv(t)
 	if platform == teetypes.PlatformSNP {
 		env.manifestPath = writeTestManifest(t, snpManifest())
 		var err error
@@ -104,7 +104,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 		case credrelease.ReleasePath:
 			releases.Add(1)
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			releaseHandler(t, http.StatusOK, goodRelease, nil).ServeHTTP(w, r)
+			releaseHandler(t, http.StatusOK, goodRelease, env.releaseRole).ServeHTTP(w, r)
 		default:
 			t.Errorf("unexpected request path %q", r.URL.Path)
 			http.NotFound(w, r)
