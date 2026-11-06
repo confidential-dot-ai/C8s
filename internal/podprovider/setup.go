@@ -42,7 +42,7 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 		return err
 	}
 	api := newCloudClient(cfg)
-	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now}
+	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now, recorder: mgr.GetEventRecorder("c8s-pod-cvm-provider")}
 	// The provider's pods are the ones bound to its node. Watch them through
 	// a cache of its own so the operator caches no other pod for it, and
 	// reconcile through the direct client.
