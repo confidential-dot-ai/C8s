@@ -30,7 +30,10 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -84,6 +87,51 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 	}
 }
 
+// Once the plugin ended the pod identity, a kubelet under restartPolicy Always
+// may keep the phase Running while it recreates refused containers; the
+// service projects the pod as failed, so the provider stops it. A kubelet
+// status that is already terminal stands. A plugin that cannot answer makes
+// the status unavailable rather than letting the kubelet's cached view stand.
+func TestHandlerProjectsAnEndedPodIdentityAsFailed(t *testing.T) {
+	ended, pluginErr := true, error(nil)
+	h := Handler{assignment: assigned("u1"), Pods: func(context.Context) ([]byte, error) { return []byte(pods), nil }, IdentityEnded: func(context.Context) (bool, error) { return ended, pluginErr }}
+	read := func() PodProjection {
+		rec := serve(h, http.MethodGet, PodPath)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		var got PodProjection
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if p := read(); p.Status.Phase != corev1.PodFailed {
+		t.Fatalf("ended identity projected as %+v", p.Status)
+	}
+	if rec := serve(h, http.MethodGet, PodPath); strings.Contains(rec.Body.String(), "reason") {
+		t.Fatalf("projection carries a guest reason: %s", rec.Body)
+	}
+	ended = false
+	if p := read(); p.Status.Phase != corev1.PodRunning {
+		t.Fatalf("live identity projected as %+v", p.Status)
+	}
+	pluginErr = errors.New("health socket unreachable")
+	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unreachable plugin: %d, want 503", rec.Code)
+	}
+	pluginErr = nil
+	succeeded := strings.Replace(pods, `"phase":"Running"`, `"phase":"Succeeded"`, 1)
+	h.Pods = func(context.Context) ([]byte, error) { return []byte(succeeded), nil }
+	ended = true
+	if p := read(); p.Status.Phase != corev1.PodSucceeded {
+		t.Fatalf("terminal kubelet status rewritten: %+v", p.Status)
+	}
+	if _, err := podIdentityEndedAt(t.Context(), filepath.Join(t.TempDir(), "absent.sock")); err == nil {
+		t.Fatal("an unreachable plugin answered")
+	}
+}
+
 var (
 	dA = "sha256:" + strings.Repeat("a", 64)
 	dB = "sha256:" + strings.Repeat("b", 64)
@@ -109,7 +157,7 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	var quoted []byte // report data the guest's quote carries
 	var servingKey crypto.PublicKey
 	h := Handler{
-		UID: "u1", Journal: journalPath,
+		assignment: assigned("u1"), Journal: journalPath,
 		Pods: func(context.Context) ([]byte, error) { return []byte(pods), nil },
 		Evidence: func(_ context.Context, rd []byte) ([]byte, error) {
 			quoted = append(make([]byte, 64)[:0], rd...)
@@ -204,34 +252,71 @@ func TestAttestBindsMeasuredDigests(t *testing.T) {
 	}
 }
 
-// A list the register has not caught up with fails the full replay but is not
-// final: the guest records before it extends. A register that took an extend
-// the list does not record, in any position, replays no prefix of it and is
-// final.
+// A list the register does not explain fails the full replay, whether the
+// register took an extend the list does not record, in any position, or the
+// list has run ahead of the register.
 func TestAttestRejectsDigestListsTheRegisterDoesNotExplain(t *testing.T) {
 	dC := "sha256:" + strings.Repeat("c", 64)
-	for name, tc := range map[string]struct {
-		journal []string
-		final   bool
-	}{
-		"tampered":  {[]string{dA, dC}, true},
-		"reordered": {[]string{dB, dA}, true},
-		"missing":   {[]string{dA}, true},
-		"extra":     {[]string{dA, dB, dC}, false},
+	for name, journal := range map[string][]string{
+		"tampered":  {dA, dC},
+		"reordered": {dB, dA},
+		"missing":   {dA},
+		"extra":     {dA, dB, dC},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg := attestFixture(t, []string{dA, dB}, tc.journal, nil)
-			_, _, err := Attest(context.Background(), cfg)
-			if err == nil {
+			cfg := attestFixture(t, []string{dA, dB}, journal, nil)
+			if _, _, err := Attest(context.Background(), cfg); err == nil {
 				t.Fatal("attested a list the register does not explain")
 			}
-			if got := errors.Is(err, ErrMeasuredHistoryDoesNotReplay); got != tc.final {
-				t.Fatalf("final = %v, want %v: %v", got, tc.final, err)
-			}
-			if !tc.final && !strings.Contains(err.Error(), "do not explain") {
+		})
+	}
+}
+
+// The service exits on every startup failure to confirm the launch key, a
+// register that replays no prefix of the journal included.
+func TestServeExitsWhenTheLaunchKeyIsNotConfirmed(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "config.json")
+	doc, err := json.Marshal(stagedPodDocument(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := loadMeasuredLaunchKey
+	t.Cleanup(func() { loadMeasuredLaunchKey = old })
+	for name, failure := range map[string]error{
+		"attestation-api not ready": errors.New("attestation-api not ready"),
+		"no replaying prefix":       fmt.Errorf("%w: RTMR[3] carries another value", credrelease.ErrRegisterDoesNotReplay),
+	} {
+		t.Run(name, func(t *testing.T) {
+			loadMeasuredLaunchKey = func(context.Context, string, string) ([]byte, error) { return nil, failure }
+			err := Serve(context.Background(), ServeConfig{Platform: "tdx", StagedPath: staged, ListenAddr: "127.0.0.1:0"})
+			if err == nil || !strings.Contains(err.Error(), "load measured launch key") || !errors.Is(err, failure) {
 				t.Fatalf("got %v", err)
 			}
 		})
+	}
+}
+
+// stagedPodDocument is the generic pod document Serve reads before anything
+// else.
+func stagedPodDocument(t *testing.T) *launchconfig.Document {
+	t.Helper()
+	public := func() string {
+		der, err := x509.MarshalPKIXPublicKey(&ecdsaCert(t).PrivateKey.(*ecdsa.PrivateKey).PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	}
+	return &launchconfig.Document{
+		SchemaVersion: launchconfig.SchemaVersion, ClusterID: "cluster", Role: launchconfig.Pod,
+		Node:                 launchconfig.Node{Name: "guest"},
+		Server:               launchconfig.ServerConfig{Address: "192.0.2.1", OperatorPublicKey: public()},
+		PodOperatorPublicKey: public(),
+		CDS:                  launchconfig.CDS{Address: "cds.example.org:8443", Measurements: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)},
+		Image:                launchconfig.Image{Platform: "tdx", Measurement: strings.Repeat("11", 48), RTMRs: map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}},
 	}
 }
 

@@ -407,25 +407,6 @@ var (
 	loadMeasuredLaunchKey = credrelease.LoadMeasuredOperatorKey
 )
 
-// ErrMeasuredHistoryDoesNotReplay reports a guest whose certificate or fresh
-// evidence verified as the pinned image, but whose register replays no prefix
-// of the measured history it declares: it took an extend its journal does not
-// record, its journal is unreadable, or another key launched it. None of
-// these mends before a reboot, so a caller waiting for the pod should stop
-// waiting; every other error from Attest may be transient. A list the
-// register has not caught up with is not this error: the guest records
-// before it extends, and replays the record when it restarts.
-var ErrMeasuredHistoryDoesNotReplay = errors.New("the pod CVM's measured history does not replay its register")
-
-// final marks err with ErrMeasuredHistoryDoesNotReplay when the verifier
-// found no replaying prefix, and returns every other error unchanged.
-func final(err error) error {
-	if errors.Is(err, guestverify.ErrPoliciesDoNotReplay) {
-		return fmt.Errorf("%w: %w", ErrMeasuredHistoryDoesNotReplay, err)
-	}
-	return err
-}
-
 // Attest verifies fresh evidence from the pod CVM and its measured digest
 // list, returning the report and the verified channel for further reads.
 func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error) {
@@ -471,7 +452,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	// the same launch key, whose certificate passes the same checks.
 	before, peer, err := fetchDigests(ctx, client, base)
 	if err != nil {
-		return nil, nil, final(err)
+		return nil, nil, err
 	}
 	if client, err = pinServingKey(client, peer); err != nil {
 		return nil, nil, err
@@ -489,7 +470,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		reqBody, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
 		var peer crypto.PublicKey
 		if envelope, peer, err = postEvidence(ctx, client, base, reqBody); err != nil {
-			return nil, nil, final(fmt.Errorf("fresh evidence: %w", err))
+			return nil, nil, fmt.Errorf("fresh evidence: %w", err)
 		}
 		// The quote must bind this channel's certificate key and our nonce.
 		rd, err := EvidenceReportData(peer, nonce)
@@ -498,7 +479,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		}
 		reportData = rd[:]
 		if digests, _, err = fetchDigests(ctx, client, base); err != nil {
-			return nil, nil, final(err)
+			return nil, nil, err
 		}
 		if slices.Equal(before, digests) {
 			break
@@ -510,12 +491,12 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	}
 	res, err := verifyFresh(envelope, reportData, exp.WithMeasuredPolicies(digests))
 	if err != nil {
-		return nil, nil, final(fmt.Errorf("evidence: %w", err))
+		return nil, nil, fmt.Errorf("evidence: %w", err)
 	}
 	// The gate accepts any replaying prefix; here the list was read on both
 	// sides of the quote and agreed, so the whole of it must replay. A list
 	// that ran ahead of the register fails here and only here: that is a
-	// recorded extend the guest has not made yet, so the error is not final.
+	// recorded extend the guest has not made yet.
 	if err := runtimemeasure.VerifyBinding(res, pub, digests); err != nil {
 		return nil, nil, fmt.Errorf("measured digests do not explain the attested register: %w", err)
 	}
@@ -642,8 +623,7 @@ func Get(ctx context.Context, cfg AttestConfig) ([]byte, error) {
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	body, err := do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
-	return body, final(err)
+	return do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
 }
 
 func hostPort(node string) string {
