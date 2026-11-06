@@ -13,6 +13,13 @@ from fixtures import OWNER, COMPONENT, SLOT, selector
 RUN = 'cds-ha-123456789abc'
 
 class Safety(unittest.TestCase):
+    def test_applied_policy_uses_delivery_wire_field(self):
+        import run
+        run.policy_applied({'checks': {'delivered': {'intent': 'test', 'applied_version': 2}}})
+        for delivered in [{}, {'version': 2}, {'held': True}, {'applied_version': 2, 'refused': 'conflict'},
+                          {'applied_version': 0}, {'applied_version': 2, 'held': True}]:
+            with self.assertRaises(ValueError): run.policy_applied({'checks': {'delivered': delivered}})
+
     def test_admin_pass_keeps_owned_destination_and_namespace_policy(self):
         a = guests.admin(RUN, 'expiry')
         self.assertEqual(a['spec']['priority'], 89)

@@ -8,10 +8,12 @@ fixed test phases signed by the measured operator key; the controller verifies
 native TDX armTLS, including the complete image tuple and launch file, before
 sending a phase. No arbitrary commands, paths, quote service or SSH are exposed.
 
-Raft and direct current-state metadata run sequentially with the same compute
-budget, images and workload. The metadata arm uses three dedicated etcd members
-and three stateless adapters. Etcd uses Raft internally. CDS's direct-state arm
-has no application WAL or Raft participant.
+Raft and direct current-state metadata run sequentially with the same CDS guest
+budget, images and workload. The metadata arm additionally uses three dedicated
+etcd members and three stateless adapters; their resources must be included in
+any cost comparison. Etcd uses Raft internally. CDS's direct-state arm has no
+application WAL or Raft participant. This single-cluster qualification does not
+establish capacity or isolation under many concurrent tenant clusters.
 
 The phases exercise real certificate issuance and renewal, workload secret
 release, one-use operator authorization, partition refusal, majority service,
@@ -24,6 +26,10 @@ decrees. Rejection of an unapproved key recipient remains a separate custody
 qualification. Test clients trust the two measured images from the start, so
 this run does not qualify automatic client pin refresh.
 Managed Kubernetes node-token enrollment is not included in the workload burst.
+Checks run before and after each replacement; this does not establish continuous
+availability during replacement or preservation of one workload leaf across all
+three guest replacements. Phase timings include the test operations and are
+individual observations, not request latency percentiles or an availability SLO.
 
 For this availability comparison, the test operator knows a synthetic state key
 provisioned over verified armTLS. Operator exclusion was tested separately in

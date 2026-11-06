@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -176,6 +177,14 @@ func TestThreeHostAgent(t *testing.T) {
 					s.c.objectWAL = &objectFixture{config: *threeHostConfig.HA.ObjectWALPilot, provision: bytes.Clone(job.q.Provision)}
 				}
 				ln, host := inventoryListener(t)
+				// Each guest models a different sandbox. A replacement also gets a
+				// fresh ID even if DHCP reuses its old address; the inventory signer
+				// is a new identity and cannot take over the previous binding.
+				var sandbox [32]byte
+				if _, err := rand.Read(sandbox[:]); err != nil {
+					t.Fatal(err)
+				}
+				pilotSandbox = hex.EncodeToString(sandbox[:])
 				s.w = startPilotWorkload(s.c, ln, host)
 			}
 			if s.c == nil {

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "backend": "raft",
+  "attempt": 4,
+  "stage": "intentional-stop-before-guest-start",
+  "runner_commit": "5ef17912ca3f4bda9da40eee3376d00c1dd6dd0e",
+  "runner_exit_code": -2,
+  "three_guest_cds_passed": false,
+  "guests_started": 0,
+  "completed_image_uploads": 3,
+  "chunk_retries": 0,
+  "reason": "Controller review found an incorrect policy receipt field: applied_version is the delivery API field. The owned runner was stopped with SIGTERM and completed ordinary cleanup before qualification.",
+  "follow_up": "Correct the receipt check, give each guest a fresh sandbox identity, and rebuild the qualification images with locked serial-console diagnostics. The CDS executable is unchanged.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 21,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

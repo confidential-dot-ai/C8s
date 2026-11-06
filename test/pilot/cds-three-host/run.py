@@ -26,6 +26,12 @@ import transfer
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
 
 
+def policy_applied(result):
+    delivered = result.get('checks', {}).get('delivered', {})
+    need(not delivered.get('refused') and not delivered.get('held') and
+         delivered.get('applied_version', 0) > 0, 'image policy decree was not applied')
+
+
 def archive_image(directory):
     # GNU sparse metadata avoids sending/decompressing the large zero regions
     # of the verified raw disk through a short-idle-timeout exec proxy. The
@@ -183,8 +189,7 @@ class Run(metadata.Run):
             need(proof.get('native_tdx_armtls_verified') and proof.get('image_and_launch_verified') and proof['result']['passed'], 'verified guest assertion failed')
             result = proof['result']
             if operation in ('overlap', 'retire'):
-                delivered = result.get('checks', {}).get('delivered', {})
-                need(not delivered.get('refused') and delivered.get('version', 0) > 0, 'image policy decree was refused')
+                policy_applied(result)
             self.state['phases'][-1].update(passed=True, seconds=result['seconds'])
             ca = result.get('checks', {}).get('ca_fingerprint')
             if ca:
@@ -311,6 +316,12 @@ class Run(metadata.Run):
 
     def diagnostics(self):
         super().diagnostics()
+        try:
+            # Read only the serial log/screen of a VMI whose owner UID still
+            # matches the journal. Never send guest keystrokes or commands.
+            self.native.Run.capture_boot_diagnostics(self)
+        except Exception:
+            pass
         for slot, row in self.guests.items():
             try:
                 if self.current(row, absent=True) is None: continue
