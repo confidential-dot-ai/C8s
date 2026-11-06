@@ -42,6 +42,12 @@ const (
 	allowlistRoute     = "/allowlist"
 	allowlistLookalike = "/allowlisted"
 	relayFailureBody   = "CDS unavailable"
+	// backendDigestMismatchBody is the 502 the router returns while its
+	// workload backend pool lags the allowlist digest a request was checked
+	// against: a transient state after an allowlist or route change. A
+	// workload-name mismatch is a different refusal ("backend unavailable"),
+	// so matching this body does not retry an intended rejection.
+	backendDigestMismatchBody = "backend_digest_mismatch"
 	// routerDigestChangedBody is the 503 (routes specification E6,
 	// policy/routes.md §9) the router returns when its own mesh leaf renewed
 	// under a different allowlist digest than the request's handshake bound —
@@ -179,9 +185,9 @@ func cdsCredentialSelected(ctx context.Context) error {
 }
 
 // routerGet sends the router GET path with headers ("Name: value"), retrying
-// through the transient router_digest_changed 503 the router returns while
-// its own leaf rolls after a just-applied allowlist. Any other answer,
-// success or failure, is kept at once.
+// through the transient backend_digest_mismatch 502 the router returns while
+// its workload backend pool catches up to a just-applied allowlist or route
+// digest. Any other answer, success or failure, is kept at once.
 func (w *world) routerGet(path string, headers ...string) error {
 	var a *answer
 	// Each attempt is an attested handshake, so poll on the router's own
@@ -191,11 +197,13 @@ func (w *world) routerGet(path string, headers ...string) error {
 		if a, err = w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...); err != nil {
 			return false, err
 		}
-		// Retry through the 503 a just-applied allowlist provokes while the
-		// router's own leaf has rolled but this attested attempt bound the old
-		// one. It is body-discriminated, so an intended rejection (a
-		// different body) still surfaces.
-		transient := a.status == http.StatusServiceUnavailable && bytes.Contains(a.body, []byte(routerDigestChangedBody))
+		// Retry through the two transient refusals a just-applied allowlist
+		// or route change provokes: the 502 while the backend pool lags the
+		// digest, and the 503 while the router's own leaf has rolled but this
+		// attested attempt bound the old one. Each is body-discriminated, so
+		// an intended rejection (a different body) still surfaces.
+		transient := (a.status == http.StatusBadGateway && bytes.Contains(a.body, []byte(backendDigestMismatchBody))) ||
+			(a.status == http.StatusServiceUnavailable && bytes.Contains(a.body, []byte(routerDigestChangedBody)))
 		return !transient, nil
 	}); err != nil {
 		return err

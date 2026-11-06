@@ -780,14 +780,14 @@ func TestHandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
 		t.Fatalf("GET = %d %q, want 200", status, body)
 	}
 	<-rs.lastHost
-	backend := rs.state.Current().Manifest.Hosts["app.example"].Routes[0].Backend
-	pooled := rs.transports.For(backend)
 
+	// The backend stays stamped under the old digest: a fresh dial fails B8,
+	// a pooled connection would not.
 	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
 		t.Fatalf("attest-lb with the renewed leaf = %q, want success", code)
 	}
-	if rs.transports.For(backend) == pooled {
-		t.Fatal("the handshake with the renewed leaf kept the old pool, want it retired")
+	if status, body := routedGet(t, listener.URL, ""); status != http.StatusBadGateway || !strings.Contains(body, "backend_digest_mismatch") {
+		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}
 }

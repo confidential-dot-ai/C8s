@@ -45,7 +45,7 @@ func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{baseURL: strings.TrimRight(baseURL, "/"), httpClient: httpClient}
 }
 
-// ForNodes returns c reading the allowlist CDS serves to nodes
+// ForNodes returns c reading the allowlist in effect on nodes
 // (allowlist.NodeQuery).
 func (c Client) ForNodes() Client {
 	c.query = "?" + allowlist.NodeQuery

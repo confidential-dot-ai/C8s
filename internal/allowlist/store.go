@@ -39,8 +39,8 @@ type Store struct {
 	gen uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest
-	// nodeDelay is how long a document is the newest before nodes are
-	// served it (ServedToNodes).
+	// nodeDelay is how long after a write it takes effect on nodes
+	// (InEffect).
 	nodeDelay time.Duration
 }
 

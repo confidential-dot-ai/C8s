@@ -45,6 +45,10 @@ func TunnelReservation(recordBytes int64) int64 {
 	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
 }
 
+// backendDigestMismatch is the body of the 502 a workload route gets when the
+// backend was stamped under another allowlist than the router (B8).
+const backendDigestMismatch = "backend_digest_mismatch"
+
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
 const ExporterHeader = "X-C8s-Exporter"
@@ -289,13 +293,17 @@ func (p *Proxy) checkBinding(
 }
 
 // backendFailure logs a failed backend exchange and returns the response it
-// gets. A damaged router stamp is logged at Error once per leaf where it is
-// parsed, so here it blames no backend.
+// gets. A digest mismatch is expected for a while after every allowlist
+// write, so it logs at Info; a damaged router stamp is logged at Error once
+// per leaf where it is parsed, so here it blames no backend.
 func (p *Proxy) backendFailure(err error, host, path, backend string) (int, string) {
 	switch {
 	case errors.Is(err, errRouterRenewed):
 		p.log.Debug(types.ErrorCodeRouterDigestChanged, "host", host, "path", path, "error", err)
 		return http.StatusServiceUnavailable, types.ErrorCodeRouterDigestChanged
+	case errors.Is(err, errBackendDigestMismatch):
+		p.log.Info("backend request refused", "host", host, "path", path, "backend", backend, "error", err)
+		return http.StatusBadGateway, backendDigestMismatch
 	case errors.Is(err, errRouterStampDamaged):
 		p.log.Debug("router stamp damaged", "host", host, "path", path, "error", err)
 	default:
@@ -424,7 +432,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	if errors.Is(backendErr, errRouterRenewed) {
 		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
 	}
-	if errors.Is(backendErr, errRouterStampDamaged) {
+	if errors.Is(backendErr, errBackendDigestMismatch) || errors.Is(backendErr, errRouterStampDamaged) {
 		status, msg := p.backendFailure(backendErr, in.Host, target.RawPath, route.Backend.Address)
 		return textResponse(status, msg), nil
 	}

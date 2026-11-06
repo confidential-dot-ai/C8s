@@ -79,8 +79,9 @@ type AttestHandler struct {
 	NamedCertTTL time.Duration
 
 	// RouterCertTTL caps the TTL of a leaf for a sandbox the inventory reports
-	// a router-role container in. It is shorter than the node delay of a new
-	// allowlist, so every router renews under it before nodes enforce it.
+	// a router-role container in. It is shorter than the delay before an
+	// allowlist write takes effect on nodes, so every router renews under it
+	// first.
 	// Zero leaves router leaves uncapped.
 	RouterCertTTL time.Duration
 

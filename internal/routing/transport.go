@@ -75,6 +75,10 @@ type pooled struct {
 	routerDigest string
 }
 
+// errBackendDigestMismatch fails a workload handshake whose leaf was stamped
+// under another allowlist than the router's (B8).
+var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
+
 // damagedRouterStamp is the tracked digest of a leaf whose stamp fails to
 // parse: shorter than any real digest and never empty.
 const damagedRouterStamp = "damaged"
@@ -303,7 +307,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload),
+		AcceptPeer:   acceptWorkload(workload, digest),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
@@ -346,12 +350,26 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 }
 
 // acceptWorkload fails the handshake unless the peer the chain path
-// authenticated is the workload the signed route names (B1). A leaf CDS
-// stamped no workload on names none, and is refused with the rest.
-func acceptWorkload(workload string) func(armtls.Peer) error {
+// authenticated is the workload the signed route names (B1), stamped under
+// the router's own allowlist digest (B8). A leaf CDS stamped no workload on
+// names none, and is refused with the rest.
+func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
+	router := "with no router allowlist digest"
+	if routerDigest != nil {
+		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
+	}
 	return func(peer armtls.Peer) error {
+		if peer.WorkloadName == "" {
+			return fmt.Errorf("routing: backend leaf carries no matched-workload stamp and no allowlist digest, and this route names %q %s", workload, router)
+		}
 		if peer.WorkloadName != workload {
-			return fmt.Errorf("routing: backend leaf names workload %q, and this route names %q", peer.WorkloadName, workload)
+			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q %s", peer.WorkloadName, peer.AllowlistDigest, workload, router)
+		}
+		if routerDigest == nil {
+			return nil // B9: an unstamped router binds no policy digest
+		}
+		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
+			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
 		}
 		return nil
 	}

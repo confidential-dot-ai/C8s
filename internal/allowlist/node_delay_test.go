@@ -9,10 +9,10 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// Nodes get a document only once it has been the newest for the node delay;
-// one superseded sooner never reaches them, and the database's first document
-// is served at once. Everyone else gets the newest.
-func TestServedToNodesWaitsOutTheDelay(t *testing.T) {
+// A write takes effect on nodes the node delay after it is written, one
+// replaced before then never does, and the first allowlist takes effect at
+// once. Everyone else reads the newest.
+func TestInEffectWaitsOutTheDelay(t *testing.T) {
 	store, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestServedToNodesWaitsOutTheDelay(t *testing.T) {
 	}
 	nodes := func(now time.Time) string {
 		t.Helper()
-		body, _, err := store.ServedToNodes(now)
+		body, _, err := store.InEffect(now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,14 +58,14 @@ func TestServedToNodesWaitsOutTheDelay(t *testing.T) {
 		want  string
 		depth int
 	}{
-		{"before the newest survives", 40 * time.Second, seed, 3},
-		{"once the newest survives", 41 * time.Second, objectDigest(newest), 1},
+		{"before the newest write takes effect", 40 * time.Second, seed, 3},
+		{"once the newest write takes effect", 41 * time.Second, objectDigest(newest), 1},
 	} {
 		if got := nodes(t0.Add(tc.at)); got != tc.want {
 			t.Errorf("%s: nodes served %s, want %s", tc.name, got, tc.want)
 		}
-		if depth, err := store.NodeServedDepth(t0.Add(tc.at)); err != nil || depth != tc.depth {
-			t.Errorf("%s: NodeServedDepth = %d, %v, want %d", tc.name, depth, err, tc.depth)
+		if depth, err := store.InEffectDepth(t0.Add(tc.at)); err != nil || depth != tc.depth {
+			t.Errorf("%s: InEffectDepth = %d, %v, want %d", tc.name, depth, err, tc.depth)
 		}
 	}
 

@@ -37,7 +37,7 @@ type WriteAuthorizer func(r *http.Request, body []byte) error
 
 // HandleList handles GET /allowlist: the document the store serves, tagged
 // with its digest and carrying its version. With pkgallowlist.NodeQuery it is
-// the document served to nodes. An If-None-Match naming exactly that tag
+// the allowlist in effect on nodes. An If-None-Match naming exactly that tag
 // returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -45,7 +45,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	var version string
 	var err error
 	if r.URL.RawQuery == pkgallowlist.NodeQuery {
-		body, version, err = h.Allowlist.ServedToNodes(time.Now())
+		body, version, err = h.Allowlist.InEffect(time.Now())
 	} else {
 		body, version, err = h.Allowlist.Served()
 	}

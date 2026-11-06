@@ -31,16 +31,17 @@ catches each:
   substitute: a workload backend must present a leaf carrying the manifest's
   workload name, whatever address the name resolved to.
 - **Policy redefinition.** An allowlist write can redefine an entry, so a pod
-  running other code earns the same workload name. Nodes get a new allowlist
-  only once it has been the newest for the node delay, and router leaves live
-  shorter than that
-  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
-  So before any node admits code under it, every router still serving has
-  renewed under it, its stamp shows the new digest, and sessions bound to the
-  old one get `router_digest_changed`. A router whose leaf expired retires its
-  backend pools and dials nothing. A router leaf with no stamp binds no policy
-  digest; a client pinning the digest sees the stamp missing and fails closed.
-  Requests in flight or queued when nodes switch can still reach the new code.
+  running other code earns the same workload name. The router takes a workload
+  backend only under the allowlist digest stamped on its own leaf — the policy
+  snapshot that named the match ([armtls.md](armtls.md#matched-workload)) — and
+  the evidence binds the stamped leaf that carries it. A router leaf with no
+  stamp binds no policy digest and checks the workload name alone; a client
+  pinning the digest sees the stamp missing and fails closed. A write takes
+  effect on nodes only after router certificates have rolled over under it
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)),
+  so sessions bound to the old digest get `router_digest_changed` before any
+  node runs code it admits. Requests in flight or queued at that moment can
+  still reach the new code.
 - **Post-handshake update.** A manifest applied after the handshake, or a
   router leaf renewed under another allowlist digest, does not route the
   session — [Session binding](#session-binding).
