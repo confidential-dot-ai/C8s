@@ -84,11 +84,6 @@ Make sure `make lint` and `make test` pass locally before opening a PR. CI
 additionally runs golangci-lint, a CRD/chart consistency check
 (`make check-crd-chart`), and vulnerability scanning.
 
-bootstrap and private RAM credential-custody tests. The bootstrap cases use
-production NRI callbacks and real namespaces with simulated runtime metadata,
-measurement registers and credential issuance. The suite requires root (or passwordless
-Python 3 and Docker with privileged containers and validates process admission
-in an isolated container. Its result receipt is required. See
 ## Pull requests
 
 - **Discuss large changes first.** Open an issue before starting anything

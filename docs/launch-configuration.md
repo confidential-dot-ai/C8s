@@ -71,18 +71,6 @@ written in it: they are derived from `image` plus every launch key the
 document names. The CDS — the Certificate Distribution Service, which holds
 policy and signs workload certificates — runs on a confidential VM of its own,
 on the TEE family its pin names, which need not be the one these nodes boot on.
-A pod document names no pod and carries no allowlist entries or mesh peers; a
-`pod` or `workloads` key is refused. Every boot under it is generic and stages
-no workload authority: one authenticated assignment supplies the Pod, its
-entries and its peers later. The CDS endpoint and launch-file pin are fixed by
-the signed boot document.
-A pod document takes no CDS pin decree: its CDS image set is the one
-`--cds-image-policy-file` binds, and its `cds.pinFloor` is zero. The
-assignment retains the generic boot's CDS trust.
-writes the role marker instead of RKE2 configuration. Pod issuance authority
-belongs in the measured CDS configuration, never in a node or Pod launch
-document. See [operator.md](operator.md#pod-cvm) for assignment and runtime
-restrictions.
 
 ## The signature
 

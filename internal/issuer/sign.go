@@ -35,12 +35,6 @@ type SignCSRParams struct {
 	// inventory — SignCSR does not re-match (docs/armtls.md, "Matched
 	// workload").
 	MatchedWorkload *armtls.MatchedWorkload
-
-	// AssignedWorkloadID, when set, is stamped as the assigned-workload-ID
-	// extension (armtls.OIDAssignedWorkloadID): the tenant identity a pod
-	// CVM's verified claims carried. The caller MUST have verified the
-	// claims the value came from — SignCSR does not re-verify.
-	AssignedWorkloadID string
 }
 
 // SignCSR returns the signed leaf's PEM, common name, and serial number.

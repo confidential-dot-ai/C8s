@@ -187,30 +187,6 @@ Every armTLS configuration disables session tickets and sets no client session
 cache: a resumed handshake would skip the callback where armTLS checks chain and
 evidence.
 
-bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
-revision, the complete ordered image measurement list and the image digest of
-every retained admission, completed containers included. The claims carry image
-digests only, no argument, environment, mount or role observation;
-`pkg/workloadclaims` owns their encoding. The report data is:
-policy. The leaf is the unnamed membership leaf: a pod CVM never carries the
-matched-workload stamp, since its claims name no arguments, environment or
-mounts to match an entry against. Neither a status quote nor a node inventory
-token substitutes for this profile.
-gains an admission, the applied policy changes or the sandbox's identity ends.
-uses fresh evidence and the current policy. The guest holds complete history,
-boot and sandbox identity and applied policy only in the plugin process: a
-plugin restart within the boot ends the Pod identity instead of reconstructing
-them, and no start permission survives it.
-credentials. A copied leaf stays usable until expiry, and an abrupt process
-failure cannot guarantee immediate local removal.
-A standalone pod CVM captures only its signed IPv4 TCP peer tuples: the pod
-network namespace's packet rules, which the guest installs from outside it and
-no container can change (every container lacks `NET_ADMIN`), send the pod's TCP
-to a tuple through the endpoint, and the endpoint dials the peer itself, as a
-member pod's does. The endpoint refuses a peer on a mesh control port before
-any handshake, and the pod CVM provider publishes no endpoint on one. Other
-IPv4 TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves
-with the CVM's source address. Pod and
 ## Sandbox identity
 
 Hardware attestation binds a key to a guest, and the guest here is the whole
@@ -295,9 +271,3 @@ the flag exists.
 The stamp has the sandbox ID's posture: CA-vouched, enforceable only where a
 chain was verified, so `c8s verify --workload` and `--allowlist` require
 `--mesh-ca` too, and a compromised mesh CA can mint any name.
-
-A pod CVM's leaf may also carry the assigned workload ID (`…1.8`), the tenant
-the pod was assigned to. Two tenants can run one workload, so the matched name
-does not tell their pods apart. A relying party that expects a tenant compares
-this extension, and refuses a leaf without it; like the other stamps it is
-CA-vouched, so the comparison means something only after the chain check.

@@ -143,7 +143,8 @@ func PodReportData(pub crypto.PublicKey, nonce, canonical []byte) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("invalid Pod CSR key")
 	}
-	keyHash, claimsHash := sha512.Sum384(spki), sha512.Sum384(canonical)
+	keyHash := sha512.Sum384(spki)
+	claimsHash := sha512.Sum384(canonical)
 	h := sha512.New384()
 	_, _ = h.Write([]byte("c8s-pod-attestation/v1\x00"))
 	_, _ = h.Write(keyHash[:])
