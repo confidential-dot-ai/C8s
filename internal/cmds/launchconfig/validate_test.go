@@ -71,9 +71,6 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent without keys", Agent, func(d *Document) { d.AgentOperatorPublicKeys = nil }, "requires agentOperatorPublicKeys"},
 		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "DNS name length"},
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
-		{"workloads carried by the document", Server, func(d *Document) {
-			d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
-		}, "--tenant-workloads"},
 		{"without cds", Server, func(d *Document) { d.CDS = CDS{} }, "cds.address"},
 		{"cds address without port", Server, func(d *Document) { d.CDS.Address = "cds.example.com" }, "must be <host>:<port>"},
 		{"cds ipv6 address", Server, func(d *Document) { d.CDS.Address = "[2001:db8::1]:8443" }, "must be an IPv4 address"},

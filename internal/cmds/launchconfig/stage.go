@@ -62,7 +62,7 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, podMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
+	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
