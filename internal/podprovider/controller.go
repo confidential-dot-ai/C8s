@@ -19,7 +19,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-const pollInterval = 10 * time.Second
+const (
+	pollInterval = 10 * time.Second
+	// optInRequiredReason fails a pod bound to the node without the opt-in.
+	optInRequiredReason = "PodCVMOptInRequired"
+	// instanceDestroyedReason fails a deleted pod whose instance the provider
+	// destroyed before it reported a terminal phase of its own.
+	instanceDestroyedReason = "InstanceDestroyed"
+)
 
 // Reconciler owns a single provider's immutable Pod-to-instance records.
 // One leader and one mutex serialize normal and orphan paths around side effects.
@@ -50,12 +57,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !pod.DeletionTimestamp.IsZero() {
 		return r.deletePod(ctx, pod)
 	}
-	if pod.Annotations[Annotation] != "true" {
-		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "PodCVMOptInRequired" {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, r.publishStatus(ctx, pod, failedStatus(pod, "PodCVMOptInRequired", r.now()))
-	}
 	if pod.UID == "" {
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
 	}
@@ -63,10 +64,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil && !apierrors.IsNotFound(err) {
 		return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 	}
+	optedIn := pod.Annotations[Annotation] == "true"
+	if !optedIn && rec == nil {
+		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == optInRequiredReason {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, r.publishStatus(ctx, pod, failedStatus(pod, optInRequiredReason, r.now()))
+	}
 	if rec != nil {
 		// Existing cleanup authority does not depend on a healthy virtual node.
 		if rec.TerminalStatus != nil || rec.DeleteRequested || rec.Deleted {
 			return r.finish(ctx, pod, rec, secret)
+		}
+		// A launched pod whose opt-in was removed past admission still owns an
+		// instance: stop it rather than leave it running unverified.
+		if !optedIn {
+			return r.stop(ctx, pod, rec, secret, optInRequiredReason)
 		}
 		if r.verificationExpired(rec) {
 			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
@@ -110,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	callCtx, cancel := r.verificationContext(ctx, rec)
 	defer cancel()
-	in, err := ensureCloudInstance(callCtx, r.cloud, &rec.instanceIntent, r.now(), func() error { return r.save(callCtx, rec, secret) })
+	in, err := ensureCloudInstance(callCtx, r.cloud, &rec.instanceIntent, func() error { return r.save(callCtx, rec, secret) })
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
@@ -255,7 +268,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
 	if apierrors.IsNotFound(err) {
-		return ctrl.Result{}, r.releaseFinalizer(ctx, pod)
+		return ctrl.Result{}, r.releaseFinalizer(ctx, pod, nil)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -266,15 +279,31 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	}
 	// Remove the finalizer before deleting the record. A crash between them
 	// leaves an orphan record the sweep can safely collect.
-	if err := r.releaseFinalizer(ctx, pod); err != nil {
+	if err := r.releaseFinalizer(ctx, pod, rec); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
 }
 
-func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) error {
+// terminalStatus is the phase a deleted pod leaves with: the terminal status
+// its record holds, its own terminal phase, or Failed, so that a controller
+// waiting for the pod to end sees it end.
+func terminalStatus(pod *corev1.Pod, rec *record, now time.Time) corev1.PodStatus {
+	if rec != nil && rec.TerminalStatus != nil {
+		return *rec.TerminalStatus
+	}
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return pod.Status
+	}
+	return failedStatus(pod, instanceDestroyedReason, now)
+}
+
+func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod, rec *record) error {
 	if !controllerutil.ContainsFinalizer(pod, finalizer) {
 		return nil
+	}
+	if err := client.IgnoreNotFound(r.publishStatus(ctx, pod, terminalStatus(pod, rec, r.now()))); err != nil {
+		return err
 	}
 	before := pod.DeepCopy()
 	controllerutil.RemoveFinalizer(pod, finalizer)
@@ -284,7 +313,7 @@ func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) erro
 // removeInstance destroys the instance a record owns and reports whether
 // destruction is confirmed.
 func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *corev1.Secret) (bool, error) {
-	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, r.now(), func() error { return r.save(ctx, rec, secret) })
+	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, func() error { return r.save(ctx, rec, secret) })
 }
 
 func (r *Reconciler) publishStatus(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus) error {

@@ -39,11 +39,18 @@ func (r *Reconciler) verificationContext(ctx context.Context, rec *record) (cont
 	return context.WithTimeout(ctx, rec.VerificationDeadline.Sub(r.now()))
 }
 
+// outageReason names a failure of the provider's own dependencies rather than
+// of the guest. A verified pod keeps its last status through one; only the
+// guest's failures start a deadline that ends the pod.
+func outageReason(reason string) bool {
+	return reason == "CloudUnavailable" || reason == "ProviderNodeUnavailable"
+}
+
 func (r *Reconciler) unverified(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, reason string, cause error) (ctrl.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return ctrl.Result{}, err
 	}
-	if rec == nil {
+	if rec == nil || (rec.VerificationDeadline == nil && outageReason(reason)) {
 		return r.unavailable(ctx, pod, reason, cause)
 	}
 	if rec.VerificationDeadline == nil {

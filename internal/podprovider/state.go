@@ -2,8 +2,6 @@ package podprovider
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,9 +60,6 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	}
 	if rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key {
 		return nil, nil, errors.New("provider record identity differs from its key")
-	}
-	if rec.CredentialHash != credentialHash(r.cfg.token) {
-		return nil, nil, errors.New("cloud credential changed while provider records exist; drain with the original credential before rotating")
 	}
 	return &rec, secret, nil
 }
@@ -134,10 +129,11 @@ func (r *Reconciler) heldRecords(ctx context.Context) (int64, error) {
 	return held, nil
 }
 
-// intent freezes the provider identity, credential and capacity a create
-// request was written under.
+// intent freezes the provider identity and capacity a create request was
+// written under. The credential is not frozen: records key on provider ID and
+// pod UID, so a rotated token still drains them.
 func (c *Config) intent(key string, req createRequest, now time.Time) instanceIntent {
-	return instanceIntent{ProviderID: c.ProviderID, CloudURL: c.CloudURL, CredentialHash: credentialHash(c.token), NodeName: c.NodeName, Key: key, Request: req, Manifest: c.manifest, VCPUs: c.VCPUs, MemoryMiB: c.MemoryMiB, CreatedAt: now}
+	return instanceIntent{ProviderID: c.ProviderID, CloudURL: c.CloudURL, NodeName: c.NodeName, Key: key, Request: req, Manifest: c.manifest, VCPUs: c.VCPUs, MemoryMiB: c.MemoryMiB, CreatedAt: now}
 }
 
 func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secret) error {
@@ -151,9 +147,4 @@ func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secre
 
 func (r *Reconciler) discard(ctx context.Context, secret *corev1.Secret) error {
 	return client.IgnoreNotFound(r.client.Delete(ctx, secret, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}}))
-}
-
-func credentialHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }

@@ -90,6 +90,7 @@ type fakeCloud struct {
 	deleteCalls int
 	create      func(string, createRequest) (*instance, error)
 	find        func(string) (*instance, error)
+	get         func(string) (*instance, error)
 	ping        func() error
 }
 
@@ -108,6 +109,9 @@ func (f *fakeCloud) Find(_ context.Context, key string) (*instance, error) {
 	return f.in, nil
 }
 func (f *fakeCloud) Get(_ context.Context, id string) (*instance, error) {
+	if f.get != nil {
+		return f.get(id)
+	}
 	if f.in == nil || f.in.ID != id {
 		return nil, errCloudNotFound
 	}
@@ -532,27 +536,42 @@ func TestUnverifiedStatusWithdrawsReadinessAndEndpoints(t *testing.T) {
 	}
 }
 
-func TestFrozenCredentialsAndOldUncertainIntentFailClosed(t *testing.T) {
+// A rotated Cloud credential and an old uncertain create both still drain:
+// records key on provider ID and pod UID, and the create is replayed under
+// its idempotency key however long ago the response was lost.
+func TestRotatedCredentialAndOldUncertainIntentStillDrain(t *testing.T) {
 	pod := fixturePod()
 	r, cloud := fixtureReconciler(t, pod)
 	cloud.create = func(string, createRequest) (*instance, error) { return nil, errors.New("timeout") }
 	if err := reconcile(t, r, pod); err != nil {
 		t.Fatal(err)
 	}
-	r.cfg.token = "different-org-token"
-	if _, _, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID))); err == nil {
-		t.Fatal("credential change accepted for existing intent")
+	r.cfg.token = "rotated-token"
+	if _, _, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID))); err != nil {
+		t.Fatalf("rotated credential stranded the record: %v", err)
 	}
-	r.cfg.token = "test-provider-token"
 	r.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+	var first createRequest
+	cloud.create = func(_ string, req createRequest) (*instance, error) {
+		first = req
+		cloud.in = instanceFor(req)
+		return cloud.in, nil
+	}
 	if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconcile(t, r, pod); err == nil {
-		t.Fatal("old uncertain deletion should require resolution")
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
 	}
-	if cloud.createCalls != 1 || !controllerutil.ContainsFinalizer(getPod(t, r, pod), finalizer) {
-		t.Fatal("old intent recreated or discarded")
+	if cloud.createCalls != 2 || cloud.deleteCalls != 1 || !reflect.DeepEqual(first, getRecord(t, r, pod).Request) {
+		t.Fatal("old uncertain create was not replayed unchanged and destroyed")
+	}
+	cloud.in.Status = "terminated"
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Pod finalizer not released: %v", err)
 	}
 }
 
@@ -683,5 +702,73 @@ func TestDeletionOfALaunchedPodWithoutOptInDestroysItsInstance(t *testing.T) {
 	}
 	if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("Pod finalizer not released: %v", err)
+	}
+}
+
+// Removing the opt-in from a launched pod stops and destroys its instance
+// rather than leaving it running unverified with its endpoints published.
+func TestRemovedOptInStopsTheLaunchedInstance(t *testing.T) {
+	pod := fixturePod()
+	r, cloud := fixtureReconciler(t, pod)
+	runToRunning(t, r, pod)
+	launched := getPod(t, r, pod)
+	delete(launched.Annotations, Annotation)
+	if err := r.client.Update(context.Background(), launched); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	got := getPod(t, r, pod)
+	if cloud.deleteCalls != 1 || getRecord(t, r, pod).TerminalStatus == nil || got.Status.Phase != corev1.PodFailed || got.Status.Reason != optInRequiredReason {
+		t.Fatalf("de-opted pod left running: deletes=%d status=%s/%s", cloud.deleteCalls, got.Status.Phase, got.Status.Reason)
+	}
+	if got.Annotations[endpointsAnnotation] != "" || !controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatal("endpoints stayed published or cleanup authority was released early")
+	}
+	cloud.in.Status = "terminated"
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if !getRecord(t, r, pod).Deleted || cloud.createCalls != 1 {
+		t.Fatal("instance not confirmed destroyed, or relaunched")
+	}
+}
+
+// A deleted pod ends with a terminal phase before its finalizer goes, so a
+// controller waiting for the pod to fail sees it fail. Another finalizer
+// keeps the pod readable after the provider's own is released.
+func TestDeletedPodLeavesWithATerminalPhase(t *testing.T) {
+	for _, outcome := range []string{"running", "stopped"} {
+		t.Run(outcome, func(t *testing.T) {
+			pod := fixturePod()
+			pod.Finalizers = []string{"example.invalid/hold"}
+			r, cloud := fixtureReconciler(t, pod)
+			runToRunning(t, r, pod)
+			want := instanceDestroyedReason
+			if outcome == "stopped" {
+				cloud.in.Status = "failed"
+				if err := reconcile(t, r, pod); err != nil {
+					t.Fatal(err)
+				}
+				want = "InstanceEnded"
+			}
+			if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+			cloud.in.Status = "terminated"
+			for range 2 {
+				if err := reconcile(t, r, pod); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := getPod(t, r, pod)
+			if controllerutil.ContainsFinalizer(got, finalizer) {
+				t.Fatal("finalizer not released")
+			}
+			if got.Status.Phase != corev1.PodFailed || got.Status.Reason != want {
+				t.Fatalf("deleted pod left as %s/%s, want Failed/%s", got.Status.Phase, got.Status.Reason, want)
+			}
+		})
 	}
 }

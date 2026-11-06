@@ -6,18 +6,11 @@ import (
 	"time"
 )
 
-// uncertainCreateWindow bounds how long a create whose response was lost is
-// repeated under its idempotency key. Cloud retains completed idempotency
-// records for the instance lifetime plus 90 days; an older uncertain intent is
-// never turned into a new VM.
-const uncertainCreateWindow = 24 * time.Hour
-
 // instanceIntent retains one immutable Cloud create and its cleanup authority:
 // the generic instance a pod record owns.
 type instanceIntent struct {
 	ProviderID      string        `json:"providerID"`
 	CloudURL        string        `json:"cloudURL"`
-	CredentialHash  string        `json:"credentialHash"`
 	NodeName        string        `json:"nodeName"`
 	Key             string        `json:"key"`
 	Request         createRequest `json:"request"`
@@ -43,7 +36,7 @@ func (in *instanceIntent) owns(got *instance) error {
 	return nil
 }
 
-func ensureCloudInstance(ctx context.Context, api cloudAPI, intent *instanceIntent, now time.Time, save func() error) (*instance, error) {
+func ensureCloudInstance(ctx context.Context, api cloudAPI, intent *instanceIntent, save func() error) (*instance, error) {
 	var in *instance
 	var err error
 	if intent.InstanceID != "" {
@@ -54,9 +47,6 @@ func ensureCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 	} else {
 		in, err = api.Find(ctx, intent.Key)
 		if err == nil && in == nil {
-			if now.Sub(intent.CreatedAt) > uncertainCreateWindow {
-				return nil, nil
-			}
 			if !intent.CreateAttempted {
 				intent.CreateAttempted = true
 				if err := save(); err != nil {
@@ -81,7 +71,7 @@ func ensureCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 	return in, nil
 }
 
-func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceIntent, now time.Time, save func() error) (bool, error) {
+func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceIntent, save func() error) (bool, error) {
 	if intent.Deleted {
 		return true, nil
 	}
@@ -106,10 +96,9 @@ func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 	}
 	if in == nil && intent.InstanceID == "" && intent.CreateAttempted {
 		// An empty lookup cannot disprove an in-flight POST. Replay the exact
-		// persisted request and key to resolve that intent before releasing cleanup.
-		if now.Sub(intent.CreatedAt) > uncertainCreateWindow {
-			return false, errors.New("old uncertain create retained for authoritative Cloud resolution")
-		}
+		// persisted request and key, however old: Cloud keeps the idempotency
+		// record for the instance lifetime, so the replay returns the instance
+		// the lost response named or creates the one to destroy.
 		in, err = api.Create(ctx, intent.Key, intent.Request)
 		if err != nil {
 			return false, err

@@ -1,11 +1,16 @@
 package podprovider
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -22,6 +27,12 @@ import (
 )
 
 type guestReader func(context.Context, *record, string) (podstatus.PodProjection, error)
+
+// maxGuestBody bounds one pod status projection.
+const maxGuestBody = 4 << 20
+
+// attest is the fresh attestation of a guest; a seam for tests.
+var attest = podstatus.Attest
 
 // attestConfig writes the frozen public trust material of one allocation to a
 // private temporary directory, because podstatus.AttestConfig takes paths. The
@@ -40,6 +51,10 @@ func attestConfig(address, launchKey string, manifest []byte) (podstatus.AttestC
 	return podstatus.AttestConfig{Node: address, LaunchKeyPubPath: key, ImageManifestPath: man, Timeout: 15 * time.Second}, cleanup, nil
 }
 
+// readGuest attests the instance with the record's frozen launch key and
+// manifest, then reads the pod status only from the serving key the
+// assignment was signed over: every guest launched from the same document
+// passes the attestation, the key tells this pod's guest from another.
 func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
 	var projection podstatus.PodProjection
 	cfg, cleanup, err := attestConfig(address, rec.Request.Trust.LaunchKey, rec.Manifest)
@@ -49,14 +64,80 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	data, err := podstatus.Get(ctx, cfg)
+	_, client, err := attest(ctx, cfg)
 	if err != nil {
 		return projection, errors.New("guest status attestation unavailable")
+	}
+	defer client.CloseIdleConnections()
+	if len(rec.ServingKey) != 0 {
+		if client, err = pinServingKey(client, rec.ServingKey); err != nil {
+			return projection, err
+		}
+		defer client.CloseIdleConnections()
+	}
+	data, err := get(ctx, client, "https://"+address+podstatus.PodPath)
+	if err != nil {
+		return projection, errors.New("guest status unavailable")
 	}
 	if err := decode(data, &projection); err != nil {
 		return projection, errors.New("guest status projection is invalid")
 	}
 	return projection, nil
+}
+
+// pinServingKey returns a client that accepts only connections served with
+// the SPKI want, before the checks the attested client already makes.
+func pinServingKey(client *http.Client, want []byte) (*http.Client, error) {
+	base, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("attested client has no TLS transport")
+	}
+	tr := base.Clone()
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	verify := tr.TLSClientConfig.VerifyConnection
+	tr.TLSClientConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+		if err := servingKeyIs(cs, want); err != nil {
+			return err
+		}
+		if verify != nil {
+			return verify(cs)
+		}
+		return nil
+	}
+	return &http.Client{Timeout: client.Timeout, CheckRedirect: client.CheckRedirect, Transport: tr}, nil
+}
+
+func servingKeyIs(cs tls.ConnectionState, want []byte) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("guest presented no certificate")
+	}
+	got, err := x509.MarshalPKIXPublicKey(cs.PeerCertificates[0].PublicKey)
+	if err != nil || !bytes.Equal(got, want) {
+		return errors.New("guest serving key differs from the assigned one")
+	}
+	return nil
+}
+
+func get(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGuestBody))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("guest returned HTTP %d", resp.StatusCode)
+	}
+	return data, nil
 }
 
 // validateInstance checks that the instance the cloud returned is the one the

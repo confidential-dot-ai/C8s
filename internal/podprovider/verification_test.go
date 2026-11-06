@@ -206,3 +206,47 @@ func TestVerificationStateWriteFailureCannotGrantReadinessOrDelete(t *testing.T)
 		})
 	}
 }
+
+// A Cloud or node outage on a verified pod keeps its last status with
+// readiness unknown and starts no deadline; only the guest's own failures do.
+func TestDependencyOutageOnAVerifiedPodStartsNoDeadline(t *testing.T) {
+	for _, outage := range []string{"cloud", "node"} {
+		t.Run(outage, func(t *testing.T) {
+			pod := fixturePod()
+			r, cloud := fixtureReconciler(t, pod)
+			now := time.Now()
+			r.now = func() time.Time { return now }
+			runToRunning(t, r, pod)
+			switch outage {
+			case "cloud":
+				cloud.get = func(string) (*instance, error) { return nil, errors.New("cloud unavailable") }
+			case "node":
+				r.ownsNode = func(context.Context) error { return errors.New("node unavailable") }
+			}
+			for range 3 {
+				if err := reconcile(t, r, pod); err == nil {
+					t.Fatal("outage hidden from the controller")
+				}
+				now = now.Add(24 * time.Hour)
+			}
+			got := getPod(t, r, pod)
+			if getRecord(t, r, pod).VerificationDeadline != nil || cloud.deleteCalls != 0 || got.Status.Phase != corev1.PodRunning {
+				t.Fatalf("outage armed a deadline or stopped the pod: deletes=%d phase=%s", cloud.deleteCalls, got.Status.Phase)
+			}
+			for _, c := range got.Status.Conditions {
+				if c.Type == corev1.PodReady && c.Status != corev1.ConditionUnknown {
+					t.Fatal("readiness kept through an outage")
+				}
+			}
+			cloud.get, r.ownsNode = nil, nil
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range getPod(t, r, pod).Status.Conditions {
+				if c.Type == corev1.PodReady && c.Status != corev1.ConditionTrue {
+					t.Fatal("pod did not recover when the outage ended")
+				}
+			}
+		})
+	}
+}

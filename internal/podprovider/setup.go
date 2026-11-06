@@ -12,14 +12,17 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // Setup adds the Pod reconciler, orphan recovery and a leased virtual node.
@@ -40,11 +43,23 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 	}
 	api := newCloudClient(cfg)
 	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now}
-	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm").For(&corev1.Pod{}).
-		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-			pod, ok := obj.(*corev1.Pod)
-			return ok && pod.Spec.NodeName == cfg.NodeName
-		})).Complete(r); err != nil {
+	// The provider's pods are the ones bound to its node. Watch them through
+	// a cache of its own so the operator caches no other pod for it, and
+	// reconcile through the direct client.
+	pods, err := cache.New(mgr.GetConfig(), cache.Options{
+		Scheme:           mgr.GetScheme(),
+		Mapper:           mgr.GetRESTMapper(),
+		DefaultTransform: cache.TransformStripManagedFields(),
+		ByObject:         map[client.Object]cache.ByObject{&corev1.Pod{}: {Field: fields.OneTermEqualSelector("spec.nodeName", cfg.NodeName)}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := mgr.Add(pods); err != nil {
+		return err
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm").
+		WatchesRawSource(source.Kind(pods, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{})).Complete(r); err != nil {
 		return err
 	}
 	n := &virtualNode{cfg: cfg, cloud: api, kube: kube, node: nodeObject(cfg)}
