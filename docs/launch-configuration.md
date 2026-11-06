@@ -304,11 +304,11 @@ the launch the image's floor pins. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
 beside each. The control plane the workers join must also accept the bootstrap
 token and issue the kubelet's client certificate, give each node a pod range
-from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), run a cloud
-controller manager that initializes each node (the kubelet runs with an
-external cloud provider, so a node stays tainted until one does), and deploy no
-CNI, kube-proxy or cluster DNS of its own: a worker refuses them. Each boot
-registers the worker as a new node.
+from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), and deploy no CNI,
+kube-proxy or cluster DNS of its own: a worker refuses them. A worker needs no
+cloud controller manager: its kubelet joins untainted and reports the staged
+`--node-ip` as the node's InternalIP. Each boot registers the worker as a new
+node.
 
 Every node credential, which a bootstrap token can mint, holds Cilium's agent
 grants for the whole cluster, so Cilium identities and network policy separate
