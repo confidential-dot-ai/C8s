@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-06",
+  "clock_skew_regression": "passed: standard X.509 verification at a consumer clock one second behind, strict expiration, bounded NotBefore and wrong-purpose rejection",
+  "passed_packages": [
+    "pkg/certutil",
+    "internal/issuer",
+    "pkg/armtls/cdsclient",
+    "internal/cmds/cds",
+    "internal/cmds/getcert",
+    "internal/cdsha",
+    "internal/cdsobject",
+    "internal/cdsdirect"
+  ],
+  "armtls_behavior_tests": "passed with TestNoRawReportFieldReads excluded after its separate failure was inspected",
+  "known_baseline_failure": {
+    "test": "pkg/armtls.TestNoRawReportFieldReads",
+    "finding": "Seven raw SNP report parser calls in the earlier sealed-recovery pilot violate the repository AST guard. The guard and all four flagged source files are byte-identical to the previous production-binary source commit 59a5ea7f. No verification guard is modified or suppressed in source.",
+    "clean_full_suite": false
+  },
+  "ci_used": false
+}

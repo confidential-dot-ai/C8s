@@ -13,20 +13,23 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // CheckLeafProfile asserts leaf carries what an issued leaf must: it certifies
-// key, its NotBefore is the signing time (between before and after; x509
-// encodes validity to the second, so before is truncated), its validity is
+// key, its bounded backdate is relative to the signing time, its validity is
 // ttl, it is not a CA, and it carries the serverAuth and clientAuth usages.
 func CheckLeafProfile(t *testing.T, leaf *x509.Certificate, key *ecdsa.PublicKey, ttl time.Duration, before, after time.Time) {
 	t.Helper()
 	if !key.Equal(leaf.PublicKey) {
 		t.Error("leaf certifies a key other than the CSR's")
 	}
-	before = before.Truncate(time.Second)
+	backdate := min(certutil.LeafValiditySkew, max(0, ttl/10))
+	before = before.Add(-backdate).Truncate(time.Second)
+	after = after.Add(-backdate)
 	if leaf.NotBefore.Before(before) || leaf.NotBefore.After(after) {
-		t.Errorf("NotBefore %s is not the signing time (between %s and %s)", leaf.NotBefore, before, after)
+		t.Errorf("NotBefore %s is outside the backdated signing window (%s to %s)", leaf.NotBefore, before, after)
 	}
 	if got := leaf.NotAfter.Sub(leaf.NotBefore); got != ttl {
 		t.Errorf("validity %s, want the %s TTL", got, ttl)

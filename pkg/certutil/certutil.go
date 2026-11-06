@@ -284,20 +284,23 @@ func NewCATemplate(serial *big.Int, commonName string, notAfter time.Time) *x509
 
 // NewLeafTemplate returns the canonical x509 leaf-certificate template used
 // by the C8s issuers: digital-signature key usage and Server+Client
-// extended key usage, anchored at time.Now() with the given TTL. Callers
-// populate DNSNames / IPAddresses on the returned template themselves so
-// SAN policy stays at the call site.
+// extended key usage. Backdate the entire validity window by at most
+// LeafValiditySkew so ordinary X.509 chain verification tolerates issuer clock
+// drift without extending the caller's TTL. Limit the backdate to one tenth of
+// the TTL so short-lived certificates retain at least 90% of their lifetime.
+// Callers populate DNSNames / IPAddresses so SAN policy stays at the call site.
 func NewLeafTemplate(commonName string, ttl time.Duration) (*x509.Certificate, error) {
 	serial, err := GenerateSerial()
 	if err != nil {
 		return nil, fmt.Errorf("generate leaf serial: %w", err)
 	}
 	now := time.Now()
+	notBefore := now.Add(-min(LeafValiditySkew, max(0, ttl/10)))
 	return &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: commonName},
-		NotBefore:    now,
-		NotAfter:     now.Add(ttl),
+		NotBefore:    notBefore,
+		NotAfter:     notBefore.Add(ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth,

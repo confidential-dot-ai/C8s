@@ -63,7 +63,8 @@ test dependency and is not evidence of production collateral-service HA.
 The [collateral preflight](../test/pilot/cds-three-host/results/2026-11-06-collateral-preflight-01.json)
 fetched Intel's revocation list through the owned proxy with end-to-end TLS
 verification. All four resources were removed and independently confirmed
-absent. Native guest startup and the backend comparison remain pending.
+absent. Native CDS startup subsequently passed on three distinct workers; the
+backend comparison remains pending.
 
 The fixed test-control endpoint allows 30 seconds of clock skew for signed
 requests, with the existing five-minute maximum token lifetime and strict
@@ -84,3 +85,12 @@ three fresh-path attempts with backoff, and retain failed receiver byte counts.
 The fixed phase client uses a five-minute header and overall response budget:
 genesis and recovery may legitimately wait longer than the standard armTLS
 client's ten-second header timeout. Its verified TLS transport is retained.
+
+[Attempt 10](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-10.json)
+reached workload issuance, where a one-second issuer/consumer clock difference
+caused strict X.509 verification to reject a new leaf. The next image backdates
+leaf validity by at most the existing five-minute skew allowance, capped at one
+tenth of its TTL. Expiry moves back equally: the total validity and named-leaf
+revocation ceiling do not increase. Both backend arms use this same change;
+the harness still uses ordinary X.509 verification with the consumer's clock.
+CA validity and host clocks are unchanged.

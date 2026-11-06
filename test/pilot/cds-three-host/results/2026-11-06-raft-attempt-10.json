@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 10,
+  "stage": "first-workload-certificate",
+  "runner_commit": "f2f63e2570363f59f4108ab0c318e420035d52e6",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "chunk_retries": 1,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 9,
+  "failed_phase_receipt_native_tdx_verified": true,
+  "finding": "The first issued workload certificate was not yet valid on the consuming guest: its NotBefore was one second ahead of that guest clock. Strict X.509 chain verification rejected it. All three native CDS startup checks passed; no fault or rolling-upgrade result is claimed.",
+  "follow_up": "Backdate leaf validity by at most the existing five-minute clock-skew allowance, capped at one tenth of its TTL. Shift expiry equally so total validity and revocation ceilings do not grow. Preserve ordinary X.509 verification. Rebuild the same CDS executable for both backend arms.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 41,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

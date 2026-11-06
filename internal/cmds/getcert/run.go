@@ -588,7 +588,7 @@ var renewalRetryBase = 15 * time.Second
 // expires first, so a CA renewed under the pod's bound key is picked up before
 // the previous CA certificate expires. That second bound is also what
 // keeps a leaf from expiring exactly as its renewal fires: CDS caps a named
-// leaf at issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on
+// leaf at issuer.MaxNamedLeafTTL, including its backdate, so pacing on
 // the flag alone — which the chart sets to the same value — would reset the
 // timer after issuance, drift later every cycle, and leave a single failed
 // renewal on a dead generation for a full interval.

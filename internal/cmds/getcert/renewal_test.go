@@ -32,8 +32,8 @@ func leafNaming(t *testing.T, name string) *x509.Certificate {
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}
 }
 
-// expiring returns a copy of leaf that CDS just issued with the given TTL: no
-// backdated NotBefore, exactly as certutil.NewLeafTemplate builds one.
+// expiring returns a copy of leaf with the given remaining lifetime. Renewal
+// pacing uses NotAfter, independently of the issuer's NotBefore backdate.
 func expiring(leaf *x509.Certificate, ttl time.Duration) *x509.Certificate {
 	out := *leaf
 	out.NotBefore = time.Now()
