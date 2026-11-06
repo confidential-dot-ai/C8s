@@ -48,7 +48,7 @@ func TestVerificationDeadlineSurvivesRestartAndRejectsLateRecovery(t *testing.T)
 	}
 	next := *r.cfg
 	next.VerificationTimeoutSeconds = 86400
-	restarted := &Reconciler{client: r.client, cfg: &next, cloud: cloud, guest: refusingGuest, now: r.now}
+	restarted := &Reconciler{client: r.client, cfg: &next, cloud: cloud, guest: refusingGuest, assignment: r.assignment, now: r.now}
 	now = deadline.Add(-time.Second)
 	result, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
 	if err != nil || result.RequeueAfter != time.Second || getPod(t, r, pod).Status.Phase == corev1.PodFailed {
@@ -121,9 +121,7 @@ func TestVerifiedPendingAndTransientRecoveryResetOnlyTheOutage(t *testing.T) {
 	now := time.Now()
 	r.now = func() time.Time { return now }
 	good := r.guest
-	if err := reconcile(t, r, pod); err != nil {
-		t.Fatal(err)
-	}
+	runToRunning(t, r, pod)
 	if getRecord(t, r, pod).VerificationDeadline != nil {
 		t.Fatal("verified status retained initial deadline")
 	}

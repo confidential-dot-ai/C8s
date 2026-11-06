@@ -103,6 +103,12 @@ func endpoints(network networkSpec, in *instance) (string, []endpoint, string, e
 		if err != nil || !ip.Is4() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ep.Port < 1 || ep.Port > 65535 || seen[ep.Name] {
 			return "", nil, "", errors.New("cloud returned an invalid or duplicate public endpoint")
 		}
+		// A peer's endpoint dials this public port through its mesh endpoint,
+		// which refuses the mesh control ports before any handshake. The cloud
+		// chooses the port, so one it allocates there is refused, never published.
+		if workloadclaims.IsMeshPort(ep.Port) {
+			return "", nil, "", errors.New("cloud allocated a public endpoint on a mesh control port")
+		}
 		seen[ep.Name] = true
 		if network.PublicIP == "dedicated" {
 			if ep.Port != port || (podIP != "" && podIP != ep.Host) {
@@ -127,15 +133,11 @@ func endpoints(network networkSpec, in *instance) (string, []endpoint, string, e
 // and projects the guest's fields onto a pod status.
 func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP, guestNode string) (corev1.PodStatus, error) {
 	var out corev1.PodStatus
-	doc, err := rec.document()
-	if err != nil {
-		return out, err
-	}
 	meta := projection.Metadata
 	if meta.UID != string(rec.UID) || meta.Namespace != rec.Namespace || meta.Name != rec.Name+"-"+guestNode {
 		return out, errors.New("attested guest status names another Pod")
 	}
-	guest, err := launchconfig.ParsePodManifest([]byte(doc.Pod.Manifest))
+	guest, err := launchconfig.ParsePodManifest(rec.Pod)
 	if err != nil {
 		return out, err
 	}
@@ -149,6 +151,12 @@ func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev
 	}
 	out.ContainerStatuses = filterStatuses(out.ContainerStatuses, guest.Spec.Containers, false)
 	out.InitContainerStatuses = filterStatuses(out.InitContainerStatuses, guest.Spec.InitContainers, true)
+	// The projection carries no reason. A failed phase no container
+	// termination explains is the guest's ended pod identity; the provider
+	// names it.
+	if out.Phase == corev1.PodFailed && !anyTerminated(out.ContainerStatuses) && !anyTerminated(out.InitContainerStatuses) {
+		out.Reason = podIdentityEndedReason
+	}
 	out.PodIP = podIP
 	if podIP != "" {
 		out.PodIPs = []corev1.PodIP{{IP: podIP}}
@@ -166,6 +174,15 @@ func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev
 	}
 	out.Conditions = conditions
 	return out, nil
+}
+
+func anyTerminated(statuses []corev1.ContainerStatus) bool {
+	for _, s := range statuses {
+		if s.State.Terminated != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // filterStatuses omits the guest's mesh endpoint container and names each

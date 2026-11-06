@@ -21,7 +21,7 @@ import (
 
 const pollInterval = 10 * time.Second
 
-// Reconciler owns a single provider's immutable Pod-to-instance assignments.
+// Reconciler owns a single provider's immutable Pod-to-instance records.
 // One leader and one mutex serialize normal and orphan paths around side effects.
 type Reconciler struct {
 	client     client.Client
@@ -61,7 +61,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	rec, secret, err := r.loadRecord(ctx, identityKey(r.cfg.ProviderID, string(pod.UID)))
 	if err != nil && !apierrors.IsNotFound(err) {
-		return r.unavailable(ctx, pod, "LaunchRefused", err)
+		return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 	}
 	if rec != nil {
 		// Existing cleanup authority does not depend on a healthy virtual node.
@@ -108,26 +108,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := matchesPod(rec, pod); err != nil {
 		return r.unverified(ctx, pod, rec, secret, "FrozenPodChanged", err)
 	}
-	// A direct launch owns its instance; a pooled Pod resolves the slot it
-	// claimed. From here both modes share one instance and status path.
-	var p *poolRecord
-	var slot *corev1.Secret
-	intent := &rec.instanceIntent
 	callCtx, cancel := r.verificationContext(ctx, rec)
 	defer cancel()
-	save := func() error { return r.save(callCtx, rec, secret) }
-	if rec.Version == 2 {
-		p, slot, err = r.selectPool(ctx, rec, secret)
-		if err != nil {
-			return r.unverified(ctx, pod, rec, secret, "AllocationPending", err)
-		}
-		if p.DeleteRequested || p.Deleted {
-			return r.stop(ctx, pod, rec, secret, "InstanceEnded")
-		}
-		intent = &p.instanceIntent
-		save = func() error { return r.savePool(callCtx, p, slot) }
-	}
-	in, err := ensureCloudInstance(callCtx, r.cloud, intent, r.now(), save)
+	in, err := ensureCloudInstance(callCtx, r.cloud, &rec.instanceIntent, r.now(), func() error { return r.save(callCtx, rec, secret) })
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
@@ -140,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if in == nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceGone")
 	}
-	if err := validateInstance(intent, in); err != nil {
+	if err := validateInstance(&rec.instanceIntent, in); err != nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceIdentityMismatch")
 	}
 	if in.Boot.Count > 1 {
@@ -153,32 +136,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	default:
 		return r.unverified(ctx, pod, rec, secret, "InstanceStarting", nil)
 	}
-	if p != nil {
-		// A generic boot was created with the status port only; the pod's
-		// application ports are opened after the claim.
-		ready, err := r.poolIngress(callCtx, rec, p, in)
-		if ctx.Err() != nil {
-			return ctrl.Result{}, ctx.Err()
-		}
-		if r.verificationExpired(rec) {
-			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
-		}
-		if err != nil || !ready {
-			return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
-		}
-	}
-	return r.running(ctx, callCtx, pod, rec, secret, intent, in, p, slot)
+	return r.running(ctx, callCtx, pod, rec, secret, in)
 }
 
 func matchesPod(rec *record, pod *corev1.Pod) error {
 	if rec.UID != pod.UID || rec.Namespace != pod.Namespace || rec.Name != pod.Name {
 		return errors.New("provider record belongs to another Pod")
 	}
-	doc, err := rec.document()
-	if err != nil {
-		return err
-	}
-	frozen, err := launchconfig.ParsePodManifest([]byte(doc.Pod.Manifest))
+	frozen, err := launchconfig.ParsePodManifest(rec.Pod)
 	if err != nil {
 		return err
 	}
@@ -189,8 +154,8 @@ func matchesPod(rec *record, pod *corev1.Pod) error {
 }
 
 // running reads the pod's status from a running instance over a verified
-// connection. A pooled guest that reports no verifiable pod yet is assigned.
-func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, intent *instanceIntent, in *instance, p *poolRecord, slot *corev1.Secret) (ctrl.Result, error) {
+// connection. A guest that reports no verifiable pod yet is assigned the pod.
+func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, in *instance) (ctrl.Result, error) {
 	address, apps, podIP, err := endpoints(rec.Request.Network, in)
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
@@ -206,25 +171,30 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	var status corev1.PodStatus
 	if err == nil {
 		reason = "GuestStatusRefused"
-		status, err = projectedStatus(rec, projection, pod, podIP, intent.Key)
+		status, err = projectedStatus(rec, projection, pod, podIP, rec.Key)
 	}
 	if err != nil {
-		if p == nil {
-			return r.unverified(ctx, pod, rec, secret, reason, err)
+		// No verified pod status: the guest waits for the assignment, or a
+		// sent assignment is replayed, which tells a guest holding the pod from
+		// one holding another. An accepted assignment is pending until the
+		// guest reports the pod; a refused one keeps the status failure's reason.
+		if assignErr := r.assign(callCtx, rec, secret, address); assignErr != nil {
+			err = errors.Join(err, assignErr)
+		} else {
+			reason, err = "AssignmentPending", nil
 		}
-		err = r.assignPool(callCtx, rec, p, slot, address)
 		if ctx.Err() != nil {
 			return ctrl.Result{}, ctx.Err()
 		}
 		if r.verificationExpired(rec) {
 			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 		}
-		return r.unverified(ctx, pod, rec, secret, "AssignmentPending", err)
+		return r.unverified(ctx, pod, rec, secret, reason, err)
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
-	if p != nil && len(p.Assignment) == 0 {
+	if len(rec.Assignment) == 0 {
 		return r.stop(ctx, pod, rec, secret, "UnexpectedAssignedGuest")
 	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
@@ -311,12 +281,9 @@ func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) erro
 	return client.IgnoreNotFound(r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 }
 
-// removeInstance destroys the instance a record owns, directly or through the
-// slot a pooled Pod claimed, and reports whether destruction is confirmed.
+// removeInstance destroys the instance a record owns and reports whether
+// destruction is confirmed.
 func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *corev1.Secret) (bool, error) {
-	if rec.Version == 2 {
-		return r.removePooledInstance(ctx, rec, secret)
-	}
 	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, r.now(), func() error { return r.save(ctx, rec, secret) })
 }
 
@@ -369,17 +336,11 @@ func (r *Reconciler) sweep(ctx context.Context) error {
 	}
 	var errs []error
 	for _, s := range records.Items {
-		if s.Labels[slotLabel] == "true" {
-			continue
-		}
 		if err := r.sweepRecord(ctx, s.Name); err != nil {
 			errs = append(errs, fmt.Errorf("reconcile provider record %s: %w", s.Name, err))
 		}
 	}
-	r.mu.Lock()
-	poolErr := r.maintainPools(ctx)
-	r.mu.Unlock()
-	return errors.Join(append(errs, poolErr)...)
+	return errors.Join(errs...)
 }
 
 func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {

@@ -21,7 +21,7 @@ import (
 
 func TestGuestReaderRefusesUnattestedStatusAndRemovesTrustFiles(t *testing.T) {
 	cfg := fixtureConfig(t)
-	req, err := cfg.launch(fixturePod())
+	req, _, err := cfg.launch(fixturePod())
 	if err != nil {
 		t.Fatal(err)
 	}

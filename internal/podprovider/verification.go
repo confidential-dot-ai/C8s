@@ -11,6 +11,10 @@ import (
 const (
 	defaultVerificationTimeoutSeconds = 600
 	verificationTimeoutReason         = "GuestVerificationTimedOut"
+	// podIdentityEndedReason names a failed phase the guest reports with no
+	// container terminated: the admission plugin ended the pod identity, so the
+	// status service failed a pod the kubelet alone would keep recreating.
+	podIdentityEndedReason = "PodIdentityEnded"
 )
 
 func validVerificationTimeout(seconds int64) bool {

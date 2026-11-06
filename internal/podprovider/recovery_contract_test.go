@@ -249,6 +249,29 @@ func TestProjectionRequiresIdentity(t *testing.T) {
 	}
 }
 
+// A failed phase with no container terminated is the guest's ended pod
+// identity, which the provider names itself; a failure a container's exit
+// explains keeps the kubelet's own account, with no reason from the guest.
+func TestProjectionNamesAnEndedPodIdentity(t *testing.T) {
+	pod := fixturePod()
+	r, _ := fixtureReconciler(t, pod)
+	rec, _, err := r.ensureRecord(context.Background(), pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := fixtureProjection(rec)
+	p.Status.Phase = corev1.PodFailed
+	out, err := projectedStatus(rec, p, pod, "", rec.Key)
+	if err != nil || out.Phase != corev1.PodFailed || out.Reason != podIdentityEndedReason {
+		t.Fatalf("ended identity projected as %s/%q, %v", out.Phase, out.Reason, err)
+	}
+	p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{ExitCode: 1}}
+	out, err = projectedStatus(rec, p, pod, "", rec.Key)
+	if err != nil || out.Phase != corev1.PodFailed || out.Reason != "" {
+		t.Fatalf("container failure projected as %s/%q, %v", out.Phase, out.Reason, err)
+	}
+}
+
 func TestEndpointContractRejectsInvalidAddressesAndDuplicates(t *testing.T) {
 	pod := fixturePod()
 	r, _ := fixtureReconciler(t, pod)

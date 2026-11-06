@@ -12,9 +12,8 @@ import (
 // never turned into a new VM.
 const uncertainCreateWindow = 24 * time.Hour
 
-// instanceIntent retains one immutable Cloud create and its cleanup authority.
-// Both static Pod records and allocation slots use this exact lifecycle. The
-// signed desired Pod document is independent of a generic VM's actual launch.
+// instanceIntent retains one immutable Cloud create and its cleanup authority:
+// the generic instance a pod record owns.
 type instanceIntent struct {
 	ProviderID      string        `json:"providerID"`
 	CloudURL        string        `json:"cloudURL"`

@@ -30,6 +30,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -146,7 +147,84 @@ func fixtureProjection(rec *record) podstatus.PodProjection {
 	return podstatus.PodProjection{Metadata: podstatus.PodMetadata{UID: string(rec.UID), Namespace: rec.Namespace, Name: rec.Name + "-" + rec.Key}, Status: podstatus.PodStatus{Phase: corev1.PodRunning, Conditions: []podstatus.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}, {Type: corev1.ContainersReady, Status: corev1.ConditionTrue}}, ContainerStatuses: []podstatus.ContainerStatus{{Name: "app", Ready: true, State: &podstatus.ContainerState{Running: &podstatus.ContainerRunning{}}}}, InitContainerStatuses: []podstatus.ContainerStatus{{Name: workloadclaims.MeshContainerName, Ready: true, State: &podstatus.ContainerState{Running: &podstatus.ContainerRunning{}}}}}}
 }
 
-func fixtureReconciler(t *testing.T, pod *corev1.Pod) (*Reconciler, *fakeCloud) {
+// fakeGuest stands in for the pod status service of every instance the
+// fixture creates: one serving key, no pod status until an assignment is
+// accepted, and the provider's durable intent checked before every send.
+type fakeGuest struct {
+	t                              *testing.T
+	r                              *Reconciler
+	key                            *ecdsa.PrivateKey
+	assigned                       map[string]bool
+	prepares, sends                int
+	lostResponse, failBeforeCommit bool
+	beforeSend                     func()
+}
+
+type fakeSession struct {
+	guest *fakeGuest
+	rec   *record
+}
+
+func (g *fakeGuest) verify(_ context.Context, rec *record, _ string) (assignmentSession, error) {
+	if g.assigned[rec.Key] {
+		return nil, errors.New("generic measurements are not empty")
+	}
+	return &fakeSession{g, rec}, nil
+}
+func (s *fakeSession) ServingKey() []byte {
+	b, err := x509.MarshalPKIXPublicKey(&s.guest.key.PublicKey)
+	if err != nil {
+		s.guest.t.Fatal(err)
+	}
+	return b
+}
+func (s *fakeSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest, entries, peers []byte) ([]byte, error) {
+	s.guest.prepares++
+	nonce := make([]byte, podassign.NonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	req, err := podassign.Sign(key, &s.guest.key.PublicKey, podassign.Request{Nonce: nonce, Manifest: manifest, Entries: entries, MeshPeers: peers})
+	if err != nil {
+		return nil, err
+	}
+	return podassign.Encode(req)
+}
+func (s *fakeSession) Send(ctx context.Context, body []byte) (string, error) {
+	g := s.guest
+	stored, _, err := g.r.loadRecord(ctx, s.rec.Key)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	if !bytes.Equal(stored.Assignment, body) || !bytes.Equal(stored.ServingKey, s.ServingKey()) {
+		g.t.Fatal("assignment POST preceded exact durable intent")
+	}
+	g.sends++
+	if g.beforeSend != nil {
+		g.beforeSend()
+	}
+	if g.failBeforeCommit {
+		return "", errors.New("POST outcome lost before commit")
+	}
+	if g.assigned[stored.Key] {
+		return "", &podstatus.AlreadyAssignedError{HeldUID: string(stored.UID)}
+	}
+	g.assigned[stored.Key] = true
+	if g.lostResponse {
+		g.lostResponse = false
+		return "", errors.New("committed assignment response lost")
+	}
+	return string(stored.UID), nil
+}
+func (*fakeSession) Close() {}
+func (g *fakeGuest) read(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+	if !g.assigned[rec.Key] {
+		return podstatus.PodProjection{}, errors.New("guest waiting for assignment")
+	}
+	return fixtureProjection(rec), nil
+}
+
+func fixture(t *testing.T, pod *corev1.Pod) (*Reconciler, *fakeCloud, *fakeGuest) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -154,16 +232,49 @@ func fixtureReconciler(t *testing.T, pod *corev1.Pod) (*Reconciler, *fakeCloud) 
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&corev1.Pod{}).WithObjects(pod).Build()
 	f := &fakeCloud{}
-	r := &Reconciler{client: c, cfg: fixtureConfig(t), cloud: f, now: time.Now, guest: func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
-		return fixtureProjection(rec), nil
-	}}
-	return r, f
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := &fakeGuest{t: t, key: key, assigned: map[string]bool{}}
+	r := &Reconciler{client: c, cfg: fixtureConfig(t), cloud: f, now: time.Now, guest: guest.read, assignment: guest.verify}
+	guest.r = r
+	return r, f, guest
+}
+
+func fixtureReconciler(t *testing.T, pod *corev1.Pod) (*Reconciler, *fakeCloud) {
+	t.Helper()
+	r, cloud, _ := fixture(t, pod)
+	return r, cloud
+}
+
+// restartReconciler is a provider restart: the same durable state and
+// configuration, nothing carried in memory.
+func restartReconciler(r *Reconciler, guest *fakeGuest) *Reconciler {
+	next := &Reconciler{client: r.client, cfg: r.cfg, cloud: r.cloud, guest: r.guest, assignment: r.assignment, now: r.now, ownsNode: r.ownsNode}
+	guest.r = next
+	return next
 }
 
 func reconcile(t *testing.T, r *Reconciler, pod *corev1.Pod) error {
 	t.Helper()
 	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
 	return err
+}
+
+// runToRunning reconciles until the pod reports verified running status: the
+// record, the instance, the assignment and then the status each take a pass.
+func runToRunning(t *testing.T, r *Reconciler, pod *corev1.Pod) {
+	t.Helper()
+	for range 8 {
+		if err := reconcile(t, r, pod); err != nil {
+			t.Fatal(err)
+		}
+		if getPod(t, r, pod).Status.Phase == corev1.PodRunning {
+			return
+		}
+	}
+	t.Fatal("Pod never reached verified running status")
 }
 
 func getPod(t *testing.T, r *Reconciler, pod *corev1.Pod) *corev1.Pod {
@@ -188,7 +299,7 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 	pod := fixturePod()
 	pod.Labels = map[string]string{"tenant": "one"}
 	pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}}, {Name: "TENANT", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.labels['tenant']"}}}}
-	r, cloud := fixtureReconciler(t, pod)
+	r, cloud, guest := fixture(t, pod)
 	var frozen []byte
 	cloud.create = func(key string, req createRequest) (*instance, error) {
 		current := getPod(t, r, pod)
@@ -200,18 +311,27 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 			t.Fatal("Cloud called before exact request and attempt persisted")
 		}
 		frozen = append([]byte(nil), req.Trust.InitData.Document...)
-		doc, err := rec.document()
+		// The document is generic: the pod, the entries and the peers are
+		// frozen in the record for the assignment, and the instance opens the
+		// pod's application ports from the start.
+		doc, err := launchconfig.Parse(req.Trust.InitData.Document)
 		if err != nil {
 			t.Fatal(err)
 		}
-		guest, err := launchconfig.ParsePodManifest([]byte(doc.Pod.Manifest))
+		if doc.Role != launchconfig.Pod || doc.Node.Name != key || doc.CDS != r.cfg.cds {
+			t.Fatal("launch document is not the generic document of this pod CVM")
+		}
+		if rec.Entries != r.cfg.workloads || !reflect.DeepEqual(rec.MeshPeers, r.cfg.MeshPeers) || len(req.Network.Ingress) != 2 || req.Network.Ingress[1].Name != "app-8080" {
+			t.Fatal("record did not freeze the assignment inputs or the pod's ingress")
+		}
+		frozenPod, err := launchconfig.ParsePodManifest(rec.Pod)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.CDS != r.cfg.cds || doc.Workloads != r.cfg.workloads || guest.Spec.ServiceAccountName != "" || guest.Spec.NodeName != "" || guest.Annotations[Annotation] != "" {
-			t.Fatal("launch trust or guest sanitization differs")
+		if frozenPod.Spec.ServiceAccountName != "" || frozenPod.Spec.NodeName != "" || frozenPod.Annotations[Annotation] != "" {
+			t.Fatal("guest sanitization differs")
 		}
-		if guest.Spec.Containers[0].Env[0].Value != "app" || guest.Spec.Containers[0].Env[1].Value != "one" {
+		if frozenPod.Spec.Containers[0].Env[0].Value != "app" || frozenPod.Spec.Containers[0].Env[1].Value != "one" {
 			t.Fatal("external metadata was not frozen")
 		}
 		cloud.in = instanceFor(req)
@@ -229,18 +349,17 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 	next.Image = "c8s-pod@2026.11.01-1"
 	next.CDSAddress = "replacement-cds.example.test:9443"
 	next.cds.Address = next.CDSAddress
-	restarted := &Reconciler{client: r.client, cfg: &next, cloud: cloud, guest: r.guest, now: r.now}
-	if err := reconcile(t, restarted, pod); err != nil {
-		t.Fatal(err)
-	}
+	restarted := restartReconciler(r, guest)
+	restarted.cfg = &next
+	runToRunning(t, restarted, pod)
 	got := getPod(t, r, pod)
-	if got.Status.Phase != corev1.PodRunning || got.Status.PodIP != "" || got.Annotations[endpointsAnnotation] == "" {
+	if got.Status.PodIP != "" || got.Annotations[endpointsAnnotation] == "" {
 		t.Fatalf("incorrect running projection: %+v", got.Status)
 	}
 	if len(got.Status.InitContainerStatuses) != 0 || got.Status.ContainerStatuses[0].Image != pod.Spec.Containers[0].Image {
 		t.Fatal("guest-only container leaked or image was not pinned")
 	}
-	if cloud.createCalls != 1 || !bytes.Equal(getRecord(t, r, pod).Request.Trust.InitData.Document, frozen) {
+	if cloud.createCalls != 1 || guest.prepares != 1 || guest.sends != 1 || !bytes.Equal(getRecord(t, r, pod).Request.Trust.InitData.Document, frozen) {
 		t.Fatal("restart recreated or resigned UID")
 	}
 	got.Labels["tenant"] = "changed"
@@ -383,9 +502,7 @@ func TestUnverifiedStatusWithdrawsReadinessAndEndpoints(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			pod := fixturePod()
 			r, _ := fixtureReconciler(t, pod)
-			if err := reconcile(t, r, pod); err != nil {
-				t.Fatal(err)
-			}
+			runToRunning(t, r, pod)
 			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
 				p := fixtureProjection(rec)
 				switch failure {
@@ -459,7 +576,7 @@ func TestProviderRejectsUnlaunchableWorkloadsBeforeCloud(t *testing.T) {
 			case "provider-fieldref":
 				pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "ENDPOINTS", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.annotations['" + endpointsAnnotation + "']"}}}}
 			}
-			if _, err := r.cfg.launch(pod); err == nil {
+			if _, _, err := r.cfg.launch(pod); err == nil {
 				t.Fatal("invalid workload accepted")
 			}
 			if cloud.createCalls != 0 {
@@ -490,6 +607,28 @@ func TestDedicatedEndpointsRequireOnePreservedAddress(t *testing.T) {
 	in.Compute.MemoryGiB = 1
 	if err := validateInstance(&rec.instanceIntent, in); err == nil {
 		t.Fatal("undersized Cloud instance accepted")
+	}
+}
+
+// The cloud chooses a shared-mode public port. One on a mesh control port is
+// unreachable through a peer's endpoint, which refuses those ports, so the
+// provider publishes no such endpoint and the pod keeps no verified status.
+func TestEndpointsRefuseAPublicPortOnAMeshControlPort(t *testing.T) {
+	pod := fixturePod()
+	r, _ := fixtureReconciler(t, pod)
+	rec, _, err := r.ensureRecord(context.Background(), pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range []int{int(workloadclaims.MeshOutboundPort), int(workloadclaims.MeshInboundPort), int(workloadclaims.MeshHealthPort)} {
+		in := instanceFor(rec.Request)
+		in.Endpoints[1].Port = port
+		if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
+			t.Fatalf("public endpoint on mesh control port %d accepted", port)
+		}
+	}
+	if _, apps, _, err := endpoints(rec.Request.Network, instanceFor(rec.Request)); err != nil || len(apps) != 1 {
+		t.Fatalf("ordinary public endpoint refused: %v %v", apps, err)
 	}
 }
 

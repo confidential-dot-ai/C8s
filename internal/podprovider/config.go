@@ -45,7 +45,6 @@ type Config struct {
 	ServerPublicKeyFile        string   `json:"serverPublicKeyFile"`
 	CDSAddress                 string   `json:"cdsAddress"`
 	CDSImagePolicyFile         string   `json:"cdsImagePolicyFile"`
-	CDSPinDecreeFile           string   `json:"cdsPinDecreeFile,omitempty"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -54,7 +53,6 @@ type Config struct {
 	MemoryMiB                  int64    `json:"memoryMiB"`
 	ReservedMemoryMiB          int64    `json:"reservedMemoryMiB"`
 	MaxPods                    int64    `json:"maxPods"`
-	WarmTarget                 int64    `json:"warmTarget,omitempty"`
 	MeshPeers                  []string `json:"meshPeers,omitempty"`
 	PublicIP                   string   `json:"publicIP,omitempty"`
 	VerificationTimeoutSeconds int64    `json:"verificationTimeoutSeconds,omitempty"`
@@ -89,9 +87,6 @@ func LoadConfig(path string) (*Config, error) {
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
 		}
-	}
-	if cfg.CDSPinDecreeFile != "" && !filepath.IsAbs(cfg.CDSPinDecreeFile) {
-		cfg.CDSPinDecreeFile = filepath.Join(filepath.Dir(path), cfg.CDSPinDecreeFile)
 	}
 	if err := cfg.loadTrust(); err != nil {
 		return nil, err
@@ -159,21 +154,16 @@ func (c *Config) loadTrust() error {
 	if err != nil {
 		return err
 	}
+	// The policy must bind the CDS image to its exact launch file, or the
+	// guest could not authenticate the CDS it polls.
 	pins, err := refvalues.Parse(cdsPolicy)
 	if err != nil {
 		return fmt.Errorf("CDS image policy: %w", err)
 	}
-	launchFile, err := cmdsutil.CDSLaunchFile(pins)
-	if err != nil {
+	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
 		return fmt.Errorf("CDS image policy: %w", err)
 	}
 	c.cds = launchconfig.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
-	if c.CDSPinDecreeFile != "" {
-		c.cds, err = launchconfig.CDSFromPinDecree(launchFile, c.CDSPinDecreeFile, c.CDSAddress)
-		if err != nil {
-			return fmt.Errorf("CDS pin decree: %w", err)
-		}
-	}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err
