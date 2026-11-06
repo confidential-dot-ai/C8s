@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "direct-state",
+  "attempt": 1,
+  "stage": "initial-workload-certificate-issuance",
+  "runner_commit": "37d06f18dcc44389a05ba3dced072c6383a35f74",
+  "image_build": "three-host-image-06",
+  "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 9,
+  "completed_and_hash_verified_disk_uploads": 3,
+  "initial_metadata_quorum_ready": true,
+  "seed_phase_passed": false,
+  "seed_phase_seconds": 142.424382184,
+  "seed_assertions_completed_before_failure": [
+    "genesis",
+    "all_three_serving",
+    "initial_policy",
+    "initial_secret_write",
+    "same_ca_on_all_replicas"
+  ],
+  "faults_injected": false,
+  "burst_reached": false,
+  "finding": "The first workload certificate issuance POST to replica 1 timed out awaiting HTTP response headers. Concurrent etcd logs show peer connection timeouts involving the same worker. Nodes reported Ready, with no memory/disk/PID pressure, and captured metadata containers had zero restarts. These observations do not establish the root cause. The replica 1 console disconnected during the phase, leaving incomplete guest-side evidence.",
+  "follow_up": "Retain this failed result. Add bounded read-only native CDS status and metadata member diagnostics, reconnecting only the same owned guest incarnation, then repeat with unchanged CDS, attester, client, workload and deadlines. Never replay the failed workload.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 51,
+    "resource_paths_checked": 60,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

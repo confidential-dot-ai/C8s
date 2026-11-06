@@ -459,7 +459,39 @@ class Run(metadata.Run):
         need(self.state['distinct_guest_workers'] == 3, 'three independently placed guests required')
         self.health(); self.event('three-host-qualification-passed', backend=self.args.backend)
 
+    def inspect_backends(self):
+        # Fixed read-only phases, never a replay of the failed workload. Keep
+        # their receipts separate from qualification results and bound each
+        # probe so unavailable guests cannot prevent ordinary cleanup.
+        for slot in sorted(self.guests):
+            try:
+                self.open_tunnel(slot)  # validates the exact owned VM/VMI
+                label = 'diagnostic-status-g'+str(slot)
+                request = self.directory/(label+'-request.json')
+                self.atomic(request, {'operation': 'status', 'target': slot})
+                self.command(label, [self.args.client, '-launch', str(self.directory/'launch.yaml'),
+                    '-key', str(self.directory/'operator.pem'), '-endpoint', self.tunnels[slot][1],
+                    '-request', str(request), '-receipt', str(self.directory/(label+'-receipt.json'))], timeout=25)
+                self.event('guest-status-diagnostic-captured', slot=slot)
+            except Exception:
+                self.event('guest-status-diagnostic-unavailable', slot=slot)
+        if self.etcd:
+            samples = []
+            for slot, url in enumerate(self.etcd[2]):
+                try:
+                    code, status = self.request(url, '/v3/maintenance/status', {}, etcd=True, timeout=5)
+                except Exception:
+                    code, status = 0, None
+                samples.append({'slot': slot, 'http_status': code, 'status': status})
+            self.atomic(self.directory/'failure-member-status.json', samples)
+
     def diagnostics(self):
+        # A console can disconnect during a long phase. Reconnect only that
+        # same owned incarnation before fixed status requests produce new logs.
+        try: self.ensure_consoles()
+        except Exception: self.event('diagnostic-console-reconnect-unavailable')
+        try: self.inspect_backends()
+        except Exception: self.event('backend-status-diagnostic-unavailable')
         super().diagnostics()
         # The live tail already contains the failed phase. Avoid opening a
         # second console, which could disconnect the active read-only capture.

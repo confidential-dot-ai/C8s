@@ -203,3 +203,15 @@ Twelve initialization handshakes timed out before dispatch and reconnected
 within the startup budget; no workload phase or image upload needed a retry.
 This is one completed bounded qualification, not an availability SLO or a
 replacement recommendation. Earlier unsuccessful attempts remain above.
+
+[Direct-state attempt 1](../test/pilot/cds-three-host/results/2026-11-06-direct-attempt-01.json)
+passed native startup and provisioning on three workers. Genesis, serving
+checks, the initial policy and secret, and the same-CA check completed, but the
+first certificate issuance to replica 1 timed out waiting for HTTP response
+headers. Etcd also logged peer connection timeouts involving that worker; this
+does not establish a CDS or infrastructure root cause. Its console disconnected
+during the phase, leaving incomplete guest-side evidence. No fault or workload
+burst was reached. All 51 resources were removed and 60 paths independently
+confirmed absent. Failure diagnostics now reconnect existing owned consoles and
+capture bounded, fixed CDS status reads and metadata member statuses before
+cleanup. These probes cannot replay a failed workload or change its result.
