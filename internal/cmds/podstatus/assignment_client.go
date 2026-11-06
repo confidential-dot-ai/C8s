@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	strictjson "sigs.k8s.io/json"
 
@@ -135,7 +136,7 @@ func (t *AssignmentTarget) Send(ctx context.Context, data []byte) (string, error
 		return "", &AlreadyAssignedError{HeldUID: held.UID}
 	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("assignment refused with HTTP %d", response.StatusCode)
+		return "", fmt.Errorf("assignment refused with %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	var accepted struct {
 		UID string `json:"uid"`
