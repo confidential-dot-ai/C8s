@@ -172,18 +172,11 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		cdsHTTPClient = httpClient
 	}
 
-	recovery, err := openPodRecovery(cfg)
-	if err != nil {
-		return fmt.Errorf("open Pod recovery: %w", err)
-	}
-	defer recovery.Close()
-
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
-	plugin.recovery = recovery
 	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
 		return fmt.Errorf("prepare Pod credential broker: %w", err)
 	}
@@ -200,7 +193,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		plugin.podMu.Unlock()
 	}()
 	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
-	if recovery != nil && !cfg.podWaiting() {
+	if cfg.podRole() {
 		applyPolicy = plugin.applyPodPolicy
 	}
 	// Before the plugin serves a single container creation: a pod admitted
@@ -635,9 +628,10 @@ type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
 	PodUID           string `json:"pod_uid,omitempty"`
-	PodWaiting       bool   `json:"pod_waiting,omitempty"`
 	PodRegistered    bool   `json:"pod_registered,omitempty"`
-	AllowlistStall   string `json:"allowlist_stall,omitempty"`
+	// PodEnded reports that the Pod identity ended for the rest of this boot.
+	PodEnded       bool   `json:"pod_ended,omitempty"`
+	AllowlistStall string `json:"allowlist_stall,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -653,8 +647,8 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 		}
 		if cfg.plugin.cfg.Pod != nil {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
-			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
 			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
+			body.PodEnded = cfg.plugin.podEnded.Load()
 		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {

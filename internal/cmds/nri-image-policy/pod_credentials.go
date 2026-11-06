@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"slices"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -19,7 +19,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -73,7 +72,7 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 }
 
 func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) error {
-	if !p.cfg.podRole() || p.cfg.podWaiting() {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if client == nil {
@@ -100,9 +99,6 @@ func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) erro
 		return err
 	}
 	bootID := hex.EncodeToString(id[:])
-	if p.recovery != nil && p.recovery.state != nil {
-		bootID = p.recovery.state.BootID
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, client: client, runtime: runtime, bootID: bootID, changes: make(chan struct{}, 1)}
 	return nil
@@ -133,19 +129,38 @@ func (p *plugin) podChanged() {
 	}
 }
 
+// podEndedMarkerName is the file, beside the boot gate's marker on tmpfs, that
+// records an ended pod identity for the rest of the boot: a plugin that starts
+// after the one that ended it still reports it, and a reboot clears it.
+const podEndedMarkerName = "pod-ended"
+
+func (p *plugin) podEndedMarker() string {
+	if !p.cfg.podRole() || p.cfg.Policy.BootMarkerPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p.cfg.Policy.BootMarkerPath), podEndedMarkerName)
+}
+
+// restorePodEnded reads the marker an earlier plugin of this boot left.
+func (p *plugin) restorePodEnded() {
+	marker := p.podEndedMarker()
+	if marker == "" {
+		return
+	}
+	if _, err := os.Lstat(marker); err == nil {
+		p.podEnded.Store(true)
+	}
+}
+
+// endPodIdentity is called under podMu. The identity ends for the rest of
+// this boot: no start permission survives, the broker issues nothing more and
+// every later start of the Pod is refused (podCredentialSource). The marker
+// carries the end across a plugin restart.
 func (p *plugin) endPodIdentity(reason error) {
-	// Most callers already own a callback transaction. Worker/snapshot failures
-	// must establish the same durable refusal before ending their authority.
-	ownFence := false
-	if s := p.recovery; s != nil && s.state != nil && !s.active {
-		if err := s.begin(); err == nil {
-			ownFence = true
-		} else {
-			if _, fenceErr := s.root.Lstat(podRecoveryPendingFile); fenceErr != nil {
-				if renameErr := s.root.Rename(podRecoveryStateFile, podRecoveryPendingFile); renameErr != nil {
-					p.boot.fatal("cannot durably end Pod identity after losing recovery storage")
-				}
-			}
+	p.podEnded.Store(true)
+	if marker := p.podEndedMarker(); marker != "" {
+		if err := errors.Join(os.MkdirAll(filepath.Dir(marker), 0o700), os.WriteFile(marker, []byte(reason.Error()+"\n"), 0o600)); err != nil {
+			p.logger.Error("cannot record the ended Pod identity", "path", marker, "error", err)
 		}
 	}
 	clear(p.podStarts)
@@ -154,9 +169,6 @@ func (p *plugin) endPodIdentity(reason error) {
 			b.terminal = reason
 		}
 		b.cancel()
-	}
-	if ownFence {
-		p.finishPodTransition(&reason)
 	}
 }
 
@@ -177,7 +189,7 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 		}
 		return samePodCredentialRoot(b.root, source)
 	}
-	if p.bootRestart.Load() && !p.podRecovered {
+	if p.bootRestart.Load() {
 		return errors.New("pod credentials cannot use reconstructed admission history; a new guest boot is required")
 	}
 	root, err := openPodCredentialRoot(source)
@@ -197,45 +209,12 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 	b.root = root
 	b.source = source
 	b.pod = proto.Clone(pod).(*api.PodSandbox)
-	return p.runPodWorkers()
-}
-
-// runPodWorkers starts what the Pod identity serves: the connect broker and
-// the credential worker. Both stop with the broker context.
-func (p *plugin) runPodWorkers() error {
-	if err := p.runPodConnectBroker(); err != nil {
-		return err
-	}
 	p.runPodCredentialWorker()
 	return nil
 }
 
-// runPodConnectBroker serves the endpoint's peer connections from the guest,
-// beside the credentials it reads. The guest forwards nothing the Pod sends to
-// a peer tuple, so this is the only way out to a peer (connectbroker).
-func (p *plugin) runPodConnectBroker() error {
-	b := p.podBroker
-	if p.mesh == nil || p.mesh.policy.Pod == nil {
-		return errors.New("pod mesh policy names no peers to connect")
-	}
-	listener, err := connectbroker.Listen(b.root, int(workloadclaims.MeshUID))
-	if err != nil {
-		return fmt.Errorf("mesh connect broker: %w", err)
-	}
-	server := &connectbroker.Server{Peers: slices.Clone(p.mesh.policy.Pod.Peers), UID: workloadclaims.MeshUID, Logger: p.logger}
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-		if err := server.Serve(b.ctx, listener); err != nil && b.ctx.Err() == nil {
-			p.logger.Error("Pod mesh connect broker stopped", "error", err)
-			p.podMu.Lock()
-			p.endPodIdentity(err)
-			p.podMu.Unlock()
-		}
-	}()
-	return nil
-}
-
+// runPodCredentialWorker issues the Pod's credentials for as long as the Pod
+// identity lasts; it stops with the broker context.
 func (p *plugin) runPodCredentialWorker() {
 	b := p.podBroker
 	identity := workloadclaims.PodClaims{BootID: b.bootID, RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId()}.InstanceID()
@@ -256,16 +235,15 @@ func (p *plugin) runPodCredentialWorker() {
 	}()
 }
 
-func (p *plugin) podSnapshot(ctx context.Context) (claims workloadclaims.PodClaims, result error) {
+func (p *plugin) podSnapshot(ctx context.Context) (workloadclaims.PodClaims, error) {
 	p.podMu.Lock()
 	defer p.podMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
-	if err := p.beginPodTransition(); err != nil {
+	if err := p.refuseDisconnectedPod(); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
-	defer p.finishPodTransition(&result)
 	return p.podSnapshotLocked()
 }
 
@@ -298,7 +276,7 @@ func (p *plugin) podSnapshotLocked() (workloadclaims.PodClaims, error) {
 	if p.measurer == nil {
 		return p.podSnapshotLost(errors.New("pod broker has no runtime journal"))
 	}
-	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID, AssignedWorkloadID: p.cfg.Pod.WorkloadID,
+	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID,
 		RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId(), Revision: revision,
 		RuntimeExtensions: p.measurer.Digests(), Containers: containers}
 	if _, err := claims.Canonical(); err != nil {
@@ -315,13 +293,12 @@ func (p *plugin) podSnapshotLost(err error) (workloadclaims.PodClaims, error) {
 // commitPodCredentials serializes the final local publication with admission.
 // No network call runs under this lock; a response to an old snapshot cannot
 // replace the generation after another container has been admitted.
-func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish func() error) (result error) {
+func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish func() error) error {
 	p.podMu.Lock()
 	defer p.podMu.Unlock()
-	if err := p.beginPodTransition(); err != nil {
+	if err := p.refuseDisconnectedPod(); err != nil {
 		return err
 	}
-	defer p.finishPodTransition(&result)
 	current, err := p.podSnapshotLocked()
 	if err != nil {
 		return err
