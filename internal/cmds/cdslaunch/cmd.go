@@ -55,10 +55,10 @@ func newNewCmd() *cobra.Command {
 Each pin entry binds the configuration exactly; on SEV-SNP there is one entry
 per --vcpus count the VM may boot with.
 
-Every replica of a highly available CDS boots these same bytes: --replica and
---voters describe the cluster, and nothing in the file names one replica.
-docs/cds-ha.md says which of its fields the replicas only start from and which
-fix the cluster for its life.`,
+Every replica of a highly available CDS boots these same bytes: --replica,
+--voters and the optional --board-* describe the cluster, and nothing in the
+file names one replica. docs/cds-ha.md says which of its fields the replicas
+only start from and which fix the cluster for its life.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

@@ -16,6 +16,11 @@ func testHAWire() haWire {
 			"10.0.0.7",
 		},
 		Voters: 3,
+		Board: boardWire{
+			Endpoint: "https://s3.acme.example",
+			Bucket:   "c8s-boards",
+			Prefix:   "boards/eu",
+		},
 	}
 }
 
@@ -43,6 +48,33 @@ func TestParseReturnsTheReplicaSet(t *testing.T) {
 	}
 	if ha.Voters != 3 {
 		t.Fatalf("voters = %d", ha.Voters)
+	}
+	want := Board{
+		Endpoint: "https://s3.acme.example",
+		Bucket:   "c8s-boards",
+		Prefix:   "boards/eu",
+	}
+	if ha.Board != want {
+		t.Fatalf("board = %+v, want %+v", ha.Board, want)
+	}
+}
+
+// A cluster takes its decrees over the attested channel alone unless its
+// block names a board, so a replica set without one parses.
+func TestParseAcceptsAReplicaSetWithNoBoard(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	document := testDocument(t, operatorPEM, anchorPEM)
+	wire := testHAWire()
+	wire.Board = boardWire{}
+	document.HA = &wire
+
+	cfg, err := Parse(render(t, document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HA == nil || cfg.HA.Board != (Board{}) {
+		t.Fatalf("ha = %+v, want a replica set with no board", cfg.HA)
 	}
 }
 
@@ -75,6 +107,9 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 		{"no voter", func(h *haWire) { h.Voters = 0 }, "ha.voters"},
 		{"an even voter count", func(h *haWire) { h.Voters = 4 }, "ha.voters"},
 		{"more voters than seats", func(h *haWire) { h.Voters = cdsdecree.MaxVoterSeats + 2 }, "ha.voters"},
+		{"a plain HTTP board", func(h *haWire) { h.Board.Endpoint = "http://s3.acme.example" }, "ha.board"},
+		{"no bucket", func(h *haWire) { h.Board.Bucket = "" }, "ha.board"},
+		{"a prefix above the bucket", func(h *haWire) { h.Board.Prefix = "../boards" }, "ha.board"},
 	}
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
@@ -119,6 +154,10 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	document.HA = HA{
 		Replicas: []string{"cds.acme.example"},
 		Voters:   1,
+		Board: Board{
+			Endpoint: "https://s3.acme.example",
+			Bucket:   "c8s-boards",
+		},
 	}
 	data, err := Format(document)
 	if err != nil {
@@ -128,7 +167,7 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Format wrote an ha block Parse refuses: %v", err)
 	}
-	if cfg.HA == nil || cfg.HA.Voters != 1 {
+	if cfg.HA == nil || cfg.HA.Voters != 1 || cfg.HA.Board != document.HA.Board {
 		t.Fatalf("ha = %+v, want the document's block", cfg.HA)
 	}
 }
@@ -139,6 +178,7 @@ func TestFormatRefusesAReplicaSetParseWouldRefuse(t *testing.T) {
 		"an even voter count":   func(h *HA) { h.Voters = 4 },
 		"no replica":            func(h *HA) { h.Replicas = nil },
 		"a replica with a port": func(h *HA) { h.Replicas = []string{"cds.acme.example:8444"} },
+		"a plain HTTP board":    func(h *HA) { h.Board.Endpoint = "http://s3.acme.example" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, operatorPEM := testKey(t)
@@ -147,6 +187,10 @@ func TestFormatRefusesAReplicaSetParseWouldRefuse(t *testing.T) {
 			document.HA = HA{
 				Replicas: []string{"cds.acme.example"},
 				Voters:   1,
+				Board: Board{
+					Endpoint: "https://s3.acme.example",
+					Bucket:   "c8s-boards",
+				},
 			}
 			change(&document.HA)
 			if _, err := Format(document); err == nil {
