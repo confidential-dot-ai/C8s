@@ -2,6 +2,8 @@ package podprovider
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,6 +21,9 @@ func TestStatusTransitionsRecordOneEventEach(t *testing.T) {
 	// its containers start.
 	phase := corev1.PodPending
 	r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+		if len(rec.Assignment) == 0 {
+			return podstatus.PodProjection{}, errors.New("no pod assigned")
+		}
 		projection := fixtureProjection(rec)
 		projection.Status.Phase = phase
 		return projection, nil
@@ -34,7 +39,10 @@ func TestStatusTransitionsRecordOneEventEach(t *testing.T) {
 	}{
 		{func() {}, "Normal InstanceStarting The Pod CVM instance is starting"},
 		{func() {}, ""},
-		{func() { cloud.in.Status = "running" }, "Normal PodCVMVerified The Pod CVM reports verified status"},
+		// A running instance is assigned its pod first; the guest reports
+		// verified status on the next pass.
+		{func() { cloud.in.Status = "running" }, "Normal AssignmentPending Waiting for the Pod CVM to accept its assignment"},
+		{func() {}, "Normal PodCVMVerified The Pod CVM reports verified status"},
 		{func() { phase = corev1.PodRunning }, ""},
 		{func() { cloud.in.Boot.Count = 2 }, "Warning GuestRebooted The Pod CVM rebooted"},
 		{func() { cloud.in.Status = "terminated" }, ""},
@@ -56,6 +64,33 @@ func TestStatusTransitionsRecordOneEventEach(t *testing.T) {
 		default:
 			if step.want != "" {
 				t.Fatalf("step %d: no event, want %q", i, step.want)
+			}
+		}
+	}
+}
+
+func TestEventsUseOnlyProviderReasonsAndMessages(t *testing.T) {
+	recorder := events.NewFakeRecorder(10)
+	r := &Reconciler{recorder: recorder}
+	pod := fixturePod()
+	pod.Status.Phase = corev1.PodFailed
+	pod.Status.Message = strings.Repeat("x", 2000)
+	for _, step := range []struct{ previous, reason, want string }{
+		{"AttestationUnavailable", "Evicted", "Normal PodCVMVerified The Pod CVM reports verified status"},
+		{"", "Evicted", ""},
+		{"Evicted", "", ""},
+		{"", "InstanceEnded", "Warning InstanceEnded The Pod CVM instance ended"},
+	} {
+		pod.Status.Reason = step.reason
+		r.recordTransition(pod, step.previous)
+		select {
+		case got := <-recorder.Events:
+			if got != step.want {
+				t.Fatalf("%q -> %q: event %q, want %q", step.previous, step.reason, got, step.want)
+			}
+		default:
+			if step.want != "" {
+				t.Fatalf("%q -> %q: no event, want %q", step.previous, step.reason, step.want)
 			}
 		}
 	}

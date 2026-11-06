@@ -353,21 +353,27 @@ var progressReasons = map[string]bool{
 }
 
 // recordTransition records one Event when the published status changes
-// reason, so polls of an unchanged state stay silent.
+// reason, so polls of an unchanged state stay silent. An Event takes its
+// reason and message only from statusMessages, never from the published
+// status, so guest data cannot name or word one.
 func (r *Reconciler) recordTransition(pod *corev1.Pod, previous string) {
 	reason := pod.Status.Reason
 	if r.recorder == nil || reason == previous {
 		return
 	}
+	message, provider := statusMessages[reason]
 	switch {
-	case reason == "":
+	case !provider:
+		if _, ok := statusMessages[previous]; !ok {
+			return
+		}
 		// Verified guest status replaced a waiting or outage reason, whatever
 		// phase the guest reports (often Pending while containers start).
 		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, "PodCVMVerified", "PublishStatus", "The Pod CVM reports verified status")
 	case progressReasons[reason] || pod.Status.Phase == corev1.PodSucceeded:
-		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, reason, "PublishStatus", "%s", pod.Status.Message)
+		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, reason, "PublishStatus", "%s", message)
 	default:
-		r.recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "PublishStatus", "%s", pod.Status.Message)
+		r.recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "PublishStatus", "%s", message)
 	}
 }
 
