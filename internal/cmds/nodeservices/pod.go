@@ -22,16 +22,16 @@ import (
 )
 
 // Pod-role outputs. Kubelet and containerd configs stay baked; preparation
-// stages the signed workload and the CNI template with the guest uplink MTU.
+// stages the CNI template with the guest uplink MTU, and the assignment later
+// renders the runtime policy and the manifest.
 const (
 	PodDir             = "/run/c8s-pod"
-	podManifestPath    = PodDir + "/manifests/pod.yaml"
 	podKubeletEnvPath  = PodDir + "/kubelet.env"
 	podUnmanagedLinks  = "/run/systemd/network/10-podcvm-unmanaged.network"
 	podUnmanagedConfig = "[Match]\nName=veth* c8spod*\n\n[Link]\nUnmanaged=yes\n"
 )
 
-// PodRuntime is fully validated runtime policy plus the optional static manifest.
+// PodRuntime is fully validated runtime policy plus the assigned manifest.
 // Rendering writes nothing, so assignment can validate before committing its record.
 type PodRuntime struct {
 	UID      string
@@ -39,27 +39,11 @@ type PodRuntime struct {
 	Manifest []byte
 }
 
-// RenderPodRuntime applies the measured floor to a cold or assigned Pod document.
-// A generic document produces an explicit waiting policy and no manifest.
-func RenderPodRuntime(rootDir string, d *launchconfig.Document) (PodRuntime, error) {
-	return renderPodRuntime(rootDir, d, d != nil && d.Pod == nil)
-}
-
-// RenderAssignedPodRuntime records that this policy belongs to a generic boot.
-// It permits only the empty-runtime transition before the first manifest.
-func RenderAssignedPodRuntime(rootDir string, d *launchconfig.Document) (PodRuntime, error) {
-	if d == nil || d.Pod == nil {
-		return PodRuntime{}, fmt.Errorf("assignment requires a Pod")
-	}
-	return renderPodRuntime(rootDir, d, true)
-}
-
-func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (PodRuntime, error) {
+// RenderPodRuntime applies the measured floor to an assigned pod: the generic
+// document's trust, the pod's entries and the manifest the assignment carried.
+func RenderPodRuntime(rootDir string, d *launchconfig.AssignedPod) (PodRuntime, error) {
 	if d == nil || d.Role != launchconfig.Pod {
 		return PodRuntime{}, fmt.Errorf("not a Pod role document")
-	}
-	if d.Pod == nil && d.Workloads != "" {
-		return PodRuntime{}, fmt.Errorf("generic Pod role must not carry workloads")
 	}
 	floor, a, err := loadFloor(rootDir)
 	if err != nil {
@@ -77,16 +61,20 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 	if err != nil {
 		return PodRuntime{}, err
 	}
-	if d.Workloads != "" {
-		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
-		if err != nil {
-			return PodRuntime{}, fmt.Errorf("launch workloads: %w", err)
-		}
-		if err := mergeWorkloads(base, workloads, false); err != nil {
-			return PodRuntime{}, err
-		}
+	// A plugin restart within the boot ends the pod identity; the plugin tells
+	// a restart from its first registration by the boot marker, so the baked
+	// floor must arm that check.
+	if marker, _ := policy["boot_marker_path"].(string); policy["fatal_existing"] != true || marker == "" {
+		return PodRuntime{}, fmt.Errorf("baked NRI policy must set policy.fatal_existing and policy.boot_marker_path")
 	}
-	manifest, images, err := renderPodManifest(d, image)
+	workloads, err := allowlist.ParseJSON([]byte(d.Entries))
+	if err != nil {
+		return PodRuntime{}, fmt.Errorf("assignment entries: %w", err)
+	}
+	if err := mergeWorkloads(base, workloads, false); err != nil {
+		return PodRuntime{}, err
+	}
+	manifest, images, err := renderPodManifest(&d.Pod, image)
 	if err != nil {
 		return PodRuntime{}, err
 	}
@@ -110,21 +98,17 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 	// network namespace, and its egress is the standalone ruleset's.
 	delete(mesh, "credential_attestation_port")
 	delete(mesh, "exits")
-	mesh["pod"] = map[string]any{"peers": []string{}, "ingress_ports": []uint16{}}
-	floor["pod"] = map[string]any{"waiting": true, "generic": true}
-	if d.Pod != nil {
-		peers, err := d.Pod.PeerAddresses()
-		if err != nil {
-			return PodRuntime{}, err
-		}
-		ports, err := d.Pod.IngressPorts()
-		if err != nil {
-			return PodRuntime{}, err
-		}
-		mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
-		// Standalone kubelet appends the guest's original launch name.
-		floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "workload_id": d.Pod.WorkloadID, "images": images, "generic": generic}
+	peers, err := d.Pod.PeerAddresses()
+	if err != nil {
+		return PodRuntime{}, err
 	}
+	ports, err := d.Pod.IngressPorts()
+	if err != nil {
+		return PodRuntime{}, err
+	}
+	mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
+	// Standalone kubelet appends the guest's original launch name.
+	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
 	floor["mesh"] = mesh
 	policy["exempt_namespaces"] = []string{}
 	delete(policy, "exempt_snapshot_path")
@@ -142,18 +126,11 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 		return PodRuntime{}, err
 	}
 
-	runtime := PodRuntime{Policy: policyData, Manifest: manifest}
-	if d.Pod != nil {
-		runtime.UID = d.Pod.UID
-	}
-	return runtime, nil
+	return PodRuntime{UID: d.Pod.UID, Policy: policyData, Manifest: manifest}, nil
 }
 
-func renderPodManifest(d *launchconfig.Document, image string) ([]byte, map[string]string, error) {
-	if d.Pod == nil {
-		return nil, nil, nil
-	}
-	pod, err := launchconfig.ParsePodManifest([]byte(d.Pod.Manifest))
+func renderPodManifest(spec *launchconfig.PodSpec, image string) ([]byte, map[string]string, error) {
+	pod, err := launchconfig.ParsePodManifest([]byte(spec.Manifest))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,13 +151,11 @@ func renderPodManifest(d *launchconfig.Document, image string) ([]byte, map[stri
 	return manifest, images, nil
 }
 
-// preparePod stages boot inputs before either standalone guest service starts.
+// preparePod stages boot inputs before the status service starts. It stages
+// no runtime policy and no manifest: the assignment that supplies the Pod
+// renders them, and the runtime, plugin and kubelet start only then (podstatus).
 func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte, resolveMTU func() (int, error)) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	runtime, err := RenderPodRuntime(rootDir, d)
-	if err != nil {
-		return err
-	}
 	cni, err := preparePodNetwork(rootDir, resolveMTU)
 	if err != nil {
 		return err
@@ -193,23 +168,16 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err := publishPublic(path(PublicDir), outputs); err != nil {
 		return err
 	}
-	files := []struct {
+	type output struct {
 		path string
 		data []byte
 		mode os.FileMode
-	}{
-		{floorConfigPath, runtime.Policy, 0600},
+	}
+	files := []output{
 		{podKubeletEnvPath, []byte("KUBELET_HOSTNAME=" + d.Node.Name + "\n"), 0644},
 		{podUnmanagedLinks, []byte(podUnmanagedConfig), 0644},
 		{podCNIPath, cni, 0644},
 		{podResolvConfPath, resolv, 0644},
-	}
-	if len(runtime.Manifest) != 0 {
-		files = append(files, struct {
-			path string
-			data []byte
-			mode os.FileMode
-		}{podManifestPath, runtime.Manifest, 0600})
 	}
 	if err := os.MkdirAll(path(PodDir+"/manifests"), 0700); err != nil {
 		return err
