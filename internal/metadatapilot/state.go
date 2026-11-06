@@ -199,6 +199,7 @@ func (c *Client) stateRequest(ctx context.Context, t Transaction, read bool) ([]
 		return nil, err
 	}
 	r.Header.Set("Authorization", "Bearer "+*c.token.Load())
+	r.GetBody = nil // Never replay a sent transaction after an uncertain response.
 	r.Header.Set("X-CDS-Namespace", c.namespace)
 	r.Header.Set("Content-Type", "application/json")
 	response, err := c.client.Do(r)

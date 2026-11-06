@@ -1,5 +1,5 @@
-// cds-metadata-pilot is a single-machine, durable comparison service. Production
-// HA requires a replicated transactional database; this executable is a pilot.
+// cds-metadata-pilot serves the local SQLite control or an explicit three-member
+// etcd current-state backend. No production backend changes by default.
 package main
 
 import (
@@ -32,6 +32,11 @@ func run() error {
 	dbDirectory := flag.String("db-dir", "", "absolute directory for independent per-cluster databases")
 	cert := flag.String("tls-cert", "", "TLS certificate PEM file")
 	key := flag.String("tls-key", "", "TLS private key PEM file")
+	etcdEndpoints := flag.String("etcd-endpoints", "", "three comma-separated HTTPS etcd members; current-state API only")
+	etcdCluster := flag.String("etcd-cluster-id", "", "pinned canonical decimal etcd cluster ID")
+	etcdCA := flag.String("etcd-root-ca", "", "private file containing the dedicated etcd CA PEM")
+	etcdCert := flag.String("etcd-client-cert", "", "private file containing the etcd client certificate PEM")
+	etcdKey := flag.String("etcd-client-key", "", "private file containing the etcd client key PEM")
 	flag.Parse()
 	if *cert == "" || *key == "" {
 		return fmt.Errorf("tls-cert and tls-key are required")
@@ -40,7 +45,37 @@ func run() error {
 		http.Handler
 		Close()
 	}
-	if *clustersFile != "" {
+	if *etcdEndpoints != "" {
+		if *database != "" || *dbDirectory != "" {
+			return fmt.Errorf("etcd mode is exclusive with SQLite db and db-dir")
+		}
+		var configs []metadatapilot.ClusterConfig
+		if *clustersFile != "" {
+			if *namespace != "" || *tokenFile != "" {
+				return fmt.Errorf("clusters-file is exclusive with namespace and token-file")
+			}
+			var err error
+			configs, err = clusterConfigs(*clustersFile)
+			if err != nil {
+				return err
+			}
+		} else {
+			data, err := privateFile(*tokenFile, 4097)
+			if err != nil {
+				return err
+			}
+			configs = []metadatapilot.ClusterConfig{{Namespace: *namespace, Token: strings.TrimSpace(string(data))}}
+			clear(data)
+		}
+		defer clear(configs)
+		ha, err := openEtcd(configs, *etcdEndpoints, *etcdCluster, *etcdCA, *etcdCert, *etcdKey)
+		if err != nil {
+			return err
+		}
+		service = ha
+	} else if *etcdCluster != "" || *etcdCA != "" || *etcdCert != "" || *etcdKey != "" {
+		return fmt.Errorf("etcd credentials require explicit etcd-endpoints")
+	} else if *clustersFile != "" {
 		if *database != "" || *namespace != "" || *tokenFile != "" {
 			return fmt.Errorf("clusters-file is exclusive with db, namespace and token-file")
 		}

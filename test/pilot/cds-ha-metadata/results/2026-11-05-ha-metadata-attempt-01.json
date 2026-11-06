@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "attempt": 1,
+  "etcd_version": "3.7.3",
+  "metadata_source_commit": "d0bbce129ef19b856b38530c6dd94b7afeb22be3",
+  "metadata_source_tree": "5a2cf509364cc0b31835d5d71f18732ca20347e2",
+  "distinct_compute_workers": 3,
+  "metadata_members": 3,
+  "stateless_adapters": 3,
+  "independent_commits": 64,
+  "conditional_race_winners": 1,
+  "partitioned_member_refused_current_read": true,
+  "majority_served_acknowledged_state_during_partition": true,
+  "runner_exit_code": 1,
+  "metadata_ha_passed": false,
+  "failure": "After healing the one-member partition, all members did not report the same nonzero leader within 35 seconds. No successful recovery or quorum-loss result is claimed.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "paths_checked": 32,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

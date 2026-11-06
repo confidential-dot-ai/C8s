@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "attempt": 2,
+  "etcd_version": "3.7.3",
+  "metadata_source_commit": "d0bbce129ef19b856b38530c6dd94b7afeb22be3",
+  "metadata_source_tree": "5a2cf509364cc0b31835d5d71f18732ca20347e2",
+  "runner_source_commit": "71350b1cc9470db132fb6fe793e7a810e0400bf9",
+  "distinct_compute_workers": 3,
+  "metadata_members": 3,
+  "stateless_adapters": 3,
+  "independent_commits": 64,
+  "conditional_race_winners": 1,
+  "partitioned_member_refused_current_read": true,
+  "majority_served_acknowledged_state_during_partition": true,
+  "quorum_loss_failed_closed": true,
+  "acknowledged_records_verified_per_adapter": 65,
+  "acknowledged_state_preserved": true,
+  "observed_quorum_ready_seconds": {
+    "initial": 9.017,
+    "heal_one_partition": 36.127,
+    "heal_quorum_loss": 33.458
+  },
+  "runner_exit_code": 0,
+  "metadata_ha_passed": true,
+  "three_guest_cds_passed": false,
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "paths_checked": 32,
+    "owned_resources_remaining": 0
+  },
+  "limits": [
+    "Three metadata workers; no CDS guests in this stage.",
+    "Recovery observations are single-run measurements, not an SLO or percentile.",
+    "The first attempt failed the 35-second recovery observation; retained separately.",
+    "Whole-metadata-cluster rollback and dishonest metadata administrators are outside the freshness contract.",
+    "Unrelated production VM stops/deletions were observed and recorded; no fixture faults targeted those VMs."
+  ],
+  "production_ready": false
+}
