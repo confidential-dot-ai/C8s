@@ -59,7 +59,7 @@ func VerifyAssignmentTarget(ctx context.Context, cfg AttestConfig) (*AssignmentT
 	if err != nil || len(digests) != 0 {
 		client.CloseIdleConnections()
 		if err != nil {
-			return nil, final(err)
+			return nil, err
 		}
 		return nil, errors.New("assignment target has measured containers")
 	}
