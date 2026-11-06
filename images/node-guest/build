@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build the C8s node image from THIS repo's profile, using a
+# Build a C8s guest image from THIS repo's profiles, using a
 # confidential-os-builder checkout purely as the builder (c8s#264).
 # Drop-in replacement for confos's bin/build-c8s: same env contract and
-# profile stack/order — only the c8s profile content (./c8s, staged via
-# --profile-dir) and the kernel fragments (./kernel) come from here, and
-# C8S_REF / C8S_REGISTRY reach the profile's mkosi.sync via --sync-input
-# (an exported var never reaches the sync: mkosi runs under sudo, which
-# strips the env).
+# profile stack/order — only the selected profile's content (./worker or
+# ./c8s, staged via --profile-dir) and the kernel fragments (./kernel)
+# come from here, and C8S_REF / C8S_REGISTRY reach the profile's
+# mkosi.sync via --sync-input (an exported var never reaches the sync:
+# mkosi runs under sudo, which strips the env).
 #
 # The full GPU node image is base + gpu + attest-gpu + C8s. That takes
 # four ordered steps because all host-side staging must precede one
@@ -52,17 +52,18 @@
 #                      branch). Use a branch SHA to test an unmerged C8s build
 #                      end-to-end.
 #   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
-#                      instead of pulling nri-image-policy:<C8S_REF>. The
-#                      core container images must support its chart's commands.
+#                      instead of the one nri-image-policy:<C8S_REF> carries.
+#                      The core container images must support its chart's
+#                      commands.
 #   C8S_IMAGES_DIR=... local OCI layouts for c8s-operator and armtls-mesh,
 #                      tagged with C8S_REF. Requires C8S_BINARY. The repro gate
 #                      shares these container inputs between both builds.
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
 #                      repo's checkout).
 #   C8S_PROFILE=worker build the worker image (./worker) instead of the node
-#                      image (./c8s, the default). Requires C8S_BINARY; takes
-#                      neither C8S_DEV nor C8S_IMAGES_DIR. The c8s profile's
-#                      files listed in worker/shared are staged with it.
+#                      image (./c8s, the default). Takes no C8S_DEV. The c8s
+#                      profile's files listed in worker/shared are staged
+#                      with it.
 #   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
 #                      private half of images/node-guest/module-signing.crt,
 #                      used to sign the NVIDIA modules. Required for GPU
@@ -81,17 +82,19 @@ tdx|snp) ;;
 esac
 [ -n "${C8S_REF:-}" ] \
     || { echo "images/node-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+[ -z "${C8S_BINARY:-}" ] || [ -f "$C8S_BINARY" ] \
+    || { echo "images/node-guest/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
 C8S_PROFILE=${C8S_PROFILE:-c8s}
 case "$C8S_PROFILE" in
 c8s) ;;
 worker)
-    [ -f "${C8S_BINARY:-}" ] && [ "${C8S_DEV:-0}" = 0 ] && [ -z "${C8S_IMAGES_DIR:-}" ] \
-        || { echo "images/node-guest/build: C8S_PROFILE=worker requires C8S_BINARY and takes neither C8S_DEV nor C8S_IMAGES_DIR" >&2; exit 1; }
+    [ "${C8S_DEV:-0}" = 0 ] \
+        || { echo "images/node-guest/build: C8S_PROFILE=worker takes no C8S_DEV" >&2; exit 1; }
     : "${C8S_NAME:=c8s-worker}" ;;
 *)  echo "images/node-guest/build: C8S_PROFILE must be c8s or worker, got '$C8S_PROFILE'" >&2; exit 1 ;;
 esac
 if [ -n "${C8S_IMAGES_DIR:-}" ]; then
-    [ -f "${C8S_BINARY:-}" ] || { echo "images/node-guest/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
+    [ -n "${C8S_BINARY:-}" ] || { echo "images/node-guest/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
     C8S_IMAGES_DIR=$(realpath -e -- "$C8S_IMAGES_DIR")
     for image in c8s-operator armtls-mesh; do
         [ -f "$C8S_IMAGES_DIR/$image/index.json" ] || {
@@ -149,7 +152,6 @@ else
 fi
 bin/confos-fetch-attest-gpu
 if [ -n "${C8S_BINARY:-}" ]; then
-    [ -f "$C8S_BINARY" ] || { echo "images/node-guest/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
 fi
 if [ "$C8S_PROFILE" = worker ]; then
