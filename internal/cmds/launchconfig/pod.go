@@ -101,6 +101,16 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
 			return fmt.Errorf("pod.manifest container %q must not be privileged", c.Name)
 		}
+		// No cluster API answers the pod CVM's kubelet, so a Secret or
+		// ConfigMap reference would never resolve.
+		if len(c.EnvFrom) != 0 {
+			return fmt.Errorf("pod.manifest container %q: pod CVM does not resolve envFrom", c.Name)
+		}
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && (e.ValueFrom.SecretKeyRef != nil || e.ValueFrom.ConfigMapKeyRef != nil) {
+				return fmt.Errorf("pod.manifest container %q: pod CVM does not resolve Secret or ConfigMap environment references", c.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -125,13 +135,10 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 		return errors.New("pod CVM resources must be specified per container")
 	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
-		if len(c.EnvFrom) != 0 || len(c.Resources.Claims) != 0 {
-			return fmt.Errorf("container %q: pod CVM does not resolve envFrom or resource claims", c.Name)
+		if len(c.Resources.Claims) != 0 {
+			return fmt.Errorf("container %q: pod CVM does not resolve resource claims", c.Name)
 		}
 		for _, e := range c.Env {
-			if e.ValueFrom != nil && (e.ValueFrom.SecretKeyRef != nil || e.ValueFrom.ConfigMapKeyRef != nil) {
-				return fmt.Errorf("container %q: pod CVM does not resolve Secret or ConfigMap environment references", c.Name)
-			}
 			if e.ValueFrom != nil && e.ValueFrom.FieldRef != nil {
 				field := e.ValueFrom.FieldRef.FieldPath
 				if field == "metadata.annotations" || strings.Contains(field, "confidential.ai/pod-cvm") || strings.Contains(field, "kubernetes.io/config.") {

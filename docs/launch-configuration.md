@@ -91,8 +91,8 @@ A pod document takes no CDS pin decree: its CDS image set is the one
 `--cds-image-policy-file` binds, and its `cds.pinFloor` is zero. The
 assignment retains the generic boot's CDS trust.
 
-Pod documents carry no RKE2 credentials, agent keys or router block. Staging
-writes the role marker instead of RKE2 configuration. Pod issuance authority
+Pod documents carry no RKE2 credentials, agent keys, router block or registry
+mirrors. Staging writes the role marker instead of RKE2 configuration. Pod issuance authority
 belongs in the measured CDS configuration, never in a node or Pod launch
 document. See [operator.md](operator.md#pod-cvm) for assignment and runtime
 restrictions.

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -24,7 +26,6 @@ type PodBundleOptions struct {
 	Dir                 string
 	ClusterID           string
 	ManifestPath        string
-	VCPUs               int
 	NodeName            string
 	LaunchKeyPath       string
 	ServerAddress       string
@@ -58,7 +59,14 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if err := cds.validate(); err != nil {
 		return err
 	}
-	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
+	identity, err := runtimemeasure.LoadImageManifest(opts.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("--image-manifest: %w", err)
+	}
+	if identity.Family() != teetypes.FamilyTDX {
+		return errors.New("--image-manifest: the pod role is TDX-only")
+	}
+	image, err := imageFromManifest(opts.ManifestPath, 0)
 	if err != nil {
 		return err
 	}

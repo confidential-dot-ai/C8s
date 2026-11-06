@@ -142,6 +142,7 @@ func TestValidatePodRole(t *testing.T) {
 		{"server is equivalent pod key", func(d *Document) { d.PodOperatorPublicKey = strings.TrimSpace(d.Server.OperatorPublicKey) }, "", "must be distinct"},
 		{"agent token", func(d *Document) { d.RKE2.AgentToken = strings.Repeat("a", 64) }, "", "rke2 tokens"},
 		{"agent keys", func(d *Document) { d.AgentOperatorPublicKeys = []string{agentPub} }, "", "agentOperatorPublicKeys"},
+		{"registry mirrors", func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000"} }, "", "registryMirrors"},
 		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "", "runtime register"},
 		{"pod section", func(*Document) {}, "pod:\n  uid: " + testPodUID + "\n  namespace: tenant\n  name: app\n", "pod"},
 		{"workloads", func(*Document) {}, "workloads: '" + testPodWorkloads + "'\n", "workloads"},
@@ -190,6 +191,23 @@ func TestNewPodBundleStages(t *testing.T) {
 	}
 	requirePresent(t, filepath.Join(dir, podKeyFile))
 	stageBundleNode(t, dir, podDir)
+}
+
+// An SNP image has no runtime register to measure the pod with, so new-pod
+// refuses its manifest before writing anything.
+func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	serverPubPath, _ := writePodServerKey(t)
+	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
+		"--image-manifest", writeManifest(t, "snp"), "--name", "p-1",
+		"--server-address", "10.0.0.1", "--server-public-key", serverPubPath,
+		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t))
+	if err == nil || !strings.Contains(err.Error(), "TDX-only") {
+		t.Fatalf("got %v, want a TDX-only refusal", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused bundle left %s behind: %v", dir, statErr)
+	}
 }
 
 func writePodServerKey(t *testing.T) (string, string) {

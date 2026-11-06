@@ -96,6 +96,9 @@ type roleRules struct {
 	// which Stage resolves for a server that omitted it.
 	stagedAddress bool
 	router        bool // may carry a router block
+	// registryMirrors is written as RKE2's registries file, so a role that
+	// runs no RKE2 must not carry it.
+	registryMirrors presence
 	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
 	// differ from the server's. A podKey authorizes its own exact bytes.
@@ -104,24 +107,26 @@ type roleRules struct {
 
 var roles = map[Role]roleRules{
 	Server: {
-		joinsCluster:  true,
-		serverToken:   required,
-		agentKeys:     optional,
-		podKey:        forbidden,
-		namesServer:   false,
-		stagedAddress: true,
-		router:        true,
-		ownLaunchKey:  true,
+		joinsCluster:    true,
+		serverToken:     required,
+		agentKeys:       optional,
+		podKey:          forbidden,
+		namesServer:     false,
+		stagedAddress:   true,
+		router:          true,
+		ownLaunchKey:    true,
+		registryMirrors: optional,
 	},
 	Agent: {
-		joinsCluster:  true,
-		serverToken:   forbidden,
-		agentKeys:     required,
-		podKey:        forbidden,
-		namesServer:   true,
-		stagedAddress: true,
-		router:        false,
-		ownLaunchKey:  false,
+		joinsCluster:    true,
+		serverToken:     forbidden,
+		agentKeys:       required,
+		podKey:          forbidden,
+		namesServer:     true,
+		stagedAddress:   true,
+		router:          false,
+		ownLaunchKey:    false,
+		registryMirrors: optional,
 	},
 	Pod: {
 		joinsCluster:      false,
@@ -133,6 +138,7 @@ var roles = map[Role]roleRules{
 		stagedAddress:     true,
 		router:            false,
 		ownLaunchKey:      false,
+		registryMirrors:   forbidden,
 	},
 }
 
@@ -592,6 +598,9 @@ func (d *Document) validate() error {
 		if err := d.Router.Validate(); err != nil {
 			return err
 		}
+	}
+	if rules.registryMirrors == forbidden && len(d.RegistryMirrors) != 0 {
+		return fmt.Errorf("%s must not carry registryMirrors", d.Role)
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
 }
