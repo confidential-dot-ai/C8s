@@ -1,6 +1,10 @@
 import copy
+import hashlib
+import tempfile
+import subprocess
 import sys
 import unittest
+import secrets
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'cds-ha-metadata'))
 import guests
@@ -49,5 +53,65 @@ class Safety(unittest.TestCase):
         self.assertIn('BridgePodNetwork: true', renderer)
         self.assertIn('RunStrategyManual', renderer)
         self.assertNotIn('HostPath', renderer)
+
+class SparseTransport(unittest.TestCase):
+    def test_chunk_is_framed_and_rejects_truncation_and_corruption(self):
+        import transfer
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory); data = b'verified image bytes'; token = secrets.token_hex(16)
+            digest = hashlib.sha256(data).hexdigest()
+            path = p/'chunk'
+            process = subprocess.Popen(transfer.chunk_receiver(len(data), digest, str(path), token), stdin=subprocess.PIPE)
+            try:
+                process.stdin.write(data+b'excess bytes'); process.stdin.flush()
+                self.assertEqual(process.wait(timeout=3), 0)  # stdin is still open
+            finally:
+                process.stdin.close()
+                if process.poll() is None: process.kill(); process.wait()
+            self.assertEqual(path.read_bytes(), data)
+            self.assertEqual((p/'chunk.complete').read_text(), token)
+            for index, bad in enumerate([data[:-1], b'x'*len(data)]):
+                target = p/('bad'+str(index))
+                result = subprocess.run(transfer.chunk_receiver(len(data), digest, str(target), token), input=bad)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(Path(str(target)+'.complete').exists())
+
+    def test_cli_failures_keep_native_upload_retry_contract(self):
+        import run
+        runner = object.__new__(run.Run)
+        with tempfile.TemporaryDirectory() as directory:
+            runner.directory = Path(directory)
+            with self.assertRaises(RuntimeError):
+                runner.command('failed-read-only-probe', [sys.executable, '-c', 'raise SystemExit(1)'])
+
+    def test_receiver_reconstructs_exact_sparse_disk(self):
+        import run
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory); disk = p/'disk.raw'
+            with disk.open('wb') as f:
+                f.write(b'GPT fixture')
+                f.seek(32*1024*1024); f.write(b'verified root extent')
+            archive = run.archive_image(p)
+            out = p/'receiver'; out.mkdir()
+            subprocess.run(['tar', '-xzf', str(archive), '-C', str(out)], check=True)
+            with disk.open('rb') as original, (out/'disk.img').open('rb') as restored:
+                self.assertEqual(hashlib.file_digest(original, 'sha256').digest(),
+                                 hashlib.file_digest(restored, 'sha256').digest())
+            self.assertEqual((out/'disk.img').stat().st_size, disk.stat().st_size)
+            self.assertLess((out/'disk.img').stat().st_blocks*512, 1024*1024)
+            self.assertLess(archive.stat().st_size, 64*1024)
+            # Extraction checks the ordered archive before publishing its own
+            # token; corrupt or missing parts cannot authorize guest startup.
+            import transfer
+            data = archive.read_bytes(); mid = len(data)//2; parts = [p/'one', p/'two']
+            parts[0].write_bytes(data[:mid]); parts[1].write_bytes(data[mid:])
+            token = secrets.token_hex(16); marker = p/'extracted'; dest = p/'framed'; dest.mkdir()
+            args = transfer.extract_receiver([str(x) for x in parts], hashlib.sha256(data).hexdigest(), str(dest), str(marker), token)
+            subprocess.run(args, check=True)
+            self.assertEqual(marker.read_text(), token)
+            self.assertEqual(hashlib.sha256((dest/'disk.img').read_bytes()).digest(), hashlib.sha256(disk.read_bytes()).digest())
+            marker.unlink(); parts[1].write_bytes(b'corrupted')
+            self.assertNotEqual(subprocess.run(args).returncode, 0)
+            self.assertFalse(marker.exists())
 
 if __name__ == '__main__': unittest.main()

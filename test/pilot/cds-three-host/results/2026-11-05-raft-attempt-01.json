@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "backend": "raft",
+  "attempt": 1,
+  "stage": "image-upload-before-guest-start",
+  "cds_runtime_commit": "59a5ea7f",
+  "workload_agent_commit": "b80868c9",
+  "runner_commit": "ad521301",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 0,
+  "failure": "The API streaming proxy timed out before the image upload receiver completed. No CDS backend result is claimed.",
+  "follow_up": "Preserve sparse disk regions in the transfer archive and independently verify the same full reconstructed disk hash.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 7,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

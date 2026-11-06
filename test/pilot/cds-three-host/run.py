@@ -13,7 +13,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tarfile
 import time
 import urllib.parse
 
@@ -22,8 +21,27 @@ sys.path.insert(0, str(ROOT/'cds-ha-metadata'))
 import cloud as metadata
 from fixtures import NS, OWNER, COMPONENT, SLOT, need
 import guests
+import transfer
 
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
+
+
+def archive_image(directory):
+    # GNU sparse metadata avoids sending/decompressing the large zero regions
+    # of the verified raw disk through a short-idle-timeout exec proxy. The
+    # receiver still checks the SHA-256 of the complete reconstructed disk.
+    directory = Path(directory)
+    archive = directory/'three-host-sparse-transfer.tar.gz'
+    if not archive.exists():
+        partial = directory/('transfer-'+secrets.token_hex(8)+'.partial')
+        try:
+            with partial.open('xb') as output:
+                subprocess.run(['tar', '--sparse', '--format=posix', '--transform=s,^disk.raw$,disk.img,',
+                    '-I', 'gzip -1', '-cf', '-', '-C', str(directory), 'disk.raw'], stdout=output, check=True, timeout=180)
+            partial.replace(archive)
+        finally:
+            if partial.exists(): partial.unlink()
+    return archive
 
 
 class Run(metadata.Run):
@@ -40,6 +58,12 @@ class Run(metadata.Run):
         self.atomic = self.helpers.atomic_json
 
     def resource_path(self, item): return guests.resource_path(item, self.run)
+
+    def command(self, name, argv, data=None, timeout=90):
+        # The native upload helper retries read-only completion probes on
+        # RuntimeError. Preserve that interface across the metadata runner.
+        try: return super().command(name, argv, data=data, timeout=timeout)
+        except ValueError as error: raise RuntimeError(str(error)) from error
 
     def create(self, item):
         if item['kind'] == 'AdminNetworkPolicy':
@@ -95,12 +119,13 @@ class Run(metadata.Run):
         pop = next(r for r in reversed(self.state['resources']) if r['item']['kind'] == 'Pod' and r['item']['metadata']['name'] == next(x['metadata']['name'] for x in items if x['kind'] == 'Pod'))
         self.ready(pop)
         name = pop['item']['metadata']['name']
-        # Reuse the receiver-completion token and independent hash checks of
-        # the native hardware runner; no timeout is interpreted as an upload.
+        # Short framed chunks avoid the streaming proxy's idle timeout. Each
+        # chunk and the assembled archive are checked by the receiver, then
+        # the complete reconstructed disk is independently checked below.
         archive = Path(self.state['archives'][variant])
         link = self.directory/('image-'+variant+'.tar.gz')
         if not link.exists(): link.symlink_to(archive)
-        self.native.Run.upload(self, name, link.name, '/rootdisk')
+        transfer.upload(self, name, link, '/rootdisk')
         expected = self.state['images'][variant]['disk_sha256']
         answer = self.command(name+'-hash', self.kubectl('exec', name, '--', 'sha256sum', '/rootdisk/disk.img')).decode().strip()
         need(answer == expected+'  /rootdisk/disk.img', 'uploaded guest image differs')
@@ -156,7 +181,11 @@ class Run(metadata.Run):
                 time.sleep(3); continue
             proof = json.loads(receipt.read_text())
             need(proof.get('native_tdx_armtls_verified') and proof.get('image_and_launch_verified') and proof['result']['passed'], 'verified guest assertion failed')
-            result = proof['result']; self.state['phases'][-1].update(passed=True, seconds=result['seconds'])
+            result = proof['result']
+            if operation in ('overlap', 'retire'):
+                delivered = result.get('checks', {}).get('delivered', {})
+                need(not delivered.get('refused') and delivered.get('version', 0) > 0, 'image policy decree was refused')
+            self.state['phases'][-1].update(passed=True, seconds=result['seconds'])
             ca = result.get('checks', {}).get('ca_fingerprint')
             if ca:
                 need(not self.state.get('ca') or self.state['ca'] == ca, 'CA changed between independently verified guests')
@@ -173,9 +202,7 @@ class Run(metadata.Run):
                 actual = self.native.digest(p/entry['path']); need(actual == entry['sha256'], 'artifact hash differs')
             need(all(len(td[k]) == 96 and set(td[k]) != {'0'} for k in ('mrtd', 'rtmr1', 'rtmr2')), 'full measured TDX tuple required')
             self.state['images'][variant] = {'directory': str(p), 'pins': td, 'disk_sha256': m['outputs']['disk_image']['sha256']}
-            archive = p/('three-host-transfer.tar.gz')
-            if not archive.exists():
-                with tarfile.open(archive, 'w:gz', compresslevel=1) as tar: tar.add(p/'disk.raw', arcname='disk.img', recursive=False)
+            archive = archive_image(p)
             self.state['archives'][variant] = str(archive)
         need(self.state['images']['a']['disk_sha256'] != self.state['images']['b']['disk_sha256'], 'distinct measured images required')
         self.save()
@@ -269,7 +296,10 @@ class Run(metadata.Run):
             self.phase(observer, 'prepare', slot); self.phase(observer, 'roll-safe', slot)
             old = self.guests[slot]; self.tunnels[slot][0].terminate(); self.remove(old)
             self.boot_guest(pending[slot, 'b'], slot, 'b'); self.phase(slot, 'init', slot, retry_start=True)
-            self.phase(observer, 'provision', slot); self.phase(observer, 'admit', slot)
+            self.phase(observer, 'provision', slot)
+            # Current-state replicas recover after attested provisioning; only
+            # the Raft control has membership admission.
+            if self.args.backend == 'raft': self.phase(observer, 'admit', slot)
             self.phase(observer, 'roll-safe', slot); self.phase(observer, 'revoked', slot)
             self.phase(slot, 'attach', slot)
             self.health()

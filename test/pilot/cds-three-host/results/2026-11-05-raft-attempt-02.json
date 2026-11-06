@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "backend": "raft",
+  "attempt": 2,
+  "stage": "upload-completion-check-before-guest-start",
+  "runner_commit": "409799606578bc2d59bc7de52029f65aa1c97b0f",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 0,
+  "failure": "A transient kubelet exec EOF interrupted the read-only upload completion check. The inherited helper expected RuntimeError; the runner raised ValueError and aborted instead of retrying.",
+  "follow_up": "Preserve the native helper error contract and verify it with a local regression test. The measured images are unchanged.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 7,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

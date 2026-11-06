@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "timezone": "America/Vancouver",
+  "backend": "raft",
+  "attempt": 3,
+  "stage": "image-transfer-before-guest-start",
+  "runner_commit": "8d58a2a4",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 0,
+  "completed_image_uploads": 5,
+  "failure": "The sixth long upload lost its streaming connection before the receiver completed. The runner rejected the partial disk and started no guests.",
+  "follow_up": "Transfer short, independently hash-checked chunks with unique retry paths; verify their assembled archive and the reconstructed disk. The measured images are unchanged.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 31,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
