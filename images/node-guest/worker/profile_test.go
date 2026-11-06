@@ -5,7 +5,9 @@ package profile
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -13,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
 )
 
 const c8sProfile = "../c8s"
@@ -34,6 +38,42 @@ func lines(t *testing.T, path string) []string {
 	return out
 }
 
+// assignment matches a single-line shell assignment.
+var assignment = regexp.MustCompile(`(?m)^([A-Z][A-Z0-9_]*)=(.*)$`)
+
+// settings are the values path assigns, by name, unquoted.
+func settings(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]string{}
+	for _, m := range assignment.FindAllStringSubmatch(string(data), -1) {
+		found[m[1]] = strings.Trim(m[2], `"`)
+	}
+	return found
+}
+
+// baked is the path of the file the worker image bakes at rel: this profile's,
+// or the c8s profile's while shared names it.
+func baked(t *testing.T, rel string) string {
+	t.Helper()
+	if own := filepath.Join("mkosi.extra", rel); fileExists(own) {
+		return own
+	}
+	if slices.Contains(lines(t, "shared"), rel) {
+		return filepath.Join(c8sProfile, "mkosi.extra", rel)
+	}
+	t.Fatalf("the worker image bakes no %s", rel)
+	return ""
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // Each shared file is the c8s profile's, and the worker profile holds no copy
 // whose precedence over it would be undefined.
 func TestSharedFilesAreTheC8sProfiles(t *testing.T) {
@@ -50,25 +90,13 @@ func TestSharedFilesAreTheC8sProfiles(t *testing.T) {
 // The worker image unpacks the RKE2 release and renders with the Helm the
 // node image pins, and narrows the same attester.
 func TestPinsAndFinalizeAreTheC8sProfiles(t *testing.T) {
-	pin := regexp.MustCompile(`(?m)^(RKE2_VERSION|RKE2_IMAGES_CORE_SHA256|HELM_VERSION|HELM_LINUX_AMD64_SHA256)=(.*)$`)
-	pins := func(path string) map[string]string {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+	worker, node := settings(t, "mkosi.sync"), settings(t, filepath.Join(c8sProfile, "mkosi.sync"))
+	for _, pin := range []string{"RKE2_VERSION", "RKE2_IMAGES_CORE_SHA256", "HELM_VERSION", "HELM_LINUX_AMD64_SHA256"} {
+		if worker[pin] == "" {
+			t.Errorf("the worker profile states no %s", pin)
 		}
-		found := map[string]string{}
-		for _, m := range pin.FindAllStringSubmatch(string(data), -1) {
-			found[m[1]] = m[2]
-		}
-		return found
-	}
-	worker, node := pins("mkosi.sync"), pins(filepath.Join(c8sProfile, "mkosi.sync"))
-	if len(worker) != 4 {
-		t.Fatalf("worker pins = %v, want four", worker)
-	}
-	for name, value := range worker {
-		if node[name] != value {
-			t.Errorf("%s = %s, want the c8s profile's %s", name, value, node[name])
+		if node[pin] != worker[pin] {
+			t.Errorf("%s = %s, want the c8s profile's %s", pin, worker[pin], node[pin])
 		}
 	}
 	finalize, err := os.ReadFile("mkosi.finalize")
@@ -77,6 +105,48 @@ func TestPinsAndFinalizeAreTheC8sProfiles(t *testing.T) {
 	}
 	if nodeFinalize, err := os.ReadFile(filepath.Join(c8sProfile, "mkosi.finalize")); err != nil || !bytes.Equal(finalize, nodeFinalize) {
 		t.Errorf("mkosi.finalize differs from the c8s profile's: %v", err)
+	}
+}
+
+// The wrapper the measured image's containerd runs is the binary this profile
+// installs, and it execs the runtime the profile stages.
+func TestTheWrapperExecsTheRuntimeTheProfileStages(t *testing.T) {
+	sync := settings(t, "mkosi.sync")
+	data, err := os.ReadFile(baked(t, "var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/10-c8s-runc.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dropIn struct {
+		Plugins map[string]struct {
+			Containerd struct {
+				Runtimes map[string]struct {
+					Options struct {
+						BinaryName string `toml:"BinaryName"`
+					} `toml:"options"`
+				} `toml:"runtimes"`
+			} `toml:"containerd"`
+		} `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(data, &dropIn); err != nil {
+		t.Fatal(err)
+	}
+	var handlers []string
+	for _, plugin := range dropIn.Plugins {
+		for name, runtime := range plugin.Containerd.Runtimes {
+			if runtime.Options.BinaryName != sync["RUNC_WRAPPER"] {
+				t.Errorf("handler %s runs %q, want the wrapper %s this profile installs", name, runtime.Options.BinaryName, sync["RUNC_WRAPPER"])
+			}
+			handlers = append(handlers, name)
+		}
+	}
+	if len(handlers) == 0 {
+		t.Fatal("the drop-in points no runtime handler at the wrapper")
+	}
+	realRunc := c8srunc.New(io.Discard).RealRunc
+	staged := strings.Fields(strings.Trim(sync["RUNTIME_BINARIES"], "()"))
+	dir, name := path.Split(realRunc)
+	if strings.TrimSuffix(dir, "/") != sync["RKE2_BIN_LINK"] || !slices.Contains(staged, name) {
+		t.Errorf("the wrapper execs %s, which this profile stages as neither of %v under %s", realRunc, staged, sync["RKE2_BIN_LINK"])
 	}
 }
 

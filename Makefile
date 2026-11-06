@@ -157,6 +157,34 @@ test-node-guest-image-cloud-init:
 test-node-guest-image-immutable-root:
 	bash images/node-guest/tests/immutable-root-test.sh
 
+# The worker image's invariants — kernel configuration, boot gates, baked
+# programs and the staging dependency of every host unit — each exercised
+# against a copy of the profile. The profile's own consistency, including the
+# measured runtime wrapper, is checked in Go. Needs a ./confos checkout (or
+# CONFOS_DIR) and Go.
+.PHONY: test-node-guest-image-invariants
+test-node-guest-image-invariants:
+	bash images/node-guest/tests/worker-invariants-test.sh
+	go test -count=1 ./images/node-guest/worker
+
+# The worker's host units under real systemd, with stubbed payloads. Needs
+# only docker.
+.PHONY: test-node-guest-image-systemd
+test-node-guest-image-systemd:
+	bash images/node-guest/tests/worker-systemd-test.sh
+
+# Every ordinary-pod handler in the worker's containerd configuration runs the
+# measured wrapper. Needs Go.
+.PHONY: test-node-guest-image-containerd
+test-node-guest-image-containerd:
+	bash images/node-guest/tests/worker-containerd-test.sh
+
+# Each image's finalize hook narrows its attester to a loopback bind. Needs
+# docker and a ./confos checkout (or CONFOS_DIR).
+.PHONY: test-node-guest-image-attester-finalize
+test-node-guest-image-attester-finalize:
+	bash images/node-guest/tests/attester-finalize-test.sh
+
 # Advisory mutation testing of code changed vs BASE (default origin/main).
 mutation-check:
 	./scripts/mutation-check.sh run "$${BASE:-origin/main}"

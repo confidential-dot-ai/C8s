@@ -33,6 +33,12 @@ HELM_LINUX_AMD64_SHA256="a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c
 RKE2_VERSION="v1.36.4+rke2r1"
 RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
 RUNTIME_BINARIES=(containerd containerd-shim-runc-v2 kubelet runc)
+# Where the runtime lands, the link c8s-runc execs it through, and the wrapper
+# the image's containerd drop-in names. profile_test.go compares these values
+# against the baked configuration and the wrapper's compiled path.
+RUNTIME_BIN_DIR="/usr/lib/c8s/worker/bin"
+RKE2_BIN_LINK="/var/lib/rancher/rke2/bin"
+RUNC_WRAPPER="/usr/local/bin/c8s-runc"
 # The CNI plugins release at RKE2's version; the worker's Cilium chains portmap.
 CNI_PLUGINS_VERSION="v1.9.1"
 CNI_PLUGINS_LINUX_AMD64_SHA256="b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303"
@@ -238,15 +244,15 @@ zstd -dc "$CORE" | tar -x -C "$TMP" "$LAYER"
 mkdir -p "$TMP/runtime"
 tar -x -C "$TMP/runtime" -f "$TMP/$LAYER" "${RUNTIME_BINARIES[@]/#/bin/}"
 for bin in "${RUNTIME_BINARIES[@]}"; do
-    install -D -m 0755 "$TMP/runtime/bin/$bin" "$STAGE_DIR/usr/lib/c8s/worker/bin/$bin"
+    install -D -m 0755 "$TMP/runtime/bin/$bin" "$STAGE_DIR$RUNTIME_BIN_DIR/$bin"
 done
-mkdir -p "$STAGE_DIR/var/lib/rancher/rke2"
-ln -sfn /usr/lib/c8s/worker/bin "$STAGE_DIR/var/lib/rancher/rke2/bin"
+mkdir -p "$STAGE_DIR${RKE2_BIN_LINK%/*}"
+ln -sfn "$RUNTIME_BIN_DIR" "$STAGE_DIR$RKE2_BIN_LINK"
 
 # --- 2. The plugin and the runtime wrapper --------------------------------
 [ -x "$C8S" ] || fail "no executable c8s binary at usr/local/bin/c8s"
 install -D -m 0755 "$C8S" "$STAGE_DIR/opt/nri/plugins/10-nri-image-policy"
-install -D -m 0755 "$C8S" "$STAGE_DIR/usr/local/bin/c8s-runc"
+install -D -m 0755 "$C8S" "$STAGE_DIR$RUNC_WRAPPER"
 
 # --- 3. Router files and the worker floor ---------------------------------
 HELM="$CACHE_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
