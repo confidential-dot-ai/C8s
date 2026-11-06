@@ -51,7 +51,7 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 				}
 				store.record.Request = encodeAssignment(t, request)
 			case "renderer":
-				s.render = func(*launchconfig.Document) (nodeservices.PodRuntime, error) {
+				s.render = func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 					return nodeservices.PodRuntime{}, errors.New("baked floor conflict")
 				}
 			}
@@ -154,16 +154,43 @@ func TestAssignmentWorkerRetriesCommittedIntentAfterRestart(t *testing.T) {
 	})
 }
 
-// No measured digest, no kubelet pod, and 503 while the
-// kubelet is unavailable); the kubelet is consulted only after the journal.
-func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T) {
-	for _, failure := range []string{"journal-unreadable", "measured", "kubelet-unavailable", "malformed", "existing-pod"} {
-		t.Run(failure, func(t *testing.T) {
+// An abandoned install stops the worker's retries; the accepted assignment
+// stands and a second one is still refused.
+func TestAssignmentWorkerStopsRetryingAnAbandonedInstall(t *testing.T) {
+	s, key, peer, _ := assignmentFixture(t)
+	body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	attempts := 0
+	s.apply = func(context.Context, nodeservices.PodRuntime) error {
+		attempts++
+		go cancel()
+		return errors.Join(errAssignmentAbandoned, errors.New("plugin ended the pod identity"))
+	}
+	if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
+		t.Fatal(response.Code)
+	}
+	s.run(ctx)
+	if attempts != 1 {
+		t.Fatalf("apply attempts=%d, want 1", attempts)
+	}
+	if response := postAssignment(s, peer, body); response.Code != http.StatusConflict {
+		t.Fatal("abandoned install reopened assignment")
+	}
+}
+
+// Before an assignment nothing runs, so the register must have measured no
+// workload; an unreadable journal refuses the assignment too.
+func TestAssignmentAvailabilityRequiresAnEmptyJournal(t *testing.T) {
+	for _, state := range []string{"absent", "empty", "unreadable", "measured"} {
+		t.Run(state, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "journal")
-			body := []byte(`{"kind":"PodList","items":[]}`)
-			var podErr error
-			switch failure {
-			case "journal-unreadable":
+			switch state {
+			case "empty":
+				if err := os.WriteFile(path, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "unreadable":
 				if err := os.Mkdir(path, 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -171,27 +198,10 @@ func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T)
 				if err := os.WriteFile(path, []byte("sha256:"+strings.Repeat("a", 64)+"\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-			case "kubelet-unavailable":
-				podErr = errors.New("kubelet unavailable")
-			case "malformed":
-				body = []byte("{")
-			case "existing-pod":
-				body = []byte(`{"kind":"PodList","items":[{"metadata":{"uid":"old"}}]}`)
 			}
-			called := false
-			runtime := guestAssignmentRuntime{journal: path, pods: func(context.Context) ([]byte, error) { called = true; return body, podErr }}
-			err := runtime.available(t.Context())
-			if err == nil {
-				t.Fatal("uncertain guest accepted assignment")
-			}
-			if errors.Is(err, errAssignmentRuntimeUnavailable) != (failure == "kubelet-unavailable") {
-				t.Fatalf("incorrect runtime availability classification: %v", err)
-			}
-			if podErr != nil && !errors.Is(err, podErr) {
-				t.Fatal("kubelet availability lost its underlying cause")
-			}
-			if (failure == "journal-unreadable" || failure == "measured") && called {
-				t.Fatal("journal refusal still consulted kubelet")
+			err := guestAssignmentRuntime{journal: path}.available(t.Context())
+			if available := state == "absent" || state == "empty"; (err == nil) != available {
+				t.Fatalf("availability with a %s journal: %v", state, err)
 			}
 		})
 	}

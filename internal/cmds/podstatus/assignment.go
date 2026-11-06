@@ -44,9 +44,10 @@ type assignmentStore interface {
 	Commit(*assignmentRecord) error
 }
 
-// assignmentService serializes the one transition from waiting to assigned.
+// assignmentService serializes the one transition from unassigned to assigned.
 // Only the record commits it: neither an apply failure nor a service restart
-// can return this boot to the waiting state.
+// can return this boot to the unassigned state. The runtime, the admission
+// plugin and the kubelet start only once a pod is assigned, through apply.
 type assignmentService struct {
 	mu        sync.Mutex
 	doc       *launchconfig.Document
@@ -56,18 +57,14 @@ type assignmentService struct {
 	uid       string
 	runtime   *nodeservices.PodRuntime
 	boundKey  func(context.Context) (*ecdsa.PublicKey, error)
-	render    func(*launchconfig.Document) (nodeservices.PodRuntime, error)
+	render    func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error)
 	available func(context.Context) error
 	apply     func(context.Context, nodeservices.PodRuntime) error
 	wake      chan struct{}
 }
 
-func newAssignmentService(ctx context.Context, doc *launchconfig.Document, store assignmentStore, key func(context.Context) (*ecdsa.PublicKey, error), render func(*launchconfig.Document) (nodeservices.PodRuntime, error), available func(context.Context) error, apply func(context.Context, nodeservices.PodRuntime) error) (*assignmentService, error) {
+func newAssignmentService(ctx context.Context, doc *launchconfig.Document, store assignmentStore, key func(context.Context) (*ecdsa.PublicKey, error), render func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error), available func(context.Context) error, apply func(context.Context, nodeservices.PodRuntime) error) (*assignmentService, error) {
 	s := &assignmentService{doc: doc, store: store, nonces: make(map[[podassign.NonceSize]byte]struct{}), boundKey: key, render: render, available: available, apply: apply, wake: make(chan struct{}, 1)}
-	if doc.Pod != nil {
-		s.uid = doc.Pod.UID
-		return s, nil
-	}
 	record, err := store.Load()
 	if err != nil {
 		return nil, err
@@ -91,7 +88,7 @@ func newAssignmentService(ctx context.Context, doc *launchconfig.Document, store
 		if err := podassign.Verify(pub, peer, req); err != nil {
 			return nil, fmt.Errorf("assignment record signature: %w", err)
 		}
-		assigned, err := launchconfig.AssignedPod(doc, req.Manifest, req.Entries, req.MeshPeers)
+		assigned, err := launchconfig.Assign(doc, req.Manifest, req.Entries, req.MeshPeers)
 		if err != nil {
 			return nil, fmt.Errorf("assignment record payload: %w", err)
 		}
@@ -175,7 +172,7 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid assignment signature", http.StatusUnauthorized)
 		return
 	}
-	assigned, err := launchconfig.AssignedPod(s.doc, req.Manifest, req.Entries, req.MeshPeers)
+	assigned, err := launchconfig.Assign(s.doc, req.Manifest, req.Entries, req.MeshPeers)
 	if err != nil {
 		http.Error(w, "invalid assignment payload", http.StatusUnprocessableEntity)
 		return
@@ -216,7 +213,8 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 }
 
 // run retries installation without a guest lifetime deadline. A provider may
-// independently retire a VM; recovery never discards its accepted assignment.
+// independently retire a VM; recovery never discards its accepted assignment,
+// but stops retrying one the boot can no longer complete.
 func (s *assignmentService) run(ctx context.Context) {
 	for {
 		select {
@@ -235,6 +233,10 @@ func (s *assignmentService) run(ctx context.Context) {
 			err := s.apply(applyCtx, *runtime)
 			cancel()
 			if err == nil {
+				break
+			}
+			if errors.Is(err, errAssignmentAbandoned) {
+				slog.Error("accepted Pod assignment cannot complete in this boot", "error", err)
 				break
 			}
 			slog.Error("recover accepted Pod assignment", "error", err)

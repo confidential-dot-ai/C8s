@@ -39,8 +39,11 @@ func serve(h Handler, method, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// assigned is a handler's assignment holding uid, "" for none.
+func assigned(uid string) *assignmentService { return &assignmentService{uid: uid} }
+
 func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
-	h := Handler{UID: "u1", Pods: func(context.Context) ([]byte, error) { return []byte(pods), nil }}
+	h := Handler{assignment: assigned("u1"), Pods: func(context.Context) ([]byte, error) { return []byte(pods), nil }}
 	rec := serve(h, http.MethodGet, PodPath)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
@@ -53,10 +56,11 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 		t.Fatalf("pod %+v", pod)
 	}
 
-	h.UID = "missing"
+	h.assignment = assigned("missing")
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown uid: %d", rec.Code)
 	}
+	h.assignment = assigned("u1")
 	h.Pods = func(context.Context) ([]byte, error) { return []byte(pods[:len(pods)/2]), nil }
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusBadGateway || strings.Contains(rec.Body.String(), "unexpected") {
 		t.Fatalf("truncated kubelet body: %d %s", rec.Code, rec.Body)
@@ -65,11 +69,13 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("kubelet down: %d", rec.Code)
 	}
+	// No kubelet runs before an assignment: the guest is unassigned, not
+	// failing, and the kubelet is not asked.
 	calls := 0
-	h.UID = ""
+	h.assignment = assigned("")
 	h.Pods = func(context.Context) ([]byte, error) { calls++; return []byte(pods), nil }
 	if rec := serve(h, http.MethodGet, PodPath); rec.Code != http.StatusNotFound || calls != 0 {
-		t.Fatalf("unassigned: %d after %d kubelet reads", rec.Code, calls)
+		t.Fatalf("unassigned with no kubelet: %d after %d kubelet reads", rec.Code, calls)
 	}
 	if rec := serve(h, http.MethodPost, PodPath); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST: %d", rec.Code)
