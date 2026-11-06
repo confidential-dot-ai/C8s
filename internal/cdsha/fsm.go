@@ -39,6 +39,9 @@ const (
 	KindDecree    EntryKind = "decree"
 	// KindDoubt records a Recover decree no replica could confirm.
 	KindDoubt EntryKind = "recover_doubt"
+	// KindRenounce ends a doubt: the member it names gave that Recover decree
+	// up for good.
+	KindRenounce EntryKind = "recover_renounced"
 	// KindRenewCA carries the cluster's mesh CA certificate, signed again.
 	KindRenewCA EntryKind = "renew_ca"
 	KindFormat  EntryKind = "format"
@@ -60,6 +63,7 @@ type Entry struct {
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
 	Doubt     *cdsdecree.Signed      `json:"recover_doubt,omitempty"`
+	Renounce  *RenounceEntry         `json:"recover_renounced,omitempty"`
 	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
 }
 
@@ -212,6 +216,8 @@ func (f *FSM) apply(e Entry) Result {
 		return f.applyDecree(*e.Decree)
 	case e.Kind == KindDoubt && e.Doubt != nil:
 		return f.applyDoubt(*e.Doubt)
+	case e.Kind == KindRenounce && e.Renounce != nil:
+		return f.applyRenounce(*e.Renounce)
 	case e.Kind == KindRenewCA && e.RenewCA != nil:
 		return f.applyRenewCA(*e.RenewCA)
 	case e.Kind == KindFormat && e.SetFormat != 0:
@@ -313,8 +319,28 @@ func (f *FSM) applyDoubt(sd cdsdecree.Signed) Result {
 		Intent: d.IntentID,
 		Member: d.TargetMember,
 	})
-	slog.Error("cds-ha: ALARM: a Recover decree names a member this cluster cannot account for; no replica serves until that member rejoins or the operator dismisses the Recover",
+	slog.Error("cds-ha: ALARM: a Recover decree names a member this cluster cannot account for; no replica serves until that member renounces the decree or the operator dismisses it",
 		"intent", d.IntentID, "member", d.TargetMember)
+	return Result{
+		Decree: &DecreeResult{Version: f.core.Version},
+	}
+}
+
+// applyRenounce ends the doubt of a Recover decree the member it names gave
+// up for good, and accounts for that decree, so the board it still lies on
+// raises it no more. The renunciation is made once in the member's TEE memory
+// and never expires, so no later recovery can follow it (recover.go).
+func (f *FSM) applyRenounce(e RenounceEntry) Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	doubt, held := f.core.doubtOf(e.Intent)
+	if !held || doubt.Member != e.Member {
+		return f.refused(fmt.Errorf("this cluster holds no doubt of Recover %s naming member %s", e.Intent, e.Member))
+	}
+	f.core.Doubts = withoutDoubt(f.core.Doubts, e.Intent)
+	f.core.AppliedDecrees = append(f.core.AppliedDecrees, e.Intent)
+	slog.Warn("cds-ha: the member a Recover decree of this cluster names gave it up for good; the doubt of it is over", "audit", true,
+		"intent", e.Intent, "member", e.Member)
 	return Result{
 		Decree: &DecreeResult{Version: f.core.Version},
 	}

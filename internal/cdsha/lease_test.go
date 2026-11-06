@@ -158,7 +158,7 @@ func TestALeaderPassesOneBarrierAtATime(t *testing.T) {
 		t.Fatal("a barrier was in flight before the test asked for one")
 	}
 	defer leader.barriers.give()
-	appended := leader.raft.LastIndex()
+	appended := leader.raft.Load().LastIndex()
 	refusedForItself, err := leader.barrier()
 	if err == nil {
 		t.Fatalf("a leader passed two barriers at once: %+v", refusedForItself)
@@ -167,7 +167,7 @@ func TestALeaderPassesOneBarrierAtATime(t *testing.T) {
 	if answer := leader.answerControl(asking, controlRequest{Op: opRead}); answer.Err == "" || answer.Index != 0 {
 		t.Fatalf("a leader with a barrier in flight answered a peer %+v", answer)
 	}
-	if last := leader.raft.LastIndex(); last != appended {
+	if last := leader.raft.Load().LastIndex(); last != appended {
 		t.Fatalf("a refused barrier appended to the log: index %d, was %d", last, appended)
 	}
 }

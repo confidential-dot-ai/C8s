@@ -38,6 +38,9 @@ func (n *Node) keepCluster(ctx context.Context) {
 		case <-tick.C:
 		}
 		n.applyBoardDecrees(ctx)
+		n.noteAcknowledgements()
+		n.liftRenouncedDoubts()
+		n.excludeSuspects()
 		n.renewMeshCA()
 		n.pruneHistory()
 	}
@@ -75,6 +78,61 @@ func (n *Node) applyDecree(signed cdsdecree.Signed) (Delivered, error) {
 	slog.Info("cds-ha: this cluster applied a decree of its operator", "audit", true,
 		"intent", intent, "kind", signed.Decree.Kind, "version", res.Decree.Version)
 	return Delivered{Intent: intent, Version: res.Decree.Version}, nil
+}
+
+// judgeRecover is what this leader makes of a Recover decree on its
+// cluster's board: a cluster that has a leader needs none, so the decree is
+// refused; and where the member it hands the cluster to does not answer here,
+// that member may be carrying the cluster on alone already, so the refusal
+// becomes a doubt on the log and every replica fences on it (fence.go).
+func (n *Node) judgeRecover(signed cdsdecree.Signed) {
+	decree := signed.Decree
+	if n.fsm.ClusterState().dealtWith(decree.IntentID) {
+		return
+	}
+	if decree.TargetMember == string(n.member) {
+		// This leader is the replica the decree hands the cluster to: it
+		// carried the cluster on alone (recover.go), and the decree goes on
+		// the log it carries on, so it can never apply again.
+		n.applyFromBoard(signed)
+		return
+	}
+	if refused := n.refusesRecover(decree); refused != "" {
+		if n.recoverLog.changed(refused) {
+			slog.Info("cds-ha: this leader refused a Recover decree of its cluster's board", "intent", decree.IntentID, "refused", refused)
+		}
+		return
+	}
+	n.doubtRecover(signed)
+}
+
+// refusesRecover is why this cluster needs no Recover of the member a decree
+// names, and nothing where that member may be carrying the cluster on alone:
+// a member that gives the decree up for good over the attested channel will
+// never act on it. An expired decree is doubted like any other, because its
+// target judges the expiry on a clock of its own (recover.go).
+func (n *Node) refusesRecover(d cdsdecree.Decree) string {
+	renounced, err := n.renouncedBy(Doubt{Intent: d.IntentID, Member: d.TargetMember})
+	if err != nil || !renounced {
+		return ""
+	}
+	return "this cluster has a leader, and the member the decree names renounced it"
+}
+
+// doubtRecover records the doubt a Recover decree leaves on this cluster, so
+// that it outlives this leader and a board the host withholds from the next
+// one.
+func (n *Node) doubtRecover(signed cdsdecree.Signed) {
+	intent := signed.Decree.IntentID
+	res, err := n.propose(Entry{Kind: KindDoubt, Doubt: &signed})
+	switch {
+	case err != nil:
+		slog.Warn("cds-ha: the doubt of a Recover decree did not commit", "intent", intent, "error", err)
+	case res.Decree == nil:
+		slog.Error("cds-ha: the state machine answered a doubt with no result of one", "intent", intent)
+	case res.Decree.Refused != "":
+		slog.Info("cds-ha: this cluster doubts no Recover decree of its board", "intent", intent, "refused", res.Decree.Refused)
+	}
 }
 
 // refuses is why this leader does not put a decree on the log: a node image

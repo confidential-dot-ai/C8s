@@ -171,7 +171,7 @@ func (n *Node) seatingNow() (seating, bool) {
 		return seating{}, false
 	}
 	now := time.Now()
-	seen := seating{seats: core.Voters, term: n.raft.CurrentTerm()}
+	seen := seating{seats: core.Voters, term: n.raft.Load().CurrentTerm()}
 	for _, server := range servers {
 		seen.members = append(seen.members, server.ID)
 		dead := n.countsDead(seen.term, server.ID, now)
@@ -183,7 +183,7 @@ func (n *Node) seatingNow() (seating, bool) {
 				continue
 			}
 			seen.staying = append(seen.staying, server)
-		case dead:
+		case dead || cutOutOfTheGroup(server):
 			seen.deadNonVoters = append(seen.deadNonVoters, server)
 		default:
 			seen.nonVoters = append(seen.nonVoters, server)
@@ -211,8 +211,10 @@ func (n *Node) lastAnswerOrFirstSight(member raft.ServerID, now time.Time) time.
 	return n.seatbook.sightedAt(member, now)
 }
 
+// A fenced leader lets no member go: it cuts the members it counts dead out
+// of the group instead, so each of them learns it was cut out (fence.go).
 func (n *Node) takeOutDeadNonVoter(seen seating) bool {
-	if len(seen.deadNonVoters) == 0 {
+	if len(seen.deadNonVoters) == 0 || n.Fenced() != nil {
 		return false
 	}
 	leaving := seen.deadNonVoters[0]
@@ -234,7 +236,7 @@ func (n *Node) fillFreeSeat(seen seating) bool {
 	}
 	// INVARIANT: the seat is taken at the configuration's own address; a
 	// member that answers elsewhere moves as a non-voter (members.go).
-	if err := n.raft.AddVoter(candidate.ID, candidate.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.raft.Load().AddVoter(candidate.ID, candidate.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
 		slog.Warn("cds-ha: this leader could not seat a voter of its cluster",
 			"member", candidate.ID,
 			"error", err)
@@ -343,7 +345,7 @@ func (n *Node) demoteSurplusVoter(seen seating) bool {
 	if !found {
 		return false
 	}
-	if err := n.raft.DemoteVoter(surplus.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.raft.Load().DemoteVoter(surplus.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
 		slog.Warn("cds-ha: this leader could not take the vote of a surplus voter",
 			"member", surplus.ID,
 			"error", err)
@@ -374,7 +376,7 @@ func (n *Node) quietestVoter(seen seating) (raft.Server, bool) {
 }
 
 func (n *Node) takeOut(member raft.ServerID) bool {
-	if err := n.raft.RemoveServer(member, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.raft.Load().RemoveServer(member, 0, n.cfg.Timing.Apply).Error(); err != nil {
 		slog.Warn("cds-ha: this leader could not take a member out of its cluster",
 			"member", member,
 			"error", err)

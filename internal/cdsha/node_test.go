@@ -144,7 +144,7 @@ func TestAReplicaJoiningTakesTheStateFromASnapshot(t *testing.T) {
 			t.Fatalf("write %d: %v", i, err)
 		}
 	}
-	if err := leader.node.raft.Snapshot().Error(); err != nil {
+	if err := leader.node.raft.Load().Snapshot().Error(); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	joiner := c.start()
@@ -230,7 +230,7 @@ func TestRunEndsWithItsContext(t *testing.T) {
 	r := c.start()
 	r.cancel()
 	<-r.done
-	if err := r.node.raft.Apply([]byte("{}"), time.Second).Error(); !errors.Is(err, raft.ErrRaftShutdown) {
+	if err := r.node.raft.Load().Apply([]byte("{}"), time.Second).Error(); !errors.Is(err, raft.ErrRaftShutdown) {
 		t.Fatalf("Raft kept running: %v", err)
 	}
 	if !r.node.mux.closed() {

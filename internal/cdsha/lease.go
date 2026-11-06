@@ -49,9 +49,9 @@ type leadership struct {
 // leader and the term one at a time, so a term that moves between the two
 // answers is no leadership at all.
 func (n *Node) following() leadership {
-	term := n.raft.CurrentTerm()
-	leader, member := n.raft.LeaderWithID()
-	if n.raft.CurrentTerm() != term {
+	term := n.raft.Load().CurrentTerm()
+	leader, member := n.raft.Load().LeaderWithID()
+	if n.raft.Load().CurrentTerm() != term {
 		return leadership{}
 	}
 	return leadership{
@@ -98,7 +98,7 @@ func (n *Node) readTimeout() time.Duration {
 // confirmRead takes a lease: the watermark the leader confirmed, and the wait
 // for this replica's own state machine to reach it.
 func (n *Node) confirmRead() (*readLease, error) {
-	if n.raft == nil {
+	if n.raft.Load() == nil {
 		return nil, errors.New("cds-ha: this replica is not started")
 	}
 	core := n.fsm.ClusterState()
@@ -180,6 +180,11 @@ func (n *Node) barrier() (uint64, error) {
 	if reason := n.fsm.Stuck(); reason != "" {
 		return 0, errors.New("cds-ha: this leader stopped following the log: " + reason)
 	}
+	// A fenced leader confirms no read, for itself or for the replicas that
+	// ask it, so the leases every replica answers reads under run out.
+	if fenced := n.fenced(); fenced != nil {
+		return 0, fenced
+	}
 	deadline := time.Now().Add(n.readTimeout())
 	if !n.barriers.take(deadline) {
 		return 0, errors.New("cds-ha: a barrier of this leader was in flight for a whole read")
@@ -213,7 +218,7 @@ func barrierPassed(passed <-chan barrierResult, deadline time.Time) (uint64, err
 func (n *Node) passBarrier(passed chan<- barrierResult) {
 	defer n.barriers.give()
 	leader := n.following()
-	err := n.raft.Barrier(n.readTimeout()).Error()
+	err := n.raft.Load().Barrier(n.readTimeout()).Error()
 	n.refusals.record(leader.term, err)
 	if err != nil {
 		passed <- barrierResult{err: err}

@@ -45,8 +45,9 @@ the divergence as `-`: only the leader knows them.
 | `this replica does not serve its cluster: ...` | it holds no cluster, lost contact with its leader, is fenced, or stopped following the log | the reason names which; follow the matching row |
 | `this replica stopped following the log: ...` | applying an entry failed here | one replica: it exits and rejoins. Every replica: runbook 8 |
 | `this replica is fenced: ...` | the cluster holds the doubt of a Recover | runbook 7 |
-| `a Recover decree names a member this cluster cannot account for` | an operator handed the cluster to a member that does not answer here | runbook 7: bring it back or dismiss the Recover |
-| `a member of this cluster may be carrying a recovered cluster of its own` | that member is out of the cluster and rejoins only as a new member | destroy its VM, or let it rejoin |
+| `a Recover decree names a member this cluster cannot account for` | an operator handed the cluster to a member that does not answer here | runbook 7: bring it back, or dismiss the Recover once its VM is destroyed |
+| `the member a Recover decree of this cluster names answers that it is carrying the cluster on under it` | that member recovered: two lives of the cluster exist, and this one serves nothing | runbook 7: keep the recovered one, and destroy the VMs of this side |
+| `a member of this cluster may be carrying a recovered cluster of its own` | the cluster reaches that member no more, and it rejoins only as a new member | destroy its VM, or let it rejoin |
 | `the replicas of this cluster hold different state: ...` | the leader compared the checkpoints | runbook 9 |
 | `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait before a planned removal; replace an already removed VM while a serving majority survives: runbook 2 |
 | `the replicas of this cluster take turns answering at one address` | a replica entry resolves to a load-balanced address, or two VMs share one | give every replica its own address: runbook 3 |

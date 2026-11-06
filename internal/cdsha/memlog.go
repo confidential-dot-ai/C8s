@@ -110,6 +110,18 @@ func (m *memLog) DeleteRange(first, last uint64) error {
 	return nil
 }
 
+// dropAll drops every entry held: the log of a replica that carried its
+// cluster on alone, whose state is in the snapshot that replaced it
+// (recover.go).
+func (m *memLog) dropAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries = make(map[uint64]*raft.Log)
+	m.first = 0
+	m.last = 0
+	m.data = 0
+}
+
 // usage is the entries the log holds and the bytes of their payloads.
 func (m *memLog) usage() (entries uint64, data int64) {
 	m.mu.Lock()

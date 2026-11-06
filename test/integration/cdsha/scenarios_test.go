@@ -820,3 +820,106 @@ func TestADecreeLeftOnTheBoardApplies(t *testing.T) {
 		c.requirePinDecree(r, cdsdecree.UpdateMeasurements, intent)
 	}
 }
+
+// A Recover decree is break-glass: the operator signs it for one surviving
+// voter when a majority of a cluster's replicas is gone for good, and that
+// replica carries the cluster on alone with the state it holds. A replica
+// that boots afterwards joins the cluster it carried on.
+func TestTheDecreedVoterCarriesTheClusterOnWhenItsMajorityIsGone(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	const workload = "written-before-the-majority-was-lost"
+	c.replaceAllowlist(leading, workload)
+	c.waitFor("every replica to serve the written allowlist", 30*time.Second, c.allServeWritten(workload))
+	survivor := c.others(leading)[0]
+	lost := []*replica{leading, c.others(leading)[1]}
+	c.waitVoter(survivor, 30*time.Second)
+	reported := c.awaitStatus(survivor)
+
+	for _, gone := range lost {
+		c.kill(gone)
+	}
+	intent := c.decreeRecover(reported.ID, survivor, reported.Version)
+
+	c.waitFor("the surviving voter to carry the cluster on alone", 2*time.Minute, func() bool {
+		alone, answered := c.status(survivor)
+		return answered && alone.Leader == alone.ID && slices.Equal(alone.Voters, []string{alone.ID}) && alone.Serving.OK
+	})
+	recovered := c.awaitStatus(survivor)
+	if !c.recorded(survivor, intent, recovered.Version) {
+		t.Errorf("the recovered cluster records no Recover decree %s at version %d", intent, recovered.Version)
+	}
+	if code, body := c.get(survivor, "/allowlist"); code != http.StatusOK || !strings.Contains(string(body), workload) {
+		t.Errorf("the recovered cluster serves /allowlist = %d %s, want the write it held", code, body)
+	}
+	const after = "written-after-the-recovery"
+	c.replaceAllowlist(survivor, after)
+
+	c.restart(lost[0])
+
+	c.waitFor("a replica of the lost majority to join the recovered cluster", 2*time.Minute, func() bool {
+		return c.allServing([]*replica{survivor, lost[0]}, after)
+	})
+}
+
+// decreeRecover posts a Recover decree to the replica it names, as the
+// operator who read its member id over the attested channel does.
+func (c *cluster) decreeRecover(member string, r *replica, version uint64) string {
+	c.t.Helper()
+	decree := cdsdecree.Decree{
+		ClusterID:     clusterID,
+		IntentID:      cdsdecree.NewIntentID(),
+		Kind:          cdsdecree.Recover,
+		ExpiresAt:     time.Now().Add(time.Hour),
+		BaseVersion:   version,
+		ResumeVersion: version,
+		TargetMember:  member,
+		TargetAddress: fmt.Sprintf("%s:%d", r.host, clientPort),
+		IssuedAtMS:    time.Now().UnixMilli(),
+	}
+	c.decree(r, decree)
+	return decree.IntentID
+}
+
+// allServeWritten reports every replica serving an allowlist that names
+// workload.
+func (c *cluster) allServeWritten(workload string) func() bool {
+	return func() bool { return c.allServe(workload) }
+}
+
+// A leader that cannot read its cluster's board while a member is cut off
+// serves nothing: the decree it cannot see may be the Recover of that very
+// member, which would leave two clusters serving at once. It serves again
+// once the board answers it.
+func TestALeaderThatCannotReadItsBoardWithACutOffVoterServesNothing(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	cut := c.others(leading)[0]
+	c.waitVoter(cut, 30*time.Second)
+	cutMember := c.awaitStatus(cut).ID
+
+	c.pause(cut)
+	c.board.Refuse(true)
+
+	c.waitFor("the leader to fence its cluster", 2*time.Minute, func() bool {
+		fenced, answered := c.status(leading)
+		return answered && fenced.Fenced != nil && slices.Contains(fenced.Fenced.CutOff, cutMember)
+	})
+	c.waitFor("every replica of the fenced cluster to stop serving", time.Minute, func() bool {
+		return len(c.serving()) == 0
+	})
+	if code, body := c.writeAllowlist(leading, "written-to-a-fenced-cluster", judged); code == http.StatusNoContent {
+		t.Errorf("the fenced cluster took a write: %d %s", code, body)
+	}
+
+	c.board.Refuse(false)
+
+	c.waitFor("the cluster to serve again once its board answers", time.Minute, func() bool {
+		serving, answered := c.status(leading)
+		return answered && serving.Fenced == nil && serving.Serving.OK
+	})
+	c.replaceAllowlist(leading, "written-once-the-board-answered")
+	c.resume(cut)
+}

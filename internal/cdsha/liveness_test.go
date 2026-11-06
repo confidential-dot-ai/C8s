@@ -45,7 +45,7 @@ var theOtherReplica = netip.MustParseAddrPort("127.0.0.1:8444")
 func TestAVoterItsLeaderCannotReplicateToCountsDead(t *testing.T) {
 	n := aMember(t, testTiming)
 	member := raft.ServerID("gkqjvjjqkqp6yqxfwqkqm5x7oe")
-	term := n.raft.CurrentTerm()
+	term := n.raft.Load().CurrentTerm()
 	now := time.Now()
 	n.seatbook.sightedAt(member, now.Add(-time.Hour))
 	answered(n.peers, theOtherReplica, string(member), now)
@@ -68,7 +68,7 @@ func TestAVoterItsLeaderCannotReplicateToCountsDead(t *testing.T) {
 func TestTheFailuresOfATermThatPassedCountForNothing(t *testing.T) {
 	n := aMember(t, testTiming)
 	member := raft.ServerID("d9lqkqfwqkqp6yqxfwqkqm5x7oe")
-	term := n.raft.CurrentTerm()
+	term := n.raft.Load().CurrentTerm()
 	now := time.Now()
 	n.noteFailure(member, now.Add(-time.Hour), now)
 
@@ -85,11 +85,11 @@ func TestTheFailuresOfATermThatPassedCountForNothing(t *testing.T) {
 func TestAMemberRaftReachesAgainCountsAlive(t *testing.T) {
 	n := aMember(t, testTiming)
 	member := raft.ServerID("b4lqkqfwqkqp6yqxfwqkqm5x7oe")
-	term := n.raft.CurrentTerm()
+	term := n.raft.Load().CurrentTerm()
 	now := time.Now()
 	n.noteFailure(member, now.Add(-time.Hour), now)
 
-	n.note(raft.Observation{Data: raft.ResumedHeartbeatObservation{PeerID: member}})
+	n.note(raft.Observation{Raft: n.raft.Load(), Data: raft.ResumedHeartbeatObservation{PeerID: member}})
 
 	if failingFor := n.failures.failingFor(term, member, now); failingFor != 0 {
 		t.Errorf("a member Raft replicates to again is failing for %s", failingFor)
@@ -100,7 +100,7 @@ func TestAMemberRaftReachesAgainCountsAlive(t *testing.T) {
 func TestTheFailuresOfAStreamThatOutlivedAReAddAreIgnored(t *testing.T) {
 	n := aMember(t, testTiming)
 	member := raft.ServerID("c7lqkqfwqkqp6yqxfwqkqm5x7oe")
-	term := n.raft.CurrentTerm()
+	term := n.raft.Load().CurrentTerm()
 	now := time.Now()
 	n.seatbook.sightedAt(member, now)
 
