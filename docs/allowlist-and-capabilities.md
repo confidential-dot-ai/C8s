@@ -302,7 +302,9 @@ by that monotone version: a consumer applies a pull only if its version is not
 below the last applied, and a 304 raises the last applied version to the one
 it names.
 
-Nodes ask for the allowlist in effect (`?for=nodes`). An allowlist write takes
+Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
+sends it over attested TLS to CDS; anything else sending it just gets the
+allowlist in effect. An allowlist write takes
 effect on nodes `--allowlist-node-delay` (30s) after it is written. CDS issues
 certificates under it at once, and router certificates (`--router-cert-ttl`,
 20s) last less than that, so any router still serving advertises it before it

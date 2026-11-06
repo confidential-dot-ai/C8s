@@ -12,4 +12,4 @@ func EntityTag(digest string) string {
 
 // NodeQuery is the query with which a node asks GET /allowlist for the
 // allowlist in effect.
-const NodeQuery = "for=nodes"
+const NodeQuery = "requester=node"
