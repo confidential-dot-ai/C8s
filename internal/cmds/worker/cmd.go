@@ -120,22 +120,23 @@ func (d draft) render() ([]byte, error) {
 
 // NewFloorCmd returns `worker floor`, run when a worker image is built.
 func NewFloorCmd() *cobra.Command {
-	var nodeFloor, renderDir, staticPodDir, out string
+	var floorTemplatePath, renderDir, staticPodDir, out string
 	cmd := &cobra.Command{
 		Use:   "floor",
 		Short: "Build a worker image's NRI floor",
-		Long: `Build a worker image's NRI floor from the node image's floor, its digests
-filled in, and the allowlist seed 'c8s node-image render' wrote to --render-dir.
-The floor keeps the node floor's settings and the entries whose every container
-holds a platform role, adds the chart's router entry and an entry pinning each
-static pod template in --static-pods, and leaves the mesh's resolver and cluster
-ranges to worker stage. It refuses a node floor key it does not know, and a
-router entry that leaves its launch open, takes a mount the control plane fills,
-or names a file under /run/c8s-node that worker stage does not publish.`,
+		Long: `Build a worker image's NRI floor from the image's floor template, its
+digests filled in, and the allowlist seed 'c8s node-image render' wrote to
+--render-dir. The floor keeps the template's settings and entries, adds the
+chart's router entry and an entry pinning each static pod template in
+--static-pods, and leaves the mesh's resolver and cluster ranges to worker
+stage. It refuses a template key it does not know, a template entry whose
+container holds no platform role, and a router entry that leaves its launch
+open, takes a mount the control plane fills, or names a file under
+/run/c8s-node that worker stage does not publish.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			node, err := os.ReadFile(nodeFloor)
+			template, err := os.ReadFile(floorTemplatePath)
 			if err != nil {
 				return err
 			}
@@ -143,11 +144,11 @@ or names a file under /run/c8s-node that worker stage does not publish.`,
 			if err != nil {
 				return err
 			}
-			templates, err := readTemplates(staticPodDir)
+			staticPods, err := readTemplates(staticPodDir)
 			if err != nil {
 				return err
 			}
-			floor, err := Floor(node, seed, templates)
+			floor, err := Floor(template, seed, staticPods)
 			if err != nil {
 				return err
 			}
@@ -155,11 +156,11 @@ or names a file under /run/c8s-node that worker stage does not publish.`,
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&nodeFloor, "node-floor", "", "the node image's NRI floor, its digests filled in")
+	f.StringVar(&floorTemplatePath, "floor-template", "", "the worker image's NRI floor template, its digests filled in")
 	f.StringVar(&renderDir, "render-dir", "", "the --output-dir of 'c8s node-image render'")
 	f.StringVar(&staticPodDir, "static-pods", "", "the worker image's static pod templates, as stage reads them")
 	f.StringVar(&out, "out", "", "file to write the worker's floor to")
-	for _, name := range []string{"node-floor", "render-dir", "static-pods", "out"} {
+	for _, name := range []string{"floor-template", "render-dir", "static-pods", "out"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd

@@ -107,6 +107,8 @@ refuses "staging that survives its own failure" staging-poweroff \
     sed -i '/^FailureAction=poweroff-force$/d' "$(baked etc/systemd/system/worker-stage.service)"
 refuses "a runtime that stops waiting for a boot gate" boot-gate \
     sed -i 's/ scratch-enforce.service//g' "$(baked etc/systemd/system/containerd.service)"
+refuses "a boot gate that does not order itself before the runtime" boot-gate \
+    sed -i '/^Before=containerd.service$/d' "$(baked etc/systemd/system/scratch-enforce.service)"
 refuses "a boot gate that is not a oneshot" boot-gate \
     sed -i 's/^Type=oneshot$/Type=simple/' "$(baked etc/systemd/system/scratch-enforce.service)"
 refuses "a unit kind the staging rule does not cover" unit-kind \

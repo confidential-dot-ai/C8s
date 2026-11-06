@@ -29,9 +29,9 @@ const (
 // runSetMeasurePolicies writes this release's policy-measurement switch into an
 // existing plugin config, leaving every other key as found.
 //
-// A node-as-CVM bakes the config into the measured image, and its
-// allowlist.base carries the RKE2 system-image digests that only the image
-// build resolves — so the chart can patch that file but never re-render it.
+// A worker bakes the config into the measured image, and its allowlist.base
+// carries the floor digests that only the image build resolves — so the chart
+// can patch that file but never re-render it.
 func runSetMeasurePolicies(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+setMeasurePoliciesVerb, flag.ContinueOnError)
 	path := fs.String("config", DefaultConfigPath, "plugin config to patch in place")

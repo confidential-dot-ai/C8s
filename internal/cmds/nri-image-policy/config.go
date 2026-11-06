@@ -83,8 +83,8 @@ type workloadClaimsConfig struct {
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
 // entries. The chart's component entries pin each container's argv and mount
-// table and leave env open; the node image's generated RKE2 system entries
-// leave command and args open.
+// table and leave env open; a worker image's floor pins every command and
+// leaves args open only where the pod chooses them.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -496,6 +496,12 @@ func (c *config) Validate() error {
 	// more likely a key in the wrong section than an intent.
 	if c.Allowlist.NodeTCB && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.node_tcb needs a non-empty allowlist.base: it exempts the base's digests from the sandbox policy")
+	}
+	// The exemption rests on the base being measured with the image, which is
+	// the worker image's floor; the only other base is a chart-rendered one,
+	// chosen by the admin the policy defends against.
+	if c.Allowlist.NodeTCB && !c.Worker {
+		return errors.New("allowlist.node_tcb requires worker: true: a measured base is a worker image's floor")
 	}
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")

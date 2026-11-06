@@ -116,10 +116,20 @@ func TestCheckWorkerConfig(t *testing.T) {
 	}
 }
 
+// A measured base is a worker image's floor, so a config claiming one without
+// the worker key is refused when it parses, wherever it was loaded from.
+func TestNodeTCBWithoutWorkerIsRefusedAtParse(t *testing.T) {
+	document := strings.Replace(workerDocument, "\nworker: true\n", "\n", 1)
+	_, err := parseConfig([]byte(document))
+	if err == nil || !strings.Contains(err.Error(), "allowlist.node_tcb requires worker: true") {
+		t.Fatalf("parseConfig = %v, want a refusal naming the worker key", err)
+	}
+}
+
 // On a worker, an API pod holds only the host binds an entry pinning its
 // launch declares, in any namespace, and none a static pod's entry declares;
 // any other host privilege is refused. A static pod is excused for a pinned
-// launch alone. A server excuses an API pod for a pinned launch.
+// launch alone: its control plane, outside the TEE, writes every other pod.
 func TestWorkerExcusesNoAPIPod(t *testing.T) {
 	pinned := func(argv string) allowlist.Container {
 		return allowlist.Container{
@@ -157,7 +167,6 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 	}
 	tests := []struct {
 		name         string
-		server       bool
 		source       string
 		namespace    string
 		pod          func(*api.PodSandbox)
@@ -180,7 +189,6 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 		{name: "a pod without a source, copying a static pod", namespace: "kube-system", ctr: privileged, argv: "/floor", want: verdictDeny},
 		{name: "a pinned static pod", source: staticPodSource, namespace: "kube-system", pod: hostNetwork, ctr: privileged, argv: "/floor", want: verdictAllow},
 		{name: "a static pod an open entry admits", source: staticPodSource, namespace: "kube-system", ctr: privileged, argv: "/open", want: verdictDeny},
-		{name: "a server's API pod on a pinned launch", server: true, source: "api", namespace: "kube-system", pod: hostNetwork, ctr: privileged, argv: "/floor", want: verdictAllow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,7 +212,7 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 			cfg := &config{
 				Allowlist: allowlistConfig{Base: base, NodeTCB: true},
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
-				Worker:    !tt.server,
+				Worker:    true,
 			}
 			p := newTestPlugin(cfg)
 			p.policy = newPolicyStore(base)

@@ -60,7 +60,6 @@ expect_result true
 reset_case
 set_paths images/node-guest/tests/immutable-root-test.sh \
   images/node-guest/tools/containerdcheck/main.go \
-  images/node-guest/tools/systemfloor/main_test.go \
   images/node-guest/README.md
 expect_result false
 

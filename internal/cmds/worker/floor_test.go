@@ -13,20 +13,21 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// nodeFloorTemplate is the node image's floor, as the worker image's build
-// reads it.
-const nodeFloorTemplate = "../../../images/node-guest/worker/image-policy.yaml.in"
+// floorTemplateFile is the worker image's floor template, as its build reads
+// it.
+const floorTemplateFile = "../../../images/node-guest/worker/image-policy.yaml.in"
 
 const testRouterEntry = "c8s-router-0123456789ab"
 
-// renderedNodeFloor is the node image's floor with its digests filled, as the
-// image build fills them.
-func renderedNodeFloor(t *testing.T) []byte {
+// renderedTemplate is the image's floor template with its digests filled, as
+// the image build fills them.
+func renderedTemplate(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile(nodeFloorTemplate)
+	data, err := os.ReadFile(floorTemplateFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +61,6 @@ func withoutKey(t *testing.T, floor []byte, path ...string) []byte {
 	return data
 }
 
-// settingsOf is floor without its allowlist base, its worker key and the
-// mesh keys named.
 // measured is a floor's settings with served allowlists measured, as a
 // worker's are.
 func measured(settings map[string]any) map[string]any {
@@ -69,7 +68,8 @@ func measured(settings map[string]any) map[string]any {
 	return settings
 }
 
-func settingsOf(t *testing.T, floor []byte, meshKeys ...string) map[string]any {
+// settingsOf is floor without its allowlist base and its worker key.
+func settingsOf(t *testing.T, floor []byte) map[string]any {
 	t.Helper()
 	var doc map[string]any
 	if err := yaml.Unmarshal(floor, &doc); err != nil {
@@ -77,9 +77,6 @@ func settingsOf(t *testing.T, floor []byte, meshKeys ...string) map[string]any {
 	}
 	delete(doc["allowlist"].(map[string]any), "base")
 	delete(doc, "worker")
-	for _, key := range meshKeys {
-		delete(doc["mesh"].(map[string]any), key)
-	}
 	return doc
 }
 
@@ -118,30 +115,30 @@ func workloadsOf(t *testing.T, floor []byte) map[string]allowlist.Workload {
 	return doc.Allowlist.Base.Workloads
 }
 
-// platformRoleEntries are the node floor's entries a member pod's injected
+// platformRoleEntries are the template's entries a member pod's injected
 // containers run under.
 var platformRoleEntries = []string{
 	"c8s-acme", "c8s-allowlist-proxy", "c8s-get-cert", "c8s-get-secret", "c8s-get-volume",
 	"c8s-mesh-endpoint", "c8s-probe-file", "c8s-router-nginx", "c8s-router-upstream",
 }
 
-// A worker's floor holds the node floor's platform roles unchanged and the
-// router's entry as the seed has it, and no server or agent workload; staged
-// from a worker document, it is a floor the plugin runs as a worker's.
+// A worker's floor holds the template's platform roles unchanged and the
+// router's entry as the seed has it; staged from a worker document, it is a
+// floor the plugin runs as a worker's.
 func TestFloorKeepsThePlatformRolesAndTheRouter(t *testing.T) {
-	nodeFloor := renderedNodeFloor(t)
+	template := renderedTemplate(t)
 	seed := routerSeed("/run/c8s-node/cds.json", "/run/c8s-node/operator-pubkey", "/run/c8s-node/router/hostnames")
-	floor, err := Floor(nodeFloor, seed, nil)
+	floor, err := Floor(template, seed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, worker := workloadsOf(t, nodeFloor), workloadsOf(t, floor)
+	want, worker := workloadsOf(t, template), workloadsOf(t, floor)
 	if got, want := slices.Sorted(maps.Keys(worker)), slices.Sorted(slices.Values(append(slices.Clone(platformRoleEntries), testRouterEntry))); !slices.Equal(got, want) {
 		t.Fatalf("workloads = %v, want the platform roles and the router, %v", got, want)
 	}
 	for _, name := range platformRoleEntries {
-		if !reflect.DeepEqual(worker[name], node[name]) {
-			t.Errorf("platform role %s =\n%+v\nwant the node floor's\n%+v", name, worker[name], node[name])
+		if !reflect.DeepEqual(worker[name], want[name]) {
+			t.Errorf("platform role %s =\n%+v\nwant the template's\n%+v", name, worker[name], want[name])
 		}
 	}
 	parsed, err := allowlist.ParseJSON(seed)
@@ -161,8 +158,8 @@ func TestFloorKeepsThePlatformRolesAndTheRouter(t *testing.T) {
 	if err := yaml.Unmarshal(floor, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := settingsOf(t, floor), measured(settingsOf(t, nodeFloor, "exempt_namespaces", "exits", "resolver", "cluster_ranges")); !reflect.DeepEqual(got, want) {
-		t.Errorf("settings =\n%v\nwant the node floor's, measuring served allowlists, without what stage fills or a worker refuses\n%v", got, want)
+	if got, want := settingsOf(t, floor), measured(settingsOf(t, template)); !reflect.DeepEqual(got, want) {
+		t.Errorf("settings =\n%v\nwant the template's, measuring served allowlists\n%v", got, want)
 	}
 	if !doc.Worker {
 		t.Fatal("the floor does not set worker: true")
@@ -176,60 +173,92 @@ func TestFloorKeepsThePlatformRolesAndTheRouter(t *testing.T) {
 	if err := stage(context.Background(), root, stagedDocument(t, data), tokenFile(t), launchedWith(t, data)); err != nil {
 		t.Fatalf("stage of the generated floor = %v", err)
 	}
+	staged, err := os.ReadFile(filepath.Join(root, nriimagepolicy.DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nriimagepolicy.CheckWorkerConfig(staged); err != nil {
+		t.Errorf("the plugin refuses the staged floor: %v", err)
+	}
+	// The posture the measured floor carries into the plugin: a container
+	// already running when it registers is fatal, every launch outside the
+	// base is sandboxed, and denials reach the journal.
+	var posture struct {
+		Policy struct {
+			FatalExisting   bool   `yaml:"fatal_existing"`
+			Sandbox         string `yaml:"sandbox"`
+			BootMarkerPath  string `yaml:"boot_marker_path"`
+			EnforceExisting bool   `yaml:"enforce_existing"`
+		} `yaml:"policy"`
+		Logging struct {
+			Syslog string `yaml:"syslog"`
+		} `yaml:"logging"`
+	}
+	if err := yaml.Unmarshal(staged, &posture); err != nil {
+		t.Fatal(err)
+	}
+	if !posture.Policy.FatalExisting || !posture.Policy.EnforceExisting || posture.Policy.Sandbox != "enforce" {
+		t.Errorf("staged policy = %+v, want existing containers fatal, enforced, and every launch sandboxed", posture.Policy)
+	}
+	if posture.Policy.BootMarkerPath == "" || posture.Logging.Syslog == "" {
+		t.Errorf("staged floor names no boot marker (%q) or no syslog (%q)", posture.Policy.BootMarkerPath, posture.Logging.Syslog)
+	}
 }
 
-// A key the node floor leaves out stays out of the worker's.
-func TestFloorWritesNoSettingTheNodeFloorLacks(t *testing.T) {
-	dropped := []string{"exempt_namespaces", "exits", "resolver", "cluster_ranges"}
+// A key the template leaves out stays out of the worker's floor.
+func TestFloorWritesNoSettingTheTemplateLacks(t *testing.T) {
 	for _, path := range [][]string{
 		{"platform"}, {"plugin"}, {"workload_claims"}, {"containerd"}, {"policy"}, {"logging"},
 		{"allowlist", "node_tcb"}, {"mesh", "capture"}, {"mesh", "roles"},
 	} {
 		t.Run(strings.Join(path, "."), func(t *testing.T) {
-			nodeFloor := withoutKey(t, renderedNodeFloor(t), path...)
-			floor, err := Floor(nodeFloor, routerSeed("/run/c8s-node/cds.json"), nil)
+			template := withoutKey(t, renderedTemplate(t), path...)
+			floor, err := Floor(template, routerSeed("/run/c8s-node/cds.json"), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, want := settingsOf(t, floor), measured(settingsOf(t, nodeFloor, dropped...)); !reflect.DeepEqual(got, want) {
-				t.Errorf("settings =\n%v\nwant the node floor's\n%v", got, want)
+			if got, want := settingsOf(t, floor), measured(settingsOf(t, template)); !reflect.DeepEqual(got, want) {
+				t.Errorf("settings =\n%v\nwant the template's\n%v", got, want)
 			}
 		})
 	}
 }
 
 func TestFloorRefusesInputsItCannotBuildAWorkersFloorFrom(t *testing.T) {
-	nodeFloor := renderedNodeFloor(t)
+	template := renderedTemplate(t)
 	seed := routerSeed("/run/c8s-node/cds.json")
 	// An entry declaring host ports pins its launch, so the open one declares none.
 	unpinnedRouter := []byte(strings.Replace(strings.Replace(string(seed), routerHostPorts+",", "", 1), `"env":{"policy":"exact","values":{"PATH":"/bin"}}`, `"env":{"policy":"any"}`, 1))
 	for _, tc := range []struct {
-		name            string
-		nodeFloor, seed []byte
-		want            string
+		name           string
+		template, seed []byte
+		want           string
 	}{
-		{"no router entry", nodeFloor, []byte(strings.ReplaceAll(string(seed), testRouterEntry, "other")), "want one c8s-router-* entry"},
-		{"two router entries", nodeFloor, []byte(strings.Replace(string(seed), `"c8s-operator-0123"`, `"c8s-router-other"`, 1)), "want one c8s-router-* entry"},
-		{"a router reading a server's file", nodeFloor, routerSeed("/run/c8s-node/peers.json"), "/run/c8s-node/peers.json, which worker stage does not publish"},
-		{"no platform role", regexp.MustCompile(`(?m)^ +role: .*\n`).ReplaceAll(nodeFloor, nil), seed, "no platform-role entry"},
-		{"a base field the allowlist does not have", []byte(strings.Replace(string(nodeFloor), "    schema: c8s.allowlist/v1\n", "    schema: c8s.allowlist/v1\n    extra: 1\n", 1)), seed, "field extra not found"},
-		{"no mesh policy", withoutKey(t, nodeFloor, "mesh"), seed, "no allowlist base or mesh policy"},
-		{"no allowlist", withoutKey(t, nodeFloor, "allowlist"), seed, "no allowlist base or mesh policy"},
-		{"no allowlist base", withoutKey(t, nodeFloor, "allowlist", "base"), seed, "no allowlist base or mesh policy"},
-		{"no pull", withoutKey(t, nodeFloor, "allowlist", "pull"), seed, "no allowlist.pull"},
-		{"a top-level key it does not know", append(slices.Clone(nodeFloor), "extra: 1\n"...), seed, "field extra not found in type worker.nodeFloor"},
-		{"an allowlist key it does not know", []byte(strings.Replace(string(nodeFloor), "\n  node_tcb: true\n", "\n  node_tcb: true\n  extra: 1\n", 1)), seed, "field extra not found in type worker.floorAllowlist"},
-		{"a mesh key it does not know", []byte(strings.Replace(string(nodeFloor), "\nmesh:\n", "\nmesh:\n  extra: 1\n", 1)), seed, "field extra not found in type worker.nodeMesh"},
-		{"a router entry named as a platform role", nodeFloor, []byte(strings.ReplaceAll(string(seed), testRouterEntry, "c8s-router-nginx")), "a platform role is named c8s-router-nginx"},
-		{"a router reading a server's file through its environment", nodeFloor, []byte(strings.Replace(string(seed), `"values":{"PATH":"/bin"}`, `"values":{"PATH":"/bin","PEERS":"/run/c8s-node/peers.json"}`, 1)), "/run/c8s-node/peers.json"},
-		{"a router mounting a server's file", nodeFloor, []byte(strings.Replace(string(seed), `"source":"/run/c8s-node"`, `"source":"/run/c8s-node/peers.json"`, 1)), "/run/c8s-node/peers.json"},
-		{"a router reading a file by a doubled slash", nodeFloor, routerSeed("/run//c8s-node/peers.json"), "which worker stage does not publish"},
-		{"a router reading outside by dot-dot", nodeFloor, routerSeed("/run/c8s-node/../nri-image-policy/x"), "which worker stage does not publish"},
-		{"an open router launch", nodeFloor, unpinnedRouter, "does not pin its launch"},
-		{"a router mounting operator data", nodeFloor, []byte(strings.Replace(string(seed), `"rules":[`, `"rules":[{"destination":"/mnt/c8s-data/keys","kind":"data"},`, 1)), "mounts data, which the control plane fills"},
+		{"no router entry", template, []byte(strings.ReplaceAll(string(seed), testRouterEntry, "other")), "want one c8s-router-* entry"},
+		{"two router entries", template, []byte(strings.Replace(string(seed), `"c8s-operator-0123"`, `"c8s-router-other"`, 1)), "want one c8s-router-* entry"},
+		{"a router reading a server's file", template, routerSeed("/run/c8s-node/peers.json"), "/run/c8s-node/peers.json, which worker stage does not publish"},
+		{"an entry without a platform role", regexp.MustCompile(`(?m)^ +role: "acme"\n`).ReplaceAll(template, nil), seed, "entry c8s-acme container with digest sha256:"},
+		{"no platform role at all", regexp.MustCompile(`(?m)^ +role: .*\n`).ReplaceAll(template, nil), seed, "holds no platform role"},
+		{"a base field the allowlist does not have", []byte(strings.Replace(string(template), "    schema: c8s.allowlist/v1\n", "    schema: c8s.allowlist/v1\n    extra: 1\n", 1)), seed, "field extra not found"},
+		{"no mesh policy", withoutKey(t, template, "mesh"), seed, "no allowlist base or mesh policy"},
+		{"no allowlist", withoutKey(t, template, "allowlist"), seed, "no allowlist base or mesh policy"},
+		{"no allowlist base", withoutKey(t, template, "allowlist", "base"), seed, "no allowlist base or mesh policy"},
+		{"no pull", withoutKey(t, template, "allowlist", "pull"), seed, "no allowlist.pull"},
+		{"a top-level key it does not know", append(slices.Clone(template), "extra: 1\n"...), seed, "field extra not found in type worker.floorTemplate"},
+		{"an allowlist key it does not know", []byte(strings.Replace(string(template), "\n  node_tcb: true\n", "\n  node_tcb: true\n  extra: 1\n", 1)), seed, "field extra not found in type worker.floorAllowlist"},
+		{"a mesh key it does not know", []byte(strings.Replace(string(template), "\nmesh:\n", "\nmesh:\n  extra: 1\n", 1)), seed, "field extra not found in type worker.workerMesh"},
+		{"a mesh key worker staging fills", []byte(strings.Replace(string(template), "\nmesh:\n", "\nmesh:\n  resolver: \"10.53.0.10\"\n", 1)), seed, "field resolver not found in type worker.workerMesh"},
+		{"a mesh key only a node has", []byte(strings.Replace(string(template), "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", 1)), seed, "field exempt_namespaces not found in type worker.workerMesh"},
+		{"a router entry named as a platform role", template, []byte(strings.ReplaceAll(string(seed), testRouterEntry, "c8s-router-nginx")), "a platform role is named c8s-router-nginx"},
+		{"a router reading a server's file through its environment", template, []byte(strings.Replace(string(seed), `"values":{"PATH":"/bin"}`, `"values":{"PATH":"/bin","PEERS":"/run/c8s-node/peers.json"}`, 1)), "/run/c8s-node/peers.json"},
+		{"a router mounting a server's file", template, []byte(strings.Replace(string(seed), `"source":"/run/c8s-node"`, `"source":"/run/c8s-node/peers.json"`, 1)), "/run/c8s-node/peers.json"},
+		{"a router reading a file by a doubled slash", template, routerSeed("/run//c8s-node/peers.json"), "which worker stage does not publish"},
+		{"a router reading outside by dot-dot", template, routerSeed("/run/c8s-node/../nri-image-policy/x"), "which worker stage does not publish"},
+		{"an open router launch", template, unpinnedRouter, "does not pin its launch"},
+		{"a router mounting operator data", template, []byte(strings.Replace(string(seed), `"rules":[`, `"rules":[{"destination":"/mnt/c8s-data/keys","kind":"data"},`, 1)), "mounts data, which the control plane fills"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Floor(tc.nodeFloor, tc.seed, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := Floor(tc.template, tc.seed, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Floor = %v, want a refusal naming %q", err, tc.want)
 			}
 		})

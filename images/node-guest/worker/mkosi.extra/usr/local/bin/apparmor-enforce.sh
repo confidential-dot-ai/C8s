@@ -1,7 +1,6 @@
 #!/bin/sh
-# Verify the running kernel and userspace before either RKE2 role starts.
-# This probes AppArmor itself; tests/apparmor-runtime-test.sh separately
-# verifies containerd's RuntimeDefault profile and Kubernetes admission.
+# Verify the running kernel and userspace before the worker's runtime starts.
+# This probes AppArmor itself.
 set -eu
 export LC_ALL=C
 

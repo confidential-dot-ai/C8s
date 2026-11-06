@@ -504,11 +504,11 @@ func TestCheckSandboxModes(t *testing.T) {
 	}
 }
 
-// The measured base excuses host privilege for a static pod or a launch an
-// entry pins. An open entry still admits its image, so a pod with the node's
-// root mounted, or only its network, is refused for the sandbox, not for the
-// image.
-func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
+// The measured base excuses host privilege for a static pod whose launch an
+// entry pins, and for nothing else: the control plane writes every other pod.
+// An open entry still admits its image, so a pod with the node's root
+// mounted, or only its network, is refused for the sandbox, not for the image.
+func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 	open := allowlist.Container{
 		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
 		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
@@ -543,11 +543,13 @@ func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
 	}{
 		{name: "open entry, privileged with the node root", entry: open, ctr: privileged, argv: shell, want: verdictDeny},
 		{name: "open entry, host network alone", entry: open, pod: hostNetwork, argv: shell, want: verdictDeny},
-		{name: "pinned entry at its own launch, host network", entry: pinned, pod: hostNetwork, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
 		{name: "open entry, host network and privileged", entry: open, pod: hostNetwork, ctr: privileged, argv: shell, want: verdictDeny},
-		{name: "open entry, static pod", entry: open, static: true, ctr: privileged, argv: shell, want: verdictAllow},
-		{name: "pinned entry at its own launch", entry: pinned, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
-		{name: "pinned entry restaged with a shell", entry: pinned, ctr: privileged, argv: shell, want: verdictDeny},
+		{name: "open entry, static pod", entry: open, static: true, ctr: privileged, argv: shell, want: verdictDeny},
+		{name: "pinned entry at its own launch, written by the control plane", entry: pinned, ctr: privileged, argv: []string{"/floor"}, want: verdictDeny},
+		{name: "pinned entry at its own launch, host network, written by the control plane", entry: pinned, pod: hostNetwork, ctr: privileged, argv: []string{"/floor"}, want: verdictDeny},
+		{name: "pinned entry at its own launch, static pod", entry: pinned, static: true, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
+		{name: "pinned entry at its own launch, static pod, host network", entry: pinned, static: true, pod: hostNetwork, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
+		{name: "pinned entry restaged with a shell, static pod", entry: pinned, static: true, ctr: privileged, argv: shell, want: verdictDeny},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -561,6 +563,7 @@ func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config{
+				Worker:    true,
 				Allowlist: allowlistConfig{Base: base, NodeTCB: true},
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
 			}

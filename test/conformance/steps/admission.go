@@ -156,12 +156,12 @@ func environment(ctx context.Context, line string) error {
 }
 
 // annotationHarnessArgv marks a pod whose first container runs an argv the
-// harness chose, beside which a backend may run its pod agent (metal.sh).
+// harness chose.
 const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
 // annotationMountsFree marks a pod carrying a workload ID whose first
 // container no entry restricts the mounts of, to which a backend may add a
-// volume (metal.sh, discovery_wrap).
+// volume.
 const annotationMountsFree = "c8s-conformance/mounts-free"
 
 // pinsLaunch reports whether an entry the scenario described pins the argv

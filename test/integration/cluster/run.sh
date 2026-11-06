@@ -22,8 +22,7 @@
 # operator token server-side.
 #
 # What this deliberately is not: a confidential-cluster test. Nothing here
-# asserts TEE properties — that is what the metal lanes (snp-metal-e2e,
-# tdx-metal-e2e) are for. See docs/integration-tests.md.
+# asserts TEE properties. See docs/integration-tests.md.
 #
 # Prerequisites: docker (or podman via KIND_EXPERIMENTAL_PROVIDER=podman),
 # kind, kubectl, helm, go, openssl, curl, python3. Run from the repo root via

@@ -1,8 +1,7 @@
-# RKE2's base template (tools/containerdcheck/rke2-base-v3.toml.tmpl) as it
-# renders for an agent, with the pod sandbox image pinned by digest and the
-# kubelet's static pod mark passed to the runtime. The
-# c8s profile's drop-ins, which images/node-guest/build stages here, route
-# runc through c8s-runc and require the NRI plugin.
+# RKE2's base template as it renders for an agent, with the pod sandbox image
+# pinned by digest and the kubelet's static pod mark passed to the runtime. The
+# drop-ins beside this file route runc through c8s-runc and require the NRI
+# plugin.
 version = 3
 imports = ["/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"]
 root = "/var/lib/rancher/rke2/agent/containerd"

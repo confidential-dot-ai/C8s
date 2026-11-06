@@ -3,7 +3,7 @@
 # and sets the CC Ready state without any verification; the C8s node must
 # do neither, so this unit runs first and nvidia-cc-ready Requires it.
 [Unit]
-Description=Refuse to start the node unless every NVIDIA GPU is in confidential-compute mode and attests
+Description=Refuse to start the worker unless every NVIDIA GPU is in confidential-compute mode and attests
 # The driver must be resident (persistenced) and the baked attestation-api
 # reachable; both are Wants, not Requires, so a GPU-less boot of a
 # composition without them is a no-op. Egress is needed for NRAS.
@@ -14,11 +14,11 @@ Description=Refuse to start the node unless every NVIDIA GPU is in confidential-
 # /verify returns 422 on nbf.
 After=nvidia-persistenced.service attestation-api.service network-online.target time-sync.target
 Wants=nvidia-persistenced.service attestation-api.service network-online.target time-sync.target
-Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service
+Before=nvidia-cc-ready.service containerd.service
 
 [Service]
 # Once per boot covers every GPU only while the guest kernel has PCI hotplug
-# compiled out (kernel/c8s.config; enforced by node-guest-image-invariants.sh).
+# compiled out (kernel/c8s.config; enforced by tests/worker-invariants.sh).
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/gpu-cc-enforce.sh
@@ -35,6 +35,6 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
-# Preset creates the .requires links, so neither the Ready-state flip nor
-# rke2 can start while this unit is failing or has not run.
-RequiredBy=nvidia-cc-ready.service rke2-server.service rke2-agent.service
+# Preset creates the .requires links, so the Ready-state flip cannot happen
+# while this unit is failing or has not run.
+RequiredBy=nvidia-cc-ready.service containerd.service

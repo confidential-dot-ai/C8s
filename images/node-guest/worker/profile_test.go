@@ -1,5 +1,4 @@
-// Package profile checks the worker profile against the c8s profile whose
-// files and pins it shares.
+// Package profile checks the worker image's profile for internal consistency.
 package profile
 
 import (
@@ -18,8 +17,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
 )
-
-const c8sProfile = "../c8s"
 
 // lines are path's lines, without comments and blanks.
 func lines(t *testing.T, path string) []string {
@@ -63,27 +60,6 @@ func baked(t *testing.T, rel string) string {
 		t.Fatalf("the worker image bakes no %s: %v", rel, err)
 	}
 	return path
-}
-
-// The worker image unpacks the RKE2 release and renders with the Helm the
-// node image pins, and narrows the same attester.
-func TestPinsAndFinalizeAreTheC8sProfiles(t *testing.T) {
-	worker, node := settings(t, "mkosi.sync"), settings(t, filepath.Join(c8sProfile, "mkosi.sync"))
-	for _, pin := range []string{"RKE2_VERSION", "RKE2_IMAGES_CORE_SHA256", "HELM_VERSION", "HELM_LINUX_AMD64_SHA256"} {
-		if worker[pin] == "" {
-			t.Errorf("the worker profile states no %s", pin)
-		}
-		if node[pin] != worker[pin] {
-			t.Errorf("%s = %s, want the c8s profile's %s", pin, worker[pin], node[pin])
-		}
-	}
-	finalize, err := os.ReadFile("mkosi.finalize")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if nodeFinalize, err := os.ReadFile(filepath.Join(c8sProfile, "mkosi.finalize")); err != nil || !bytes.Equal(finalize, nodeFinalize) {
-		t.Errorf("mkosi.finalize differs from the c8s profile's: %v", err)
-	}
 }
 
 // The wrapper the measured image's containerd runs is the binary this profile
