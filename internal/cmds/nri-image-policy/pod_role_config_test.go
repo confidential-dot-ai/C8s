@@ -1,12 +1,18 @@
 package nriimagepolicy_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
@@ -99,6 +105,7 @@ func podRoleInputs(t *testing.T) (string, *launchconfig.AssignedPod) {
 		t.Fatal(err)
 	}
 	write("etc/systemd/resolved.conf.d/10-upstream.conf", resolved)
+	write("var/lib/rancher/rke2/agent/images/c8s-1.tar", podMeshArchive(t))
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +141,42 @@ func podRoleInputs(t *testing.T) (string, *launchconfig.AssignedPod) {
 			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
 	}
 	return root, assigned
+}
+
+// podMeshArchive is the airgap archive the image preserves for the pod role,
+// as airgap-images.sh lays it out: an OCI index naming the baked mesh endpoint
+// image at its measured digest, so guest preparation stages it instead of
+// pulling the endpoint at start.
+func podMeshArchive(t *testing.T) []byte {
+	t.Helper()
+	ref := "ghcr.io/confidential-dot-ai/armtls-mesh@" + nriimagepolicy.MeshImageDigest
+	index := ocispec.Index{Manifests: []ocispec.Descriptor{{
+		MediaType:   ocispec.MediaTypeImageIndex,
+		Digest:      godigest.Digest(nriimagepolicy.MeshImageDigest),
+		Size:        1,
+		Annotations: map[string]string{"io.containerd.image.name": ref, ocispec.AnnotationRefName: ref},
+	}}}
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	w := tar.NewWriter(&b)
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"index.json", data}, {"oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`)}, {"blobs/sha256/" + strings.Repeat("0", 64), []byte("{}")}} {
+		if err := w.WriteHeader(&tar.Header{Name: f.name, Mode: 0o644, Size: int64(len(f.data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }
 
 // installPodRole prepares the generic boot, renders the assigned runtime and

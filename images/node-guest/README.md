@@ -195,9 +195,12 @@ configuration in `/usr/lib/c8s/router-nginx`, and the router mounts it from
 there instead of from a ConfigMap the control plane could edit.
 `airgap-images.sh` preserves the core images' complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
-role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
-when every referenced blob is present and matches its digest, and copies the
-image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
+node role. `airgap-images.sh` reuses a cached layout under
+`mkosi.pkgcache/c8s/core-images` only when every referenced blob is present
+and matches its digest, and copies the image afresh otherwise, so a warm cache
+needs no registry access. A Pod CVM runs no RKE2: boot preparation links the
+archive that holds the measured mesh endpoint, and `podcvm-containerd` imports
+it, pinned, before kubelet starts. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
 floor, allowing the components to start while CDS is unavailable.
 

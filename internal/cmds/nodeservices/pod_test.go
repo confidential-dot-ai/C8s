@@ -1,6 +1,9 @@
 package nodeservices
 
 import (
+	"archive/tar"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 
@@ -61,7 +66,92 @@ func preparePodRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	writeInput(t, root, bakedResolvedConfDir+"/10-upstream.conf", resolved)
+	writeAirgapArchive(t, root, "c8s-0.tar", map[string]string{"registry.test/operator@" + operatorDigest: operatorDigest})
+	writeAirgapArchive(t, root, "c8s-1.tar", map[string]string{podMeshImage: podMeshDigest, "registry.test/mesh:c8s-node": podMeshDigest})
 	return root
+}
+
+const (
+	podMeshDigest  = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	podMeshImage   = "registry.test/mesh@" + podMeshDigest
+	operatorDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+)
+
+// writeAirgapArchive writes an archive as airgap-images.sh lays it out: an
+// index.json naming each image for containerd, then the layout's blobs.
+func writeAirgapArchive(t *testing.T, root, name string, images map[string]string) {
+	t.Helper()
+	var index ocispec.Index
+	for ref, digest := range images {
+		index.Manifests = append(index.Manifests, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: godigest.Digest(digest), Size: 1,
+			Annotations: map[string]string{imageNameAnnotation: ref, ocispec.AnnotationRefName: ref}})
+	}
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	w := tar.NewWriter(&b)
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"index.json", data}, {"oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`)}, {"blobs/sha256/" + strings.Repeat("0", 64), []byte("{}")}} {
+		if err := w.WriteHeader(&tar.Header{Name: f.name, Mode: 0644, Size: int64(len(f.data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeInput(t, root, airgapImagesDir+"/"+name, b.Bytes())
+}
+
+// The pod role imports its mesh endpoint from the archive the image
+// preserves, the one that names the measured endpoint at its digest.
+func TestPreparePodStagesTheMeshEndpointArchive(t *testing.T) {
+	root := preparePodRoot(t)
+	if err := preparePodFixture(root, podDocument(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(filepath.Join(root, podMeshArchivePath)); err != nil || got != airgapImagesDir+"/c8s-1.tar" {
+		t.Fatalf("mesh archive link = %q, %v", got, err)
+	}
+}
+
+// Without exactly one archive that holds the endpoint at its measured digest,
+// the pod role publishes nothing rather than pull the endpoint at start.
+func TestPreparePodRefusesAMissingOrMismatchedMeshArchive(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		images map[string]string
+		want   string
+	}{
+		{"missing", nil, "found 0"},
+		{"other digest", map[string]string{podMeshImage: operatorDigest}, "at digest " + operatorDigest},
+		{"duplicate", map[string]string{podMeshImage: podMeshDigest}, "found 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := preparePodRoot(t)
+			if tc.images == nil {
+				if err := os.Remove(filepath.Join(root, airgapImagesDir, "c8s-1.tar")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeAirgapArchive(t, root, "c8s-2.tar", tc.images)
+			}
+			if err := preparePodFixture(root, podDocument(t)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+			for _, name := range []string{floorConfigPath, podManifestPath, podMeshArchivePath} {
+				if _, err := os.Lstat(filepath.Join(root, name)); !os.IsNotExist(err) {
+					t.Fatalf("published %s without the mesh archive: %v", name, err)
+				}
+			}
+		})
+	}
 }
 
 func preparePodFixture(root string, doc *launchconfig.Document) error {
