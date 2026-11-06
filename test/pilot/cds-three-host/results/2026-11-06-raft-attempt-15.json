@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 15,
+  "stage": "pre-dispatch-native-attestation-verification",
+  "runner_commit": "d2ad71fed82fe1822baf63567b212115ad59849a",
+  "image_build": "three-host-image-06",
+  "client_commit": "f2f63e2570363f59f4108ab0c318e420035d52e6",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 3,
+  "chunk_retries": 0,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 13,
+  "finding": "The host-side native TDX verifier timed out during the control TLS handshake before the burst phase could be dispatched. The guest logged the matching control-handshake timeout. There is no burst receipt or backend-fault result for this attempt.",
+  "follow_up": "The host client may retry one TLS deadline failure only when TLSHandshakeDone reports a wrapped context deadline and WroteHeaders has not run. Image/attestation rejection and any failure after HTTP dispatch remain fatal. The overall deadline, guest binaries, attestation policy and workload are unchanged.",
+  "shared_health": {
+    "existing_nodes_identity_boot_readiness_unchanged": true,
+    "external_owner_deletions_observed": 1
+  },
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 23,
+    "resource_paths_checked": 29,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

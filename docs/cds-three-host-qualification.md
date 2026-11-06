@@ -147,3 +147,13 @@ alone did not establish complete loss of connectivity. This is a failed test,
 not proof of a Raft safety violation. All 32 owned resources were removed and
 41 resource paths independently confirmed absent. The next run uses the
 observable guest pause fault above to establish quorum loss.
+
+[Attempt 15](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-15.json)
+stopped before dispatching the burst: host-side native attestation verification
+hit its deadline during the control TLS handshake. Three guests had passed
+startup, seeding and attachment. No fault was injected, and all 29 resource
+paths were independently confirmed absent. The host client now permits one
+retry only when its TLS handshake reports a deadline and no HTTP headers were
+written. Attestation or pin rejection and all failures after dispatch remain
+fatal. Both attempts share the original overall deadline, and successful
+receipts record the retry count. Guest binaries and workload limits are unchanged.

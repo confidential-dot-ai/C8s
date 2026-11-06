@@ -304,6 +304,11 @@ class Run(metadata.Run):
                 time.sleep(3); continue
             proof = json.loads(receipt.read_text())
             need(proof.get('native_tdx_armtls_verified') and proof.get('image_and_launch_verified') and proof['result']['passed'], 'verified guest assertion failed')
+            retries = proof.get('pre_dispatch_handshake_retries', 0)
+            need(type(retries) is int and retries in (0, 1), 'invalid control handshake retry count')
+            if retries:
+                self.state['phases'][-1]['pre_dispatch_handshake_retries'] = retries
+                self.event('guest-control-handshake-retried', operation=operation, agent=agent, retries=retries)
             result = proof['result']
             if operation in ('overlap', 'retire'):
                 policy_applied(result)
