@@ -100,11 +100,11 @@ canonical encoding: a value that re-encodes to different bytes is refused, so
 two extensions cannot parse to the same ID. CDS stamps it after verifying the
 sandbox token signed by the node's admission inventory, the node service that
 records which containers ran in which pod sandbox
-([armtls.md](armtls.md#sandbox-identity)). The Pod CVM issuance profile
-instead derives a separate Pod identity from verified guest claims; that
-identity confers no node-inventory or secret-release authority. A certificate
-carrying two of them, or one that does not parse, is an error and never read as
-absence.
+([armtls.md](armtls.md#sandbox-identity)). The
+[Pod CVM issuance profile](armtls.md#pod-cvm-issuance) instead derives a
+separate Pod identity from verified guest claims; that identity confers no
+node-inventory or secret-release authority. A certificate carrying two of them, or one that does not parse, is an error and
+never read as absence.
 
 For a CSR with no DNS or IP SAN and no common name, the issued common name is
 the lowercase hex SHA-256 of this ID. Names authorize nothing in the mesh.

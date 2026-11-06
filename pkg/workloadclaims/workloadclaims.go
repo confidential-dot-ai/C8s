@@ -174,6 +174,9 @@ func IsMeshPort(port int) bool {
 	return port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort)
 }
 
+// PodStatusPort is the pod CVM guest's attested status port; no pod container may declare it.
+const PodStatusPort int32 = 8443
+
 // MeshProbePrefix is where the endpoint answers an application probe the
 // injector moved onto MeshHealthPort. The rendered path names the port and the
 // path the probe reaches inside the pod, so the injector and the endpoint
