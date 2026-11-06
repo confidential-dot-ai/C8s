@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 18,
+  "stage": "replacement-disk-population-cleanup",
+  "runner_commit": "58e0038b9f11f6b4a0b907db5511b2b5cb5733a4",
+  "image_build": "three-host-image-06",
+  "client_commit": "0ab648447d63c24014eea7c9aac29d48d092e9e9",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 14,
+  "completed_and_hash_verified_disk_uploads": 6,
+  "burst": {
+    "issuances": 24,
+    "secret_reads": 24,
+    "seconds": 25.696735573
+  },
+  "faults_injected": false,
+  "finding": "All six disk hashes matched; removal of the final population pod stopped on a proxy CONNECT 502 before TLS or Kubernetes request dispatch. The exact API method was not recorded. This is a runner transport failure, not a backend availability result.",
+  "follow_up": "Retry only exact urllib proxy CONNECT 502/503/504 rejections, at most four attempts with bounded backoff. A real local proxy test confirms only CONNECT bytes arrive and no origin Authorization or body is sent. API HTTP responses and ambiguous transport failures never permit mutation retry.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "owned_resources_removed": 32,
+    "resource_paths_checked": 41,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}

@@ -84,8 +84,11 @@ Failed control requests retain safe authentication/clock diagnostics. Startup
 attempts are bounded to 30 seconds within the three-minute startup budget.
 The first guest's startup is checked before the remaining disks are prepared.
 Kubernetes reads returning 429 or transient gateway errors (502/503/504) use at
-most four attempts with bounded backoff and respect `Retry-After`. Writes and
-nontransient failures are not automatically retried. The complete health
+most four attempts with bounded backoff and respect `Retry-After`. A proxy
+CONNECT rejection with status 502/503/504 can also be retried within that budget:
+Python raises it before TLS or any Kubernetes request is sent. An API response,
+unknown transport failure or uncertain mutation never permits a write retry.
+The complete health
 preflight must succeed before resource creation.
 
 Agent attestation alone is not CDS readiness. A separate fixed startup phase
@@ -178,3 +181,12 @@ exposed a runner regression: applying the one-retry cap to initialization cut
 boot readiness short after two 15-second TLS deadlines. No CDS startup or
 backend result is claimed. The correction restores only the existing idempotent
 startup window; guest binaries, workload retries and workload limits are unchanged.
+
+[Attempt 18](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-18.json)
+passed startup on all three workers and the native burst (24 issuances and 24
+secret reads in 25.697 seconds). All six disk hashes matched. Removing the final
+disk-population pod encountered a proxy CONNECT 502 before the API request could
+be dispatched; the precise API method was not recorded. No fault was injected.
+All 32 owned resources were removed and 41 paths independently confirmed absent.
+The bounded CONNECT handling above is covered by a real local proxy test that
+observes only CONNECT requests, with no origin authorization header or body.

@@ -39,10 +39,10 @@ class APIBackpressure(unittest.TestCase):
         opener, pauses, notices, call = self.retry([self.throttle('3'), 'ready'])
         self.assertEqual(call(), 'ready')
         self.assertEqual(pauses, [3]); self.assertEqual(opener.calls, 2)
-        self.assertEqual(notices, [(1, 3)])
+        self.assertEqual(notices, [(1, 3, 'GET', 'http_read')])
 
-    def test_mutation_is_never_resubmitted(self):
-        for method in ['POST', 'PATCH', 'DELETE']:
+    def test_origin_http_response_never_retries_mutation(self):
+        for method in ['POST', 'PUT', 'PATCH', 'DELETE']:
             opener, pauses, _, call = self.retry([self.throttle()], method)
             with self.assertRaises(urllib.error.HTTPError): call()
             self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
@@ -67,6 +67,27 @@ class APIBackpressure(unittest.TestCase):
             opener, pauses, _, call = self.retry([error, 'healthy'])
             self.assertEqual(call(), 'healthy'); self.assertEqual(opener.calls, 2)
             self.assertEqual(pauses, [1])
+
+    def test_only_proxy_gateway_connect_rejection_can_retry_before_mutation(self):
+        for method in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']:
+            for code in [502, 503, 504]:
+                failure = urllib.error.URLError(OSError(f'Tunnel connection failed: {code} Gateway Failure'))
+                opener, pauses, notices, call = self.retry([failure, 'ready'], method)
+                self.assertEqual(call(), 'ready'); self.assertEqual(opener.calls, 2)
+                self.assertEqual(pauses, [1]); self.assertEqual(notices, [(1, 1, method, 'proxy_connect')])
+        failures = [urllib.error.URLError(OSError('Tunnel connection failed: 502 Bad Gateway')) for _ in range(4)]
+        opener, pauses, _, call = self.retry(failures, 'DELETE')
+        with self.assertRaises(urllib.error.URLError): call()
+        self.assertEqual(opener.calls, 4); self.assertEqual(pauses, [1, 2, 4])
+
+    def test_proxy_denial_and_unknown_transport_failure_do_not_retry_mutation(self):
+        import ssl
+        for reason in [OSError('Tunnel connection failed: 403 Forbidden'), OSError('Tunnel connection failed: 407 Authentication Required'),
+                       OSError('Tunnel connection failed: 501 Not Implemented'), TimeoutError('uncertain timeout'),
+                       ConnectionResetError('uncertain reset'), ssl.SSLCertVerificationError('untrusted certificate')]:
+            opener, pauses, _, call = self.retry([urllib.error.URLError(reason)], 'POST')
+            with self.assertRaises(urllib.error.URLError): call()
+            self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
 
 class Safety(unittest.TestCase):
     def test_applied_policy_uses_delivery_wire_field(self):

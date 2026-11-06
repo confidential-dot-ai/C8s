@@ -59,8 +59,8 @@ def archive_image(directory):
 class Run(metadata.Run):
     def __init__(self, args):
         super().__init__(args)
-        self.kube.opener = ReadBackoff(self.kube.opener, lambda attempt, delay:
-            self.event('kube-read-backpressure', attempt=attempt, delay_seconds=delay))
+        self.kube.opener = ReadBackoff(self.kube.opener, lambda attempt, delay, method, kind:
+            self.event('kube-request-backpressure', attempt=attempt, delay_seconds=delay, method=method, retry_kind=kind))
         if not self.state['resources']:
             self.state['expires'] = (dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=75)).isoformat()
             self.state['backend'] = args.backend
