@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// The plugin must report the waiting floor before
-// assignment and the assigned UID, not waiting, after it; registration before
-// the first CDS pull (503) suffices.
+// The plugin must report the assigned UID registered; registration before the
+// first CDS pull (503) suffices.
 func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "assignment-health-")
 	if err != nil {
@@ -45,13 +44,14 @@ func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 		status          int
 		ready           bool
 	}{
-		{"waiting before CDS pull", "", `{"pod_registered":true,"pod_waiting":true}`, http.StatusServiceUnavailable, true},
-		{"assigned before CDS pull", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a","pod_waiting":false}`, http.StatusServiceUnavailable, true},
-		{"unregistered", "pod-a", `{"pod_registered":false,"pod_uid":"pod-a","pod_waiting":false}`, http.StatusOK, false},
-		{"wrong assignment", "pod-a", `{"pod_registered":true,"pod_uid":"pod-b","pod_waiting":false}`, http.StatusOK, false},
-		{"still waiting", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a","pod_waiting":true}`, http.StatusOK, false},
+		{"assigned before CDS pull", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusServiceUnavailable, true},
+		{"assigned and ready", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusOK, true},
+		{"unregistered", "pod-a", `{"pod_registered":false,"pod_uid":"pod-a"}`, http.StatusOK, false},
+		{"wrong assignment", "pod-a", `{"pod_registered":true,"pod_uid":"pod-b"}`, http.StatusOK, false},
+		{"no assignment", "pod-a", `{"pod_registered":true}`, http.StatusOK, false},
+		{"ended identity", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a","pod_ended":true}`, http.StatusOK, false},
 		{"malformed", "pod-a", "{", http.StatusOK, false},
-		{"server error", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a","pod_waiting":false}`, http.StatusInternalServerError, false},
+		{"server error", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusInternalServerError, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response.Store(&reply{status: tc.status, body: tc.body})

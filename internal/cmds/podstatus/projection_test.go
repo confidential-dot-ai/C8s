@@ -75,7 +75,7 @@ func TestPodRouteServesOnlyTheStatusProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler{UID: "u1", Pods: func(ctx context.Context) ([]byte, error) { return list, nil }}
+	h := Handler{assignment: assigned("u1"), Pods: func(ctx context.Context) ([]byte, error) { return list, nil }}
 	rec := serve(h, http.MethodGet, PodPath)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)

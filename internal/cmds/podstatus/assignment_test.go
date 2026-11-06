@@ -63,11 +63,11 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 	store := &memoryAssignmentStore{}
 	s, err := newAssignmentService(t.Context(), doc, store,
 		func(context.Context) (*ecdsa.PublicKey, error) { return &key.PublicKey, nil },
-		func(d *launchconfig.Document) (nodeservices.PodRuntime, error) {
+		func(d *launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 			if d.CDS != doc.CDS {
 				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated CDS trust")
 			}
-			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Workloads), Manifest: []byte(d.Pod.Manifest)}, nil
+			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Entries), Manifest: []byte(d.Pod.Manifest)}, nil
 		},
 		func(context.Context) error { return nil },
 		func(context.Context, nodeservices.PodRuntime) error { return nil })
@@ -144,7 +144,7 @@ func TestAssignmentRefusalsDoNotChangeState(t *testing.T) {
 				s.available = func(context.Context) error { return errors.New("private runtime diagnostic") }
 				status = http.StatusServiceUnavailable
 			case "render":
-				s.render = func(*launchconfig.Document) (nodeservices.PodRuntime, error) {
+				s.render = func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 					return nodeservices.PodRuntime{}, errors.New("endpoint collision")
 				}
 			case "store":
@@ -249,18 +249,9 @@ func TestAssignmentNonceBoundDiscardsTheOldestUnusedNonce(t *testing.T) {
 	}
 }
 
-// A pod section holds the Pod; 405 and 404 on the other routes.
-func TestAssignmentRoutesAndStaticLaunchConflict(t *testing.T) {
-	s, key, peer, _ := assignmentFixture(t)
-	data := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-	s.doc.Pod = &launchconfig.PodSpec{UID: "static"}
-	static, err := newAssignmentService(t.Context(), s.doc, nil, s.boundKey, s.render, s.available, s.apply)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec := postAssignment(static, peer, data); rec.Code != http.StatusConflict || heldUID(t, rec) != "static" {
-		t.Fatal("static launch accepted assignment or did not name its Pod")
-	}
+// 405 on a wrong method and 404 on an unknown assignment route.
+func TestAssignmentRoutes(t *testing.T) {
+	s, _, _, _ := assignmentFixture(t)
 	for _, path := range []string{AssignNoncePath, AssignPath} {
 		if rec := serve(Handler{assignment: s}, http.MethodDelete, path); rec.Code != http.StatusMethodNotAllowed {
 			t.Fatal("route accepted wrong method")
