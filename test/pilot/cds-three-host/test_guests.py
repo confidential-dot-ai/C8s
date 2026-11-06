@@ -5,6 +5,9 @@ import subprocess
 import sys
 import unittest
 import secrets
+import io
+import urllib.error
+import urllib.request
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'cds-ha-metadata'))
 import guests
@@ -12,6 +15,51 @@ import egress
 from fixtures import OWNER, COMPONENT, SLOT, selector
 
 RUN = 'cds-ha-123456789abc'
+
+class APIBackpressure(unittest.TestCase):
+    def retry(self, responses, method='GET'):
+        from api import ReadBackoff
+        class Opener:
+            def __init__(self): self.calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                result = responses.pop(0)
+                if isinstance(result, Exception): raise result
+                return result
+        opener = Opener(); pauses = []; notices = []
+        wrapper = ReadBackoff(opener, lambda *args: notices.append(args), pauses.append)
+        request = urllib.request.Request('https://example.invalid/api', method=method)
+        return opener, pauses, notices, lambda: wrapper.open(request)
+
+    def throttle(self, hint=''):
+        return urllib.error.HTTPError('https://example.invalid/api', 429, 'backpressure',
+                                      {'Retry-After': hint}, io.BytesIO())
+
+    def test_read_respects_server_backpressure_then_recovers(self):
+        opener, pauses, notices, call = self.retry([self.throttle('3'), 'ready'])
+        self.assertEqual(call(), 'ready')
+        self.assertEqual(pauses, [3]); self.assertEqual(opener.calls, 2)
+        self.assertEqual(notices, [(1, 3)])
+
+    def test_mutation_is_never_resubmitted(self):
+        for method in ['POST', 'PATCH', 'DELETE']:
+            opener, pauses, _, call = self.retry([self.throttle()], method)
+            with self.assertRaises(urllib.error.HTTPError): call()
+            self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
+
+    def test_persistent_or_long_backpressure_stops(self):
+        opener, pauses, _, call = self.retry([self.throttle() for _ in range(4)])
+        with self.assertRaises(urllib.error.HTTPError): call()
+        self.assertEqual(opener.calls, 4); self.assertEqual(pauses, [1, 2, 4])
+        opener, pauses, _, call = self.retry([self.throttle('60')])
+        with self.assertRaises(urllib.error.HTTPError): call()
+        self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
+
+    def test_other_errors_are_not_hidden(self):
+        failure = urllib.error.HTTPError('https://example.invalid/api', 403, 'denied', {}, io.BytesIO())
+        opener, pauses, _, call = self.retry([failure])
+        with self.assertRaises(urllib.error.HTTPError): call()
+        self.assertEqual(opener.calls, 1); self.assertEqual(pauses, [])
 
 class Safety(unittest.TestCase):
     def test_applied_policy_uses_delivery_wire_field(self):

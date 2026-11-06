@@ -25,6 +25,7 @@ from fixtures import NS, OWNER, COMPONENT, SLOT, need
 import guests
 import transfer
 import egress
+from api import ReadBackoff
 
 VMI = '/apis/kubevirt.io/v1/namespaces/'+NS+'/virtualmachineinstances/'
 
@@ -56,6 +57,8 @@ def archive_image(directory):
 class Run(metadata.Run):
     def __init__(self, args):
         super().__init__(args)
+        self.kube.opener = ReadBackoff(self.kube.opener, lambda attempt, delay:
+            self.event('kube-read-backpressure', attempt=attempt, delay_seconds=delay))
         if not self.state['resources']:
             self.state['expires'] = (dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=75)).isoformat()
             self.state['backend'] = args.backend

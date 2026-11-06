@@ -71,3 +71,5 @@ expiry/replay checks in its actor. This does not change CDS authorization.
 Failed control requests retain safe authentication/clock diagnostics. Startup
 attempts are bounded to 30 seconds within the three-minute startup budget.
 The first guest's startup is checked before the remaining disks are prepared.
+Throttled Kubernetes reads use at most four attempts with bounded backoff and
+respect `Retry-After`; writes and other failures are not automatically retried.

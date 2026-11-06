@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 6,
+  "stage": "read-only-preflight",
+  "runner_commit": "aee84caaacd795a88eb9f8d7a3df9065ba9d5053",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "guests_started": 0,
+  "resources_created": 0,
+  "finding": "Kubernetes returned HTTP 429 to the read-only network-policy preflight. No fixture resources had been created.",
+  "follow_up": "Retry only throttled GET requests with bounded backoff, respecting Retry-After. Never resubmit a mutation automatically.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 0,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
