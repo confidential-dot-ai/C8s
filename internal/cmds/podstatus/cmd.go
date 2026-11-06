@@ -7,9 +7,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-// NewCmd returns `pod-status serve` (guest) and `pod-status get` (client).
+// NewCmd returns `pod-status serve`.
 func NewCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "pod-status", Short: "Serve or read a pod CVM's attested pod status"}
+	cmd := &cobra.Command{Use: "pod-status", Short: "Serve a pod CVM's attested pod status"}
 	cmd.AddCommand(newServeCmd())
 	return cmd
 }
