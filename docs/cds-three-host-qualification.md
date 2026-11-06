@@ -114,3 +114,14 @@ before a phase, revalidating both VM and guest UIDs and waiting for a new
 connection acknowledgment. Two attempts are allowed per reconnect. It retains
 the same bounded tail, explicitly marks possible output gaps, and cannot treat
 an old connection message as proof of a new connection.
+
+[Attempt 13](../test/pilot/cds-three-host/results/2026-11-06-raft-attempt-13.json)
+reproduced the burst failure with working console capture: three workload secret
+reads received EOF, and the destination logged TLS handshake read timeouts. CDS
+allows five seconds for that handshake, while the client attester was generating
+TDX quotes at approximately one-second intervals. The pinned attester performs
+blocking ConfigFS/vsock quote I/O directly on async workers. The next qualification
+uses a separate attester branch with one hardware worker and a bounded message
+queue, allowing verification to run while quote generation waits. No CDS timeout,
+attestation policy, or workload limit is relaxed. All 29 fixture resource paths
+were independently confirmed absent after this failed attempt.

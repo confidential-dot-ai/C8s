@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "backend": "raft",
+  "attempt": 13,
+  "stage": "native-concurrent-issuance-and-secret-release",
+  "runner_commit": "cc07b0a04926a039ab7e72840b9402f11d8229d9",
+  "image_build": "three-host-image-05",
+  "runner_exit_code": 1,
+  "three_guest_cds_passed": false,
+  "initial_guests_started": 3,
+  "distinct_tdx_workers": 3,
+  "completed_and_hash_verified_disk_uploads": 3,
+  "chunk_retries": 2,
+  "native_cds_startup_checks_passed": 3,
+  "completed_verified_phases": 13,
+  "failed_phase_seconds": 12.904067906,
+  "finding": "Concurrent secret reads returned EOF; the destination CDS logged matching TLS handshake read timeouts. Its five-second handshake budget expired while the client-side attestation service was busy generating TDX quotes. The pinned attester calls blocking ConfigFS/vsock I/O directly on async workers. This is evidence of an attestation scheduling bottleneck; no partition or rolling-upgrade result is claimed.",
+  "follow_up": "Move TDX hardware quote generation to a single bounded actor thread, preserving quote validation and CDS workload/timeouts. Requalify the changed measured images locally and on the same three workers.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 29,
+    "owned_resources_remaining": 0
+  },
+  "production_ready": false
+}
