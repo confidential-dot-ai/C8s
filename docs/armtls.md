@@ -212,10 +212,23 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 
 CDS verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
-policy. The leaf is the unnamed membership leaf: a pod CVM never carries the
-matched-workload stamp, since its claims name no arguments, environment or
-mounts to match an entry against. Neither a status quote nor a node inventory
-token substitutes for this profile.
+policy and every non-platform observation must pass its admission checks. A
+snapshot holding only the measured endpoint can get an unnamed membership leaf;
+a named leaf needs one unique whole-workload match of the complete non-platform
+history. Neither a status quote nor a node inventory token substitutes for this
+profile.
+
+The assigned workload ID is the tenant identity of the leaf. The pod provider
+signs the manifest's annotation into the assignment, the broker carries it in
+the claims and nowhere else, and CDS stamps the verified value under
+`1.3.6.1.4.1.66378.1.8`
+([certificate-extensions.md](certificate-extensions.md#assigned-workload-id-18)).
+A pod without the annotation gets no extension. The pod CVM's mesh endpoint
+requires every peer, in both roles, to carry exactly the assigned workload ID
+of its own leaf: a leaf with none, with another tenant's or with a damaged
+extension fails the handshake, so two tenants running the same image cannot
+substitute each other's certificates, and an endpoint without the stamp meshes
+only with unstamped peers.
 
 Measured Pod launch keys remain separate from node and operator authority. In
 an HA cluster, that boundary also applies to signed node-image replacements.
@@ -345,3 +358,9 @@ the flag exists.
 The stamp has the sandbox ID's posture: CA-vouched, enforceable only where a
 chain was verified, so `c8s verify --workload` and `--allowlist` require
 `--mesh-ca` too, and a compromised mesh CA can mint any name.
+
+A pod CVM's leaf may also carry the assigned workload ID (`…1.8`), the tenant
+the pod was assigned to. Two tenants can run one workload, so the matched name
+does not tell their pods apart. A relying party that expects a tenant compares
+this extension, and refuses a leaf without it; like the other stamps it is
+CA-vouched, so the comparison means something only after the chain check.

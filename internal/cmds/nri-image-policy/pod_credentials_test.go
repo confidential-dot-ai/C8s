@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path"
-	"slices"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
@@ -113,7 +112,7 @@ func TestPodSnapshotRetainsStoppedAndRemovedLaunches(t *testing.T) {
 	inv.remove("first")
 	inv.recordObserved("second", "pod", "app", pushDigestA, "", []string{"/app", "two"}, env, mounts)
 	after, next, err := inv.podSnapshot("pod")
-	if err != nil || next <= revision || len(after) != 2 || !slices.ContainsFunc(after, func(c workloadclaims.SandboxContainer) bool { return slices.Equal(c.Argv, before[0].Argv) }) {
+	if err != nil || next <= revision || len(after) != 2 || after[0].Digest != pushDigestA || after[1].Digest != pushDigestA {
 		t.Fatalf("removed launch omitted: %+v, revision %d -> %d, %v", after, revision, next, err)
 	}
 	inv.removeSandbox("pod")
