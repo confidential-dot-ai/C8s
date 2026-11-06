@@ -1,4 +1,5 @@
-// The ha block runs CDS as a replica set instead of a singleton. Three of the
+// The ha block runs CDS as a replica set instead of a singleton, and its
+// backend names how the replicas agree on their log. Three of the
 // document's fields bootstrap the replicated log and then follow it: `nodes`,
 // `workloads` and `ha.voters` seed the node images, the allowlist and the
 // voter count at Genesis, and signed commands change them while the cluster
@@ -8,6 +9,7 @@
 package cdsconfig
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -18,8 +20,16 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
+// Backend names how a replica set agrees on its log. The document names it,
+// so every replica of a cluster runs the same one and a verifier reads which.
+type Backend string
+
+// BackendRaft replicates the log by Raft among the replicas' memories.
+const BackendRaft Backend = "raft"
+
 // HA is the replica set one cluster's CDS runs as.
 type HA struct {
+	Backend Backend
 	// Replicas are the DNS names and IPv4 addresses discovery resolves to the
 	// replicas' own addresses, never to a load-balanced address; one name may
 	// resolve to several replicas.
@@ -30,6 +40,7 @@ type HA struct {
 
 // haWire mirrors the document's ha block.
 type haWire struct {
+	Backend  Backend  `yaml:"backend,omitempty"`
 	Replicas []string `yaml:"replicas"`
 	Voters   int      `yaml:"voters"`
 }
@@ -39,6 +50,10 @@ func (w *haWire) parse() (*HA, error) {
 	if w == nil {
 		return nil, nil
 	}
+	backend, err := parseBackend(w.Backend)
+	if err != nil {
+		return nil, err
+	}
 	replicas, err := parseReplicas(w.Replicas)
 	if err != nil {
 		return nil, err
@@ -47,9 +62,21 @@ func (w *haWire) parse() (*HA, error) {
 		return nil, err
 	}
 	return &HA{
+		Backend:  backend,
 		Replicas: replicas,
 		Voters:   w.Voters,
 	}, nil
+}
+
+// parseBackend reads ha.backend. A document written before the field existed
+// names raft, the only backend there was, so its bytes keep their meaning and
+// its measurement.
+func parseBackend(name Backend) (Backend, error) {
+	switch name {
+	case "", BackendRaft:
+		return BackendRaft, nil
+	}
+	return "", fmt.Errorf("ha.backend %q is not a backend this CDS runs; the only one is %q", name, BackendRaft)
 }
 
 // wire renders the block; a document naming no replica set renders no ha
@@ -59,6 +86,7 @@ func (h HA) wire() *haWire {
 		return nil
 	}
 	return &haWire{
+		Backend:  cmp.Or(h.Backend, BackendRaft),
 		Replicas: h.Replicas,
 		Voters:   h.Voters,
 	}

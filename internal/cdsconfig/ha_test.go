@@ -46,6 +46,24 @@ func TestParseReturnsTheReplicaSet(t *testing.T) {
 	}
 }
 
+// A block written before ha.backend existed keeps meaning raft, and naming raft
+// means the same.
+func TestParseReadsTheBackendRaftWhenTheBlockNamesNone(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	for _, named := range []Backend{"", BackendRaft} {
+		document := testHADocument(t, operatorPEM, anchorPEM)
+		document.HA.Backend = named
+		cfg, err := Parse(render(t, document))
+		if err != nil {
+			t.Fatalf("backend %q: %v", named, err)
+		}
+		if cfg.HA.Backend != BackendRaft {
+			t.Fatalf("backend %q parsed as %q, want %q", named, cfg.HA.Backend, BackendRaft)
+		}
+	}
+}
+
 // Without an ha block a cluster's CDS runs as the singleton.
 func TestParseLeavesTheSingletonWithoutAnHABlock(t *testing.T) {
 	_, operatorPEM := testKey(t)
@@ -65,6 +83,7 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 		change func(*haWire)
 		want   string
 	}{
+		{"an unknown backend", func(h *haWire) { h.Backend = "paxos" }, "ha.backend"},
 		{"no replica", func(h *haWire) { h.Replicas = nil }, "ha.replicas"},
 		{"the same replica twice", func(h *haWire) { h.Replicas = []string{"cds.acme.example", "cds.acme.example"} }, "twice"},
 		{"a replica port", func(h *haWire) { h.Replicas = []string{"cds.acme.example:8444"} }, "port"},
@@ -130,6 +149,9 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	}
 	if cfg.HA == nil || cfg.HA.Voters != 1 {
 		t.Fatalf("ha = %+v, want the document's block", cfg.HA)
+	}
+	if !strings.Contains(string(data), "backend: raft") {
+		t.Fatalf("Format left the backend unnamed:\n%s", data)
 	}
 }
 

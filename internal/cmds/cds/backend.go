@@ -13,6 +13,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -58,13 +59,18 @@ func (o ownCA) Current() (issuer.CurrentCA, bool) {
 	return o.MeshCA.Current(), true
 }
 
-// newBackend picks what this CDS serves from; the configuration's ha block is
-// the whole decision.
+// newBackend picks what this CDS serves from; the configuration's ha block and
+// the backend it names are the whole decision.
 func newBackend(ctx context.Context, cfg config, st stores) (backend, error) {
-	if cfg.measured.HA == nil {
+	ha := cfg.measured.HA
+	if ha == nil {
 		return newSingleton(cfg, st)
 	}
-	return newReplica(ctx, cfg, st)
+	switch ha.Backend {
+	case cdsconfig.BackendRaft:
+		return newReplica(ctx, cfg, st)
+	}
+	return nil, fmt.Errorf("ha.backend %q names no replica this CDS can run", ha.Backend)
 }
 
 // A replica's log writes all three stores, so they exist before it joins its

@@ -42,6 +42,7 @@ cluster; the log rules afterwards.
 |---|---|---|
 | `nodes` | the node images the cluster certifies at its Genesis | a `node-images` decree, which carries the whole set |
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
+| `ha.backend` | how the replicas agree on their log: `raft`, the only backend, which a file without the field also means | fixed for the cluster's life |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
 | `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
