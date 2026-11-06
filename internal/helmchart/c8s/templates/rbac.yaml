@@ -44,11 +44,13 @@ rules:
     # The operator provisions one headless Service per annotated workload in
     # the workload's namespace.
     verbs: [get, list, watch, create, update, delete]
-  - apiGroups: [""]
+  - apiGroups: ["", events.k8s.io]
     resources: [events]
-    # The controller-runtime manager's event recorder (leader election,
-    # reconcile events) creates and patch-aggregates events across the
-    # namespaces it watches; without this it logs "events is forbidden".
+    # The controller-runtime manager's event recorders (leader election,
+    # reconcile events, Pod CVM status transitions) create and
+    # patch-aggregate events across the namespaces they watch, through both
+    # the core and the events.k8s.io APIs; without this they log "events is
+    # forbidden".
     verbs: [create, patch]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]

@@ -3029,8 +3029,10 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 			t.Fatalf("operator %s verbs = %v, want %v", tc.resource, got, tc.verbs)
 		}
 	}
-	if got := operatorVerbsFor(role, "", "events"); !slices.Equal(got, []string{"create", "patch"}) {
-		t.Fatalf("operator events verbs = %v, want [create patch]", got)
+	for _, group := range []string{"", "events.k8s.io"} {
+		if got := operatorVerbsFor(role, group, "events"); !slices.Equal(got, []string{"create", "patch"}) {
+			t.Fatalf("operator %q events verbs = %v, want [create patch]", group, got)
+		}
 	}
 	// The workload-service reconciler reads workloads (never mutates them)
 	// and owns the headless Services it provisions in workload namespaces.
