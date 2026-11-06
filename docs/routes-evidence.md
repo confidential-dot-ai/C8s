@@ -66,6 +66,14 @@ An unreadable credential blocks forwarding with 502 while retaining the binding;
 an attest-pq request receives that 502 inside its encrypted response. The check
 runs as a request is admitted, so a response already streaming runs to its end.
 
+A client that attests on one connection and forwards on others can send
+`X-C8s-Expect-Allowlist: <hex>`, the allowlist digest of the router stamp it
+verified. The routing listener reads the published router credential and, unless
+its stamp carries exactly that digest, answers 503 `router_digest_changed`
+without forwarding; a malformed value or an unstamped router never matches. The
+header is dropped before forwarding, and a request without it is unaffected.
+The client drops its verdict and attests again.
+
 A renewal of the router's certificate reaches new connections only: nginx
 reads it on each TLS handshake and resumes no TLS session. A handshake on an
 attest-lb connection that is already bound attests the serving leaf that

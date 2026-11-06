@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -337,5 +338,48 @@ func TestSyncRouterDigestReadsAnUnreadCredential(t *testing.T) {
 	}
 	if _, known := f.transports.knownRouterDigest(); !known {
 		t.Fatal("knownRouterDigest() after SyncRouterDigest = unknown, want the credential read")
+	}
+}
+
+// TestListenerChecksTheExpectedAllowlist: a request carrying
+// X-C8s-Expect-Allowlist is routed only while that digest is the router's,
+// read fresh, and the backend never sees the header.
+func TestListenerChecksTheExpectedAllowlist(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	get := func(expect string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = testHost
+		r.Header.Set(ExpectAllowlistHeader, expect)
+		w := httptest.NewRecorder()
+		f.proxy.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusOK {
+		t.Fatalf("GET / expecting the router digest = %d %q, want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := web.seen().header.Values(ExpectAllowlistHeader); len(got) != 0 {
+		t.Fatalf("backend saw %s %q, want it dropped", ExpectAllowlistHeader, got)
+	}
+
+	hits := web.hits.Load()
+	for _, expect := range []string{hex.EncodeToString(digestOf(0x43)), "not hex", hex.EncodeToString(testDigest[:16])} {
+		if w := get(expect); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+			t.Fatalf("GET / expecting %q = %d %q, want 503 %q", expect, w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+		}
+	}
+	// A renewal no poll has seen yet is read before the comparison.
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET / expecting the digest before a renewal = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	f.renew(t, issueLeaf(t, f.mesh, ""))
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET / expecting a digest from an unstamped router = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	if got := web.hits.Load(); got != hits {
+		t.Fatalf("backend served %d requests after refusals, want %d", got, hits)
 	}
 }
