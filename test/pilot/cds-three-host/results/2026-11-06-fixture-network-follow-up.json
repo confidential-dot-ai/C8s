@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "purpose": "Reconcile operator-supplied teardown timing with retained fixture and pinger artifacts; no new cluster inspection or mutation.",
+  "run": "cds-ha-912c47f495b0",
+  "operator_report": {
+    "source": "User follow-up; no underlying query, metric series or OVN controller log supplied in this workspace.",
+    "no_network_change_or_maintenance_on_b200_pair": true,
+    "reported_first_loss_utc": [
+      "13:49",
+      "13:50"
+    ],
+    "reported_port_deletion_window_utc": {
+      "start": "13:48:51",
+      "end": "13:49:23",
+      "order": [
+        "g1-a",
+        "g2-a",
+        "e1/e2",
+        "a1/a2"
+      ]
+    },
+    "reported_guest2_populate_window_utc": [
+      "13:39",
+      "13:44"
+    ],
+    "reported_five_minute_loss": {
+      "13:50_to_13:55": [
+        0.08,
+        0.44
+      ],
+      "14:30": 0.86,
+      "14:40": 0.86,
+      "15:00": 0.07,
+      "15:10_through_20:10": 0
+    },
+    "reported_scope": "Only the two B200 peers; other nodes unaffected.",
+    "reported_health": "Both nodes continuously Ready since 2026-11-04; no events or OVN component restarts; no relevant kernel link/NIC/reboot/geneve/IPsec lines.",
+    "hypothesis": "Stale OVS/OVN state following fixture port deletion disrupted the peer path until it aged out.",
+    "hypothesis_confirmed": false
+  },
+  "retained_raw_pinger_evidence": [
+    {
+      "source_worker": "poc115-node",
+      "artifact": "pinger-comparison-history.log",
+      "artifact_sha256": "5998bac4d23ac8649ceb45764cd8f1d9193cebe727d3c924138235836ee11cba",
+      "last_clean_sample_line": "I1106 13:43:40.936711       1 ping.go:221] ping pod: kube-ovn-pinger-rmfmx 10.48.31.35, count: 3, loss count 0, average rtt 1.47ms",
+      "first_loss_sample_line": "I1106 13:43:53.567269       1 ping.go:221] ping pod: kube-ovn-pinger-rmfmx 10.48.31.35, count: 3, loss count 3, average rtt 0.00ms"
+    },
+    {
+      "source_worker": "poc115-node-2",
+      "artifact": "worker2-pinger.log",
+      "artifact_sha256": "fa1292178ac8f99e84e49877d773e963d8fc2924c895c338487ac4c3c4e69018",
+      "last_clean_sample_line": "I1106 13:43:38.637722       1 ping.go:221] ping pod: kube-ovn-pinger-244vr 10.48.31.41, count: 3, loss count 0, average rtt 1.63ms",
+      "first_loss_sample_line": "I1106 13:43:51.157017       1 ping.go:221] ping pod: kube-ovn-pinger-244vr 10.48.31.41, count: 3, loss count 3, average rtt 0.00ms"
+    }
+  ],
+  "timestamp_basis": "The early retained output has embedded klog timestamps, without CRI timestamp prefixes. The original collection treated them as UTC. These clocks and the operator-reported metric/query time basis have not been independently reconciled.",
+  "retained_runner_events": [
+    {
+      "time": "2026-11-06T13:43:14.462655+00:00",
+      "event": "framed-image-receiver-completed",
+      "archive": "image-a.tar.gz",
+      "chunks": 26
+    },
+    {
+      "time": "2026-11-06T13:44:29.528822+00:00",
+      "event": "vm-ready",
+      "phase": "guest-2-a",
+      "vmi_uid": "c4cfb9ea-cc20-4027-8ccf-a725067894d7",
+      "vm_uid": "a0fa018b-2b83-4170-b0d5-e8ebb8925ad6",
+      "node": "poc115-node-2"
+    },
+    {
+      "time": "2026-11-06T13:47:59.044252+00:00",
+      "event": "qualification-failed",
+      "failure": "ValueError",
+      "detail": "015-seed-g0 failed; inspect private log"
+    },
+    {
+      "time": "2026-11-06T13:50:21.718092+00:00",
+      "event": "cleanup",
+      "complete": true,
+      "errors": []
+    }
+  ],
+  "other_retained_observations": {
+    "isolated_other_peer_loss": "poc115-node pinger recorded 2 of 3 pod probes lost to kube-ovn-pinger-g46fl at embedded time 13:42:30; this is not evidence of the same sustained regression.",
+    "later_isolated_loss_reference": "2026-11-06-direct-attempt-03.json retains one three-probe loss interval at 15:40:54; it cannot establish the reported five-minute metric definition."
+  },
+  "assessment": {
+    "fixture_lifecycle_is_a_possible_trigger": true,
+    "final_teardown_causation_established": false,
+    "stale_ovs_or_ovn_state_established": false,
+    "infrastructure_maintenance_explanation_supported": false,
+    "onset_chronology_reconciled": false,
+    "cleanup_absence_audit_excludes_residual_datapath_effects": false,
+    "interpretation": "The saved pinger timestamps precede the reported final port teardown and the runner failure. Preserve both accounts; do not silently move onset to 13:49 or clear fixture operations of responsibility. Earlier population/port lifecycle activity and final teardown remain unproven candidates.",
+    "no_current_repair_requested": true
+  },
+  "constraints": {
+    "new_cloud_qualification_paused": true,
+    "live_ovs_exec_performed_for_this_review": false,
+    "ovn_central_raft_files_read_for_this_review": false,
+    "shared_network_changes": false,
+    "ci_used": false
+  }
+}

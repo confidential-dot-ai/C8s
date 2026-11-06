@@ -243,8 +243,10 @@ window, then 41 losses in 54 probes around the direct-state failure and 38 in
 individual sample averages exceeding 17 seconds. Both nodes still reported
 Ready; their inspected queue counters had no drops or backlog. Peer-node routes
 used the physical interfaces and their gateways. These observations establish
-a network regression overlapping the failure, not its complete root cause.
-ICMP probes and CDS use different workloads and may use different subnet paths.
+a network regression overlapping the failure by the embedded log timestamps,
+not its complete root cause. The operator subsequently supplied a conflicting
+onset timeline, retained below. ICMP probes and CDS use different workloads and
+may use different subnet paths.
 
 [Direct-state attempt 2](../test/pilot/cds-three-host/results/2026-11-06-direct-attempt-02.json)
 was stopped before guest boot or fault injection after that regression was
@@ -337,3 +339,22 @@ network regression still has no confirmed root cause or permanent repair.
 No shared network or host configuration was changed. The completed qualification
 does not erase the earlier failures or qualify production scale, migration,
 mixed-release compatibility, large-object availability or combined key custody.
+
+The operator's [network follow-up](../test/pilot/cds-three-host/results/2026-11-06-fixture-network-follow-up.json)
+reports no maintenance on either B200 worker and places the first loss at
+13:49–13:50 UTC, following fixture port deletion at 13:48:51–13:49:23. Stale
+OVS/OVN state from fixture lifecycle is a possible explanation, not a confirmed
+cause. The saved raw pinger output instead contains full-loss samples at embedded
+times 13:43:51.157017 and 13:43:53.567269, following clean samples in both
+directions. The runner records guest 2 becoming ready at 13:44:29, workload
+failure at 13:47:59 and completed cleanup at 13:50:21. The early pinger captures
+lack CRI timestamp prefixes; their clock basis has not been reconciled with the
+operator's report. Preserve both accounts rather than assigning teardown as the
+established trigger or ruling out earlier fixture port activity.
+
+An absence audit proves that the owned Kubernetes objects are gone; it cannot
+exclude residual effects in the shared datapath. The statement that shared
+network settings were unchanged does not imply that fixture creation/deletion
+could not affect production networking. No current repair is requested. Further
+cloud qualification is paused; this follow-up used saved artifacts only, with
+no live OVS execution, OVN-central Raft-file inspection, cluster changes or CI.

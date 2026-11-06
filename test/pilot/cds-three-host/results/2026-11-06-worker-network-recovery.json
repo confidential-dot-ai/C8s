@@ -88,7 +88,8 @@
     "root_cause_resolved": false,
     "scope": "observed recovery; monitor during the next owned qualification"
   },
-  "shared_production_changes": false,
   "test_workload_or_deadline_changes": false,
-  "qualification": "Metadata repeat and full direct-state acceptance must still pass; temporary recovery does not establish a permanent network repair."
+  "qualification": "Metadata repeat and full direct-state acceptance must still pass; temporary recovery does not establish a permanent network repair.",
+  "shared_network_configuration_changes": false,
+  "fixture_lifecycle_follow_up": "2026-11-06-fixture-network-follow-up.json"
 }

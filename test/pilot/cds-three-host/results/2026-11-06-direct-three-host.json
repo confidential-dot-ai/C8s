@@ -460,6 +460,7 @@
       "ICMP probes do not establish every CDS or metadata TCP path.",
       "The earlier worker network regression has no confirmed root cause or permanent repair.",
       "No shared network, host, route, NAT or OVN settings were changed."
-    ]
+    ],
+    "fixture_lifecycle_follow_up": "2026-11-06-fixture-network-follow-up.json"
   }
 }

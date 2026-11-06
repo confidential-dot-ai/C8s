@@ -70,14 +70,14 @@
   },
   "peer_node_routes_use_physical_interface": "ens121np0 via each worker gateway",
   "root_cause_established": false,
-  "shared_production_changes": false,
   "limits": [
     "Existing ICMP probes use different pods and may use different subnets/paths from CDS.",
     "Concurrent etcd peer timeouts and certificate-issuance timeout overlap the network regression; causation is not fully established.",
     "Node readiness, a common metadata leader, and TCP readiness alone did not establish suitability for this comparison.",
-    "No host, interface, queue, route, OVN or shared policy setting was changed."
+    "No host, interface, queue, route, OVN or shared policy setting was changed.",
+    "Deleting owned Kubernetes objects can affect shared datapath state; an absence audit does not establish network recovery or exclude fixture-triggered impact."
   ],
-  "resumption": "Restore stable worker-to-worker connectivity, repeat metadata health qualification, then run the unchanged direct-state acceptance before recommending a replacement.",
+  "resumption": "The later completed qualification is recorded separately. Further cloud qualification is paused while the fixture-lifecycle concern and conflicting onset timelines are retained for review; no current network repair is requested.",
   "post_cleanup_observations": {
     "independent_cleanup_audit_time": "2026-11-06T14:09:52.833299+00:00",
     "observation_start": "2026-11-06T14:13:34.845760+00:00",
@@ -97,5 +97,9 @@
       }
     }
   },
-  "regression_persisted_after_all_test_resources_removed": true
+  "regression_persisted_after_all_test_resources_removed": true,
+  "first_observation_timestamp_basis": "Embedded pinger log time, interpreted as UTC by the original collector; see follow-up for the conflicting operator-reported onset.",
+  "shared_network_configuration_changes": false,
+  "fixture_lifecycle_impact_excluded": false,
+  "operator_follow_up": "2026-11-06-fixture-network-follow-up.json"
 }
