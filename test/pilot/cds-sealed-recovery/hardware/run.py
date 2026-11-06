@@ -259,7 +259,11 @@ class Run:
                 self.save()
         self.kube.call("DELETE", row["path"], {"apiVersion": "v1", "kind": "DeleteOptions",
             "preconditions": {"uid": row["uid"]}, "propagationPolicy": "Foreground"}, expected=(200, 202, 404))
-        self.wait_absent(row["path"])
+        # A VM's ordinary guest termination and foreground controller cleanup
+        # can exceed two minutes. Wait within a fixed five-minute bound; do not
+        # override grace periods, remove finalizers, or force-delete its Pod.
+        timeout = 300 if row["item"]["kind"] == "VirtualMachine" else 120
+        self.wait_absent(row["path"], timeout=timeout)
         if row.get("pv"):
             # The checked Delete reclaim policy must remove this exact owned
             # claim's PV as well. Never delete or change the provisioner.

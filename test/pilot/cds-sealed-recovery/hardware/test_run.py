@@ -90,6 +90,24 @@ class LifecycleTests(unittest.TestCase):
         args = types.SimpleNamespace(directory=self.tmp.name)
         return module.Run(args, kube, lambda p, v: Path(p).write_text(json.dumps(v)))
 
+    def test_vm_teardown_waits_without_overriding_grace_or_uid_protection(self):
+        for kind, version, seconds in (("VirtualMachine", "kubevirt.io/v1", 300),
+                                       ("Pod", "v1", 120)):
+            with self.subTest(kind=kind):
+                kube = FakeKube()
+                run = self.runner(kube)
+                item = copy.deepcopy(self.item)
+                item["kind"], item["apiVersion"] = kind, version
+                item["metadata"]["name"] = "cds-snp-0123456789ab"
+                row = run.create(item)
+                with patch.object(run, "wait_absent") as wait:
+                    run.remove(row)
+                wait.assert_called_once_with(row["path"], timeout=seconds)
+                deletes = [body for method, _, body in kube.calls if method == "DELETE"]
+                self.assertEqual([{"apiVersion": "v1", "kind": "DeleteOptions",
+                    "preconditions": {"uid": "created-uid"}, "propagationPolicy": "Foreground"}], deletes)
+                self.assertTrue(row["deleted"])
+
     def test_interrupt_escapes_child_wait_to_reach_cleanup(self):
         previous = signal.signal(signal.SIGINT, module.interrupt_run)
         self.addCleanup(signal.signal, signal.SIGINT, previous)

@@ -47,7 +47,7 @@ Secrets and network policies are absent. No worker or shared cloud rollout is
 changed. Raw quotes, collateral, launch bytes and private runner data are kept
 outside the repository; the published result is an explicit summary.
 
-Native TDX CDS execution is pending for frozen image source `87c4aff8`. Local native-harness
+A clean end-to-end runner result is pending for frozen image source `87c4aff8`. Local native-harness
 compilation, the direct-state HTTP/workload regression, custody race tests,
 and all 36 runner checks passed. The first image build stopped because the
 builder's symlink target was absent inside its dedicated container; the retry
@@ -61,3 +61,14 @@ existing three-attempt retry for unchanged GET requests. Mutation, authorization
 and validation failures retain their previous behavior. All 36 runner checks
 pass, including bounded retries and no mutation retry. The failure is retained;
 it is not counted as native TDX recovery evidence.
+
+The [second native attempt](../test/pilot/cds-sealed-recovery/results/2026-11-06-tdx-current-recovery-attempt-02.json)
+passed native TDX seeding and recovery, including original CA continuity,
+still-valid spent-token rejection, revocation and the original leaf/secret
+positive control. Its post-recovery VM deletion exceeded the runner's two-minute
+wait, so the run exited nonzero. Normal final cleanup then completed, and all
+32 recorded paths were independently absent. It is retained as assertion
+evidence, not counted as a clean end-to-end run. The VM-removal wait is now
+bounded at five minutes; grace periods, finalizers, host settings and the run's
+45-minute deadline are unchanged. All 37 runner checks pass, including UID
+protection and absence of forced deletion.

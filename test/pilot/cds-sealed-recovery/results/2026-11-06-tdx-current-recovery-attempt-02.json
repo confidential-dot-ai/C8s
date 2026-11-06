@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "attempt": 2,
+  "image_source_commit": "87c4aff8d5aedf9d71eceb30dcc9567dc9b7c939",
+  "runner_source_commit": "6e06525f61e7bc6fc63d2b54e0043491eac89167",
+  "backend": "transactional-current-state",
+  "cds_platform": "tdx",
+  "custody_platform": "snp",
+  "native_seed_and_recovery_assertions_passed": true,
+  "full_tdx_attestation_and_launch_verified": true,
+  "same_ca_before_and_after_total_source_guest_loss": true,
+  "recovery_checks": {
+    "attested_custodian_delegation": true,
+    "authority_reads_current_records": true,
+    "old_leaf_and_secret_positive_control": true,
+    "real_tdx_attestation": true,
+    "revocation_preserved_all_replicas": true,
+    "same_ca_all_replicas": true,
+    "state_key_and_ca_never_exported_as_plaintext": true,
+    "unexpired_replay_rejected_all_replicas": true
+  },
+  "runner_exit_code": 1,
+  "clean_end_to_end_run": false,
+  "failure_stage": "Post-recovery VM deletion",
+  "failure": "A normal UID-scoped foreground VM deletion exceeded the runner 120-second wait after the signed recovery checks had passed. The final cleanup pass then removed every owned resource without forced deletion or host changes.",
+  "cleanup": {
+    "runner_verified": true,
+    "independent_read_only_audit_passed": true,
+    "resource_paths_checked": 32,
+    "owned_resources_remaining": 0
+  },
+  "remediation": "Allow up to 300 seconds for normal VM removal while retaining the existing bounded run lifetime, UID preconditions and foreground deletion. Do not change grace periods, remove finalizers, or force-delete Pods.",
+  "production_ready": false,
+  "publication": "Explicit selected summary only; no raw quotes, collateral, launch bytes, measurements, identities or private runner data."
+}
