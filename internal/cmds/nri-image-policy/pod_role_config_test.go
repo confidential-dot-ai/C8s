@@ -17,15 +17,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// The pod role rewrites the baked config at boot (nodeservices.preparePod).
-// Load that output here so the rewrite cannot drift from the plugin schema.
-// A pod measures its images: the rewrite must keep the baked
+// The assignment rewrites the baked config for the assigned pod
+// (nodeservices.RenderPodRuntime), and the guest installs it before the
+// runtime starts. Load that output here so the rewrite cannot drift from the
+// plugin schema. A pod measures its images: the rewrite must keep the baked
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
 func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
-	root, doc := podRoleInputs(t)
-	if err := nodeservices.PrepareNode(root, doc); err != nil {
-		t.Fatal(err)
-	}
+	root, assigned := podRoleInputs(t)
+	installPodRole(t, root, assigned)
 	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatalf("pod-role config does not load: %v", err)
@@ -63,8 +62,9 @@ func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 // podRoleInputs stages the baked policy, the pins and a TDX pod document
-// under a fresh root, as the initrd leaves them for Prepare.
-func podRoleInputs(t *testing.T) (string, *launchconfig.Document) {
+// under a fresh root, as the initrd leaves them for Prepare, together with the
+// assignment the pod CVM then receives.
+func podRoleInputs(t *testing.T) (string, *launchconfig.AssignedPod) {
 	t.Helper()
 	// Successful guest preparation reads the Linux uplink's route and MTU.
 	// Keep this integration test on that real path; pure rendering and
@@ -120,16 +120,38 @@ func podRoleInputs(t *testing.T) (string, *launchconfig.Document) {
 	for _, name := range []string{"served", "cached"} {
 		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, nriimagepolicy.PodBootstrapServedDigest))
 	}
-	doc := &launchconfig.Document{
-		Role:                 launchconfig.Pod,
-		CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
-		Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
-		PodOperatorPublicKey: podKey,
-		Image:                launchconfig.Image{Platform: "tdx"},
-		Node:                 launchconfig.Node{Name: "p-pod"},
-		Workloads:            `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
-		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
+	assigned := &launchconfig.AssignedPod{
+		Document: launchconfig.Document{
+			Role:                 launchconfig.Pod,
+			CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
+			Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
+			PodOperatorPublicKey: podKey,
+			Image:                launchconfig.Image{Platform: "tdx"},
+			Node:                 launchconfig.Node{Name: "p-pod"},
+		},
+		Entries: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
+		Pod: launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
 			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
 	}
-	return root, doc
+	return root, assigned
+}
+
+// installPodRole prepares the generic boot, renders the assigned runtime and
+// installs its policy where the plugin reads it, as the guest does once an
+// assignment is recorded.
+func installPodRole(t *testing.T, root string, assigned *launchconfig.AssignedPod) {
+	t.Helper()
+	if err := nodeservices.PrepareNode(root, &assigned.Document); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := nodeservices.RenderPodRuntime(root, assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/nri/conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"), runtime.Policy, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

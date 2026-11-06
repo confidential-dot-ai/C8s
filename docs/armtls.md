@@ -212,11 +212,10 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 
 CDS verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
-policy and every non-platform observation must pass its admission checks. A
-snapshot holding only the measured endpoint can get an unnamed membership leaf;
-a named leaf needs one unique whole-workload match of the complete non-platform
-history. Neither a status quote nor a node inventory token substitutes for this
-profile.
+policy. The leaf is the unnamed membership leaf: a pod CVM never carries the
+matched-workload stamp, since its claims name no arguments, environment or
+mounts to match an entry against. Neither a status quote nor a node inventory
+token substitutes for this profile.
 
 Measured Pod launch keys remain separate from node and operator authority. In
 an HA cluster, that boundary also applies to signed node-image replacements.

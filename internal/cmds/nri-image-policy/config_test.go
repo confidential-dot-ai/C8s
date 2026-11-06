@@ -661,21 +661,3 @@ func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
 		t.Fatalf("journal elsewhere than its readers look: %v", err)
 	}
 }
-
-// A waiting broker has no identity to carry; an assigned one may
-// carry a workload ID only in the grammar the leaf extension accepts.
-func TestPodBrokerWorkloadIDFollowsTheSignedAssignment(t *testing.T) {
-	cfg := podRoleConfig(t)
-	cfg.Pod.WorkloadID = "tenant-a.web"
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("assigned pod with a workload ID: %v", err)
-	}
-	cfg.Pod.WorkloadID = "tenant a"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "workload id") {
-		t.Fatalf("workload ID the leaf cannot carry: %v", err)
-	}
-	cfg.Pod = &podConfig{Waiting: true, Generic: true, WorkloadID: "tenant-a.web"}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("waiting broker carried a workload ID")
-	}
-}
