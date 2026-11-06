@@ -3,6 +3,7 @@ enable worker-stage.service
 enable containerd.service
 enable kubelet.service
 enable attest-proxy.service
+enable volumed.path
 enable containerd-data-disk.service
 enable models-disk.service
 enable scratch-enforce.service

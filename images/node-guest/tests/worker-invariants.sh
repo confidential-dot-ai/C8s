@@ -134,6 +134,30 @@ for unit in "$units"/*; do
   baked_units="$baked_units $name"
   case "$name" in
     *.service) ;;
+    *.path)
+      # A watch starts a service; the service it starts carries the staging
+      # dependency, and nothing else may start it.
+      [ "$(grep -c '^Unit=' "$unit")" = 1 ] && [ "$(grep -c '^PathExists=' "$unit")" = 1 ] \
+          || fail path-target "the path unit $name must name one Unit= and one PathExists="
+      target=$(sed -n 's/^Unit=//p' "$unit")
+      case "$target" in
+        *.service) ;;
+        *) fail path-target "the path unit $name starts ${target:-no unit}, which is no service" ;;
+      esac
+      [ -f "$units/$target" ] \
+          || fail path-target "the path unit $name starts $target, which the image does not bake"
+      if grep -q '^\[Install\]' "$units/$target"; then
+        fail path-target "$target is started by $name, so it must carry no [Install] section"
+      fi
+      # systemd starts a path unit before basic.target, and every service of
+      # this image after it, so a watch that orders itself against a service
+      # is a cycle systemd breaks by dropping a job of its choosing — the
+      # worker then stages, or does not, by luck. The service it starts
+      # carries the staging dependency, checked as any other service below.
+      ! grep -qE '^(After|Before)=' "$unit" \
+          || fail watch-ordering "the path unit $name orders itself against another unit; $target carries the staging dependency instead"
+      continue
+      ;;
     *) fail unit-kind "the worker image bakes the $name unit, which this gate's staging rule does not cover" ;;
   esac
   if [ "$name" = worker-stage.service ]; then

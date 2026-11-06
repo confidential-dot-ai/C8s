@@ -104,11 +104,116 @@ func TestTheWrapperExecsTheRuntimeTheProfileStages(t *testing.T) {
 	}
 }
 
+// flagOfExecStart is the value the unit's ExecStart gives flag; a flag it leaves out,
+// or gives twice, is a failure rather than an empty string. Only ExecStart is
+// read, so a flag named in a comment cannot answer.
+var execFlagPattern = regexp.MustCompile(`--([a-z0-9-]+)=(\S+)`)
+
+func flagOfExecStart(t *testing.T, path, flag string) string {
+	t.Helper()
+	var found []string
+	for _, m := range execFlagPattern.FindAllStringSubmatch(unitValue(t, path, "ExecStart"), -1) {
+		if m[1] == flag {
+			found = append(found, m[2])
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%s names --%s %d times in its ExecStart, want once", path, flag, len(found))
+	}
+	return found[0]
+}
+
+// unitValue is the value path assigns to a unit key; a key it leaves out, or
+// assigns twice, is a failure.
+func unitValue(t *testing.T, path, key string) string {
+	t.Helper()
+	var found []string
+	for _, line := range lines(t, path) {
+		if value, ok := strings.CutPrefix(line, key+"="); ok {
+			found = append(found, strings.TrimSpace(value))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%s names %s %d times, want once", path, key, len(found))
+	}
+	return found[0]
+}
+
+// unitList are the units path names under key, as systemd accumulates them
+// over repeated lines. An empty assignment resets a systemd list, which no
+// unit of this image does, so it is a failure here.
+func unitList(t *testing.T, path, key string) []string {
+	t.Helper()
+	var out []string
+	for _, line := range lines(t, path) {
+		value, ok := strings.CutPrefix(line, key+"=")
+		if !ok {
+			continue
+		}
+		if value = strings.TrimSpace(value); value == "" {
+			t.Fatalf("%s resets its %s list", path, key)
+		}
+		out = append(out, strings.Fields(value)...)
+	}
+	return out
+}
+
+// tmpfilesDirs are the directories path creates.
+func tmpfilesDirs(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	dirs := map[string]bool{}
+	for _, line := range lines(t, path) {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && slices.Contains([]string{"d", "D"}, fields[0]) {
+			dirs[strings.TrimSuffix(fields[1], "/")] = true
+		}
+	}
+	return dirs
+}
+
+// The volume service runs only while the kubelet's pod directory exists, and
+// only after staging: the watch that starts it is what the preset enables.
+func TestVolumedWaitsForTheKubeletsPodDirectoryBehindStaging(t *testing.T) {
+	watch := baked(t, "etc/systemd/system/volumed.path")
+	service := baked(t, "etc/systemd/system/volumed.service")
+	pods := flagOfExecStart(t, service, "kubelet-root") + "/pods"
+	if got := unitValue(t, watch, "PathExists"); got != pods {
+		t.Errorf("the watch waits for %q, want the pod directory under volumed's kubelet root, %q", got, pods)
+	}
+	if got := unitValue(t, watch, "Unit"); got != "volumed.service" {
+		t.Errorf("the watch starts %q, want volumed.service", got)
+	}
+	if got := unitValue(t, service, "ConditionPathExists"); got != pods {
+		t.Errorf("the service runs on condition %q, want %q, so nothing else can start it without one", got, pods)
+	}
+	if got := unitValue(t, service, "Restart"); got != "always" {
+		t.Errorf("Restart = %q, want always: a worker serves volumes for as long as it runs", got)
+	}
+	if got := unitList(t, service, "Requires"); !slices.Contains(got, "worker-stage.service") {
+		t.Errorf("the service requires %v, want worker-stage.service: volumed holds every volume key", got)
+	}
+	if got := unitList(t, service, "After"); !slices.Contains(got, "worker-stage.service") {
+		t.Errorf("the service starts after %v, want worker-stage.service among them", got)
+	}
+	if !slices.Contains(lines(t, baked(t, "usr/lib/systemd/system-preset/50-worker.preset")), "enable volumed.path") {
+		t.Error("the preset does not enable volumed.path; an unenabled watch never starts volumed")
+	}
+}
+
+// volumed serves in the directory the plugin mounts into a workload's
+// sidecar, which this image's tmpfiles create.
+func TestVolumedServesWhereTheTmpfilesCreate(t *testing.T) {
+	socketDir := flagOfExecStart(t, baked(t, "etc/systemd/system/volumed.service"), "socket-dir")
+	if !tmpfilesDirs(t, baked(t, "etc/tmpfiles.d/c8s-worker.conf"))[socketDir] {
+		t.Errorf("--socket-dir = %q, which the image's tmpfiles do not create", socketDir)
+	}
+}
+
 // Every unit containerd requires, and every unit the presets enable, is one
 // the worker image has or its base provides.
 func TestUnitsNameUnitsTheImageHas(t *testing.T) {
 	units := map[string]bool{"attestation-api.service": true, "systemd-timesyncd.service": true, "systemd-time-wait-sync.service": true, "apparmor.service": true}
-	own, err := filepath.Glob("mkosi.extra/etc/systemd/system/*.service")
+	own, err := filepath.Glob("mkosi.extra/etc/systemd/system/*")
 	if err != nil {
 		t.Fatal(err)
 	}

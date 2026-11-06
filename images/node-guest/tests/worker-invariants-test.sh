@@ -113,6 +113,16 @@ refuses "a boot gate that is not a oneshot" boot-gate \
     sed -i 's/^Type=oneshot$/Type=simple/' "$(baked etc/systemd/system/scratch-enforce.service)"
 refuses "a unit kind the staging rule does not cover" unit-kind \
     install -D -m 0644 /dev/null "$UNITS/models.mount"
+refuses "a path unit starting a unit the image does not bake" path-target \
+    sed -i 's/^Unit=.*/Unit=other.service/' "$(baked etc/systemd/system/volumed.path)"
+refuses "a path unit watching nothing" path-target \
+    sed -i '/^PathExists=/d' "$(baked etc/systemd/system/volumed.path)"
+# shellcheck disable=SC2016 # sed's last-line address, not a shell expansion.
+refuses "a path unit's service the boot could start too" path-target \
+    sed -i '$a[Install]' "$(baked etc/systemd/system/volumed.service)"
+# shellcheck disable=SC2016 # sed's last-line address, not a shell expansion.
+refuses "a watch ordered against a service" watch-ordering \
+    sed -i '/^Description=/aAfter=worker-stage.service' "$(baked etc/systemd/system/volumed.path)"
 refuses "an image without its attestation proxy" baked-units \
     rm "$(baked etc/systemd/system/attest-proxy.service)"
 
