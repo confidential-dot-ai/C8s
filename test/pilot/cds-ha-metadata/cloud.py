@@ -269,7 +269,8 @@ class Run:
             response = connection.getresponse()
             raw = response.read(2*1024*1024+1); need(len(raw) <= 2*1024*1024, 'oversized fixture response')
             return response.status, json.loads(raw) if raw else None
-        except (OSError, http.client.HTTPException): return 0, None
+        except (OSError, http.client.HTTPException) as error:
+            return 0, {'transport_error': type(error).__name__}
         finally: connection.close()
 
     def exercise(self):
@@ -403,12 +404,27 @@ class Run:
         return {'checks': [{'key': key, 'version': ''}], 'writes': [{'key': key, 'version': '0000000000000001',
             'value': base64.b64encode(hashlib.sha256(('opaque-'+name).encode()).digest()).decode()}]}
 
+    def commit_batch(self, urls, names, label):
+        def commit(index):
+            start = time.monotonic()
+            code, reply = self.request(urls[index%3], '/v1/state/commit', self.txn(names[index]))
+            return {'index': index, 'adapter': index%3, 'http_status': code,
+                    'elapsed_seconds': round(time.monotonic()-start, 6),
+                    'transport_error': reply.get('transport_error') if code == 0 and isinstance(reply, dict) else None}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            observations = list(pool.map(commit, range(len(names))))
+        # Record every outcome before checking the batch; uncertain writes are
+        # never retried. Worker threads return observations to this sole owner.
+        self.state.setdefault('transaction_batches', {})[label] = observations
+        results = [row['http_status'] for row in observations]
+        counts = {str(code): results.count(code) for code in sorted(set(results))}
+        self.event('metadata-transaction-batch-observed', batch=label, http_status_counts=counts)
+        return results
+
     def check_transactions(self, urls):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-            results = list(pool.map(lambda i: self.request(urls[i%3], '/v1/state/commit', self.txn('winner'))[0], range(16)))
+        results = self.commit_batch(urls, ['winner']*16, 'conditional-race')
         need(results.count(204) == 1 and results.count(412) == 15, 'conditional race did not have one winner')
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-            results = list(pool.map(lambda i: self.request(urls[i%3], '/v1/state/commit', self.txn('independent-'+str(i)))[0], range(64)))
+        results = self.commit_batch(urls, ['independent-'+str(i) for i in range(64)], 'independent')
         need(all(c == 204 for c in results), 'independent transaction failed')
         self.state['independent_commits'] = 64; self.state['conditional_race_winners'] = 1
         self.event('metadata-transactions-passed', independent_commits=64, conditional_race_winners=1)

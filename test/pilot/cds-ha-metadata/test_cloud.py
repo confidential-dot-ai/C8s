@@ -1,4 +1,5 @@
 import copy
+import queue
 import unittest
 
 from fixtures import COMPONENT, NS, OWNER, render, partition, selector
@@ -90,6 +91,41 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(delete['propagationPolicy'], 'Foreground')
         self.assertNotIn('gracePeriodSeconds', delete)
         self.assertTrue(row['deleted'])
+
+    def test_unknown_commit_is_recorded_before_failure_and_never_retried(self):
+        run = object.__new__(Run); run.state = {}; calls = queue.Queue(); saved = []
+        race = queue.Queue()
+        for code in [204]+[412]*15: race.put(code)
+        failed_key = run.key('independent-7')
+        def request(origin, path, body):
+            key = body['checks'][0]['key']; calls.put(key)
+            if key == run.key('winner'): return race.get_nowait(), None
+            return (0, {'transport_error': 'TimeoutError'}) if key == failed_key else (204, None)
+        run.request = request
+        run.event = lambda *args, **kwargs: saved.append(copy.deepcopy(run.state))
+        with self.assertRaisesRegex(ValueError, 'independent transaction failed'):
+            run.check_transactions(['a0', 'a1', 'a2'])
+        attempted = [calls.get_nowait() for _ in range(calls.qsize())]
+        self.assertEqual(len(attempted), 80)
+        self.assertEqual(attempted.count(failed_key), 1)
+        batch = saved[-1]['transaction_batches']['independent']
+        self.assertEqual(len(batch), 64)
+        self.assertEqual(sum(row['http_status'] == 204 for row in batch), 63)
+        self.assertEqual(batch[7]['transport_error'], 'TimeoutError')
+        self.assertNotIn('independent_commits', run.state)
+
+    def test_failed_conditional_race_preserves_outcomes_and_stops_next_batch(self):
+        run = object.__new__(Run); run.state = {}; calls = queue.Queue(); saved = []
+        def request(origin, path, body):
+            calls.put(body['checks'][0]['key'])
+            return 503, None
+        run.request = request
+        run.event = lambda *args, **kwargs: saved.append(copy.deepcopy(run.state))
+        with self.assertRaisesRegex(ValueError, 'conditional race did not have one winner'):
+            run.check_transactions(['a0', 'a1', 'a2'])
+        self.assertEqual(calls.qsize(), 16)
+        self.assertEqual(set(saved[-1]['transaction_batches']), {'conditional-race'})
+        self.assertTrue(all(row['http_status'] == 503 for row in saved[-1]['transaction_batches']['conditional-race']))
 
 
 if __name__ == '__main__': unittest.main()

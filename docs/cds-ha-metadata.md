@@ -72,3 +72,14 @@ bound and additional private failure diagnostics.
 This completes the metadata stage only. Three separately placed CDS guests and
 the Raft/current-state upgrade comparison are the next stages; their success
 and production readiness are not implied by this result.
+
+A [subsequent repeat](../test/pilot/cds-ha-metadata/results/2026-11-06-ha-metadata-attempt-03.json)
+on November 6 failed the independent-write batch after the conditional race
+passed. The worker pinger remained clean, but the runner did not retain each
+request's status, so the cause and number of acknowledged writes are unknown.
+All 29 owned resources were removed; an independent audit confirmed 32 paths
+absent. This repeat does not qualify the next CDS run. The runner now saves
+every status, elapsed time and transport-error type before asserting a batch's
+result. Its workload, concurrency, deadlines and single-send rule are unchanged;
+eight local fixture tests pass, including preservation of uncertain outcomes
+without retry and stopping after a failed conditional race.

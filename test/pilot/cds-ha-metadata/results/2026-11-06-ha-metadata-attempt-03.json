@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "timezone": "UTC",
+  "attempt": 3,
+  "purpose": "Repeat metadata qualification after worker pod-network recovery",
+  "runner_commit": "f6633fac4e943a55e8f9693207b3e83562de86ae",
+  "metadata_source_commit": "d0bbce129ef19b856b38530c6dd94b7afeb22be3",
+  "metadata_source_tree": "5a2cf509364cc0b31835d5d71f18732ca20347e2",
+  "etcd_version": "3.7.3",
+  "distinct_compute_workers": 3,
+  "metadata_members": 3,
+  "stateless_adapters": 3,
+  "runner_exit_code": 1,
+  "metadata_ha_passed": false,
+  "conditional_race_assertion_passed": true,
+  "independent_write_batch_passed": false,
+  "independent_requests_attempted": 64,
+  "per_request_outcomes_available": false,
+  "failure": "At least one independent commit did not return HTTP 204. The runner did not retain individual statuses or timings; the exact outcome and cause are unknown. No fault phase or CDS guest was reached.",
+  "network_observation": {
+    "existing_pinger_sent_per_direction": 123,
+    "existing_pinger_lost_per_direction": 0,
+    "last_observation_utc": "15:06:49",
+    "limits": "ICMP probes are not a proof of the metadata TCP path."
+  },
+  "cleanup": {
+    "owned_resources_removed": 29,
+    "independent_read_only_audit_passed": true,
+    "paths_checked": 32,
+    "owned_resources_remaining": 0
+  },
+  "shared_production_changes": false,
+  "production_ready": false
+}
