@@ -74,6 +74,12 @@ without forwarding; a malformed value or an unstamped router never matches. The
 header is dropped before forwarding, and a request without it is unaffected.
 The client drops its verdict and attests again.
 
+Such a client can also send `X-C8s-Expect-Route: <hex>`, the route digest it
+verified. Unless that is the digest of the manifest the routing listener applies,
+the listener answers 503 `route_digest_changed` without forwarding; a malformed
+value never matches. This check runs before the allowlist one and reads nothing.
+The header is dropped before forwarding, and a request without it is unaffected.
+
 A renewal of the router's certificate reaches new connections only: nginx
 reads it on each TLS handshake and resumes no TLS session. A handshake on an
 attest-lb connection that is already bound attests the serving leaf that
