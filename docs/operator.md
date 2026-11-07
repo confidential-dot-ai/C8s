@@ -426,8 +426,17 @@ TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
 refuse a front door outside mode `cds`, wanting a direct CDS URL.
 
 ACME issuance covers the names the sidecar is configured with — `router.san` on
-an installed cluster, the launch file's `hostnames` on a baked node — and never
-one outside that set. It keeps one certificate for those whose public challenge
+an installed cluster, the launch file's `hostnames` on a baked node — plus,
+with `router.acme.routeManifestHosts` (default on), the hosts of the applied
+[route manifest](#route-manifest), and never one outside that set. Adding a
+host to a signed manifest therefore adds it to the certificate without a
+relaunch: `cds-attest` writes the applied manifest's hosts to a pod-local
+Memory volume, the sidecar re-reads it each check, issues a certificate for
+the new set, verifies that the chain holds its key and exactly those names,
+and only then replaces the served pair. A failed issuance keeps the served
+certificate and retries with backoff. Removing a host re-issues without it.
+The sidecar issues only once at least one launch hostname exists; a node whose
+launch file names none stays in mode `cds`. It keeps one certificate for those whose public challenge
 path reaches this router, probing each with a one-off token first, so an
 unreachable name blocks no other. The certificate is kept while it covers the
 reachable names, renewal fires at two thirds of its lifetime, and a covered name

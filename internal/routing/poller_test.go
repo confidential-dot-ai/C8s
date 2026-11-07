@@ -96,10 +96,15 @@ func TestA1A3PollAppliesFromCDS(t *testing.T) {
 	cds := startCDS(t)
 	cds.keysPEM = publicKeysPEM(t, f.op)
 	client := cds.client(t)
-	p := NewPoller(PollerConfig{State: f.state, Fetcher: client, Keys: client, Transports: f.transports})
+	var hooked []*Applied
+	p := NewPoller(PollerConfig{State: f.state, Fetcher: client, Keys: client, Transports: f.transports,
+		OnApplied: func(a *Applied) { hooked = append(hooked, a) }})
 
 	if err := p.Poll(context.Background()); !errors.Is(err, errNoManifest) {
 		t.Fatalf("poll() with no stored manifest = %v, want %v", err, errNoManifest)
+	}
+	if len(hooked) != 0 {
+		t.Fatal("OnApplied called before any apply")
 	}
 	cds.serve(t, f.op.sign(t, simpleManifest(3, "127.0.0.1:1").bytes(t)))
 	if err := p.Poll(context.Background()); err != nil {
@@ -107,6 +112,9 @@ func TestA1A3PollAppliesFromCDS(t *testing.T) {
 	}
 	if got := f.state.Current(); got == nil || got.Manifest.Revision != 3 {
 		t.Fatalf("Current() after poll = %v, want revision 3", got)
+	}
+	if len(hooked) != 1 || hooked[0] != f.state.Current() {
+		t.Fatalf("OnApplied calls = %v, want the applied manifest once", hooked)
 	}
 }
 

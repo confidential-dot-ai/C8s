@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/crypto/acme"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -54,8 +55,14 @@ type manager struct {
 	email        string
 	certDir      string
 	keyDir       string
-	domains      []string
-	log          *slog.Logger
+	// domains are the launch names: always wanted on the certificate.
+	domains []string
+	// extraDomainsFile holds the applied route manifest's hosts, one per line
+	// (cds-attest --route-hosts-file). They join the launch names at runtime;
+	// unset or absent means none. extras is its last good read.
+	extraDomainsFile string
+	extras           []string
+	log              *slog.Logger
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
 	// contact so a validation is never sent at a listener that is still
 	// starting. 0 (tests without a front door) skips the probe; the CLI
@@ -66,9 +73,12 @@ type manager struct {
 	// front door) treats every domain as reachable.
 	probe *http.Client
 
-	// recheck/retry pace run; tests tighten them.
-	recheck time.Duration
-	retry   time.Duration
+	// recheck/retry pace run; tests tighten them. failures backs retry off
+	// after failed issuances, so a CA refusal does not spend the per-hour
+	// failed-authorization limit.
+	recheck  time.Duration
+	retry    time.Duration
+	failures int
 
 	mu     sync.Mutex
 	client *acme.Client
@@ -135,10 +145,14 @@ func (m *manager) run(ctx context.Context) {
 		m.log.Error("bootstrap certificate failed", "error", err)
 	}
 	for {
-		m.ensure(ctx)
+		if m.ensure(ctx) {
+			m.failures = 0
+		} else {
+			m.failures++
+		}
 		wait := m.recheck
 		if m.needsIssue() {
-			wait = m.retry
+			wait = min(m.retry<<min(m.failures, 6), m.recheck)
 		}
 		select {
 		case <-ctx.Done():
@@ -159,10 +173,55 @@ func (m *manager) diskLeaf() (*x509.Certificate, error) {
 	return certutil.ParseCertificatePEM(data)
 }
 
+// wanted is the name set the certificate should carry: the launch names,
+// then the hosts of the applied route manifest that are valid public names
+// and not already listed, capped at the CA's 100 names per certificate. A
+// failed read keeps the last good extras, so an I/O error never drops a name.
+func (m *manager) wanted() []string {
+	if m.extraDomainsFile != "" {
+		data, err := os.ReadFile(m.extraDomainsFile)
+		switch {
+		case err == nil:
+			m.extras = strings.Fields(string(data))
+		case errors.Is(err, os.ErrNotExist):
+			m.extras = nil
+		default:
+			m.log.Warn("read route hosts; keeping the last set", "path", m.extraDomainsFile, "error", err)
+		}
+	}
+	return unionDomains(m.domains, m.extras, m.log)
+}
+
+// maxNames is Let's Encrypt's limit of names on one certificate.
+const maxNames = 100
+
+// unionDomains is launch followed by the valid extras not in launch, in
+// their order, capped at maxNames.
+func unionDomains(launch, extras []string, log *slog.Logger) []string {
+	out := slices.Clone(launch)
+	for _, name := range extras {
+		if slices.Contains(out, name) {
+			continue
+		}
+		if err := launchconfig.ValidateHostname(name); err != nil {
+			log.Debug("route host is not a certificate name; skipped", "host", name, "error", err)
+			continue
+		}
+		if len(out) == maxNames {
+			log.Warn("route hosts exceed the certificate name limit; the rest are skipped", "limit", maxNames)
+			break
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // needsIssue reports whether the disk certificate is absent, is the
 // self-signed bootstrap placeholder, covers a different SAN set than the
-// configured domains, or is past 2/3 of its lifetime.
-func (m *manager) needsIssue() bool {
+// wanted names, or is past 2/3 of its lifetime.
+func (m *manager) needsIssue() bool { return m.needsIssueWant(m.wanted()) }
+
+func (m *manager) needsIssueWant(want []string) bool {
 	leaf, err := m.diskLeaf()
 	if err != nil {
 		return true
@@ -170,7 +229,7 @@ func (m *manager) needsIssue() bool {
 	if bytes.Equal(leaf.RawIssuer, leaf.RawSubject) {
 		return true
 	}
-	if !sameDomainSet(leaf.DNSNames, m.domains) {
+	if !sameDomainSet(leaf.DNSNames, want) {
 		return true
 	}
 	renewAt := leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore) * 2 / 3)
@@ -231,26 +290,30 @@ func sameDomainSet(a, b []string) bool {
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
-// ensure runs one issuance if the disk certificate needs one.
-func (m *manager) ensure(ctx context.Context) {
-	if !m.needsIssue() {
-		return
+// ensure runs one issuance if the disk certificate needs one. It reports
+// false only when an issuance was attempted and failed; the certificate on
+// disk is then untouched.
+func (m *manager) ensure(ctx context.Context) bool {
+	want := m.wanted()
+	if !m.needsIssueWant(want) {
+		return true
 	}
 	ctx, cancel := context.WithTimeout(ctx, issueTimeout)
 	defer cancel()
-	domains := m.reachableDomains(ctx)
+	domains := m.reachableDomains(ctx, want)
 	if len(domains) == 0 {
 		m.log.Warn("no configured hostname reaches this router's public HTTP challenge path")
-		return
+		return true
 	}
-	if !m.needsIssueFor(domains) {
-		return
+	if !m.needsIssueFor(domains, want) {
+		return true
 	}
 	if err := m.issueDomains(ctx, domains); err != nil {
-		m.log.Error("certificate issuance failed", "domains", domains, "error", err)
-		return
+		m.log.Error("certificate issuance failed; keeping the served certificate", "domains", domains, "error", err)
+		return false
 	}
 	m.log.Info("certificate issued", "domains", domains)
+	return true
 }
 
 // acmeClient lazily initializes the ACME account: key from disk or freshly
@@ -382,6 +445,9 @@ func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 	if err != nil {
 		return fmt.Errorf("finalize: %w", err)
 	}
+	if err := verifyIssued(ders, key, domains, time.Now()); err != nil {
+		return fmt.Errorf("issued certificate: %w", err)
+	}
 	var chainPEM []byte
 	for _, der := range ders {
 		chainPEM = append(chainPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
@@ -446,16 +512,17 @@ func (m *manager) fulfillAuthorization(ctx context.Context, client *acme.Client,
 }
 
 // needsIssueFor keeps a valid certificate when it already covers the reachable
-// names. Names outside the signed launch configuration are never retained.
+// names. Names outside want (launch names and applied route hosts) are never
+// retained: a removed route host is replaced at once.
 // A configured name the certificate covers but the probe missed may be a
 // transient failure, so it blocks issuance until 5/6 of the lifetime.
-func (m *manager) needsIssueFor(domains []string) bool {
+func (m *manager) needsIssueFor(domains, want []string) bool {
 	leaf, err := m.diskLeaf()
 	if err != nil || bytes.Equal(leaf.RawIssuer, leaf.RawSubject) {
 		return true
 	}
 	for _, name := range leaf.DNSNames {
-		if !slices.Contains(m.domains, name) {
+		if !slices.Contains(want, name) {
 			return true
 		}
 	}
@@ -478,12 +545,12 @@ func (m *manager) needsIssueFor(domains []string) bool {
 // reachableDomains prevents an unavailable launch hostname from blocking the
 // other names. This probe is only a readiness check. The CA still performs
 // normal HTTP-01 ownership validation before it issues any certificate.
-func (m *manager) reachableDomains(ctx context.Context) []string {
+func (m *manager) reachableDomains(ctx context.Context, want []string) []string {
 	if m.probe == nil {
-		return slices.Clone(m.domains)
+		return slices.Clone(want)
 	}
 	var reachable []string
-	for _, name := range m.domains {
+	for _, name := range want {
 		if ctx.Err() != nil {
 			break
 		}
@@ -535,4 +602,36 @@ func publicProbeClient() *http.Client {
 		Timeout:       5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// verifyIssued checks the chain the CA returned before it replaces the served
+// one: the leaf holds key, carries exactly domains, is valid at now and is
+// signed by the next certificate in the chain.
+func verifyIssued(ders [][]byte, key *ecdsa.PrivateKey, domains []string, now time.Time) error {
+	if len(ders) == 0 {
+		return errors.New("empty chain")
+	}
+	leaf, err := x509.ParseCertificate(ders[0])
+	if err != nil {
+		return fmt.Errorf("leaf: %w", err)
+	}
+	if pub, ok := leaf.PublicKey.(*ecdsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+		return errors.New("leaf does not hold the requested key")
+	}
+	if !sameDomainSet(leaf.DNSNames, domains) {
+		return fmt.Errorf("leaf names %v, requested %v", leaf.DNSNames, domains)
+	}
+	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+		return fmt.Errorf("leaf is not valid now (%s to %s)", leaf.NotBefore, leaf.NotAfter)
+	}
+	if len(ders) > 1 {
+		issuer, err := x509.ParseCertificate(ders[1])
+		if err != nil {
+			return fmt.Errorf("issuer: %w", err)
+		}
+		if err := leaf.CheckSignatureFrom(issuer); err != nil {
+			return fmt.Errorf("leaf is not signed by the chain's issuer: %w", err)
+		}
+	}
+	return nil
 }
