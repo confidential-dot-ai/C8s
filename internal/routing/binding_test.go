@@ -197,10 +197,8 @@ func TestRenewalBeforeThePollRefusesABoundDial(t *testing.T) {
 	}
 }
 
-// TestRenewalBeforeThePollRefusesAnUnboundDial: the unbound request whose
-// dial retires the pools gets a retryable 503, not a backend 502, and the
-// next one is served.
-func TestRenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
+// An unbound dial retires pools on renewal and serves under the renewed leaf.
+func TestRenewalBeforeThePollServesAnUnboundDial(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
 	f.apply(t, simpleManifest(1, web.addr()))
@@ -211,8 +209,14 @@ func TestRenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
 	f.transports.For(backend)
 
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
-	if w := f.get("/"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("unbound GET / on a pool built before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("unbound GET / after renewal = %d %q, want 200", w.Code, w.Body.String())
+	}
+	if got := web.hits.Load(); got != 1 {
+		t.Fatalf("backend requests = %d, want 1", got)
+	}
+	if got := f.transports.RouterDigest(); got != string(digestOf(0x43)) {
+		t.Fatalf("RouterDigest() = %x, want %x", got, digestOf(0x43))
 	}
 	if w := f.get("/"); w.Code != http.StatusOK {
 		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
@@ -253,8 +257,8 @@ func TestListenerRefusesAPoolUnderAnotherDigest(t *testing.T) {
 	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
-	f.transports.For(backend)
-	key := backendKey(backend)
+	f.transports.ForRouterDigest(backend, bindings.entries["1.1"].RouterDigest)
+	key := poolKey{backend: backendKey(backend), pinned: true}
 	f.transports.mu.Lock()
 	pool := f.transports.cache[key]
 	pool.routerDigest = string(digestOf(0x44))

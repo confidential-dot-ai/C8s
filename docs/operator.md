@@ -219,8 +219,10 @@ detectable only by pinning the route digest or the operator keys.
   `--ca-watch-interval`s, plus half an interval of jitter, plus one issuance
   bounds that; with the watch off it lasts until the next scheduled renewal.
   A backend under an entry the write added is accepted once the router's
-  leaf renews under it. Bound sessions still end on every router renewal (503
-  `router_digest_changed`, below).
+  leaf renews under it. A router renewal under another allowlist digest refuses
+  pinned requests: bound sessions and requests carrying `X-C8s-Expect-Allowlist`
+  get 503 `router_digest_changed`. Other requests are forwarded under the renewed
+  digest, subject to the per-backend entry check.
 - An allowlist write takes effect on nodes `--allowlist-node-delay` (CDS flag,
   30s) after it is written. CDS issues certificates under it at once, and
   router certificates (`--router-cert-ttl`, 20s) last less than that, so any
