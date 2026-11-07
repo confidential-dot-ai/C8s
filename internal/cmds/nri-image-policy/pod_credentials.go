@@ -276,7 +276,7 @@ func (p *plugin) podSnapshotLocked() (workloadclaims.PodClaims, error) {
 	if p.measurer == nil {
 		return p.podSnapshotLost(errors.New("pod broker has no runtime journal"))
 	}
-	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID,
+	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID, AssignedWorkloadID: p.cfg.Pod.WorkloadID,
 		RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId(), Revision: revision,
 		RuntimeExtensions: p.measurer.Digests(), Containers: containers}
 	if _, err := claims.Canonical(); err != nil {

@@ -224,3 +224,14 @@ func writePodCDSPin(t *testing.T) string {
 	t.Helper()
 	return writeFile(t, "cds.json", testCDSPin(t, teetypes.FamilySNP, 2))
 }
+
+// The workload ID is the signed manifest's confidential.ai/cw annotation.
+func TestPodSpecWorkloadIDIsTheManifestAnnotation(t *testing.T) {
+	annotated := strings.Replace(testPodManifest(""), `"metadata":{`, `"metadata":{"annotations":{"confidential.ai/cw":"user-alice"},`, 1)
+	for manifest, want := range map[string]string{annotated: "user-alice", testPodManifest(""): ""} {
+		got, err := (&PodSpec{Manifest: manifest}).WorkloadID()
+		if err != nil || got != want {
+			t.Fatalf("WorkloadID = %q, %v; want %q", got, err, want)
+		}
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -23,9 +24,13 @@ import (
 
 func podTestClaims(t *testing.T, digests ...string) workloadclaims.PodClaims {
 	t.Helper()
+	env, err := allowlist.ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := workloadclaims.PodClaims{Version: 1, BootID: strings.Repeat("b", 64), AssignedPodUID: "assigned", RuntimePodUID: "runtime", SandboxID: "sandbox", Revision: 1, RuntimeExtensions: digests}
 	for _, d := range digests {
-		p.Containers = append(p.Containers, workloadclaims.PodContainer{Digest: d})
+		p.Containers = append(p.Containers, workloadclaims.SandboxContainer{Digest: d, Argv: []string{"/app"}, Env: env, Mounts: []allowlist.ObservedMount{}})
 	}
 	return p
 }
@@ -65,10 +70,10 @@ func podRequest(t *testing.T, h AttestHandler, p workloadclaims.PodClaims) types
 	return types.AttestRequestBody{Challenge: issueChallenge(t, h), CSR: csr, PodClaims: raw, Evidence: teetypes.AttestationEvidence{Platform: "tdx", Evidence: json.RawMessage(`{"quote":"fake"}`)}}
 }
 
-// The verifier binds key, challenge and claims; the leaf carries the instance
-// identity and no matched-workload stamp, since the claims carry image digests
-// only; no node inventory is recorded and the spent challenge refuses a replay.
-func TestPodAttestIssuesBoundMembershipLeafWithoutNodeAuthority(t *testing.T) {
+// The verifier binds key, challenge and claims; the
+// leaf carries the instance identity and the unique match; no node inventory
+// is recorded and the spent challenge refuses a replay.
+func TestPodAttestIssuesBoundNamedLeafWithoutNodeAuthority(t *testing.T) {
 	p := podTestClaims(t, wlDigestA)
 	h, stub := podTestHandler(t, p)
 	binder := &recordingBinder{}
@@ -84,8 +89,8 @@ func TestPodAttestIssuesBoundMembershipLeafWithoutNodeAuthority(t *testing.T) {
 		t.Fatalf("wrong instance %q %v", instance, err)
 	}
 	stamp, err := armtls.MatchedWorkloadFromCert(leaf)
-	if err != nil || stamp != nil {
-		t.Fatalf("pod CVM acquired a named identity: %v %v", stamp, err)
+	if err != nil || stamp == nil || stamp.Name != "api" {
+		t.Fatalf("missing full-workload stamp: %v %v", stamp, err)
 	}
 	if len(binder.calls) != 0 {
 		t.Fatal("Pod profile gained node callback ledger authority")
@@ -104,6 +109,21 @@ func TestPodAttestIssuesBoundMembershipLeafWithoutNodeAuthority(t *testing.T) {
 		t.Fatal("verifier did not bind complete snapshot")
 	}
 	wantRefusal(t, postPodRequest(t, h, req), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
+}
+
+// The mesh-only snapshot obtains membership without a workload name.
+func TestPodAttestBootstrapIsMembershipOnly(t *testing.T) {
+	p := podTestClaims(t, wlDigestC)
+	p.Containers[0].Role = "mesh"
+	h, _ := podTestHandler(t, p)
+	w := postPodRequest(t, h, podRequest(t, h, p))
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	stamp, err := armtls.MatchedWorkloadFromCert(leafFromAttestResponse(t, w))
+	if err != nil || stamp != nil {
+		t.Fatalf("bootstrap acquired named identity: %v %v", stamp, err)
+	}
 }
 
 // One row per refused condition of the Pod profile.
@@ -165,4 +185,66 @@ func TestPodAttestRejectsExplicitNullNodeLog(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(raw)))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+}
+
+// Every non-platform observation, including retained history, passes full
+// admission before a membership leaf; a subset earns no name.
+func TestPodMembershipChecksWholeObservationBeforeIssuing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(*workloadclaims.PodClaims)
+		allowed bool
+	}{
+		{"valid partial startup", func(p *workloadclaims.PodClaims) {}, true},
+		{"denied command", func(p *workloadclaims.PodClaims) { p.Containers[0].Argv = []string{"/bin/sh"} }, false},
+		{"retained denied historical command", func(p *workloadclaims.PodClaims) {
+			old := p.Containers[0]
+			old.Argv = []string{"/old-command"}
+			p.Containers = append(p.Containers, old)
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := podTestClaims(t, wlDigestA)
+			p.Containers[0].Env, _ = allowlist.ObserveEnv([]string{"MODE=production"})
+			p.Containers[0].Mounts = []allowlist.ObservedMount{{Destination: "/data", Volume: "state", Class: allowlist.MountEmptyDir, Storage: allowlist.MountMemory}}
+			h, _ := podTestHandler(t, p)
+			strict := allowlist.Container{Digest: wlDigest(t, wlDigestA), Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/app"}}, Args: allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+				Env: allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"MODE": "production"}}, Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/data", Kind: allowlist.MountEmptyDir}}}}
+			// B has not started: A must be admitted fully, but a complete workload
+			// match is deliberately not required for the bootstrap certificate.
+			h.AllowlistStore = fakeStore{workloads: map[string]allowlist.Workload{"api": {Containers: []allowlist.Container{strict, {Digest: wlDigest(t, wlDigestB), Command: anyPolicy, Args: anyPolicy}}}}}
+			tc.change(&p)
+			w := postPodRequest(t, h, podRequest(t, h, p))
+			if !tc.allowed {
+				wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+				return
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("valid subset refused: %d %s", w.Code, w.Body.String())
+			}
+			stamp, err := armtls.MatchedWorkloadFromCert(leafFromAttestResponse(t, w))
+			if err != nil || stamp != nil {
+				t.Fatalf("partial workload stamped: %v %v", stamp, err)
+			}
+		})
+	}
+}
+
+// The tenant identity rides the verified claims into the leaf and nowhere
+// else: a pod with no workload ID gets a leaf with no assigned-workload-ID
+// extension, never an empty one.
+func TestPodAttestStampsTheAssignedWorkloadID(t *testing.T) {
+	for _, workloadID := range []string{"tenant-a.web", ""} {
+		p := podTestClaims(t, wlDigestA)
+		p.AssignedWorkloadID = workloadID
+		h, _ := podTestHandler(t, p)
+		w := postPodRequest(t, h, podRequest(t, h, p))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%q: %d %s", workloadID, w.Code, w.Body.String())
+		}
+		got, err := armtls.AssignedWorkloadIDFromCert(leafFromAttestResponse(t, w))
+		if err != nil || got != workloadID {
+			t.Fatalf("assigned workload ID = %q, %v; want %q", got, err, workloadID)
+		}
+	}
 }

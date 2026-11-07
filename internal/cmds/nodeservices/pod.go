@@ -120,8 +120,16 @@ func RenderPodRuntime(rootDir string, d *launchconfig.AssignedPod) (PodRuntime, 
 		return PodRuntime{}, err
 	}
 	mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
+	workloadID, err := d.Pod.WorkloadID()
+	if err != nil {
+		return PodRuntime{}, err
+	}
 	// Standalone kubelet appends the guest's original launch name.
-	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
+	podFloor := map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
+	if workloadID != "" {
+		podFloor["workload_id"] = workloadID
+	}
+	floor["pod"] = podFloor
 	floor["mesh"] = mesh
 	policy["exempt_namespaces"] = []string{}
 	delete(policy, "exempt_snapshot_path")

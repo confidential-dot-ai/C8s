@@ -345,22 +345,16 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 	return digests, containers, true, nil
 }
 
-// podSnapshot lists the image digest of every retained admission in the pod
-// sandbox, independently of the latest local pull: the claims carry digests
-// only, and CDS checks them against its policy itself.
-func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.PodContainer, uint64, error) {
+// podSnapshot keeps all available environment evidence, independently of the
+// latest local pull: CDS evaluates the quote-bound observations itself, and
+// each observation's spec digest is computed from exactly what admission
+// recorded.
+func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.SandboxContainer, uint64, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if _, ok := b.sandboxes[sandboxID]; !ok {
 		return nil, 0, fmt.Errorf("pod sandbox is no longer live")
 	}
 	_, containers, err := b.admitted[sandboxID].Snapshot(nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	digests := make([]workloadclaims.PodContainer, len(containers))
-	for i, c := range containers {
-		digests[i] = workloadclaims.PodContainer{Digest: c.Digest}
-	}
-	return digests, b.revision, nil
+	return containers, b.revision, err
 }

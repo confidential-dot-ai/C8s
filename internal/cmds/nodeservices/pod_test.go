@@ -418,3 +418,27 @@ func TestRenderPodRuntimeRejectsCompetingPolicyMeasurements(t *testing.T) {
 		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
 	}
 }
+
+// The signed manifest's confidential.ai/cw annotation is staged as the
+// broker's workload ID, and nothing is staged without one.
+func TestRenderPodRuntimeStagesTheManifestWorkloadID(t *testing.T) {
+	for _, tc := range []struct{ manifest, want string }{
+		{strings.Replace(podManifest, `"metadata":{`, `"metadata":{"annotations":{"confidential.ai/cw":"user-alice"},`, 1), "user-alice"},
+		{podManifest, ""},
+	} {
+		runtime, err := RenderPodRuntime(preparePodRoot(t), assignedPod(t, tc.manifest))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var staged struct {
+			Pod map[string]any `yaml:"pod"`
+		}
+		if err := yaml.Unmarshal(runtime.Policy, &staged); err != nil {
+			t.Fatal(err)
+		}
+		got, present := staged.Pod["workload_id"]
+		if tc.want == "" && present || tc.want != "" && got != tc.want {
+			t.Fatalf("staged workload_id = %v (present %v), want %q", got, present, tc.want)
+		}
+	}
+}

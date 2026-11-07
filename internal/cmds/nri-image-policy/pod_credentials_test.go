@@ -115,6 +115,10 @@ func TestPodSnapshotRetainsStoppedAndRemovedLaunches(t *testing.T) {
 	if err != nil || next <= revision || len(after) != 2 || after[0].Digest != pushDigestA || after[1].Digest != pushDigestA {
 		t.Fatalf("removed launch omitted: %+v, revision %d -> %d, %v", after, revision, next, err)
 	}
+	// One image admitted with two argvs is two admitted specs.
+	if workloadclaims.ContainerSpecDigest(after[0]) == workloadclaims.ContainerSpecDigest(after[1]) {
+		t.Fatal("admissions with different argv share a spec digest")
+	}
 	inv.removeSandbox("pod")
 	if _, _, err := inv.podSnapshot("pod"); err == nil {
 		t.Fatal("removed sandbox supplied a complete snapshot")
