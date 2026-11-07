@@ -525,7 +525,7 @@ func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workl
 		membership[digest.String()] = struct{}{}
 	}
 
-	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), nil
+	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox, ""), nil
 }
 
 // policySnapshot returns the one immutable snapshot this issuance decides
@@ -542,7 +542,11 @@ func (h AttestHandler) policySnapshot() (*PolicySnapshot, error) {
 // issuance: every failure returns nil (unnamed) with a bounded log line —
 // the diagnostics name the sandbox and attested inventory, never the full
 // inventory response.
-func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapshot, resp workloadclaims.SandboxDigestsResponse, membership map[string]struct{}, sandbox workloadclaims.VerifiedSandbox) *armtls.MatchedWorkload {
+//
+// assigned is a pod CVM's signed assigned workload ID, or "". When it names an
+// assignedOnly entry, that entry alone is matched: the whole-workload match
+// plus the signed assignment, which no other requester can reach.
+func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapshot, resp workloadclaims.SandboxDigestsResponse, membership map[string]struct{}, sandbox workloadclaims.VerifiedSandbox, assigned string) *armtls.MatchedWorkload {
 	unnamed := func(level slog.Level, why string, args ...any) *armtls.MatchedWorkload {
 		args = append(args, "sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 		slog.Log(ctx, level, "issuing unnamed: "+why, args...)
@@ -584,7 +588,13 @@ func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapsh
 	}
 
 	candidates := secrets.WorkloadContainers(canonical)
-	name, _, err := snapshot.Allowlist.MatchWorkload(candidates)
+	var name string
+	if entry, ok := snapshot.Allowlist.Workloads[assigned]; ok && assigned != "" && entry.AssignedOnly {
+		name = assigned
+		_, err = snapshot.Allowlist.MatchAssigned(assigned, candidates)
+	} else {
+		name, _, err = snapshot.Allowlist.MatchWorkload(candidates)
+	}
 	if err != nil {
 		// ErrNoMatch mid-lifecycle and ErrAmbiguous are ordinary unnamed
 		// states, not faults.

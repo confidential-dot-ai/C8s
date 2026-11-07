@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -245,6 +246,33 @@ func TestPodAttestStampsTheAssignedWorkloadID(t *testing.T) {
 		got, err := armtls.AssignedWorkloadIDFromCert(leafFromAttestResponse(t, w))
 		if err != nil || got != workloadID {
 			t.Fatalf("assigned workload ID = %q, %v; want %q", got, err, workloadID)
+		}
+	}
+}
+
+// Per-user entries share one shape and are marked assignedOnly. A pod gets the
+// matched-workload name only for the entry its signed assignment names; with
+// another ID, or none, the shared shape names nothing.
+func TestPodAttestNamesAssignedOnlyEntryByAssignment(t *testing.T) {
+	entry := namedEntry(t, wlDigestA)
+	entry.AssignedOnly = true
+	store := fakeStore{workloads: map[string]pkgallowlist.Workload{"opencode-alice": entry, "opencode-bob": entry}}
+	for assigned, want := range map[string]string{"opencode-alice": "opencode-alice", "opencode-bob": "opencode-bob", "opencode-carol": "", "": ""} {
+		p := podTestClaims(t, wlDigestA)
+		p.AssignedWorkloadID = assigned
+		h, _ := podTestHandler(t, p)
+		h.AllowlistStore = store
+		w := postPodRequest(t, h, podRequest(t, h, p))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%q: %d %s", assigned, w.Code, w.Body.String())
+		}
+		stamp, err := armtls.MatchedWorkloadFromCert(leafFromAttestResponse(t, w))
+		got := ""
+		if stamp != nil {
+			got = stamp.Name
+		}
+		if err != nil || got != want {
+			t.Fatalf("assigned %q: name %q, %v; want %q", assigned, got, err, want)
 		}
 	}
 }

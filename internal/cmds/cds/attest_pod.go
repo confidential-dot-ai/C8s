@@ -90,5 +90,5 @@ func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaim
 		}
 	}
 	resp := workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers}
-	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}), nil
+	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}, pod.AssignedWorkloadID), nil
 }

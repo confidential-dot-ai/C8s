@@ -308,7 +308,7 @@ func shadowedEntries(al *pkgallowlist.Allowlist) []finding {
 // which indistinguishableEntries already reports.
 func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 	var out [][2]string
-	names := slices.Sorted(maps.Keys(al.Workloads))
+	names := observationMatched(al)
 	for _, wide := range names {
 		for _, narrow := range names {
 			if wide == narrow {
@@ -321,6 +321,20 @@ func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 				continue
 			}
 			out = append(out, [2]string{wide, narrow})
+		}
+	}
+	return out
+}
+
+// observationMatched names the entries release can resolve a running set to
+// without an assignment, in a stable order. An AssignedOnly entry is matched
+// by name alone, so it neither shadows nor is shadowed, and entries sharing
+// its shape are not ambiguous with it.
+func observationMatched(al *pkgallowlist.Allowlist) []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+		if !al.Workloads[name].AssignedOnly {
+			out = append(out, name)
 		}
 	}
 	return out
@@ -500,7 +514,7 @@ func indistinguishableEntries(al *pkgallowlist.Allowlist) []finding {
 // shape, in a stable order.
 func indistinguishableGroups(al *pkgallowlist.Allowlist) ([][]string, error) {
 	byShape := map[string][]string{}
-	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+	for _, name := range observationMatched(al) {
 		shape, err := entryShape(al.Workloads[name])
 		if err != nil {
 			// A shape that will not marshal cannot be compared; say so rather

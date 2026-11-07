@@ -32,23 +32,25 @@ var ErrPodSecretUngranted = errors.New("path is not granted to this pod")
 // A pod with an assigned workload ID (the signed confidential.ai/cw) may only
 // match the entry of that name, so two users' entries with the same images
 // and launches release different secrets to their own pods. Without one, the
-// observations must match exactly one entry of the whole allowlist.
+// observations must match exactly one entry of the whole allowlist, never an
+// AssignedOnly one.
 func MatchPodGrant(al *pkgallowlist.Allowlist, claims workloadclaims.PodClaims) (PodGrant, error) {
 	running := WorkloadContainers(claims.Containers)
 	if len(running) == 0 {
 		return PodGrant{}, fmt.Errorf("pod reports no workload containers")
 	}
-	candidates := al
-	if id := claims.AssignedWorkloadID; id != "" {
-		w, ok := al.Workloads[id]
-		if !ok {
-			return PodGrant{}, fmt.Errorf("no allowlist entry for the assigned workload %q", id)
-		}
-		candidates = &pkgallowlist.Allowlist{Schema: al.Schema, Workloads: map[string]pkgallowlist.Workload{id: w}}
+	var (
+		name string
+		w    pkgallowlist.Workload
+		err  error
+	)
+	if name = claims.AssignedWorkloadID; name != "" {
+		w, err = al.MatchAssigned(name, running)
+	} else {
+		name, w, err = al.MatchWorkload(running)
 	}
-	name, w, err := candidates.MatchWorkload(running)
 	if err != nil {
-		return PodGrant{}, fmt.Errorf("pod workload: %w", err)
+		return PodGrant{}, fmt.Errorf("pod workload %q: %w", name, err)
 	}
 	if w.Secrets == nil {
 		return PodGrant{}, fmt.Errorf("workload %q holds no secrets grant", name)
