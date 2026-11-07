@@ -117,6 +117,9 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 		if _, err := p.podCredentialSource(pod, ctr, role, mounts); err != nil {
 			return err
 		}
+		if err := p.podSecretReader(pod, ctr, role, launch.Digest, mounts, false); err != nil {
+			return err
+		}
 	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,

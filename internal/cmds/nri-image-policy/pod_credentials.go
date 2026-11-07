@@ -38,6 +38,7 @@ type podCredentialBroker struct {
 	root     *os.Root
 	source   string
 	changes  chan struct{}
+	secrets  *podSecretState
 	terminal error
 	wg       sync.WaitGroup
 }
@@ -100,7 +101,8 @@ func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) erro
 	}
 	bootID := hex.EncodeToString(id[:])
 	ctx, cancel := context.WithCancel(ctx)
-	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, client: client, runtime: runtime, bootID: bootID, changes: make(chan struct{}, 1)}
+	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, client: client, runtime: runtime, bootID: bootID, changes: make(chan struct{}, 1),
+		secrets: &podSecretState{changes: make(chan struct{}, 1), readers: map[string]bool{}}}
 	return nil
 }
 
@@ -125,6 +127,12 @@ func (p *plugin) podChanged() {
 		select {
 		case b.changes <- struct{}{}:
 		default:
+		}
+		if b.secrets != nil {
+			select {
+			case b.secrets.changes <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
@@ -233,6 +241,7 @@ func (p *plugin) runPodCredentialWorker() {
 			p.podMu.Unlock()
 		}
 	}()
+	p.runPodSecretWorker()
 }
 
 func (p *plugin) podSnapshot(ctx context.Context) (workloadclaims.PodClaims, error) {

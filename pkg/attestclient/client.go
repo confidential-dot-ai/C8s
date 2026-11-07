@@ -306,6 +306,12 @@ func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, e
 	return string(body), nil
 }
 
+// PostJSON posts body (nil for none) to path on CDS and returns the 2xx
+// response body; any other status is a *StatusError.
+func (c Client) PostJSON(ctx context.Context, path string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, path, body)
+}
+
 // MeshCA fetches the mesh CA bundle CDS currently serves at /ca.
 // Authenticity comes from the armTLS transport the client was constructed
 // over, the same channel that authenticates the CA trailing an issued chain.
