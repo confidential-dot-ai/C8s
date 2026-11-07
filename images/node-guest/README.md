@@ -195,9 +195,12 @@ configuration in `/usr/lib/c8s/router-nginx`, and the router mounts it from
 there instead of from a ConfigMap the control plane could edit.
 `airgap-images.sh` preserves the core images' complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
-role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
-when every referenced blob is present and matches its digest, and copies the
-image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
+node role. `airgap-images.sh` reuses a cached layout under
+`mkosi.pkgcache/c8s/core-images` only when every referenced blob is present
+and matches its digest, and copies the image afresh otherwise, so a warm cache
+needs no registry access. A Pod CVM runs no RKE2: boot preparation links the
+archive that holds the measured mesh endpoint, and `podcvm-containerd` imports
+it, pinned, before kubelet starts. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
 floor, allowing the components to start while CDS is unavailable.
 
@@ -516,12 +519,12 @@ exact acceptance or promote stable aliases. The workflow's selected branch
 or tag supplies the image profile, kernel fragments and build pins. For a
 feature build, select that source with `--ref` and supply its matching
 published component SHA as a nonempty `c8s_ref`; this keeps publication on
-commit-scoped tags. Published manual builds reject a `c8s_ref` that is not a
-7–40-character lowercase hexadecimal prefix of the selected source commit.
-An empty `c8s_ref` uses that commit's seven-character SHA and retains the
-existing floating-tag publication behavior. `confos_ref` can still override
-the builder pin for an A/B build. The summary records both the full image
-profile SHA and the component ref.
+commit-scoped tags. Published manual builds reject a `c8s_ref` that is not
+the selected source commit's seven-character short SHA. An empty `c8s_ref`
+uses that short SHA; a manual build never moves the floating tags, which only
+the automatic main publication advances. `confos_ref` can still override the
+builder pin for an A/B build. The summary records both the full image profile
+SHA and the component ref.
 
 To build the images of one commit without pairing it with another commit's
 profile or components, run

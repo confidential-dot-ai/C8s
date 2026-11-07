@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,8 +20,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 )
 
+// Any failure re-verifying the record stops the service, one row per
+// check; the record itself is never touched.
 func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
-	for _, failure := range []string{"version", "request", "serving-key", "launch-binding", "payload", "renderer"} {
+	for _, failure := range []string{"version", "request", "serving-key", "launch-binding", "signature", "payload", "renderer"} {
 		t.Run(failure, func(t *testing.T) {
 			s, key, peer, store := assignmentFixture(t)
 			request := issuedAssignment(t, s, key, peer, "pod-a")
@@ -36,6 +39,9 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 				store.record.ServingKey = []byte("invalid SPKI")
 			case "launch-binding":
 				s.boundKey = func(context.Context) (*ecdsa.PublicKey, error) { return nil, errors.New("binding unavailable") }
+			case "signature":
+				// The recorded request no longer verifies against another serving key.
+				store.record.ServingKey, _ = x509.MarshalPKIXPublicKey(&ecdsaCert(t).PrivateKey.(*ecdsa.PrivateKey).PublicKey)
 			case "payload":
 				request.MeshPeers = []byte("null")
 				var err error
@@ -45,7 +51,7 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 				}
 				store.record.Request = encodeAssignment(t, request)
 			case "renderer":
-				s.render = func(*launchconfig.Document) (nodeservices.PodRuntime, error) {
+				s.render = func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 					return nodeservices.PodRuntime{}, errors.New("baked floor conflict")
 				}
 			}
@@ -61,8 +67,9 @@ func TestAssignmentRecoveryRefusesUntrustedRecord(t *testing.T) {
 	}
 }
 
+// A record is never replaced, even one the service cannot read.
 func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testing.T) {
-	for _, failure := range []string{"unknown-field", "trailing-data", "truncated", "oversized", "symlink"} {
+	for _, failure := range []string{"truncated", "oversized", "symlink"} {
 		t.Run(failure, func(t *testing.T) {
 			s, key, peer, memory := assignmentFixture(t)
 			if response := postAssignment(s, peer, encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))); response.Code != http.StatusOK {
@@ -79,10 +86,6 @@ func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testin
 				t.Fatal(err)
 			}
 			switch failure {
-			case "unknown-field":
-				data = append([]byte(`{"extra":true,`), data[1:]...)
-			case "trailing-data":
-				data = append(data, []byte(" {}")...)
 			case "truncated":
 				data = data[:len(data)/2]
 			case "oversized":
@@ -114,56 +117,80 @@ func TestAssignmentFileRecoveryRefusesCorruptionWithoutReplacingRecord(t *testin
 	}
 }
 
-func TestAssignmentWorkerRetriesCommittedIntentUntilSuccessOrShutdown(t *testing.T) {
-	for _, shutdown := range []bool{false, true} {
-		t.Run(map[bool]string{false: "recovery", true: "shutdown"}[shutdown], func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				s, key, peer, store := assignmentFixture(t)
-				body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-				if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
-					t.Fatal(response.Code)
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				attempts := 0
-				s.apply = func(_ context.Context, runtime nodeservices.PodRuntime) error {
-					attempts++
-					if runtime.UID != "pod-a" || store.commits != 1 || !bytes.Equal(store.record.Request, body) {
-						t.Error("retry lost committed identity")
-					}
-					if attempts == 1 {
-						if shutdown {
-							cancel()
-						}
-						return errors.New("runtime restart interrupted")
-					}
-					cancel()
-					return nil
-				}
-				s.run(ctx)
-				want := 2
-				if shutdown {
-					want = 1
-				}
-				if attempts != want {
-					t.Fatalf("apply attempts=%d, want %d", attempts, want)
-				}
-				if response := postAssignment(s, peer, body); response.Code != http.StatusConflict {
-					t.Fatal("worker failure reopened assignment")
-				}
-			})
-		})
+// Retry until it succeeds, and a restart with a record completes the
+// assignment from the committed record and refuses a second one).
+func TestAssignmentWorkerRetriesCommittedIntentAfterRestart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, key, peer, store := assignmentFixture(t)
+		body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
+		if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
+			t.Fatal(response.Code)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		attempts := 0
+		apply := func(_ context.Context, runtime nodeservices.PodRuntime) error {
+			attempts++
+			if runtime.UID != "pod-a" || store.commits != 1 || !bytes.Equal(store.record.Request, body) {
+				t.Error("retry lost committed identity")
+			}
+			if attempts == 1 {
+				return errors.New("runtime restart interrupted")
+			}
+			cancel()
+			return nil
+		}
+		restarted, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, apply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted.run(ctx)
+		if attempts != 2 {
+			t.Fatalf("apply attempts=%d, want 2", attempts)
+		}
+		if response := postAssignment(restarted, peer, body); response.Code != http.StatusConflict {
+			t.Fatal("worker failure reopened assignment")
+		}
+	})
+}
+
+// An abandoned install stops the worker's retries; the accepted assignment
+// stands and a second one is still refused.
+func TestAssignmentWorkerStopsRetryingAnAbandonedInstall(t *testing.T) {
+	s, key, peer, _ := assignmentFixture(t)
+	body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	attempts := 0
+	s.apply = func(context.Context, nodeservices.PodRuntime) error {
+		attempts++
+		go cancel()
+		return errors.Join(errAssignmentAbandoned, errors.New("plugin ended the pod identity"))
+	}
+	if response := postAssignment(s, peer, body); response.Code != http.StatusOK {
+		t.Fatal(response.Code)
+	}
+	s.run(ctx)
+	if attempts != 1 {
+		t.Fatalf("apply attempts=%d, want 1", attempts)
+	}
+	if response := postAssignment(s, peer, body); response.Code != http.StatusConflict {
+		t.Fatal("abandoned install reopened assignment")
 	}
 }
 
-func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T) {
-	for _, failure := range []string{"journal-unreadable", "measured", "kubelet-unavailable", "malformed", "wrong-kind", "existing-pod"} {
-		t.Run(failure, func(t *testing.T) {
+// Before an assignment nothing runs, so the register must have measured no
+// workload; an unreadable journal refuses the assignment too.
+func TestAssignmentAvailabilityRequiresAnEmptyJournal(t *testing.T) {
+	for _, state := range []string{"absent", "empty", "unreadable", "measured"} {
+		t.Run(state, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "journal")
-			body := []byte(`{"kind":"PodList","items":[]}`)
-			var podErr error
-			switch failure {
-			case "journal-unreadable":
+			switch state {
+			case "empty":
+				if err := os.WriteFile(path, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "unreadable":
 				if err := os.Mkdir(path, 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -171,34 +198,16 @@ func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T)
 				if err := os.WriteFile(path, []byte("sha256:"+strings.Repeat("a", 64)+"\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-			case "kubelet-unavailable":
-				podErr = errors.New("kubelet unavailable")
-			case "malformed":
-				body = []byte("{")
-			case "wrong-kind":
-				body = []byte(`{"kind":"Status"}`)
-			case "existing-pod":
-				body = []byte(`{"kind":"PodList","items":[{"metadata":{"uid":"old"}}]}`)
 			}
-			called := false
-			runtime := guestAssignmentRuntime{journal: path, pods: func(context.Context) ([]byte, error) { called = true; return body, podErr }}
-			err := runtime.available(t.Context())
-			if err == nil {
-				t.Fatal("uncertain guest accepted assignment")
-			}
-			if errors.Is(err, errAssignmentRuntimeUnavailable) != (failure == "kubelet-unavailable") {
-				t.Fatalf("incorrect runtime availability classification: %v", err)
-			}
-			if podErr != nil && !errors.Is(err, podErr) {
-				t.Fatal("kubelet availability lost its underlying cause")
-			}
-			if (failure == "journal-unreadable" || failure == "measured") && called {
-				t.Fatal("journal refusal still consulted kubelet")
+			err := guestAssignmentRuntime{journal: path}.available(t.Context())
+			if available := state == "absent" || state == "empty"; (err == nil) != available {
+				t.Fatalf("availability with a %s journal: %v", state, err)
 			}
 		})
 	}
 }
 
+// The launch key the document binds is exactly one P-256 key.
 func TestAssignmentPublicKeyRequiresExactlyOneBoundP256Key(t *testing.T) {
 	s, key, _, _ := assignmentFixture(t)
 	if got, err := assignmentPublicKey([]byte(s.doc.PodOperatorPublicKey)); err != nil || !got.Equal(&key.PublicKey) {

@@ -1,8 +1,8 @@
 // Assigned workload ID: the tenant identity of a pod CVM, stamped by CDS as an
-// X.509 extension after verifying the guest's claims (docs/armtls.md, "Pod CVM
-// issuance"). The value is the pod's confidential.ai/cw annotation as the
-// provider signed it into the assignment; the guest carries it in its claims,
-// so the quote vouches for it before CDS stamps it.
+// X.509 extension after verifying the guest's claims. The value is the pod's
+// confidential.ai/cw annotation as the provider signed it into the assignment;
+// the guest carries it in its claims, so the quote vouches for it before CDS
+// stamps it.
 
 package armtls
 
@@ -90,49 +90,4 @@ func AssignedWorkloadIDFromCert(cert *x509.Certificate) (string, error) {
 		seen = true
 	}
 	return id, nil
-}
-
-// CheckAssignedWorkloadPin requires cert to carry exactly expectedID as its
-// assigned workload ID. A leaf without the extension fails: absence names no
-// tenant. The caller must have verified the leaf's chain to the mesh CA, which
-// is what authenticates the ID.
-func CheckAssignedWorkloadPin(cert *x509.Certificate, expectedID string) error {
-	if expectedID == "" {
-		return nil
-	}
-	id, err := AssignedWorkloadIDFromCert(cert)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
-	}
-	if id == "" {
-		return fmt.Errorf("%w: assigned-workload-ID pin set but certificate carries no assigned-workload-ID extension", ErrPolicyViolation)
-	}
-	if id != expectedID {
-		return fmt.Errorf("%w: certificate assigned workload ID %q does not match pinned %q", ErrPolicyViolation, id, expectedID)
-	}
-	return nil
-}
-
-// RequireSameAssignedWorkload is the AcceptPeer of a pod CVM's mesh endpoint:
-// the peer must carry exactly the assigned workload ID of the endpoint's own
-// leaf, in both roles. The ID names the tenant, not the image: it is the
-// `confidential.ai/cw` value the provider signed into the assignment, shared by
-// every pod CVM the tenant runs, so a tenant's router and inference pods mesh
-// with each other and with nothing else, two tenants running the same image
-// cannot substitute certificates, and a leaf without the stamp is refused where
-// a tenant is expected. An endpoint whose own leaf carries no ID admits only
-// peers without one.
-func RequireSameAssignedWorkload(own string) func(Peer) error {
-	return func(peer Peer) error {
-		switch {
-		case peer.AssignedWorkloadID == own:
-			return nil
-		case own == "":
-			return fmt.Errorf("armtls: mesh peer %s is assigned to workload %q and this endpoint's leaf is assigned to none", peer.SandboxID, peer.AssignedWorkloadID)
-		case peer.AssignedWorkloadID == "":
-			return fmt.Errorf("armtls: mesh peer %s carries no assigned workload ID and this endpoint's leaf is assigned to %q", peer.SandboxID, own)
-		default:
-			return fmt.Errorf("armtls: mesh peer %s is assigned to workload %q, not %q", peer.SandboxID, peer.AssignedWorkloadID, own)
-		}
-	}
 }

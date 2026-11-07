@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Listen keeps the authority in a root-owned directory that workloads cannot write.
@@ -28,6 +29,9 @@ func Listen(path string) (net.Listener, error) {
 		if old.Mode()&os.ModeSocket == 0 || !ownedByRoot(old) {
 			return nil, errors.New("refusing to replace a non-root socket at the Pod start path")
 		}
+		if err := requireAbandoned(path); err != nil {
+			return nil, err
+		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
 		}
@@ -43,6 +47,20 @@ func Listen(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// requireAbandoned refuses to replace a socket another process still answers
+// on: only one left behind by an exited gate is taken over.
+func requireAbandoned(path string) error {
+	conn, err := net.DialTimeout("unix", path, Timeout)
+	if err == nil {
+		_ = conn.Close()
+		return errors.New("another Pod start gate is listening on the socket path")
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return nil
+	}
+	return fmt.Errorf("probe the existing Pod start socket: %w", err)
 }
 
 type rootPeerKey struct{}

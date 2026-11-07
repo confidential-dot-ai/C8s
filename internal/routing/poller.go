@@ -26,6 +26,9 @@ type PollerConfig struct {
 	Transports *Transports
 	Interval   time.Duration
 	Logger     *slog.Logger
+	// OnApplied, when set, is called after every successful poll with the
+	// applied manifest (nil before the first apply is never passed).
+	OnApplied func(*Applied)
 }
 
 // Poller fetches the signed manifest from the CDS on an interval and offers
@@ -114,6 +117,9 @@ func (p *Poller) Poll(ctx context.Context) (err error) {
 	}
 	if p.cfg.Transports != nil && applied != nil {
 		p.cfg.Transports.Retain(applied.Manifest)
+	}
+	if p.cfg.OnApplied != nil && applied != nil {
+		p.cfg.OnApplied(applied)
 	}
 	return nil
 }

@@ -15,9 +15,8 @@ enable c8s-modules-latch.service
 enable rke2-role.service
 enable rke2-server.service
 enable rke2-agent.service
-# Pod role: containerd and a standalone kubelet, gated on /run/confos/role-pod.
-enable podcvm-containerd.service
-enable podcvm-kubelet.service
+# Pod role, gated on /run/confos/role-pod: the status service alone starts at
+# boot; it starts podcvm-containerd and podcvm-kubelet once a pod is assigned.
 enable podcvm-status.service
 enable systemd-timesyncd.service
 # Makes time-sync.target block until the clock is actually synchronised.

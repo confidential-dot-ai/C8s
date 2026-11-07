@@ -23,7 +23,7 @@ func TestCoverageTotalExcludesAcceptancePrograms(t *testing.T) {
 	profile := "mode: set\n" +
 		"fixture.invalid/coverage/production/value.go:1.1,1.2 1 1\n" +
 		"fixture.invalid/coverage/test/tdxpod-production/value.go:1.1,1.2 1 0\n"
-	for _, pkg := range []string{"test/workflows", "test/tdxpod", "test/integration/pod-runtime/workload", "test/integration/pod-runtime/fixtures", "test/integration/pod-cloud/acceptance", "test/integration/pod-cloud/tool"} {
+	for _, pkg := range []string{"test/workflows", "test/tdxpod", "test/integration/pod-runtime/workload", "test/integration/pod-runtime/fixtures"} {
 		profile += "fixture.invalid/coverage/" + pkg + "/main.go:1.1,1.2 100 0\n"
 	}
 	path := filepath.Join(fixture, "profile.out")

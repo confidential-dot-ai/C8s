@@ -346,7 +346,9 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 }
 
 // podSnapshot keeps all available environment evidence, independently of the
-// latest local pull: CDS evaluates the quote-bound observations itself.
+// latest local pull: CDS evaluates the quote-bound observations itself, and
+// each observation's spec digest is computed from exactly what admission
+// recorded.
 func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.SandboxContainer, uint64, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

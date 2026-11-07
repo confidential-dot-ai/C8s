@@ -42,6 +42,12 @@ func (r *Resolver) VerifyContainerImage(ctx context.Context, containerID, sandbo
 	}
 	ctx, cancel := context.WithTimeout(namespaces.WithNamespace(ctx, r.namespace), podImageTimeout)
 	defer cancel()
+	return r.withReconnect(func() error {
+		return r.verifyContainerImage(ctx, containerID, sandboxID, pin)
+	})
+}
+
+func (r *Resolver) verifyContainerImage(ctx context.Context, containerID, sandboxID, pin string) error {
 	info, err := r.client.ContainerService().Get(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("read selected container image: %w", err)

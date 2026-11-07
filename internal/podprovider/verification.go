@@ -11,21 +11,14 @@ import (
 const (
 	defaultVerificationTimeoutSeconds = 600
 	verificationTimeoutReason         = "GuestVerificationTimedOut"
+	// podIdentityEndedReason names a failed phase the guest reports with no
+	// container terminated: the admission plugin ended the pod identity, so the
+	// status service failed a pod the kubelet alone would keep recreating.
+	podIdentityEndedReason = "PodIdentityEnded"
 )
 
 func validVerificationTimeout(seconds int64) bool {
 	return seconds >= 30 && seconds <= 86400
-}
-
-// Older records receive one persisted upgrade window; a restart or later
-// configuration change must not refresh it or alter the frozen timeout.
-func (r *Reconciler) ensureVerificationPolicy(ctx context.Context, rec *record, secret *corev1.Secret) error {
-	if rec.VerificationTimeoutSeconds != 0 {
-		return nil
-	}
-	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
-	r.beginVerification(rec)
-	return r.save(ctx, rec, secret)
 }
 
 func (r *Reconciler) beginVerification(rec *record) {
@@ -46,11 +39,18 @@ func (r *Reconciler) verificationContext(ctx context.Context, rec *record) (cont
 	return context.WithTimeout(ctx, rec.VerificationDeadline.Sub(r.now()))
 }
 
+// outageReason names a failure of the provider's own dependencies rather than
+// of the guest. A verified pod keeps its last status through one; only the
+// guest's failures start a deadline that ends the pod.
+func outageReason(reason string) bool {
+	return reason == "CloudUnavailable" || reason == "ProviderNodeUnavailable"
+}
+
 func (r *Reconciler) unverified(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, reason string, cause error) (ctrl.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return ctrl.Result{}, err
 	}
-	if rec == nil {
+	if rec == nil || (rec.VerificationDeadline == nil && outageReason(reason)) {
 		return r.unavailable(ctx, pod, reason, cause)
 	}
 	if rec.VerificationDeadline == nil {

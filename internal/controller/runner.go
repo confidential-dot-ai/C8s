@@ -133,6 +133,10 @@ func init() {
 
 // Run boots the manager and blocks until ctx is cancelled or the manager exits.
 func Run(ctx context.Context, opts Options) error {
+	if opts.WebhookHost != "" && (opts.GetCertImage == "" || opts.MeshImage == "") {
+		return fmt.Errorf("--webhook-host requires --get-cert-image and --mesh-image to serve admission webhooks")
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 	opts = withPresentPodCVMProvider(opts, logger)
@@ -190,11 +194,6 @@ func kubeConfig(path string) (*rest.Config, error) {
 func managerOptions(opts Options) ctrl.Options {
 	objects := map[client.Object]cache.ByObject{
 		&corev1.Service{}: {Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue})},
-	}
-	if opts.PodCVMProviderConfig != "" {
-		objects[&corev1.Secret{}] = cache.ByObject{
-			Namespaces: map[string]cache.Config{opts.LeaderElectionNS: {}},
-		}
 	}
 	options := ctrl.Options{
 		Scheme:                  scheme,
@@ -326,10 +325,11 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 	return nil
 }
 
-// withPresentPodCVMProvider disables the provider when its configuration file
-// does not exist. A measured image enables the provider before an administrator
-// creates the Secret holding that file; the operator then runs without it until
-// restarted. A present but invalid configuration still fails setup.
+// withPresentPodCVMProvider disables the provider, its Secret cache and its
+// webhook routing when the configuration file does not exist. The measured
+// node image enables the provider before an administrator creates the Secret
+// holding that file; the operator runs without it until restarted. A present
+// but invalid configuration still fails setup.
 func withPresentPodCVMProvider(opts Options, logger logr.Logger) Options {
 	if opts.PodCVMProviderConfig == "" {
 		return opts

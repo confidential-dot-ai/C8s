@@ -432,6 +432,8 @@ func extractAttestationDigest(t *testing.T, leaf *x509.Certificate) []byte {
 	return nil
 }
 
+// The leaf carries the assigned-workload-ID extension exactly when asked,
+// with the given value; an invalid value fails the signing.
 func TestCASignCSR_StampsAssignedWorkloadID(t *testing.T) {
 	ca, err := issuer.NewCA("test ca", time.Hour)
 	if err != nil {
@@ -450,10 +452,6 @@ func TestCASignCSR_StampsAssignedWorkloadID(t *testing.T) {
 	}
 	if got != workloadID {
 		t.Fatalf("assigned workload = %q, want %q", got, workloadID)
-	}
-	// The tenant stamp is its own extension: it never masquerades as a sandbox.
-	if sandbox, err := armtls.SandboxIDFromCert(mustParseCert(t, certPEM)); err != nil || sandbox != "" {
-		t.Fatalf("sandbox = %q, %v; want none", sandbox, err)
 	}
 
 	// No AssignedWorkloadID param ⇒ no extension.

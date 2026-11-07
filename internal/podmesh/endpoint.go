@@ -8,7 +8,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -19,9 +18,6 @@ const (
 	CertFile       = "tls.crt"
 	KeyFile        = "tls.key"
 	CAFile         = "ca.crt"
-	// ConnectSocket is where a guest Pod's endpoint finds the guest's connect
-	// broker, in the volume the guest publishes its credentials into.
-	ConnectSocket = CertDir + "/" + connectbroker.SocketName
 )
 
 // Endpoint is a capability-free native sidecar. Startup does not wait for its
@@ -86,8 +82,8 @@ func ValidateWorkloadPod(pod *corev1.Pod) error {
 			}
 		}
 		for _, p := range c.Ports {
-			if isMeshPort(p.ContainerPort) {
-				return fmt.Errorf("container %q port %d is reserved for the mesh", c.Name, p.ContainerPort)
+			if isReservedPort(p.ContainerPort) {
+				return fmt.Errorf("container %q port %d is reserved for the platform", c.Name, p.ContainerPort)
 			}
 		}
 	}
@@ -98,16 +94,15 @@ func ValidateWorkloadPod(pod *corev1.Pod) error {
 }
 
 // InjectEndpoint prepends only the endpoint. The guest owns issuance; neither
-// a get-cert sidecar nor its node-service mounts belong in this Pod. The guest
-// also opens every peer connection: the endpoint reaches its peers through
-// the connect broker in the credential volume, and the guest forwards no
-// Pod-originated packet to a peer tuple (ruleset.GuestPolicy).
+// a get-cert sidecar nor its node-service mounts belong in this Pod. The
+// endpoint dials its peers itself, as a member pod's does: the pod's packet
+// rules, installed from outside the namespace, are what send the pod's TCP to
+// an advertised peer tuple through it.
 func InjectEndpoint(pod *corev1.Pod, image string) error {
 	if err := ValidateWorkloadPod(pod); err != nil {
 		return err
 	}
 	endpoint := Endpoint(image, RewriteProbes(pod))
-	endpoint.Env = append(endpoint.Env, corev1.EnvVar{Name: workloadclaims.MeshConnectSocketEnv, Value: ConnectSocket})
 	pod.Spec.InitContainers = append([]corev1.Container{endpoint}, pod.Spec.InitContainers...)
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: CertVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}})
 	pod.Spec.EnableServiceLinks = new(false)

@@ -414,9 +414,8 @@ journal, whose directory is never mounted into Pod containers.
 certificate. `c8s pod-attest` accepts the certificate's binding as the seed
 followed by a prefix, then requires the list read on both sides of a fresh
 quote to replay in full. A guest whose register replays no prefix of the list
-it declares fails with an error marked final, which no retry clears before a
-reboot; a list the register has not caught up with fails the full replay and
-is retried.
+it declares fails verification, as does a list the register has not caught up
+with; the guest itself exits when its register does not replay its journal.
 
 ## Pod image binding
 

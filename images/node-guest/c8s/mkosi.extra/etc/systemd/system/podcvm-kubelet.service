@@ -1,4 +1,6 @@
 # Pod role only: a standalone kubelet that runs the one signed static pod.
+# Not enabled: pod-status starts it last, once the admission plugin reports
+# the assigned pod registered and the manifest is published.
 [Unit]
 Description=Pod-role standalone kubelet
 ConditionPathExists=/run/confos/role-pod
@@ -13,6 +15,3 @@ EnvironmentFile=/run/c8s-pod/kubelet.env
 ExecStart=/var/lib/rancher/rke2/bin/kubelet --config=/usr/lib/c8s/pod-runtime/kubelet.yaml --hostname-override=${KUBELET_HOSTNAME}
 Restart=always
 RestartSec=2
-
-[Install]
-WantedBy=multi-user.target

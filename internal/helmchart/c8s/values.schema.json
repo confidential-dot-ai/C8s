@@ -210,7 +210,8 @@
           "additionalProperties": false,
           "properties": {
             "directoryURL": {},
-            "email": {}
+            "email": {},
+            "routeManifestHosts": {}
           }
         },
         "allowlist": {

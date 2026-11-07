@@ -32,9 +32,6 @@ type generation struct {
 	cert                 *tls.Certificate
 	ca                   *x509.Certificate
 	published            credvolume.Set
-	// assignedWorkloadID is the tenant the leaf is stamped with; every peer
-	// must carry the same one (armtls.RequireSameAssignedWorkload).
-	assignedWorkloadID string
 }
 
 // adoptPublishedSet validates a published set and builds the configurations that
@@ -65,10 +62,6 @@ func adoptPublishedSet(published credvolume.Set, now time.Time, logger *slog.Log
 	if err := requireChainToCA(cert.Leaf, ca, now); err != nil {
 		return nil, err
 	}
-	assigned, err := armtls.AssignedWorkloadIDFromCert(cert.Leaf)
-	if err != nil {
-		return nil, fmt.Errorf("published leaf assigned workload ID: %w", err)
-	}
 	provider, err := newPublishedCredentials(&cert)
 	if err != nil {
 		return nil, err
@@ -76,7 +69,6 @@ func adoptPublishedSet(published credvolume.Set, now time.Time, logger *slog.Log
 	meshCfg := &armtls.MeshConfig{
 		CertProvider: provider,
 		MeshCA:       ca,
-		AcceptPeer:   armtls.RequireSameAssignedWorkload(assigned),
 		Logger:       logger,
 	}
 	serverTLS, _, err := armtls.NewMeshServerTLSConfig(meshCfg)
@@ -88,12 +80,11 @@ func adoptPublishedSet(published credvolume.Set, now time.Time, logger *slog.Log
 		return nil, err
 	}
 	return &generation{
-		serverTLS:          serverTLS,
-		clientTLS:          clientTLS,
-		cert:               &cert,
-		ca:                 ca,
-		published:          published,
-		assignedWorkloadID: assigned,
+		serverTLS: serverTLS,
+		clientTLS: clientTLS,
+		cert:      &cert,
+		ca:        ca,
+		published: published,
 	}, nil
 }
 
@@ -235,7 +226,7 @@ func (c *credentials) adoptPublication(now time.Time) {
 		return
 	}
 	c.adopted.Store(g)
-	c.logger.Info("credential generation adopted", "expires", g.expiry(), "assigned_workload", g.assignedWorkloadID)
+	c.logger.Info("credential generation adopted", "expires", g.expiry())
 }
 
 // withdrawUnusable drops the adopted generation once it stops validating.

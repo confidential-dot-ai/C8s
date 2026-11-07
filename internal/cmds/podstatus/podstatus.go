@@ -84,7 +84,6 @@ type Measurements struct {
 
 // Handler serves the pod-status routes.
 type Handler struct {
-	UID        string
 	assignment *assignmentService
 	// Pods returns the kubelet's /pods body.
 	Pods func(ctx context.Context) ([]byte, error)
@@ -92,6 +91,10 @@ type Handler struct {
 	Journal string
 	// Evidence returns an evidence envelope bound to reportData (48 bytes).
 	Evidence func(ctx context.Context, reportData []byte) ([]byte, error)
+	// IdentityEnded reports whether the admission plugin ended the pod
+	// identity for this boot; nil never does. An ended identity is projected
+	// as failed, and a plugin that cannot answer makes the status unavailable.
+	IdentityEnded func(ctx context.Context) (bool, error)
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -139,25 +142,48 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 }
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
-	uid := h.UID
+	var uid string
 	if h.assignment != nil {
 		uid = h.assignment.assignedUID()
+	}
+	// No kubelet runs before an assignment is recorded, so the assignment is
+	// checked first: an unassigned guest answers 404, an assigned one whose
+	// kubelet is not up yet 503.
+	if uid == "" {
+		http.Error(w, "Pod is not assigned", http.StatusNotFound)
+		return
+	}
+	ended := false
+	if h.IdentityEnded != nil {
+		var err error
+		if ended, err = h.IdentityEnded(r.Context()); err != nil {
+			// The kubelet's cached status cannot stand in for the admission
+			// plugin: without its answer the pod may be running unguarded.
+			http.Error(w, "pod admission unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	pods, err := h.Pods(r.Context())
 	if err != nil {
 		http.Error(w, "kubelet unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if uid == "" {
-		http.Error(w, "Pod is not assigned", http.StatusNotFound)
+	pod, err := findPod(pods, uid)
+	if errors.Is(err, errKubeletBody) {
+		// A body that does not parse is the kubelet's fault, not a pod that
+		// is still starting; a poller must not wait on it.
+		http.Error(w, "kubelet reply unreadable", http.StatusBadGateway)
 		return
 	}
-	pod, err := findPod(pods, uid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, ProjectPod(pod))
+	projection := ProjectPod(pod)
+	if ended {
+		projection = failIdentityEnded(projection)
+	}
+	writeJSON(w, projection)
 }
 
 // serveMeasurements reads the journal as the serving cert does, so both list
@@ -209,10 +235,13 @@ func writeJSON(w http.ResponseWriter, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// errKubeletBody marks a kubelet reply that does not decode as a pod list.
+var errKubeletBody = errors.New("decode kubelet pods")
+
 func findPod(body []byte, uid string) (*corev1.Pod, error) {
 	var list corev1.PodList
 	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("decode kubelet pods: %w", err)
+		return nil, fmt.Errorf("%w: %w", errKubeletBody, err)
 	}
 	for i := range list.Items {
 		if string(list.Items[i].UID) == uid {
@@ -234,7 +263,11 @@ type ServeConfig struct {
 }
 
 // Serve confirms the measured launch key, reads the signed pod UID and
-// serves until ctx is done.
+// serves until ctx is done. Every failure to confirm the key exits, a register
+// that replays no prefix of the journal included: a client that verifies the
+// guest then sees a connection failure rather than a failed verification. The
+// key confirmed here is the one every assignment's signature is checked
+// against; no request triggers another attestation.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -249,30 +282,26 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if doc.Role != launchconfig.Pod {
 		return fmt.Errorf("staged launch configuration is not a pod")
 	}
-	if err := checkMeasuredLaunchKey(ctx, cfg); err != nil {
-		return err
+	launchKeyPEM, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
+	if err != nil {
+		return fmt.Errorf("load measured launch key: %w", err)
+	}
+	launchKey, err := assignmentPublicKey(launchKeyPEM)
+	if err != nil {
+		return fmt.Errorf("measured launch key: %w", err)
 	}
 	api := attestclient.NewClient("")
 	pods := kubeletPods(cfg.KubeletURL, cfg.KubeletCert)
-	var store *fileAssignmentStore
-	if doc.Pod == nil {
-		store, err = openAssignmentStore()
-		if err != nil {
-			return fmt.Errorf("open assignment state: %w", err)
-		}
-		defer store.Close()
+	store, err := openAssignmentStore()
+	if err != nil {
+		return fmt.Errorf("open assignment state: %w", err)
 	}
-	runtime := guestAssignmentRuntime{journal: cfg.JournalPath, pods: pods}
-	boundKey := func(ctx context.Context) (*ecdsa.PublicKey, error) {
-		pub, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
-		if err != nil {
-			return nil, err
-		}
-		return assignmentPublicKey(pub)
-	}
+	defer store.Close()
+	runtime := guestAssignmentRuntime{journal: cfg.JournalPath}
+	boundKey := func(context.Context) (*ecdsa.PublicKey, error) { return launchKey, nil }
 	assignment, err := newAssignmentService(ctx, doc, store, boundKey,
-		func(d *launchconfig.Document) (nodeservices.PodRuntime, error) {
-			return nodeservices.RenderAssignedPodRuntime("", d)
+		func(d *launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
+			return nodeservices.RenderPodRuntime("", d)
 		},
 		runtime.available, runtime.apply)
 	if err != nil {
@@ -283,9 +312,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Stop the installer before releasing the assignment store's lifetime lock.
 	defer func() { cancel(); <-workerDone }()
 	h := Handler{
-		assignment: assignment,
-		Pods:       pods,
-		Journal:    cfg.JournalPath,
+		assignment:    assignment,
+		Pods:          pods,
+		Journal:       cfg.JournalPath,
+		IdentityEnded: podIdentityEnded,
 		Evidence: func(ctx context.Context, reportData []byte) ([]byte, error) {
 			resp, err := api.GenerateEvidenceContext(ctx, cfg.AttestationAPIURL, reportData)
 			if err != nil {
@@ -304,30 +334,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Logger:               slog.Default(),
 		MeasuredPoliciesFile: cfg.JournalPath,
 	})
-}
-
-// checkMeasuredLaunchKey fails closed when the staged pod key cannot be
-// confirmed as the launch-bound one. The register holds the key's seed plus
-// whatever this guest's own journal lists, so a restart after containers were
-// measured still passes.
-//
-// A register that replays no prefix of the journal is the one failure the
-// service runs through: the plugin admits nothing for the rest of the boot
-// and the assignment route refuses every request, both without this check,
-// while a client that verifies the guest proves the divergence from its
-// certificate or fresh quote. A guest that exited instead would look to that
-// client like one still booting.
-func checkMeasuredLaunchKey(ctx context.Context, cfg ServeConfig) error {
-	_, err := loadMeasuredLaunchKey(ctx, cfg.AttestationAPIURL, cfg.JournalPath)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, credrelease.ErrRegisterDoesNotReplay):
-		slog.Error("measured history does not replay the register; serving so that verifying clients observe it", "error", err)
-		return nil
-	default:
-		return fmt.Errorf("load measured launch key: %w", err)
-	}
 }
 
 // kubeletPods reads the loopback kubelet. Its serving certificate is
@@ -396,7 +402,7 @@ type AttestConfig struct {
 	Timeout           time.Duration
 }
 
-// Report is what pod-attest proves about the pod CVM.
+// Report is what Attest proves about the pod CVM.
 type Report struct {
 	Image           string   `json:"image"`
 	LaunchKeySHA256 string   `json:"launch_key_sha256"`
@@ -411,48 +417,29 @@ var (
 	loadMeasuredLaunchKey = credrelease.LoadMeasuredOperatorKey
 )
 
-// ErrMeasuredHistoryDoesNotReplay reports a guest whose certificate or fresh
-// evidence verified as the pinned image, but whose register replays no prefix
-// of the measured history it declares: it took an extend its journal does not
-// record, its journal is unreadable, or another key launched it. None of
-// these mends before a reboot, so a caller waiting for the pod should stop
-// waiting; every other error from Attest may be transient. A list the
-// register has not caught up with is not this error: the guest records
-// before it extends, and replays the record when it restarts.
-var ErrMeasuredHistoryDoesNotReplay = errors.New("the pod CVM's measured history does not replay its register")
-
-// final marks err with ErrMeasuredHistoryDoesNotReplay when the verifier
-// found no replaying prefix, and returns every other error unchanged.
-func final(err error) error {
-	if errors.Is(err, guestverify.ErrPoliciesDoNotReplay) {
-		return fmt.Errorf("%w: %w", ErrMeasuredHistoryDoesNotReplay, err)
-	}
-	return err
-}
-
 // Attest verifies fresh evidence from the pod CVM and its measured digest
 // list, returning the report and the verified channel for further reads.
-func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error) {
+func Attest(ctx context.Context, cfg AttestConfig) (_ *Report, _ *http.Client, err error) {
 	if cfg.Node == "" || cfg.LaunchKeyPubPath == "" || cfg.ImageManifestPath == "" {
-		return nil, nil, errors.New("--node, --launch-key-pub and --image-manifest are required")
+		return nil, nil, errors.New("cfg.Node, cfg.LaunchKeyPubPath and cfg.ImageManifestPath are required")
 	}
 	if cfg.Timeout <= 0 {
-		return nil, nil, errors.New("--timeout must be positive")
+		return nil, nil, errors.New("cfg.Timeout must be positive")
 	}
 	if strings.ContainsAny(cfg.Node, "/?#@") {
-		return nil, nil, fmt.Errorf("--node must be a host or IP, got %q", cfg.Node)
+		return nil, nil, fmt.Errorf("cfg.Node must be a host or IP, got %q", cfg.Node)
 	}
 	expect := make([]string, 0, len(cfg.ExpectDigests))
 	for _, ref := range cfg.ExpectDigests {
 		d, err := runtimemeasure.CanonicalDigest(ref)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--expect-digest: %w", err)
+			return nil, nil, fmt.Errorf("cfg.ExpectDigests: %w", err)
 		}
 		expect = append(expect, d)
 	}
 	pub, err := os.ReadFile(cfg.LaunchKeyPubPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("--launch-key-pub: %w", err)
+		return nil, nil, fmt.Errorf("launch key: %w", err)
 	}
 	// One gate for the channel and the evidence: the image the manifest pins
 	// and the launch key, bound as every c8s verifier binds a node's. The
@@ -465,6 +452,14 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	}
 	exp = exp.WithMeasuredPolicies(nil)
 	client := newClient(exp, cfg.Timeout)
+	// The transport has no idle timeout, so a failed attestation must not
+	// leave its sockets to the retry; client is the pinned clone once the
+	// serving key is fixed.
+	defer func() {
+		if err != nil {
+			client.CloseIdleConnections()
+		}
+	}()
 	base := "https://" + hostPort(cfg.Node)
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -475,11 +470,14 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	// the same launch key, whose certificate passes the same checks.
 	before, peer, err := fetchDigests(ctx, client, base)
 	if err != nil {
-		return nil, nil, final(err)
+		return nil, nil, err
 	}
+	unpinned := client
 	if client, err = pinServingKey(client, peer); err != nil {
 		return nil, nil, err
 	}
+	// The unpinned transport served its one request.
+	unpinned.CloseIdleConnections()
 
 	// A container may start between the quote and the list; read the list
 	// on both sides of the quote and retry until they agree.
@@ -493,7 +491,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		reqBody, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
 		var peer crypto.PublicKey
 		if envelope, peer, err = postEvidence(ctx, client, base, reqBody); err != nil {
-			return nil, nil, final(fmt.Errorf("fresh evidence: %w", err))
+			return nil, nil, fmt.Errorf("fresh evidence: %w", err)
 		}
 		// The quote must bind this channel's certificate key and our nonce.
 		rd, err := EvidenceReportData(peer, nonce)
@@ -502,7 +500,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		}
 		reportData = rd[:]
 		if digests, _, err = fetchDigests(ctx, client, base); err != nil {
-			return nil, nil, final(err)
+			return nil, nil, err
 		}
 		if slices.Equal(before, digests) {
 			break
@@ -514,12 +512,12 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	}
 	res, err := verifyFresh(envelope, reportData, exp.WithMeasuredPolicies(digests))
 	if err != nil {
-		return nil, nil, final(fmt.Errorf("evidence: %w", err))
+		return nil, nil, fmt.Errorf("evidence: %w", err)
 	}
 	// The gate accepts any replaying prefix; here the list was read on both
 	// sides of the quote and agreed, so the whole of it must replay. A list
 	// that ran ahead of the register fails here and only here: that is a
-	// recorded extend the guest has not made yet, so the error is not final.
+	// recorded extend the guest has not made yet.
 	if err := runtimemeasure.VerifyBinding(res, pub, digests); err != nil {
 		return nil, nil, fmt.Errorf("measured digests do not explain the attested register: %w", err)
 	}
@@ -629,7 +627,13 @@ func doPeer(ctx context.Context, client *http.Client, method, url string, body [
 		return nil, nil, "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(data)))
+		// The body is peer-controlled; keep only its head in the error.
+		const maxErrBody = 512
+		msg := strings.TrimSpace(string(data))
+		if len(msg) > maxErrBody {
+			msg = msg[:maxErrBody] + "..."
+		}
+		return nil, nil, "", fmt.Errorf("%s: %s", resp.Status, msg)
 	}
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 		return nil, nil, "", errors.New("response did not arrive over TLS")
@@ -646,8 +650,7 @@ func Get(ctx context.Context, cfg AttestConfig) ([]byte, error) {
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	body, err := do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
-	return body, final(err)
+	return do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
 }
 
 func hostPort(node string) string {

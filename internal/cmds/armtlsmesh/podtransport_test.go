@@ -29,9 +29,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // transportNS keeps its namespace alive on a dedicated thread. Production
@@ -182,19 +180,11 @@ func startTransportProcess(t *testing.T, ns *transportNS, uid int, mode, value s
 	return cmd
 }
 
-// startGuestMesh starts, for one guest Pod, the guest's connect broker and the
-// Pod's endpoint, which reaches each advertised peer through the broker alone.
-func startGuestMesh(t *testing.T, guest, pod *transportNS, volume meshVolume, peers ...string) *exec.Cmd {
-	t.Helper()
-	startTransportProcess(t, guest, 0, "broker", strings.Join(append([]string{volume.dir}, peers...), " "))
-	return startGuestEndpoint(t, pod, volume)
-}
-
-// startGuestEndpoint starts a Pod's endpoint told, as the injector tells it,
-// where its guest's connect broker is.
+// startGuestEndpoint starts a Pod's endpoint, which dials its peers itself
+// from the pod network namespace.
 func startGuestEndpoint(t *testing.T, pod *transportNS, volume meshVolume) *exec.Cmd {
 	t.Helper()
-	return startTransportProcess(t, pod, 1337, "endpoint", volume.dir, workloadclaims.MeshConnectSocketEnv+"="+filepath.Join(volume.dir, connectbroker.SocketName))
+	return startTransportProcess(t, pod, 1337, "endpoint", volume.dir)
 }
 
 // TestPodTransportProcess is a test-binary subprocess, never a network daemon
@@ -220,7 +210,7 @@ func TestPodTransportProcess(t *testing.T) {
 	}
 	switch mode {
 	case "endpoint":
-		cfg := &podEndpointConfig{chainPath: filepath.Join(value, "tls.crt"), keyPath: filepath.Join(value, "tls.key"), caPath: filepath.Join(value, "ca.crt"), connectSocket: os.Getenv(workloadclaims.MeshConnectSocketEnv)}
+		cfg := &podEndpointConfig{chainPath: filepath.Join(value, "tls.crt"), keyPath: filepath.Join(value, "tls.key"), caPath: filepath.Join(value, "ca.crt")}
 		e, err := newPodEndpoint(cfg, discardLogger())
 		if err != nil {
 			t.Fatal(err)
@@ -232,29 +222,6 @@ func TestPodTransportProcess(t *testing.T) {
 		e.credentials.reload(time.Now())
 		fmt.Println("ready")
 		if err := e.serve(context.Background(), listeners); err != nil {
-			t.Fatal(err)
-		}
-	case "broker":
-		parts := strings.Fields(value)
-		if len(parts) < 2 {
-			t.Fatal("broker requires a credential volume and at least one peer")
-		}
-		volume, err := os.OpenRoot(parts[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer volume.Close()
-		listener, err := connectbroker.Listen(volume, int(workloadclaims.MeshUID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		peers := make([]netip.AddrPort, 0, len(parts)-1)
-		for _, peer := range parts[1:] {
-			peers = append(peers, netip.MustParseAddrPort(peer))
-		}
-		fmt.Println("ready")
-		server := &connectbroker.Server{Peers: peers, UID: workloadclaims.MeshUID, Logger: discardLogger()}
-		if err := server.Serve(context.Background(), listener); err != nil {
 			t.Fatal(err)
 		}
 	case "echo":
@@ -372,6 +339,12 @@ func serveTransportSource(network, address string) error {
 	}
 }
 
+// Two guests exchange authenticated traffic through provider and guest
+// translation with the same Pod-local address; plaintext, an untrusted
+// certificate and an endpoint without credentials deliver nothing; egress
+// carries the CVM source and no container reaches a guest service or a
+// link-local address. The provider publishes each peer on a public port of
+// its own choosing, never a mesh control port, which the endpoint refuses.
 func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	if os.Geteuid() != 0 {
 		if os.Getenv("C8S_REQUIRE_NFT") == "1" {
@@ -397,14 +370,14 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	for _, side := range []struct {
 		guest, pod *transportNS
 		peer       string
-	}{{ga, pa, "203.0.113.1:15006"}, {gb, pb, "203.0.113.2:15001"}} {
+	}{{ga, pa, "203.0.113.1:31006"}, {gb, pb, "203.0.113.2:31001"}} {
 		peer := netip.MustParseAddrPort(side.peer)
 		destinations := []ruleset.Destination{{Addr: peer.Addr(), Port: peer.Port()}}
 		policy := ruleset.Policy{Capture: ruleset.CapturePorts{Outbound: 15001, Inbound: 15006, Health: 15021}, MeshUID: 1337, Pod: &ruleset.PodPolicy{Peers: destinations}}
 		if err := ruleset.Install(side.pod.path, policy); err != nil {
 			t.Fatal(err)
 		}
-		guest := ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, Peers: destinations, IngressPorts: []uint16{8080}}
+		guest := ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, IngressPorts: []uint16{8080}}
 		if err := ruleset.InstallGuest(side.guest.path, guest); err != nil {
 			t.Fatal(err)
 		}
@@ -427,8 +400,8 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	va, vb := transportVolume(t, ca), transportVolume(t, ca)
 	startTransportProcess(t, pa, 1500, "echo", "0.0.0.0:8080")
 	startTransportProcess(t, pb, 1500, "echo", "0.0.0.0:8080")
-	startGuestMesh(t, ga, pa, va, "203.0.113.1:15006")
-	server := startGuestMesh(t, gb, pb, vb, "203.0.113.2:15001")
+	startGuestEndpoint(t, pa, va)
+	server := startGuestEndpoint(t, pb, vb)
 	for _, port := range []string{"8400", "8443", "10250"} {
 		startTransportProcess(t, ga, 0, "echo", "0.0.0.0:"+port)
 		if err := ga.run(func() error { return transportEcho("10.255.254.1:"+port, nil) }); err != nil {
@@ -438,14 +411,14 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	for _, side := range []struct {
 		pod *transportNS
 		dst string
-	}{{pa, "203.0.113.1:15006"}, {pb, "203.0.113.2:15001"}} {
+	}{{pa, "203.0.113.1:31006"}, {pb, "203.0.113.2:31001"}} {
 		if out, err := transportCommand(t, side.pod, 1500, "client", side.dst).CombinedOutput(); err != nil {
 			t.Fatalf("mesh %s: %v\n%s", side.dst, err, out)
 		}
 	}
 	// A nonpeer TCP port on the advertised peer IP remains ordinary egress.
 	// Port 53 must carry both UDP and TCP to guest upstream resolvers.
-	for _, service := range []string{"tcp 203.0.113.1:15007", "udp 203.0.113.1:15007", "udp 203.0.113.1:15006", "tcp 203.0.113.1:53", "udp 203.0.113.1:53"} {
+	for _, service := range []string{"tcp 203.0.113.1:31007", "udp 203.0.113.1:31007", "udp 203.0.113.1:31006", "tcp 203.0.113.1:53", "udp 203.0.113.1:53"} {
 		startTransportProcess(t, wan, 0, "source-server", service)
 		for _, side := range []struct {
 			pod    *transportNS
@@ -492,7 +465,7 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	foreign := newMeshCA(t, time.Hour)
 	_, foreignTLS := foreign.meshConfigs(t)
 	for _, cfg := range []*tls.Config{nil, foreignTLS} {
-		if err := ga.run(func() error { return transportEcho("203.0.113.1:15006", cfg) }); err == nil {
+		if err := ga.run(func() error { return transportEcho("203.0.113.1:31006", cfg) }); err == nil {
 			t.Fatal("unauthenticated traffic reached the application")
 		}
 	}
@@ -520,7 +493,7 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 	_ = server.Wait()
 	withdrawSet(t, vb)
 	startGuestEndpoint(t, pb, vb)
-	if out, err := transportCommand(t, pa, 1500, "client", "203.0.113.1:15006").CombinedOutput(); err == nil {
+	if out, err := transportCommand(t, pa, 1500, "client", "203.0.113.1:31006").CombinedOutput(); err == nil {
 		t.Fatalf("missing credentials permitted fallback: %s", out)
 	}
 }
@@ -547,7 +520,7 @@ func installTransportProvider() error {
 	for _, mapping := range []struct {
 		public, guest string
 		port          uint16
-	}{{"203.0.113.1", "198.51.100.2", 15006}, {"203.0.113.2", "192.0.2.2", 15001}} {
+	}{{"203.0.113.1", "198.51.100.2", 31006}, {"203.0.113.2", "192.0.2.2", 31001}} {
 		lo, err := netlink.LinkByName("lo")
 		if err != nil {
 			return err

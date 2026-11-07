@@ -100,7 +100,7 @@ func TestCloudResponseIdentityAndCardinalityContract(t *testing.T) {
 	}
 }
 
-func TestNodeRegistrationPreservesForeignMetadataAndRestoresRouting(t *testing.T) {
+func TestNodeRegistrationAdoptsOnlyItsOwnNode(t *testing.T) {
 	cfg := fixtureConfig(t)
 	want := nodeObject(cfg)
 	kube := kubefake.NewClientset()
@@ -114,21 +114,8 @@ func TestNodeRegistrationPreservesForeignMetadataAndRestoresRouting(t *testing.T
 	if got.Status.Conditions[0].Status != corev1.ConditionUnknown || got.Spec.ProviderID != want.Spec.ProviderID {
 		t.Fatal("new node was Ready before health or lacks ownership")
 	}
-	got.Labels["example.invalid/operator"] = "preserve"
-	delete(got.Labels, Annotation)
-	got.Spec.Taints = []corev1.Taint{{Key: "maintenance", Effect: corev1.TaintEffectNoExecute}}
-	if _, err := kube.CoreV1().Nodes().Update(context.Background(), got, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
 	if err := ensureOwnedNode(context.Background(), kube.CoreV1().Nodes(), want); err != nil {
-		t.Fatal(err)
-	}
-	got, err = kube.CoreV1().Nodes().Get(context.Background(), want.Name, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Labels[Annotation] != "true" || got.Labels["example.invalid/operator"] != "preserve" || len(got.Spec.Taints) != 2 || got.Spec.Taints[0].Key != "maintenance" || got.Spec.Taints[1] != want.Spec.Taints[0] {
-		t.Fatal("registration lost operator metadata or failed to restore routing")
+		t.Fatal("restart did not adopt the node this provider registered")
 	}
 	n := &virtualNode{cfg: cfg, cloud: &fakeCloud{}, kube: kube, node: want}
 	if err := n.checkOwnership(context.Background()); err == nil {

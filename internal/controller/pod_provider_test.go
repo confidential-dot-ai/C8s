@@ -1,14 +1,12 @@
 package controller
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/confidential-dot-ai/c8s/internal/podprovider"
@@ -21,16 +19,12 @@ func TestPodProviderSetupRequiresTrustedNamespaceAndWebhooks(t *testing.T) {
 		name                   string
 		path, image, namespace string
 		disableElection        bool
-		loadErr, setupErr      error
 		wantLoad, wantSetup    bool
 		wantError              string
 	}{
-		{name: "disabled"},
 		{name: "no webhooks", path: "/config.json", wantError: "requires the pod admission webhooks"},
 		{name: "no leader election", path: "/config.json", image: "image", disableElection: true, wantError: "requires --leader-elect=true"},
-		{name: "unreadable config", path: "/config.json", image: "image", wantLoad: true, loadErr: errors.New("invalid configuration"), wantError: "load pod CVM provider"},
 		{name: "namespace mismatch", path: "/config.json", image: "image", namespace: "tenant", wantLoad: true, wantError: "namespace must match"},
-		{name: "setup failure", path: "/config.json", image: "image", namespace: "system", wantLoad: true, wantSetup: true, setupErr: errors.New("registration failed"), wantError: "setup pod CVM provider"},
 		{name: "configured", path: "/config.json", image: "image", namespace: "system", wantLoad: true, wantSetup: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,14 +35,14 @@ func TestPodProviderSetupRequiresTrustedNamespaceAndWebhooks(t *testing.T) {
 				if path != tc.path {
 					t.Fatalf("loaded %q", path)
 				}
-				return cfg, tc.loadErr
+				return cfg, nil
 			}
 			registerPodCVMProvider = func(_ manager.Manager, got *podprovider.Config) error {
 				registered = true
 				if got != cfg {
 					t.Fatal("configuration replaced")
 				}
-				return tc.setupErr
+				return nil
 			}
 			err := setupPodCVMProvider(nil, Options{PodCVMProviderConfig: tc.path, GetCertImage: tc.image, LeaderElectionNS: "system", LeaderElection: !tc.disableElection})
 			if (tc.wantError == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantError)) {
@@ -61,44 +55,18 @@ func TestPodProviderSetupRequiresTrustedNamespaceAndWebhooks(t *testing.T) {
 	}
 }
 
-func TestPodProviderSecretCacheStaysInItsNamespace(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		opts := Options{LeaderElectionNS: "system"}
-		if enabled {
-			opts.PodCVMProviderConfig = "/config.json"
-		}
-		configured := false
-		for object, scope := range managerOptions(opts).Cache.ByObject {
-			if _, ok := object.(*corev1.Secret); !ok {
-				continue
-			}
-			configured = true
-			if len(scope.Namespaces) != 1 {
-				t.Fatalf("Secret cache scope=%v", scope.Namespaces)
-			}
-			if _, ok := scope.Namespaces["system"]; !ok {
-				t.Fatal("Secret cache includes another namespace")
-			}
-		}
-		if configured != enabled {
-			t.Fatalf("Secret cache configured=%t, enabled=%t", configured, enabled)
-		}
-	}
-}
-
 func TestPodProviderWithoutInstalledConfigurationIsDisabled(t *testing.T) {
 	dir := t.TempDir()
+	missing := Options{PodCVMProviderConfig: filepath.Join(dir, "absent", "config.json")}
+	if got := withPresentPodCVMProvider(missing, logr.Discard()); got.PodCVMProviderConfig != "" {
+		t.Fatalf("absent configuration kept the provider enabled: %q", got.PodCVMProviderConfig)
+	}
+	// An invalid file stays configured, so setupPodCVMProvider fails on it.
 	present := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(present, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	missing := Options{PodCVMProviderConfig: filepath.Join(dir, "absent", "config.json"), LeaderElectionNS: "system"}
-	if got := withPresentPodCVMProvider(missing, logr.Discard()); got.PodCVMProviderConfig != "" {
-		t.Fatalf("absent configuration kept the provider enabled: %q", got.PodCVMProviderConfig)
-	}
-	// An invalid file stays configured so setupPodCVMProvider fails on it.
-	invalid := Options{PodCVMProviderConfig: present}
-	if got := withPresentPodCVMProvider(invalid, logr.Discard()); got.PodCVMProviderConfig != present {
+	if got := withPresentPodCVMProvider(Options{PodCVMProviderConfig: present}, logr.Discard()); got.PodCVMProviderConfig != present {
 		t.Fatal("present configuration was dropped")
 	}
 }

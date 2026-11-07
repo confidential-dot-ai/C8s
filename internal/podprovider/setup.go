@@ -12,15 +12,17 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // Setup adds the Pod reconciler, orphan recovery and a leased virtual node.
@@ -41,11 +43,28 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 	}
 	api := newCloudClient(cfg)
 	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now, recorder: mgr.GetEventRecorder("c8s-pod-cvm-provider")}
-	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm").For(&corev1.Pod{}).
-		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-			pod, ok := obj.(*corev1.Pod)
-			return ok && pod.Spec.NodeName == cfg.NodeName
-		})).Complete(r); err != nil {
+	// The provider's pods are the ones bound to its node. Watch them through
+	// a cache of its own so the operator caches no other pod for it, and
+	// reconcile through the direct client.
+	pods, err := cache.New(mgr.GetConfig(), cache.Options{
+		Scheme:           mgr.GetScheme(),
+		Mapper:           mgr.GetRESTMapper(),
+		DefaultTransform: cache.TransformStripManagedFields(),
+		ByObject:         map[client.Object]cache.ByObject{&corev1.Pod{}: {Field: fields.OneTermEqualSelector("spec.nodeName", cfg.NodeName)}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := mgr.Add(pods); err != nil {
+		return err
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm").
+		WatchesRawSource(source.Kind(pods, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{})).Complete(r); err != nil {
+		return err
+	}
+	ingress := &ingressReconciler{client: direct, nodeName: cfg.NodeName, providerID: cfg.ProviderID}
+	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm-ingress").
+		WatchesRawSource(source.Kind(pods, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{})).Complete(ingress); err != nil {
 		return err
 	}
 	n := &virtualNode{cfg: cfg, cloud: api, kube: kube, node: nodeObject(cfg)}
@@ -70,21 +89,17 @@ type virtualNode struct {
 func (*virtualNode) NeedLeaderElection() bool { return true }
 
 func (n *virtualNode) Start(ctx context.Context) error {
-	delay := time.Second
 	for {
 		err := n.run(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
 		ctrl.LoggerFrom(ctx).Error(err, "Pod CVM virtual node unavailable")
-		timer := time.NewTimer(wait.Jitter(delay, 0.2))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(pollInterval):
 		}
-		delay = min(delay*2, time.Minute)
 	}
 }
 
@@ -185,9 +200,9 @@ func (*virtualNode) NotifyNodeStatus(context.Context, func(*corev1.Node)) {}
 
 func nodeObject(cfg *Config) *corev1.Node {
 	capacity := corev1.ResourceList{corev1.ResourceCPU: *resource.NewQuantity(cfg.VCPUs*cfg.MaxPods, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity((cfg.MemoryMiB-cfg.ReservedMemoryMiB)*(1<<20)*cfg.MaxPods, resource.BinarySI), corev1.ResourcePods: *resource.NewQuantity(cfg.MaxPods, resource.DecimalSI)}
-	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName, Labels: map[string]string{Annotation: "true", ownerLabel: cfg.ProviderID, corev1.LabelOSStable: "linux", corev1.LabelArchStable: "amd64", corev1.LabelHostname: cfg.NodeName}},
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName, Labels: map[string]string{Annotation: "true", ownerLabel: cfg.ProviderID}},
 		Spec:   corev1.NodeSpec{ProviderID: "podcvm://" + cfg.ProviderID, Taints: []corev1.Taint{{Key: Annotation, Value: "true", Effect: corev1.TaintEffectNoSchedule}}},
-		Status: corev1.NodeStatus{Capacity: capacity, Allocatable: capacity.DeepCopy(), Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "ProviderReady", LastTransitionTime: metav1.Now()}}, NodeInfo: corev1.NodeSystemInfo{OperatingSystem: "linux", Architecture: "amd64", KubeletVersion: "v1.37.1-podcvm"}},
+		Status: corev1.NodeStatus{Capacity: capacity, Allocatable: capacity.DeepCopy(), Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "ProviderReady", LastTransitionTime: metav1.Now()}}},
 	}
 }
 
@@ -209,44 +224,21 @@ func ensureOwnedNode(ctx context.Context, api coreclient.NodeInterface, want *co
 	if current.Labels[ownerLabel] != want.Labels[ownerLabel] || current.Spec.ProviderID != want.Spec.ProviderID {
 		return errors.New("refusing to adopt an existing node owned by another provider")
 	}
-	if current.Labels == nil {
-		current.Labels = map[string]string{}
-	}
-	for k, v := range want.Labels {
-		current.Labels[k] = v
-	}
-	tainted := false
-	for i, t := range current.Spec.Taints {
-		if t.Key == Annotation && t.Effect == corev1.TaintEffectNoSchedule {
-			current.Spec.Taints[i].Value = "true"
-			tainted = true
-		}
-	}
-	if !tainted {
-		current.Spec.Taints = append(current.Spec.Taints, want.Spec.Taints[0])
-	}
-	_, err = api.Update(ctx, current, metav1.UpdateOptions{})
-	return err
+	return nil
 }
 
 type orphanWorker struct{ reconciler *Reconciler }
 
 func (*orphanWorker) NeedLeaderElection() bool { return true }
 func (w *orphanWorker) Start(ctx context.Context) error {
-	delay := pollInterval
 	for {
 		if err := w.reconciler.sweep(ctx); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "Pod CVM orphan recovery failed")
-			delay = min(2*delay, 5*time.Minute)
-		} else {
-			delay = pollInterval
 		}
-		timer := time.NewTimer(wait.Jitter(delay, 0.2))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(pollInterval):
 		}
 	}
 }

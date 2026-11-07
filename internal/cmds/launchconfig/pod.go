@@ -12,31 +12,35 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
-// PodSpec names the pod a pod-role boot runs. Manifest is a v1 Pod in YAML
-// or JSON; its metadata must repeat UID, Namespace and Name so the identity
-// the provider reports and the pod kubelet runs cannot diverge. WorkloadID is
-// the manifest's confidential.ai/cw annotation, the tenant identity the guest
-// carries in its credential claims; empty when the manifest has none.
+// PodSpec names the pod assigned to a pod-role boot. Manifest is a v1 Pod in
+// YAML or JSON; its metadata must repeat UID, Namespace and Name so the
+// identity the provider reports and the pod kubelet runs cannot diverge.
 type PodSpec struct {
-	UID        string   `yaml:"uid" json:"uid"`
-	Namespace  string   `yaml:"namespace" json:"namespace"`
-	Name       string   `yaml:"name" json:"name"`
-	WorkloadID string   `yaml:"workloadID,omitempty" json:"workloadID,omitempty"`
-	Manifest   string   `yaml:"manifest" json:"manifest"`
-	MeshPeers  []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
+	UID       string   `yaml:"uid" json:"uid"`
+	Namespace string   `yaml:"namespace" json:"namespace"`
+	Name      string   `yaml:"name" json:"name"`
+	Manifest  string   `yaml:"manifest" json:"manifest"`
+	MeshPeers []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
 }
 
-// podWorkloadID is the workload ID a pod manifest names, "" when it names none.
-func podWorkloadID(pod *corev1.Pod) string {
-	return pod.Annotations[workloadclaims.AnnotationWorkloadID]
+// WorkloadID is the signed manifest's confidential.ai/cw annotation, the
+// per-pod identity the guest carries in its claims and CDS stamps on the
+// leaf; "" when the manifest names none. The manifest is the one source: the
+// assignment signature covers it, and validate checks the annotation's grammar.
+func (p *PodSpec) WorkloadID() (string, error) {
+	pod, err := ParsePodManifest([]byte(p.Manifest))
+	if err != nil {
+		return "", err
+	}
+	return pod.Annotations[workloadclaims.AnnotationWorkloadID], nil
 }
 
 // validate is defence in depth: NRI's sandbox policy is the enforcement
-// point. It refuses what the pod role can never need, so a bad document
+// point. It refuses what the pod role can never need, so a bad assignment
 // fails at signing time instead of at container start.
 func (p *PodSpec) validate() error {
 	if p.UID == "" || len(p.UID) > 128 || len(validation.IsDNS1123Subdomain(p.UID)) != 0 {
@@ -55,9 +59,6 @@ func (p *PodSpec) validate() error {
 	if string(pod.UID) != p.UID || pod.Namespace != p.Namespace || pod.Name != p.Name {
 		return fmt.Errorf("pod.manifest metadata must match pod.uid, pod.namespace and pod.name")
 	}
-	if podWorkloadID(pod) != p.WorkloadID {
-		return fmt.Errorf("pod.workloadID must equal the manifest's %s annotation", workloadclaims.AnnotationWorkloadID)
-	}
 	if err := ValidatePodSpec(pod); err != nil {
 		return err
 	}
@@ -71,15 +72,13 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 	if pod == nil || len(pod.Spec.Containers) == 0 {
 		return errors.New("pod.manifest must have containers")
 	}
-	// The workload ID travels into the leaf as an extension with a fixed
-	// grammar, so a manifest naming one the leaf cannot carry fails here.
-	if id := podWorkloadID(pod); id != "" {
-		if err := armtls.ValidateWorkloadID(id); err != nil {
-			return fmt.Errorf("pod.manifest %s annotation: %w", workloadclaims.AnnotationWorkloadID, err)
-		}
-	}
 	if err := podmesh.ValidateWorkloadPod(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
+	}
+	// The annotation, when present, is the allowlist workload name the pod's
+	// entries are looked up under; an unusable name fails here, not at admission.
+	if id, present := pod.Annotations[workloadclaims.AnnotationWorkloadID]; present && (!workloadname.ValidGrammar(id) || len(id) > workloadname.MaxLen) {
+		return fmt.Errorf("pod.manifest %s annotation %q is not a valid workload name", workloadclaims.AnnotationWorkloadID, id)
 	}
 	if _, err := podmesh.IngressPorts(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
@@ -114,6 +113,16 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
 			return fmt.Errorf("pod.manifest container %q must not be privileged", c.Name)
 		}
+		// No cluster API answers the pod CVM's kubelet, so a Secret or
+		// ConfigMap reference would never resolve.
+		if len(c.EnvFrom) != 0 {
+			return fmt.Errorf("pod.manifest container %q: pod CVM does not resolve envFrom", c.Name)
+		}
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && (e.ValueFrom.SecretKeyRef != nil || e.ValueFrom.ConfigMapKeyRef != nil) {
+				return fmt.Errorf("pod.manifest container %q: pod CVM does not resolve Secret or ConfigMap environment references", c.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -138,13 +147,10 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 		return errors.New("pod CVM resources must be specified per container")
 	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
-		if len(c.EnvFrom) != 0 || len(c.Resources.Claims) != 0 {
-			return fmt.Errorf("container %q: pod CVM does not resolve envFrom or resource claims", c.Name)
+		if len(c.Resources.Claims) != 0 {
+			return fmt.Errorf("container %q: pod CVM does not resolve resource claims", c.Name)
 		}
 		for _, e := range c.Env {
-			if e.ValueFrom != nil && (e.ValueFrom.SecretKeyRef != nil || e.ValueFrom.ConfigMapKeyRef != nil) {
-				return fmt.Errorf("container %q: pod CVM does not resolve Secret or ConfigMap environment references", c.Name)
-			}
 			if e.ValueFrom != nil && e.ValueFrom.FieldRef != nil {
 				field := e.ValueFrom.FieldRef.FieldPath
 				if field == "metadata.annotations" || strings.Contains(field, "confidential.ai/pod-cvm") || strings.Contains(field, "kubernetes.io/config.") {

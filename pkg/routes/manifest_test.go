@@ -179,6 +179,7 @@ func TestParseAccepts(t *testing.T) {
 		{"D6 trailing slash", func(m map[string]any) { routeOf(m, 1)["path"] = "/admin/" }},
 		{"D6 sub-delims, colon and at", func(m map[string]any) { routeOf(m, 1)["path"] = "/a:b@c!$&'()*+,;=~" }},
 		{"D7 IPv4 address", func(m map[string]any) { backendOf(m, 0)["address"] = "10.0.0.5:8443" }},
+		{"D7 workload with an assigned workload ID", func(m map[string]any) { backendOf(m, 0)["assignedWorkloadID"] = "user-alice" }},
 		{"D7 IPv6 address", func(m map[string]any) { backendOf(m, 0)["address"] = "[fd00::1]:443" }},
 		{"D7 mixed-case server name", func(m map[string]any) { backendOf(m, 1)["serverName"] = "Admin.Ops.svc" }},
 		{"D7 two anchors", func(m map[string]any) {
@@ -236,6 +237,9 @@ func TestParseRejects(t *testing.T) {
 		{name: "D1 member name in other case", edit: func(m map[string]any) { m["Revision"] = m["revision"]; delete(m, "revision") }, wantErr: `missing member "revision"`},
 		{name: "D1 unknown host member", edit: func(m map[string]any) { hostOf(m)["cors"] = false }, wantErr: `unknown member "cors"`},
 		{name: "D1 unknown route member", edit: func(m map[string]any) { routeOf(m, 0)["priority"] = 1 }, wantErr: `unknown member "priority"`},
+		{name: "D7 assigned workload ID on an address backend", edit: func(m map[string]any) { backendOf(m, 1)["assignedWorkloadID"] = "user-alice" }, wantErr: "must have exactly one of workload"},
+		{name: "D7 assigned workload ID outside the grammar", edit: func(m map[string]any) { backendOf(m, 0)["assignedWorkloadID"] = "user alice" }, wantErr: "assignedWorkloadID"},
+		{name: "D7 assigned workload ID not a string", edit: func(m map[string]any) { backendOf(m, 0)["assignedWorkloadID"] = 1 }, wantErr: "assignedWorkloadID: must be a string"},
 		{name: "D1 unknown backend member", edit: func(m map[string]any) { backendOf(m, 0)["timeout"] = 1 }, wantErr: `unknown member "timeout"`},
 		{name: "D2 revision 0", edit: func(m map[string]any) { m["revision"] = 0 }, wantErr: "revision"},
 		{name: "D2 negative revision", edit: func(m map[string]any) { m["revision"] = -1 }, wantErr: "revision"},
@@ -491,5 +495,19 @@ func TestParseTimestampLeapSecond(t *testing.T) {
 		} else if err != nil || !got.Equal(tt.want) {
 			t.Errorf("parseTimestamp(%q) = %v, %v; want %v", tt.in, got, err, tt.want)
 		}
+	}
+}
+
+// The assigned workload ID survives parsing onto the workload backend.
+func TestParseAssignedWorkloadID(t *testing.T) {
+	ca, _, _ := newCA(t, nil)
+	m := baseManifest(ca)
+	backendOf(m, 0)["assignedWorkloadID"] = "user-alice"
+	parsed, err := Parse(encode(t, m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Hosts["app.example"].Routes[0].Backend; got.Workload != "vllm" || got.AssignedWorkloadID != "user-alice" {
+		t.Fatalf("backend = %+v, want workload vllm pinned to user-alice", got)
 	}
 }

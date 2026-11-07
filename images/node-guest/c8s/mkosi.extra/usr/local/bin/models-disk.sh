@@ -34,8 +34,9 @@ fi
 # Find the models disk by serial=confai-models. virtio-scsi (KubeVirt Bus:
 # scsi) surfaces the serial ONLY in /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_
 # <serial>, NOT in /sys/block/<dev>/serial (empty on SCSI) — same matching as
-# containerd-data-disk.sh. Poll briefly (~10s) so a slow udev probe doesn't make
-# us miss it. virtio-blk is scanned as a fallback via its sysfs serial.
+# containerd-data-disk.sh. Settle udev, then poll briefly (~1.5 s) in case a
+# probe is still finishing. virtio-blk is scanned as a fallback via its sysfs
+# serial.
 DEV=""
 # Disks attached at launch are enumerated by udev coldplug: wait for udev to
 # settle, then scan briefly. An absent disk costs ~1 s, not the old 10 s poll.

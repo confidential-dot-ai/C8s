@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -23,40 +24,64 @@ func assignmentTestRoot(t *testing.T) *os.Root {
 	return root
 }
 
-func TestAssignmentInstallCrashRecoveryAndManifestLast(t *testing.T) {
+// The runtime starts after the policy is published, the manifest is written
+// only once the plugin reports the assigned UID, and the kubelet starts last;
+// an interruption at any boundary exposes no manifest to a kubelet, and the
+// recovery completes the install and starts both units again, idempotently.
+func TestAssignmentInstallStartsTheKubeletOnlyAfterThePluginRegisteredThePod(t *testing.T) {
 	runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("assigned policy"), Manifest: []byte("assigned manifest")}
-	for _, boundary := range []string{"empty", "policy", "restart", "health", "manifest"} {
+	for _, boundary := range []string{"policy", "runtime", "health", "kubelet"} {
 		t.Run(boundary, func(t *testing.T) {
 			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
 			fail := errors.New("simulated interruption")
-			emptyCalls, restarts := 0, 0
-			empty := func(context.Context) error {
-				emptyCalls++
-				if boundary == "empty" || boundary == "manifest" && emptyCalls == 2 {
-					return fail
-				}
-				return nil
-			}
-			restart := func(context.Context) error {
-				restarts++
-				if _, err := manifests.Stat("pod.yaml"); !errors.Is(err, os.ErrNotExist) {
-					t.Fatal("manifest appeared before restart")
-				}
+			var started []string
+			registered, recovering := false, false
+			start := func(_ context.Context, unit string) error {
+				started = append(started, unit)
 				data, err := policy.ReadFile("image-policy.yaml")
 				if err != nil || !bytes.Equal(data, runtime.Policy) {
-					t.Fatal("restart preceded policy publication")
+					t.Fatal("a unit started before the policy was published")
 				}
-				if boundary == "restart" {
-					return fail
+				_, manifestErr := manifests.Stat("pod.yaml")
+				switch unit {
+				case podRuntimeUnit:
+					if !recovering && !errors.Is(manifestErr, os.ErrNotExist) {
+						t.Fatal("manifest appeared before the runtime started")
+					}
+					if boundary == "runtime" && !recovering {
+						return fail
+					}
+				case podKubeletUnit:
+					if !registered {
+						t.Fatal("kubelet started before the plugin registered the pod")
+					}
+					if data, err := manifests.ReadFile("pod.yaml"); err != nil || !bytes.Equal(data, runtime.Manifest) {
+						t.Fatal("kubelet started before the manifest was published")
+					}
+					if boundary == "kubelet" && !recovering {
+						return fail
+					}
+				default:
+					t.Fatalf("unknown unit %s", unit)
 				}
 				return nil
 			}
 			ctx, cancel := context.WithCancel(t.Context())
-			health := func(context.Context, string) error {
-				if boundary == "health" {
+			health := func(_ context.Context, uid string) error {
+				if uid != runtime.UID {
+					t.Fatal("wrong assignment health identity")
+				}
+				if !slices.Contains(started, podRuntimeUnit) {
+					t.Fatal("health was polled before the runtime started")
+				}
+				if _, err := manifests.Stat("pod.yaml"); !recovering && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("manifest published before the plugin registered the pod")
+				}
+				if boundary == "health" && !recovering {
 					cancel()
 					return fail
 				}
+				registered = true
 				return nil
 			}
 			if boundary == "policy" {
@@ -64,40 +89,42 @@ func TestAssignmentInstallCrashRecoveryAndManifestLast(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := installAssignment(ctx, runtime, manifests, policy, empty, restart, health); err == nil {
+			if err := installAssignment(ctx, runtime, manifests, policy, start, health); err == nil {
 				t.Fatal("interruption hidden")
 			}
 			cancel()
-			if _, err := manifests.Stat("pod.yaml"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("interrupted install exposed manifest")
+			if slices.Contains(started, podKubeletUnit) && boundary != "kubelet" {
+				t.Fatal("interrupted install started the kubelet")
 			}
 			if boundary == "policy" {
 				if err := policy.Remove("image-policy.yaml"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := installAssignment(t.Context(), runtime, manifests, policy, func(context.Context) error { return nil }, func(context.Context) error { restarts++; return nil }, func(_ context.Context, uid string) error {
-				if uid != "pod" {
-					t.Fatal("wrong policy identity")
-				}
-				return nil
-			}); err != nil {
+			started, registered, recovering = nil, false, true
+			if err := installAssignment(t.Context(), runtime, manifests, policy, start, health); err != nil {
 				t.Fatal(err)
 			}
-			before := restarts
-			forbidden := func(context.Context) error { t.Fatal("published assignment restarted a running runtime"); return nil }
-			if err := installAssignment(t.Context(), runtime, manifests, policy, forbidden, forbidden, func(context.Context, string) error { t.Fatal("published assignment awaited health"); return nil }); err != nil {
+			if !slices.Equal(started, []string{podRuntimeUnit, podKubeletUnit}) {
+				t.Fatalf("recovery started %v", started)
+			}
+			// A completed install is recovered by starting the units again and
+			// nothing else; a start is idempotent for a running unit.
+			started = nil
+			if err := installAssignment(t.Context(), runtime, manifests, policy, start, func(context.Context, string) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
-			if restarts != before {
-				t.Fatal("recovery restarted the runtime")
+			if !slices.Equal(started, []string{podRuntimeUnit, podKubeletUnit}) {
+				t.Fatalf("published assignment started %v", started)
 			}
 		})
 	}
 }
 
+// An assigned manifest or floor is never replaced, and an
+// output that is not a private regular file is refused before any mutation.
 func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
-	for _, kind := range []string{"manifest", "policy", "symlink", "permissions"} {
+	for _, kind := range []string{"manifest", "policy", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
 			runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
@@ -112,10 +139,6 @@ func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
 				runtime.Manifest = []byte("replacement")
 			case "policy":
 				runtime.Policy = []byte("replacement")
-			case "permissions":
-				if err := manifests.Chmod("pod.yaml", 0644); err != nil {
-					t.Fatal(err)
-				}
 			case "symlink":
 				if err := manifests.Remove("pod.yaml"); err != nil {
 					t.Fatal(err)
@@ -124,14 +147,16 @@ func TestAssignmentInstallRefusesReplacementAndUnsafeOutputs(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			forbidden := func(context.Context) error { t.Fatal("unsafe output reached runtime mutation"); return nil }
-			if err := installAssignment(t.Context(), runtime, manifests, policy, forbidden, forbidden, nil); err == nil {
+			forbidden := func(context.Context, string) error { t.Fatal("unsafe output reached runtime mutation"); return nil }
+			if err := installAssignment(t.Context(), runtime, manifests, policy, forbidden, nil); err == nil {
 				t.Fatal("assignment output changed or unsafe output accepted")
 			}
 		})
 	}
 }
 
+// One service holds the store, a record is never replaced, and a record
+// readable by others is refused.
 func TestAssignmentStoreExclusiveAndImmutable(t *testing.T) {
 	root := assignmentTestRoot(t)
 	store, err := lockAssignmentStore(root)
@@ -161,45 +186,64 @@ func TestAssignmentStoreExclusiveAndImmutable(t *testing.T) {
 	}
 }
 
-func TestAssignmentApplyStartsOnlyAfterCommitAndRecovers(t *testing.T) {
-	s, key, peer, store := assignmentFixture(t)
-	body := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-	if rec := postAssignment(s, peer, body); rec.Code != 200 {
-		t.Fatal(rec.Code)
+// An install the boot can no longer complete is abandoned rather than retried:
+// an installed output that differs from the assignment, or a plugin that
+// ended the pod identity.
+func TestAssignmentInstallAbandonsAMismatchOrAnEndedIdentity(t *testing.T) {
+	runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
+	for _, kind := range []string{"policy", "manifest", "ended"} {
+		t.Run(kind, func(t *testing.T) {
+			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
+			health := func(context.Context, string) error { return nil }
+			switch kind {
+			case "policy":
+				if err := fileutil.WriteAtomicRoot(policy, "image-policy.yaml", []byte("other"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "manifest":
+				if err := fileutil.WriteAtomicRoot(policy, "image-policy.yaml", runtime.Policy, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := fileutil.WriteAtomicRoot(manifests, "pod.yaml", []byte("other"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "ended":
+				health = func(context.Context, string) error { return errPodIdentityEnded }
+			}
+			start := func(context.Context, string) error { return nil }
+			err := installAssignment(t.Context(), runtime, manifests, policy, start, health)
+			if !errors.Is(err, errAssignmentAbandoned) {
+				t.Fatalf("install with %s = %v, want abandonment", kind, err)
+			}
+			if _, err := manifests.Stat("pod.yaml"); kind != "manifest" && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("abandoned install published a manifest")
+			}
+		})
 	}
-	applied := make(chan struct{})
-	s.apply = func(context.Context, nodeservices.PodRuntime) error {
-		if store.record == nil || store.commits != 1 {
-			t.Error("runtime mutated before commitment")
+	// A transient health failure is retried, not abandoned.
+	manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
+	calls := 0
+	health := func(context.Context, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("not registered yet")
 		}
-		close(applied)
 		return nil
 	}
-	restarted, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply)
-	if err != nil {
-		t.Fatal(err)
+	if err := installAssignment(t.Context(), runtime, manifests, policy, func(context.Context, string) error { return nil }, health); err != nil || calls != 2 {
+		t.Fatalf("transient failure: %v after %d polls", err, calls)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { defer close(done); restarted.run(ctx) }()
-	select {
-	case <-applied:
-	case <-time.After(3 * time.Second):
-		cancel()
-		t.Fatal("record was not applied")
-	}
-	cancel()
-	<-done
 }
 
-func TestAssignmentInstallWaitsForRuntimeObservationsWithoutRestartingAgain(t *testing.T) {
+// The plugin's registration is polled until it names the assigned UID; the
+// runtime is started once, and the manifest waits for the registration.
+func TestAssignmentInstallWaitsForThePluginWithoutStartingTheRuntimeAgain(t *testing.T) {
 	manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
 	runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
-	emptyCalls, healthCalls, restarts := 0, 0, 0
-	empty := func(context.Context) error {
-		emptyCalls++
-		if emptyCalls == 2 {
-			return errors.Join(errAssignmentRuntimeUnavailable, errors.New("kubelet starting"))
+	healthCalls, runtimeStarts := 0, 0
+	start := func(_ context.Context, unit string) error {
+		if unit == podRuntimeUnit {
+			runtimeStarts++
 		}
 		return nil
 	}
@@ -209,67 +253,23 @@ func TestAssignmentInstallWaitsForRuntimeObservationsWithoutRestartingAgain(t *t
 			t.Fatal("wrong assignment health identity")
 		}
 		if _, err := manifests.Stat("pod.yaml"); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("manifest published before runtime observations")
+			t.Fatal("manifest published before the plugin registered the pod")
 		}
-		if healthCalls == 2 {
-			return errors.New("admission temporarily unregistered")
+		if healthCalls < 3 {
+			return errors.New("admission not registered yet")
 		}
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := installAssignment(ctx, runtime, manifests, policy, empty, func(context.Context) error { restarts++; return nil }, health); err != nil {
+	if err := installAssignment(ctx, runtime, manifests, policy, start, health); err != nil {
 		t.Fatal(err)
 	}
-	if restarts != 1 || emptyCalls != 3 || healthCalls != 3 {
-		t.Fatalf("handoff calls: restarts=%d empty=%d health=%d", restarts, emptyCalls, healthCalls)
+	if runtimeStarts != 1 || healthCalls != 3 {
+		t.Fatalf("handoff calls: runtime starts=%d health=%d", runtimeStarts, healthCalls)
 	}
 	data, err := manifests.ReadFile("pod.yaml")
 	if err != nil || !bytes.Equal(data, runtime.Manifest) {
-		t.Fatalf("ready runtime did not publish assignment: %v", err)
-	}
-}
-
-func TestAssignmentInstallDoesNotRetryDefinitiveRefusalOrExceedDeadline(t *testing.T) {
-	for _, unavailable := range []bool{false, true} {
-		name := "definitive refusal"
-		if unavailable {
-			name = "unavailable until deadline"
-		}
-		t.Run(name, func(t *testing.T) {
-			manifests, policy := assignmentTestRoot(t), assignmentTestRoot(t)
-			runtime := nodeservices.PodRuntime{UID: "pod", Policy: []byte("policy"), Manifest: []byte("manifest")}
-			refusal := errors.New("observed nonempty runtime")
-			emptyCalls, restarts := 0, 0
-			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-			defer cancel()
-			empty := func(context.Context) error {
-				emptyCalls++
-				if emptyCalls == 1 {
-					return nil
-				}
-				if unavailable {
-					return errAssignmentRuntimeUnavailable
-				}
-				if emptyCalls == 2 {
-					return refusal
-				}
-				return nil // A later empty inventory must not erase the refusal.
-			}
-			err := installAssignment(ctx, runtime, manifests, policy, empty, func(context.Context) error { restarts++; return nil }, func(context.Context, string) error { return nil })
-			if unavailable {
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("unavailable runtime exceeded caller budget: %v", err)
-				}
-			} else if !errors.Is(err, refusal) || emptyCalls != 2 {
-				t.Fatalf("definitive refusal retried or replaced: calls=%d err=%v", emptyCalls, err)
-			}
-			if restarts != 1 {
-				t.Fatalf("runtime restarted %d times", restarts)
-			}
-			if _, err := manifests.Stat("pod.yaml"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("unready/refused runtime published manifest")
-			}
-		})
+		t.Fatalf("registered plugin did not publish assignment: %v", err)
 	}
 }

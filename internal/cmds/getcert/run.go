@@ -410,6 +410,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// refusals the consecutive requests CDS or the inventory refused. They
 	// only pace the timer.
 	var unnamedRuns, failures, refusals int
+	// retrying is set while the timer holds a backed-off retry of a failed
+	// request, so a change does not shorten it.
+	var retrying bool
 	warned := map[string]bool{}
 	warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 	next := renewalInterval(cfg, creds.current, unnamedRuns)
@@ -457,7 +460,10 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				changes = nil
 				continue
 			}
-			resetRenewal(0)
+			// A pending retry already re-asks with the current snapshot.
+			if !retrying {
+				resetRenewal(0)
+			}
 		case <-operationCtx.Done():
 			if ctx.Err() != nil {
 				slog.Info("shutting down cert renewer")
@@ -522,6 +528,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 					retry = refusedRetryInterval(cfg, refusals)
 				}
 				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
@@ -539,10 +546,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				failures++
 				retry := renewalRetryInterval(cfg, creds.current, failures, refusals)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
 			failures = 0
+			retrying = false
 			warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 			if isNamedLeaf(cfg, creds.current) {
 				unnamedRuns = 0

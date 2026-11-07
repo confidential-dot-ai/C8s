@@ -30,7 +30,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -86,7 +85,6 @@ type roleRules struct {
 	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
 	agentKeys    presence // agentOperatorPublicKeys
 	podKey       presence // podOperatorPublicKey
-	pod          presence // whether a static Pod may be supplied at launch
 	// measuresWorkloads requires a platform with a runtime register: the
 	// role measures what it runs after launch, and without the register no
 	// evidence could carry those measurements.
@@ -98,6 +96,9 @@ type roleRules struct {
 	// which Stage resolves for a server that omitted it.
 	stagedAddress bool
 	router        bool // may carry a router block
+	// registryMirrors is written as RKE2's registries file, so a role that
+	// runs no RKE2 must not carry it.
+	registryMirrors presence
 	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
 	// differ from the server's. A podKey authorizes its own exact bytes.
@@ -106,38 +107,38 @@ type roleRules struct {
 
 var roles = map[Role]roleRules{
 	Server: {
-		joinsCluster:  true,
-		serverToken:   required,
-		agentKeys:     optional,
-		podKey:        forbidden,
-		pod:           forbidden,
-		namesServer:   false,
-		stagedAddress: true,
-		router:        true,
-		ownLaunchKey:  true,
+		joinsCluster:    true,
+		serverToken:     required,
+		agentKeys:       optional,
+		podKey:          forbidden,
+		namesServer:     false,
+		stagedAddress:   true,
+		router:          true,
+		ownLaunchKey:    true,
+		registryMirrors: optional,
 	},
 	Agent: {
-		joinsCluster:  true,
-		serverToken:   forbidden,
-		agentKeys:     required,
-		podKey:        forbidden,
-		pod:           forbidden,
-		namesServer:   true,
-		stagedAddress: true,
-		router:        false,
-		ownLaunchKey:  false,
+		joinsCluster:    true,
+		serverToken:     forbidden,
+		agentKeys:       required,
+		podKey:          forbidden,
+		namesServer:     true,
+		stagedAddress:   true,
+		router:          false,
+		ownLaunchKey:    false,
+		registryMirrors: optional,
 	},
 	Pod: {
 		joinsCluster:      false,
 		serverToken:       forbidden,
 		agentKeys:         forbidden,
 		podKey:            required,
-		pod:               optional,
 		measuresWorkloads: true,
 		namesServer:       true,
 		stagedAddress:     true,
 		router:            false,
 		ownLaunchKey:      false,
+		registryMirrors:   forbidden,
 	},
 }
 
@@ -163,10 +164,6 @@ type Document struct {
 	// CDS is the confidential data service this cluster's nodes trust.
 	CDS CDS `yaml:"cds" json:"cds"`
 
-	// Workloads is the Pod role's signed cold-boot base. Cluster node
-	// workload entries belong in the external CDS configuration.
-	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
-
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
 	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
@@ -177,9 +174,6 @@ type Document struct {
 	// public certificate. Image references stay digest-pinned, so a mirror
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
-
-	// Pod is optional for generic Pod boots awaiting assignment; forbidden for other roles.
-	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -478,9 +472,6 @@ func (d *Document) validate() error {
 	if err := d.CDS.validate(); err != nil {
 		return err
 	}
-	if d.Role != Pod && d.Workloads != "" {
-		return fmt.Errorf("workloads is not a node's to apply: give the cluster's tenant entries to `c8s launch-config new --tenant-workloads`, which writes them into the CDS configuration")
-	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
 	}
@@ -608,28 +599,8 @@ func (d *Document) validate() error {
 			return err
 		}
 	}
-	switch rules.pod {
-	case optional:
-		if d.Pod == nil {
-			if d.Workloads != "" {
-				return fmt.Errorf("generic pod boot must not carry workloads")
-			}
-		} else if err := d.Pod.validate(); err != nil {
-			return err
-		}
-	case forbidden:
-		if d.Pod != nil {
-			return fmt.Errorf("pod section requires role pod")
-		}
-	}
-	if d.Workloads != "" {
-		if !json.Valid([]byte(d.Workloads)) {
-			return fmt.Errorf("workloads must contain one valid JSON document")
-		}
-		_, err := allowlist.ParseJSON([]byte(d.Workloads))
-		if err != nil {
-			return fmt.Errorf("workloads: %w", err)
-		}
+	if rules.registryMirrors == forbidden && len(d.RegistryMirrors) != 0 {
+		return fmt.Errorf("%s must not carry registryMirrors", d.Role)
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
 }

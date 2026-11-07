@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// A standalone pod captures its advertised peer tuples, keeps IPv4 TCP/UDP
+// egress and its resolvers, and forwards no IPv6.
 func TestStandalonePodCapturesPeersAndAdmitsInternetInTheNamespace(t *testing.T) {
 	podNetNS(t, func(path string) error {
 		peer, err := startPeerNamespace()

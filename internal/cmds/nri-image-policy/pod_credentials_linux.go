@@ -3,10 +3,12 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -68,6 +70,32 @@ func openPodCredentialDirectory(kubeletDir, source string) (*os.Root, error) {
 	return root, nil
 }
 
+func podRootIdentity(root *os.Root) (fileID, error) {
+	info, err := root.Stat(".")
+	if err != nil {
+		return fileID{}, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || stat.Uid != 0 || stat.Gid != uint32(workloadclaims.MeshUID) || info.Mode().Perm() != 0750 {
+		return fileID{}, errors.New("pod credential root lost its protected ownership")
+	}
+	return fileID{device: uint64(stat.Dev), inode: stat.Ino}, nil
+}
+
+func openRetainedPodCredentialRoot(source string, want fileID) (*os.Root, error) {
+	root, err := openPodCredentialDirectory(kubeletRoot, source)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := podRootIdentity(root)
+	if err != nil || identity != want {
+		root.Close()
+		return nil, errors.New("retained Pod credential volume was replaced or changed permissions")
+	}
+	return root, nil
+}
+
+// samePodCredentialRoot proves the held root is still the volume at source.
 func samePodCredentialRoot(held *os.Root, source string) error {
 	identity, err := podRootIdentity(held)
 	if err != nil {

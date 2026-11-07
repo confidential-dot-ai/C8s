@@ -20,9 +20,16 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-const pollInterval = 10 * time.Second
+const (
+	pollInterval = 10 * time.Second
+	// optInRequiredReason fails a pod bound to the node without the opt-in.
+	optInRequiredReason = "PodCVMOptInRequired"
+	// instanceDestroyedReason fails a deleted pod whose instance the provider
+	// destroyed before it reported a terminal phase of its own.
+	instanceDestroyedReason = "InstanceDestroyed"
+)
 
-// Reconciler owns a single provider's immutable Pod-to-instance assignments.
+// Reconciler owns a single provider's immutable Pod-to-instance records.
 // One leader and one mutex serialize normal and orphan paths around side effects.
 type Reconciler struct {
 	client     client.Client
@@ -30,7 +37,6 @@ type Reconciler struct {
 	cloud      cloudAPI
 	guest      guestReader
 	assignment assignmentVerifier
-	poolCursor int64
 	now        func() time.Time
 	ownsNode   func(context.Context) error
 	recorder   events.EventRecorder
@@ -53,14 +59,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !pod.DeletionTimestamp.IsZero() {
 		return r.deletePod(ctx, pod)
 	}
-	if pod.Annotations[Annotation] != "true" {
-		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "PodCVMOptInRequired" {
-			return ctrl.Result{}, nil
-		}
-		status := failedStatus(pod, "PodCVMOptInRequired", r.now())
-		status.Message = "Pods bound to this node must opt into Pod CVM execution"
-		return ctrl.Result{}, r.publishStatus(ctx, pod, status)
-	}
 	if pod.UID == "" {
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
 	}
@@ -68,13 +66,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil && !apierrors.IsNotFound(err) {
 		return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 	}
+	optedIn := pod.Annotations[Annotation] == "true"
+	if !optedIn && rec == nil {
+		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == optInRequiredReason {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, r.publishStatus(ctx, pod, failedStatus(pod, optInRequiredReason, r.now()))
+	}
 	if rec != nil {
 		// Existing cleanup authority does not depend on a healthy virtual node.
 		if rec.TerminalStatus != nil || rec.DeleteRequested || rec.Deleted {
 			return r.finish(ctx, pod, rec, secret)
 		}
-		if err := r.ensureVerificationPolicy(ctx, rec, secret); err != nil {
-			return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
+		// A launched pod whose opt-in was removed past admission still owns an
+		// instance: stop it rather than leave it running unverified.
+		if !optedIn {
+			return r.stop(ctx, pod, rec, secret, optInRequiredReason)
 		}
 		if r.verificationExpired(rec) {
 			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
@@ -116,12 +123,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := matchesPod(rec, pod); err != nil {
 		return r.unverified(ctx, pod, rec, secret, "FrozenPodChanged", err)
 	}
-	if rec.Version == 2 {
-		return r.pooled(ctx, pod, rec, secret)
-	}
 	callCtx, cancel := r.verificationContext(ctx, rec)
-	in, err := r.ensureInstance(callCtx, rec, secret)
-	cancel()
+	defer cancel()
+	in, err := ensureCloudInstance(callCtx, r.cloud, &rec.instanceIntent, func() error { return r.save(callCtx, rec, secret) })
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
@@ -134,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if in == nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceGone")
 	}
-	if err := validateInstance(rec, in); err != nil {
+	if err := validateInstance(&rec.instanceIntent, in); err != nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceIdentityMismatch")
 	}
 	if in.Boot.Count > 1 {
@@ -144,21 +148,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case "failed", "terminated", "terminating", "stopped":
 		return r.stop(ctx, pod, rec, secret, "InstanceEnded")
 	case "running":
-		return r.running(ctx, pod, rec, secret, in)
 	default:
 		return r.unverified(ctx, pod, rec, secret, "InstanceStarting", nil)
 	}
+	return r.running(ctx, callCtx, pod, rec, secret, in)
 }
 
 func matchesPod(rec *record, pod *corev1.Pod) error {
 	if rec.UID != pod.UID || rec.Namespace != pod.Namespace || rec.Name != pod.Name {
 		return errors.New("provider record belongs to another Pod")
 	}
-	doc, err := rec.document()
-	if err != nil {
-		return err
-	}
-	frozen, err := launchconfig.ParsePodManifest([]byte(doc.Pod.Manifest))
+	frozen, err := launchconfig.ParsePodManifest(rec.Pod)
 	if err != nil {
 		return err
 	}
@@ -168,73 +168,49 @@ func matchesPod(rec *record, pod *corev1.Pod) error {
 	return nil
 }
 
-func (r *Reconciler) ensureInstance(ctx context.Context, rec *record, secret *corev1.Secret) (*instance, error) {
-	if rec.InstanceID != "" {
-		in, err := r.cloud.Get(ctx, rec.InstanceID)
-		if errors.Is(err, errCloudNotFound) {
-			return nil, nil
-		}
-		return in, err
-	}
-	in, err := r.cloud.Find(ctx, rec.Key)
+// running reads the pod's status from a running instance over a verified
+// connection. A guest that reports no verifiable pod yet is assigned the pod.
+func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, in *instance) (ctrl.Result, error) {
+	address, apps, podIP, err := endpoints(rec.Request.Network, in)
 	if err != nil {
-		return nil, err
+		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
 	}
-	if in == nil {
-		// Cloud retains completed idempotency records for the instance lifetime
-		// plus 90 days. Never turn a much older uncertain intent into a new VM.
-		if r.now().Sub(rec.CreatedAt) > 24*time.Hour {
-			return nil, nil
-		}
-		if !rec.CreateAttempted {
-			rec.CreateAttempted = true
-			if err := r.save(ctx, rec, secret); err != nil {
-				return nil, err
-			}
-		}
-		in, err = r.cloud.Create(ctx, rec.Key, rec.Request)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if in == nil || in.ID == "" {
-		return nil, errors.New("cloud returned no instance identity")
-	}
-	for key, value := range rec.Request.Labels {
-		if in.Labels[key] != value {
-			return nil, errors.New("idempotency result has another owner")
-		}
-	}
-	rec.InstanceID = in.ID
-	if err := r.save(ctx, rec, secret); err != nil {
-		return nil, err
-	}
-	return in, nil
-}
-
-func (r *Reconciler) running(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, in *instance) (ctrl.Result, error) {
-	address, apps, podIP, err := endpoints(rec, in)
-	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", nil)
-	}
-	callCtx, cancel := r.verificationContext(ctx, rec)
 	projection, err := r.guest(callCtx, rec, address)
-	cancel()
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
-	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "AttestationUnavailable", err)
+	reason := "AttestationUnavailable"
+	var status corev1.PodStatus
+	if err == nil {
+		reason = "GuestStatusRefused"
+		status, err = projectedStatus(rec, projection, pod, podIP, rec.Key)
 	}
-	status, err := projectedStatus(rec, projection, pod, podIP)
 	if err != nil {
-		return r.unverified(ctx, pod, rec, secret, "GuestStatusRefused", err)
+		// No verified pod status: the guest waits for the assignment, or a
+		// sent assignment is replayed, which tells a guest holding the pod from
+		// one holding another. An accepted assignment is pending until the
+		// guest reports the pod; a refused one keeps the status failure's reason.
+		if assignErr := r.assign(callCtx, rec, secret, address); assignErr != nil {
+			err = errors.Join(err, assignErr)
+		} else {
+			reason, err = "AssignmentPending", nil
+		}
+		if ctx.Err() != nil {
+			return ctrl.Result{}, ctx.Err()
+		}
+		if r.verificationExpired(rec) {
+			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+		}
+		return r.unverified(ctx, pod, rec, secret, reason, err)
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
+	if len(rec.Assignment) == 0 {
+		return r.stop(ctx, pod, rec, secret, "UnexpectedAssignedGuest")
 	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
 		rec.TerminalStatus = &status
@@ -268,9 +244,6 @@ func (r *Reconciler) stop(ctx context.Context, pod *corev1.Pod, rec *record, sec
 		return ctrl.Result{}, err
 	}
 	status := failedStatus(pod, reason, r.now())
-	if reason == verificationTimeoutReason {
-		status.Message = "The Pod CVM could not be verified before its deadline; a new Pod UID is required for a new launch"
-	}
 	rec.TerminalStatus = &status
 	if err := r.save(ctx, rec, secret); err != nil {
 		return ctrl.Result{}, err
@@ -297,7 +270,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
 	if apierrors.IsNotFound(err) {
-		return ctrl.Result{}, r.releaseFinalizer(ctx, pod)
+		return ctrl.Result{}, r.finishDeletion(ctx, pod, nil)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -306,92 +279,55 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	if err != nil || !done {
 		return ctrl.Result{RequeueAfter: pollInterval}, err
 	}
-	// Remove the finalizer before deleting the record. A crash between them
+	// Finish the Pod before deleting the record. A crash between them
 	// leaves an orphan record the sweep can safely collect.
-	if err := r.releaseFinalizer(ctx, pod); err != nil {
+	if err := r.finishDeletion(ctx, pod, rec); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
 }
 
-func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) error {
+// terminalStatus is the phase a deleted pod leaves with: the terminal status
+// its record holds, its own terminal phase, or Failed, so that a controller
+// waiting for the pod to end sees it end.
+func terminalStatus(pod *corev1.Pod, rec *record, now time.Time) corev1.PodStatus {
+	if rec != nil && rec.TerminalStatus != nil {
+		return *rec.TerminalStatus
+	}
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return pod.Status
+	}
+	return failedStatus(pod, instanceDestroyedReason, now)
+}
+
+// finishDeletion does the kubelet's part once the Pod's instance is gone: it
+// publishes the terminal phase, releases the finalizer and removes the Pod
+// object with a zero grace period. No kubelet runs for the virtual node, so
+// nothing else ends a terminating Pod bound to it.
+func (r *Reconciler) finishDeletion(ctx context.Context, pod *corev1.Pod, rec *record) error {
+	if err := r.releaseFinalizer(ctx, pod, rec); err != nil {
+		return err
+	}
+	uid := pod.UID
+	return client.IgnoreNotFound(r.client.Delete(ctx, pod, client.GracePeriodSeconds(0), client.Preconditions{UID: &uid}))
+}
+
+func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod, rec *record) error {
 	if !controllerutil.ContainsFinalizer(pod, finalizer) {
 		return nil
+	}
+	if err := client.IgnoreNotFound(r.publishStatus(ctx, pod, terminalStatus(pod, rec, r.now()))); err != nil {
+		return err
 	}
 	before := pod.DeepCopy()
 	controllerutil.RemoveFinalizer(pod, finalizer)
 	return client.IgnoreNotFound(r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 }
 
+// removeInstance destroys the instance a record owns and reports whether
+// destruction is confirmed.
 func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *corev1.Secret) (bool, error) {
-	if rec.Version == 2 {
-		return r.removePooledInstance(ctx, rec, secret)
-	}
-	if rec.Deleted {
-		return true, nil
-	}
-	if !rec.DeleteRequested {
-		rec.DeleteRequested = true
-		if err := r.save(ctx, rec, secret); err != nil {
-			return false, err
-		}
-	}
-	var in *instance
-	var err error
-	if rec.InstanceID == "" {
-		in, err = r.cloud.Find(ctx, rec.Key)
-	} else {
-		in, err = r.cloud.Get(ctx, rec.InstanceID)
-	}
-	if errors.Is(err, errCloudNotFound) {
-		in, err = nil, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if in == nil && rec.InstanceID == "" && rec.CreateAttempted {
-		// An empty lookup cannot disprove an in-flight POST. Replay the exact
-		// persisted request/key to resolve that intent before releasing cleanup.
-		if r.now().Sub(rec.CreatedAt) > 24*time.Hour {
-			return false, errors.New("old uncertain create retained for authoritative Cloud resolution")
-		}
-		in, err = r.cloud.Create(ctx, rec.Key, rec.Request)
-		if err != nil {
-			return false, err
-		}
-		if in == nil {
-			return false, errors.New("create replay returned no instance")
-		}
-	}
-	if in == nil {
-		rec.Deleted = true
-		return true, r.save(ctx, rec, secret)
-	}
-	if in.ID == "" {
-		return false, errors.New("cloud returned no instance identity during deletion")
-	}
-	if rec.InstanceID != "" && in.ID != rec.InstanceID {
-		return false, errors.New("cloud get returned another instance during deletion")
-	}
-	for k, v := range rec.Request.Labels {
-		if in.Labels[k] != v {
-			return false, errors.New("refusing deletion of a foreign instance")
-		}
-	}
-	if in.Status == "terminated" {
-		rec.Deleted = true
-		return true, r.save(ctx, rec, secret)
-	}
-	if rec.InstanceID == "" {
-		rec.InstanceID = in.ID
-		if err := r.save(ctx, rec, secret); err != nil {
-			return false, err
-		}
-	}
-	if err := r.cloud.Delete(ctx, rec.InstanceID); err != nil {
-		return false, err
-	}
-	return false, nil
+	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, func() error { return r.save(ctx, rec, secret) })
 }
 
 func (r *Reconciler) publishStatus(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus) error {
@@ -416,21 +352,28 @@ var progressReasons = map[string]bool{
 	"AssignmentPending": true,
 }
 
-// recordTransition emits one Event when a published status changes reason, so
-// repeated polls of an unchanged state stay silent.
+// recordTransition records one Event when the published status changes
+// reason, so polls of an unchanged state stay silent. An Event takes its
+// reason and message only from statusMessages, never from the published
+// status, so guest data cannot name or word one.
 func (r *Reconciler) recordTransition(pod *corev1.Pod, previous string) {
 	reason := pod.Status.Reason
 	if r.recorder == nil || reason == previous {
 		return
 	}
+	message, provider := statusMessages[reason]
 	switch {
-	case reason == "" && pod.Status.Phase == corev1.PodRunning:
+	case !provider:
+		if _, ok := statusMessages[previous]; !ok {
+			return
+		}
+		// Verified guest status replaced a waiting or outage reason, whatever
+		// phase the guest reports (often Pending while containers start).
 		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, "PodCVMVerified", "PublishStatus", "The Pod CVM reports verified status")
-	case reason == "":
 	case progressReasons[reason] || pod.Status.Phase == corev1.PodSucceeded:
-		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, reason, "PublishStatus", "%s", pod.Status.Message)
+		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, reason, "PublishStatus", "%s", message)
 	default:
-		r.recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "PublishStatus", "%s", pod.Status.Message)
+		r.recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "PublishStatus", "%s", message)
 	}
 }
 
@@ -474,17 +417,11 @@ func (r *Reconciler) sweep(ctx context.Context) error {
 	}
 	var errs []error
 	for _, s := range records.Items {
-		if s.Labels[slotLabel] == "true" {
-			continue
-		}
 		if err := r.sweepRecord(ctx, s.Name); err != nil {
 			errs = append(errs, fmt.Errorf("reconcile provider record %s: %w", s.Name, err))
 		}
 	}
-	r.mu.Lock()
-	poolErr := r.maintainPools(ctx)
-	r.mu.Unlock()
-	return errors.Join(append(errs, poolErr)...)
+	return errors.Join(errs...)
 }
 
 func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {

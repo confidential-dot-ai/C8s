@@ -559,9 +559,21 @@ if ! grep -qxF 'makeIPTablesUtilChains: false' "$image/c8s/mkosi.extra/usr/lib/c
   exit 1
 fi
 for service in podcvm-containerd podcvm-kubelet podcvm-status; do
-  if ! grep -qxF "ConditionPathExists=/run/confos/role-pod" "$units/$service.service" \
-     || ! grep -qxF "enable $service.service" "$preset"; then
-    echo "::error::$service.service must be enabled and gate on the authenticated pod verdict"
+  if ! grep -qxF "ConditionPathExists=/run/confos/role-pod" "$units/$service.service"; then
+    echo "::error::$service.service must gate on the authenticated pod verdict"
+    exit 1
+  fi
+done
+# Only the status service starts at boot; it starts containerd and the kubelet
+# once a pod is assigned, so the admission plugin never runs under a generic
+# policy. The runtime units must not be enabled or installable.
+if ! grep -qxF "enable podcvm-status.service" "$preset"; then
+  echo "::error::podcvm-status.service must be enabled"
+  exit 1
+fi
+for service in podcvm-containerd podcvm-kubelet; do
+  if grep -qxF "enable $service.service" "$preset" || grep -q '^\[Install\]' "$units/$service.service"; then
+    echo "::error::$service.service must not start at boot; pod-status starts it once a pod is assigned"
     exit 1
   fi
 done

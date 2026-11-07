@@ -179,7 +179,8 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	var pod *workloadclaims.PodClaims
 	if len(req.PodClaims) > 0 {
 		claims, claimErr := workloadclaims.DecodePodClaims(req.PodClaims)
-		if claimErr != nil || len(req.SandboxToken) != 0 || fields["runtime_extensions"] != nil || !req.Evidence.Platform.IsTDX() || len(h.PodImages) == 0 || len(csr.Extensions) != 0 || csr.Subject.String() != "" {
+		if cause := h.podProfileRefusal(req, fields, csr, claimErr); cause != "" {
+			slog.Warn("Pod attestation profile refused", "reason", cause, "remote_addr", r.RemoteAddr)
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
 			return
 		}
@@ -216,6 +217,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if pod != nil {
 		bound, bindErr := workloadclaims.PodReportData(csrPubKey, challengeBytes, req.PodClaims)
 		if bindErr != nil {
+			slog.Warn("Pod attestation profile refused", "reason", bindErr, "remote_addr", r.RemoteAddr)
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
 			return
 		}

@@ -29,7 +29,10 @@ catches each:
 - **Endpoint substitution.** Repointing DNS or a Service changes no manifest
   byte, so attestation still succeeds. The router's backend check rejects the
   substitute: a workload backend must present a leaf carrying the manifest's
-  workload name, whatever address the name resolved to.
+  workload name, whatever address the name resolved to. A backend that also
+  names `assignedWorkloadID` must present a pod CVM leaf carrying exactly that
+  assigned workload ID ([certificate-extensions.md](certificate-extensions.md#assigned-workload-id-18)),
+  so a Service repointed at another user's pod of the same workload is refused.
 - **Policy redefinition.** An allowlist write can redefine an entry, so a pod
   running other code earns the same workload name. The router takes a workload
   backend only under the allowlist digest stamped on its own leaf — the policy
@@ -55,8 +58,11 @@ them: `route_digest_changed` once another manifest is applied,
 digest, and `binding_expired` once an attest-lb connection has carried no
 request for two minutes. The client attests again: the first refusal ends an
 attest-pq session, whose later requests get 401 `channel_error`, while an
-attest-lb connection keeps answering 503. The check runs as a request is
-admitted, so a response already streaming runs to its end.
+attest-lb connection keeps answering 503. Each bound request reads the published
+router credential before forwarding, including when reusing a backend connection.
+An unreadable credential blocks forwarding with 502 while retaining the binding;
+an attest-pq request receives that 502 inside its encrypted response. The check
+runs as a request is admitted, so a response already streaming runs to its end.
 
 A renewal of the router's certificate reaches new connections only: nginx
 reads it on each TLS handshake and resumes no TLS session. A handshake on an

@@ -166,6 +166,38 @@ image that exits, the secret collected in that window and read when it restarts.
 The cost is that a pod which ever ran an image outside its entry never receives
 a secret, which is the correct direction for a release decision.
 
+## Pod CVMs (proof of concept)
+
+A pod CVM has no node inventory and no sandbox token, so the path above does
+not apply to it. Instead its guest broker asks CDS directly:
+
+1. The signed pod manifest names what the pod reads:
+   `confidential.ai/pod-secrets: data-key=/users/alice/data` (comma-separated,
+   at most 8), and declares a memory `emptyDir` named `c8s-pod-secrets`.
+   Workload containers that need the values mount it read-only.
+2. After each admission the broker takes a challenge from `POST /secrets`,
+   quotes `SHA-384("c8s-pod-secret/v1" 0x00 || SHA-384(response key) ||
+   challenge || SHA-384(claims) || SHA-384(path))` and sends `POST
+   /pod-secrets` with the evidence, its pod claims, the path and a
+   single-use X25519 response key.
+3. CDS checks the evidence, Pod authority, image membership and admitted
+   observations as for Pod issuance. It then selects the grant: the pod's
+   workload observations (image, argv, env commitment and mounts, which the
+   claims' spec digests commit to; platform roles excluded) must match one
+   allowlist entry as a whole workload. A pod with an assigned workload ID
+   (`confidential.ai/cw`) may only match the entry of that name, so two users
+   running the same image get their own entries' secrets. The entry must carry
+   a `secrets` grant. CDS reads the path, or mints it when the entry may write
+   it, and returns the value sealed with HPKE to the response key, the entry
+   name and the entry's image digests.
+4. The broker writes each value into the volume as a `0444` file. Only
+   workload containers whose image the entry names may mount the volume;
+   the mesh endpoint never may.
+
+Release waits for the complete workload, so containers must wait for their
+file. Without an assigned workload ID, entries that the observations cannot
+tell apart are refused.
+
 ## Restarts
 
 A CDS restart destroys every secret, and you must roll every workload that holds

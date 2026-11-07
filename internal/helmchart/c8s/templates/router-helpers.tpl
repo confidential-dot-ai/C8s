@@ -431,6 +431,15 @@ nginx :80 server, and the cert-path helpers below.
 {{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.acmeReadyPort" -}}8403{{- end -}}
 
+{{/* The pod-local file cds-attest writes the applied route manifest's hosts
+     to and the acme sidecar unions with its launch names; "" when off. */}}
+{{- define "router.routeHostsDir" -}}/run/c8s-route-hosts{{- end -}}
+{{- define "router.routeHostsFile" -}}
+{{- if and (eq (include "router.acmeSidecar" .) "true") (ne (toString (dig "acme" "routeManifestHosts" true .Values.router)) "false") -}}
+{{ include "router.routeHostsDir" . }}/hosts
+{{- end -}}
+{{- end -}}
+
 {{/*
 Path to the public-TLS certificate nginx serves: the publicTLS Secret
 (webpki), the sidecar-issued ACME leaf (acme), or the CDS-issued cert under
@@ -564,6 +573,9 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- if dig "routePublication" "enabled" false $v -}}
 {{- $args = append $args "--publish-routes" -}}
 {{- end -}}
+{{- with include "router.routeHostsFile" $root -}}
+{{- $args = append $args (printf "--route-hosts-file=%s" .) -}}
+{{- end -}}
 {{- $args | toJson -}}
 {{- end -}}
 
@@ -596,6 +608,9 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--challenge-port=%s" (include "router.acmeChallengePort" .)) -}}
 {{- $args = append $args (printf "--http-port=%s" (include "router.acmeHTTPPort" .)) -}}
 {{- $args = append $args (printf "--ready-port=%s" (include "router.acmeReadyPort" .)) -}}
+{{- with include "router.routeHostsFile" . -}}
+{{- $args = append $args (printf "--extra-domains-file=%s" .) -}}
+{{- end -}}
 {{- $args | toJson -}}
 {{- end -}}
 

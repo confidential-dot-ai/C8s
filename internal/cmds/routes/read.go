@@ -86,6 +86,9 @@ func printManifest(out io.Writer, manifest []byte, m *pkgroutes.Manifest, verifi
 	for _, host := range slices.Sorted(maps.Keys(m.Hosts)) {
 		for _, r := range m.Hosts[host].Routes {
 			backend := "workload " + r.Backend.Workload
+			if r.Backend.AssignedWorkloadID != "" {
+				backend += " assigned " + r.Backend.AssignedWorkloadID
+			}
 			if r.Backend.Workload == "" {
 				backend = "server name " + r.Backend.ServerName
 			}

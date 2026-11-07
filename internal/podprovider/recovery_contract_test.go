@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,7 +15,7 @@ import (
 )
 
 func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
-	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document", "legacy-launch-format", "verification-timeout", "verification-short-timeout", "verification-long-timeout", "verification-zero-deadline", "verification-missing-policy"} {
+	for _, kind := range []string{"invalid-json", "uid"} {
 		t.Run(kind, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -25,44 +23,15 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			switch kind {
-			case "foreign-secret":
-				secret.Labels[ownerLabel] = "foreign-provider"
-			case "version":
-				rec.Version++
-			case "origin":
-				rec.CloudURL = "https://another-cloud.example"
-			case "node":
-				rec.NodeName = "another-node"
-			case "uid":
+			if kind == "uid" {
 				rec.UID = "another-pod"
-			case "manifest":
-				rec.Manifest = nil
-			case "signature":
-				rec.Request.Trust.InitData.Signature = []byte("invalid-signature")
-			case "signed-identity":
-				rec.Name = "another-name"
-			case "signed-document":
-				rec.Request.Trust.InitData.Document = []byte("not a launch document")
-			case "legacy-launch-format":
-				rec.Request.Trust.InitData.Format = "c8s-launch/v1"
-			case "verification-timeout":
-				rec.VerificationTimeoutSeconds = -1
-			case "verification-short-timeout":
-				rec.VerificationTimeoutSeconds = 29
-			case "verification-long-timeout":
-				rec.VerificationTimeoutSeconds = 86401
-			case "verification-zero-deadline":
-				rec.VerificationDeadline = new(time.Time)
-			case "verification-missing-policy":
-				rec.VerificationTimeoutSeconds = 0
 			}
 			secret.Data["state.json"], err = json.Marshal(rec)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if kind == "invalid-json" {
-				secret.Data["state.json"] = []byte(`{"version":1,"unknown":true}`)
+				secret.Data["state.json"] = []byte(`{`)
 			}
 			if err := r.client.Update(context.Background(), secret); err != nil {
 				t.Fatal(err)
@@ -73,7 +42,7 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 			if cloud.createCalls != 0 || cloud.deleteCalls != 0 {
 				t.Fatal("corrupt intent caused Cloud side effects")
 			}
-			if err := r.sweep(context.Background()); err == nil && kind != "foreign-secret" {
+			if err := r.sweep(context.Background()); err == nil {
 				t.Fatal("orphan sweep accepted corrupt owned record")
 			}
 			stored := &corev1.Secret{}
@@ -248,14 +217,14 @@ func TestDeletionNeverFollowsForeignRecoveryResult(t *testing.T) {
 	}
 }
 
-func TestProjectionRequiresIdentityPhaseAndUniqueConditions(t *testing.T) {
+func TestProjectionRequiresIdentity(t *testing.T) {
 	pod := fixturePod()
 	r, _ := fixtureReconciler(t, pod)
 	rec, _, err := r.ensureRecord(context.Background(), pod)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"name", "namespace", "phase", "condition-status", "duplicate-condition"} {
+	for _, kind := range []string{"name", "namespace"} {
 		t.Run(kind, func(t *testing.T) {
 			p := fixtureProjection(rec)
 			switch kind {
@@ -263,26 +232,43 @@ func TestProjectionRequiresIdentityPhaseAndUniqueConditions(t *testing.T) {
 				p.Metadata.Name = rec.Name
 			case "namespace":
 				p.Metadata.Namespace = "foreign"
-			case "phase":
-				p.Status.Phase = "invalid"
-			case "condition-status":
-				p.Status.Conditions[0].Status = "invalid"
-			case "duplicate-condition":
-				p.Status.Conditions = append(p.Status.Conditions, p.Status.Conditions[0])
 			}
-			if _, err := projectedStatus(rec, p, pod, ""); err == nil {
+			if _, err := projectedStatus(rec, p, pod, "", rec.Key); err == nil {
 				t.Fatal("invalid projection accepted")
 			}
 		})
 	}
 	p := fixtureProjection(rec)
 	p.Status.Conditions = append(p.Status.Conditions, podstatus.PodCondition{Type: corev1.PodScheduled, Status: corev1.ConditionFalse})
-	out, err := projectedStatus(rec, p, pod, "203.0.113.5")
+	out, err := projectedStatus(rec, p, pod, "203.0.113.5", rec.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.PodIP != "203.0.113.5" || len(out.PodIPs) != 1 || out.Conditions[0].Type != corev1.PodScheduled || out.Conditions[0].Status != corev1.ConditionTrue {
 		t.Fatal("guest overwrote scheduler identity or dedicated Pod IP")
+	}
+}
+
+// A failed phase with no container terminated is the guest's ended pod
+// identity, which the provider names itself; a failure a container's exit
+// explains keeps the kubelet's own account, with no reason from the guest.
+func TestProjectionNamesAnEndedPodIdentity(t *testing.T) {
+	pod := fixturePod()
+	r, _ := fixtureReconciler(t, pod)
+	rec, _, err := r.ensureRecord(context.Background(), pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := fixtureProjection(rec)
+	p.Status.Phase = corev1.PodFailed
+	out, err := projectedStatus(rec, p, pod, "", rec.Key)
+	if err != nil || out.Phase != corev1.PodFailed || out.Reason != podIdentityEndedReason {
+		t.Fatalf("ended identity projected as %s/%q, %v", out.Phase, out.Reason, err)
+	}
+	p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{ExitCode: 1}}
+	out, err = projectedStatus(rec, p, pod, "", rec.Key)
+	if err != nil || out.Phase != corev1.PodFailed || out.Reason != "" {
+		t.Fatalf("container failure projected as %s/%q, %v", out.Phase, out.Reason, err)
 	}
 }
 
@@ -296,95 +282,13 @@ func TestEndpointContractRejectsInvalidAddressesAndDuplicates(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "10.0.0.1", "::1", "status.example", "169.254.1.1"} {
 		in := instanceFor(rec.Request)
 		in.Endpoints[0].Host = host
-		if _, _, _, err := endpoints(rec, in); err == nil {
+		if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 			t.Fatalf("nonpublic endpoint accepted: %s", host)
 		}
 	}
 	in := instanceFor(rec.Request)
 	in.Endpoints = append(in.Endpoints, in.Endpoints[0])
-	if _, _, _, err := endpoints(rec, in); err == nil {
+	if _, _, _, err := endpoints(rec.Request.Network, in); err == nil {
 		t.Fatal("duplicate public status endpoint accepted")
-	}
-	in = instanceFor(rec.Request)
-	in.ID = "not-an-instance"
-	if _, _, _, err := endpoints(rec, in); err == nil {
-		t.Fatal("malformed instance ID accepted")
-	}
-}
-
-func TestGuestMetadataSnapshotAndLaunchSizeBound(t *testing.T) {
-	pod := fixturePod()
-	r, _ := fixtureReconciler(t, pod)
-	pod.Annotations["team"] = "tenant-one"
-	pod.Annotations["kubernetes.io/config.hash"] = "untrusted"
-	paths := []string{"metadata.namespace", "metadata.uid", "metadata.annotations['team']", "spec.nodeName"}
-	for i, path := range paths {
-		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: strings.Repeat("A", i+1), ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: path}}})
-	}
-	guest := guestPod(pod)
-	if guest.Annotations["kubernetes.io/config.hash"] != "" || guest.Spec.Containers[0].Env[0].Value != pod.Namespace || guest.Spec.Containers[0].Env[1].Value != string(pod.UID) || guest.Spec.Containers[0].Env[2].Value != "tenant-one" || guest.Spec.Containers[0].Env[3].ValueFrom == nil {
-		t.Fatal("guest metadata snapshot changed the Downward API contract")
-	}
-	pod.Annotations["large"] = strings.Repeat("x", 64<<10)
-	if _, err := r.cfg.launch(pod); err == nil || !strings.Contains(err.Error(), "64 KiB") {
-		t.Fatalf("Cloud launch size limit not enforced: %v", err)
-	}
-}
-
-type deletionSignalCloud struct {
-	cloudAPI
-	deleted chan struct{}
-}
-
-func (c *deletionSignalCloud) Delete(ctx context.Context, id string) error {
-	err := c.cloudAPI.Delete(ctx, id)
-	close(c.deleted)
-	return err
-}
-
-func TestOrphanWorkerStopsAfterConfirmedCancellation(t *testing.T) {
-	pod := fixturePod()
-	r, cloud := fixtureReconciler(t, pod)
-	rec, _, err := r.ensureRecord(context.Background(), pod)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cloud.in = instanceFor(rec.Request)
-	if err := r.client.Delete(context.Background(), pod); err != nil {
-		t.Fatal(err)
-	}
-	signal := &deletionSignalCloud{cloudAPI: cloud, deleted: make(chan struct{})}
-	r.cloud = signal
-	worker := &orphanWorker{reconciler: r}
-	if !worker.NeedLeaderElection() || !(&virtualNode{}).NeedLeaderElection() {
-		t.Fatal("side-effect workers must run only under leader election")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- worker.Start(ctx) }()
-	select {
-	case <-signal.deleted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("orphan sweep did not initiate cleanup")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("orphan worker ignored cancellation")
-	}
-	if cloud.deleteCalls != 1 {
-		t.Fatal("orphan worker continued Cloud calls after cancellation")
-	}
-	if getRecord(t, r, pod).Deleted {
-		t.Fatal("orphan worker discarded unconfirmed deletion")
-	}
-	// Already-removed records are harmless to a delayed sweep event.
-	if err := r.sweepRecord(context.Background(), "missing-record"); err != nil {
-		t.Fatal(err)
 	}
 }

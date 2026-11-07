@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -55,6 +56,10 @@ func publishRootGeneration(v credentialVolume, g *generation) error {
 		return err
 	}
 	if err := v.root.Chown(target, 0, guestMeshGID); err != nil {
+		return err
+	}
+	// Explicit, as the umask may have narrowed Mkdir's mode.
+	if err := v.root.Chmod(target, 0o750); err != nil {
 		return err
 	}
 	dir, err := v.root.OpenRoot(target)
@@ -118,14 +123,21 @@ func publishRootGeneration(v credentialVolume, g *generation) error {
 			return err
 		}
 	}
+	slog.Info("credential generation published", "generation", target, "expires", generationExpiry(g))
 	return nil
 }
 
 func withdrawRootGeneration(v credentialVolume) error {
+	withdrawn := false
 	for _, name := range append(v.names(), pointerName) {
-		if err := v.root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		err := v.root.Remove(name)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		withdrawn = withdrawn || err == nil
+	}
+	if withdrawn {
+		slog.Warn("credential generation withdrawn", "dir", v.root.Name())
 	}
 	return nil
 }
