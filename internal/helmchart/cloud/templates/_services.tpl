@@ -145,9 +145,7 @@ enabled = false
 
 [attestation]
 enabled = true
-platforms = [{{- range $i, $p := $root.Values.attestationApi.platforms -}}
-  {{- if $i }}, {{ end -}}{{- $p | quote -}}
-{{- end -}}]
+platforms = ["snp", "tdx", "az-snp", "az-tdx", "gcp-snp", "gcp-tdx"]
 
 [certs]
 cache_max_entries = 1024

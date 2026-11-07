@@ -59,7 +59,6 @@
 {{- define "c8s.imageAllowlist" -}}
 {{- $digests := dict -}}
 {{- $components := include "c8s.components" . | fromJsonArray -}}
-{{- if .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}
 {{- range $c := $components -}}
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
@@ -72,14 +71,12 @@
 {{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint") "imageEnv" (get $c "imageEnv")) -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
 {{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
        independently versioned and digest-pinned, so it is not in the
        tag-locked component derive set (the resolver would `crane digest
-       nginx:<c8s-tag>`). Seed it from its pinned digest whenever router is
-       enabled, independent of deriveComponents, so a default install admits
-       the nginx it ships without the operator hand-writing an entry for it. */}}
-{{- if .Values.router.enabled -}}
+       nginx:<c8s-tag>`). Seed it from its pinned digest, so a default install
+       admits the nginx it ships without the operator hand-writing an entry
+       for it. */}}
 {{- $nginx := include "c8s.routerNginxPin" . | fromJson -}}
 {{- $lbImg := $nginx.image -}}
 {{- if $lbImg.digest -}}
@@ -90,7 +87,6 @@
 {{- fail "routerNginx.imageEnv is required: the nginx self-entry must match the image's environment" -}}
 {{- end -}}
 {{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" $nginx.entrypoint "imageEnv" ($nginx.imageEnv | default dict)) -}}
-{{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
@@ -106,7 +102,7 @@
 {{- $templates = append $templates (list "volumed" "c8s.volumedPodSpec") -}}
 {{- $templates = append $templates (list "volumed-teardown" "c8s.volumedTeardownPodSpec") -}}
 {{- end -}}
-{{- if .Values.router.enabled -}}{{- $templates = append $templates (list "router" "router.podSpec") -}}{{- end -}}
+{{- $templates = append $templates (list "router" "router.podSpec") -}}
 {{- $pods := list -}}
 {{- range $t := $templates -}}
 {{- $spec := include (index $t 1) $ | fromYaml -}}
@@ -410,62 +406,6 @@
 {{ $out | toJson }}
 {{- end -}}
 
-{{/* "true" when an operator-written container admits a component shape:
-     its command any or a prefix of the shape's argv, its args admitting the
-     rest (any for a shape whose args are open), its mounts any or the shape's
-     rule set, and its env any or a match over the shape's names whose exact
-     matchers pin the values the shape pins. Feeds the coverage guard
-     (validations.yaml). */ -}}
-{{- define "c8s.admitsShape" -}}
-{{- $c := .container -}}
-{{- $shape := .shape -}}
-{{- $argv := concat (get (get $shape "command") "argv") (dig "args" "argv" list $shape) -}}
-{{- $ok := true -}}
-{{- $rest := $argv -}}
-{{- $command := dig "command" "policy" "" $c -}}
-{{- if eq $command "exact" -}}
-{{- $pin := dig "command" "argv" list $c -}}
-{{- if and (le (len $pin) (len $argv)) (eq (slice $argv 0 (len $pin) | toJson) ($pin | toJson)) -}}
-{{- $rest = slice $argv (len $pin) -}}
-{{- else -}}
-{{- $ok = false -}}
-{{- end -}}
-{{- else if ne $command "any" -}}
-{{- $ok = false -}}
-{{- end -}}
-{{- $args := dig "args" "policy" "deny" $c -}}
-{{- if eq (dig "args" "policy" "" $shape) "any" -}}
-{{- if ne $args "any" -}}{{- $ok = false -}}{{- end -}}
-{{- else if eq $args "exact" -}}
-{{- if ne ($rest | toJson) (dig "args" "argv" list $c | toJson) -}}{{- $ok = false -}}{{- end -}}
-{{- else if eq $args "deny" -}}
-{{- if $rest -}}{{- $ok = false -}}{{- end -}}
-{{- else if ne $args "any" -}}
-{{- $ok = false -}}
-{{- end -}}
-{{- $mounts := dig "mounts" "policy" "deny" $c -}}
-{{- if ne $mounts "any" -}}
-{{- $want := dict -}}
-{{- range $r := (dig "mounts" "rules" list $shape) -}}{{- $_ := set $want $r.destination (list $r.kind (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
-{{- $have := dict -}}
-{{- range $r := (dig "mounts" "rules" list $c) -}}{{- $_ := set $have (toString $r.destination) (list (toString $r.kind) (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
-{{- if or (not (has $mounts (list "exact" "deny"))) (ne ($want | toJson) ($have | toJson)) -}}{{- $ok = false -}}{{- end -}}
-{{- end -}}
-{{- $env := dig "env" "policy" "any" $c -}}
-{{- if eq $env "match" -}}
-{{- $want := dig "env" "variables" dict $shape -}}
-{{- $have := dig "env" "variables" dict $c -}}
-{{- if ne (keys $want | sortAlpha | toJson) (keys $have | sortAlpha | toJson) -}}{{- $ok = false -}}{{- end -}}
-{{- range $name, $m := $have -}}
-{{- if and (hasKey $m "exact") (ne (toString (get $m "exact")) (toString (dig $name "exact" "" $want))) -}}{{- $ok = false -}}{{- end -}}
-{{- if and (hasKey $m "exact") (not (hasKey (get $want $name | default dict) "exact")) -}}{{- $ok = false -}}{{- end -}}
-{{- end -}}
-{{- else if ne $env "any" -}}
-{{- $ok = false -}}
-{{- end -}}
-{{- if $ok -}}true{{- end -}}
-{{- end -}}
-
 {{/* The base container for an operator open-args entry pinned to an
      entrypoint: command pinned, args and mounts any. */ -}}
 {{- define "c8s.componentContainer" -}}
@@ -741,7 +681,7 @@ null
 {{- define "c8s.routerContainerMounts" -}}
 {{- $root := .root -}}
 {{- $name := .container -}}
-{{- if and $name $root.Values.router.enabled -}}
+{{- if $name -}}
 {{- $spec := include "router.podSpec" $root | fromYaml -}}
 {{- $volumes := dict -}}
 {{- range $v := (default list $spec.volumes) -}}
@@ -814,9 +754,7 @@ null
 {{- /* Platform setup scripts require host mounts; their executable and script argv stay pinned. */ -}}
 {{- $containers := list -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" $script ""))))) -}}
-{{- if .Values.nriImagePolicy.uninstall.enabled -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/uninstall.sh") ""))))) -}}
-{{- end -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list "sleep infinity"))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list (include "nri-image-policy.pluginReadyScript" .)))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list $sweep))) -}}
@@ -840,27 +778,10 @@ null
 
 {{/* The router pod's workload entry. See ../helpers/allowlist/README.md#router-entry. */}}
 
-{{- /* Why the router entry cannot be derived, or "" when it can. Values-only,
-       so router.expectedWorkload can call it. */ -}}
-{{- define "c8s.routerEntryBlocker" -}}
-{{- if not .Values.router.enabled -}}router.enabled is false
-{{- else if not (include "c8s.routerNginxPin" . | fromJson).image.digest -}}routerNginx.image.digest is unset
-{{- else if not .Values.image.digest -}}image.digest is unset
-{{- /* The entry pins the c8s image's containers like its component entry,
-       which deriveComponents seeds. */ -}}
-{{- else if not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}nriImagePolicy.bootstrapAllowlist.deriveComponents is false
-{{- end -}}
-{{- end -}}
-
-{{- /* A non-empty router.attest.expectedWorkload outside c8s-router-*: the
-       operator's own router entry, which replaces the seeded one. */ -}}
-{{- define "c8s.routerOperatorGate" -}}
-{{- $explicit := .Values.router.attest.expectedWorkload -}}
-{{- if and (kindIs "string" $explicit) (not (hasPrefix "c8s-router-" $explicit)) -}}{{ $explicit }}{{- end -}}
-{{- end -}}
-
+{{- /* The entry pins the nginx and c8s images by digest. Values-only. */ -}}
 {{- define "c8s.routerWorkloadSeeded" -}}
-{{- if not (or (include "c8s.routerEntryBlocker" .) (include "c8s.routerOperatorGate" .)) -}}true{{- end -}}
+{{- $nginxDigest := (include "c8s.routerNginxPin" . | fromJson).image.digest -}}
+{{- if and (not (empty $nginxDigest)) (not (empty .Values.image.digest)) -}}true{{- end -}}
 {{- end -}}
 
 {{- /* Every container of router.podSpec whose image is nginx or the c8s
@@ -932,13 +853,10 @@ null
 {{- end -}}
 {{- end -}}
 
-{{- /* The entry the router pod should match: the seeded one, or the
-       operator's. "" when neither. */ -}}
+{{- /* The seeded entry the router pod should match, or "" when none is. */ -}}
 {{- define "c8s.routerEntryName" -}}
 {{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
 {{- include "c8s.routerWorkloadName" . -}}
-{{- else -}}
-{{- include "c8s.routerOperatorGate" . -}}
 {{- end -}}
 {{- end -}}
 

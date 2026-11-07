@@ -31,7 +31,7 @@ func entriesFor(doc *pkgallowlist.Allowlist, digest string) []string {
 func TestChartOverrideReplacesGeneratedEntryInSeedAndBase(t *testing.T) {
 	t.Parallel()
 	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000012"
-	args := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	args := []string{"--set-string", "image.digest=" + opD}
 	derived, err := helmTemplate(t, args...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, derived)

@@ -42,12 +42,6 @@ common_set=(
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
-  # The default policy mode is fail-closed, which requires every digest-pinned
-  # C8s component to be covered in the allowlist floor or the plugin would deny
-  # it on its own node. deriveComponents auto-covers the C8s images from their
-  # digests (what `c8s install --resolve-digests` turns on) — the representative
-  # way to render a valid fail-closed config without hand-listing CI placeholders.
-  --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
   # The chart refuses to render a release that names no CDS.
   --set-string cds.address=10.9.9.9:8443
   --set-file "cds.measurementsConfig=$cds_pin"

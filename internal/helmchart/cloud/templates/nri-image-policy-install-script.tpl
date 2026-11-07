@@ -262,7 +262,7 @@ allowlist:
     # Paths, so no argument of a component names the CDS it is served by.
     cds_address_file: {{ include "nri-image-policy.hostCDSAddressPath" $root | quote }}
     cds_measurements_config: {{ include "nri-image-policy.hostCDSPinPath" $root | quote }}
-    measure_policies: {{ $root.Values.nriImagePolicy.measurePolicies }}
+    measure_policies: false
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" $root | fromJson -}}
@@ -303,7 +303,7 @@ logging:
 {{- if not $root.Values.nriImagePolicy.mesh.resolver }}
 {{- fail "nriImagePolicy.mesh.resolver is required with a mesh policy: a member pod resolves names through this address and no other" }}
 {{- end }}
-{{- if and $root.Values.router.enabled (not $root.Values.nriImagePolicy.mesh.clusterRanges) }}
+{{- if not $root.Values.nriImagePolicy.mesh.clusterRanges }}
 {{- fail "nriImagePolicy.mesh.clusterRanges is required with the router: its egress exception must exclude this cluster's pod and Service ranges, or its dial to a member would leave the pod in the clear" }}
 {{- end }}
 mesh:

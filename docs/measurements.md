@@ -60,10 +60,8 @@ extend(d) = SHA-384( register ‖ SHA-384("sha256:<hex>") )
 ```
 
 Policies are measured only on TDX and only where the node plugin has
-`measure_policies` on: the chart value `nriImagePolicy.measurePolicies`, which
-the chart refuses unless it also deploys the node's attestation-api, so not on
-the lane that bakes it, or on every worker, whose image turns it on. The
-measurer seeds its journal from the staged document, so a node without one
+`measure_policies` on: on every worker, whose image turns it on, and on no
+installed cluster. The measurer seeds its journal from the staged document, so a node without one
 applies no pulled allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 

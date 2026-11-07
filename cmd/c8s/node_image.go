@@ -178,11 +178,9 @@ func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra 
 	args = append(args,
 		"--set", "node.baked=true",
 		"--set", "nriImagePolicy.enabled=false",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		// A baked node runs volumed as the host service volumed.service, not
 		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
-		"--set", "router.attest.enabled=true",
 		// Always on: the value is part of the measured image, and
 		// c8s verify --operator-keys reads the publication.
 		"--set", "router.routePublication.enabled=true",

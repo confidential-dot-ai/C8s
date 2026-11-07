@@ -4,55 +4,6 @@
 {{- if not (has .Values.attestationApi.cvmMode (list "bare-metal" "gke" "aks")) -}}
 {{- fail (printf "attestationApi.cvmMode must be one of bare-metal, gke, aks (got %q)" .Values.attestationApi.cvmMode) -}}
 {{- end -}}
-{{- $router := .Values.router -}}
-{{- $nri := .Values.nriImagePolicy -}}
-{{- /*
-  Helm silently ignores values keys the chart no longer reads, so a values
-  file carried over from a release that still had tee-proxy would drop its
-  settings (hostPort opt-out, upstream) without a trace. Fail loud instead.
-*/ -}}
-{{- if hasKey .Values "teeProxy" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and write teeProxy.upstream as a route manifest with `c8s routes add`, then drop the teeProxy block." -}}
-{{- end -}}
-{{- /*
-  The same for the two values the node guest image switched on: a release that
-  carried them keeps rendering, with no admission plugin or no metrics, unless
-  the chart says what replaced each.
-*/ -}}
-{{- if hasKey $nri "baked" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.baked is set, but the installer has one shape: a measured image carries the plugin, its containerd registration and its config. Set nriImagePolicy.enabled=false on such a cluster (`c8s install --cvm-mode=bare-metal` does) and drop the baked key." -}}
-{{- end -}}
-{{- /*
-  The same for the host distro: the installer targets the upstream containerd
-  layout, and a release carrying the RKE2 value would keep rendering against
-  /etc/containerd with no sign that it stopped selecting anything. The plugin's
-  own sandbox-mount baseline is compiled for containerd's directories
-  (internal/cmds/nri-image-policy/mounts.go), so the values below move the
-  config the installer writes, not the layout a node may have.
-*/ -}}
-{{- if hasKey $nri "distro" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.distro is set, but the installer targets one host layout: upstream containerd, whose config directory, socket and restart are nriImagePolicy.containerd.configDir, .socket and .restartCommand. A node whose containerd keeps its state elsewhere is unsupported — the plugin admits sandbox mounts under /var/lib/containerd and /run/containerd. Drop the distro key." -}}
-{{- end -}}
-{{- if hasKey .Values "kubeStateMetrics" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: kubeStateMetrics.* values are set, but kube-state-metrics was removed with the node guest image, whose measured mesh policy named its Service as every member pod's exit. Deploy it from its own chart outside this release, and drop the kubeStateMetrics block." -}}
-{{- end -}}
-{{- /*
-  The same for the router's own backend configuration: the operator-signed
-  route manifest replaced it, and a carried-over value would otherwise leave
-  the front door answering 503 with no hint why.
-*/ -}}
-{{- $removedRouterKeys := list -}}
-{{- range $key := list "upstream" "routes" -}}
-{{- if hasKey $router $key -}}{{- $removedRouterKeys = append $removedRouterKeys (printf "router.%s" $key) -}}{{- end -}}
-{{- end -}}
-{{- if hasKey (default dict $router.nginx) "resolver" -}}{{- $removedRouterKeys = append $removedRouterKeys "router.nginx.resolver" -}}{{- end -}}
-{{- if $removedRouterKeys -}}
-{{- fail (printf "VALIDATION_ERROR kind=removed_router_routes: the router no longer reads backends from Helm values (%s): it routes only by the operator-signed route manifest on CDS. Write the routes with `c8s routes add --host <host> --path / --address <host:port> --workload <allowlist name>` (or `c8s routes put <file>`), move router.upstream.readTimeout to router.routing.readTimeout, and drop these keys. A workload backend is reached over the mesh; see docs/operator.md, \"Route manifest\"." (join ", " $removedRouterKeys)) -}}
-{{- end -}}
-{{- if and $router.enabled (dig "routePublication" "enabled" false $router) (not $router.attest.enabled) -}}
-{{- fail "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false." -}}
-{{- end -}}
-
 {{- /*
   Hardware-TEE mutual exclusion. A single cluster picks one CPU TEE at install
   time (--hardware-platform sev-snp or tdx). teeDevices.sevGuest and
@@ -79,97 +30,6 @@
 {{- end -}}
 
 {{- /*
-  In fail-closed mode with deriveComponents off, every container the chart
-  runs a digest-pinned C8s component's executable in must be admitted by a
-  bootstrapAllowlist.workloads entry that reaches the base: one with open
-  args, env and mounts under any command (c8s.openArgsEntries), or one for
-  the component's digest that pins them to what the chart renders and
-  matches the env it launches with (c8s.pinnedComponentEntries); otherwise the NRI
-  plugin would deny that component's pod on its own node. argvPinned
-  components are exempt: the chart seeds them argv-pinned
-  (c8s.argvPinnedEntries). This guard only applies in fail-closed
-  mode (the default); audit mode creates every container, but with
-  workloadClaims on a would-be denial still reaches /digests and costs its
-  sandbox a certificate.
-*/ -}}
-{{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") (not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents) -}}
-{{- $pins := dict -}}
-{{- $envs := dict -}}
-{{- $names := dict -}}
-{{- range $c := (include "c8s.components" . | fromJsonArray) -}}
-{{- $img := get $c "image" -}}
-{{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
-{{- if not (hasKey $c "imageEnv") -}}
-{{- fail (printf "component %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
-{{- end -}}
-{{- $_ := set $pins (get $img "digest") (get $c "entrypoint") -}}
-{{- $_ := set $envs (get $img "digest") (get $c "imageEnv") -}}
-{{- $_ := set $names (get $img "digest") (get $c "name") -}}
-{{- end -}}
-{{- end -}}
-{{- if $pins -}}
-{{- $operator := list -}}
-{{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
-{{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
-{{- $command := dig "command" "policy" "" $c -}}
-{{- $argv := dig "command" "argv" list $c -}}
-{{- /* An entry pinned to a component executable with open mounts or env,
-       or open args outside a webhook-injected sidecar, is one allowlist lint
-       refuses (componentInvocations; nginx is not a guarded component): it
-       lets the pod point the component at other code. */ -}}
-{{- $binary := false -}}
-{{- if eq $command "exact" -}}
-{{- range $prefix := list (list "/c8s") (list "/app/c8s") (list "/attestation-api") -}}
-{{- if and (ge (len $argv) (len $prefix)) (eq (slice $argv 0 (len $prefix) | toJson) ($prefix | toJson)) -}}{{- $binary = true -}}{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- $sidecar := and (eq (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "get-secret" "get-volume" "probe-file")) -}}
-{{- $open := or (eq (dig "mounts" "policy" "deny" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (and (eq (dig "args" "policy" "deny" $c) "any") (not $sidecar)) -}}
-{{- if and (has $command (list "any" "exact")) (not (and $binary $open)) -}}{{- $operator = append $operator $c -}}{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- /* Covered per shape: a container with a hostPath under /var/run has a
-       shape per host layout, and each must be admitted, since the node's
-       layout is not known here. The sidecars the webhook injects with the
-       C8s image need the same entry, so their shapes count too. */ -}}
-{{- $covered := dict -}}
-{{- $argvs := dict -}}
-{{- $shapes := list -}}
-{{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
-{{- $shapes = concat $shapes (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "envs" $envs "refs" dict) | fromJsonArray) -}}
-{{- end -}}
-{{- with .Values.image.digest -}}
-{{- if hasKey $pins . -}}
-{{- $shapes = concat $shapes (include "c8s.injectedShapes" (dict "root" $ "digest" . "image" "" "imageEnv" (get $envs .)) | fromJsonArray) -}}
-{{- end -}}
-{{- end -}}
-{{- range $shape := $shapes -}}
-{{- $entrypoint := get $pins (get $shape "digest") -}}
-{{- $command := get (get $shape "command") "argv" -}}
-{{- /* Only the component's own executable runs before CDS serves policy;
-       another invocation (the volumed teardown hook) is seed-only. */ -}}
-{{- if and (ge (len $command) (len $entrypoint)) (eq (slice $command 0 (len $entrypoint) | toJson) ($entrypoint | toJson)) -}}
-{{- $argv := concat $command (dig "args" "argv" list $shape) -}}
-{{- $key := $shape | toJson -}}
-{{- $_ := set $argvs $key $argv -}}
-{{- if not (get $covered $key) -}}
-{{- $ok := false -}}
-{{- range $c := $operator -}}
-{{- if and (eq (lower (toString $c.digest)) (lower (get $shape "digest"))) (include "c8s.admitsShape" (dict "container" $c "shape" $shape)) -}}{{- $ok = true -}}{{- end -}}
-{{- end -}}
-{{- $_ := set $covered $key $ok -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- range $key, $ok := $covered -}}
-{{- if not $ok -}}
-{{- $digest := get (fromJson $key) "digest" -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts and env. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned and env matched as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
   get-cert and the mesh endpoint. Disabling it there renders a cluster whose
@@ -180,21 +40,15 @@
 {{- end -}}
 {{- /*
   Rate budget for the built-in /allowlist route: each per-client bound must
-  fit inside the nginx aggregate. Positivity parsing lives with the zone
-  rendering in router-configmap.yaml (same c8s.positiveInt, so either
-  template failing first reports the same message).
+  fit inside the nginx aggregate. router.allowlistLimits parses and bounds
+  each value, so this template and the zone rendering fail alike.
 */ -}}
-{{- if and $router.enabled (eq (include "router.renderAllowlistRoute" .) "true") -}}
-{{- $writeRate := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.requestsPerSecond "label" "router.allowlist.rateLimit.requestsPerSecond")) -}}
-{{- $writeBurst := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.burst "label" "router.allowlist.rateLimit.burst")) -}}
-{{- $writeTotalRate := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.totalRequestsPerSecond "label" "router.allowlist.rateLimit.totalRequestsPerSecond")) -}}
-{{- $writeTotalBurst := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.totalBurst "label" "router.allowlist.rateLimit.totalBurst")) -}}
-{{- if gt $writeRate $writeTotalRate -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.requestsPerSecond must not exceed rateLimit.totalRequestsPerSecond (%d), got: %d" $writeTotalRate $writeRate) -}}
+{{- $allowlist := include "router.allowlistLimits" . | fromJson -}}
+{{- if gt $allowlist.writeRate $allowlist.writeTotalRate -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.requestsPerSecond must not exceed rateLimit.totalRequestsPerSecond (%d), got: %d" (int $allowlist.writeTotalRate) (int $allowlist.writeRate)) -}}
 {{- end -}}
-{{- if gt $writeBurst $writeTotalBurst -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (%d), got: %d" $writeTotalBurst $writeBurst) -}}
-{{- end -}}
+{{- if gt $allowlist.writeBurst $allowlist.writeTotalBurst -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (%d), got: %d" (int $allowlist.writeTotalBurst) (int $allowlist.writeBurst)) -}}
 {{- end -}}
 {{- /* A baked node takes both from its measured launch file, which the chart
        cannot see. */ -}}
@@ -208,38 +62,6 @@
        from its own namespace (templates/cds-operator-keys.yaml). */ -}}
 {{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys (not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys)) -}}
 {{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>" -}}
-{{- end -}}
-{{- /*
-  Per-container `paths` was replaced by an entry-level `secrets` grant. CDS
-  parses its seed with unknown fields rejected and fails closed on a parse
-  error, so a values file carried over from a release that used `paths` would
-  not misconfigure CDS — it would stop it booting, taking the mesh CA with it.
-  Catch it at upgrade time instead. See docs/secrets.md.
-*/ -}}
-{{- range $name, $entry := .Values.nriImagePolicy.bootstrapAllowlist.workloads -}}
-{{- range $field := (list "initContainers" "containers") -}}
-{{- range $ctr := (index $entry $field) -}}
-{{- if hasKey $ctr "paths" -}}
-{{- fail (printf "VALIDATION_ERROR kind=allowlist_container_paths: nriImagePolicy.bootstrapAllowlist.workloads.%s.%s has a container with a `paths` policy, which was replaced by an entry-level `secrets` grant. CDS rejects unknown fields in its seed and would fail to start. Move the grant up to the entry as `secrets: {policy: allow, read: [...], write: [...]}` (a deny grant is just omitted). See docs/secrets.md." $name $field) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- /*
-  Certificate producers read the measured-policy journal at the default
-  runtime directory (armtls.NodeJournal). Elsewhere they send no
-  list and CDS refuses the node's identity.
-*/ -}}
-{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/run/nri-image-policy") -}}
-{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
-{{- end -}}
-{{- /*
-  Producers mount the runtime directory only beside the attestation-api
-  socket. Under node.baked the image owns the plugin config, which the value
-  cannot reach.
-*/ -}}
-{{- if and $nri.measurePolicies (not .Values.attestationApi.enabled) -}}
-{{- fail "VALIDATION_ERROR kind=measure_policies_no_journal_mount: nriImagePolicy.measurePolicies=true requires attestationApi.enabled=true, and so excludes node.baked: otherwise certificate producers do not mount the measured-policy journal, or the plugin never sees the setting" -}}
 {{- end -}}
 {{- /*
   A component expands $(HOST_IP) from its HOST_IP variable, which the

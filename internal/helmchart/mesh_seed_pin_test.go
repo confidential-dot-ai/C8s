@@ -70,7 +70,6 @@ func meshLaunchWith(t *testing.T, argv []string, mounts []pkgallowlist.ObservedM
 // refuses.
 func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "armtlsMesh.image.digest="+meshSeedDigest,
 		"--set-string", "image.digest="+meshSeedOperatorDigest,
 	)

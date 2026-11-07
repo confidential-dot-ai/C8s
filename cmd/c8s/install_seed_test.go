@@ -76,40 +76,34 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, router := range []bool{true, false} {
-		t.Run(fmt.Sprintf("router.enabled=%t", router), func(t *testing.T) {
-			set := []string{
-				"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-				"--set", fmt.Sprintf("router.enabled=%t", router),
-				"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
-				"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
-			}
-			for i, c := range components {
-				set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuesPath, i+1))
-			}
-			set, err := appendCvmModeInstallArgs(set, "bare-metal", "sev-snp")
-			if err != nil {
-				t.Fatal(err)
-			}
-			set = append(set, chartCDSArgs(t)...)
-			set = append(set, adoptArgs...)
-			values, err := effectiveValues(ctx, chart, set)
-			if err != nil {
-				t.Fatal(err)
-			}
-			model, err := seedWorkloads(values)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rendered := renderedSeed(t, chart, set)
-			checkSeedModel(t, model, rendered)
-			if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
-				t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)
-			}
-			if err := checkAdoptedEntries(entries, values); err != nil {
-				t.Fatalf("checkAdoptedEntries() = %v", err)
-			}
-		})
+	set := []string{
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+	}
+	for i, c := range components {
+		set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuesPath, i+1))
+	}
+	set, err = appendCvmModeInstallArgs(set, "bare-metal", "sev-snp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set = append(set, chartCDSArgs(t)...)
+	set = append(set, adoptArgs...)
+	values, err := effectiveValues(ctx, chart, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := seedWorkloads(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := renderedSeed(t, chart, set)
+	checkSeedModel(t, model, rendered)
+	if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
+		t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)
+	}
+	if err := checkAdoptedEntries(entries, values); err != nil {
+		t.Fatalf("checkAdoptedEntries() = %v", err)
 	}
 }
 

@@ -192,9 +192,8 @@ measured base and a chart-rendered base is the cluster admin's to choose. What
 remains there is control-plane admission the operator owns: the chart's
 `<release>-deny-host-namespaces` policy, refusing host namespaces, host ports,
 and `hostPath` volumes to pods outside the release, router, and `kube-system`
-namespaces, the namespaces `hostNamespacePolicy.exemptNamespaces` names, and
-`local-path-storage` on an installed cluster (`node.baked=false`)
-([operator.md](operator.md)).
+namespaces, and `local-path-storage` on an installed cluster
+(`node.baked=false`) ([operator.md](operator.md)).
 
 Some containers must hold host privilege: the worker's static pods. They are
 the node's trusted computing base, and the exemption belongs to whoever
@@ -409,12 +408,10 @@ the node reports in its evidence — with each allowlist it pulls, before applyi
 it, so a verifier can replay what the node enforced since boot: proof of what it
 enforced, not that it was acceptable. A document the node fails to measure is
 not applied. How the register is seeded, journalled, and replayed is
-[measurements.md](measurements.md#policy-history). Set
-`nriImagePolicy.measurePolicies: true` to turn measuring on. A worker always
-measures: its image's policy turns it on, and `c8s worker stage` refuses one
-that does not.
+[measurements.md](measurements.md#policy-history). A worker measures: its
+image's policy turns it on, and `c8s worker stage` refuses one that does not.
 
-It is off by default because checks that expect the bare seed reject a node
+An installed cluster's plugin does not measure, because checks that expect the bare seed reject a node
 that measures: armTLS verifiers built before runtime extensions, a pin on one
 fixed RTMR[3] value, and `c8s verify --image-policy-file` with an approver key.
 It is a no-op on SEV-SNP, which has no runtime register. A node that cannot

@@ -1,5 +1,3 @@
-{{- if .Values.router.enabled }}
-{{- $svc := .Values.router.service }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,26 +5,10 @@ metadata:
   namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
     {{- include "router.labels" . | nindent 4 }}
-  {{- with $svc.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 spec:
-  type: {{ $svc.type }}
-  {{- if or (eq $svc.type "LoadBalancer") (eq $svc.type "NodePort") }}
-  {{- $renderAllowlistRoute := eq (include "router.renderAllowlistRoute" .) "true" }}
-  {{- $perClientLimits := or $renderAllowlistRoute .Values.router.attest.enabled }}
-  {{- $policy := default (ternary "Local" "Cluster" $perClientLimits) $svc.externalTrafficPolicy }}
-  {{- if not (or (eq $policy "Local") (eq $policy "Cluster")) }}
-  {{- fail (printf "router.service.externalTrafficPolicy must be Local or Cluster, got: %s" $policy) }}
-  {{- end }}
-  # Local (the default while the /allowlist route or the attestation sidecar
-  # renders) preserves the public source IP their per-client limiters key on;
-  # see values.yaml.
-  externalTrafficPolicy: {{ $policy }}
-  {{- end }}
+  type: ClusterIP
   ports:
-    - port: {{ $svc.port }}
+    - port: 443
       targetPort: https
       protocol: TCP
       name: https
@@ -39,4 +21,3 @@ spec:
     {{- end }}
   selector:
     {{- include "router.selectorLabels" . | nindent 4 }}
-{{- end }}

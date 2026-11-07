@@ -38,6 +38,9 @@ const (
 	// ComponentsFile is the component table and its image pins, relative to a
 	// chart directory whose c8s-lib dependency is linked.
 	ComponentsFile = "charts/c8s-lib/files/components.yaml"
+	// RouterHostPort is the node port the router's nginx binds; the chart's
+	// router Deployment renders the same number.
+	RouterHostPort = 443
 )
 
 // HostSweepScript is the uninstall host sweep script, normalized the way the

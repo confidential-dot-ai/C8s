@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -137,7 +136,7 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 // them.
 func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	t.Parallel()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set-json", `operator.extraArgs=["$$(KUBERNETES_SERVICE_HOST)"]`}
+	args := []string{"--set-json", `operator.extraArgs=["$$(KUBERNETES_SERVICE_HOST)"]`}
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -206,7 +205,7 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 // thing between the pin and a silent any-argv shadow.
 func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -331,19 +330,6 @@ func componentPinValues(t *testing.T) map[string][]string {
 	return pins
 }
 
-// withMatcher returns p, a match policy, with name matched by matcher, a
-// JSON matcher.
-func withMatcher(t *testing.T, p pkgallowlist.EnvPolicy, name, matcher string) pkgallowlist.EnvPolicy {
-	t.Helper()
-	var m pkgallowlist.EnvMatcher
-	if err := json.Unmarshal([]byte(matcher), &m); err != nil {
-		t.Fatal(err)
-	}
-	variables := maps.Clone(p.Variables)
-	variables[name] = m
-	return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: variables}
-}
-
 // componentImageEnvValues reads the imageEnv the components file declares for
 // every derived component, keyed like componentPinValues.
 func componentImageEnvValues(t *testing.T) map[string]map[string]string {
@@ -418,7 +404,6 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 func componentRender(t *testing.T) string {
 	t.Helper()
 	args := []string{
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "volumed.enabled=true",
 		"--set", "attestationApi.enabled=true",
 	}
@@ -504,7 +489,6 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set-string", "image.digest="+opD,
 		"--set", "nriImagePolicy.policy.mode=fail-closed",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", p+"digest="+opD,
 		"--set-string", p+"command.policy=exact",
 		"--set-string", p+"command.argv[0]=/c8s",
@@ -521,130 +505,6 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 	}
 	if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
 		t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
-	}
-}
-
-// An operator entry for a component digest that pins args and mounts is a
-// component entry like the chart's own: copied from the chart's derived entry,
-// it covers the component for the fail-closed guard and reaches the base
-// verbatim. Missing any container the chart runs the executable in, an
-// injected sidecar shape among them, or with an env that would refuse the
-// launch environment or leave it open, it does not cover the component.
-func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
-	t.Parallel()
-	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
-	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, derived)
-	}
-	var containers []pkgallowlist.Container
-	for _, w := range renderedSeed(t, derived).Workloads {
-		for _, c := range w.Containers {
-			if c.Digest.String() == opD {
-				containers = append(containers, c)
-			}
-		}
-	}
-	operatorArgv := runtimeArgv(renderedDeploymentContainer(t, derived, "c8s-operator", "operator"), []string{"/c8s"})
-	resolvedLayout := func(c pkgallowlist.Container) bool {
-		return slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return strings.HasPrefix(r.Source, "/run/nri-image-policy") })
-	}
-	for _, tc := range []struct {
-		name      string
-		drop      func(pkgallowlist.Container) bool
-		env       func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy
-		uppercase bool
-		covered   bool
-	}{
-		{name: "the chart's entry", covered: true},
-		{name: "uppercase digest", uppercase: true, covered: true},
-		{name: "without the operator's container", drop: func(c pkgallowlist.Container) bool {
-			return c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
-		}},
-		{name: "without the resolved layout of a host mount", drop: resolvedLayout},
-		{name: "without the injected sidecars", drop: injectedShape},
-		{name: "env denied", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyDeny}
-		}},
-		{name: "env open", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
-		}},
-		{name: "env matching one more variable", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return withMatcher(t, p, "EXTRA", `{"present":true}`)
-		}},
-		{name: "env pinning a value the pod chooses", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return withMatcher(t, p, "HOSTNAME", `{"exact":"c8s-0"}`)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			entry := slices.Clone(containers)
-			if tc.env != nil {
-				for i := range entry {
-					entry[i].Env = tc.env(entry[i].Env)
-				}
-			}
-			if tc.drop != nil {
-				entry = slices.DeleteFunc(entry, tc.drop)
-				if len(entry) == len(containers) {
-					t.Fatal("the derived entry has no container to drop")
-				}
-			}
-			raw, err := json.Marshal(map[string]any{"containers": entry})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.uppercase {
-				raw = []byte(strings.ReplaceAll(string(raw), `"digest":"`+opD, `"digest":"sha256:`+strings.ToUpper(strings.TrimPrefix(opD, "sha256:"))))
-			}
-			out, err := helmTemplate(t,
-				"--set-string", "image.digest="+opD,
-				"--set", "nriImagePolicy.policy.mode=fail-closed",
-				"--set-json", "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator="+string(raw),
-			)
-			if !tc.covered {
-				if err == nil || parseValidationErrorKind(out) != "uncovered_component_digest" {
-					t.Fatalf("helm template = %v, want uncovered_component_digest\n%s", err, out)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("helm template should render with the component covered by a pinned entry: %v\n%s", err, out)
-			}
-			base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
-			if !base.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: operatorArgv}) {
-				t.Errorf("base does not admit the operator as rendered: %v", base.Workloads)
-			}
-		})
-	}
-}
-
-// An open-args entry pinned to another executable does not cover the
-// component: it would reach the base and still deny the component on its
-// own node. One pinned to the C8s binary does not cover it either: allowlist
-// lint refuses that shape. Two open-args entries pinning one digest
-// differently cannot both reach the base, so the render fails.
-func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
-	t.Parallel()
-	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
-	entry := func(name, argv0 string) []string {
-		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + ".containers[0]."
-		return []string{
-			"--set-string", p + "digest=" + opD,
-			"--set-string", p + "command.policy=exact",
-			"--set-string", p + "command.argv[0]=" + argv0,
-			"--set-string", p + "args.policy=any",
-			"--set-string", p + "mounts.policy=any",
-		}
-	}
-	base := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
-	for _, argv0 := range []string{"/bin/sh", "/c8s"} {
-		out, err := helmTemplate(t, append(base, entry("c8s-operator", argv0)...)...)
-		if err == nil {
-			t.Fatalf("helm template succeeded with the component covered only by an open entry pinned to %s\n%s", argv0, out)
-		}
-		if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
-			t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
-		}
 	}
 }
 
@@ -685,7 +545,6 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
 	out, err := helmTemplate(t,
 		"--set-string", "image.digest="+opD,
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", attest+"digest="+opD,
 		"--set-string", attest+"command.policy=exact",
 		"--set-string", attest+"command.argv[0]=/c8s",

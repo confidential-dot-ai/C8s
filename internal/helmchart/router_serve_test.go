@@ -70,38 +70,16 @@ func TestChartRouterServesWithoutASharedProcessNamespace(t *testing.T) {
 }
 
 // The entrypoint watches the credentials the router serves: the ones get-cert
-// publishes, and the public certificate of whichever TLS mode is on.
+// publishes.
 func TestChartRouterServeWatchesTheServedCredentials(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		args []string
-		line string
-	}{
-		{
-			name: "mesh leaf",
-			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt"`,
-		},
-		{
-			name: "public web PKI certificate",
-			args: []string{"--set-string", "router.publicTLS.mode=webpki", "--set-string", "router.publicTLS.secretName=front-door"},
-			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /mnt/c8s-data/public-tls/tls.crt /mnt/c8s-data/public-tls/tls.key"`,
-		},
-		{
-			name: "acme certificate and key",
-			args: []string{"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"},
-			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			script := renderedConfigMap(t, out, "c8s-router-nginx").Data["serve.sh"]
-			if !strings.Contains(script, tc.line) {
-				t.Errorf("serve.sh does not carry the line %s:\n%s", tc.line, script)
-			}
-		})
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	script := renderedConfigMap(t, out, "c8s-router-nginx").Data["serve.sh"]
+	line := `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt"`
+	if !strings.Contains(script, line) {
+		t.Errorf("serve.sh does not carry the line %s:\n%s", line, script)
 	}
 }
 
@@ -114,8 +92,6 @@ func TestChartRouterReadsItsCertificatePerHandshake(t *testing.T) {
 		args []string
 	}{
 		{name: "cds"},
-		{name: "webpki", args: []string{"--set-string", "router.publicTLS.mode=webpki", "--set-string", "router.publicTLS.secretName=front-door"}},
-		{name: "acme", args: []string{"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"}},
 		{name: "baked", args: bakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

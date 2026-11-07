@@ -117,7 +117,6 @@ func hostPortPod(ns, name, node string, port int32) corev1.Pod {
 }
 
 func TestPreflightRouterHostPortExec(t *testing.T) {
-	values := "router:\n  enabled: true\n  hostPort:\n    enabled: true\n    https: \"\"\n"
 	kubectlBody := func(nodes, podsFile string) string {
 		return `case "$*" in
 "get pods --all-namespaces -o json") /bin/cat '` + podsFile + `' ;;
@@ -128,13 +127,12 @@ esac`
 	t.Run("port taken on every node aborts", func(t *testing.T) {
 		pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "kubectl", kubectlBody(`node-a\n`, pods))
-		err := preflightRouterHostPort(context.Background(), writeChart(t, values), "c8s-system")
+		err := preflightRouterHostPort(context.Background())
 		if err == nil {
 			t.Fatal("want error when the host port is bound on every node")
 		}
-		for _, want := range []string{"443", "kube-system/ingress-a", "router.hostPort.enabled=false"} {
+		for _, want := range []string{"443", "kube-system/ingress-a", "free the port"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q missing %q", err, want)
 			}
@@ -144,39 +142,25 @@ esac`
 	t.Run("a free node passes", func(t *testing.T) {
 		pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "kubectl", kubectlBody(`node-a\nnode-b\n`, pods))
-		if err := preflightRouterHostPort(context.Background(), writeChart(t, values), "c8s-system"); err != nil {
+		if err := preflightRouterHostPort(context.Background()); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("own namespace holder is ignored", func(t *testing.T) {
-		pods := podListFile(t, hostPortPod("c8s-system", "c8s-router", "node-a", 443))
+	t.Run("the router's own holder is ignored", func(t *testing.T) {
+		pods := podListFile(t, hostPortPod(workloadclaims.RouterNamespace, "c8s-router", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "kubectl", kubectlBody(`node-a\n`, pods))
-		if err := preflightRouterHostPort(context.Background(), writeChart(t, values), "c8s-system"); err != nil {
+		if err := preflightRouterHostPort(context.Background()); err != nil {
 			t.Fatalf("re-install must not flag its own router: %v", err)
 		}
 	})
 
-	t.Run("hostPort disabled skips the cluster reads", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "kubectl", "")
-		chart := writeChart(t, "router:\n  enabled: true\n  hostPort:\n    enabled: false\n")
-		if err := preflightRouterHostPort(context.Background(), chart, "c8s-system"); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		mustNotContainPrefix(t, f.calls(t), "kubectl")
-	})
-
 	t.Run("node read failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "kubectl", "exit 1")
-		if err := preflightRouterHostPort(context.Background(), writeChart(t, values), "c8s-system"); err == nil {
+		if err := preflightRouterHostPort(context.Background()); err == nil {
 			t.Fatal("want error when kubectl fails")
 		}
 	})
@@ -187,9 +171,8 @@ esac`
 			t.Fatal(err)
 		}
 		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "kubectl", kubectlBody(`node-a\n`, bad))
-		if err := preflightRouterHostPort(context.Background(), writeChart(t, values), "c8s-system"); err == nil {
+		if err := preflightRouterHostPort(context.Background()); err == nil {
 			t.Fatal("want error for unparseable pod list")
 		}
 	})
@@ -531,7 +514,6 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		assertArgsEqual(t, got, []string{
 			"--set-string", "cds.image.repository=ghcr.io/x/cds",
 			"--set-string", "cds.image.digest=" + testDigest,
-			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		})
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/x/cds:main")
 	})
@@ -539,13 +521,11 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 	t.Run("checks the router's nginx image at its rendered digest", func(t *testing.T) {
 		const nginxDigest = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
 		for name, tc := range map[string]struct {
-			enabled  bool
 			nginxEnv string
 			wantErr  bool
 		}{
-			"image matches imageEnv": {enabled: true, nginxEnv: `"PATH=/bin","NGINX_VERSION=1.30.5"`},
-			"image env differs":      {enabled: true, nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`, wantErr: true},
-			"router disabled":        {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`},
+			"image matches imageEnv": {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.30.5"`},
+			"image env differs":      {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`, wantErr: true},
 		} {
 			t.Run(name, func(t *testing.T) {
 				resetCLIState(t)
@@ -556,16 +536,15 @@ config) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],
 *) echo `+testDigest+` ;;
 esac`)
 				chart := writeChartWithComponents(t,
-					values+fmt.Sprintf("router:\n  enabled: %t\n", tc.enabled),
+					values,
 					components+fmt.Sprintf("routerNginx:\n  image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: %q}\n  entrypoint: [/docker-entrypoint.sh, nginx]\n  imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n", nginxDigest),
 				)
 				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", comps)
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
 				}
-				checked := slices.Contains(f.calls(t), "crane config docker.io/nginxinc/nginx-unprivileged@"+nginxDigest)
-				if checked != tc.enabled {
-					t.Fatalf("nginx image config read = %v, want %v", checked, tc.enabled)
+				if !slices.Contains(f.calls(t), "crane config docker.io/nginxinc/nginx-unprivileged@"+nginxDigest) {
+					t.Fatal("nginx image config not read")
 				}
 			})
 		}
@@ -588,23 +567,6 @@ esac`)
 			t.Fatal("want error when crane fails")
 		}
 	})
-}
-
-func TestPrintAttestVerifyHint(t *testing.T) {
-	resetCLIState(t)
-
-	var buf bytes.Buffer
-	printAttestVerifyHint(&buf, false)
-	if buf.Len() != 0 {
-		t.Errorf("--attest=false must print nothing, got %q", buf.String())
-	}
-
-	buf.Reset()
-	installCDS = &cdsPin{path: "cds-pin.json"}
-	printAttestVerifyHint(&buf, true)
-	if out := buf.String(); !strings.Contains(out, "--image-policy-file cds-pin.json") {
-		t.Errorf("want the install's own pin named, got %q", out)
-	}
 }
 
 // installStubs wires stub helm/kubectl/crane for full `c8s install` runs

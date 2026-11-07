@@ -17,7 +17,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
@@ -195,14 +194,12 @@ func setCvmModeForTest(t *testing.T, mode string) {
 // tag) must survive as a string: buildValueArgs emits .tag via --set-string, so
 // coerce never int-coerces it (0640 -> 640 would pin the wrong image).
 func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(flagCvmMode, "bare-metal", "")
 	setCvmModeForTest(t, "bare-metal")
 	prev := installResolveDigests
 	installResolveDigests = false // tag is the sole image ref only when digests are off
 	defer func() { installResolveDigests = prev }()
 
-	args, err := buildValueArgs(context.Background(), cmd, "",
+	args, err := buildValueArgs(context.Background(), "",
 		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
 		"0640", appendResolvedDigestArgs)
 	if err != nil {
@@ -219,11 +216,8 @@ func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
 
 // When digests are resolved, the bundle must pin by digest only: emitting .tag
 // too is redundant. The injected resolver mirrors appendResolvedDigestArgs
-// (repository + digest + deriveComponents), so the test also confirms allowlist
-// derivation survives to the tree and keeps crane off PATH.
+// (repository + digest) and keeps crane off PATH.
 func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(flagCvmMode, "bare-metal", "")
 	setCvmModeForTest(t, "bare-metal")
 
 	prevFlag := installResolveDigests
@@ -234,10 +228,10 @@ func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
 			args = append(args, "--set-string", c.valuesPath+".repository="+c.repository,
 				"--set-string", c.valuesPath+".digest=sha256:abc")
 		}
-		return append(args, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"), nil
+		return args, nil
 	}
 
-	got, err := buildValueArgs(context.Background(), cmd, "",
+	got, err := buildValueArgs(context.Background(), "",
 		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
 		"main", stubResolver)
 	if err != nil {
@@ -253,9 +247,6 @@ func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
 	}
 	if img["digest"] != "sha256:abc" {
 		t.Errorf("digest: got %#v, want sha256:abc", img["digest"])
-	}
-	if got := tree["nriImagePolicy"].(map[string]any)["bootstrapAllowlist"].(map[string]any)["deriveComponents"]; got != true {
-		t.Errorf("deriveComponents: got %#v, want bool true", got)
 	}
 }
 
@@ -304,31 +295,14 @@ var coerceSafeValueArg = regexp.MustCompile(`^[A-Za-z0-9.]+(\[[0-9]+\])?=[^,]*$`
 // non-value flag would silently break BOTH install and render-values (the
 // shared path hides the divergence) with every existing test still green.
 func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(flagCvmMode, "bare-metal", "")
-	cmd.Flags().Int64("webhook-cert-fs-group", 0, "")
-	cmd.Flags().Duration("webhook-get-cert-renew-interval", 0, "")
-	cmd.Flags().Int64("webhook-get-cert-run-as-user", 0, "")
-	cmd.Flags().Int64("webhook-get-cert-run-as-group", 0, "")
-	cmd.Flags().Bool("webhook-get-cert-run-as-non-root", false, "")
-	for _, name := range []string{
-		flagCvmMode, "webhook-cert-fs-group",
-		"webhook-get-cert-renew-interval", "webhook-get-cert-run-as-user",
-		"webhook-get-cert-run-as-group", "webhook-get-cert-run-as-non-root",
-	} {
-		if err := cmd.Flags().Set(name, cmd.Flags().Lookup(name).DefValue); err != nil {
-			t.Fatalf("mark %q changed: %v", name, err)
-		}
-	}
-
 	prev := struct {
-		crds, resolveDigests                      bool
+		resolveDigests                            bool
 		secret, cvm, plat, upstream, operatorKeys string
 		workloadRefs                              []string
 		cdsAddress, cdsPin                        string
-	}{installCRDs, installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), installCDSAddress, installCDSPin}
+	}{installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), installCDSAddress, installCDSPin}
 	defer func() {
-		installCRDs, installResolveDigests = prev.crds, prev.resolveDigests
+		installResolveDigests = prev.resolveDigests
 		installImagePullSecret, installCvmMode = prev.secret, prev.cvm
 		installHardwarePlatform = prev.plat
 		installUpstream = prev.upstream
@@ -336,15 +310,15 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		installWorkloadRefs = prev.workloadRefs
 		installCDSAddress, installCDSPin = prev.cdsAddress, prev.cdsPin
 	}()
-	// Drive every value-producing toggle. --install-crds=false exercises the
-	// non-default CRD path; --resolve-digests=false keeps crane off PATH (the
-	// digest-arg shape is covered separately via buildDigestArgs below).
-	installCRDs, installResolveDigests = false, false
+	// Drive every value-producing toggle. --resolve-digests=false keeps crane
+	// off PATH (the digest-arg shape is covered separately via buildDigestArgs
+	// below).
+	installResolveDigests = false
 	installImagePullSecret, installCvmMode = "regcred", "bare-metal"
 	installHardwarePlatform = "sev-snp"
 	installOperatorKeys = writeTestOperatorKeys(t)
 
-	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", appendResolvedDigestArgs)
+	args, err := buildValueArgs(context.Background(), "", nil, "main", appendResolvedDigestArgs)
 	if err != nil {
 		t.Fatalf("buildValueArgs: %v", err)
 	}

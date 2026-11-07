@@ -17,13 +17,11 @@ var bakedArgs = []string{
 	"--set", "attestationApi.cvmMode=bare-metal",
 	"--set", "attestationApi.enabled=false",
 	"--set", "nriImagePolicy.enabled=false",
-	"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 	"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
 	"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
 	"--set", "image.pullPolicy=Never",
 	"--set", "armtlsMesh.image.pullPolicy=Never",
 	"--set", "router.nginx.imagePullPolicy=Never",
-	"--set", "router.attest.enabled=true",
 }
 
 // helmTemplateBakedNode renders the chart shape `c8s node-image render`
@@ -237,14 +235,6 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 
-func TestChartBakedRouterRejectsChartTLSMode(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set", "router.publicTLS.mode=acme")
-	if err == nil || !strings.Contains(out, "node.baked takes the public TLS mode") {
-		t.Fatalf("render accepted or failed elsewhere: %v\n%s", err, out)
-	}
-}
-
 // A baked router runs the ACME sidecar whatever router.publicTLS.mode says.
 func TestChartBakedRouterRoutingPortAvoidsACMEPorts(t *testing.T) {
 	t.Parallel()
@@ -320,7 +310,6 @@ func TestChartRouterTakesItsCDSFromTheNode(t *testing.T) {
 		"--set", "attestationApi.cvmMode=bare-metal",
 		"--set", "attestationApi.enabled=false",
 		"--set", "nriImagePolicy.enabled=false",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "image.digest=sha256:"+strings.Repeat("1", 64),
 		"--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64),
 	)
@@ -371,7 +360,6 @@ func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 		"--set", "attestationApi.cvmMode=bare-metal",
 		"--set", "attestationApi.enabled=false",
 		"--set", "nriImagePolicy.enabled=false",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
 		"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
 	}

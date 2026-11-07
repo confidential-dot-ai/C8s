@@ -112,7 +112,7 @@ func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 // under repository, or the chart default when empty.
 func publishOverride(t *testing.T, repository string) {
 	t.Helper()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	if repository != "" {
 		args = append(args, "--set", "image.repository="+repository)
 	}

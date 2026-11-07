@@ -31,6 +31,3 @@ webhooks:
         name: {{ include "c8s.operatorName" . }}
         path: /validate-pods
         port: {{ .Values.webhook.service.port }}
-      {{- if .Values.webhook.caBundle }}
-      caBundle: {{ .Values.webhook.caBundle }}
-      {{- end }}
