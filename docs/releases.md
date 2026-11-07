@@ -5,7 +5,9 @@ C8s releases as one unit.
 A `vX.Y.Z` tag versions the `c8s` CLI, the component images, the Helm chart, and
 the measured node images — the guest images a node boots — together, all built
 from one commit. Releases are automatic: maintainers do not calculate or push
-release tags. Terms are defined in [glossary.md](glossary.md).
+release tags. Terms are defined in [glossary.md](glossary.md). The nested
+`pkg/launchfile` Go module has its own tags, described in
+[The pkg/launchfile module](#the-pkglaunchfile-module).
 
 ## Version rules
 
@@ -122,6 +124,42 @@ proves that the `beta` workflow made the statement, so its value rests on the
 branch rules below. To bring `main` into `beta`, merge a pull request from
 `main` with a merge commit.
 
+## The pkg/launchfile module
+
+`github.com/confidential-dot-ai/c8s/pkg/launchfile` is a separate Go module so
+other modules can read and write the CDS launch file without C8s's dependency
+graph. Go resolves a nested module from tags named `pkg/launchfile/vX.Y.Z`.
+
+A release creates `pkg/launchfile/vX.Y.Z`, with the root release's version, at
+the release commit when `pkg/launchfile` changed since the newest
+`pkg/launchfile/v*` tag in the commit's history, or when no such tag exists. An
+unchanged module gets no tag, so module versions skip numbers. The module tag
+is created before the root tag. A beta release creates
+`pkg/launchfile/vX.Y.Z-beta.N` under the same rule.
+
+The root `go.mod` requires a published module version and replaces it with
+`./pkg/launchfile`, as `go.work` does. A module importing the root honors
+neither, so it builds the root against the required tag. CI's **Build as a
+pkg/launchfile importer** step drops the replace, sets `GOWORK=off`, and
+builds `./...` against the required version. A root change that needs
+unpublished module code therefore lands in two steps:
+
+1. Merge the module change. Its release creates the module tag.
+2. Merge the root change with its require bumped to that tag:
+   `go mod edit -require=github.com/confidential-dot-ai/c8s/pkg/launchfile@vX.Y.Z`.
+
+The release refuses to create a root tag whose `go.mod` requires a module
+version without a tag, `v0.0.0` included. A run it refuses keeps any module tag
+it created.
+
+Bootstrap: until the first module tag exists, `go.mod` requires `v0.0.0` and
+the CI step passes with a notice. The first release after the module was added
+creates `pkg/launchfile/vX.Y.Z` and then fails before the root tag, because the
+root still requires `v0.0.0`. Merge a commit that bumps the require to that
+tag. The release run for that push cuts the root tag, normally the same
+`vX.Y.Z` since no root tag was created. Rerunning the failed run does not help: its commit still
+requires `v0.0.0`.
+
 ## Repository setup
 
 A release needs:
@@ -132,9 +170,10 @@ A release needs:
   credential; it gates the publishing jobs.
 - An Actions policy permitting the workflow's `contents: write`,
   `packages: write`, and `id-token: write` permissions.
-- A `v*` tag ruleset, if any, that lets GitHub Actions create tags while
-  rejecting updates and deletions. Release tags are annotated but unsigned, so
-  a ruleset requiring signed `v*` tags rejects the workflow.
+- A `v*` and `pkg/launchfile/v*` tag ruleset, if any, that lets GitHub
+  Actions create tags while rejecting updates and deletions. Release tags are
+  annotated but unsigned, so a ruleset requiring signed tags rejects the
+  workflow.
 - A `beta` ruleset copying `main`'s rules (pull request, signed commits, the
   required status checks, no force-push, no deletion), without a bypass and
   without linear history, which the merge-commit flow above needs.

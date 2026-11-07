@@ -43,6 +43,9 @@ jobs:
     outputs:
       channel: ${{ steps.version.outputs.channel }}
       image-matrix: ${{ steps.release-images.outputs.matrix }}
+      launchfile-latest: ${{ steps.launchfile.outputs.launchfile-latest }}
+      launchfile-require: ${{ steps.launchfile.outputs.launchfile-require }}
+      launchfile-tag: ${{ steps.launchfile.outputs.launchfile-tag }}
       publish: ${{ steps.version.outputs.publish }}
       tag: ${{ steps.version.outputs.tag }}
       update-latest: ${{ steps.version.outputs.update-latest }}
@@ -153,6 +156,14 @@ jobs:
           RELEASE_CHANNEL: ${{ github.ref == 'refs/heads/beta' && 'beta' || 'stable' }}
           TARGET_SHA: ${{ inputs.target-sha }}
         run: .github/scripts/calculate-release-version.sh
+
+      - name: Plan the pkg/launchfile module tag
+        id: launchfile
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TARGET_SHA: ${{ inputs.target-sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: .github/scripts/launchfile-module.sh release-plan
 
   images:
     name: Build release image (${{ matrix.binary }})
@@ -468,9 +479,14 @@ jobs:
 
       # The Git reference reserves the version before registry writes. A retry
       # verifies the exact target and repairs only missing registry aliases.
-      - name: Create or verify annotated release tag
+      # The module tag comes first so the root's require can name it; the
+      # root tag waits until that require is published (docs/releases.md).
+      - name: Create or verify annotated release tags
         env:
           GH_TOKEN: ${{ github.token }}
+          LAUNCHFILE_LATEST: ${{ needs.calculate.outputs.launchfile-latest }}
+          LAUNCHFILE_REQUIRE: ${{ needs.calculate.outputs.launchfile-require }}
+          LAUNCHFILE_TAG: ${{ needs.calculate.outputs.launchfile-tag }}
           RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
           TARGET_SHA: ${{ inputs.target-sha }}
         run: |
@@ -481,44 +497,74 @@ jobs:
               gh api -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" "$@"
           }
 
-          refs="$(github_api "/repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG")"
-          exact_ref="refs/tags/$RELEASE_TAG"
-          exact_count="$(jq --arg ref "$exact_ref" '[.[] | select(.ref == $ref)] | length' <<< "$refs")"
-          if [ "$exact_count" = "0" ]; then
-            tagger_name="github-actions[bot]"
-            tagger_id="$(github_api "/users/$tagger_name" --jq .id)"
-            [[ "$tagger_id" =~ ^[0-9]+$ ]]
-            tag_object_sha="$(
-              github_api --method POST "/repos/$GITHUB_REPOSITORY/git/tags" \
-                --raw-field tag="$RELEASE_TAG" \
-                --raw-field message="Release $RELEASE_TAG from $TARGET_SHA" \
-                --raw-field object="$TARGET_SHA" \
-                --raw-field type=commit \
-                --raw-field "tagger[name]=$tagger_name" \
-                --raw-field "tagger[email]=$tagger_id+$tagger_name@users.noreply.github.com" \
-                --jq .sha
+          exact_ref_count() {
+            local refs
+            # Command substitution clears errexit, so fail explicitly.
+            refs="$(github_api "/repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$1")" || return 1
+            jq --arg ref "refs/tags/$1" '[.[] | select(.ref == $ref)] | length' <<< "$refs"
+          }
+
+          ensure_tag() {
+            local tag="$1" message="$2" exact_count tagger_name tagger_id tag_object_sha
+            local ref_type ref_sha target_type target_sha
+            exact_count="$(exact_ref_count "$tag")"
+            if [ "$exact_count" = "0" ]; then
+              tagger_name="github-actions[bot]"
+              tagger_id="$(github_api "/users/$tagger_name" --jq .id)"
+              [[ "$tagger_id" =~ ^[0-9]+$ ]]
+              tag_object_sha="$(
+                github_api --method POST "/repos/$GITHUB_REPOSITORY/git/tags" \
+                  --raw-field tag="$tag" \
+                  --raw-field message="$message" \
+                  --raw-field object="$TARGET_SHA" \
+                  --raw-field type=commit \
+                  --raw-field "tagger[name]=$tagger_name" \
+                  --raw-field "tagger[email]=$tagger_id+$tagger_name@users.noreply.github.com" \
+                  --jq .sha
+              )"
+              test -n "$tag_object_sha"
+              github_api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
+                --raw-field ref="refs/tags/$tag" \
+                --raw-field sha="$tag_object_sha" > /dev/null
+            elif [ "$exact_count" != "1" ]; then
+              echo "::error::multiple exact refs returned for $tag"
+              exit 1
+            fi
+
+            IFS=$'\t' read -r ref_type ref_sha <<< "$(
+              github_api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+                --jq '[.object.type, .object.sha] | @tsv'
             )"
-            test -n "$tag_object_sha"
-            github_api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
-              --raw-field ref="$exact_ref" \
-              --raw-field sha="$tag_object_sha" > /dev/null
-          elif [ "$exact_count" != "1" ]; then
-            echo "::error::multiple exact refs returned for $RELEASE_TAG"
+            test "$ref_type" = tag
+            [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
+            IFS=$'\t' read -r target_type target_sha <<< "$(
+              github_api "/repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" \
+                --jq '[.object.type, .object.sha] | @tsv'
+            )"
+            test "$target_type" = commit
+            test "$target_sha" = "$TARGET_SHA"
+          }
+
+          module_version='v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?'
+          [[ "$LAUNCHFILE_REQUIRE" =~ ^$module_version$ ]]
+          [[ "$LAUNCHFILE_LATEST" =~ ^pkg/launchfile/$module_version$ ]]
+          if [ -n "$LAUNCHFILE_TAG" ]; then
+            test "$LAUNCHFILE_TAG" = "pkg/launchfile/$RELEASE_TAG"
+            ensure_tag "$LAUNCHFILE_TAG" "Release $LAUNCHFILE_TAG from $TARGET_SHA"
+          fi
+
+          # A root release whose require names an unpublished module version
+          # breaks every importer, v0.0.0 included.
+          require_count=0
+          if [ "$LAUNCHFILE_REQUIRE" != v0.0.0 ]; then
+            require_count="$(exact_ref_count "pkg/launchfile/$LAUNCHFILE_REQUIRE")"
+          fi
+          if [ "$require_count" != "1" ]; then
+            echo "::error::go.mod at $TARGET_SHA requires pkg/launchfile $LAUNCHFILE_REQUIRE, which is not published, so $RELEASE_TAG is not cut. Merge a commit that requires ${LAUNCHFILE_LATEST#pkg/launchfile/}; the release run for that push cuts the root tag."
             exit 1
           fi
 
-          IFS=$'\t' read -r ref_type ref_sha <<< "$(
-            github_api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
-              --jq '[.object.type, .object.sha] | @tsv'
-          )"
-          test "$ref_type" = tag
-          [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
-          IFS=$'\t' read -r target_type target_sha <<< "$(
-            github_api "/repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" \
-              --jq '[.object.type, .object.sha] | @tsv'
-          )"
-          test "$target_type" = commit
-          test "$target_sha" = "$TARGET_SHA"
+          ensure_tag "$RELEASE_TAG" "Release $RELEASE_TAG from $TARGET_SHA"
 
       - name: Publish or verify component image aliases
         env:

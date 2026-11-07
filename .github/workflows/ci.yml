@@ -10,6 +10,8 @@ on:
       - "go.sum"
       - "go.work"
       - "go.work.sum"
+      - "pkg/launchfile/go.mod"
+      - "pkg/launchfile/go.sum"
       - "Makefile"
       - ".golangci.yml"
       - "internal/helmchart/c8s/**"
@@ -19,6 +21,7 @@ on:
       - "scripts/coverage-gate.sh"
       - "scripts/shipped-deps-guard.sh"
       - "scripts/mutation-check.sh"
+      - ".github/scripts/launchfile-module.sh"
       - ".gremlins.yaml"
       - ".github/workflows/ci.yml"
   pull_request:
@@ -101,6 +104,11 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      # The replace and go.work do not reach importers of the root, so a root
+      # change that needs unpublished pkg/launchfile code lands in two steps.
+      - name: Build as a pkg/launchfile importer
+        run: .github/scripts/launchfile-module.sh downstream-build
 
       - name: Build macOS CLI
         run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/c8s-darwin ./cmd/c8s

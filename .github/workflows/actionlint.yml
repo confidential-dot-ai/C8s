@@ -42,6 +42,9 @@ jobs:
       - name: Test the one-command image publisher
         run: bash .github/scripts/tests/test-publish-ref-images.sh
 
+      - name: Test the pkg/launchfile release checks
+        run: bash .github/scripts/tests/test-launchfile-module.sh
+
       - name: Install actionlint (checksum-pinned)
         env:
           # SHA256 from the v1.7.12 release's checksums.txt (linux_amd64).
@@ -71,6 +74,8 @@ jobs:
         run: |
           shellcheck \
             .github/scripts/calculate-release-version.sh \
+            .github/scripts/launchfile-module.sh \
+            .github/scripts/tests/test-launchfile-module.sh \
             .github/scripts/pin-manifest.sh \
             .github/scripts/release-pin.sh \
             .github/scripts/confos-mkosi-pin.sh \
