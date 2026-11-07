@@ -34,7 +34,7 @@ func TestClockQuarantineHTTPOnExistingConnection(t *testing.T) {
 	serving := func() cdsha.Serving { return cdsha.Serving{OK: !fault.Load(), Reason: reason.Error()} }
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	var connections atomic.Int32
-	server := httptest.NewUnstartedServer(haGate(serving, clock, next))
+	server := httptest.NewUnstartedServer(haGate(serving, clock, confirmed, next))
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
 			connections.Add(1)
@@ -92,7 +92,7 @@ func TestClockBeforeObservationFutureTokenStillGetsUnauthorized(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := allowlist.Handler{Allowlist: inMemoryStore(t), WriteAuthorizer: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}, ClockSkew: 30 * time.Second}.Authorize}
-	gated := haGate(func() cdsha.Serving { return cdsha.Serving{OK: true} }, func() error { return nil }, http.HandlerFunc(handler.HandleReplaceAll))
+	gated := haGate(alwaysServing, noClockError, confirmed, http.HandlerFunc(handler.HandleReplaceAll))
 	request := httptest.NewRequest(http.MethodPut, "/allowlist", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestClockBeforeObservationFutureTokenStillGetsUnauthorized(t *testing.T) {
 
 func TestClockGateDiagnosticsDoNotConsultServing(t *testing.T) {
 	gated := haGate(func() cdsha.Serving { t.Error("exempt route consulted Serving"); return cdsha.Serving{} },
-		func() error { return nil }, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		noClockError, confirmed, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	for _, path := range []string{"/healthz", "/metrics", "/ha/status", "/ha/pins", "/ha/decrees"} {
 		response := httptest.NewRecorder()
 		gated.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

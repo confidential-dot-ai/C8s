@@ -171,6 +171,19 @@ The aggregate client Service publishes ready guests on 8443; per-replica
 Services publish unready addresses on 8443 and 8444 for bootstrap, diagnostics
 and peer traffic.
 
+The cached readiness lease does not authorize a protected request. Each such
+request also confirms a new watermark through the leader's Raft barrier and
+waits for that watermark to apply locally before reading policy or releasing a
+secret. A revocation acknowledged before the request starts therefore applies
+to its authorization, even on a follower whose readiness lease is still valid.
+
+If confirmation fails, the request returns HTTP 503 without reaching its
+handler. This adds a quorum confirmation to protected requests and can increase
+latency or refusals during leader transitions. Health, readiness, metrics and
+`/ha/status`, `/ha/pins`, `/ha/decrees` remain reachable for diagnosis and
+recovery without a fresh confirmation. `/readyz` can briefly remain successful
+while protected requests fail their confirmation.
+
 A replica that observes its clock lagging an authenticated current member
 beyond the configured JWT allowance refuses client requests, CA acquisition
 and new local mutations. Its readiness reason describes the observed lag;
