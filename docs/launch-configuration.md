@@ -215,6 +215,25 @@ c8s-cert sidecar uses with no in-cluster service account to fall back to. An
 external webhook host requires the injection images; missing either stops
 the operator at startup.
 
+Copy `/usr/bin/cilium-operator-generic` from `quay.io/cilium/operator-generic`
+to the same path on each control-plane host, matching the worker static pod's
+Cilium version. Run one supervised instance beside each external control-plane
+replica, using the generated
+kubeconfig; `DIR` is the credentials command's `--output-dir` above:
+
+```sh
+/usr/bin/cilium-operator-generic \
+  --k8s-kubeconfig-path DIR/c8s-cilium-operator.kubeconfig \
+  --k8s-namespace kube-system \
+  --ipam kubernetes \
+  --identity-allocation-mode crd \
+  --enable-l7-proxy=false
+```
+
+Its leader lease lives in `kube-system`, where the rendered grants authorize
+it. Kubernetes assigns the pod ranges, and the operator uses the worker's
+CRD identity allocation and L7 policy settings.
+
 The image flags must be the worker image build's, so the router it renders is
 the launch the image's floor pins. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
