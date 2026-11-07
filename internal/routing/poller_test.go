@@ -243,7 +243,7 @@ func TestPollRetainsOnUnchanged(t *testing.T) {
 	}
 	f.transports.mu.Lock()
 	defer f.transports.mu.Unlock()
-	if _, ok := f.transports.cache[backendKey(gone)]; ok {
+	if _, ok := f.transports.cache[poolKey{backend: backendKey(gone)}]; ok {
 		t.Fatal("transport of an unnamed backend survived an unchanged poll")
 	}
 }

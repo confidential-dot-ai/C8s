@@ -50,14 +50,14 @@ func (l routerLeaf) Provision(context.Context) (*tls.Certificate, time.Duration,
 	return l.cert, 0, nil
 }
 
-// Transports caches one HTTP transport per backend, so connections are pooled
-// per backend and never shared between backends with different identities.
+// Transports caches separate pinned and unpinned workload transports and one
+// transport per address backend. Connections stay within their backend and pin.
 // It is safe for concurrent use.
 type Transports struct {
 	cfg TransportConfig
 
 	mu    sync.Mutex
-	cache map[string]pooled
+	cache map[poolKey]pooled
 	// caDigest identifies the mesh CA bundle last seen by dropMeshPools.
 	caDigest [sha256.Size]byte
 	// routerDigest is the router stamp's allowlist digest last read, empty
@@ -82,6 +82,11 @@ type pooled struct {
 	routerDigest string
 }
 
+type poolKey struct {
+	backend string
+	pinned  bool
+}
+
 // errBackendDigestMismatch fails a workload backend whose entry differs
 // between the allowlist its leaf was stamped under and the router's (B8).
 var errBackendDigestMismatch = errors.New("routing: backend allowlist entry differs from the router's")
@@ -95,9 +100,8 @@ const damagedRouterStamp = "damaged"
 // backend's.
 var errRouterStampDamaged = errors.New("routing: router stamp damaged")
 
-// errRouterRenewed refuses a workload dial whose router leaf is stamped under
-// another digest than its transport was built under, so a pool never mixes
-// digests.
+// errRouterRenewed refuses a pinned workload dial whose router leaf carries
+// another digest than its pool's tag.
 var errRouterRenewed = errors.New("routing: router leaf renewed under another allowlist digest")
 
 // stampCache holds the router stamp of the last leaf it parsed, so an
@@ -163,7 +167,7 @@ func NewTransports(cfg TransportConfig) *Transports {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	t := &Transports{cfg: cfg, cache: map[string]pooled{}}
+	t := &Transports{cfg: cfg, cache: map[poolKey]pooled{}}
 	t.stamp.log = cfg.Logger
 	if cfg.Allowlist != nil {
 		t.entries = &entryDocs{src: cfg.Allowlist}
@@ -171,23 +175,23 @@ func NewTransports(cfg TransportConfig) *Transports {
 	return t
 }
 
-// For returns the transport for b, building it on first use.
+// For returns b's unpinned transport, building it on first use.
 func (t *Transports) For(b routes.Backend) *http.Transport {
-	return t.pool(b).Transport
+	return t.poolForTrackedDigest(b, false).Transport
 }
 
-// ForRouterDigest is For for a request bound to routerDigest. It reports
-// false for a workload backend whose pool was built under another digest.
+// ForRouterDigest selects a pinned workload pool for a binding or header,
+// refusing a pool tagged with another digest. Address backends share one pool.
 func (t *Transports) ForRouterDigest(b routes.Backend, routerDigest string) (*http.Transport, bool) {
-	p := t.pool(b)
+	p := t.poolForTrackedDigest(b, true)
 	if p.workload && p.routerDigest != routerDigest {
 		return nil, false
 	}
 	return p.Transport, true
 }
 
-func (t *Transports) pool(b routes.Backend) pooled {
-	key := backendKey(b)
+func (t *Transports) poolForTrackedDigest(b routes.Backend, pinned bool) pooled {
+	key := poolKey{backend: backendKey(b), pinned: pinned && b.Workload != ""}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Pooled connections skip the handshake, so none outlives the leaf it
@@ -199,7 +203,7 @@ func (t *Transports) pool(b routes.Backend) pooled {
 	if p, ok := t.cache[key]; ok {
 		return p
 	}
-	p := pooled{Transport: t.build(b), workload: b.Workload != "", routerDigest: t.routerDigest}
+	p := pooled{Transport: t.build(b, key.pinned), workload: b.Workload != "", routerDigest: t.routerDigest}
 	t.cache[key] = p
 	return p
 }
@@ -217,7 +221,7 @@ func (t *Transports) Retain(m *routes.Manifest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, tr := range t.cache {
-		if !keep[key] {
+		if !keep[key.backend] {
 			tr.CloseIdleConnections()
 			delete(t.cache, key)
 		}
@@ -228,7 +232,7 @@ func backendKey(b routes.Backend) string {
 	return strings.Join([]string{b.Address, b.Workload, b.ServerName, b.CA}, "\x00")
 }
 
-func (t *Transports) build(b routes.Backend) *http.Transport {
+func (t *Transports) build(b routes.Backend, pinned bool) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -242,7 +246,7 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 		// headers only when generation ends. The proxy bounds the request.
 	}
 	if b.Workload != "" {
-		transport.DialTLSContext = t.dialWorkload(b.Workload, t.routerDigest, t.routerDigestKnown, dialer)
+		transport.DialTLSContext = t.dialWorkload(b.Workload, t.routerDigest, t.routerDigestKnown, pinned, dialer)
 		return transport
 	}
 	// A fresh pool, never nil: a nil RootCAs means the system roots.
@@ -267,22 +271,31 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 // published mesh CA, and the route's workload name is required of it before
 // any request is written. The pod's ruleset leaves this identity's
 // connections into the cluster uncaptured, so this handshake is the one that
-// crosses the pod boundary. Once the router digest is known, a leaf renewed
-// under another one retires the pools instead of dialling.
-func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown bool, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+// crosses the pod boundary. A renewed digest retires the pools; only pinned
+// dials are refused. Unpinned dials complete under the generation they read.
+func (t *Transports) dialWorkload(
+	workload string,
+	routerDigest string,
+	digestKnown bool,
+	pinned bool,
+	dialer *net.Dialer,
+) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
 		var stamped []byte
-		cfg, digest, err := t.meshClientConfig(workload, &stamped)
+		dialConfig, dialDigest, err := t.meshClientConfig(workload, &stamped)
 		if err != nil {
 			return nil, err
 		}
-		if digestKnown && string(digest) != routerDigest {
+		digestChanged := string(dialDigest) != routerDigest
+		if digestChanged && (pinned || digestKnown) {
 			if err := t.syncRouterDigest(); err != nil {
 				return nil, err
 			}
-			return nil, errRouterRenewed
+			if pinned {
+				return nil, errRouterRenewed
+			}
 		}
 		conn, err := dialer.DialContext(ctx, network, addr)
 		if err != nil {
@@ -290,13 +303,13 @@ func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown boo
 		}
 		handshake, cancel := context.WithTimeout(ctx, handshakeTimeout)
 		defer cancel()
-		mesh := tls.Client(conn, cfg)
+		mesh := tls.Client(conn, dialConfig)
 		if err := mesh.HandshakeContext(handshake); err != nil {
 			conn.Close()
 			return nil, err
 		}
 		if stamped != nil {
-			if err := t.entries.sameEntry(handshake, workload, stamped, digest); err != nil {
+			if err := t.entries.sameEntry(handshake, workload, stamped, dialDigest); err != nil {
 				mesh.Close()
 				return nil, fmt.Errorf("%w: %w", errBackendDigestMismatch, err)
 			}

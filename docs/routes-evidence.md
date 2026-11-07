@@ -70,9 +70,13 @@ A client that attests on one connection and forwards on others can send
 `X-C8s-Expect-Allowlist: <hex>`, the allowlist digest of the router stamp it
 verified. The routing listener reads the published router credential and, unless
 its stamp carries exactly that digest, answers 503 `router_digest_changed`
-without forwarding; a malformed value or an unstamped router never matches. The
-header is dropped before forwarding, and a request without it is unaffected.
-The client drops its verdict and attests again.
+without forwarding; a malformed value or an unstamped router never matches.
+For a workload backend, the request uses only a connection made under that digest;
+a renewal under another digest before its dial gets 503 `router_digest_changed`.
+The header is dropped before forwarding, and a request without it is unaffected.
+The client drops its verdict and attests again. To keep requests from being
+forwarded under an allowlist you did not verify, use a bound session or the header;
+verifying the front-door certificate on a plain TLS connection pins nothing.
 
 Such a client can also send `X-C8s-Expect-Route: <hex>`, the route digest it
 verified. Unless that is the digest of the manifest the routing listener applies,

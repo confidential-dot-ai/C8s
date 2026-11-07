@@ -237,8 +237,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var expectedDigest string
 	if len(expected) > 0 {
-		if err := p.checkExpected(expected); err != nil {
+		var err error
+		expectedDigest, err = p.checkExpected(expected)
+		if err != nil {
 			var changed *BindingChangedError
 			if errors.As(err, &changed) {
 				http.Error(w, changed.Code, http.StatusServiceUnavailable)
@@ -266,15 +269,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if expectedDigest != "" && held.RouterDigest != expectedDigest {
+			p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+			return
+		}
 	}
 	route, target, ok := applied.Table.Select(r)
 	if !ok {
 		http.NotFound(w, r) // M5
 		return
 	}
-	transport, ok := p.transport(route, held)
+	var transport *http.Transport
+	if held == nil && expectedDigest != "" {
+		transport, ok = p.transports.ForRouterDigest(route.Backend, expectedDigest)
+	} else {
+		transport, ok = p.transport(route, held)
+	}
 	if !ok {
-		p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+		if held != nil {
+			p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+		} else {
+			http.Error(w, types.ErrorCodeRouterDigestChanged, http.StatusServiceUnavailable)
+		}
 		return
 	}
 	if p.timeout > 0 {
@@ -331,23 +347,23 @@ func (p *Proxy) checkBinding(
 }
 
 // checkExpected refreshes the published credential, as checkBinding does, and
-// requires its router digest to equal the one digest in expected. A malformed
+// returns the expected digest only when it matches the router's. A malformed
 // value or an unstamped router matches nothing.
-func (p *Proxy) checkExpected(expected []string) error {
+func (p *Proxy) checkExpected(expected []string) (string, error) {
 	changed := &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
 	want := decodeExpected(expected)
 	if want == nil {
-		return changed
+		return "", changed
 	}
 	if p.transports != nil {
 		if err := p.transports.syncRouterDigest(); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if p.transports.RouterDigest() != string(want) {
-		return changed
+		return "", changed
 	}
-	return nil
+	return string(want), nil
 }
 
 // decodeExpected returns the one SHA-256 digest an expect header carries in
