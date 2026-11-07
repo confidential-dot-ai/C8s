@@ -1,11 +1,13 @@
 # What a cluster of workers holds for them beyond c8s's chart (c8s worker
 # control-plane render): the static pods' grants, which their node's kubelet
 # credentials carry, so every node holds them (CoreDNS needs nothing
-# c8s-worker-cilium does not grant); the Cilium operator's, which runs beside
-# the control plane as the user c8s-cilium-operator, since NodeRestriction
-# keeps node credentials from its leader lease; and the kube-dns Service in
-# front of the workers' CoreDNS, at the document's clusterDNS. Every worker
-# runs CoreDNS, so a lookup stays on its node.
+# c8s-worker-cilium does not grant); the grants a kubelet's bootstrap token and
+# client-certificate rotation rest on, which a control plane other than
+# kubeadm's leaves unbound; the Cilium operator's, which runs beside the control
+# plane as the user c8s-cilium-operator, since NodeRestriction keeps node
+# credentials from its leader lease; and the kube-dns Service in front of the
+# workers' CoreDNS, at the document's clusterDNS. Every worker runs CoreDNS, so
+# a lookup stays on its node.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -133,6 +135,48 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: 'system:node-proxier'
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: 'system:nodes'
+---
+# A worker's kubelet asks for its client certificate with the bootstrap token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: c8s-worker-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'system:node-bootstrapper'
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: 'system:bootstrappers'
+---
+# The signer issues that first certificate without an admin approving it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: c8s-worker-bootstrap-client-cert
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'system:certificates.k8s.io:certificatesigningrequests:nodeclient'
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: 'system:bootstrappers'
+---
+# The kubelet rotates that certificate, each renewal approved the same way.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: c8s-worker-client-cert-renewal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'system:certificates.k8s.io:certificatesigningrequests:selfnodeclient'
 subjects:
 - kind: Group
   apiGroup: rbac.authorization.k8s.io

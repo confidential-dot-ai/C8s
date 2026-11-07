@@ -182,6 +182,9 @@ workers:
   host-namespace admission policies are off, and each worker's NRI plugin
   admits host privilege;
 - the grants the static pods need, bound to every node;
+- the grants a kubelet's join rests on, which only kubeadm binds: requesting a
+  client certificate with the bootstrap token, and automatic approval of that
+  certificate and of each rotation of it, so no admin approves a worker by hand;
 - the Cilium operator's grants, bound to the user `c8s-cilium-operator`;
 - the `kube-dns` Service, at `kubernetes.clusterDNS`, which sends each lookup
   to its own node's CoreDNS.
@@ -216,10 +219,10 @@ The image flags must be the worker image build's, so the router it renders is
 the launch the image's floor pins. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
 beside each. The control plane the workers join must also accept the bootstrap
-token and issue the kubelet's client certificate, give each node a pod range
-from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), and deploy no CNI,
-kube-proxy or cluster DNS of its own: a worker refuses them. A worker needs no
-cloud controller manager: its kubelet joins untainted and reports the staged
+token and run the client-certificate signer and approver, give each node a pod
+range from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), and deploy no
+CNI, kube-proxy or cluster DNS of its own: a worker refuses them. A worker needs
+no cloud controller manager: its kubelet joins untainted and reports the staged
 `--node-ip` as the node's InternalIP. Each boot registers the worker as a new
 node.
 

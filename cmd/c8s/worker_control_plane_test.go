@@ -95,6 +95,8 @@ func TestWorkerClusterHoldsTheChartForWorkers(t *testing.T) {
 	want := append([]string{"Namespace//c8s-system"}, workerClusterKeeps...)
 	want = append(want,
 		"ClusterRole//c8s-worker-cilium", "ClusterRoleBinding//c8s-worker-cilium", "ClusterRoleBinding//c8s-worker-kube-proxy",
+		"ClusterRoleBinding//c8s-worker-bootstrap", "ClusterRoleBinding//c8s-worker-bootstrap-client-cert",
+		"ClusterRoleBinding//c8s-worker-client-cert-renewal",
 		"ClusterRole//c8s-worker-cilium-operator", "ClusterRoleBinding//c8s-worker-cilium-operator",
 		"Role/kube-system/c8s-worker-cilium-operator-lease", "RoleBinding/kube-system/c8s-worker-cilium-operator-lease",
 		"Service/kube-system/kube-dns",
