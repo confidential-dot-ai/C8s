@@ -227,6 +227,10 @@ detectable only by pinning the route digest or the operator keys.
   router still serving advertises it before it takes effect. A write replaced
   before it takes effect never does. When its certificate expires the router
   retires every backend pool and dials nothing until it renews.
+  Its nginx supervisor checks credentials every five seconds, stops nginx on
+  withdrawal, and starts it again when all served credentials are readable.
+  Readiness fails while nginx is stopped. An unexpected nginx exit terminates
+  the container for kubelet to restart.
 - With the front door in `cds` mode the serving certificate is the router's
   mesh certificate, so a client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist

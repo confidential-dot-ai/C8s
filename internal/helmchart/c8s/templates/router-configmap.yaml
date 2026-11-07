@@ -80,9 +80,6 @@ data:
   serve.sh: |
     #!/bin/sh
     set -eu
-    # nginx reads its certificate on every TLS handshake, so a renewal needs
-    # no signal. This script stops nginx once a credential the router serves
-    # is withdrawn: serving on would serve a certificate C8s took back.
     interval=5
     watched="{{ include "router.servedCredentials" . }}"
     {{- if $launchDriven }}
@@ -103,28 +100,52 @@ data:
         return 1
     }
 
-    if withdrawn; then exit 1; fi
-    # Worker PIDs and $connection restart from the same numbers, so each
-    # start names itself in the connection identifier.
-    start="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
-    if [ "${#start}" -ne 16 ]; then
-        echo "router: cannot name this nginx start" >&2
-        exit 1
-    fi
-    printf 'map $pid $nginx_start {\n    default "%s";\n}\n' "$start" > {{ $startConf }}
-    nginx -c {{ include "router.configDir" . }}/nginx.conf -g 'daemon off;' &
-    nginx_pid=$!
-    trap 'kill -TERM "$nginx_pid" 2>/dev/null; exit 0' TERM INT
-    trap 'kill -QUIT "$nginx_pid" 2>/dev/null; exit 0' QUIT
+    nginx_pid=
+    stop_nginx() {
+        if [ -n "$nginx_pid" ]; then
+            kill -TERM "$nginx_pid" 2>/dev/null || true
+            wait "$nginx_pid" || true
+            nginx_pid=
+        fi
+    }
 
-    while kill -0 "$nginx_pid" 2>/dev/null; do
-        sleep "$interval"
-        if withdrawn; then
-            kill -TERM "$nginx_pid" 2>/dev/null
+    quit_nginx() {
+        if [ -n "$nginx_pid" ]; then
+            kill -QUIT "$nginx_pid" 2>/dev/null || true
+            wait "$nginx_pid" || true
+        fi
+        exit 0
+    }
+
+    start_nginx() {
+        # Each start has distinct connection identifiers, even when PIDs repeat.
+        start="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+        if [ "${#start}" -ne 16 ]; then
+            echo "router: cannot name this nginx start" >&2
             exit 1
         fi
+        printf 'map $pid $nginx_start {\n    default "%s";\n}\n' "$start" > {{ $startConf }}
+        nginx -c {{ include "router.configDir" . }}/nginx.conf -g 'daemon off;' &
+        nginx_pid=$!
+    }
+
+    trap 'stop_nginx; exit 0' TERM INT
+    trap quit_nginx QUIT
+
+    while :; do
+        while withdrawn; do sleep "$interval"; done
+        start_nginx
+        while kill -0 "$nginx_pid" 2>/dev/null; do
+            sleep "$interval"
+            if ! kill -0 "$nginx_pid" 2>/dev/null; then break; fi
+            if withdrawn; then
+                stop_nginx
+                continue 2
+            fi
+        done
+        wait "$nginx_pid"
+        exit $?
     done
-    wait "$nginx_pid"
   nginx.conf: |
     worker_processes auto;
     # Each connection may hold a client socket, an upstream socket and a

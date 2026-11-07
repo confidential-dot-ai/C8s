@@ -113,14 +113,6 @@ containers:
         scheme: HTTPS
       initialDelaySeconds: 5
       periodSeconds: 10
-    livenessProbe:
-      httpGet:
-        path: /healthz
-        port: https
-        scheme: HTTPS
-      initialDelaySeconds: 10
-      periodSeconds: 30
-
     volumeMounts:
       - name: c8s-certs
         mountPath: {{ include "c8s.certDir" . }}
