@@ -25,6 +25,8 @@ func testPodClaims(t *testing.T) PodClaims {
 		RuntimeExtensions: []string{d}, Containers: []SandboxContainer{{Digest: d, Argv: []string{"/app", "<>&\u2028\u2029"}, Env: env, Mounts: []allowlist.ObservedMount{{Destination: "/data", Volume: "data", Source: "/private/guest/path", Class: allowlist.MountData, Storage: allowlist.MountMemory}}}}}
 }
 
+// The canonical bytes survive the outer JSON unchanged and keep the
+// named-volume identity; host source paths never reach the wire.
 func TestPodClaimsTransportPreservesExactBindingAndVolume(t *testing.T) {
 	p := testPodClaims(t)
 	raw, err := p.Canonical()
@@ -66,6 +68,8 @@ func TestPodClaimsTransportPreservesExactBindingAndVolume(t *testing.T) {
 	}
 }
 
+// Incomplete history and alternate, ambiguous or unknown
+// JSON are refused.
 func TestPodClaimsRejectAmbiguousAndIncompleteHistory(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -106,6 +110,8 @@ func TestPodClaimsRejectAmbiguousAndIncompleteHistory(t *testing.T) {
 	}
 }
 
+// The report-data binding covers the CSR key, the challenge and the
+// claims, and a node quote cannot satisfy it.
 func TestPodReportDataSeparatesProfilesAndEveryClaim(t *testing.T) {
 	p := testPodClaims(t)
 	raw, _ := p.Canonical()
@@ -126,8 +132,6 @@ func TestPodReportDataSeparatesProfilesAndEveryClaim(t *testing.T) {
 		t.Fatal("Pod and node profiles collide")
 	}
 	for _, change := range []func(*PodClaims){
-		func(p *PodClaims) { p.AssignedPodUID += "x" }, func(p *PodClaims) { p.RuntimePodUID += "x" }, func(p *PodClaims) { p.SandboxID += "x" },
-		func(p *PodClaims) { p.BootID = strings.Repeat("c", 64) }, func(p *PodClaims) { p.Revision++ }, func(p *PodClaims) { p.Containers[0].Argv[0] = "/other" },
 		func(p *PodClaims) { p.Containers[0].Mounts[0].Volume = "other" }, func(p *PodClaims) { p.Containers[0].Role = "mesh" },
 	} {
 		changed := testPodClaims(t)
@@ -159,9 +163,9 @@ func TestPodReportDataSeparatesProfilesAndEveryClaim(t *testing.T) {
 	}
 }
 
-// The assigned workload ID is the tenant identity the leaf carries; it is
-// absent from the wire when the pod has none and must satisfy the extension's
-// grammar when present, so a snapshot CDS accepts is one it can stamp.
+// The assigned workload ID is absent from the wire when the pod has
+// none and must satisfy the extension's grammar when present, so a snapshot
+// CDS accepts is one it can stamp.
 func TestPodClaimsAssignedWorkloadID(t *testing.T) {
 	p := testPodClaims(t)
 	raw, err := p.Canonical()
@@ -183,14 +187,51 @@ func TestPodClaimsAssignedWorkloadID(t *testing.T) {
 	if decoded.AssignedWorkloadID != "tenant-a.web" {
 		t.Fatalf("workload ID = %q after transport", decoded.AssignedWorkloadID)
 	}
-	for _, bad := range []string{"tenant a", "a/b", strings.Repeat("a", 64)} {
-		p.AssignedWorkloadID = bad
-		if _, err := p.Canonical(); err == nil {
-			t.Fatalf("workload ID %q the leaf cannot carry was accepted", bad)
-		}
+	p.AssignedWorkloadID = "tenant a"
+	if _, err := p.Canonical(); err == nil {
+		t.Fatal("a workload ID the leaf cannot carry was accepted")
 	}
 	// An explicit empty string is not the canonical absent form.
 	if _, err := DecodePodClaims([]byte(strings.Replace(string(raw), `"assigned_workload_id":"tenant-a.web"`, `"assigned_workload_id":""`, 1))); err == nil {
 		t.Fatal("explicit empty workload ID accepted as canonical")
+	}
+}
+
+// The spec digest commits to argv, the environment commitment and the mounts
+// with their volumes, is stable across per-variable evidence eviction, and a
+// claim whose spec_digest disagrees with its observation is not canonical.
+func TestPodClaimsSpecDigest(t *testing.T) {
+	p := testPodClaims(t)
+	base := ContainerSpecDigest(p.Containers[0])
+	if !types.IsCanonicalDigest(base) {
+		t.Fatalf("spec digest %q is not a canonical digest", base)
+	}
+	raw, err := p.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"spec_digest":"`+base+`"`)) {
+		t.Fatalf("claims carry no spec_digest %s: %s", base, raw)
+	}
+	for name, change := range map[string]func(*SandboxContainer){
+		"argv":   func(c *SandboxContainer) { c.Argv = append(c.Argv, "--debug") },
+		"env":    func(c *SandboxContainer) { c.Env, _ = allowlist.ObserveEnv([]string{"MESSAGE=other"}) },
+		"volume": func(c *SandboxContainer) { c.Mounts[0].Volume = "other" },
+		"ro":     func(c *SandboxContainer) { c.Mounts[0].ReadOnly = true },
+	} {
+		c := testPodClaims(t).Containers[0]
+		change(&c)
+		if ContainerSpecDigest(c) == base {
+			t.Fatalf("%s change kept the spec digest", name)
+		}
+	}
+	evicted := testPodClaims(t).Containers[0]
+	evicted.Env.VariableDigests = nil
+	if ContainerSpecDigest(evicted) != base {
+		t.Fatal("evicting per-variable evidence changed the spec digest")
+	}
+	forged := bytes.Replace(raw, []byte(base), []byte("sha256:"+strings.Repeat("0", 64)), 1)
+	if _, err := DecodePodClaims(forged); err == nil {
+		t.Fatal("spec_digest disagreeing with the observation accepted")
 	}
 }

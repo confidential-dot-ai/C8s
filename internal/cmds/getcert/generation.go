@@ -517,10 +517,14 @@ func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
 }
 
 func writeIssuerRecord(v credentialVolume, id issuerKeyID) error {
+	record := []byte(string(id) + "\n")
+	var err error
 	if v.root != nil {
-		return fileutil.WriteAtomicRoot(v.root, issuerRecordName, []byte(string(id)+"\n"), 0o644)
+		err = fileutil.WriteAtomicRoot(v.root, issuerRecordName, record, 0o644)
+	} else {
+		err = fileutil.WriteAtomic(v.issuerPath(), record, 0o644)
 	}
-	if err := fileutil.WriteAtomic(v.issuerPath(), []byte(string(id)+"\n"), 0o644); err != nil {
+	if err != nil {
 		return fmt.Errorf("write issuer record: %w", err)
 	}
 	slog.Info("pod bound to CDS CA key", "issuer_key", id)

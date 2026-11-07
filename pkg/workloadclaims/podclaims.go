@@ -27,7 +27,8 @@ const (
 // PodClaims is a guest-owned admission snapshot, authenticated by fresh TDX
 // evidence rather than by the TLS private key exported to the mesh container.
 // RuntimeExtensions is the complete ordered image journal for this boot;
-// Containers retains every distinct admission, including exited init jobs.
+// Containers retains every distinct admission, including exited init jobs;
+// each carries its ContainerSpecDigest on the wire as spec_digest.
 // AssignedPodUID is the signed assignment; RuntimePodUID is kubelet's actual
 // static-Pod UID. Neither is substituted for the guest-generated BootID.
 // AssignedWorkloadID is the pod's confidential.ai/cw annotation as the
@@ -51,7 +52,8 @@ type PodClaims struct {
 // SandboxContainer.Mounts without emitting duplicate JSON keys.
 type podContainerWire struct {
 	SandboxContainer
-	Mounts []podMountWire `json:"mounts"`
+	Mounts     []podMountWire `json:"mounts"`
+	SpecDigest string         `json:"spec_digest"`
 }
 type podMountWire struct {
 	allowlist.ObservedMount
@@ -85,9 +87,41 @@ func podWire(p PodClaims) podClaimsWire {
 		for i, m := range c.Mounts {
 			mounts[i] = podMountWire{ObservedMount: m, Volume: m.Volume}
 		}
-		w.Containers = append(w.Containers, podContainerWire{SandboxContainer: c, Mounts: mounts})
+		w.Containers = append(w.Containers, podContainerWire{SandboxContainer: c, Mounts: mounts, SpecDigest: ContainerSpecDigest(c)})
 	}
 	return w
+}
+
+// ContainerSpecDigest is the canonical digest of the container spec admission
+// checked, beside the image digest: the effective argv, the environment
+// commitment and the mounts with their named volumes. It is "sha256:" and the
+// lowercase hex SHA-256 of a domain tag and the compact JSON of those three.
+// The environment enters through its format and aggregate digest only, which
+// fix the per-variable digests, so evicting per-variable evidence does not
+// change it. The guest computes it from the recorded admission and CDS
+// recomputes it, so a canonical claim's spec_digest always agrees with its
+// observation.
+func ContainerSpecDigest(c SandboxContainer) string {
+	type envCommitment struct {
+		Format string `json:"format"`
+		Digest string `json:"digest"`
+	}
+	spec := struct {
+		Argv   []string       `json:"argv"`
+		Env    *envCommitment `json:"env"`
+		Mounts []podMountWire `json:"mounts"`
+	}{Argv: c.Argv, Mounts: make([]podMountWire, len(c.Mounts))}
+	if c.Env != nil {
+		spec.Env = &envCommitment{Format: c.Env.Format, Digest: c.Env.Digest}
+	}
+	for i, m := range c.Mounts {
+		spec.Mounts[i] = podMountWire{ObservedMount: m, Volume: m.Volume}
+	}
+	b, _ := json.Marshal(spec)
+	h := sha256.New()
+	_, _ = h.Write([]byte("c8s-pod-container-spec/v1\x00"))
+	_, _ = h.Write(b)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 func (w podClaimsWire) claims() PodClaims {
@@ -241,7 +275,8 @@ func PodReportData(pub crypto.PublicKey, nonce, canonical []byte) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("invalid Pod CSR key")
 	}
-	keyHash, claimsHash := sha512.Sum384(spki), sha512.Sum384(canonical)
+	keyHash := sha512.Sum384(spki)
+	claimsHash := sha512.Sum384(canonical)
 	h := sha512.New384()
 	_, _ = h.Write([]byte("c8s-pod-attestation/v1\x00"))
 	_, _ = h.Write(keyHash[:])

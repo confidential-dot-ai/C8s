@@ -407,33 +407,23 @@ func TestRequireDeliverable(t *testing.T) {
 	}
 }
 
-// A captured connection leaves the pod. A member dialling peers itself never
-// dials a mesh port; a brokered endpoint's provider may translate the port.
+// A captured connection leaves the pod, and never for a mesh port.
 func TestRequireMeshDestination(t *testing.T) {
 	tests := []struct {
-		dst      string
-		brokered bool
-		wantErr  bool
+		dst     string
+		wantErr bool
 	}{
-		{"10.42.0.9:8080", false, false},
-		{"10.42.0.7:8080", false, true},
-		{"10.42.0.9:15001", false, true},
-		{"10.42.0.9:15006", false, true},
-		{"10.42.0.9:15021", false, true},
-		{"10.42.0.9:8080", true, false},
-		{"10.42.0.7:8080", true, true},
-		{"10.42.0.9:15001", true, false},
-		{"10.42.0.9:15006", true, false},
-		{"10.42.0.9:15021", true, false},
+		{"10.42.0.9:8080", false},
+		{"10.42.0.7:8080", true},
+		{"10.42.0.9:15001", true},
+		{"10.42.0.9:15006", true},
+		{"10.42.0.9:15021", true},
 	}
 	for _, tc := range tests {
-		endpoint := &podEndpoint{
-			own:      podAddresses{netip.MustParseAddr("10.42.0.7")},
-			brokered: tc.brokered,
-		}
+		endpoint := &podEndpoint{own: podAddresses{netip.MustParseAddr("10.42.0.7")}}
 		err := endpoint.requireMeshDestination(netip.MustParseAddrPort(tc.dst))
 		if (err != nil) != tc.wantErr {
-			t.Errorf("requireMeshDestination(%q, brokered=%v) = %v, wantErr %v", tc.dst, tc.brokered, err, tc.wantErr)
+			t.Errorf("requireMeshDestination(%q) = %v, wantErr %v", tc.dst, err, tc.wantErr)
 		}
 	}
 }

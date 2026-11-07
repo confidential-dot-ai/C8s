@@ -180,6 +180,8 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 	}
 }
 
+// The generator embeds a complete Pod policy in the measured
+// configuration the CDS pin binds, and writes nothing for an invalid one.
 func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 	podKey := publicKeyPEM(t)
 	policy, err := refvalues.Format(refvalues.ReferenceValues{
@@ -193,17 +195,12 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 	for _, tc := range []struct {
 		name, policy string
 		allowed      bool
-		ha           bool
 	}{
-		{"valid", string(policy), true, false}, {"with HA", string(policy), true, true},
-		{"empty", "", false, false}, {"malformed", "null", false, false},
+		{"valid", string(policy), true}, {"empty", "", false}, {"malformed", "null", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "cds")
 			args := append(inputs(t, out), "--pod-image-policy-file", writeInput(t, "pods.json", tc.policy))
-			if tc.ha {
-				args = append(args, "--replica", "cds-1.acme.example", "--voters", "1")
-			}
 			err := run(t, args...)
 			if !tc.allowed {
 				if err == nil {
@@ -227,9 +224,6 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 			}
 			if len(cfg.PodImages) != 1 || !bytes.Equal(cfg.PodImages[0].Anchor, []byte(podKey)) {
 				t.Fatal("measured Pod policy lost")
-			}
-			if tc.ha && (cfg.HA == nil || cfg.HA.Voters != 1 || len(cfg.HA.Replicas) != 1) {
-				t.Fatal("Pod policy displaced the measured HA configuration")
 			}
 			pinBytes, err := os.ReadFile(filepath.Join(out, cdsconfig.PinFile))
 			if err != nil {

@@ -2,8 +2,6 @@ package podprovider
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,49 +12,37 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-// record is the durable authority for one Pod UID's Cloud side effects. Keep
-// versioned launch fields stable across upgrades: retrying must preserve the
-// original signature, request and account binding. It deliberately has no Pod
-// owner reference, so forced Pod deletion cannot garbage-collect cleanup intent.
+// recordVersion names the record shape this provider writes. A record of
+// another version is unreadable: its instance lives under a shape this code
+// cannot resolve, so the pod stays held until an operator drains it with the
+// provider that wrote it.
+const recordVersion = 3
+
+// record is the durable authority for one Pod UID's Cloud side effects: the
+// generic instance the embedded intent created for the pod, the pod frozen at
+// record time, and the assignment once it is signed. It deliberately has no
+// Pod owner reference, so forced Pod deletion cannot garbage-collect cleanup
+// intent.
 type record struct {
-	Pool                       *poolRef          `json:"pool,omitempty"`
-	PoolCommitted              bool              `json:"poolCommitted,omitempty"`
-	Version                    int               `json:"version"`
-	ProviderID                 string            `json:"providerID"`
-	CloudURL                   string            `json:"cloudURL"`
-	CredentialHash             string            `json:"credentialHash"`
-	UID                        types.UID         `json:"uid"`
-	Namespace                  string            `json:"namespace"`
-	Name                       string            `json:"name"`
-	NodeName                   string            `json:"nodeName"`
-	Key                        string            `json:"key"`
-	Request                    createRequest     `json:"request"`
-	Manifest                   []byte            `json:"manifest"`
-	VCPUs                      int64             `json:"vCPUs"`
-	MemoryMiB                  int64             `json:"memoryMiB"`
-	CreatedAt                  time.Time         `json:"createdAt"`
-	CreateAttempted            bool              `json:"createAttempted,omitempty"`
-	InstanceID                 string            `json:"instanceID,omitempty"`
-	DeleteRequested            bool              `json:"deleteRequested,omitempty"`
-	Deleted                    bool              `json:"deleted,omitempty"`
+	instanceIntent
+	Version   int       `json:"version"`
+	UID       types.UID `json:"uid"`
+	Namespace string    `json:"namespace"`
+	Name      string    `json:"name"`
+	// Pod is the frozen pod manifest the assignment carries; Entries and
+	// MeshPeers are the allowlist entries and peer endpoints frozen with it.
+	Pod       []byte   `json:"pod"`
+	Entries   string   `json:"entries"`
+	MeshPeers []string `json:"meshPeers"`
+	// Assignment and ServingKey are written together before the assignment
+	// is first sent, and never changed afterwards.
+	Assignment                 []byte            `json:"assignment,omitempty"`
+	ServingKey                 []byte            `json:"servingKey,omitempty"`
 	TerminalStatus             *corev1.PodStatus `json:"terminalStatus,omitempty"`
 	VerificationTimeoutSeconds int64             `json:"verificationTimeoutSeconds,omitempty"`
 	VerificationDeadline       *time.Time        `json:"verificationDeadline,omitempty"`
-}
-
-func (r *record) document() (*launchconfig.Document, error) {
-	doc, err := signedDocument(r.Request.Trust)
-	if err != nil {
-		return nil, err
-	}
-	if doc.Role != launchconfig.Pod || doc.Pod == nil || doc.Pod.UID != string(r.UID) || doc.Pod.Name != r.Name || doc.Pod.Namespace != r.Namespace || doc.Node.Name != r.Key || doc.PodOperatorPublicKey != r.Request.Trust.LaunchKey {
-		return nil, errors.New("stored Pod identity differs from its signed launch")
-	}
-	return doc, nil
 }
 
 func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *corev1.Secret, error) {
@@ -65,34 +51,22 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if err != nil {
 		return nil, nil, err
 	}
-	if secret.Labels[ownerLabel] != r.cfg.ProviderID {
-		return nil, nil, errors.New("refusing a foreign provider record")
-	}
 	var rec record
 	if err := decode(secret.Data["state.json"], &rec); err != nil {
 		return nil, nil, errors.New("provider record is invalid")
 	}
-	if (rec.Version != 1 && rec.Version != 2) || rec.ProviderID != r.cfg.ProviderID || rec.CloudURL != r.cfg.CloudURL || rec.NodeName != r.cfg.NodeName || rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key || rec.CreatedAt.IsZero() || len(rec.Manifest) == 0 {
-		return nil, nil, errors.New("provider record identity or origin differs from this provider")
+	if rec.Version != recordVersion {
+		return nil, nil, fmt.Errorf("provider record version %d is not readable by this provider; drain it with the provider that wrote it", rec.Version)
 	}
-	if rec.Version == 1 && (rec.Pool != nil || rec.PoolCommitted) {
-		return nil, nil, errors.New("static Pod record contains an allocation")
-	}
-	if rec.Version == 2 && (secret.UID == "" || (rec.PoolCommitted && rec.Pool == nil) || rec.CreateAttempted || rec.InstanceID != "" || (rec.Pool != nil && (rec.Pool.Name == "" || rec.Pool.UID == ""))) {
-		return nil, nil, errors.New("pooled Pod record has invalid allocation authority")
-	}
-	if rec.CredentialHash != credentialHash(r.cfg.token) {
-		return nil, nil, errors.New("cloud credential changed while provider records exist; drain with the original credential before rotating")
-	}
-	if (rec.VerificationTimeoutSeconds != 0 && !validVerificationTimeout(rec.VerificationTimeoutSeconds)) || (rec.VerificationDeadline != nil && (rec.VerificationTimeoutSeconds == 0 || rec.VerificationDeadline.IsZero())) {
-		return nil, nil, errors.New("provider record verification policy is invalid")
-	}
-	if _, err := rec.document(); err != nil {
-		return nil, nil, err
+	if rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key {
+		return nil, nil, errors.New("provider record identity differs from its key")
 	}
 	return &rec, secret, nil
 }
 
+// ensureRecord returns the pod's record, writing it first when none exists.
+// The record is written before any cloud call and only within the pod budget:
+// every record whose instance is not confirmed destroyed counts.
 func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record, *corev1.Secret, error) {
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
@@ -102,27 +76,28 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if !apierrors.IsNotFound(err) {
 		return nil, nil, err
 	}
-	req, err := r.cfg.launch(pod)
+	req, frozen, err := r.cfg.launch(pod)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pod cannot be launched: %w", err)
 	}
-	rec = &record{Version: 1, ProviderID: r.cfg.ProviderID, CloudURL: r.cfg.CloudURL, CredentialHash: credentialHash(r.cfg.token), UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, NodeName: r.cfg.NodeName, Key: key, Request: req, Manifest: r.cfg.manifest, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, CreatedAt: r.now()}
-	pooled, err := r.poolMode(ctx)
+	held, err := r.heldRecords(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	if pooled {
-		rec.Version = 2
+	if held >= r.cfg.MaxPods {
+		return nil, nil, errors.New("waiting for Pod CVM capacity")
 	}
+	peers := r.cfg.MeshPeers
+	if peers == nil {
+		peers = []string{}
+	}
+	rec = &record{Version: recordVersion, UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, Pod: frozen, Entries: r.cfg.workloads, MeshPeers: peers, instanceIntent: r.cfg.intent(key, req, r.now())}
 	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
 	deadline := rec.CreatedAt.Add(time.Duration(rec.VerificationTimeoutSeconds) * time.Second)
 	rec.VerificationDeadline = &deadline
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return nil, nil, err
-	}
-	if len(data) > 900<<10 {
-		return nil, nil, errors.New("frozen provider record exceeds the Secret size budget")
 	}
 	secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace, Labels: map[string]string{ownerLabel: r.cfg.ProviderID}}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"state.json": data}}
 	if err := r.client.Create(ctx, secret); err != nil {
@@ -134,13 +109,37 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	return rec, secret, nil
 }
 
+// heldRecords counts the records whose instance is not confirmed destroyed,
+// unresolved creates included. An unreadable record is counted, never skipped.
+func (r *Reconciler) heldRecords(ctx context.Context) (int64, error) {
+	list := &corev1.SecretList{}
+	if err := r.client.List(ctx, list, client.InNamespace(r.cfg.Namespace), client.MatchingLabels{ownerLabel: r.cfg.ProviderID}); err != nil {
+		return 0, err
+	}
+	var held int64
+	for _, secret := range list.Items {
+		rec, _, err := r.loadRecord(ctx, secret.Name)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil || !rec.Deleted {
+			held++
+		}
+	}
+	return held, nil
+}
+
+// intent freezes the provider identity and capacity a create request was
+// written under. The credential is not frozen: records key on provider ID and
+// pod UID, so a rotated token still drains them.
+func (c *Config) intent(key string, req createRequest, now time.Time) instanceIntent {
+	return instanceIntent{ProviderID: c.ProviderID, CloudURL: c.CloudURL, NodeName: c.NodeName, Key: key, Request: req, Manifest: c.manifest, VCPUs: c.VCPUs, MemoryMiB: c.MemoryMiB, CreatedAt: now}
+}
+
 func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secret) error {
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
-	}
-	if len(b) > 900<<10 {
-		return errors.New("provider record exceeds the Secret size budget")
 	}
 	secret.Data = map[string][]byte{"state.json": b}
 	return r.client.Update(ctx, secret)
@@ -148,9 +147,4 @@ func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secre
 
 func (r *Reconciler) discard(ctx context.Context, secret *corev1.Secret) error {
 	return client.IgnoreNotFound(r.client.Delete(ctx, secret, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}}))
-}
-
-func credentialHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }

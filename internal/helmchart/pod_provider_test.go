@@ -70,16 +70,22 @@ func TestPodProviderMountAndPermissionsAreOptIn(t *testing.T) {
 			if !findDoc(t, out, "ClusterRole", "c8s-operator", &clusterRole) {
 				t.Fatal("operator ClusterRole missing")
 			}
-			nodes, podStatus := false, false
+			nodes, podStatus, endpointSlices := false, false, false
 			for _, rule := range clusterRole.Rules {
 				if slices.Contains(rule.Resources, "secrets") {
 					t.Fatal("provider has cluster-wide Secret access")
 				}
 				nodes = nodes || slices.Contains(rule.Resources, "nodes")
 				podStatus = podStatus || slices.Contains(rule.Resources, "pods/status")
+				if slices.Contains(rule.Resources, "endpointslices") {
+					endpointSlices = true
+					if slices.Contains(rule.Verbs, "list") || slices.Contains(rule.Verbs, "watch") {
+						t.Fatalf("provider EndpointSlice access is wider than get/create/update/delete: %v", rule.Verbs)
+					}
+				}
 			}
-			if nodes != enabled || podStatus != enabled {
-				t.Fatalf("provider RBAC nodes=%t podStatus=%t", nodes, podStatus)
+			if nodes != enabled || podStatus != enabled || endpointSlices != enabled {
+				t.Fatalf("provider RBAC nodes=%t podStatus=%t endpointslices=%t", nodes, podStatus, endpointSlices)
 			}
 		})
 	}

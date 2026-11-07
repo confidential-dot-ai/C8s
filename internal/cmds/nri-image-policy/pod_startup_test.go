@@ -45,7 +45,6 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 			runPodBootstrap(t, &local, root, podKey, baseDigest, scenario)
 		})
 	}
-	assertPodRecovery(t, cfg, root, podKey, baseDigest)
 }
 
 func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest, scenario string) {
@@ -68,10 +67,6 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
 	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
-	// Runtime IDs are synthetic here; process birth/liveness remain real.
-	oldIdentity := podProcessIdentity
-	podProcessIdentity = func(pid uint32, _ string) (uint64, error) { return readPodProcessBirth(pid) }
-	t.Cleanup(func() { podProcessIdentity = oldIdentity })
 	var selected sync.Map
 	oldResolver := newContainerdResolver
 	newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
@@ -280,7 +275,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		t.Fatalf("broker CDS URL = %q, want resolved pull endpoint %q", guest.CDSURL, cds.URL)
 	}
 	first, err := guest.Snapshot(ctx)
-	if err != nil || len(first.Containers) != 1 || first.Containers[0].Role != meshRole || !slices.Equal(first.RuntimeExtensions, []string{meshDigest}) {
+	if err != nil || len(first.Containers) != 1 || first.Containers[0].Digest != meshDigest || !slices.Equal(first.RuntimeExtensions, []string{meshDigest}) {
 		t.Fatalf("first broker snapshot = %+v, %v", first, err)
 	}
 	if err := guest.Commit(first, func() error { return nil }); err != nil {

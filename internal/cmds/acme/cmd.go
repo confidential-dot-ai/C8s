@@ -42,6 +42,7 @@ type config struct {
 
 	// Launch-driven inputs (node image): each file overrides its flag.
 	domainsFile      string
+	extraDomainsFile string
 	emailFile        string
 	directoryURLFile string
 	standbyCertDir   string
@@ -85,7 +86,13 @@ On a node image the inputs come from the signed launch file:
 --domains-file, --acme-email-file and --acme-directory-url-file. When the
 domains file is empty, no ACME account is used: nginx serves the mesh leaf
 from --standby-cert-dir instead, and the sidecar only reports ready once that
-leaf exists.`,
+leaf exists.
+
+--extra-domains-file adds names at runtime: cds-attest writes the hosts of
+the applied, operator-signed route manifest there. Each check unions them
+with the launch names; a new name is issued for once its challenge path
+reaches this router, the new chain is verified, and only then replaces the
+served one. A failed issuance keeps the served certificate.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -105,6 +112,7 @@ leaf exists.`,
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.extraDomainsFile, "extra-domains-file", "", "file with the applied route manifest's hosts, one per line (cds-attest --route-hosts-file), re-read each check: valid names join --domains on the certificate, each added once its challenge path reaches this router; removing a name re-issues without it")
 	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the tls.crt and tls.key nginx serves instead")
 
 	return cmd
@@ -245,6 +253,7 @@ func runWith(cfg config, probe *http.Client) error {
 	}
 	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.keyDir, cfg.domains, logger)
 	mgr.httpPort = cfg.httpPort
+	mgr.extraDomainsFile = cfg.extraDomainsFile
 	if probe == nil {
 		probe = publicProbeClient()
 	}

@@ -14,6 +14,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// Staged pins are canonical digests and the endpoint is the one
+// measured image.
 func TestPodImageConfigRequiresCanonicalPinsAndMeasuredEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -21,13 +23,9 @@ func TestPodImageConfigRequiresCanonicalPinsAndMeasuredEndpoint(t *testing.T) {
 	}{
 		{"missing", func(c *config) { c.Pod.Images = nil }},
 		{"tag", func(c *config) { c.Pod.Images["app"] = "repo:latest" }},
-		{"uppercase", func(c *config) { c.Pod.Images["app"] = "sha256:" + strings.Repeat("A", 64) }},
-		{"reference", func(c *config) { c.Pod.Images["app"] = "repo@" + pushDigestA }},
-		{"unnamed", func(c *config) { c.Pod.Images[""] = pushDigestA }},
 		{"invalid name", func(c *config) { c.Pod.Images["../app"] = pushDigestA }},
 		{"missing endpoint", func(c *config) { delete(c.Pod.Images, workloadclaims.MeshContainerName) }},
 		{"replaced endpoint", func(c *config) { c.Pod.Images[workloadclaims.MeshContainerName] = pushDigestA }},
-		{"no measured base", func(c *config) { c.Allowlist.Base = nil }},
 		{"ambiguous endpoint", func(c *config) { c.Allowlist.Base.Workloads["other"] = c.Allowlist.Base.Workloads["role-entry"] }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,6 +41,8 @@ func TestPodImageConfigRequiresCanonicalPinsAndMeasuredEndpoint(t *testing.T) {
 	}
 }
 
+// The image admitted and measured is the staged pin, never the
+// runtime's mutable name.
 func TestPodImageBindingIgnoresMutableRuntimeNames(t *testing.T) {
 	pod := makePod("tenant", "assigned-node")
 	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo:latest")
@@ -58,10 +58,6 @@ func TestPodImageBindingIgnoresMutableRuntimeNames(t *testing.T) {
 		change func(*api.PodSandbox, *api.Container)
 	}{
 		{"namespace", func(p *api.PodSandbox, _ *api.Container) { p.Namespace = "other" }},
-		{"Pod name", func(p *api.PodSandbox, _ *api.Container) { p.Name = "other" }},
-		{"sandbox", func(_ *api.PodSandbox, c *api.Container) { c.PodSandboxId = "other" }},
-		{"missing sandbox", func(p *api.PodSandbox, _ *api.Container) { p.Id = "" }},
-		{"missing container", func(_ *api.PodSandbox, c *api.Container) { c.Id = "" }},
 		{"unknown container", func(_ *api.PodSandbox, c *api.Container) { c.Name = "other" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

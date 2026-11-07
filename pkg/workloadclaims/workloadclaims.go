@@ -140,12 +140,6 @@ func SplitList(value string) []string {
 	return items
 }
 
-// AnnotationWorkloadID names the workload a pod belongs to: node mode selects a
-// SAN from it (get-cert), a pod CVM carries it as the tenant identity of its
-// credential claims (PodClaims.AssignedWorkloadID). It is control-plane input
-// that a leaf states only where something the relying party trusts signed it.
-const AnnotationWorkloadID = "confidential.ai/cw"
-
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
@@ -169,6 +163,20 @@ const (
 	MeshHealthPort   int32  = 15021
 )
 
+// AnnotationWorkloadID names the workload a pod belongs to, confidential.ai/cw.
+// It is the allowlist workload name the pod's entries are looked up under, so
+// its grammar is the allowlist's (pkg/workloadname).
+const AnnotationWorkloadID = "confidential.ai/cw"
+
+// IsMeshPort reports whether port is one the mesh endpoint binds: a capture
+// port or the health port. None of them answers an application.
+func IsMeshPort(port int) bool {
+	return port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort)
+}
+
+// PodStatusPort is the pod CVM guest's attested status port; no pod container may declare it.
+const PodStatusPort int32 = 8443
+
 // MeshProbePrefix is where the endpoint answers an application probe the
 // injector moved onto MeshHealthPort. The rendered path names the port and the
 // path the probe reaches inside the pod, so the injector and the endpoint
@@ -183,11 +191,6 @@ const MeshProbeTimeout = 5 * time.Second
 // not a mount, both of which a node's measured policy pins alike for every
 // member pod's endpoint.
 const MeshProbesEnv = "C8S_MESH_PROBES"
-
-// MeshConnectSocketEnv names, to a guest Pod's endpoint, the unix socket its
-// guest connects peers through (internal/podmesh/connectbroker). Unset, as in a
-// member pod, the endpoint dials its peers itself.
-const MeshConnectSocketEnv = "C8S_MESH_CONNECT_SOCKET"
 
 // JoinMeshProbePaths renders the MeshProbesEnv value carrying paths.
 func JoinMeshProbePaths(paths []string) string {
@@ -237,7 +240,7 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	if port < 1 || port > 65535 {
 		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
 	}
-	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+	if IsMeshPort(port) {
 		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
 	}
 	appPath := "/" + path

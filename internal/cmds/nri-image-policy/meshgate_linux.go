@@ -103,7 +103,7 @@ func (p meshPolicy) podPeers() []ruleset.Destination {
 }
 
 func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
-	return ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, Peers: p.podPeers(), IngressPorts: p.Pod.IngressPorts}
+	return ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, IngressPorts: p.Pod.IngressPorts}
 }
 
 // serviceExits are the platform services trusted policy names for every

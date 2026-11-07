@@ -601,3 +601,17 @@ func TestDryRunRequiresPinnedEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// --assigned-workload pins a workload route to one pod CVM's assigned
+// workload ID; without --workload it is refused.
+func TestAddAssignedWorkload(t *testing.T) {
+	h := newHarness(t)
+	h.mustRun(t, "add", "--new", "--host", "alice.example", "--path", "/", "--address", "a:1", "--workload", "opencode", "--assigned-workload", "user-alice")
+	rs := h.cds.stored(t).Hosts["alice.example"].Routes
+	if len(rs) != 1 || rs[0].Backend.Workload != "opencode" || rs[0].Backend.AssignedWorkloadID != "user-alice" {
+		t.Fatalf("stored routes = %+v", rs)
+	}
+	if _, err := h.run(t, "add", "--host", "x.example", "--path", "/", "--address", "a:1", "--server-name", "x", "--ca", "ca.pem", "--assigned-workload", "user-alice"); err == nil {
+		t.Fatal("--assigned-workload without --workload accepted")
+	}
+}

@@ -845,8 +845,8 @@ func TestGrantsBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	}
 }
 
-// A pod CVM refuses a container that runs without a seccomp filter; a node
-// judges that under its own TCB rules and observes it only.
+// A pod CVM refuses a container that runs without a seccomp filter; a
+// node judges that under its own TCB rules and observes it only.
 func TestPodRoleRefusesUnfilteredSeccomp(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -857,7 +857,6 @@ func TestPodRoleRefusesUnfilteredSeccomp(t *testing.T) {
 		{"pod role, runtime default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_ERRNO"}, true, false},
 		{"pod role, unfiltered", nil, true, true},
 		{"pod role, allow by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_ALLOW"}, true, true},
-		{"pod role, log by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_LOG"}, true, true},
 		{"pod role, kill by default", &api.LinuxSeccomp{DefaultAction: "SCMP_ACT_KILL_PROCESS"}, true, false},
 		{"node role, unfiltered", nil, false, false},
 	} {

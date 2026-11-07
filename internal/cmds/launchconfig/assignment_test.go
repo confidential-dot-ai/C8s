@@ -1,9 +1,9 @@
 package launchconfig
 
 import (
-	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,141 +12,90 @@ import (
 
 const emptyPodEntries = `{"schema":"c8s.allowlist/v1","workloads":{}}`
 
-func TestGenericBootStagesTrustWithoutWorkloadAuthority(t *testing.T) {
-	doc, key, pub := testPodDocument(t, "tdx")
-	doc.Pod, doc.Workloads = nil, ""
-	testLoader(t, doc, pub)
-	cfg := testConfig(t, doc, key)
-	if err := Stage(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	staged, err := LoadStaged(cfg.path(DefaultStagedPath))
+// An assignment validates its payload and never mutates the generic document
+// it derives from. Every refusal of a manifest, entries or peer list, one row
+// per check.
+func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
+	doc, _, _ := testPodDocument(t, "tdx")
+	before, err := yaml.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staged.Role != Pod || staged.Pod != nil || staged.Workloads != "" || staged.PodOperatorPublicKey != pub || staged.Server != doc.Server || staged.CDS != doc.CDS {
-		t.Fatal("generic launch changed workload or trust authority")
+	unchanged := func() bool { after, err := yaml.Marshal(doc); return err == nil && reflect.DeepEqual(before, after) }
+	assigned, err := Assign(&doc, []byte(testPodManifest("")), []byte(testPodWorkloads), []byte(`["192.0.2.1:15006"]`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	requirePresent(t, cfg.path(podMarker))
-	for _, p := range []string{Dir + "/operator-pubkey", Dir + "/peers.json"} {
-		requirePresent(t, cfg.path(p))
+	if !unchanged() || assigned.Pod.UID != testPodUID || assigned.Pod.Namespace != "tenant" || assigned.Pod.Name != "app" || assigned.Entries != testPodWorkloads || len(assigned.Pod.MeshPeers) != 1 {
+		t.Fatal("assignment mutated generic authority or lost Pod identity")
 	}
-	for _, p := range []string{Dir + "/workloads.json", Dir + "/cds.json", serverMarker, agentMarker, serverTokenPath, agentTokenPath} {
-		requireAbsent(t, cfg.path(p))
+	if assigned.CDS != doc.CDS || assigned.Server != doc.Server || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
+		t.Fatal("assignment changed launch trust")
 	}
-	for _, entries := range []string{testPodWorkloads, emptyPodEntries, "null"} {
-		doc.Workloads = entries
-		data, err := yaml.Marshal(doc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), "must not carry workloads") {
-			t.Fatalf("generic policy accepted: %v", err)
-		}
-	}
-}
-
-func TestStaticPodAllowsAbsentOrEmptyBase(t *testing.T) {
-	for _, entries := range []string{"", emptyPodEntries} {
-		doc, _, _ := testPodDocument(t, "tdx")
-		doc.Workloads = entries
-		data, err := yaml.Marshal(doc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Parse(data); err != nil {
-			t.Fatal(err)
-		}
-		pubPath, _ := writePodServerKey(t)
-		dir := filepath.Join(t.TempDir(), "bundle")
-		args := []string{"new-pod", "--out", dir, "--cluster-id", "cluster-one",
-			"--image-manifest", writeManifest(t, "tdx"), "--pod-manifest", writeFile(t, "pod.json", testPodManifest("")),
-			"--server-address", "10.0.0.1", "--server-public-key", pubPath,
-			"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t)}
-		if entries != "" {
-			args = append(args, "--workloads", writeFile(t, "workloads.json", entries))
-		}
-		if err := runBundleCmd(t, args...); err != nil {
-			t.Fatal(err)
-		}
-		bundled, _ := readBundleDocument(t, dir, podDir)
-		if bundled.Pod == nil || bundled.Workloads != entries || bundled.CDS.Address != "cds.example.org:8443" {
-			t.Fatal("static bundle lost optional base or explicit CDS trust")
-		}
-	}
-}
-
-func TestAssignedPodPreservesGenericTrustAndValidatesPayload(t *testing.T) {
-	doc, _, _ := testPodDocument(t, "tdx")
-	doc.Pod, doc.Workloads = nil, ""
-	for _, entries := range []string{testPodWorkloads, emptyPodEntries} {
-		assigned, err := AssignedPod(&doc, []byte(testPodManifest("")), []byte(entries), []byte(`["192.0.2.1:15006"]`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if doc.Pod != nil || doc.Workloads != "" || assigned.Pod == nil || assigned.Pod.UID != testPodUID || assigned.Pod.Namespace != "tenant" || assigned.Pod.Name != "app" || assigned.Workloads != entries || len(assigned.Pod.MeshPeers) != 1 {
-			t.Fatal("assignment mutated generic authority or lost Pod identity")
-		}
-		if assigned.CDS != doc.CDS || assigned.Server != doc.Server || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
-			t.Fatal("assignment changed launch trust")
-		}
-		if _, err := AssignedPod(assigned, []byte(testPodManifest("")), []byte(entries), []byte("[]")); err == nil {
-			t.Fatal("assigned document reassigned")
-		}
-	}
-	cases := []struct{ name, manifest, entries, peers string }{
-		{"host-network", testPodManifest(`,"hostNetwork":true`), testPodWorkloads, "[]"},
-		{"unpinned-image", strings.Replace(testPodManifest(""), "busybox@sha256:"+strings.Repeat("a", 64), "busybox:latest", 1), testPodWorkloads, "[]"},
-		{"missing-uid", strings.Replace(testPodManifest(""), testPodUID, "", 1), testPodWorkloads, "[]"},
-		{"platform-container", strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"c8s-mesh","image"`, 1), testPodWorkloads, "[]"},
-		{"platform-role", testPodManifest(""), strings.Replace(testPodWorkloads, `"digest":`, `"role":"mesh","digest":`, 1), "[]"},
-		{"missing-entries", testPodManifest(""), "", "[]"},
-		{"invalid-entries", testPodManifest(""), "null", "[]"},
-		{"peer-null", testPodManifest(""), emptyPodEntries, "null"},
-		{"peer-object", testPodManifest(""), emptyPodEntries, "{}"},
-		{"peer-number", testPodManifest(""), emptyPodEntries, "[1]"},
-		{"peer-trailing", testPodManifest(""), emptyPodEntries, "[] []"},
-		{"peer-metadata", testPodManifest(""), emptyPodEntries, `["169.254.169.254:80"]`},
-		{"oversized-manifest", strings.Repeat(" ", MaxDocumentSize+1), emptyPodEntries, "[]"},
+	app := `"name":"app","image"`
+	cases := []struct{ name, manifest, entries, peers, want string }{
+		{"missing-entries", testPodManifest(""), "", "[]", "entries"},
+		{"platform-role", testPodManifest(""), strings.Replace(testPodWorkloads, `"digest":`, `"role":"mesh","digest":`, 1), "[]", "entries"},
+		{"peer-null", testPodManifest(""), emptyPodEntries, "null", "meshPeers"},
+		{"peer-object", testPodManifest(""), emptyPodEntries, "{}", "meshPeers"},
+		{"oversized-manifest", strings.Repeat(" ", MaxDocumentSize+1), emptyPodEntries, "[]", "document limit"},
+		{"local peer", testPodManifest(""), emptyPodEntries, `["169.254.169.254:80"]`, "pod.meshPeers"},
+		{"Pod subnet peer", testPodManifest(""), emptyPodEntries, `["10.255.254.1:8400"]`, "pod.meshPeers"},
+		{"IPv6 peer", testPodManifest(""), emptyPodEntries, `["[2001:db8::1]:80"]`, "pod.meshPeers"},
+		{"peer without port", testPodManifest(""), emptyPodEntries, `["192.0.2.1"]`, "pod.meshPeers"},
+		{"bad uid", strings.Replace(testPodManifest(""), testPodUID, "Not A UID", 1), emptyPodEntries, "[]", "pod.uid"},
+		{"bad namespace", strings.Replace(testPodManifest(""), `"namespace":"tenant"`, `"namespace":"Tenant"`, 1), emptyPodEntries, "[]", "pod.namespace"},
+		{"not a pod", strings.Replace(testPodManifest(""), `"Pod"`, `"Deployment"`, 1), emptyPodEntries, "[]", "v1 Pod"},
+		{"unknown field", testPodManifest(`,"bogus":true`), emptyPodEntries, "[]", "pod.manifest"},
+		{"host network", testPodManifest(`,"hostNetwork":true`), emptyPodEntries, "[]", "host namespaces"},
+		{"ephemeral containers", testPodManifest(`,"ephemeralContainers":[{"name":"debug","image":"busybox@sha256:` + strings.Repeat("a", 64) + `"}]`), emptyPodEntries, "[]", "ephemeral"},
+		{"platform container", strings.Replace(testPodManifest(""), app, `"name":"c8s-mesh","image"`, 1), emptyPodEntries, "[]", "reserved"},
+		{"guest status ingress", strings.Replace(testPodManifest(""), app, `"name":"app","ports":[{"containerPort":8443}],"image"`, 1), emptyPodEntries, "[]", "reserved"},
+		{"tag-only image", strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"busybox:1.36"`, 1), emptyPodEntries, "[]", "pin the image by digest"},
+		{"tag-only init image", testPodManifest(`,"initContainers":[{"name":"init","image":"busybox"}]`), emptyPodEntries, "[]", "pin the image by digest"},
+		{"sha512 digest", strings.Replace(testPodManifest(""), "sha256:"+strings.Repeat("a", 64), "sha512:"+strings.Repeat("a", 128), 1), emptyPodEntries, "[]", "not sha256"},
+		{"disk emptyDir", testPodManifest(`,"volumes":[{"name":"d","emptyDir":{}}]`), emptyPodEntries, "[]", "medium: Memory"},
+		{"host path", testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`), emptyPodEntries, "[]", "only emptyDir"},
+		{"host port", strings.Replace(testPodManifest(""), app, `"name":"app","ports":[{"containerPort":80,"hostPort":80}],"image"`, 1), emptyPodEntries, "[]", "hostPort"},
+		{"privileged", strings.Replace(testPodManifest(""), app, `"name":"app","securityContext":{"privileged":true},"image"`, 1), emptyPodEntries, "[]", "privileged"},
+		{"invalid workload annotation", strings.Replace(testPodManifest(""), `"metadata":{`, `"metadata":{"annotations":{"confidential.ai/cw":"../other"},`, 1), emptyPodEntries, "[]", "not a valid workload name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := AssignedPod(&doc, []byte(tc.manifest), []byte(tc.entries), []byte(tc.peers)); err == nil {
-				t.Fatal("unsafe assignment accepted")
+			_, err := Assign(&doc, []byte(tc.manifest), []byte(tc.entries), []byte(tc.peers))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
 			}
-			if doc.Pod != nil || doc.Workloads != "" {
+			if !unchanged() {
 				t.Fatal("refusal mutated generic launch")
 			}
 		})
 	}
-	if _, err := AssignedPod(nil, nil, nil, nil); err == nil {
+	if _, err := Assign(nil, nil, nil, nil); err == nil {
 		t.Fatal("nil document accepted")
 	}
 	doc.Role = Server
-	if _, err := AssignedPod(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]")); err == nil {
+	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]")); err == nil {
 		t.Fatal("non-Pod role assigned")
 	}
 }
 
-func TestGenericPodBundleRequiresExplicitEmptyLaunch(t *testing.T) {
+// A pod bundle is generic: it names its node and takes no pod, entries or
+// peers.
+func TestPodBundleIsGeneric(t *testing.T) {
 	pubPath, _ := writePodServerKey(t)
 	manifest := writeManifest(t, "tdx")
 	cdsPolicy := writePodCDSPin(t)
-	unboundCDS := writeFile(t, "unbound-cds.json", testDigestOnlyPin(t))
 	for _, tc := range []struct {
 		name  string
 		args  []string
 		valid bool
 	}{
-		{"generic", []string{"--generic", "--name", "warm-1"}, true},
-		{"missing CDS address", []string{"--generic", "--name", "warm-1", "--cds-address", ""}, false},
-		{"missing CDS policy", []string{"--generic", "--name", "warm-1", "--cds-image-policy-file", ""}, false},
-		{"unbound CDS policy", []string{"--generic", "--name", "warm-1", "--cds-image-policy-file", unboundCDS}, false},
-		{"implicit", nil, false},
-		{"no-name", []string{"--generic"}, false},
-		{"pod", []string{"--generic", "--name", "warm-1", "--pod-manifest", "unused"}, false},
-		{"entries", []string{"--generic", "--name", "warm-1", "--workloads", "unused"}, false},
-		{"peers", []string{"--generic", "--name", "warm-1", "--mesh-peer", "192.0.2.1:80"}, false},
+		{"named", []string{"--name", "p-1"}, true},
+		{"unnamed", nil, false},
+		{"pod manifest", []string{"--name", "p-1", "--pod-manifest", "unused"}, false},
+		{"workloads", []string{"--name", "p-1", "--workloads", "unused"}, false},
+		{"mesh peer", []string{"--name", "p-1", "--mesh-peer", "192.0.2.1:15006"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
@@ -162,41 +111,10 @@ func TestGenericPodBundleRequiresExplicitEmptyLaunch(t *testing.T) {
 				return
 			}
 			doc, _ := readBundleDocument(t, dir, podDir)
-			if doc.Pod != nil || doc.Workloads != "" || doc.Node.Name != "warm-1" || doc.CDS.Address != "cds.example.org:8443" || doc.CDS.Measurements == "" {
-				t.Fatal("generic bundle carried workload state")
+			if doc.Node.Name != "p-1" || doc.CDS.Address != "cds.example.org:8443" || doc.CDS.Measurements == "" {
+				t.Fatal("generic bundle lost its identity or trust")
 			}
 			stageBundleNode(t, dir, podDir)
 		})
-	}
-}
-
-// The workload ID the assignment records is the manifest's confidential.ai/cw
-// annotation and nothing else; a manifest naming one the leaf cannot carry is
-// refused at assignment, not at issuance.
-func TestAssignedPodRecordsTheManifestWorkloadID(t *testing.T) {
-	annotated := func(id string) string {
-		return strings.Replace(testPodManifest(""), `"metadata":{`, `"metadata":{"annotations":{"confidential.ai/cw":"`+id+`"},`, 1)
-	}
-	doc, _, _ := testPodDocument(t, "tdx")
-	doc.Pod, doc.Workloads = nil, ""
-	assigned, err := AssignedPod(&doc, []byte(annotated("tenant-a.web")), []byte(emptyPodEntries), []byte("[]"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if assigned.Pod.WorkloadID != "tenant-a.web" {
-		t.Fatalf("workload ID = %q, want the annotation", assigned.Pod.WorkloadID)
-	}
-	if assigned, err := AssignedPod(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]")); err != nil || assigned.Pod.WorkloadID != "" {
-		t.Fatalf("unannotated pod: %q, %v; want no workload ID", assigned.Pod.WorkloadID, err)
-	}
-	for _, bad := range []string{"tenant a", strings.Repeat("a", 64)} {
-		if _, err := AssignedPod(&doc, []byte(annotated(bad)), []byte(emptyPodEntries), []byte("[]")); err == nil {
-			t.Fatalf("workload ID %q the leaf cannot carry was assigned", bad)
-		}
-	}
-	// A signed document whose workloadID disagrees with its manifest is refused.
-	assigned.Pod.WorkloadID = "tenant-b.web"
-	if err := assigned.Pod.validate(); err == nil {
-		t.Fatal("workloadID diverging from the manifest annotation validated")
 	}
 }

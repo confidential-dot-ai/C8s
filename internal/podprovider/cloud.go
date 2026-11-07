@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -88,12 +87,6 @@ type cloudAPI interface {
 	Ping(context.Context) error
 }
 
-// cloudIngressAPI is needed only by the opt-in warm path. Cold launches keep
-// their create-time network contract and require no mutable-ingress support.
-type cloudIngressAPI interface {
-	AddIngress(context.Context, string, string, ingress) (*instance, error)
-}
-
 type cloudClient struct {
 	base, token string
 	http        *http.Client
@@ -145,19 +138,6 @@ func (c *cloudClient) Get(ctx context.Context, id string) (*instance, error) {
 	return &out, nil
 }
 
-// AddIngress uses Cloud's existing idempotent rule addition. The caller freezes
-// the rule/key before this call and waits for Network.IngressUpdating to clear.
-func (c *cloudClient) AddIngress(ctx context.Context, id, key string, rule ingress) (*instance, error) {
-	if id == "" || key == "" || rule.Name == "" || rule.Port < 1 || rule.Port > 65535 {
-		return nil, errors.New("cloud ingress requires an instance, idempotency key and valid rule")
-	}
-	var out instance
-	if err := c.do(ctx, http.MethodPost, "/v1/instances/"+url.PathEscape(id)+"/ingress", key, rule, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 func (c *cloudClient) Delete(ctx context.Context, id string) error {
 	err := c.do(ctx, http.MethodDelete, "/v1/instances/"+url.PathEscape(id), "", nil, nil)
 	if errors.Is(err, errCloudNotFound) {
@@ -198,27 +178,16 @@ func (c *cloudClient) do(ctx context.Context, method, path, key string, in, out 
 		return fmt.Errorf("cloud request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8*maxFile+1))
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
-	}
-	if len(data) > 8*maxFile {
-		return errors.New("cloud response exceeds limit")
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errCloudNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Error details may contain launch input. Only the bounded error code
-		// reaches controller logs; retries stay with the work queue.
-		var p struct {
-			Code string `json:"code"`
-		}
-		_ = json.Unmarshal(data, &p)
-		if len(p.Code) > 80 || strings.ContainsAny(p.Code, " \r\n\t") {
-			p.Code = "unknown"
-		}
-		return fmt.Errorf("cloud returned HTTP %d (%s)", resp.StatusCode, p.Code)
+		// Error details may contain launch input; only the status reaches logs.
+		return fmt.Errorf("cloud returned HTTP %d", resp.StatusCode)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {

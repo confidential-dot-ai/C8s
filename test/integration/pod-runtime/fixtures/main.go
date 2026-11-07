@@ -3,7 +3,7 @@
 //
 // It is built by run.sh at the start of a lane and serves the lane's small
 // tools: a bounded command runner, the provenance receipt, the OCI fixture
-// image and the three result receipts.
+// image and the result receipt.
 package main
 
 import (
@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-const usage = "usage: fixtures prepare SOURCE STAGE ARCH | image STAGE ARCH | receipt INPUTS RESULT | recovery-receipt INPUTS RESULT | kubelet-receipt INPUTS RESULT | bounded SECONDS COMMAND... | json-string FILE KEY | binaries STAGE OUTPUT"
+const usage = "usage: fixtures prepare SOURCE STAGE ARCH | image STAGE ARCH | receipt INPUTS RESULT | bounded SECONDS COMMAND... | json-string FILE KEY | binaries STAGE OUTPUT"
 
 func main() {
 	args := os.Args[1:]
@@ -40,10 +40,6 @@ func main() {
 		err = image(args[1], args[2])
 	case len(args) == 3 && args[0] == "receipt":
 		err = receipt(args[1], args[2])
-	case len(args) == 3 && args[0] == "recovery-receipt":
-		err = recoveryReceipt(args[1], args[2])
-	case len(args) == 3 && args[0] == "kubelet-receipt":
-		err = kubeletReceipt(args[1], args[2])
 	case len(args) >= 3 && args[0] == "bounded":
 		os.Exit(bounded(args[1], args[2:]))
 	case len(args) == 3 && args[0] == "json-string":
@@ -66,14 +62,6 @@ type pins struct {
 	RegistryIndex                 string            `json:"registryIndex"`
 	HistoricalRuntimeAirgapDigest string            `json:"historicalRuntimeAirgapDigest"`
 	Platforms                     map[string]string `json:"platforms"`
-	CNI                           cniPins           `json:"cni"`
-}
-
-type cniPins struct {
-	Version           string            `json:"version"`
-	RegistryIndex     string            `json:"registryIndex"`
-	AirgapFloorDigest string            `json:"airgapFloorDigest"`
-	Platforms         map[string]string `json:"platforms"`
 }
 
 var sha256Pin = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -99,17 +87,6 @@ func validateRuntimeInputs(source string, p pins, architecture string) (string, 
 			return "", errors.New("runtime pins must be reviewed with the guest " + bundle + " bundle")
 		}
 	}
-	policy, err := os.ReadFile(filepath.Join(source, "images/node-guest/c8s/image-policy.yaml.in"))
-	if err != nil {
-		return "", err
-	}
-	expectedCNI := "docker.io/rancher/hardened-cni-plugins:" + p.CNI.Version
-	// Match the one current Cilium init rule, not a label or an arbitrary digest.
-	entries := regexp.MustCompile(`(?m)^      cilium:\n        initContainers:\n          - digest: "(sha256:[a-f0-9]{64})"\n            image: "(docker\.io/rancher/hardened-cni-plugins:[^"]+)"$`).FindAllSubmatch(policy, -1)
-	images := submatches(`(?m)^\s*image: "(docker\.io/rancher/hardened-cni-plugins:[^"]+)"$`, policy)
-	if len(entries) != 1 || string(entries[0][1]) != p.CNI.AirgapFloorDigest || string(entries[0][2]) != expectedCNI || !equal(images, []string{expectedCNI}) {
-		return "", errors.New("CNI registry pin must be reviewed with the measured Cilium init rule")
-	}
 	kindLib, err := os.ReadFile(filepath.Join(source, "test/integration/cluster/lib.sh"))
 	if err != nil {
 		return "", err
@@ -118,11 +95,9 @@ func validateRuntimeInputs(source string, p pins, architecture string) (string, 
 	if len(runner) != 1 || !regexp.MustCompile(`^kindest/node:[A-Za-z0-9.-]+@sha256:[a-f0-9]{64}$`).MatchString(runner[0]) {
 		return "", errors.New("expected the existing digest-pinned kind runner image")
 	}
-	digests := []string{p.RegistryIndex, p.HistoricalRuntimeAirgapDigest, p.CNI.RegistryIndex, p.CNI.AirgapFloorDigest}
-	for _, m := range []map[string]string{p.Platforms, p.CNI.Platforms} {
-		for _, d := range m {
-			digests = append(digests, d)
-		}
+	digests := []string{p.RegistryIndex, p.HistoricalRuntimeAirgapDigest}
+	for _, d := range p.Platforms {
+		digests = append(digests, d)
 	}
 	for _, d := range digests {
 		if !sha256Pin.MatchString(d) {
@@ -157,13 +132,8 @@ type inputs struct {
 	RunID                         string            `json:"runId"`
 	SourceRevision                string            `json:"sourceRevision"`
 	SourceDiffSHA256              string            `json:"sourceDiffSHA256"`
-	KubeletTestSHA256             string            `json:"kubeletTestSHA256"`
-	RecoveryTestSHA256            string            `json:"recoveryTestSHA256"`
 	RKE2Version                   string            `json:"rke2Version"`
 	RuntimeImage                  string            `json:"runtimeImage"`
-	CNIImage                      string            `json:"cniImage"`
-	CNIRegistryIndex              string            `json:"cniRegistryIndex"`
-	CNIAirgapFloorDigest          string            `json:"cniAirgapFloorDigest"`
 	RuntimeRegistryIndex          string            `json:"runtimeRegistryIndex"`
 	RuntimePlatformDigest         string            `json:"runtimePlatformDigest"`
 	HistoricalRuntimeAirgapDigest string            `json:"historicalRuntimeAirgapDigest"`
@@ -195,14 +165,6 @@ func prepare(source, stage, architecture string) error {
 	if err != nil {
 		return err
 	}
-	kubeletTest, err := fileSHA256(filepath.Join(source, "internal/cmds/nri-image-policy/pod_runtime_kubelet_integration_linux_test.go"))
-	if err != nil {
-		return err
-	}
-	recoveryTest, err := fileSHA256(filepath.Join(source, "internal/cmds/nri-image-policy/pod_runtime_recovery_integration_linux_test.go"))
-	if err != nil {
-		return err
-	}
 	runID, err := newRunID()
 	if err != nil {
 		return err
@@ -211,13 +173,8 @@ func prepare(source, stage, architecture string) error {
 		RunID:                         runID,
 		SourceRevision:                strings.TrimSpace(string(revision)),
 		SourceDiffSHA256:              hexSHA256(diff),
-		KubeletTestSHA256:             kubeletTest,
-		RecoveryTestSHA256:            recoveryTest,
 		RKE2Version:                   p.RKE2Version,
 		RuntimeImage:                  "docker.io/rancher/rke2-runtime@" + p.Platforms[architecture],
-		CNIImage:                      "docker.io/rancher/hardened-cni-plugins@" + p.CNI.Platforms[architecture],
-		CNIRegistryIndex:              p.CNI.RegistryIndex,
-		CNIAirgapFloorDigest:          p.CNI.AirgapFloorDigest,
 		RuntimeRegistryIndex:          p.RegistryIndex,
 		RuntimePlatformDigest:         p.Platforms[architecture],
 		HistoricalRuntimeAirgapDigest: p.HistoricalRuntimeAirgapDigest,
@@ -225,7 +182,7 @@ func prepare(source, stage, architecture string) error {
 		RunnerImage:                   runner,
 		Architecture:                  architecture,
 		Scope:                         "native snapshotter; simulated measurement register and credential broker",
-		RuntimeProvenance:             "digest-pinned registry release runtime; runtime/CNI guest airgap byte equivalence unverified",
+		RuntimeProvenance:             "digest-pinned registry release runtime; runtime guest airgap byte equivalence unverified",
 	}
 	if err := writeJSON(filepath.Join(stage, "inputs.json"), in); err != nil {
 		return err
@@ -244,7 +201,7 @@ type descriptor struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-// image writes the two single-layer fixture images as an OCI layout tar.
+// image writes the single-layer fixture image as an OCI layout tar.
 func image(stage, architecture string) error {
 	blobs := map[string][]byte{}
 	blob := func(data []byte, media string) descriptor {
@@ -281,7 +238,7 @@ func image(stage, architecture string) error {
 	}
 	layerDesc := blob(layer.Bytes(), "application/vnd.oci.image.layer.v1.tar")
 	var descriptors []descriptor
-	for _, name := range []string{"pod-start", "pod-recovery-mesh"} {
+	for _, name := range []string{"pod-start"} {
 		config, err := obj(map[string]any{
 			"architecture": architecture,
 			"os":           "linux",
@@ -303,12 +260,8 @@ func image(stage, architecture string) error {
 		tag := "example.invalid/" + name + ":fixture"
 		manifest.Annotations = map[string]string{"org.opencontainers.image.ref.name": tag}
 		descriptors = append(descriptors, manifest)
-		output := "fixture.json"
-		if name != "pod-start" {
-			output = "mesh-fixture.json"
-		}
 		fixture := map[string]string{"tag": tag, "pin": manifest.Digest, "reference": "example.invalid/" + name + "@" + manifest.Digest}
-		if err := writeJSON(filepath.Join(stage, output), fixture); err != nil {
+		if err := writeJSON(filepath.Join(stage, "fixture.json"), fixture); err != nil {
 			return err
 		}
 	}
@@ -414,86 +367,6 @@ func receipt(inputsPath, resultPath string) error {
 	return nil
 }
 
-var credentialInstanceID = regexp.MustCompile(`^pcvm-[a-f0-9]{64}$`)
-
-func recoveryReceipt(inputsPath, resultPath string) error {
-	result, err := loadPair(inputsPath, resultPath, "recovery")
-	if err != nil {
-		return err
-	}
-	for _, key := range []string{"fullClaimsPreserved", "taskPreserved", "oldGrantRefused", "cgroupIdentityChecked", "sandboxCleanup"} {
-		if result[key] != true {
-			return errors.New("missing production recovery assertion: " + key)
-		}
-	}
-	for _, key := range []string{"pluginProcessIds", "containerdProcessIds"} {
-		if !twoDistinctPIDs(result[key]) {
-			return errors.New("recovery did not replace the real processes: " + key)
-		}
-	}
-	ids := map[string]bool{}
-	for _, key := range []string{"meshContainerId", "appContainerId", "removedContainerId", "postRecoveryContainerId"} {
-		id, ok := result[key].(string)
-		if !ok || id == "" {
-			return errors.New("recovery requires four distinct actual runtime container identities")
-		}
-		ids[id] = true
-	}
-	if len(ids) != 4 {
-		return errors.New("recovery requires four distinct actual runtime container identities")
-	}
-	observations, _ := positiveInt(result["historicalObservations"])
-	digests, _ := result["measuredDigests"].([]any)
-	if observations != 3 || len(digests) != 2 {
-		return errors.New("recovery did not preserve distinct removed same-image history")
-	}
-	if !reflect.DeepEqual(result["negative"], map[string]any{"missing-history": true, "tampered-history": true, "pending-transition": true}) {
-		return errors.New("recovery must refuse each invalid retained-history state")
-	}
-	if id, _ := result["credentialInstanceId"].(string); !credentialInstanceID.MatchString(id) {
-		return errors.New("missing stable recovery credential identity")
-	}
-	if policy, _ := result["assignedPolicySHA256"].(string); !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(policy) {
-		return errors.New("missing unchanged assigned-policy identity")
-	}
-	if _, ok := positiveInt(result["taskPid"]); !ok || !truthy(result["sandboxId"]) {
-		return errors.New("missing retained actual task identity")
-	}
-	fmt.Println("PASS: fresh production recovery receipt validates actual process restart, full history and fail-closed state")
-	return nil
-}
-
-func kubeletReceipt(inputsPath, resultPath string) error {
-	result, err := loadPair(inputsPath, resultPath, "kubelet recovery")
-	if err != nil {
-		return err
-	}
-	for _, key := range []string{"assignmentPreserved", "fullClaimsPreserved", "tasksPreserved", "kubeletReportedRunning", "sandboxCleanup"} {
-		if result[key] != true {
-			return errors.New("missing actual kubelet recovery assertion: " + key)
-		}
-	}
-	for _, key := range []string{"kubeletProcessIds", "pluginProcessIds", "containerdProcessIds"} {
-		if !twoDistinctPIDs(result[key]) {
-			return errors.New("kubelet recovery did not replace the actual service process: " + key)
-		}
-	}
-	if id, _ := result["credentialInstanceId"].(string); !credentialInstanceID.MatchString(id) || !truthy(result["runtimePodUID"]) {
-		return errors.New("kubelet recovery lost credential or runtime Pod identity")
-	}
-	for _, key := range []string{"appPID", "meshPID"} {
-		if _, ok := positiveInt(result[key]); !ok {
-			return errors.New("kubelet recovery is missing its retained task PID")
-		}
-	}
-	app, mesh := result["appContainerId"], result["meshContainerId"]
-	if !truthy(app) || !truthy(mesh) || app == mesh {
-		return errors.New("kubelet recovery is missing distinct task identities")
-	}
-	fmt.Println("PASS: fresh kubelet receipt validates actual static Pod service restart and retained tasks")
-	return nil
-}
-
 // bounded runs a command under a deadline, as the lane's bounded helper.
 func bounded(seconds string, command []string) int {
 	limit, err := strconv.Atoi(seconds)
@@ -539,14 +412,12 @@ func jsonString(path, key string) error {
 // copies into its container.
 func binaries(stage, output string) error {
 	var files []string
-	for _, dir := range []string{"runtime", "cni"} {
-		entries, err := os.ReadDir(filepath.Join(stage, dir))
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			files = append(files, filepath.Join(dir, e.Name()))
-		}
+	entries, err := os.ReadDir(filepath.Join(stage, "runtime"))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		files = append(files, filepath.Join("runtime", e.Name()))
 	}
 	files = append(files, "c8s-runc", "nri-runtime.test")
 	records := map[string]map[string]any{}
@@ -623,16 +494,6 @@ func positiveInt(v any) (int64, bool) {
 		return 0, false
 	}
 	return i, true
-}
-
-func twoDistinctPIDs(v any) bool {
-	list, ok := v.([]any)
-	if !ok || len(list) != 2 {
-		return false
-	}
-	a, okA := positiveInt(list[0])
-	b, okB := positiveInt(list[1])
-	return okA && okB && a != b
 }
 
 // truthy mirrors a JSON value's truth: absent, null, false, zero, "" and

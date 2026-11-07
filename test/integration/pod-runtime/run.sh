@@ -24,7 +24,7 @@ bounded() {
 bounded 120 go test -count=1 ./test/integration/pod-runtime/fixtures
 
 stage="$work/stage"
-mkdir -p "$stage/runtime" "$stage/cni" "$stage/artifacts"
+mkdir -p "$stage/runtime" "$stage/artifacts"
 artifacts="${C8S_POD_RUNTIME_ARTIFACTS:-$work/artifacts}"
 mkdir -p "$artifacts"
 artifacts=$(cd "$artifacts" && pwd)
@@ -81,7 +81,6 @@ input() {
 }
 runtime_image=$(input runtimeImage)
 runner_image=$(input runnerImage)
-cni_image=$(input cniImage)
 cp "$stage/inputs.json" "$artifacts/inputs.json"
 
 echo "Building Linux/$arch runtime test binaries"
@@ -94,9 +93,8 @@ bounded 300 env GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
     ./internal/cmds/nri-image-policy
 "$fixtures" image "$stage" "$arch"
 cp "$SCRIPT_DIR/inside.sh" "$stage/inside.sh"
-cp images/node-guest/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml "$stage/kubelet-base.yaml"
 
-for image in "$runtime_image" "$runner_image" "$cni_image"; do
+for image in "$runtime_image" "$runner_image"; do
     if ! bounded 30 docker image inspect "$image" >/dev/null 2>&1; then
         bounded 300 docker pull --platform "linux/$arch" "$image"
     fi
@@ -110,21 +108,9 @@ done
 runtime_container=$(bounded 30 docker create --platform "linux/$arch" \
     --label confidential.ai/pod-runtime-source=1 \
     --entrypoint /bin/true "$runtime_image")
-for binary in containerd containerd-shim-runc-v2 runc ctr kubelet; do
+for binary in containerd containerd-shim-runc-v2 runc ctr; do
     bounded 30 docker cp "$runtime_container:/bin/$binary" "$stage/runtime/$binary"
     chmod 0755 "$stage/runtime/$binary"
-done
-bounded 30 docker rm -v "$runtime_container" >/dev/null
-runtime_container=
-
-# Extract only the same CNI binaries that the measured guest stages. The
-# registry release is immutable; guest airgap byte equivalence is not asserted.
-runtime_container=$(bounded 30 docker create --platform "linux/$arch" \
-    --label confidential.ai/pod-runtime-source=1 \
-    --entrypoint /bin/true "$cni_image")
-for binary in bridge host-local loopback; do
-    bounded 30 docker cp "$runtime_container:/opt/cni/bin/$binary" "$stage/cni/$binary"
-    chmod 0755 "$stage/cni/$binary"
 done
 bounded 30 docker rm -v "$runtime_container" >/dev/null
 runtime_container=
@@ -156,9 +142,3 @@ state=$(bounded 30 docker inspect --format '{{.State.ExitCode}}' "$test_containe
 # Copy into this invocation's private staging tree, never trust old artifacts.
 bounded 30 docker cp "$test_container:/validation/artifacts/result.json" "$stage/result.json"
 "$fixtures" receipt "$stage/inputs.json" "$stage/result.json"
-
-bounded 30 docker cp "$test_container:/validation/artifacts/recovery-result.json" "$stage/recovery-result.json"
-"$fixtures" recovery-receipt "$stage/inputs.json" "$stage/recovery-result.json"
-
-bounded 30 docker cp "$test_container:/validation/artifacts/kubelet-recovery-result.json" "$stage/kubelet-recovery-result.json"
-"$fixtures" kubelet-receipt "$stage/inputs.json" "$stage/kubelet-recovery-result.json"

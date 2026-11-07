@@ -16,7 +16,6 @@ package c8srunc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,7 +80,9 @@ type Wrapper struct {
 	Floor      nriimagepolicy.MeshFloor
 	FloorError error
 	// State reads the real runtime's persisted created-process identity.
-	State        func(context.Context, string, []string) (specs.State, error)
+	State func(context.Context, string, []string) (specs.State, error)
+	// ConsumeStart spends the admission permission bound to the created
+	// process at the gate's socket path; any error denies the start.
 	ConsumeStart func(context.Context, string, podstart.Request) error
 	// ExecGrantDir is where admission records the execs each container is
 	// granted (nriimagepolicy.ExecGrantDir).
@@ -184,9 +185,6 @@ func (w Wrapper) Run(argv []string) int {
 func (w Wrapper) checkFloor(args []string) error {
 	if w.FloorError != nil {
 		return fmt.Errorf("read the measured mesh floor from %s: %w", w.MeshConfig, w.FloorError)
-	}
-	if w.Floor.PodWaiting {
-		return errors.New("pod guest is waiting for an assignment")
 	}
 	spec, containerID, err := readBundle(args)
 	if err != nil {

@@ -4,7 +4,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/netip"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/connectbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -182,37 +180,4 @@ func podCredentialTestDir(t *testing.T) string {
 		}
 	})
 	return dir
-}
-
-// The guest serves the endpoint's peer connections from the credential volume
-// for as long as the Pod identity lasts, to the endpoint's UID alone.
-func TestPodIdentityServesTheConnectBrokerInTheCredentialVolume(t *testing.T) {
-	requireNetNS(t)
-	base := podCredentialTestDir(t)
-	mountPodTestRAM(t, base)
-	source := filepath.Join(base, "certs")
-	if err := os.Mkdir(source, 0700); err != nil {
-		t.Fatal(err)
-	}
-	p := podBrokerPlugins(t, base)()
-	if err := p.startPodCredentials(sandboxedPod(), source); err != nil {
-		t.Fatal(err)
-	}
-	socket := filepath.Join(source, connectbroker.SocketName)
-	info, err := os.Lstat(socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat := info.Sys().(*syscall.Stat_t)
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o660 || stat.Uid != 0 || stat.Gid != workloadclaims.MeshUID {
-		t.Fatalf("broker socket = %v uid %d gid %d", info.Mode(), stat.Uid, stat.Gid)
-	}
-	// This test runs as root, not as the endpoint: the broker answers, and refuses.
-	if _, err := connectbroker.Dial(t.Context(), socket, netip.MustParseAddrPort("203.0.113.1:15006")); !errors.Is(err, connectbroker.ErrRefused) {
-		t.Fatalf("a caller that is not the endpoint got %v", err)
-	}
-	p.closePodBroker()
-	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("the broker socket outlived the Pod identity")
-	}
 }

@@ -1,13 +1,19 @@
 package nodeservices
 
 import (
+	"archive/tar"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/distribution/reference"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -22,44 +28,35 @@ import (
 )
 
 // Pod-role outputs. Kubelet and containerd configs stay baked; preparation
-// stages the signed workload and the CNI template with the guest uplink MTU.
+// stages the CNI template with the guest uplink MTU, and the assignment later
+// renders the runtime policy and the manifest.
 const (
 	PodDir             = "/run/c8s-pod"
-	podManifestPath    = PodDir + "/manifests/pod.yaml"
 	podKubeletEnvPath  = PodDir + "/kubelet.env"
 	podUnmanagedLinks  = "/run/systemd/network/10-podcvm-unmanaged.network"
 	podUnmanagedConfig = "[Match]\nName=veth* c8spod*\n\n[Link]\nUnmanaged=yes\n"
+	// podMeshArchivePath links to the airgap archive that holds the measured
+	// mesh endpoint image; podcvm-containerd imports it before kubelet starts.
+	podMeshArchivePath = PodDir + "/mesh-image.tar"
+	// airgapImagesDir holds the archives airgap-images.sh preserves, which
+	// RKE2 imports on a node.
+	airgapImagesDir = "/var/lib/rancher/rke2/agent/images"
 )
 
-// PodRuntime is fully validated runtime policy plus the optional static manifest.
+// PodRuntime is fully validated runtime policy plus the assigned manifest.
 // Rendering writes nothing, so assignment can validate before committing its record.
 type PodRuntime struct {
-	UID      string
-	Policy   []byte
-	Manifest []byte
+	UID       string
+	Policy    []byte
+	Manifest  []byte
+	MeshImage string
 }
 
-// RenderPodRuntime applies the measured floor to a cold or assigned Pod document.
-// A generic document produces an explicit waiting policy and no manifest.
-func RenderPodRuntime(rootDir string, d *launchconfig.Document) (PodRuntime, error) {
-	return renderPodRuntime(rootDir, d, d != nil && d.Pod == nil)
-}
-
-// RenderAssignedPodRuntime records that this policy belongs to a generic boot.
-// It permits only the empty-runtime transition before the first manifest.
-func RenderAssignedPodRuntime(rootDir string, d *launchconfig.Document) (PodRuntime, error) {
-	if d == nil || d.Pod == nil {
-		return PodRuntime{}, fmt.Errorf("assignment requires a Pod")
-	}
-	return renderPodRuntime(rootDir, d, true)
-}
-
-func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (PodRuntime, error) {
+// RenderPodRuntime applies the measured floor to an assigned pod: the generic
+// document's trust, the pod's entries and the manifest the assignment carried.
+func RenderPodRuntime(rootDir string, d *launchconfig.AssignedPod) (PodRuntime, error) {
 	if d == nil || d.Role != launchconfig.Pod {
 		return PodRuntime{}, fmt.Errorf("not a Pod role document")
-	}
-	if d.Pod == nil && d.Workloads != "" {
-		return PodRuntime{}, fmt.Errorf("generic Pod role must not carry workloads")
 	}
 	floor, a, err := loadFloor(rootDir)
 	if err != nil {
@@ -77,16 +74,20 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 	if err != nil {
 		return PodRuntime{}, err
 	}
-	if d.Workloads != "" {
-		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
-		if err != nil {
-			return PodRuntime{}, fmt.Errorf("launch workloads: %w", err)
-		}
-		if err := mergeWorkloads(base, workloads, false); err != nil {
-			return PodRuntime{}, err
-		}
+	// A plugin restart within the boot ends the pod identity; the plugin tells
+	// a restart from its first registration by the boot marker, so the baked
+	// floor must arm that check.
+	if marker, _ := policy["boot_marker_path"].(string); policy["fatal_existing"] != true || marker == "" {
+		return PodRuntime{}, fmt.Errorf("baked NRI policy must set policy.fatal_existing and policy.boot_marker_path")
 	}
-	manifest, images, err := renderPodManifest(d, image)
+	workloads, err := allowlist.ParseJSON([]byte(d.Entries))
+	if err != nil {
+		return PodRuntime{}, fmt.Errorf("assignment entries: %w", err)
+	}
+	if err := mergeWorkloads(base, workloads, false); err != nil {
+		return PodRuntime{}, err
+	}
+	manifest, images, err := renderPodManifest(&d.Pod, image)
 	if err != nil {
 		return PodRuntime{}, err
 	}
@@ -110,21 +111,25 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 	// network namespace, and its egress is the standalone ruleset's.
 	delete(mesh, "credential_attestation_port")
 	delete(mesh, "exits")
-	mesh["pod"] = map[string]any{"peers": []string{}, "ingress_ports": []uint16{}}
-	floor["pod"] = map[string]any{"waiting": true, "generic": true}
-	if d.Pod != nil {
-		peers, err := d.Pod.PeerAddresses()
-		if err != nil {
-			return PodRuntime{}, err
-		}
-		ports, err := d.Pod.IngressPorts()
-		if err != nil {
-			return PodRuntime{}, err
-		}
-		mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
-		// Standalone kubelet appends the guest's original launch name.
-		floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "workload_id": d.Pod.WorkloadID, "images": images, "generic": generic}
+	peers, err := d.Pod.PeerAddresses()
+	if err != nil {
+		return PodRuntime{}, err
 	}
+	ports, err := d.Pod.IngressPorts()
+	if err != nil {
+		return PodRuntime{}, err
+	}
+	mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
+	workloadID, err := d.Pod.WorkloadID()
+	if err != nil {
+		return PodRuntime{}, err
+	}
+	// Standalone kubelet appends the guest's original launch name.
+	podFloor := map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
+	if workloadID != "" {
+		podFloor["workload_id"] = workloadID
+	}
+	floor["pod"] = podFloor
 	floor["mesh"] = mesh
 	policy["exempt_namespaces"] = []string{}
 	delete(policy, "exempt_snapshot_path")
@@ -142,18 +147,11 @@ func renderPodRuntime(rootDir string, d *launchconfig.Document, generic bool) (P
 		return PodRuntime{}, err
 	}
 
-	runtime := PodRuntime{Policy: policyData, Manifest: manifest}
-	if d.Pod != nil {
-		runtime.UID = d.Pod.UID
-	}
-	return runtime, nil
+	return PodRuntime{UID: d.Pod.UID, Policy: policyData, Manifest: manifest, MeshImage: image}, nil
 }
 
-func renderPodManifest(d *launchconfig.Document, image string) ([]byte, map[string]string, error) {
-	if d.Pod == nil {
-		return nil, nil, nil
-	}
-	pod, err := launchconfig.ParsePodManifest([]byte(d.Pod.Manifest))
+func renderPodManifest(spec *launchconfig.PodSpec, image string) ([]byte, map[string]string, error) {
+	pod, err := launchconfig.ParsePodManifest([]byte(spec.Manifest))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,13 +172,11 @@ func renderPodManifest(d *launchconfig.Document, image string) ([]byte, map[stri
 	return manifest, images, nil
 }
 
-// preparePod stages boot inputs before either standalone guest service starts.
+// preparePod stages boot inputs before the status service starts. It stages
+// no runtime policy and no manifest: the assignment that supplies the Pod
+// renders them, and the runtime, plugin and kubelet start only then (podstatus).
 func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte, resolveMTU func() (int, error)) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	runtime, err := RenderPodRuntime(rootDir, d)
-	if err != nil {
-		return err
-	}
 	cni, err := preparePodNetwork(rootDir, resolveMTU)
 	if err != nil {
 		return err
@@ -189,27 +185,34 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err != nil {
 		return err
 	}
+	// The mesh endpoint image is baked into the floor, so its archive can be
+	// staged before any pod is assigned.
+	_, a, err := loadFloor(rootDir)
+	if err != nil {
+		return err
+	}
+	_, image, err := podMeshBase(a["base"])
+	if err != nil {
+		return err
+	}
+	archive, err := podMeshArchive(rootDir, image)
+	if err != nil {
+		return err
+	}
 
 	if err := publishPublic(path(PublicDir), outputs); err != nil {
 		return err
 	}
-	files := []struct {
+	type output struct {
 		path string
 		data []byte
 		mode os.FileMode
-	}{
-		{floorConfigPath, runtime.Policy, 0600},
+	}
+	files := []output{
 		{podKubeletEnvPath, []byte("KUBELET_HOSTNAME=" + d.Node.Name + "\n"), 0644},
 		{podUnmanagedLinks, []byte(podUnmanagedConfig), 0644},
 		{podCNIPath, cni, 0644},
 		{podResolvConfPath, resolv, 0644},
-	}
-	if len(runtime.Manifest) != 0 {
-		files = append(files, struct {
-			path string
-			data []byte
-			mode os.FileMode
-		}{podManifestPath, runtime.Manifest, 0600})
 	}
 	if err := os.MkdirAll(path(PodDir+"/manifests"), 0700); err != nil {
 		return err
@@ -219,7 +222,80 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 			return err
 		}
 	}
-	return nil
+	if err := os.Remove(path(podMeshArchivePath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Symlink(archive, path(podMeshArchivePath))
+}
+
+// podMeshArchive returns the airgap archive whose OCI index names the measured
+// mesh endpoint image at its pinned digest. The archive is part of the
+// measured image, and containerd checks every blob against its digest on
+// import, so the pod pulls nothing for its endpoint.
+func podMeshArchive(rootDir, image string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", fmt.Errorf("mesh endpoint image: %w", err)
+	}
+	canonical, ok := named.(reference.Canonical)
+	if !ok {
+		return "", fmt.Errorf("mesh endpoint image %s is not pinned by digest", image)
+	}
+	paths, err := filepath.Glob(filepath.Join(rootDir, airgapImagesDir, "c8s-*.tar"))
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	for _, p := range paths {
+		index, err := archiveIndex(p)
+		if err != nil {
+			return "", fmt.Errorf("airgap archive %s: %w", filepath.Base(p), err)
+		}
+		for _, m := range index.Manifests {
+			name, err := reference.ParseNormalizedNamed(m.Annotations[imageNameAnnotation])
+			if err == nil && name.String() == canonical.String() {
+				if m.Digest != canonical.Digest() {
+					return "", fmt.Errorf("airgap archive %s holds %s at digest %s", filepath.Base(p), image, m.Digest)
+				}
+				found = append(found, filepath.Join(airgapImagesDir, filepath.Base(p)))
+				break
+			}
+		}
+	}
+	if len(found) != 1 {
+		return "", fmt.Errorf("want one airgap archive holding mesh endpoint image %s, found %d", image, len(found))
+	}
+	return found[0], nil
+}
+
+// imageNameAnnotation is the name containerd gives an image it imports.
+const imageNameAnnotation = "io.containerd.image.name"
+
+// archiveIndex reads the OCI index of an image layout archive.
+func archiveIndex(path string) (*ocispec.Index, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := tar.NewReader(f)
+	for {
+		h, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("no index.json")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if h.Name != "index.json" {
+			continue
+		}
+		var index ocispec.Index
+		if err := json.NewDecoder(r).Decode(&index); err != nil {
+			return nil, fmt.Errorf("index.json: %w", err)
+		}
+		return &index, nil
+	}
 }
 
 // podImagePins binds every runtime container name to its signed or baked image.

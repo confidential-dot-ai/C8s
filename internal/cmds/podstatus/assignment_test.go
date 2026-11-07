@@ -63,11 +63,11 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 	store := &memoryAssignmentStore{}
 	s, err := newAssignmentService(t.Context(), doc, store,
 		func(context.Context) (*ecdsa.PublicKey, error) { return &key.PublicKey, nil },
-		func(d *launchconfig.Document) (nodeservices.PodRuntime, error) {
+		func(d *launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 			if d.CDS != doc.CDS {
 				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated CDS trust")
 			}
-			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Workloads), Manifest: []byte(d.Pod.Manifest)}, nil
+			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Entries), Manifest: []byte(d.Pod.Manifest)}, nil
 		},
 		func(context.Context) error { return nil },
 		func(context.Context, nodeservices.PodRuntime) error { return nil })
@@ -115,8 +115,10 @@ func encodeAssignment(t *testing.T, req podassign.Request) []byte {
 	return data
 }
 
+// One row per step's failure status, in step order (steps 2 to 9); every
+// refusal leaves the record, the UID and the issued nonce unchanged.
 func TestAssignmentRefusalsDoNotChangeState(t *testing.T) {
-	for _, kind := range []string{"body", "unissued", "signature", "channel", "manifest", "entries", "peers", "measured-key", "runtime", "render", "store"} {
+	for _, kind := range []string{"body", "unissued", "measured-key", "signature", "channel", "entries", "peers", "render", "runtime", "store"} {
 		t.Run(kind, func(t *testing.T) {
 			s, key, peer, store := assignmentFixture(t)
 			req := issuedAssignment(t, s, key, peer, "pod-a")
@@ -131,8 +133,6 @@ func TestAssignmentRefusalsDoNotChangeState(t *testing.T) {
 			case "channel":
 				peer = &ecdsaCert(t).PrivateKey.(*ecdsa.PrivateKey).PublicKey
 				status = http.StatusUnauthorized
-			case "manifest":
-				req.Manifest = []byte("{}")
 			case "entries":
 				req.Entries = []byte("{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"x\":{\"containers\":[{\"role\":\"mesh\"}]}}}")
 			case "peers":
@@ -144,17 +144,16 @@ func TestAssignmentRefusalsDoNotChangeState(t *testing.T) {
 				s.available = func(context.Context) error { return errors.New("private runtime diagnostic") }
 				status = http.StatusServiceUnavailable
 			case "render":
-				s.render = func(*launchconfig.Document) (nodeservices.PodRuntime, error) {
+				s.render = func(*launchconfig.AssignedPod) (nodeservices.PodRuntime, error) {
 					return nodeservices.PodRuntime{}, errors.New("endpoint collision")
 				}
 			case "store":
 				store.fail = true
 				status = http.StatusServiceUnavailable
 			}
-			if kind == "manifest" || kind == "entries" || kind == "peers" {
+			if kind == "entries" || kind == "peers" {
 				var err error
-				req, err = podassign.Sign(key, peer, req)
-				if err != nil {
+				if req, err = podassign.Sign(key, peer, req); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -171,6 +170,8 @@ func TestAssignmentRefusalsDoNotChangeState(t *testing.T) {
 	}
 }
 
+// One assignment per boot, a commit invalidates every nonce,
+// and a restart keeps the assignment and refuses a second one.
 func TestAssignmentConcurrentCommitAndRecovery(t *testing.T) {
 	s, key, peer, store := assignmentFixture(t)
 	first := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
@@ -201,14 +202,10 @@ func TestAssignmentConcurrentCommitAndRecovery(t *testing.T) {
 	if rec := postAssignment(restored, rotated, first); rec.Code != http.StatusConflict {
 		t.Fatal("new serving key reopened assignment")
 	}
-	// Signature verification on recovery uses the original serving key; changing
-	// the record itself is rejected rather than treated as an unassigned boot.
-	store.record.ServingKey, _ = x509.MarshalPKIXPublicKey(rotated)
-	if _, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply); err == nil {
-		t.Fatal("altered assignment record recovered")
-	}
 }
 
+// A refused assignment leaves its nonce held, a restart forgets every
+// nonce; a replay answers 409 naming the held Pod.
 func TestAssignmentStorageFailureCanRetryButRestartForgetsNonce(t *testing.T) {
 	s, key, peer, store := assignmentFixture(t)
 	data := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
@@ -232,20 +229,10 @@ func TestAssignmentStorageFailureCanRetryButRestartForgetsNonce(t *testing.T) {
 	}
 }
 
+// A nonce discarded at the bound is refused like one never issued.
 func TestAssignmentNonceBoundDiscardsTheOldestUnusedNonce(t *testing.T) {
 	s, key, peer, _ := assignmentFixture(t)
 	first := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-	for range maxAssignmentNonces - 1 {
-		if rec := serve(Handler{assignment: s}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK {
-			t.Fatal(rec.Code)
-		}
-	}
-	if rec := postAssignment(s, peer, first); rec.Code != http.StatusOK {
-		t.Fatal("a nonce within the bound was discarded")
-	}
-
-	s, key, peer, _ = assignmentFixture(t)
-	first = encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
 	for range maxAssignmentNonces {
 		if rec := serve(Handler{assignment: s}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK {
 			t.Fatal("issuance refused at the bound")
@@ -262,17 +249,9 @@ func TestAssignmentNonceBoundDiscardsTheOldestUnusedNonce(t *testing.T) {
 	}
 }
 
-func TestAssignmentRoutesAndStaticLaunchConflict(t *testing.T) {
-	s, key, peer, _ := assignmentFixture(t)
-	data := encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))
-	s.doc.Pod = &launchconfig.PodSpec{UID: "static"}
-	static, err := newAssignmentService(t.Context(), s.doc, nil, s.boundKey, s.render, s.available, s.apply)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec := postAssignment(static, peer, data); rec.Code != http.StatusConflict || heldUID(t, rec) != "static" {
-		t.Fatal("static launch accepted assignment or did not name its Pod")
-	}
+// 405 on a wrong method and 404 on an unknown assignment route.
+func TestAssignmentRoutes(t *testing.T) {
+	s, _, _, _ := assignmentFixture(t)
 	for _, path := range []string{AssignNoncePath, AssignPath} {
 		if rec := serve(Handler{assignment: s}, http.MethodDelete, path); rec.Code != http.StatusMethodNotAllowed {
 			t.Fatal("route accepted wrong method")

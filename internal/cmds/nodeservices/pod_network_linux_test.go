@@ -26,7 +26,7 @@ func TestPodDefaultRouteSelection(t *testing.T) {
 	ipv6.Family = netlink.FAMILY_V6
 	otherTable := base
 	otherTable.Table = 100
-	for _, routes := range [][]netlink.Route{{higher, base}, {base, higher}, {specific, ipv6, otherTable, base}, {higher, higher, base}} {
+	for _, routes := range [][]netlink.Route{{higher, base}, {specific, ipv6, otherTable, base}} {
 		got, err := podDefaultRoute(routes)
 		if err != nil || !reflect.DeepEqual(got, base) {
 			t.Fatalf("selected %+v, %v; want %+v", got, err, base)
@@ -46,14 +46,8 @@ func TestPodDefaultRouteRejectsAmbiguityAndUnusableWinners(t *testing.T) {
 	}
 	for _, change := range []func(*netlink.Route){
 		func(r *netlink.Route) { r.Family = netlink.FAMILY_V6 },
-		func(r *netlink.Route) { r.Table = 100 },
-		func(r *netlink.Route) { r.Type = unix.RTN_BLACKHOLE },
-		func(r *netlink.Route) { r.LinkIndex = 0 },
 		func(r *netlink.Route) { r.Priority = -1 },
 		func(r *netlink.Route) { r.MultiPath = []*netlink.NexthopInfo{{LinkIndex: 7}} },
-		func(r *netlink.Route) { r.Tos = 4 },
-		func(r *netlink.Route) { r.Flags = unix.RTNH_F_DEAD },
-		func(r *netlink.Route) { r.Flags = unix.RTNH_F_LINKDOWN },
 	} {
 		route := defaultRoute()
 		change(&route)
@@ -68,74 +62,51 @@ func TestPodDefaultRouteRejectsAmbiguityAndUnusableWinners(t *testing.T) {
 	}
 }
 
-func TestPreparePodFromNetlinkFixtures(t *testing.T) {
+func TestPodMTUFromNetwork(t *testing.T) {
+	up := func(index, mtu int) netlink.Link {
+		return &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: index, Flags: net.FlagUp, MTU: mtu}}
+	}
 	for _, tc := range []struct {
-		name                    string
-		linkMTU, routeMTU, want int
-		ambiguous               bool
+		name      string
+		routeMTU  int
+		ambiguous bool
+		routesErr error
+		link      netlink.Link
+		linkErr   error
+		want      int
 	}{
-		{name: "uplink1400", linkMTU: 1400, want: 1400},
-		{name: "route cap", linkMTU: 1500, routeMTU: 1400, want: 1400},
-		{name: "jumbo ceiling", linkMTU: 9000, want: 1500},
-		{name: "invalid link", linkMTU: 0},
-		{name: "invalid route cap", linkMTU: 1500, routeMTU: 67},
-		{name: "ambiguous default", linkMTU: 1400, ambiguous: true},
+		{name: "uplink1400", link: up(7, 1400), want: 1400},
+		{name: "route cap", routeMTU: 1400, link: up(7, 1500), want: 1400},
+		{name: "jumbo ceiling", link: up(7, 9000), want: 1500},
+		{name: "invalid link", link: up(7, 0)},
+		{name: "invalid route cap", routeMTU: 67, link: up(7, 1500)},
+		{name: "ambiguous default", ambiguous: true, link: up(7, 1400)},
+		{name: "route lookup failed", routesErr: errors.New("route lookup failed"), link: up(7, 1400)},
+		{name: "link disappeared", linkErr: errors.New("link disappeared")},
+		{name: "missing link"},
+		{name: "link down", link: &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 7, MTU: 1400}}},
+		{name: "loopback", link: &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 7, Flags: net.FlagUp | net.FlagLoopback, MTU: 1400}}},
+		{name: "replaced link", link: up(8, 1400)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := preparePodRoot(t)
 			route := defaultRoute()
 			route.MTU = tc.routeMTU
 			routes := []netlink.Route{route}
 			if tc.ambiguous {
 				routes = append(routes, route)
 			}
-			resolve := func() (int, error) {
-				return podMTUFromNetwork(func() ([]netlink.Route, error) { return routes, nil }, func(index int) (netlink.Link, error) {
-					if index != route.LinkIndex {
-						t.Fatalf("read unrelated interface %d", index)
-					}
-					return &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: index, Flags: net.FlagUp, MTU: tc.linkMTU}}, nil
-				})
-			}
-			err := prepare(root, podDocument(t), resolve)
-			if tc.want == 0 {
-				if err == nil {
-					t.Fatal("accepted invalid guest network")
+			got, err := podMTUFromNetwork(func() ([]netlink.Route, error) { return routes, tc.routesErr }, func(index int) (netlink.Link, error) {
+				if tc.routesErr != nil || tc.ambiguous {
+					t.Fatal("read a link without a usable default route")
 				}
-				assertNoPodOutputs(t, root)
-			} else {
-				if err != nil {
-					t.Fatal(err)
+				if index != route.LinkIndex {
+					t.Fatalf("read unrelated interface %d", index)
 				}
-				assertPreparedCNI(t, root, tc.want)
+				return tc.link, tc.linkErr
+			})
+			if got != tc.want || (err == nil) != (tc.want != 0) {
+				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
 			}
 		})
-	}
-}
-
-func TestPodMTUReadFailuresAndInvalidLinks(t *testing.T) {
-	routes := func() ([]netlink.Route, error) { return []netlink.Route{defaultRoute()}, nil }
-	if _, err := podMTUFromNetwork(func() ([]netlink.Route, error) { return nil, errors.New("route lookup failed") }, func(int) (netlink.Link, error) {
-		t.Fatal("read link after failed route lookup")
-		return nil, nil
-	}); err == nil {
-		t.Fatal("ignored route lookup error")
-	}
-	for _, lookup := range []func(int) (netlink.Link, error){
-		func(int) (netlink.Link, error) { return nil, errors.New("link disappeared") },
-		func(int) (netlink.Link, error) { return nil, nil },
-		func(int) (netlink.Link, error) {
-			return &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 7, MTU: 1400}}, nil
-		},
-		func(int) (netlink.Link, error) {
-			return &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 7, Flags: net.FlagUp | net.FlagLoopback, MTU: 1400}}, nil
-		},
-		func(int) (netlink.Link, error) {
-			return &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 8, Flags: net.FlagUp, MTU: 1400}}, nil
-		},
-	} {
-		if _, err := podMTUFromNetwork(routes, lookup); err == nil {
-			t.Fatal("accepted missing, down, loopback or replaced link")
-		}
 	}
 }

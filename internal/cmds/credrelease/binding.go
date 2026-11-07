@@ -44,8 +44,9 @@ var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 // extended with a prefix of the measured list: the key is not the one the
 // launch bound, or the register took an extend the list does not record.
 // Neither mends before a reboot, so a caller that keeps running may treat it
-// as final. Every other failure of LoadMeasuredOperatorKey is a read or
-// attestation error a retry can clear.
+// as final. So are ErrNoOperatorKey and a journal over
+// armtls.MaxRuntimeExtensions; a failed attestation round trip or file read
+// is what a retry can clear.
 var ErrRegisterDoesNotReplay = errors.New("the register is not the staged key's seed extended with a prefix of the measured list")
 
 // ReadOperatorPubkey reads the operator public key the initrd staged off the
@@ -253,8 +254,13 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, jour
 // the allowlist policies in the measured-policy journal; an empty journal path
 // lists none. The journal is read after the report, so it may hold extends
 // the report does not. A journal over armtls.MaxRuntimeExtensions fails, as it
-// does at every verifier.
+// does at every verifier. Only a register that was compared and found
+// different is ErrRegisterDoesNotReplay; a report that carries no binding is
+// not.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
+	if _, err := runtimemeasure.Binding(report); err != nil {
+		return fmt.Errorf("this guest's self-report: %w", err)
+	}
 	return matchJournalPrefix(journal, func(policies []string) error {
 		if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
 			return fmt.Errorf("%w: %w", ErrRegisterDoesNotReplay, err)

@@ -49,7 +49,7 @@ func IngressPorts(pod *corev1.Pod) ([]uint16, error) {
 			if p.Protocol != "" && p.Protocol != corev1.ProtocolTCP {
 				continue
 			}
-			if p.ContainerPort == 8443 || isMeshPort(p.ContainerPort) {
+			if isReservedPort(p.ContainerPort) {
 				return nil, fmt.Errorf("container %q port %d is reserved for the platform", c.Name, p.ContainerPort)
 			}
 			ports = append(ports, uint16(p.ContainerPort))

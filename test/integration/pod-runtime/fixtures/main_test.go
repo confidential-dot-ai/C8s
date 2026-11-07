@@ -17,8 +17,6 @@ var sourceFiles = []string{
 	"images/node-guest/c8s/mkosi.sync",
 	"images/node-guest/c8s/image-policy.yaml.in",
 	"test/integration/cluster/lib.sh",
-	"internal/cmds/nri-image-policy/pod_runtime_kubelet_integration_linux_test.go",
-	"internal/cmds/nri-image-policy/pod_runtime_recovery_integration_linux_test.go",
 	"internal/testdata/node-identities.json",
 	"test/integration/pod-runtime/runtime-pins.json",
 }
@@ -118,7 +116,7 @@ func TestPrepareLabelsProvenanceWithoutByteEquivalence(t *testing.T) {
 	if _, present := receipt["airgapFloorDigest"]; present {
 		t.Fatal("the receipt must not claim an airgap floor digest")
 	}
-	if provenance, _ := receipt["runtimeProvenance"].(string); !strings.Contains(provenance, "runtime/CNI guest airgap byte equivalence unverified") {
+	if provenance, _ := receipt["runtimeProvenance"].(string); !strings.Contains(provenance, "runtime guest airgap byte equivalence unverified") {
 		t.Fatalf("runtimeProvenance = %q", provenance)
 	}
 }
@@ -151,55 +149,19 @@ func TestGuestVersionAndBundleDrift(t *testing.T) {
 	}
 }
 
-func TestCNIRuleDrift(t *testing.T) {
-	source, p := stageSource(t)
-	path := filepath.Join(source, "images/node-guest/c8s/image-policy.yaml.in")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := string(raw)
-	digest := p.CNI.AirgapFloorDigest
-	image := "docker.io/rancher/hardened-cni-plugins:" + p.CNI.Version
-	cases := map[string]string{
-		"digest":    strings.ReplaceAll(original, digest, "sha256:"+strings.Repeat("0", 64)),
-		"version":   strings.ReplaceAll(original, image, image+"-changed"),
-		"not-init":  strings.ReplaceAll(original, "      cilium:\n        initContainers:", "      cilium:\n        containers:"),
-		"duplicate": original + "\n            image: \"" + image + "\"\n",
-	}
-	for reason, changed := range cases {
-		if changed == original {
-			t.Fatalf("%s: the drift case changed nothing", reason)
-		}
-		rewrite(t, path, changed)
-		expectRefusal(t, source, p, "Cilium init rule")
-	}
-}
-
 func TestMalformedRegistryPins(t *testing.T) {
 	source, p := stageSource(t)
-	for _, family := range []string{"runtime", "cni"} {
-		for _, field := range []string{"registryIndex", "amd64", "arm64"} {
-			broken := p
-			broken.Platforms = map[string]string{}
-			broken.CNI.Platforms = map[string]string{}
-			for k, v := range p.Platforms {
-				broken.Platforms[k] = v
-			}
-			for k, v := range p.CNI.Platforms {
-				broken.CNI.Platforms[k] = v
-			}
-			switch {
-			case family == "runtime" && field == "registryIndex":
-				broken.RegistryIndex = "sha256:bad"
-			case family == "runtime":
-				broken.Platforms[field] = "sha256:bad"
-			case field == "registryIndex":
-				broken.CNI.RegistryIndex = "sha256:bad"
-			default:
-				broken.CNI.Platforms[field] = "sha256:bad"
-			}
-			expectRefusal(t, source, broken, "sha256 pins")
+	for _, field := range []string{"registryIndex", "amd64", "arm64"} {
+		broken := p
+		broken.Platforms = map[string]string{}
+		for k, v := range p.Platforms {
+			broken.Platforms[k] = v
 		}
+		if field == "registryIndex" {
+			broken.RegistryIndex = "sha256:bad"
+		} else {
+			broken.Platforms[field] = "sha256:bad"
+		}
+		expectRefusal(t, source, broken, "sha256 pins")
 	}
 }

@@ -57,6 +57,7 @@ func newAddCmd(o *options) *cobra.Command {
 	var (
 		host, path, match, address string
 		workload, serverName, ca   string
+		assigned                   string
 		maxAge                     time.Duration
 		revision                   uint64
 		dryRun, newManifest        bool
@@ -76,13 +77,18 @@ and drops all but this one.
 
 Name the backend in one of two ways:
   --workload            an allowlist workload name; the router requires it in
-                        the backend's named leaf.
+                        the backend's named leaf. --assigned-workload also
+                        requires the leaf's assigned workload ID: one pod
+                        CVM's confidential.ai/cw.
   --server-name, --ca   a TLS server name and a PEM file of trust anchors; the
                         anchors must not include the CDS mesh CA.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (workload == "") == (serverName == "" && ca == "") {
 				return fmt.Errorf("name the backend with --workload, or with --server-name and --ca")
+			}
+			if assigned != "" && workload == "" {
+				return fmt.Errorf("--assigned-workload needs --workload")
 			}
 			if workload == "" && (serverName == "" || ca == "") {
 				return fmt.Errorf("an address backend needs both --server-name and --ca")
@@ -93,7 +99,7 @@ Name the backend in one of two ways:
 			r := pkgroutes.Route{
 				Path:    path,
 				Match:   pkgroutes.MatchKind(match),
-				Backend: pkgroutes.Backend{Address: address, Workload: workload, ServerName: serverName},
+				Backend: pkgroutes.Backend{Address: address, Workload: workload, AssignedWorkloadID: assigned, ServerName: serverName},
 			}
 			if ca != "" {
 				pemBytes, err := os.ReadFile(ca)
@@ -117,6 +123,7 @@ Name the backend in one of two ways:
 	f.StringVar(&match, "match", string(pkgroutes.MatchPrefix), "exact or prefix")
 	f.StringVar(&address, "address", "", "backend host:port (required)")
 	f.StringVar(&workload, "workload", "", "allowlist workload name the backend's named leaf must carry")
+	f.StringVar(&assigned, "assigned-workload", "", "assigned workload ID (a pod CVM's confidential.ai/cw) the backend's leaf must also carry; needs --workload")
 	f.StringVar(&serverName, "server-name", "", "TLS server name of an address backend")
 	f.StringVar(&ca, "ca", "", "PEM file of trust anchors for an address backend")
 	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds of a manifest --new starts; otherwise add keeps the stored value")
@@ -232,6 +239,10 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 		m = &edited
 	}
 	done, err := change(m)
+	if errors.Is(err, errUnchanged) {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s at revision %d\n", err, m.Revision)
+		return nil
+	}
 	if err != nil {
 		return err
 	}

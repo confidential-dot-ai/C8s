@@ -200,12 +200,14 @@ its measured admission plugin instead of a container credential client and node
 inventory callback. The guest authenticates CDS against the signed launch
 document's independent server pins, then sends an empty-subject CSR, a fresh
 challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
-bind the boot identity, the assigned and runtime Pod UIDs, the assigned
-workload ID when the pod's manifest carries `confidential.ai/cw`, the sandbox
-ID, a revision, the complete ordered image measurement list and every retained
-admission observation (image, arguments, environment commitments and mounts,
-completed containers included); `pkg/workloadclaims` owns their encoding. The
-report data is:
+bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
+revision, the complete ordered image measurement list and every retained
+admission observation, completed containers included: image digest, argv,
+environment commitment, mounts with their named volumes and the platform role,
+plus `spec_digest`, a canonical SHA-256 over the argv, environment commitment
+and mounts admission checked. The claims also carry `assigned_workload_id`,
+the signed manifest's `confidential.ai/cw` annotation, when it has one.
+`pkg/workloadclaims` owns their encoding. The report data is:
 
 ```text
 SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
@@ -213,23 +215,14 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 
 CDS verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
-policy and every non-platform observation must pass its admission checks. A
-snapshot holding only the measured endpoint can get an unnamed membership leaf;
-a named leaf needs one unique whole-workload match of the complete non-platform
-history. Neither a status quote nor a node inventory token substitutes for this
-profile.
-
-The assigned workload ID is the tenant identity of the leaf. The pod provider
-signs the manifest's annotation into the assignment, the broker carries it in
-the claims and nowhere else, and CDS stamps the verified value under
-`1.3.6.1.4.1.66378.1.8`
+policy, and every workload observation must be admitted by it. When the whole
+observation set matches exactly one entry, the leaf carries the matched-workload
+stamp, so the router's named routes reach the pod; a subset sufficient for
+bootstrap gets the unnamed membership leaf. A pod with a workload ID gets the
+assigned-workload-ID extension
 ([certificate-extensions.md](certificate-extensions.md#assigned-workload-id-18)).
-A pod without the annotation gets no extension. The pod CVM's mesh endpoint
-requires every peer, in both roles, to carry exactly the assigned workload ID
-of its own leaf: a leaf with none, with another tenant's or with a damaged
-extension fails the handshake, so two tenants running the same image cannot
-substitute each other's certificates, and an endpoint without the stamp meshes
-only with unstamped peers.
+Neither a status quote nor a node inventory
+token substitutes for this profile.
 
 Measured Pod launch keys remain separate from node and operator authority. In
 an HA cluster, that boundary also applies to signed node-image replacements.
@@ -240,21 +233,17 @@ earlier pins. Pod issuance continues to use its separate measured policy.
 The guest publishes complete credential generations to a verified RAM-backed
 volume only the endpoint mounts, read-only. Publication rechecks the retained
 revision, sandbox and packet protection. The revision moves when the history
-gains an observation, the applied policy changes or the sandbox's identity ends.
+gains an admission, the applied policy changes or the sandbox's identity ends.
 Stopping or removing a container does not change it or restart issuance. Renewal
-uses fresh evidence and the current policy. The guest checkpoints complete
-history, boot and sandbox identity, issuer binding and applied policy in
-protected RAM. A completed service restart can restore that state after
-verifying the original task identities, image bindings, namespace rules and
-credential volume. It withdraws the old local generation and requests fresh
-evidence; it never restores start permissions.
+uses fresh evidence and the current policy. The guest holds complete history,
+boot and sandbox identity and applied policy only in the plugin process: a
+plugin restart within the boot ends the Pod identity instead of reconstructing
+them, and no start permission survives it.
 Policy changes invalidate issuance responses obtained under an earlier revision.
 
 Losing retained history or protection ends issuance and removes the published
-credentials. An interrupted state transition also refuses recovery; the
-processes left cannot reconstruct complete history. A copied leaf stays usable
-until expiry, and an abrupt process failure cannot guarantee immediate local
-removal.
+credentials. A copied leaf stays usable until expiry, and an abrupt process
+failure cannot guarantee immediate local removal.
 
 These are ordinary mesh leaves: a relying party sees neither the claims nor the
 profile, and a named leaf records authorization at issuance, not current
@@ -262,14 +251,14 @@ liveness or exclusive assignment. The profile creates no node inventory binding
 and does not enable secret release. Setup is in
 [operator.md](operator.md#pod-cvm).
 
-A standalone pod CVM captures only its signed IPv4 TCP peer tuples, and the
-guest alone connects to them: the endpoint asks the guest's connect broker, a
-unix socket in its credential volume named in `C8S_MESH_CONNECT_SOCKET`, for
-each peer connection, and the guest refuses any tuple the launch did not sign.
-The guest forwards nothing the pod itself sends to a peer tuple, so neither a
-peer authentication failure nor the loss of the pod's capture rules turns a
-tuple into plaintext egress. Other IPv4 TCP/UDP traffic, DNS to the guest's
-upstream resolvers included, leaves with the CVM's source address. Pod and
+A standalone pod CVM captures only its signed IPv4 TCP peer tuples: the pod
+network namespace's packet rules, which the guest installs from outside it and
+no container can change (every container lacks `NET_ADMIN`), send the pod's TCP
+to a tuple through the endpoint, and the endpoint dials the peer itself, as a
+member pod's does. The endpoint refuses a peer on a mesh control port before
+any handshake, and the pod CVM provider publishes no endpoint on one. Other
+IPv4 TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves
+with the CVM's source address. Pod and
 guest rules exclude IPv4 link-local and block container-initiated access to
 guest-local services, the endpoint's included. An entry's declared exits and
 the node's platform exits (`mesh.exits`) grant nothing in a pod CVM, whose
@@ -363,9 +352,3 @@ the flag exists.
 The stamp has the sandbox ID's posture: CA-vouched, enforceable only where a
 chain was verified, so `c8s verify --workload` and `--allowlist` require
 `--mesh-ca` too, and a compromised mesh CA can mint any name.
-
-A pod CVM's leaf may also carry the assigned workload ID (`…1.8`), the tenant
-the pod was assigned to. Two tenants can run one workload, so the matched name
-does not tell their pods apart; `c8s verify --assigned-workload-id <id>`
-requires the leaf to name exactly that tenant, refuses a leaf without the
-extension, and requires `--mesh-ca` for the same reason as the other stamps.

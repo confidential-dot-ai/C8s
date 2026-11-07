@@ -32,6 +32,11 @@ rules:
   - apiGroups: [""]
     resources: [nodes, nodes/status]
     verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    # Each pod CVM's Service points at its Cloud endpoints through one
+    # EndpointSlice the provider owns. Read uncached, so no list or watch.
+    verbs: [get, create, update, delete]
   {{- end }}
 
   - apiGroups: [apps]

@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 )
 
 func identityKey(provider, uid string) string {
@@ -21,44 +22,80 @@ func identityKey(provider, uid string) string {
 	return "podcvm-" + hex.EncodeToString(sum[:20])
 }
 
-func (c *Config) launch(pod *corev1.Pod) (createRequest, error) {
+// launch freezes the pod and builds the create request for its generic
+// instance: the signed generic document and the pod's own ingress rules. The
+// frozen pod, the entries and the peers are checked here as the guest will
+// check the assignment, so a pod the guest would refuse is refused before any
+// record exists.
+func (c *Config) launch(pod *corev1.Pod) (createRequest, []byte, error) {
 	var req createRequest
 	if err := launchconfig.ValidateProviderPod(pod); err != nil {
-		return req, err
+		return req, nil, err
 	}
 	if err := c.fits(pod); err != nil {
-		return req, err
+		return req, nil, err
 	}
 	guest := guestPod(pod)
 	manifest, err := json.Marshal(guest)
 	if err != nil {
-		return req, err
+		return req, nil, err
 	}
-	name := identityKey(c.ProviderID, string(pod.UID))
-	if len(pod.Name)+1+len(name) > 253 {
-		return req, errors.New("pod name is too long for the guest's static Pod name")
+	peers, err := json.Marshal(c.peers())
+	if err != nil {
+		return req, nil, err
 	}
-	doc := launchconfig.Document{
+	doc := c.document(identityKey(c.ProviderID, string(pod.UID)))
+	if _, err := launchconfig.Assign(&doc, manifest, []byte(c.workloads), peers); err != nil {
+		return req, nil, err
+	}
+	ports, err := podmesh.IngressPorts(guest)
+	if err != nil {
+		return req, nil, err
+	}
+	req, err = c.signedRequest(doc, ports)
+	return req, manifest, err
+}
+
+// peers is the operator-configured peer list, never nil: the assignment
+// carries an empty list for a pod with no peers.
+func (c *Config) peers() []string {
+	if c.MeshPeers == nil {
+		return []string{}
+	}
+	return c.MeshPeers
+}
+
+// document is the generic launch document every pod CVM of this provider
+// boots under: the cluster, image, server and CDS trust the operator
+// configured, signed by the pod launch key. It names no pod and carries no
+// allowlist entries; those travel in the assignment.
+func (c *Config) document(name string) launchconfig.Document {
+	return launchconfig.Document{
 		SchemaVersion: launchconfig.SchemaVersion, ClusterID: c.ClusterID, Role: launchconfig.Pod, Image: c.image,
 		Node: launchconfig.Node{Name: name}, Server: launchconfig.ServerConfig{Address: c.ServerAddress, OperatorPublicKey: c.serverPub},
-		PodOperatorPublicKey: c.pub, Workloads: c.workloads, CDS: c.cds,
-		Pod: &launchconfig.PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: c.MeshPeers},
+		PodOperatorPublicKey: c.pub, CDS: c.cds,
 	}
+}
+
+// signedRequest signs the document and builds the create request around it:
+// the status port is always reachable, plus one ingress rule per application
+// port. The instance is labelled with the provider and the allocation identity.
+func (c *Config) signedRequest(doc launchconfig.Document, ports []uint16) (createRequest, error) {
 	data, sig, err := launchconfig.SignDocument(doc, c.key)
 	if err != nil {
-		return req, err
+		return createRequest{}, err
 	}
+	// The cloud refuses a larger document for good. Refuse it here, before
+	// any record exists, or the pod would be held forever behind a create
+	// that can never succeed.
 	if len(data) > 64<<10 {
-		return req, errors.New("signed Pod document exceeds the Cloud 64 KiB limit")
-	}
-	ports, err := doc.Pod.IngressPorts()
-	if err != nil {
-		return req, err
+		return createRequest{}, errors.New("signed launch document exceeds the Cloud 64 KiB limit")
 	}
 	rules := []ingress{{Name: "pod-status", Port: 8443}}
 	for _, p := range ports {
-		rules = append(rules, ingress{Name: fmt.Sprintf("app-%d", p), Port: int(p)})
+		rules = append(rules, ingress{Name: fmt.Sprintf("%s%d", appEndpointPrefix, p), Port: int(p)})
 	}
+	name := doc.Node.Name
 	return createRequest{
 		Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1,
 		Labels:  map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")},
@@ -159,9 +196,8 @@ func (c *Config) fits(pod *corev1.Pod) error {
 	return nil
 }
 
-// tee names the Cloud TEE for the configured image. Every launch of this
-// provider, per-pod or generic, asks for the same one, so a pooled guest and
-// the pod that claims it never differ in platform.
+// tee names the Cloud TEE for the configured image. Every pod CVM of this
+// provider asks for the same one.
 func (c *Config) tee() string {
 	if c.image.Platform == "snp" {
 		return "sev-snp"

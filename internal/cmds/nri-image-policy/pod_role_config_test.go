@@ -1,6 +1,9 @@
 package nriimagepolicy_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -18,111 +23,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// The pod role rewrites the baked config at boot (nodeservices.preparePod).
-// Load that output here so the rewrite cannot drift from the plugin schema.
-// A pod measures its images: the rewrite must keep the baked
+// The assignment rewrites the baked config for the assigned pod
+// (nodeservices.RenderPodRuntime), and the guest installs it before the
+// runtime starts. Load that output here so the rewrite cannot drift from the
+// plugin schema. A pod measures its images: the rewrite must keep the baked
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
 func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
-	testNodeImagePodRoleConfig(t, "tdx")
-}
-
-// A platform without a runtime register cannot measure the pod, so
-// preparation refuses it rather than writing a policy that measures nothing.
-func TestNodeImagePodRoleConfig_RefusesSNP(t *testing.T) {
-	root, doc := podRoleInputs(t, "snp")
-	err := nodeservices.PrepareNode(root, doc)
-	if err == nil || !strings.Contains(err.Error(), "runtime register") {
-		t.Fatalf("got %v, want a runtime register refusal", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("pod-role config written without measurement: %v", err)
-	}
-}
-
-const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-// podRoleInputs stages the baked policy, the pins and a pod document of the
-// given platform under a fresh root, as the initrd leaves them for Prepare.
-func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Document) {
-	t.Helper()
-	// Successful guest preparation reads the Linux uplink's route and MTU.
-	// Keep these integration tests on that real path; pure rendering and
-	// invalid-network cases are covered by the node-services unit tests.
-	if platform == "tdx" && runtime.GOOS != "linux" {
-		t.Skip("Pod guest preparation requires Linux network discovery")
-	}
-	root := t.TempDir()
-	write := func(name string, data []byte) {
-		t.Helper()
-		p := filepath.Join(root, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	baked := nriimagepolicy.RenderNodeImagePolicy(t)
-	if strings.Count(baked, `platform: "snp"`) != 1 {
-		t.Fatal("rendered fixture must contain exactly one platform setting")
-	}
-	baked = strings.Replace(baked, `platform: "snp"`, `platform: "`+platform+`"`, 1)
-	write("usr/lib/c8s/image-policy.yaml", []byte(baked))
-	cni, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist", cni)
-	resolved, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/etc/systemd/resolved.conf.d/10-upstream.conf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("etc/systemd/resolved.conf.d/10-upstream.conf", resolved)
-	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The server and Pod launch authorities stay distinct.
-	serverKey, podKey := string(pins.Images[0].Anchor), string(pins.Images[1].Anchor)
-	// The pins are TDX pins; an SNP pod has no register pins.
-	pins.Images = pins.Images[:1]
-	if platform == "snp" {
-		pins.Family = teetypes.FamilySNP
-		pins.Images[0].Registers = nil
-	}
-	policy, err := refvalues.Format(pins)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(launchconfig.Dir+"/peers.json", policy)
-	// The independent CDS VM uses SNP even when the Pod uses TDX.
-	cdsPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
-	containers := []string{}
-	for _, name := range []string{"app", "unknown"} {
-		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, podImageDigest))
-	}
-	for _, name := range []string{"served", "cached"} {
-		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, nriimagepolicy.PodBootstrapServedDigest))
-	}
-	doc := &launchconfig.Document{
-		Role:                 launchconfig.Pod,
-		CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
-		Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
-		PodOperatorPublicKey: podKey,
-		Image:                launchconfig.Image{Platform: platform},
-		Node:                 launchconfig.Node{Name: "p-pod"},
-		Workloads:            `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
-		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
-	}
-	return root, doc
-}
-
-func testNodeImagePodRoleConfig(t *testing.T, platform string) {
-	root, doc := podRoleInputs(t, platform)
-	if err := nodeservices.PrepareNode(root, doc); err != nil {
-		t.Fatal(err)
-	}
+	root, assigned := podRoleInputs(t)
+	installPodRole(t, root, assigned)
 	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatalf("pod-role config does not load: %v", err)
@@ -132,7 +40,7 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 			cfg.PullEnabled(), cfg.Allowlist.NodeTCB, nriimagepolicy.SandboxModeOf(cfg), cfg.Policy.FatalExisting)
 	}
 	if !cfg.Measure.RTMR3 {
-		t.Fatalf("measure.rtmr3 = %v on %s", cfg.Measure.RTMR3, platform)
+		t.Fatal("measure.rtmr3 is off on tdx")
 	}
 	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
@@ -155,23 +63,150 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != workloadclaims.MeshRole || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {
 		t.Fatalf("base = %+v, want signed app and measured endpoint", base)
 	}
-	// This helper checks the preliminary allowlist decision. The full Run
-	// test below proves that adjustment validation still requires the mesh.
-	if err := nriimagepolicy.AdmitsCreation(cfg, doc.Pod.Namespace, "busybox@"+podImageDigest, podImageDigest); err != nil {
-		t.Fatalf("signed workload refused by the prepared allowlist: %v", err)
+}
+
+const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+// podRoleInputs stages the baked policy, the pins and a TDX pod document
+// under a fresh root, as the initrd leaves them for Prepare, together with the
+// assignment the pod CVM then receives.
+func podRoleInputs(t *testing.T) (string, *launchconfig.AssignedPod) {
+	t.Helper()
+	// Successful guest preparation reads the Linux uplink's route and MTU.
+	// Keep this integration test on that real path; pure rendering and
+	// invalid-network cases are covered by the node-services unit tests.
+	if runtime.GOOS != "linux" {
+		t.Skip("Pod guest preparation requires Linux network discovery")
+	}
+	root := t.TempDir()
+	write := func(name string, data []byte) {
+		t.Helper()
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	baked := nriimagepolicy.RenderNodeImagePolicy(t)
+	if strings.Count(baked, `platform: "snp"`) != 1 {
+		t.Fatal("rendered fixture must contain exactly one platform setting")
+	}
+	baked = strings.Replace(baked, `platform: "snp"`, `platform: "tdx"`, 1)
+	write("usr/lib/c8s/image-policy.yaml", []byte(baked))
+	cni, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist", cni)
+	resolved, err := os.ReadFile("../../../images/node-guest/c8s/mkosi.extra/etc/systemd/resolved.conf.d/10-upstream.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("etc/systemd/resolved.conf.d/10-upstream.conf", resolved)
+	write("var/lib/rancher/rke2/agent/images/c8s-1.tar", podMeshArchive(t))
+	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The server and Pod launch authorities stay distinct.
+	serverKey, podKey := string(pins.Images[0].Anchor), string(pins.Images[1].Anchor)
+	pins.Images = pins.Images[:1]
+	policy, err := refvalues.Format(pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(launchconfig.Dir+"/peers.json", policy)
+	// The independent CDS VM uses SNP even when the Pod uses TDX.
+	cdsPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	containers := []string{}
+	for _, name := range []string{"app", "unknown"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, podImageDigest))
+	}
+	for _, name := range []string{"served", "cached"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, nriimagepolicy.PodBootstrapServedDigest))
+	}
+	assigned := &launchconfig.AssignedPod{
+		Document: launchconfig.Document{
+			Role:                 launchconfig.Pod,
+			CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
+			Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
+			PodOperatorPublicKey: podKey,
+			Image:                launchconfig.Image{Platform: "tdx"},
+			Node:                 launchconfig.Node{Name: "p-pod"},
+		},
+		Entries: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
+		Pod: launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
+			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
+	}
+	return root, assigned
+}
+
+// podMeshArchive is the airgap archive the image preserves for the pod role,
+// as airgap-images.sh lays it out: an OCI index naming the baked mesh endpoint
+// image at its measured digest, so guest preparation stages it instead of
+// pulling the endpoint at start.
+func podMeshArchive(t *testing.T) []byte {
+	t.Helper()
+	ref := "ghcr.io/confidential-dot-ai/armtls-mesh@" + nriimagepolicy.MeshImageDigest
+	index := ocispec.Index{Manifests: []ocispec.Descriptor{{
+		MediaType:   ocispec.MediaTypeImageIndex,
+		Digest:      godigest.Digest(nriimagepolicy.MeshImageDigest),
+		Size:        1,
+		Annotations: map[string]string{"io.containerd.image.name": ref, ocispec.AnnotationRefName: ref},
+	}}}
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	w := tar.NewWriter(&b)
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"index.json", data}, {"oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`)}, {"blobs/sha256/" + strings.Repeat("0", 64), []byte("{}")}} {
+		if err := w.WriteHeader(&tar.Header{Name: f.name, Mode: 0o644, Size: int64(len(f.data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// installPodRole prepares the generic boot, renders the assigned runtime and
+// installs its policy where the plugin reads it, as the guest does once an
+// assignment is recorded.
+func installPodRole(t *testing.T, root string, assigned *launchconfig.AssignedPod) {
+	t.Helper()
+	if err := nodeservices.PrepareNode(root, &assigned.Document); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := nodeservices.RenderPodRuntime(root, assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/nri/conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"), runtime.Policy, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// Exercise the prepared policy through the production startup path and an NRI
+// Exercise the installed policy through the production startup path and an NRI
 // runtime connection, including admission before CDS becomes available.
 func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
-	root, doc := podRoleInputs(t, "tdx")
-	if err := nodeservices.PrepareNode(root, doc); err != nil {
-		t.Fatal(err)
-	}
+	root, assigned := podRoleInputs(t)
+	installPodRole(t, root, assigned)
 	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	nriimagepolicy.AssertPodBootstrap(t, cfg, root, []byte(doc.PodOperatorPublicKey), podImageDigest)
+	nriimagepolicy.AssertPodBootstrap(t, cfg, root, []byte(assigned.PodOperatorPublicKey), podImageDigest)
 }
