@@ -856,6 +856,12 @@ router:
   acme:
     email: ""
     directoryURL: ""
+    # -- Add the hosts of the applied operator-signed route manifest to the
+    # certificate at runtime, beside the san list / launch hostnames, without
+    # relaunching the server. cds-attest publishes them to the sidecar over a
+    # pod-local Memory emptyDir; a host is added once its :80 challenge path
+    # reaches this router, and a removed host is re-issued without.
+    routeManifestHosts: true
 
   # -- Discovery/preflight metadata (the issued cert + attestation evidence
   # with the VCEK chain) served by nginx at `path`. The chart-rendered get-cert

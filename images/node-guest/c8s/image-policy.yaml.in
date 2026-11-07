@@ -1305,6 +1305,10 @@ allowlist:
                 - destination: "/etc/c8s-acme-key"
                   kind: "emptyDir"
                   source: "acme-key"
+                # The applied route manifest's hosts, which cds-attest writes.
+                - destination: "/run/c8s-route-hosts"
+                  kind: "emptyDir"
+                  source: "route-hosts"
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
                   source: "c8s-certs"
@@ -1379,6 +1383,10 @@ allowlist:
                 - destination: "/etc/c8s-acme-tls"
                   kind: "emptyDir"
                   source: "acme-tls"
+                # It publishes the applied route manifest's hosts to acme.
+                - destination: "/run/c8s-route-hosts"
+                  kind: "emptyDir"
+                  source: "route-hosts"
                 - destination: "/run/nri-image-policy"
                   kind: "host"
                   source: "/run/nri-image-policy"

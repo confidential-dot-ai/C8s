@@ -1,15 +1,18 @@
 package cdsattest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -54,6 +58,7 @@ type routingConfig struct {
 	reservedPaths    []string
 	tunnelBudget     quantityFlag
 	publish          bool
+	routeHostsFile   string
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
@@ -66,6 +71,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
 	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 32Gi; each reserves three copies of its record and four of the largest response (32 MiB), one client (by X-Real-IP) holds at most a quarter, and a request over either gets 503 tunnel_busy; unset means 75% of the container memory limit, or 32Gi without one")
+	f.StringVar(&cfg.routeHostsFile, "route-hosts-file", "", "write the applied manifest's host names here, one per line, for the acme sidecar to add to the front-door certificate (--extra-domains-file); unset writes nothing")
 	f.BoolVar(&cfg.publish, "publish-routes", false, "serve the applied signed route manifest at /.well-known/c8s/routes, for clients that verify it under pinned operator keys; off, the path answers 404")
 }
 
@@ -165,8 +171,43 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 			Transports: transports,
 			Interval:   r.pollInterval,
 			Logger:     logger,
+			OnApplied:  routeHostsWriter(r.routeHostsFile, logger),
 		}),
 	}, nil
+}
+
+// routeHostsWriter publishes the applied manifest's hosts to path, rewriting
+// the file only when the set changes. The acme sidecar unions it with the
+// launch hostnames; it is a hint inside the pod, not an authorization: only a
+// manifest verified under the operator keys reaches this hook. nil when path
+// is unset.
+func routeHostsWriter(path string, logger *slog.Logger) func(*routing.Applied) {
+	if path == "" {
+		return nil
+	}
+	var last []byte
+	return func(a *routing.Applied) {
+		data := routeHostsFile(a.Manifest)
+		if last != nil && bytes.Equal(data, last) {
+			return
+		}
+		if err := fileutil.WriteAtomic(path, data, 0o644); err != nil {
+			logger.Error("write route hosts file", "path", path, "error", err)
+			return
+		}
+		last = data
+		logger.Info("route hosts file written", "path", path, "hosts", len(a.Manifest.Hosts))
+	}
+}
+
+// routeHostsFile is the manifest's host names, sorted, one per line. An
+// empty manifest gives an empty, but present, file.
+func routeHostsFile(m *routes.Manifest) []byte {
+	data := []byte{}
+	for _, name := range slices.Sorted(maps.Keys(m.Hosts)) {
+		data = append(data, name+"\n"...)
+	}
+	return data
 }
 
 // routeSourcePins is the set the poller holds its CDS to: the pins the node's
