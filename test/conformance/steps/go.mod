@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/confidential-dot-ai/attestation-go v0.8.3
-	github.com/confidential-dot-ai/c8s v0.87.1
+	github.com/confidential-dot-ai/c8s v0.87.5
 	github.com/cucumber/godog v0.16.0
 	github.com/google/go-sev-guest v0.15.0
 	github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0
@@ -26,7 +26,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/spf13/pflag v1.1.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
