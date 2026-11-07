@@ -77,7 +77,7 @@ func NewCmd() *cobra.Command {
 	f.IntVarP(&cfg.port, "port", "p", 8800, "listen port")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: cds (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
-	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In cds front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER. Re-read per request to follow get-cert rotation.")
+	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; cds mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")

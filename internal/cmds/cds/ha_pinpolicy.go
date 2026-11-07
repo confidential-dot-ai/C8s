@@ -30,7 +30,7 @@ func newPinPolicyCmd() *cobra.Command {
 			"cluster, and its entries bind the launch file the replicas boot.\n\n" +
 			"--out writes the pin document the decree makes, with that launch file filled in: what a client\n" +
 			"pins this CDS by, and what --cds-pin takes during a roll. --decree-out writes the signed decree\n" +
-			"itself, which 'launch-config add-agent --pin-decree' takes a node document's pin from.",
+			"itself, the object each replica and each node's image-policy plugin checks the roll against.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

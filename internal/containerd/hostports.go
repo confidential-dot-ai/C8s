@@ -47,7 +47,7 @@ type SandboxNetwork struct {
 }
 
 // The CRI plugin records each sandbox's metadata as this extension.
-// INVARIANT: the node image's containerd (v2.3.4-k3s1.36) writes v1 holding
+// INVARIANT: the worker image's containerd (v2.3.4) writes v1 holding
 // k8s.io/cri-api v0.36.3's PodSandboxConfig.
 const (
 	criMetadataExtension = "metadata"

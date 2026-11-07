@@ -132,7 +132,7 @@ outbound, 15006 inbound and 15021 for probes.
 
 A member pod's application TCP is redirected into those listeners in both
 directions, so it crosses the pod boundary over armTLS. The node's packet rules
-deny everything else in both directions and leave five kinds of traffic
+deny everything else in both directions and leave four kinds of traffic
 uncaptured:
 
 - **Resolver queries**: to the single address trusted policy names, on port 53.
@@ -140,31 +140,10 @@ uncaptured:
   port 15021.
 - **Platform-role sockets**: the credential clients that reach CDS, and the
   endpoint itself.
-- **Platform services**: the ones the measured mesh policy names for every
-  member pod (see [Cluster metrics](#cluster-metrics)).
 - **Declared egress**: what the pod's workload entry declares, once the pod
   matches that entry ([allowlist-entries.md](allowlist-entries.md)).
 
 Loopback stays reachable.
-
-### Cluster metrics
-
-A baked node — one booted from the measured C8s node image — runs
-kube-state-metrics as a platform add-on, and every non-root socket of a member
-pod may open TCP to its Service at `10.53.0.11:8080`, uncaptured, and read `GET
-/metrics` there: the measured mesh policy names that one address and port. It
-runs in `kube-system`, outside the mesh, from a stock image the node's base
-allowlist pins to its exact argv, mounts, and environment, over plain HTTP.
-
-What it exports is Kubernetes object metadata: names, owners, status and
-conditions, restart counts, container images, pod IPs and node addresses, and
-resource and replica figures, for pods, nodes, namespaces, Services, volumes,
-the workload controllers and pod disruption budgets. Its RBAC is list and watch
-on those kinds alone, so it reads no Secret and no ConfigMap; it exports no
-labels, annotations or environment, and the series describing the host rather
-than the workloads are off. Any member pod can read that metadata about every
-other pod in the cluster: like the resolver, this is an address and a port the
-mesh leaves open, not a payload filter.
 
 ### The mesh endpoint profile
 
@@ -251,8 +230,8 @@ the snapshot's version and digest; anything else — a malformed answer, no matc
 mid-lifecycle, an ambiguous match — issues the unnamed, membership-only leaf,
 since an incomplete pod still needs a certificate. The digest pins which policy
 decided the match, so a client holding the same bytes detects skew. The router
-keeps a route's backend inside its own allowlist by requiring the two stamps to
-carry the same digest, checking the name alone while its own leaf carries no
+keeps a route's backend inside its own allowlist by requiring the entry the
+backend's stamp names to be the same in both stamps' documents, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
 parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
 reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),

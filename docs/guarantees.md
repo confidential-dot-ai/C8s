@@ -87,8 +87,8 @@ comes from the Azure vTPM
   the containers each pod sandbox ran — signs over a pod's key and CDS's
   challenge, stamped on the pod's certificate with the matched workload when the
   pod matches one entry — [armtls.md](armtls.md#sandbox-identity).
-- **Launch key binding**: on `bare-metal`, the public half of the operator
-  keypair a node boots with, bound into its evidence —
+- **Launch binding**: on `bare-metal`, the digest of the document a worker
+  boots with, bound into its evidence —
   [launch-configuration.md](launch-configuration.md).
 
 A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
@@ -98,21 +98,13 @@ A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
 ## No privileged way in
 
 On a measured node image no interface starts a new process in a running
-container or hands one host privilege — for any principal, including the holder
-of the operator credential C8s releases. The exception is an exact command the
-measured base allowlist grants a container: anyone who reaches the runtime can
-start that command, and only that one. The release image grants one pair,
-RKE2's `/livez` and `/readyz` checks in kube-apiserver.
+container or hands one host privilege, for any principal.
 
-Two independent layers close it: the API server denies `pods/exec`,
-`pods/attach`, `pods/portforward`, and `pods/ephemeralcontainers`, and the
-measured `c8s-runc` wrapper denies the `exec` verb under the runtime, where a
-CRI call, an exec probe, or a lifecycle hook lands, letting through only
-granted commands ([node-exec-mode.md](node-exec-mode.md#granted-execs)). The
-release node image carries both; a development build (`C8S_DEV=1`) carries
-neither and has its own measurement, so exec posture is what a verifier pins.
-`gke` and `aks` keep the ordinary exec path
-([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
+Two independent layers close it: the kubelet serves no `exec`, `attach` or
+`port-forward`, and the measured `c8s-runc` wrapper denies the `exec` verb
+under the runtime, where a CRI call, an exec probe, or a lifecycle hook lands
+([node-exec-mode.md](node-exec-mode.md)). `gke` and `aks` keep the ordinary
+exec path ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
 - **Privilege floor**: the capability, `no_new_privs`, namespace, and
   privileged-mark limits `c8s-runc` enforces on every container of a member pod
@@ -122,8 +114,6 @@ neither and has its own measurement, so exec posture is what a verifier pins.
 - **Platform role**: the identity a measured base grants one C8s node-side
   invocation, with the command line and mounts its measured declaration pins —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
-- **Bounded operator credential**: an enumerated ClusterRole with no path to
-  those guards ([operator.md](operator.md#bounded-operator)).
 
 Creating a pod is not what this closes: whoever can create one chooses its
 initial process, which the allowlist restricts.
@@ -153,8 +143,8 @@ CDS's own API is reachable separately, at the address the install named with
   session's requests get 503 and the client attests again —
   [routes-evidence.md](routes-evidence.md#session-binding).
 
-A baked node takes the operator keys from its signed launch configuration
-([launch-configuration.md](launch-configuration.md)); elsewhere they are
+A baked node takes the operator keys from the CDS configuration its document
+pins ([launch-configuration.md](launch-configuration.md)); elsewhere they are
 Kubernetes configuration, so a client that cares pins the route digest or the
 keys — `c8s verify --route-digest`, `--operator-keys` ([verify.md](verify.md)).
 

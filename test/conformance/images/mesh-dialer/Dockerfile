@@ -12,7 +12,7 @@ COPY pkg/ ./pkg/
 COPY test/conformance/tools/armtls-dial/ ./test/conformance/tools/armtls-dial/
 RUN GOWORK=off CGO_ENABLED=0 go build -C test/conformance/tools/armtls-dial -ldflags="-s -w" -o /armtls-dial .
 
-# busybox, for the sh the metal backend's agent runs in.
+# busybox: a small base with the sh the dialer's callers use.
 # Bump: crane digest busybox:1.36.1
 FROM busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
 COPY --from=builder /armtls-dial /usr/local/bin/armtls-dial

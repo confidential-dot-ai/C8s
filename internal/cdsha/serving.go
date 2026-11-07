@@ -27,6 +27,9 @@ func (n *Node) Serving() Serving {
 }
 
 func (n *Node) servesReads() (bool, string) {
+	if err := n.ClockError(); err != nil {
+		return false, err.Error()
+	}
 	if !n.fsm.ClusterState().Joined() {
 		return false, "this replica holds no cluster"
 	}
@@ -100,6 +103,11 @@ func (n *Node) RollSafe() (RollSafety, bool) {
 }
 
 func (n *Node) unsafeToRoll(seen seating) string {
+	for _, voter := range seen.voters {
+		if (string(voter.ID) == string(n.member) && n.ClockError() != nil) || n.peers.clockQuarantined(string(voter.ID)) {
+			return fmt.Sprintf("voter %s is clock-quarantined", voter.ID)
+		}
+	}
 	switch {
 	case len(seen.deadVoters) > 0:
 		return fmt.Sprintf("voter %s is still giving up its seat", seen.deadVoters[0].ID)

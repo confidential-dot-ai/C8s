@@ -134,54 +134,13 @@ uninstall hook.
 {{- end }}
 
 {{/*
-Host mounts for the node-as-CVM policy-measurement installer: the baked config
-it patches and the runtime dir holding the plugin's health socket. It touches
-neither the plugin binary nor containerd's config, so neither is mounted.
-*/}}
-{{- define "nri-image-policy.measurePoliciesVolumeMounts" -}}
-- name: host-config-dir
-  mountPath: /host{{ .Values.nriImagePolicy.hostPaths.configDir }}
-- name: host-runtime-dir
-  mountPath: /host{{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-{{- end }}
-
-{{- define "nri-image-policy.measurePoliciesVolumes" -}}
-- name: host-config-dir
-  hostPath:
-    path: {{ .Values.nriImagePolicy.hostPaths.configDir }}
-    type: DirectoryOrCreate
-- name: host-runtime-dir
-  hostPath:
-    path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-    type: DirectoryOrCreate
-{{- end }}
-
-{{/*
 Host containerd config directory bind-mounted into the installer.
 */}}
 {{- define "nri-image-policy.containerdConfigDir" -}}
 {{- if .Values.nriImagePolicy.containerd.configDir -}}
 {{ .Values.nriImagePolicy.containerd.configDir }}
-{{- else if eq .Values.nriImagePolicy.distro "rke2" -}}
-/var/lib/rancher/rke2/agent/etc/containerd
-{{- else if eq .Values.nriImagePolicy.distro "k8s" -}}
+{{- else -}}
 /etc/containerd
-{{- else -}}
-{{ fail (printf "nri-image-policy: distro must be \"k8s\" or \"rke2\" (got %q), or set containerd.configDir explicitly" .Values.nriImagePolicy.distro) }}
-{{- end -}}
-{{- end -}}
-
-{{/*
-patch  = splice an in-place sentinel-delimited block into config.toml.
-dropin = write a standalone file the installer owns entirely.
-*/}}
-{{- define "nri-image-policy.containerdConfigMode" -}}
-{{- if eq .Values.nriImagePolicy.distro "rke2" -}}
-dropin
-{{- else if eq .Values.nriImagePolicy.distro "k8s" -}}
-patch
-{{- else -}}
-{{ fail (printf "nri-image-policy: distro must be \"k8s\" or \"rke2\" (got %q)" .Values.nriImagePolicy.distro) }}
 {{- end -}}
 {{- end -}}
 
@@ -191,11 +150,6 @@ Host service restart that makes containerd re-read its config.
 {{- define "nri-image-policy.restartCommand" -}}
 {{- if .Values.nriImagePolicy.containerd.restartCommand -}}
 {{ .Values.nriImagePolicy.containerd.restartCommand }}
-{{- else if eq .Values.nriImagePolicy.distro "rke2" -}}
-{{- /* A server/control-plane node runs rke2-server (which owns containerd); a
-       worker node runs rke2-agent. Restart whichever unit is active so the
-       install works on a single-node/server cluster too, not just workers. */ -}}
-if systemctl is-active --quiet rke2-server; then systemctl restart rke2-server; else systemctl restart rke2-agent; fi
 {{- else -}}
 systemctl restart containerd
 {{- end -}}
@@ -207,8 +161,6 @@ Host containerd socket the plugin connects to.
 {{- define "nri-image-policy.containerdSocket" -}}
 {{- if .Values.nriImagePolicy.containerd.socket -}}
 {{ .Values.nriImagePolicy.containerd.socket }}
-{{- else if eq .Values.nriImagePolicy.distro "rke2" -}}
-/run/k3s/containerd/containerd.sock
 {{- else -}}
 /run/containerd/containerd.sock
 {{- end -}}

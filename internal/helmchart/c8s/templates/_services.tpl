@@ -118,11 +118,12 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- if not .Values.node.baked -}}true{{- end -}}
 {{- end -}}
 
-{{/* c8s.nodeReadsCDSAddress is non-empty where the chart hands the node the
-     CDS address: a plugin the node image bakes takes it from its own launch
-     staging, so only the installer that writes a boot config carries it. */}}
-{{- define "c8s.nodeReadsCDSAddress" -}}
-{{- if and (not .Values.node.baked) (not .Values.nriImagePolicy.baked) -}}true{{- end -}}
+{{/* c8s.installerCopiesCDSAddress is non-empty where the installer that
+     copies the CDS endpoint to its node renders: it is the one reader of the
+     cds-address key, and a plugin from a measured image takes the endpoint
+     from its own launch staging. */}}
+{{- define "c8s.installerCopiesCDSAddress" -}}
+{{- if and (include "c8s.cdsFromValues" .) .Values.nriImagePolicy.enabled -}}true{{- end -}}
 {{- end -}}
 
 {{/* The fixed namespace whose pods serve the router's own ports, as the

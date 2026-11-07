@@ -279,11 +279,11 @@ func requiredComponentsForMode(mode string) ([]string, error) {
 	if mode == "" {
 		return slices.Clone(defaultRequiredComponents), nil
 	}
-	baked, err := deployment.BakedAttestationAndNRIPlugin(mode)
+	measured, err := deployment.MeasuredImageCarriesAttestationAndNRIPlugin(mode)
 	if err != nil {
 		return nil, err
 	}
-	if baked {
+	if measured {
 		return slices.DeleteFunc(slices.Clone(defaultRequiredComponents), func(component string) bool {
 			return component == "attestation-api" || component == "nri-image-policy"
 		}), nil

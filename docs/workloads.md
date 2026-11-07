@@ -8,7 +8,7 @@ After step 3, do only the steps you need; terms left undefined here are in
 
 ## Prerequisites
 
-- A cluster running C8s ([QUICKSTART.md](QUICKSTART.md)) and the operator
+- A cluster running C8s ([operator.md](operator.md)) and the operator
   private key you installed it with.
 - Every image in the pod template pinned by digest: a tag names whatever the
   registry serves at pull time.
@@ -224,10 +224,10 @@ starts the first manifest of a cluster; without it `add` refuses an empty store.
 `--operator-keys` is required because the write re-signs every stored route.
 `--workload` is the entry name the backend's certificate must carry, so the
 router handshakes with the pod's mesh endpoint and answers 502 rather than reach
-it in the clear. That certificate must also carry the same allowlist digest as
-the router's own, so after an allowlist write the route refuses requests — 502
-while the backend lags, 503 while the router does — until both have renewed
-([operator.md](operator.md#route-manifest)). Which manifest the router applied
+it in the clear. That entry must also be the same in the allowlist the
+certificate is stamped under as in the router's own, so an allowlist write that
+redefines or removes the entry refuses the route with 502 until both have
+renewed ([operator.md](operator.md#route-manifest)). Which manifest the router applied
 is evidence a client can check:
 [routes-evidence.md](routes-evidence.md).
 

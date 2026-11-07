@@ -42,7 +42,7 @@ run_test_case() {
     # gate separately checks mkosi.sync creates CNI/NRI directories; do not
     # derive these from state.d, which would hide missing build-time dirs.
     for directory in var home root tmp run etc \
-        etc/rancher/rke2/config.yaml.d etc/cni/net.d opt/cni/bin \
+        etc/cni/net.d opt/cni/bin \
         etc/nri/conf.d opt/nri/plugins usr/lib/c8s; do
         mkdir -p "/image/$directory"
     done
@@ -79,10 +79,10 @@ run_test_case() {
         cp /sysroot/usr/lib/c8s/image-policy.yaml /sysroot/etc/nri/conf.d/image-policy.yaml
         # Exercise atomic replacement of the staged floor and node state.
         for path in \
-            etc/rancher/rke2/config.yaml.d/95-gpu-resources.yaml \
-            etc/rancher/node/password etc/cni/net.d/05-cilium.conflist \
+            etc/cni/net.d/05-cilium.conflist \
             opt/cni/bin/cilium-cni etc/nri/conf.d/image-policy.yaml \
-            var/lib/rancher/rke2/server/token run/immutable-root-test; do
+            var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db \
+            run/immutable-root-test; do
             path="/sysroot/$path"
             mkdir -p "${path%/*}"
             printf 'runtime state\n' > "$path.new"
@@ -107,7 +107,7 @@ run_test_case() {
         status=0
         timeout --signal=KILL 30s /bin/bash /init-under-test >/command.log 2>&1 || status=$?
         [ "$status" -eq 1 ] || fail "missing state directory: expected exit 1, got $status"
-        grep -Fq 'FATAL: state.d: etc/cni listed in 60-c8s.conf' /command.log \
+        grep -Fq 'FATAL: state.d: etc/cni listed in 60-worker.conf' /command.log \
             || fail "missing state directory diagnostic"
         [ ! -e /switch-root-args ] || fail "missing state directory reached switch_root"
         printf 'b\n' > /expected
@@ -179,10 +179,10 @@ base="$CONFOS_DIR/mkosi/base"
 for extra in "$base/mkosi.extra" \
     "$base/mkosi.profiles/gpu/mkosi.extra" \
     "$base/mkosi.profiles/attest-gpu/mkosi.extra" \
-    "$ngi_dir/c8s/mkosi.extra"; do
+    "$ngi_dir/worker/mkosi.extra"; do
     cp -a "$extra/." "$fixture_root/image-template/"
 done
-cp "$ngi_dir/c8s/image-policy.yaml.in" "$fixture_root/nri-floor-template"
+cp "$ngi_dir/worker/image-policy.yaml.in" "$fixture_root/nri-floor-template"
 cp "$base/mkosi.finalize" "$fixture_root/finalize-under-test"
 cp "$CONFOS_DIR/mkosi/initrd/mkosi.extra/init" "$fixture_root/init-under-test"
 cp "$test_script" "$fixture_root/tests.sh"

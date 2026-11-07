@@ -44,7 +44,7 @@ func loadMeshConfigDocument(t *testing.T, cfg *config) (*config, error) {
 }
 
 func TestNodeImageBootConfigRequiresCredentialBinding(t *testing.T) {
-	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	cfg, err := parseConfig([]byte(renderWorkerImagePolicy(t)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -91,8 +91,12 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		if deployment.Namespace != namespace || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 			t.Errorf("%s must be a singleton of %s with Recreate strategy", name, namespace)
 		}
-		if deployment.Spec.Template.Spec.NodeSelector["node-role.kubernetes.io/control-plane"] != "true" {
-			t.Errorf("%s must run on the signed server node", name)
+		// The pod runs on whichever node the measured image booted, so the
+		// render names none: a cluster of workers holds this same Deployment
+		// (cmd/c8s worker control-plane render) and no worker carries a node
+		// role label.
+		if selector := deployment.Spec.Template.Spec.NodeSelector; len(selector) > 0 {
+			t.Errorf("%s selects nodes by %v", name, selector)
 		}
 	}
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
@@ -119,7 +123,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 
 func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set-string", "nriImagePolicy.distro=rke2")
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -176,10 +180,6 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 		}
 	}
 
-	deployment := renderedDeployment(t, out, "c8s-router")
-	if deployment.Spec.Template.Spec.NodeSelector["node-role.kubernetes.io/control-plane"] != "true" {
-		t.Error("the router must run on the server, the only node with launch router inputs")
-	}
 	acme, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "acme")
 	if !ok {
 		t.Fatal("launch-driven router lacks the acme sidecar")

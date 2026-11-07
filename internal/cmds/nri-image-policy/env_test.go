@@ -219,36 +219,33 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 }
 
 func TestMountCreationValidatorContainerdBaseline(t *testing.T) {
-	for _, tc := range []struct{ name, root, state string }{
-		{"containerd", "/var/lib/containerd", "/run/containerd"},
-		{"rke2", "/var/lib/rancher/rke2/agent/containerd", "/run/k3s/containerd"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
-			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
-			p.SetReady()
-			pod := makePod("default", "pod")
-			pod.Uid = "pod-a"
-			ctr := makeCtrWithImageArgs(pod.Id, "ctr", "registry/repo@"+pushDigestB, []string{"/bin/app", "--serve"})
-			sandbox := "/io.containerd.grpc.v1.cri/sandboxes/" + pod.Id
-			ctr.Mounts = []*api.Mount{
-				{Source: tc.root + sandbox + "/hostname", Destination: "/etc/hostname"},
-				{Source: tc.root + sandbox + "/resolv.conf", Destination: "/etc/resolv.conf"},
-				{Source: tc.state + sandbox + "/shm", Destination: "/dev/shm"},
-				{Source: kubeletRoot + "/pods/pod-a/etc-hosts", Destination: "/etc/hosts"},
-			}
-			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
-			if err := p.ValidateContainerAdjustment(context.Background(), req); err != nil {
-				t.Fatalf("platform baseline rejected: %v", err)
-			}
-			for _, source := range []string{tc.root + "/io.containerd.grpc.v1.cri/sandboxes/foreign/hostname", tc.root + "-lookalike" + sandbox + "/hostname"} {
-				ctr.Mounts[0].Source = source
-				if err := p.ValidateContainerAdjustment(context.Background(), req); err == nil {
-					t.Errorf("unowned hostname source admitted: %s", source)
-				}
-			}
-		})
+	const (
+		root  = "/var/lib/containerd"
+		state = "/run/containerd"
+	)
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
+	p.SetReady()
+	pod := makePod("default", "pod")
+	pod.Uid = "pod-a"
+	ctr := makeCtrWithImageArgs(pod.Id, "ctr", "registry/repo@"+pushDigestB, []string{"/bin/app", "--serve"})
+	sandbox := "/io.containerd.grpc.v1.cri/sandboxes/" + pod.Id
+	ctr.Mounts = []*api.Mount{
+		{Source: root + sandbox + "/hostname", Destination: "/etc/hostname"},
+		{Source: root + sandbox + "/resolv.conf", Destination: "/etc/resolv.conf"},
+		{Source: state + sandbox + "/shm", Destination: "/dev/shm"},
+		{Source: kubeletRoot + "/pods/pod-a/etc-hosts", Destination: "/etc/hosts"},
+	}
+	req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
+	if err := p.ValidateContainerAdjustment(context.Background(), req); err != nil {
+		t.Fatalf("platform baseline rejected: %v", err)
+	}
+	for _, source := range []string{root + "/io.containerd.grpc.v1.cri/sandboxes/foreign/hostname", root + "-lookalike" + sandbox + "/hostname"} {
+		ctr.Mounts[0].Source = source
+		if err := p.ValidateContainerAdjustment(context.Background(), req); err == nil {
+			t.Errorf("unowned hostname source admitted: %s", source)
+		}
 	}
 }
 

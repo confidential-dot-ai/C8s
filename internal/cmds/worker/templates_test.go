@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -142,6 +144,53 @@ func TestWorkerKubeProxyAndCoreDNS(t *testing.T) {
 	}
 }
 
+// nodeCertificateBinding is the group a binding grants and the role it binds,
+// of the bindings a kubelet's certificates rest on.
+type nodeCertificateBinding struct {
+	group string
+	role  string
+}
+
+// grantsNodeCertificates holds of a binding that lets a node request a
+// certificate or have one approved without an admin.
+func grantsNodeCertificates(b nodeCertificateBinding) bool {
+	return b.group == "system:bootstrappers" ||
+		b.role == "system:node-bootstrapper" ||
+		strings.HasPrefix(b.role, "system:certificates.k8s.io:")
+}
+
+// A worker's kubelet joins with a bootstrap token and rotates the client
+// certificate it gets, so the render binds the three grants that carry it, and
+// binds nothing else a node's certificates rest on.
+func TestWorkerKubeletCertificateBindings(t *testing.T) {
+	objects, err := ControlPlaneObjects(&Document{Kubernetes: Kubernetes{ClusterDNS: "10.53.0.10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]nodeCertificateBinding{
+		"c8s-worker-bootstrap":             {"system:bootstrappers", "system:node-bootstrapper"},
+		"c8s-worker-bootstrap-client-cert": {"system:bootstrappers", "system:certificates.k8s.io:certificatesigningrequests:nodeclient"},
+		"c8s-worker-client-cert-renewal":   {"system:nodes", "system:certificates.k8s.io:certificatesigningrequests:selfnodeclient"},
+	}
+	got := map[string]nodeCertificateBinding{}
+	for _, doc := range strings.Split(string(objects), "\n---\n") {
+		var binding rbacv1.ClusterRoleBinding
+		if err := yaml.Unmarshal([]byte(doc), &binding); err != nil || binding.Kind != "ClusterRoleBinding" {
+			continue
+		}
+		if len(binding.Subjects) != 1 || binding.Subjects[0].Kind != rbacv1.GroupKind {
+			continue
+		}
+		b := nodeCertificateBinding{binding.Subjects[0].Name, binding.RoleRef.Name}
+		if grantsNodeCertificates(b) {
+			got[binding.Name] = b
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("certificate bindings = %v, want %v", got, want)
+	}
+}
+
 // The control plane's kube-dns Service, at the document's clusterDNS, selects
 // the CoreDNS static pod on the asking pod's own node.
 func TestKubeDNSSelectsTheWorkersCoreDNS(t *testing.T) {
@@ -174,5 +223,24 @@ func TestKubeDNSSelectsTheWorkersCoreDNS(t *testing.T) {
 		if pod.Labels[k] != v {
 			t.Fatalf("kube-dns selects %v, which the CoreDNS static pod's labels %v do not carry", service.Spec.Selector, pod.Labels)
 		}
+	}
+}
+
+// The kubelet dials the socket the worker image's containerd binds.
+func TestKubeletDialsTheImagesContainerd(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(imageTree, "etc/containerd/config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Plugins map[string]struct {
+			Address string `toml:"address"`
+		} `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if want := "unix://" + config.Plugins["io.containerd.server.v1.grpc"].Address; containerdEndpoint != want {
+		t.Errorf("the kubelet's runtime endpoint is %s, and the image's containerd binds %s", containerdEndpoint, want)
 	}
 }

@@ -10,8 +10,7 @@ ExecStart=/usr/lib/c8s/worker/bin/kubelet \
     --bootstrap-kubeconfig=/run/kubernetes/bootstrap-kubelet.conf \
     --kubeconfig=/var/lib/kubelet/kubeconfig \
     --hostname-override=${NODE_NAME} \
-    --node-ip=${NODE_IP} \
-    --cloud-provider=external
+    --node-ip=${NODE_IP}
 Restart=always
 RestartSec=5
 

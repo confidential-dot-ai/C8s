@@ -10,70 +10,28 @@ import (
 
 const wrapper = "/usr/local/bin/c8s-runc"
 
-// bakedConfigDir is the profile's containerd directory, the one the CI gate
-// checks.
-const bakedConfigDir = "../../c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd"
+// schemaVersion is the config schema the worker image declares, in the main
+// config and in every drop-in.
+const schemaVersion = "version = 4\n"
 
-// The image as committed must pass: RKE2's own base template and the baked
-// drop-ins.
-func TestBakedConfigWrapsEveryHandler(t *testing.T) {
-	cfg, err := effectiveConfig(bakedConfigDir, "", nil)
-	if err != nil {
-		t.Fatalf("effectiveConfig(baked) = %v", err)
-	}
-	handlers, err := checkHandlers(cfg, wrapper)
-	if err != nil {
-		t.Fatalf("checkHandlers(baked) = %v", err)
-	}
-	if len(handlers) == 0 || handlers[0] != "runc" {
-		t.Fatalf("wrapped handlers = %v, want the runc handler", handlers)
-	}
-}
+// bakedConfigDir is the worker profile's containerd directory, the one the CI
+// gate checks.
+const bakedConfigDir = "../../worker/mkosi.extra/etc/containerd"
 
-// workerConfig is the worker image's baked main config.
-const workerConfig = "../../worker/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd/config.toml"
+// bakedConfig is the worker image's baked main config, beside its drop-ins.
+const bakedConfig = bakedConfigDir + "/config.toml"
 
-// workerDropIns is a containerd directory holding the drop-ins the worker
-// image stages from the c8s profile (worker/shared).
-func workerDropIns(t *testing.T) string {
-	t.Helper()
-	shared, err := os.ReadFile("../../worker/shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	const prefix = "var/lib/rancher/rke2/agent/etc/containerd/"
-	for _, line := range strings.Split(string(shared), "\n") {
-		name, ok := strings.CutPrefix(strings.TrimSpace(line), prefix+dropInDirName+"/")
-		if !ok {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(bakedConfigDir, dropInDirName, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Join(dir, dropInDirName), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, dropInDirName, name), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
-
-// The worker image as committed must pass: its baked config and the drop-ins
-// it stages; a handler it adds unwrapped fails.
+// The worker image as committed must pass: its baked config and drop-ins; a
+// handler it adds unwrapped fails.
 func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
-	dropIns := workerDropIns(t)
-	cfg, err := effectiveConfig(dropIns, workerConfig, nil)
+	cfg, err := effectiveConfig(bakedConfigDir, bakedConfig)
 	if err != nil {
 		t.Fatalf("effectiveConfig(worker) = %v", err)
 	}
 	if handlers, err := checkHandlers(cfg, wrapper); err != nil || len(handlers) != 1 || handlers[0] != "runc" {
 		t.Fatalf("checkHandlers(worker) = %v, %v; want the runc handler wrapped", handlers, err)
 	}
-	data, err := os.ReadFile(workerConfig)
+	data, err := os.ReadFile(bakedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +40,7 @@ func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
 	if err := os.WriteFile(unwrapped, append(data, extra...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = effectiveConfig(dropIns, unwrapped, nil)
+	cfg, err = effectiveConfig(bakedConfigDir, unwrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,40 +49,28 @@ func TestWorkerConfigWrapsEveryHandler(t *testing.T) {
 	}
 }
 
-// RKE2 adds a handler for every runtime binary it finds on PATH. None of them
-// is wrapped, so the gate must fail rather than publish the image.
-func TestAutoDetectedRuntimeFails(t *testing.T) {
-	for name, binary := range map[string]string{
-		"crun":   "/usr/bin/crun",
-		"nvidia": "/usr/local/nvidia/toolkit/nvidia-container-runtime",
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg, err := effectiveConfig(bakedConfigDir, "", extraRuntimes{name: binary})
-			if err != nil {
-				t.Fatalf("effectiveConfig = %v", err)
-			}
-			if _, err := checkHandlers(cfg, wrapper); err == nil {
-				t.Fatalf("checkHandlers accepted an auto-detected %s handler", name)
-			}
-		})
-	}
-}
-
-// buildConfigDir writes the drop-ins and returns the directory. Like the
-// profile, it bakes no user template.
-func buildConfigDir(t *testing.T, dropIns map[string]string) string {
+// buildConfigDir is a containerd directory holding the drop-ins and a main
+// config shaped like the image's: the runc handler, the drop-in import, and
+// one schema version across every file.
+func buildConfigDir(t *testing.T, dropIns map[string]string) (dir, mainConfig string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir = t.TempDir()
 	dropInDir := filepath.Join(dir, dropInDirName)
 	if err := os.MkdirAll(dropInDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for name, body := range dropIns {
-		if err := os.WriteFile(filepath.Join(dropInDir, name), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dropInDir, name), []byte(schemaVersion+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return dir
+	mainConfig = filepath.Join(dir, "config.toml")
+	body := schemaVersion + "imports = [\"" + filepath.Join(dir, dropInDirName, "*.toml") + "\"]\n" +
+		"[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"" + runcShim + "\"\n"
+	if err := os.WriteFile(mainConfig, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir, mainConfig
 }
 
 func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
@@ -153,7 +99,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 			name: "a later drop-in unwrapping the handler is rejected",
 			dropIns: map[string]string{
 				"10-c8s-runc.toml": runcOptions + `BinaryName = "` + wrapper + `"` + "\n",
-				"zz-operator.toml": runcOptions + `BinaryName = "/var/lib/rancher/rke2/bin/runc"` + "\n",
+				"zz-operator.toml": runcOptions + `BinaryName = "/usr/lib/c8s/worker/bin/runc"` + "\n",
 			},
 			wantErr: "want the measured wrapper",
 		},
@@ -178,8 +124,8 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := buildConfigDir(t, tt.dropIns)
-			cfg, err := effectiveConfig(dir, "", nil)
+			dir, mainConfig := buildConfigDir(t, tt.dropIns)
+			cfg, err := effectiveConfig(dir, mainConfig)
 			if err != nil {
 				t.Fatalf("effectiveConfig = %v", err)
 			}
@@ -194,14 +140,36 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	}
 }
 
+// A drop-in containerd reads against another schema than the main config's
+// sets its keys in tables this check never merges.
+func TestDropInsDeclareTheMainConfigsSchemaVersion(t *testing.T) {
+	const wrapped = "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
+		`BinaryName = "` + wrapper + `"` + "\n"
+	for name, body := range map[string]string{
+		"no version":      wrapped,
+		"another version": "version = 3\n" + wrapped,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, mainConfig := buildConfigDir(t, nil)
+			if err := os.WriteFile(filepath.Join(dir, dropInDirName, "10-c8s-runc.toml"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := effectiveConfig(dir, mainConfig)
+			if err == nil || !strings.Contains(err.Error(), "want 4") {
+				t.Fatalf("effectiveConfig = %v, want a refusal naming the main config's version", err)
+			}
+		})
+	}
+}
+
 func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
-	dir := buildConfigDir(t, map[string]string{
+	dir, mainConfig := buildConfigDir(t, map[string]string{
 		"10-c8s-runc.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
 			`BinaryName = "` + wrapper + `"` + "\n",
 		"20-kata.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.kata-qemu-tdx]\n" +
 			`runtime_type = "io.containerd.kata-qemu-tdx.v2"` + "\n",
 	})
-	cfg, err := effectiveConfig(dir, "", nil)
+	cfg, err := effectiveConfig(dir, mainConfig)
 	if err != nil {
 		t.Fatalf("effectiveConfig = %v", err)
 	}
@@ -210,33 +178,20 @@ func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 	}
 }
 
-// A baked user template replaces the base as the root of the render, so one
-// that does not include the base loses the drop-in import and fails.
-func TestUserTemplateWithoutBaseFails(t *testing.T) {
-	dir := buildConfigDir(t, map[string]string{
-		"10-c8s-runc.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
-			`BinaryName = "` + wrapper + `"` + "\n",
-	})
-	if err := os.WriteFile(filepath.Join(dir, userTemplateName), []byte("version = 3\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := effectiveConfig(dir, "", nil); err == nil || !strings.Contains(err.Error(), "no import matching") {
-		t.Fatalf("effectiveConfig(user template without base) = %v, want an error about the missing import", err)
-	}
-}
-
-// Without the drop-in import the wrapper's BinaryName never reaches
-// containerd, however correct the drop-in itself is. The import comes from
-// RKE2's base template, so a re-vendor that lost it must fail here.
-func TestConfigWithoutDropInImportFails(t *testing.T) {
+// Without an import of exactly the drop-ins this check merges, either the
+// wrapper's BinaryName never reaches containerd or containerd reads a drop-in
+// nothing here checked.
+func TestConfigImportingOtherThanTheMergedDropInsFails(t *testing.T) {
+	const merged = "/etc/containerd/conf.d/*.toml"
 	for name, cfg := range map[string]map[string]any{
-		"no imports":      {"version": int64(3)},
-		"other imports":   {"imports": []any{"/etc/containerd/other.d/*.toml"}},
-		"import not toml": {"imports": []any{"/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.json"}},
+		"no imports":        {"version": int64(4)},
+		"another directory": {"imports": []any{"/etc/containerd/other.d/*.toml"}},
+		"another suffix":    {"imports": []any{"/etc/containerd/conf.d/*.json"}},
+		"a second import":   {"imports": []any{merged, "/etc/containerd/other.d/*.toml"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := checkImports(cfg); err == nil || !strings.Contains(err.Error(), "no import matching") {
-				t.Fatalf("checkImports(%v) = %v, want an error about the missing import", cfg, err)
+			if err := checkImports(cfg); err == nil || !strings.Contains(err.Error(), "want") {
+				t.Fatalf("checkImports(%v) = %v, want an error naming the merged drop-ins", cfg, err)
 			}
 		})
 	}
@@ -246,8 +201,8 @@ func TestConfigWithoutDropInImportFails(t *testing.T) {
 // usage errors: every exit status the gate can produce.
 func TestRun(t *testing.T) {
 	const runcOptions = "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n"
-	unwrapped := buildConfigDir(t, map[string]string{"10-c8s-runc.toml": runcOptions + `BinaryName = "/usr/bin/runc"` + "\n"})
-	broken := buildConfigDir(t, map[string]string{"10-c8s-runc.toml": "not = [toml\n"})
+	unwrapped, unwrappedConfig := buildConfigDir(t, map[string]string{"10-c8s-runc.toml": runcOptions + `BinaryName = "/usr/bin/runc"` + "\n"})
+	broken, brokenConfig := buildConfigDir(t, map[string]string{"10-c8s-runc.toml": "not = [toml\n"})
 	tests := []struct {
 		name       string
 		args       []string
@@ -257,24 +212,18 @@ func TestRun(t *testing.T) {
 	}{
 		{
 			name:       "baked image passes",
-			args:       []string{"-config-dir", bakedConfigDir},
+			args:       []string{"-config-dir", bakedConfigDir, "-config", bakedConfig},
 			wantStdout: "every ordinary-pod handler runs " + wrapper + ": runc",
 		},
 		{
-			name:       "auto-detected runtime fails",
-			args:       []string{"-config-dir", bakedConfigDir, "-extra-runtime", "crun=/usr/bin/crun"},
-			wantCode:   1,
-			wantStderr: "::error::",
-		},
-		{
 			name:       "unwrapped handler fails",
-			args:       []string{"-config-dir", unwrapped},
+			args:       []string{"-config-dir", unwrapped, "-config", unwrappedConfig},
 			wantCode:   1,
 			wantStderr: "want the measured wrapper",
 		},
 		{
 			name:       "malformed drop-in fails",
-			args:       []string{"-config-dir", broken},
+			args:       []string{"-config-dir", broken, "-config", brokenConfig},
 			wantCode:   1,
 			wantStderr: "parse drop-in",
 		},
@@ -282,13 +231,13 @@ func TestRun(t *testing.T) {
 			name:       "missing config dir is a usage error",
 			args:       nil,
 			wantCode:   2,
-			wantStderr: "-config-dir is required",
+			wantStderr: "-config-dir and -config are required",
 		},
 		{
-			name:       "malformed extra runtime is a usage error",
-			args:       []string{"-config-dir", bakedConfigDir, "-extra-runtime", "crun"},
+			name:       "missing main config is a usage error",
+			args:       []string{"-config-dir", bakedConfigDir},
 			wantCode:   2,
-			wantStderr: "want NAME=BINARY",
+			wantStderr: "-config-dir and -config are required",
 		},
 	}
 	for _, tt := range tests {

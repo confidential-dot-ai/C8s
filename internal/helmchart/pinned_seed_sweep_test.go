@@ -17,21 +17,16 @@ import (
 // satisfy deadlocks the uninstall fail-closed.
 func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{
-		nil,
-		{"--set", "nriImagePolicy.baked=true"},
-	} {
-		out, err := helmTemplate(t, args...)
-		if err != nil {
-			t.Fatalf("helm template %v: %v\n%s", args, err, out)
-		}
-		seed := renderedSeed(t, out)
-
-		admitArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript()})
-		admitArgvs(t, seed, baseNRIDigest, []string{"/bin/sleep", "2147483647"})
-		denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript() + "\nrm -rf /"})
-		denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sleep", "2147483648"})
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
 	}
+	seed := renderedSeed(t, out)
+
+	admitArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript()})
+	admitArgvs(t, seed, baseNRIDigest, []string{"/bin/sleep", "2147483647"})
+	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript() + "\nrm -rf /"})
+	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sleep", "2147483648"})
 }
 
 // c8s uninstall replays the pinned sweep argvs out of the release's seed

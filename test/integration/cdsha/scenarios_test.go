@@ -128,6 +128,7 @@ func TestAcknowledgedPolicyReplacementsAreImmediatelyVisible(t *testing.T) {
 // one that cannot reach a leader fails closed instead of answering from the
 // state it still holds.
 func TestEveryReplicaStopsServingWhenTheClusterLosesItsVoter(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, shape{
 		voters:   1,
@@ -183,6 +184,7 @@ func TestARestartedReplicaRejoinsItsCluster(t *testing.T) {
 // A cluster with more replicas than votes: the replicas holding none serve
 // reads and hand their writes to the one that leads.
 func TestReplicasThatHoldNoVoteStillServe(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, shape{voters: 1, replicas: 3})
 	leading := c.waitLeader(30 * time.Second)
@@ -208,6 +210,7 @@ var fiveReplicas = shape{
 
 // The replicas left over hand their writes to the leader.
 func TestTheVoterSeatsAreFilledAndTheReplicasLeftOverServeReads(t *testing.T) {
+	raftOnly(t)
 	c := newCluster(t, fiveReplicas)
 	leading := c.waitLeader(30 * time.Second)
 	c.waitRollSafe(time.Minute)
@@ -226,6 +229,7 @@ func TestTheVoterSeatsAreFilledAndTheReplicasLeftOverServeReads(t *testing.T) {
 // The cluster is no cluster to replace a replica of from the moment that voter
 // stops answering, and one again once its seat is filled.
 func TestADeadVoterGivesItsSeatToAReplicaWithoutAVote(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, fiveReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -251,6 +255,7 @@ func TestADeadVoterGivesItsSeatToAReplicaWithoutAVote(t *testing.T) {
 // A replacement is a membership change, and the log carries writes and
 // membership both.
 func TestAVoterIsReplacedWhileTheClusterTakesWrites(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, fiveReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -274,6 +279,7 @@ const writesWhileASeatChanges = 5
 
 // A replica cut off and back is no replica's to replace.
 func TestAVoterThatAnswersAgainKeepsItsSeat(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, fiveReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -302,6 +308,7 @@ const devDeadAfter = 5 * time.Second
 // The cluster fills the seats a SetVoters decree adds, and takes the vote of
 // the voters the seats it leaves no longer hold.
 func TestASetVotersDecreeMovesTheSeatsOfTheCluster(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, fiveReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -505,6 +512,7 @@ func (c *cluster) allServeOneOtherCA(was string) bool {
 // Two of the three replicas failing at once both stay: the log lives in the
 // replicas' memory, and the one that follows it is no majority without them.
 func TestAStuckReplicaLeavesOnlyWhileAMajorityFollowsTheLog(t *testing.T) {
+	raftOnly(t)
 	notShort(t)
 	c := newCluster(t, threeReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -547,6 +555,7 @@ const longerThanAStuckReplicaWaits = 10 * time.Second
 // The leader is the only replica that appends to the log, and a cluster whose
 // leader walked out takes no write until it has elected another.
 func TestAStuckLeaderHandsTheClusterOverBeforeItLeaves(t *testing.T) {
+	raftOnly(t)
 	c := newCluster(t, threeReplicas)
 	leading := c.waitLeader(30 * time.Second)
 	stuck, _ := c.status(leading)

@@ -82,6 +82,8 @@ rather than a file on the node's filesystem, because a node running the C8s node
 image — the measured guest image — keeps its writable state on an ephemeral disk
 that no reboot survives. The device is attached to one node, so the pod must be
 pinned there, with the `nodeSelector` that `c8s volume create --node` prints.
+A worker takes its node name from its boot ID, so it registers under a new one
+at every boot and a pod pinned to it must be pinned again after it reboots.
 
 ### Attaching the image
 
@@ -150,7 +152,7 @@ test host with `cryptsetup`, `veritysetup`, `mkfs.erofs` and loop-device support
 sudo python3 test/readonly-volume-sharing.py
 ```
 
-On a node running the C8s node image, volumed runs as the host service
+On a node running the C8s worker image, volumed runs as the host service
 `volumed.service`, because the image fixes the paths it needs. Everywhere else
 it is a chart DaemonSet, off by default because it is privileged, with `hostPID`
 and a writable kubelet-directory bind; `--volumes` on `c8s install` turns it on.

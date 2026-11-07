@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,7 +118,7 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 	})
 	for path, unserved := range map[string]int{
 		"/healthz":          answered,
-		"/readyz":           answered,
+		"/readyz":           http.StatusServiceUnavailable,
 		"/metrics":          answered,
 		"/ha/status":        answered,
 		"/ha/pins":          answered,
@@ -129,7 +130,7 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 		"/secrets/a/secret": http.StatusServiceUnavailable,
 	} {
 		for serving, want := range map[bool]int{true: answered, false: unserved} {
-			gated := haGate(func() bool { return serving }, routed)
+			gated := haGate(func() cdsha.Serving { return cdsha.Serving{OK: serving} }, func() error { return nil }, routed)
 			w := httptest.NewRecorder()
 			gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 			if w.Code != want {
@@ -155,6 +156,31 @@ func TestAReplicaCertifiesTheNodeImagesOfItsCluster(t *testing.T) {
 	}
 	if certified.Generation() != 0 {
 		t.Errorf("a replica that holds no cluster names node image version %d", certified.Generation())
+	}
+}
+
+func TestClockSkewFitsNonnegativeDuration(t *testing.T) {
+	cfg, state := replicatedRunConfig(t, attestingAPI(t))
+	for _, tt := range []struct {
+		name    string
+		skew    int64
+		invalid bool
+	}{
+		{"negative", -1, true},
+		{"minimum integer", math.MinInt64, true},
+		{"positive overflow to zero", 1 << 55, true},
+		{"first unrepresentable second", math.MaxInt64/int64(time.Second) + 1, true},
+		{"last representable second", math.MaxInt64 / int64(time.Second), false},
+		{"zero", 0, false},
+		{"default", 30, false},
+		{"custom", 17, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg.jwtClockSkew = tt.skew
+			if _, err := newMember(cfg, state); (err != nil) != tt.invalid {
+				t.Fatalf("JWT allowance %d seconds: error = %v, want invalid=%v", tt.skew, err, tt.invalid)
+			}
+		})
 	}
 }
 

@@ -1,5 +1,5 @@
-# RKE2 v1.36.4's rke2-cilium DaemonSet as a static pod on upstream's image, its
-# configuration measured and its API access the kubelet's (docs/launch-configuration.md).
+# Cilium as a static pod on upstream's image, its configuration measured and
+# its API access the kubelet's (docs/launch-configuration.md).
 apiVersion: v1
 kind: Pod
 metadata:

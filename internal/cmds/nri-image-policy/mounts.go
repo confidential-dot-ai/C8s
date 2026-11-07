@@ -21,8 +21,6 @@ const (
 var containerdRoots = []string{
 	"/var/lib/containerd",
 	"/run/containerd",
-	"/var/lib/rancher/rke2/agent/containerd",
-	"/run/k3s/containerd",
 }
 
 // MountContext binds path-shaped runtime evidence to the object currently

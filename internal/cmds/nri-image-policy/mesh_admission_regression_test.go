@@ -173,10 +173,11 @@ func TestMeshConfigRejectsInvalidRulesetInputs(t *testing.T) {
 
 func meshConfigForLoad(t *testing.T) *config {
 	t.Helper()
+	// The mesh bindings below are the subject; the base is not the node's TCB,
+	// which only a worker config may claim.
 	return &config{
 		Allowlist: allowlistConfig{
-			Base:    roleBase(t, pushDigestB, testCertRole, []string{"/usr/local/bin/c8s"}),
-			NodeTCB: true,
+			Base: roleBase(t, pushDigestB, testCertRole, []string{"/usr/local/bin/c8s"}),
 		},
 		Policy: policyConfig{
 			Mode:            ModeFailClosed,

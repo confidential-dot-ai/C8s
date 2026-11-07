@@ -35,7 +35,7 @@ concurrency:
 jobs:
   # A release tag is created inside the successful parent Docker run. Resolve it
   # from that run's exact revision only for the trusted automatic main and beta
-  # paths; manual node-image rebuilds must never mint or move release aliases.
+  # paths; manual worker-image rebuilds must never mint or move release aliases.
   # main resolves only stable tags and beta only -beta.N tags.
   release-context:
     name: Resolve release context
@@ -103,28 +103,12 @@ jobs:
     secrets:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
 
-  # Exact-image acceptance consumes this run's immutable publication evidence,
-  # never the independently maintained staged-image ConfigMap or root PVC.
-  verify-tdx-image:
-    name: Verify the published TDX image
-    needs: [release-context, build-and-push]
-    if: >-
-      needs.release-context.result == 'success' &&
-      needs.build-and-push.result == 'success'
-    permissions:
-      contents: read
-      actions: read
-      packages: read # The acme check reads the component images.
-    uses: ./.github/workflows/tdx-image-acceptance.yml
-    with:
-      image_acceptance_artifact_prefix: node-image-acceptance-rke2-tdx
-
   # Wait for both TDX/SNP matrix legs, then preflight every exact alias before
   # creating any of them. Registry publication is not transactional, so a
   # network failure may leave a subset; a rerun repairs missing aliases and
   # rejects any existing alias whose digest differs.
   promote-release:
-    name: Publish exact node-image release aliases
+    name: Publish exact worker-image release aliases
     needs: [release-context, build-and-push]
     if: |
       always() &&
@@ -160,7 +144,7 @@ jobs:
 
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
              [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
-            echo "::error::invalid node-image release context"
+            echo "::error::invalid worker-image release context"
             exit 1
           fi
           short="${HEAD_SHA:0:7}"
@@ -170,7 +154,7 @@ jobs:
 
           for platform in tdx snp; do
             for format in '' -cdi; do
-              base_tag="rke2-$platform$format"
+              base_tag="worker-$platform$format"
               source_tag="$base_tag-$short"
               release_alias="$base_tag-$RELEASE_TAG"
               source_digest="$(oras resolve "$IMAGE:$source_tag")"
@@ -200,6 +184,6 @@ jobs:
           done < "$aliases"
 
           {
-            echo "### $RELEASE_TAG node image aliases"
+            echo "### $RELEASE_TAG worker image aliases"
             cut -f1 "$aliases" | sed 's/^/- `ghcr.io\/confidential-dot-ai\/node-guest-base:/' | sed 's/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"

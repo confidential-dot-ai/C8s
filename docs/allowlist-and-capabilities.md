@@ -196,51 +196,40 @@ namespaces, the namespaces `hostNamespacePolicy.exemptNamespaces` names, and
 `local-path-storage` on an installed cluster (`node.baked=false`)
 ([operator.md](operator.md)).
 
-Some containers must hold host privilege: the RKE2 static pods, Cilium, C8s's
-own node-level components. They are the node's trusted computing base, and the
-exemption belongs to whoever measured them. A boot config can mark its own base
-allowlist as the node TCB, and nothing else exempts a container. The node image
-sets that marker, since its base is measured with the image; a chart-rendered
-base must not, and no served document can claim it: the marker is a boot-config
-key, not an allowlist field.
+Some containers must hold host privilege: the worker's static pods. They are
+the node's trusted computing base, and the exemption belongs to whoever
+measured them. C8s's own node-side services are host units on a worker, which
+this policy never sees. A boot config can mark its own base allowlist as the
+node TCB, and nothing else exempts a container. The measured
+node image sets that marker, since its base is measured with the image; a
+chart-rendered base must not, and no served document can claim it: the marker is
+a boot-config key, not an allowlist field.
 
-The control plane picks the image a pod runs, so a base entry that leaves its
-launch open would otherwise let the cluster admin run that image with a shell
-and the node's root. A launch the base admits is therefore exempt in two
-cases, and nothing more:
+A worker ([launch-configuration.md](launch-configuration.md)) answers to a
+control plane outside its TEE. That control plane picks the image a pod runs,
+writes every API pod's spec, and can read the values in the static pods'
+launches, so a worker's measured config (`worker: true`) exempts one case and
+nothing more: a kubelet static pod (sandbox annotation
+`kubernetes.io/config.source: file`, which the kubelet sets itself and writes
+`api` for every API pod) under an entry that pins its launch — command, args
+and mounts not `any`, and the environment constrained. Its manifest comes from
+the worker's own staging, out of the measured image and the document the launch
+bound.
 
-- a kubelet static pod (sandbox annotation `kubernetes.io/config.source: file`,
-  which the kubelet sets itself and writes `api` for every API pod): its
-  manifest comes only from RKE2 on the node, from the measured config and the
-  signed launch document;
-- any other pod only under an entry that pins the launch: command, args and
-  mounts not `any`, and the environment constrained.
-
-A worker ([launch-configuration.md](launch-configuration.md#worker-documents))
-answers to a control plane outside its TEE. That control plane writes every
-API pod's spec and can read the values in the static pods' launches, so a
-worker's measured config (`worker: true`) narrows both cases:
-
-- a static pod is exempt only under an entry that pins its launch;
-- no other pod is exempt. An API pod holds the host binds, host ports and
-  capabilities an entry declares for its launch, as the router does, and no
-  other host privilege. A static pod's entry, which the worker's floor marks
-  `staticPod: true`, grants no host bind, host port or capability, and a
-  boot config whose static-pod entry declares host ports or capabilities is
-  refused.
+No other pod is exempt. An API pod holds the host binds, host ports and
+capabilities an entry declares for its launch, as the router does, and no other
+host privilege. A static pod's entry, which the worker's floor marks
+`staticPod: true`, grants no host bind, host port or capability, and a boot
+config whose static-pod entry declares host ports or capabilities is refused.
 
 A worker's config also names no mesh-exempt namespace, so the mesh protects
 every API pod with its own network namespace wherever the control plane puts
-it; a static pod is the node's own and is never a member, on any node. It
-names no mesh exits, since a member's connections to one leave the mesh in
-the clear for endpoints the control plane chooses, and no credential
-attestation port: its credential clients verify through the node's
-attestation socket.
+it; a static pod is the node's own and is never a member, on any node. It names
+no credential attestation port: its credential clients verify through the
+node's attestation socket.
 
 An open entry admits its image, and the pod is sandboxed like any other, the
-host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
-operator run with the host network, so their entries pin every launch the
-node runs, environment included.
+host network included.
 
 GPU devices are set aside outside the node TCB too. containerd applies the
 edits of the CDI devices a container requests (the CRI `CDIDevices` field or a
@@ -343,8 +332,11 @@ Two documents start the platform before CDS serves anything. The base allowlist
 is the set of entries each plugin holds in its own boot config, checked ahead of
 every pulled snapshot and never changed by a pull, so a node admits the platform
 before CDS is reachable and a failed pull never drops it. The chart renders it
-from `nriImagePolicy.bootstrapAllowlist`; a measured node image merges it at
-boot from the file it bakes at `/usr/lib/c8s/allowlist-seed.json`.
+from `nriImagePolicy.bootstrapAllowlist`; a measured node image carries it in
+the floor its own build rendered, which it bakes at
+`/usr/lib/c8s/image-policy.yaml` and staging fills in and writes to
+`/etc/nri/conf.d/image-policy.yaml`, where the plugin reads it
+([launch-configuration.md](launch-configuration.md#staging-a-worker-document)).
 
 The CDS seed is the component entries this release needs served. The chart
 renders them into a ConfigMap from the resolved component digests, its
@@ -359,6 +351,21 @@ start: it adds every name the store lacks and retires the chart-generated
 shapes its seed replaces, leaving an operator entry under any other name
 untouched, so an operator edit survives until the CDS VM restarts and a
 deleted entry returns then for as long as the configuration carries it.
+
+A worker cluster runs no chart install, so it has no `--allowlist-seed-out` to
+take the seed from. `c8s node-image render` writes the same document instead,
+given the digests the worker image's own release published:
+
+```sh
+c8s node-image render --output-dir seed \
+    --hardware-platform sev-snp --kube-version v1.36.4 \
+    --image-digest sha256:<operator/get-cert digest> \
+    --armtls-mesh-image-digest sha256:<armTLS mesh digest>
+c8s cds config new --allowlist-seed seed/allowlist-seed.json ...
+```
+
+The digests must be the release the worker image was built from: a seed from
+another release leaves pods waiting in `c8s-cert-wait`.
 
 ## Allowlist history
 

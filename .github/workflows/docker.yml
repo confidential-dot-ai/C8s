@@ -4,23 +4,16 @@ on:
   # Publish component images on EVERY push to main.
   #
   # NO paths filter on the push trigger, deliberately. This workflow is the head
-  # of the post-merge chain: confidential-e2e fires off its completion via
-  # workflow_run, so a path gate here does not just skip an image build, it
-  # deletes that merge's SEV-SNP integration run. Its comment says "run the
-  # c8s e2e ... for every main merge", which was silently false for 25 of the
-  # last 100 merges. Verified: 0e3a876 and a7eb195 have ZERO Docker runs, their
-  # confidential-e2e workflow_run instances were skipped, and the only green
-  # runs on those shas came from a human pressing workflow_dispatch.
+  # of the post-merge chain: c8s-image-publish.yml fires off its completion via
+  # workflow_run, so a path gate here does not just skip a component build, it
+  # deletes that merge's measured image build.
   #
   # A push that changes no buildable source is cheap AND is the correct thing to
   # publish: paths-filter reports every component unchanged, docker-build-matrix.sh
   # emits has_images=false with all five components in retag_matrix, `images`
   # skips, and retag-unchanged aliases each component's current :main manifest to
   # :<short-sha> (`oras tag` writes the registry tag index only, no layer upload).
-  # That alias IS what the commit deploys, so e2e-c8s.yml's resolve_tag() hits
-  # :<short-sha> on its first probe instead of walking ancestry. This exact shape
-  # already runs green end to end: run 30024702633 (45cd7a0) took 18s, and its
-  # cascade produced a successful SEV-SNP e2e (30024734575).
+  # That alias is what the worker image bakes at that C8S_REF.
   #
   # The protected beta branch runs the same chain and publishes prereleases.
   push:
@@ -45,9 +38,8 @@ on:
   # Manual rebuild escape hatch, for a rebuild with NO new commit behind it: a
   # base-image refresh or a registry re-push. workflow_dispatch publishes EVERY
   # component image at this commit's tags (the matrix fans out to all of them,
-  # see docker-build-matrix.sh). NOTE: dispatching this workflow just to give
-  # a docs-only merge its images and its TEE run is no
-  # longer necessary; the unfiltered push trigger above covers that.
+  # see docker-build-matrix.sh). Dispatching it to give a docs-only merge its
+  # images is unnecessary: the unfiltered push trigger above covers that.
   workflow_dispatch:
 
 permissions:

@@ -16,7 +16,7 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = runC8s(t, "render-values", "--cvm-mode=bare-metal", "--resolve-digests=false", "--distro", "rke2")
+		err = runC8s(t, "render-values", "--cvm-mode=bare-metal", "--resolve-digests=false")
 	})
 	if err != nil {
 		t.Fatalf("render-values: %v", err)
@@ -44,10 +44,6 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 		if got := treeAt(t, tree, prefix...); got != "main" {
 			t.Errorf("%s = %#v, want main", strings.Join(prefix, "."), got)
 		}
-	}
-	// --distro configures the NRI installer.
-	if got := treeAt(t, tree, "nriImagePolicy", "distro"); got != "rke2" {
-		t.Errorf("nriImagePolicy.distro = %#v, want rke2", got)
 	}
 }
 

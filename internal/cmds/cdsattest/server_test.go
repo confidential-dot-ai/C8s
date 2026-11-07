@@ -510,13 +510,12 @@ func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
 // An evidence provider that cannot produce a quote is a 502 with the versioned
 // unavailable code on both split endpoints.
 func TestAttestationEvidenceUnavailable(t *testing.T) {
-	certPath, _ := writeTestServingLeaf(t)
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             failingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -680,9 +679,19 @@ func TestServingLeafErrors(t *testing.T) {
 	}
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
+	identity := writeTestMeshIdentity(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file, Bindings: NewBindings()})
+			srv := NewServer(Config{
+				Routes:               testRoutes(t),
+				Evidence:             &capturingProvider{},
+				FrontDoorMode:        types.FrontDoorModeACME,
+				ServingCertFile:      tc.file,
+				MeshIdentityCertFile: identity.certFile,
+				MeshIdentityKeyFile:  identity.keyFile,
+				MeshIdentityCAFile:   identity.caFile,
+				Bindings:             NewBindings(),
+			})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))

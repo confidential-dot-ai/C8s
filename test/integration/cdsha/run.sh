@@ -4,6 +4,10 @@
 #   test/integration/cdsha/run.sh            every scenario
 #   test/integration/cdsha/run.sh -short     the subset a pull request runs
 #   test/integration/cdsha/run.sh -run TestARestartedReplicaRejoinsItsCluster
+#   CDSHA_BACKEND=raft test/integration/cdsha/run.sh
+#
+# CDSHA_BACKEND names the backend every cluster runs, raft by default; the
+# scenarios about Raft's own membership skip under any other backend.
 #
 # Linux only: the replicas answer at 127.0.77.0/24.
 set -euo pipefail

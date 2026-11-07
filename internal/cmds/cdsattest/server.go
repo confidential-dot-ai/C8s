@@ -62,8 +62,8 @@ const (
 	// Session establishment: one attestation report, one X-Wing encapsulation
 	// and one session per request. Defaults for --establish-rate and
 	// --establish-burst.
-	defaultEstablishRate  = 10 // requests per second per client
-	defaultEstablishBurst = 20
+	defaultEstablishRate  = 50 // requests per second per client
+	defaultEstablishBurst = 100
 	// One established session's application traffic, charged to the session.
 	sessionRateLimit = 200
 	sessionRateBurst = 400
@@ -179,10 +179,11 @@ type Config struct {
 	// binding for a host-visible key.
 	FrontDoorMode types.FrontDoorMode
 	// ServingCertFile is the path to the LB serving-leaf PEM (the cert nginx
-	// presents on the wire). In cds front-door mode, GET .../attest-lb binds
-	// report_data to this exact leaf DER plus the mesh identity. Re-read per
-	// request so a get-cert renewal (which SIGHUPs nginx to a new leaf) is
-	// picked up without restarting the sidecar.
+	// presents on the wire). Only acme front-door mode reads it: GET
+	// .../attest-lb binds report_data to this exact leaf DER, refused outside
+	// its validity window, plus the mesh identity. A cds front door serves the
+	// mesh identity leaf, which attest-lb binds directly. Re-read per request
+	// so a renewal is picked up without restarting the sidecar.
 	ServingCertFile string
 	// MeshIdentity* are the TEE-held mesh leaf, matching private key, and CA
 	// bundle whose possession both attestation endpoints prove. They are
@@ -655,17 +656,14 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
 		return
 	}
-	servingLeafDER, err := s.servingLeafOf(connection)
-	if err != nil {
-		s.log.Error("attest-lb binding unavailable", "error", err)
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
-			"the serving certificate is unavailable; attest-lb cannot bind this connection")
-		return
-	}
 	identity, err := s.meshIdentity()
 	if err != nil {
 		s.log.Error("mesh identity binding unavailable", "error", err)
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "mesh identity credentials are temporarily unavailable")
+		return
+	}
+	servingLeafDER, ok := s.servingLeafOf(w, connection, identity)
+	if !ok {
 		return
 	}
 	routerDigest, ok := s.routerDigest(w, identity)
@@ -775,23 +773,57 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 	return loadMeshIdentity(s.cfg.MeshIdentityCertFile, s.cfg.MeshIdentityKeyFile, s.cfg.MeshIdentityCAFile)
 }
 
-// servingLeafOf returns the serving leaf connection presents. nginx reads its
-// certificate per TLS handshake, so a connection keeps the leaf it opened
-// with across renewals: for a bound connection that is the leaf its binding
-// attested, while kept and unexpired; otherwise the leaf nginx serves new
-// connections now.
-func (s *Server) servingLeafOf(connection string) ([]byte, error) {
+// servingLeafOf returns the serving leaf connection presents, or writes the
+// refusal. nginx reads its certificate per TLS handshake, so a connection
+// keeps the leaf it opened with across renewals: for a bound connection that
+// is the leaf its binding attested, while kept and unexpired; otherwise the
+// leaf nginx serves new connections now. A cds front door serves the mesh
+// identity leaf, taken from identity so it cannot race a rotation; an acme
+// one serves --serving-cert-file, admitted inside its and its chain's
+// validity windows.
+func (s *Server) servingLeafOf(w http.ResponseWriter, connection string, identity *meshIdentity) ([]byte, bool) {
 	if hash, bound := s.bindings.servingLeaf(connection); bound {
 		if der, kept := s.servedLeaves.find(hash, time.Now()); kept {
-			return der, nil
+			return der, true
 		}
 	}
-	leaf, err := s.servingLeaf()
-	if err != nil {
-		return nil, err
+	// Warn, not Error, on every refusal below: they repeat on every request
+	// until renewal recovers, and renewal monitoring alerts on them.
+	leaf := servedLeaf{der: identity.leaf.Raw, expires: identity.servedUntil}
+	if s.cfg.FrontDoorMode != types.FrontDoorModeACME {
+		// nginx refuses to load a tls.crt with a block it cannot parse and
+		// keeps serving its previous one, so this leaf cannot be bound.
+		if identity.chainErr != nil {
+			s.log.Warn("attest-lb binding unavailable", "error", identity.chainErr)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
+				"the serving certificate is unavailable; attest-lb cannot bind this connection")
+			return nil, false
+		}
+		if time.Now().After(leaf.expires) {
+			s.log.Warn("attest-lb serving leaf rejected", "error", "mesh identity served with an expired chain", "chain_expires", leaf.expires)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+				"the served certificate chain has expired; attest-lb cannot bind this connection")
+			return nil, false
+		}
+	} else {
+		// A missing cert.pem is normal before the first ACME order completes.
+		cert, served, err := s.servingLeaf()
+		if err != nil {
+			s.log.Warn("attest-lb binding unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
+				"the serving certificate is unavailable; attest-lb cannot bind this connection")
+			return nil, false
+		}
+		if err := checkACMEServingLeaf(cert, served.expires); err != nil {
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_before", cert.NotBefore, "not_after", cert.NotAfter, "chain_expires", served.expires)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+				"the serving certificate or its chain is outside its validity window; attest-lb cannot bind this connection")
+			return nil, false
+		}
+		leaf = served
 	}
 	s.servedLeaves.remember(leaf)
-	return leaf.der, nil
+	return leaf.der, true
 }
 
 // servedLeaf is a serving leaf and when the chain it was served with
@@ -841,41 +873,39 @@ func (l *servedLeaves) findLocked(hash [sha256.Size]byte) (servedLeaf, bool) {
 	return servedLeaf{}, false
 }
 
-// servingLeaf reads the LB serving-leaf PEM nginx serves new connections:
+// servingLeaf reads the acme serving-leaf PEM nginx serves new connections:
 // the leaf first, then the rest of its chain. It is read per request so a
-// get-cert renewal is picked up without restarting the sidecar. Exactly one
+// renewal is picked up without restarting the sidecar. Exactly one
 // leaf is committed; per-SNI or multi-certificate serving is unsupported and
 // fails the client's exact-DER comparison closed.
-func (s *Server) servingLeaf() (servedLeaf, error) {
+func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if s.cfg.ServingCertFile == "" {
-		return servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
+		return nil, servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
 	}
 	pemBytes, err := os.ReadFile(s.cfg.ServingCertFile)
 	if err != nil {
-		return servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
 	}
 	block, rest := pem.Decode(pemBytes)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
+		return nil, servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
 	}
-	leaf := servedLeaf{der: cert.Raw, expires: cert.NotAfter}
+	var chain []*x509.Certificate
 	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
 		if block.Type != "CERTIFICATE" {
 			continue
 		}
 		issuer, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
+			return nil, servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
 		}
-		if issuer.NotAfter.Before(leaf.expires) {
-			leaf.expires = issuer.NotAfter
-		}
+		chain = append(chain, issuer)
 	}
-	return leaf, nil
+	return cert, servedLeaf{der: cert.Raw, expires: chainExpiry(cert, chain...)}, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer

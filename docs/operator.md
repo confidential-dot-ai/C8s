@@ -1,16 +1,20 @@
 # Running a cluster
 
-A C8s cluster takes its policy from operator private keys that never enter it,
-and a measured node releases credentials only inside the bounds its image
-bakes.
+A C8s cluster takes its policy from operator private keys that never enter it.
 
 Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in),
 [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
 
 The platform operator is the person holding those keys; `c8s install` is the
 command they run, `c8s operator` is the controller pod it deploys, and only the
-person's keys authorize policy. For the install itself see
-[QUICKSTART.md](QUICKSTART.md); for a workload, [workloads.md](workloads.md).
+person's keys authorize policy. For a workload, see
+[workloads.md](workloads.md).
+
+Kubernetes credentials come from the cluster's own control plane, which on
+bare-metal runs outside every TEE and issues the kubeconfig `c8s install` and
+`kubectl` use
+([launch-configuration.md](launch-configuration.md#a-workers-control-plane));
+a measured node releases none.
 
 ## What an install deploys
 
@@ -25,7 +29,7 @@ here, such as `router.publicTLS.mode`, are chart values.
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
 | `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
-| `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the node image bakes both, and the worker only carries this release's CDS pins to the baked plugin |
+| `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the measured node image carries both, so the chart renders neither |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
 | `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); `--install-crds=false` skips the CRD |
@@ -37,10 +41,10 @@ this cluster's components resolve, or an IPv4 address. `--operator-keys` pins th
 the router verifies route manifests under; without it the router uses the keys
 the pinned CDS serves. CDS takes its own write keys from
 `c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
-policy that would deny the platform's own pods. A measured node image boots the same chart, rendered at
-build time and configured from the signed launch file; `c8s install` refuses a
-cluster
-labelled `confidential.ai/baked=true`.
+policy that would deny the platform's own pods. A measured node image boots the
+chart its own build rendered, configured from the worker document it launches
+with ([launch-configuration.md](launch-configuration.md)); `c8s install`
+refuses a cluster labelled `confidential.ai/baked=true`.
 
 Images in a registry that needs authentication need a
 `kubernetes.io/dockerconfigjson` Secret in the release namespace, named with
@@ -143,105 +147,6 @@ escrow file (`c8s secrets put <PATH> --from-file <ESCROW>`). An encrypted
 volume opens once its consumer's entry and its key are both back
 ([volumes.md](volumes.md#keep-the-escrow-file)).
 
-## Authenticated launch configuration
-
-A measured node runs one image for both roles and takes its configuration from a
-signed `c8s-launch/v2` document on the disk it boots with: the document fixes
-the role (`server` or `agent`), the node's identity in the cluster, the RKE2
-join tokens, the CDS its clients trust, and the image measurements the boot
-must report, and staging authenticates its bytes before parsing them. Nothing
-an unmeasured host says at boot decides any of it. Every field, the signature,
-and the boot-time check order are
-[launch-configuration.md](launch-configuration.md).
-
-On a measured bare-metal node — the one CVM mode with a launch document
-([overview.md](overview.md#cvm-modes-and-hardware-platforms)) — the launch key's
-public half binds into the node's evidence, so a client that pins the image and
-that key learns which operator launched the guest it dialled, not only which
-image booted ([measurements.md](measurements.md)). Use distinct keys per
-cluster: evidence names the key and the image, not the cluster, so two clusters
-sharing both are indistinguishable to a client pinning them.
-`c8s node launch-config new` writes one cluster's bundle — separate server and
-agent launch keys, fresh join tokens, a signed document per node, the client
-policies pinning the server and listing every identity CDS admits, and the
-launch file its CDS VM boots on with the pin binding those bytes, which every
-node document carries. The server launch key is also the operator key for
-[`c8s get-kubeconfig`](#trust-gate-c8s-get-kubeconfig) and for signed CDS
-writes.
-
-A non-empty `router.hostnames` in the document puts the baked front door in ACME
-mode at boot, while the chart value `router.publicTLS.mode` stays `cds`. The
-join tokens are RKE2 enrollment credentials, not C8s identity: the mesh wraps
-neither port `9345` nor `6443`, so a token holder with network access can enroll
-with no C8s evidence.
-
-## Operator credentials
-
-### Trust gate: `c8s get-kubeconfig`
-
-`c8s get-kubeconfig` obtains a kubeconfig from a measured node and enforces the
-node's full measured identity before any credential moves. The
-`--image-manifest` shape selects the platform and pins the whole guest image.
-The operator-key binding is pinned with it: on TDX as the RTMR[3] chain, which
-`--workload-image` pins in first-extend order, and on SEV-SNP as `HOST_DATA`
-equal to `SHA-256(operator pubkey)`. What each register and field holds is
-[measurements.md](measurements.md). A fresh nonce-bound report comes from the
-credential-release service on port `8443`, which authenticates the operator
-token first. The gate proves that a genuine guest of that platform booted the
-pinned image and was launched to trust this operator key — and nothing the flags
-do not name.
-
-The released certificate is `CN=operator, O=c8s:node-operators`.
-`--role log-reader` asks for `CN=log-reader, O=c8s:log-readers` instead: get,
-list and watch on pods, their logs, namespaces and events, nothing more. The
-role travels inside the token-bound request body, so neither it nor the CSR can
-be swapped, and a log-reader holder cannot release another. The node image binds
-both groups to baked ClusterRoles, and the measured unit fixes the group names;
-a cluster running `c8s cred-release` itself needs equivalent bindings, or
-`--cert-org` and `--log-cert-org` naming groups it already binds.
-
-### Bounded operator
-
-The released credential is deliberately not `cluster-admin`, and the node's
-guards exist to hold against its holder. The baked ClusterRole is an enumerated
-allowlist with no wildcards and no path to those guards: no `bind`, `escalate`
-or `impersonate`, no cluster-scoped RBAC, admission or webhook writes, no
-`*/proxy`, and no PersistentVolume, StorageClass, CRD or Node writes. A baked
-admission policy re-checks the same exclusions for every principal in a `c8s:`
-group, whatever RBAC says, and refuses any write in the privileged namespaces
-(`kube-system`, `c8s-system`, and `c8s-router`), except core Pod deletion
-without a subresource in `c8s-router` by `c8s:node-operators`. The fixed
-Deployment recreates a deleted router Pod with a fresh credential volume. It
-also refuses a Service that would take over a platform address a member pod's
-packet filter passes by IP: `spec.externalIPs`,
-and a ClusterIP in `10.53.0.0/24`, where the platform pins the resolver and the
-baked cluster-metrics exit
-([armtls.md](armtls.md#cluster-metrics)). The credential-release service keeps
-its listener closed until those guards are live, match their copies on the
-read-only root, and pass server-side dry-runs of the deny paths; exec, attach,
-port-forward and ephemeral containers are denied for every credential
-([node-exec-mode.md](node-exec-mode.md)).
-
-After total CDS CA-key loss, fence lost CDS VMs, recover the CDS, and restore
-its authorized allowlist, routes and secrets. Recreate router Pods one at a time:
-
-```sh
-kubectl --kubeconfig operator.kubeconfig -n c8s-router get pods
-kubectl --kubeconfig operator.kubeconfig -n c8s-router delete pod POD_NAME
-```
-
-Wait for each replacement to become Ready and obtain a leaf from the recovered
-CA. Recreate old-CA tenant backends as needed and verify a routed request over a
-fresh attested connection. A running Pod retains its issuer-key binding across
-sidecar restarts; same-key CA renewal needs no recreation. Credential release
-remains available independently of the CDS. This admission permission requires
-a node image containing this policy to be built and launched.
-
-Revocation is a launch-time decision: deleting a binding cuts access until the
-next boot only, because the manifests sit on the read-only root and RKE2's state
-lives on the encrypted scratch disk, which no reboot survives. To revoke
-durably, relaunch with a rotated server launch key and new documents.
-
 ## The router
 
 The router is the cluster's only public entry point, in its own `c8s-router`
@@ -261,6 +166,15 @@ The two attested handshakes, attest-pq and attest-lb, are
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
 refuse a front door outside mode `cds`, wanting a direct CDS URL.
+In mode `cds` attest-lb binds the mesh identity leaf, which is the leaf nginx
+serves; a mesh leaf or CA outside its validity window is a credential failure,
+503 `binding_unavailable`. In mode `acme` it binds the leaf
+`--serving-cert-file` names and refuses with 503 `serving_leaf_rejected` while
+that leaf is outside its validity window or served with a chain that has
+expired. In mode `cds`, an expired intermediate in `tls.crt` gets
+`serving_leaf_rejected`, and a `tls.crt` chain block that does not parse gets
+503 `binding_unavailable` from attest-lb; `/readyz` and attest-pq are
+unaffected.
 
 ACME issuance covers the names the sidecar is configured with — `router.san` on
 an installed cluster, the launch file's `hostnames` on a baked node — and never
@@ -279,7 +193,7 @@ same store as the served allowlist, so it shares its lifetime; there is no route
 seed. `cds-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
 over armTLS against the same CDS pins, verifies the manifest's write token under
 the operator keys, and routes by nothing else. A baked node takes those keys
-from its signed launch configuration; elsewhere they are Kubernetes
+from the CDS configuration its document pins; elsewhere they are Kubernetes
 configuration, so whoever controls that can sign routes of their own —
 detectable only by pinning the route digest or the operator keys.
 
@@ -290,18 +204,23 @@ detectable only by pinning the route digest or the operator keys.
 - A request whose `Host` is not a manifest host, or whose path matches no route,
   gets 404. The router's own paths are never routed by the manifest.
 - A workload backend is dialed as a mesh client: the peer must present a leaf
-  chaining to the mesh CA, carrying that route's workload name, stamped under
-  the same allowlist digest as the router's own leaf. A failed handshake is
-  502 — `backend_digest_mismatch` when the two digests differ — and no backend
-  is reached in plaintext. A router whose own leaf carries no stamp binds no
-  policy digest and checks the name alone.
-- The router and its backends renew on their own schedules, so after an
-  allowlist write a workload route refuses requests until both carry the new
-  digest: 502 `backend_digest_mismatch` while a backend lags, 503
-  `router_digest_changed` while the router's own pools still hold its previous
-  digest. The slower of their `--ca-watch-interval`s, plus half an interval of
-  jitter, plus one issuance bounds that; with the watch off it lasts until the
-  next scheduled renewal.
+  chaining to the mesh CA, carrying that route's workload name, and that entry
+  must be the same in the allowlist its leaf is stamped under as in the one
+  the router's own leaf is stamped under. When the two digests differ the
+  router fetches both documents from CDS's allowlist history
+  (`/allowlist/objects/sha256/<hex>`, cached by digest) and compares the
+  entry. A failed check is 502 `backend_digest_mismatch`: the entry was
+  redefined, is missing from either document, or a document cannot be
+  fetched. No backend is reached in plaintext. A router whose own leaf carries
+  no stamp binds no policy digest and checks the name alone.
+- An allowlist write therefore refuses only the backends whose entry it
+  removed or redefined, from the router's renewal or the backend's, whichever
+  comes first, until both carry the new definition. The slower of their
+  `--ca-watch-interval`s, plus half an interval of jitter, plus one issuance
+  bounds that; with the watch off it lasts until the next scheduled renewal.
+  A backend under an entry the write added is accepted once the router's
+  leaf renews under it. Bound sessions still end on every router renewal (503
+  `router_digest_changed`, below).
 - An allowlist write takes effect on nodes `--allowlist-node-delay` (CDS flag,
   30s) after it is written. CDS issues certificates under it at once, and
   router certificates (`--router-cert-ttl`, 20s) last less than that, so any
@@ -348,8 +267,8 @@ answers 503 until stored.
 With `--resolve-digests` (the default) install also writes one workload entry
 per adopted workload, named `<ENTRY>`, declaring every container of its pod
 template with exact mounts. CDS stamps that name on the pod's leaf, which is
-what the router requires of a workload backend, under the same allowlist digest
-as its own leaf ([Route manifest](#route-manifest)). When two entries describe
+what the router requires of a workload backend, with the same entry as in the
+allowlist its own leaf is stamped under ([Route manifest](#route-manifest)). When two entries describe
 one pod, CDS stamps neither name, and the router answers 502 for that backend
 at runtime. A template with other mounts, a `subPath`, or secrets and volumes
 gets an any-mounts entry and a warning; for the `--upstream` workload install

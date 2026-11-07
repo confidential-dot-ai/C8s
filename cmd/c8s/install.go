@@ -287,15 +287,14 @@ func preflightNotBakedNode(ctx context.Context) error {
 	if ns.Metadata.Labels["confidential.ai/baked"] != "true" {
 		return nil
 	}
-	return fmt.Errorf("c8s-system carries confidential.ai/baked=true: this node image owns the core services, operator and admission policies; configure its signed launch.yaml and workloads instead of running c8s install")
+	return fmt.Errorf("c8s-system carries confidential.ai/baked=true: this node's measured image owns the core services, operator and admission policies; configure them in its worker document and deploy only your workloads here, instead of running c8s install")
 }
 
 // preflightRouterHostPort fails fast when router's host port is already bound on
 // every node, so the router pod would sit Pending and `--wait` would time out
-// with an opaque scheduler error. The classic collision is a bundled ingress
-// controller (rke2 <= v1.35 ships rke2-ingress-nginx, v1.36+ rke2-traefik,
-// both on host 80/443). Reads chart
-// defaults, so the caller gates it to the default (no -f) path where they apply.
+// with an opaque scheduler error. The classic collision is the cluster's own
+// ingress controller on host 80/443. Reads chart defaults, so the caller gates
+// it to the default (no -f) path where they apply.
 func preflightRouterHostPort(ctx context.Context, chartPath, namespace string) error {
 	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
 	if err != nil {
@@ -461,14 +460,6 @@ const deniedImagesListed = 20
 // --force installs anyway, and returns the same list as a warning.
 func preflightImagePolicy(ctx context.Context, w io.Writer, values map[string]any, components []c8sComponent, releaseNamespace string, force bool) (warn string, err error) {
 	if !boolAtPath(values, "nriImagePolicy.enabled") {
-		return "", nil
-	}
-	// Under .baked the node's floor is the one the image build rendered — the
-	// RKE2 system digests included — and the chart cannot see it, so every
-	// baked-floor pod here reads as denied. The plugin has also been enforcing
-	// since boot, so what runs is already admitted and the pins the installer
-	// writes change who may serve the allowlist, not what it admits.
-	if boolAtPath(values, "nriImagePolicy.baked") {
 		return "", nil
 	}
 	// A mode the chart cannot read is the render guard's to reject, not this
@@ -706,67 +697,44 @@ func stringsAtPath(tree map[string]any, path string) []string {
 	return out
 }
 
-// clusterDistroNodes reads every node's kubeletVersion via kubectl and splits
-// the nodes into RKE2-built vs upstream-built buckets.
-//
-// Detection: RKE2's bundled kubelet stamps a "+rke2" build suffix onto
-// status.nodeInfo.kubeletVersion (e.g. v1.29.5+rke2r1); vanilla upstream
-// kubelet has no suffix. The suffix is the only reliable distro signal
-// kubectl can see without going on-host.
-func clusterDistroNodes(ctx context.Context) (rke2, other []string, err error) {
+// preflightUpstreamContainerd refuses an install whose host image-policy
+// installer would reach a node that is not laid out as upstream containerd:
+// the installer writes /etc/containerd/config.toml and restarts containerd,
+// which such a node neither reads nor runs, leaving its pods admitted by
+// nothing. The build-metadata suffix the bundled kubelet stamps onto
+// status.nodeInfo.kubeletVersion is the only signal kubectl can see without
+// going on-host.
+func preflightUpstreamContainerd(ctx context.Context) error {
 	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes",
 		"-o", `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}`).Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("kubectl get nodes: %w", withStderr(err))
+		return fmt.Errorf("kubectl get nodes: %w", withStderr(err))
 	}
-	rke2, other = classifyDistroNodes(strings.Split(strings.TrimSpace(string(out)), "\n"))
-	return rke2, other, nil
+	bundled := bundledKubeletNodes(strings.Split(strings.TrimSpace(string(out)), "\n"))
+	if len(bundled) == 0 {
+		return nil
+	}
+	return fmt.Errorf("these nodes run a Kubernetes distribution's own containerd, which c8s does not support: %s. Install on nodes running upstream containerd, or keep the image-policy installer off these ones with nriImagePolicy.nodeAffinity.excludeLabels via -f", strings.Join(bundled, ", "))
 }
 
-// detectDistro picks the host distro for an install, from the cluster's
-// kubelet versions.
-func detectDistro(ctx context.Context) (string, error) {
-	rke2Nodes, otherNodes, err := clusterDistroNodes(ctx)
-	if err != nil {
-		return "", err
-	}
-	return chooseDistro(rke2Nodes, otherNodes)
-}
-
-// classifyDistroNodes splits "name\tkubeletVersion" lines into RKE2-built vs
-// upstream-built buckets by the "+rke2" build-metadata suffix RKE2's kubelet
-// build carries. Lines without a tab (no kubeletVersion reported) are skipped
-// — a node Status with no kubeletVersion can't be classified either way, so
-// detection ignores it rather than guessing.
-func classifyDistroNodes(lines []string) (rke2, other []string) {
+// bundledKubeletNodes returns the nodes of "name\tkubeletVersion" lines whose
+// kubelet is a distribution's own build. A line without a tab reports no
+// kubelet version and is skipped: an unclassifiable node is not a finding.
+func bundledKubeletNodes(lines []string) []string {
+	var nodes []string
 	for _, l := range lines {
-		name, ver, ok := strings.Cut(l, "\t")
+		name, version, ok := strings.Cut(l, "\t")
 		if !ok || name == "" {
 			continue
 		}
-		if strings.Contains(ver, "+rke2") {
-			rke2 = append(rke2, name)
-		} else {
-			other = append(other, name)
+		for _, suffix := range []string{"+rke2", "+k3s"} {
+			if strings.Contains(version, suffix) {
+				nodes = append(nodes, name)
+				break
+			}
 		}
 	}
-	return
-}
-
-// chooseDistro maps the node classification to a distro value: any RKE2 node
-// (and no upstream ones) selects rke2; otherwise k8s, which also covers an
-// empty or unclassifiable node list — the chart default and the only safe
-// guess. A mixed cluster has no single right answer: nri-image-policy patches
-// a distro-specific containerd path on every selected node, so it demands an
-// explicit choice via -f instead of guessing.
-func chooseDistro(rke2Nodes, otherNodes []string) (string, error) {
-	if len(rke2Nodes) > 0 && len(otherNodes) > 0 {
-		return "", fmt.Errorf("cannot detect the host distro: the cluster mixes RKE2 nodes (%s) and non-RKE2 nodes (%s). Set nriImagePolicy.distro and restrict the install with nriImagePolicy.nodeSelector via -f", strings.Join(rke2Nodes, ", "), strings.Join(otherNodes, ", "))
-	}
-	if len(rke2Nodes) > 0 {
-		return "rke2", nil
-	}
-	return "k8s", nil
+	return nodes
 }
 
 // nestedMap walks map keys and returns the map[string]any at the path.
@@ -833,28 +801,9 @@ func decodeValuesFile(path string) (map[string]any, error) {
 	return tree, nil
 }
 
-// valuesFilesSetDistro reports whether any -f values file explicitly sets
-// nriImagePolicy.distro. When one does, that file owns the host containerd
-// layout and cluster auto-detection must stand aside; when none does,
-// detection still applies even though other values were supplied.
-func valuesFilesSetDistro(files []string) (bool, error) {
-	for _, f := range files {
-		tree, err := decodeValuesFile(f)
-		if err != nil {
-			return false, err
-		}
-		for _, path := range []string{"nriImagePolicy.distro"} {
-			if v, err := stringAtPath(tree, path); err == nil && v != "" {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
 // materializeStdinValues replaces each "-" entry (helm's -f - idiom) with a
-// temp file holding the piped values, so every values consumer — the distro
-// and TEE-selector scans, effectiveValues, and helm itself — reads the same
+// temp file holding the piped values, so every values consumer — the
+// TEE-selector scan, effectiveValues, and helm itself — reads the same
 // bytes. Stdin is drained once, so a repeated "-" gets an empty file, as does
 // helm's own repeated -f -. The returned cleanup removes the temp files.
 func materializeStdinValues(files []string, stdin io.Reader) ([]string, func(), error) {
@@ -921,12 +870,6 @@ var installCmd = &cobra.Command{
     CDS named by --cds-address and --cds-pin
   - the pod-validating webhook configuration
   - the nri-image-policy and router components
-
-The host distro (k8s vs rke2) is detected from the cluster's kubelet versions;
-override nriImagePolicy.distro via -f for a layout detection
-cannot see. On RKE2 the nri-image-policy DaemonSets carry a
-containerd-prep initContainer that wires up the drop-in import; no node
-preparation is required beyond a running cluster.
 
 On the hosted lanes (--cvm-mode=gke/aks) the provider's kube-system pods are
 not on the c8s allowlist, so the install renders
@@ -1067,33 +1010,20 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return fmt.Errorf("read chart components: %w", err)
 		}
-		imageTag := resolveImageTag()
-		// nri-image-policy must bind the host's containerd
-		// layout in every install mode, so the distro is detected from the
-		// cluster's kubelet versions and plumbed; letting the chart default
-		// (k8s) stand would silently mis-target RKE2. Detection is suppressed
-		// only when a -f file actually sets nriImagePolicy.distro
-		// (that file then owns the layout) — not merely because some -f is
-		// present. buildValueArgs skips the distro when it is empty.
-		distro := ""
-		distroInValues, err := valuesFilesSetDistro(installValues)
+		// The cluster before the registry: an install that cannot reach the
+		// cluster it is for says so without first resolving every digest.
+		kubeVersion, err := clusterKubeVersion(cmd.Context())
 		if err != nil {
 			return err
 		}
-		if !distroInValues {
-			distro, err = detectDistro(cmd.Context())
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stdout, "+ detected host distro: %s\n", distro)
-		}
+		imageTag := resolveImageTag()
 		// The computed values are shared with `c8s render-values` via
 		// buildValueArgs, then written to one values file rather than passed as a
 		// pile of --set flags. The contract that the CLI's flag-derived values
 		// override an operator's -f is preserved by ordering: the computed file
 		// is the LAST -f, so it wins on the keys it sets (matching the previous
 		// "--set beats -f" precedence) while the operator's files supply the rest.
-		setArgs, err := buildValueArgs(cmd.Context(), cmd, chartPath, components, imageTag, distro, appendResolvedDigestArgs)
+		setArgs, err := buildValueArgs(cmd.Context(), cmd, chartPath, components, imageTag, appendResolvedDigestArgs)
 		if err != nil {
 			return err
 		}
@@ -1109,10 +1039,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			return err
 		}
 		defer os.Remove(computedValues)
-		kubeVersion, err := clusterKubeVersion(cmd.Context())
-		if err != nil {
-			return err
-		}
 		render := seedRender{
 			chart:       chartPath,
 			release:     installRelease,
@@ -1194,12 +1120,20 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
 		}
 
+		// Only the installer touches a node's containerd, so a release that
+		// leaves it to a measured image takes the node's layout as given.
+		if boolAtPath(values, "nriImagePolicy.enabled") {
+			if err := preflightUpstreamContainerd(cmd.Context()); err != nil {
+				return err
+			}
+		}
+
 		// The install always ships pods that exceed the restricted pod-security
 		// profile: nri-image-policy runs privileged unconditionally and
 		// attestation-api needs SYS_RAWIO (node/gke) or privileged (aks).
-		// No supported shape fits restricted, so
-		// the namespace is always labelled privileged (a CIS-hardened cluster, e.g.
-		// RKE2 with profile: cis, would otherwise reject those pods at admission).
+		// No supported shape fits restricted, so the namespace is always
+		// labelled privileged (a CIS-hardened cluster would otherwise reject
+		// those pods at admission).
 		if err := applyNamespace(cmd.Context(), installNamespace); err != nil {
 			return err
 		}
@@ -1387,16 +1321,6 @@ func appendInstallCRDArgs(setArgs []string, installCRDs bool) []string {
 	return append(setArgs, "--set", "statusMirror.enabled=false")
 }
 
-// appendDistroInstallArgs translates the detected host distro into the
-// nri-image-policy containerd layout. No enum guard: the value comes from
-// chooseDistro, and the chart re-validates anyway.
-func appendDistroInstallArgs(helmArgs []string, distro string) []string {
-	return append(helmArgs,
-
-		"--set-string", "nriImagePolicy.distro="+distro,
-	)
-}
-
 // appendCvmModeInstallArgs translates --cvm-mode into the attestation-api
 // values. The chart re-validates, so the allowed check is a fast typo guard
 // before shelling to helm.
@@ -1448,7 +1372,7 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // GitOps/HelmRelease installs get it too), not emitted as a --set here; see
 // internal/helmchart/c8s/templates/webhook.yaml.
 func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform string) ([]string, error) {
-	bakedAttestationAndNRIPlugin, err := deployment.BakedAttestationAndNRIPlugin(cvmMode)
+	measuredImageCarriesAttestationAndPlugin, err := deployment.MeasuredImageCarriesAttestationAndNRIPlugin(cvmMode)
 	if err != nil {
 		return nil, err
 	}
@@ -1516,16 +1440,13 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 			"--set-string", "router.attest.generation=",
 		)
 	}
-	// node: the node image bakes host attestation-api and nri-image-policy;
-	// re-rendering them duplicates the baked pair and the baked fail-closed NRI
-	// floor denies the chart copies' own images. The NRI installer does stay
-	// on, in its baked form — the pins below are the one thing an image built
-	// before this release cannot carry, and the installer is the only path that
-	// reaches the baked plugin's config.
-	if bakedAttestationAndNRIPlugin {
+	// bare-metal: the measured image carries host attestation-api and
+	// nri-image-policy, so rendering them again would duplicate the measured
+	// pair and write a second plugin config.
+	if measuredImageCarriesAttestationAndPlugin {
 		helmArgs = append(helmArgs,
 			"--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.baked=true",
+			"--set", "nriImagePolicy.enabled=false",
 		)
 	}
 	return helmArgs, nil

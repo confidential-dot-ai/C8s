@@ -195,33 +195,6 @@ esac`
 	})
 }
 
-func TestDetectDistroExec(t *testing.T) {
-	t.Run("rke2 kubelet suffix selects rke2", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "kubectl", `/usr/bin/printf 'node-a\tv1.29.5+rke2r1\n'`)
-		got, err := detectDistro(context.Background())
-		if err != nil || got != "rke2" {
-			t.Fatalf("detectDistro = (%q, %v), want (rke2, nil)", got, err)
-		}
-	})
-	t.Run("vanilla kubelet selects k8s", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "kubectl", `/usr/bin/printf 'node-a\tv1.31.0\n'`)
-		got, err := detectDistro(context.Background())
-		if err != nil || got != "k8s" {
-			t.Fatalf("detectDistro = (%q, %v), want (k8s, nil)", got, err)
-		}
-	})
-	t.Run("kubectl failure surfaces its stderr", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "kubectl", "echo The connection to the server dead was refused >&2; exit 1")
-		_, err := detectDistro(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "The connection to the server dead was refused") {
-			t.Fatalf("want kubectl's own reason in the error, got %v", err)
-		}
-	})
-}
-
 func TestCraneDigestShellsOut(t *testing.T) {
 	t.Run("resolves the ref", func(t *testing.T) {
 		f := newFakeBin(t)
@@ -765,12 +738,12 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	}
 
 	// An unstamped build resolves digests at the fallback tag, and only for
-	// components the bare-metal mode actually renders. nri-image-policy is among
-	// them: the baked installer runs from that image, and its digest is what
-	// derives it into the seed the node's plugin admits it from.
+	// components the bare-metal mode actually renders. The measured image
+	// carries the attestation-api and the admission plugin, so neither image
+	// is resolved here.
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
+	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy")
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
 	// The CDS runs outside the cluster, so the install deploys no CDS image.
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds")
@@ -785,20 +758,14 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	if got := treeAt(t, tree, "attestationApi", "enabled"); got != false {
 		t.Errorf("attestationApi.enabled = %#v, want false (baked into the node image)", got)
 	}
-	// The plugin is baked, but its installer stays on (chart default enabled) —
-	// it is the only path that writes this release's CDS pins into the baked
-	// config, so bare-metal mode flips the installer's shape, not its presence.
-	if got := treeAt(t, tree, "nriImagePolicy", "baked"); got != true {
-		t.Errorf("nriImagePolicy.baked = %#v, want true", got)
+	if got := treeAt(t, tree, "nriImagePolicy", "enabled"); got != false {
+		t.Errorf("nriImagePolicy.enabled = %#v, want false (the measured image carries the plugin)", got)
 	}
 	if got := treeAt(t, tree, "attestationApi", "teeDevices", "sevGuest"); got != true {
 		t.Errorf("teeDevices.sevGuest = %#v, want true", got)
 	}
 	if got := treeAt(t, tree, "image", "digest"); got != testDigest {
 		t.Errorf("image.digest = %#v, want %s", got, testDigest)
-	}
-	if got := treeAt(t, tree, "nriImagePolicy", "distro"); got != "k8s" {
-		t.Errorf("nriImagePolicy.distro = %#v, want the detected k8s", got)
 	}
 
 	// The namespace applied before helm must admit privileged pods.
@@ -850,9 +817,7 @@ func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 	s := newInstallStubs(t, "", false)
-	// kubeletVersion first: the distro query also mentions .metadata.name.
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
-*metadata.name*) echo node-a ;;
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*metadata.name*) echo node-a ;;
 "get pods --all-namespaces -o json") /bin/cat '`+pods+`' ;;
 `))
 	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
@@ -860,6 +825,35 @@ func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 		t.Fatalf("want the router host-port conflict, got %v", err)
 	}
 	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// A node running a Kubernetes distribution's own containerd is refused: the
+// installer would write a config file that containerd never reads, leaving the
+// node's pods admitted by nothing.
+func TestInstallRefusesABundledContainerdNode(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
+`))
+	err := runInstall(t, "--cvm-mode=gke", "--wait=false", "--resolve-digests=false")
+	if err == nil || !strings.Contains(err.Error(), "node-a") ||
+		!strings.Contains(err.Error(), "nriImagePolicy.nodeAffinity.excludeLabels") {
+		t.Fatalf("want the bundled-containerd refusal naming the node and the override, got %v", err)
+	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// The measured worker image owns its node's containerd, so a release that
+// leaves the installer off takes whatever layout the node has.
+func TestInstallSkipsTheContainerdCheckWithoutTheInstaller(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
+`))
+	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--resolve-digests=false"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if lineIndex(s.f.calls(t), "helm upgrade") < 0 {
+		t.Error("install did not reach helm upgrade")
+	}
 }
 
 func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
@@ -998,11 +992,11 @@ upgrade)
 esac`)
 }
 
-// `c8s install -f -` pipes stdin into a real values file: the distro scan and
-// effectiveValues must read it, and helm must receive the piped bytes as a
+// `c8s install -f -` pipes stdin into a real values file: effectiveValues
+// must read it, and helm must receive the piped bytes as a
 // -f file ahead of the computed values.
 func TestInstallValuesFromStdin(t *testing.T) {
-	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\n" + pipedCDS(t)
+	payload := "volumed:\n  enabled: true\n" + pipedCDS(t)
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
@@ -1017,9 +1011,6 @@ func TestInstallValuesFromStdin(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 	calls := s.f.calls(t)
-
-	// The piped nriImagePolicy.distro owns the distro, so detection never runs.
-	mustNotContainPrefix(t, calls, "kubectl get nodes -o jsonpath")
 
 	// The piped volumed.enabled=true is visible to the digest resolver, which
 	// reads effectiveValues — volumed is pinned only when enabled there.
@@ -1268,6 +1259,40 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 		t.Errorf("stderr missing the forced-past warning:\n%s", stderr)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+// The image-policy preflight follows the plugin this release renders, not the
+// cvm mode: a bare-metal install that renders the plugin enforces a policy on
+// the cluster's pods and must read them, and one that leaves admission to the
+// measured image reads nothing.
+func TestPreflightImagePolicyFollowsTheRenderedPlugin(t *testing.T) {
+	const podList = "kubectl get pods --all-namespaces -o json"
+	for _, tc := range []struct {
+		name           string
+		enabled, reads bool
+	}{
+		{"the chart installs the plugin", true, true},
+		{"the measured image carries it", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeBin(t)
+			f.tool(t, "kubectl", `case "$*" in "get pods --all-namespaces -o json") echo '{"items":[]}' ;; esac`)
+			values := map[string]any{
+				"attestationApi": map[string]any{"cvmMode": "bare-metal"},
+				"nriImagePolicy": map[string]any{
+					"enabled": tc.enabled,
+					"policy":  map[string]any{"mode": policyModeFailClosed},
+				},
+			}
+			warn, err := preflightImagePolicy(context.Background(), &bytes.Buffer{}, values, nil, "c8s-system", false)
+			if err != nil || warn != "" {
+				t.Fatalf("preflight = (%q, %v), want no finding for a cluster running no pods", warn, err)
+			}
+			if got := slices.Contains(f.calls(t), podList); got != tc.reads {
+				t.Fatalf("read the cluster's pods = %v, want %v; calls %q", got, tc.reads, f.calls(t))
+			}
+		})
+	}
 }
 
 // audit mode creates the container anyway, so there is nothing to refuse — and

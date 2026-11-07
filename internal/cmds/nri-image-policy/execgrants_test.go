@@ -49,7 +49,7 @@ func TestExecGrantFollowsTheMeasuredBase(t *testing.T) {
 	argv := []string{"kube-apiserver"}
 	p := execsPlugin(t, argv)
 	ctr := &api.Container{Id: grantContainerID, PodSandboxId: "pod", Args: argv}
-	// A host-network pod, like RKE2's static pods: outside the mesh gates.
+	// A host-network pod, like the control plane's static pods: outside the mesh gates.
 	pod := makePod("default", "pod")
 
 	p.recordDigest(pod, ctr, pushDigestB, []allowlist.ObservedMount{})
@@ -146,24 +146,5 @@ func writeGrant(t *testing.T, dir, content string, mode os.FileMode) {
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// The node image grants execs to kube-apiserver alone.
-func TestNodeImageGrantsExecsToKubeAPIServerAlone(t *testing.T) {
-	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var holders []string
-	for name, workload := range cfg.Allowlist.Base.Workloads {
-		for _, container := range slices.Concat(workload.InitContainers, workload.Containers) {
-			if len(container.Execs) > 0 {
-				holders = append(holders, name)
-			}
-		}
-	}
-	if !slices.Equal(holders, []string{"kube-apiserver"}) {
-		t.Fatalf("workloads granted execs = %q, want kube-apiserver alone", holders)
 	}
 }

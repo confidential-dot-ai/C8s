@@ -1,6 +1,6 @@
-# RKE2 v1.36.4's rke2-cilium configuration for the node image, with the
-# kubelet's kubeconfig; no dynamic configuration, secrets, L7 proxy, health
-# listeners or metrics port; and a node pod range required.
+# The Cilium agent's configuration on a worker: the kubelet's kubeconfig; no
+# dynamic configuration, secrets, L7 proxy, health listeners or metrics port;
+# and a node pod range required.
 agent-not-ready-taint-key: "node.cilium.io/agent-not-ready"
 auto-direct-node-routes: "false"
 bpf-distributed-lru: "false"

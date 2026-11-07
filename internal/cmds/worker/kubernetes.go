@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // reservedRanges are the IPv4 blocks no pod or Service range may reach into:
@@ -71,13 +71,13 @@ func checkAPIServer(address string) error {
 	if !isCanonicalPort(port) {
 		return fmt.Errorf("%q must name a port 1..65535 without leading zeros", address)
 	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if err := launchconfig.ValidateRoutableIPv4(addr); err != nil {
+	if _, err := netip.ParseAddr(host); err == nil {
+		if err := cmdsutil.ValidateRoutableIPv4(host); err != nil {
 			return fmt.Errorf("%q host %w", address, err)
 		}
 		return nil
 	}
-	if err := launchconfig.ValidateHostname(host); err != nil {
+	if err := cmdsutil.ValidateHostname(host); err != nil {
 		return fmt.Errorf("%q host %w", address, err)
 	}
 	return nil

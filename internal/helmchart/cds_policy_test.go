@@ -1,7 +1,6 @@
 package helmchart
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -25,31 +24,10 @@ func TestChartComponentsCarryNoPolicyFlags(t *testing.T) {
 	}
 }
 
-// A node image's own installer carries no pins either: its launch staging
-// names the CDS, and the chart patches only the policy-measurement switch.
-func TestChartBakedPluginInstallerPatchesMeasurePoliciesAlone(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "attestationApi.cvmMode=bare-metal",
-		"--set", "nriImagePolicy.baked=true", "--set", "nriImagePolicy.measurePolicies=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	if !strings.Contains(script, "set-measure-policies") || !strings.Contains(script, "--measure-policies=true") {
-		t.Fatalf("the installer does not set the policy-measurement switch:\n%s", script)
-	}
-	for _, unwanted := range []string{"--cds-measurements", "--cds-rtmrs", baseCDSAddress} {
-		if strings.Contains(script, unwanted) {
-			t.Errorf("the installer carries %s: a measured config names its own CDS", unwanted)
-		}
-	}
-}
-
-// The ConfigMap the node reads its CDS from carries the address only where a
-// node reads one: a plugin the image bakes takes it from its own launch
-// staging.
-func TestChartHandsTheNodeItsCDSAddressOnlyWhereOneReadsIt(t *testing.T) {
+// The ConfigMap the node reads its CDS from carries the endpoint only where
+// the installer that copies it to a node renders: a plugin from a measured
+// image takes the endpoint from its own launch staging.
+func TestChartHandsTheNodeItsCDSAddressOnlyWhereOneCopiesIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
@@ -57,7 +35,11 @@ func TestChartHandsTheNodeItsCDSAddressOnlyWhereOneReadsIt(t *testing.T) {
 		address bool
 	}{
 		{name: "the chart installs the plugin", address: true},
-		{name: "the node image bakes it", args: []string{"--set", "attestationApi.cvmMode=bare-metal", "--set", "nriImagePolicy.baked=true"}},
+		{name: "the measured image carries the plugin", args: []string{
+			"--set-string", "attestationApi.cvmMode=bare-metal",
+			"--set", "attestationApi.enabled=false",
+			"--set", "nriImagePolicy.enabled=false",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)

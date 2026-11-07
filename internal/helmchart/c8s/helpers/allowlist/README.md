@@ -26,8 +26,8 @@ plus enabled router nginx. Nginx is independently versioned and derives from
 its own image values (`router.nginx.entrypoint`). A derived
 component without an entrypoint fails the render. `c8s.componentShapes` turns
 each such image into its allowlist containers; see
-[Component shapes](#component-shapes). Argv-pinned components and RKE2
-containerd-prep images are seeded through `c8s.argvPinnedEntries`.
+[Component shapes](#component-shapes). Argv-pinned components are seeded
+through `c8s.argvPinnedEntries`.
 With `node.baked=true`, the same derivation covers the operator/get-cert,
 CDS, mesh and nginx images rendered into the measured guest. The host stages
 this seed merged with signed workload entries for CDS; the image also admits
@@ -190,15 +190,14 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | `nriImagePolicy.enabled` | Install script (policy-measurement script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
-| NRI containerd-prep | NRI enabled, RKE2, and not baked | Containerd-prep script |
+| NRI installer | `nriImagePolicy.enabled` | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 | Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image
 references are digest-pinned.
 
-Install, uninstall, and containerd-prep entries explicitly
+Install and uninstall entries explicitly
 set `mounts: {policy: any}` because these platform scripts require host mounts,
 which exact workload mount rules do not support. Their command/args pins still
 apply. The pause and `plugin-ready` containers have no workload mounts and
