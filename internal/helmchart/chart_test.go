@@ -6082,33 +6082,24 @@ func TestChartRejectsAttestationApiOffOnManagedNodes(t *testing.T) {
 	}
 }
 
-func TestRouterProbesUseHTTPSHealthChecks(t *testing.T) {
+func TestRouterWaitsForCredentialsWithoutLivenessRestarts(t *testing.T) {
 	t.Parallel()
-	type namedProbe struct {
-		name  string
-		probe *corev1.Probe
-	}
 
 	base, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, base)
 	}
 	nginx := renderedDeploymentContainer(t, base, "c8s-router", "nginx")
-	for _, p := range []namedProbe{
-		{"readiness", nginx.ReadinessProbe},
-		{"liveness", nginx.LivenessProbe},
-	} {
-		if p.probe == nil || p.probe.HTTPGet == nil {
-			t.Fatalf("base shape: router %s probe should be httpGet; got %+v", p.name, p.probe)
-		}
-		if got := p.probe.HTTPGet.Scheme; got != corev1.URISchemeHTTPS {
-			t.Errorf("base shape: router %s probe scheme = %q, want HTTPS", p.name, got)
-		}
-		if got := p.probe.HTTPGet.Path; got != "/healthz" {
-			t.Errorf("base shape: router %s probe path = %q, want /healthz", p.name, got)
-		}
+	if nginx.LivenessProbe != nil {
+		t.Fatal("nginx liveness restarts the wrapper while credentials are absent")
 	}
-
+	p := nginx.ReadinessProbe
+	if p == nil || p.HTTPGet == nil {
+		t.Fatalf("router readiness should be httpGet; got %+v", p)
+	}
+	if p.HTTPGet.Scheme != corev1.URISchemeHTTPS || p.HTTPGet.Path != "/healthz" {
+		t.Fatalf("router readiness = %+v, want HTTPS /healthz", p.HTTPGet)
+	}
 }
 
 func TestChartSweepMountAdmission(t *testing.T) {
