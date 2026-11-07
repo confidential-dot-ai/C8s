@@ -1,6 +1,7 @@
 # Presets are applied at image build time.
 enable worker-stage.service
 enable containerd.service
+enable nri-image-policy.service
 enable kubelet.service
 enable attest-proxy.service
 enable volumed.path
