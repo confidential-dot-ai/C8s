@@ -44,14 +44,27 @@ func TestTheOperatorCLIStartsAClusterAndReadsItBack(t *testing.T) {
 		"--cds-pin", operator.cdsPin,
 		"--attestation-api-url", operator.apiURL,
 	)
-	lines := strings.Split(strings.TrimSpace(reported), "\n")
-	if len(lines) != len(c.replicas) {
-		t.Fatalf("cds ha status printed %d lines, want one per replica:\n%s", len(lines), reported)
-	}
-	for _, line := range lines {
-		if !strings.Contains(line, "serving=true") {
-			t.Errorf("cds ha status reports a replica that does not serve: %s", line)
+	// Each replica has one status line. An ALARM line may follow while the
+	// cluster settles after Genesis, such as a seat change not yet on every voter.
+	status := map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(reported), "\n") {
+		address, rest, _ := strings.Cut(line, " ")
+		if strings.HasPrefix(rest, "cluster=") {
+			status[address] = rest
 		}
+	}
+	for _, r := range c.replicas {
+		address := strings.TrimPrefix(r.base, "https://")
+		rest, ok := status[address]
+		switch {
+		case !ok:
+			t.Errorf("cds ha status has no status line for %s:\n%s", address, reported)
+		case !strings.Contains(rest, "serving=true"):
+			t.Errorf("cds ha status reports %s does not serve: %s", address, rest)
+		}
+	}
+	if len(status) != len(c.replicas) {
+		t.Errorf("cds ha status reported %d replicas, want %d:\n%s", len(status), len(c.replicas), reported)
 	}
 }
 
