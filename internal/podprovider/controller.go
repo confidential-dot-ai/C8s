@@ -107,6 +107,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if rec == nil {
 		rec, secret, err = r.ensureRecord(ctx, pod)
+		if errors.Is(err, errPodLimit) {
+			return r.unavailable(ctx, pod, "CapacityLimit", err)
+		}
 		if err != nil {
 			return r.unavailable(ctx, pod, "LaunchRefused", err)
 		}
@@ -131,6 +134,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
+	if problemCode(err) == "insufficient_capacity" {
+		return r.unverified(ctx, pod, rec, secret, "InsufficientCapacity", err)
 	}
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "CloudUnavailable", err)

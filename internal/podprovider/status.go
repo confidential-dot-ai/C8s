@@ -291,10 +291,12 @@ func filterStatuses(statuses []corev1.ContainerStatus, containers []corev1.Conta
 var statusMessages = map[string]string{
 	"PodCVMOptInRequired":      "The Pod lacks the Pod CVM opt-in annotation",
 	"LaunchRefused":            "The provider refused to launch the Pod",
+	"CapacityLimit":            "The provider's maxPods limit is reached",
 	"ProviderNodeUnavailable":  "The provider does not own its virtual node",
 	"FrozenPodChanged":         "The Pod specification differs from its launch",
 	"AllocationPending":        "Waiting for a Pod CVM allocation",
 	"CloudUnavailable":         "The cloud API is unavailable",
+	"InsufficientCapacity":     "No Cloud host has room for this Pod CVM size",
 	"InstanceStarting":         "The Pod CVM instance is starting",
 	"EndpointsPending":         "Waiting for the Pod CVM endpoints",
 	"AttestationUnavailable":   "The Pod CVM status attestation is unavailable",

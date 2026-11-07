@@ -20,6 +20,9 @@ import (
 // provider that wrote it.
 const recordVersion = 3
 
+// errPodLimit refuses a record that would exceed the provider's maxPods.
+var errPodLimit = errors.New("waiting for Pod CVM capacity")
+
 // record is the durable authority for one Pod UID's Cloud side effects: the
 // generic instance the embedded intent created for the pod, the pod frozen at
 // record time, and the assignment once it is signed. It deliberately has no
@@ -85,7 +88,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 		return nil, nil, err
 	}
 	if held >= r.cfg.MaxPods {
-		return nil, nil, errors.New("waiting for Pod CVM capacity")
+		return nil, nil, errPodLimit
 	}
 	peers := r.cfg.MeshPeers
 	if peers == nil {
