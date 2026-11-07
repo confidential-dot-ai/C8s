@@ -247,7 +247,7 @@ func requireGrantedCapabilities(beyond []string, grantDir, containerID string) e
 	}
 	for _, name := range beyond {
 		if allowlist.UndeclarableCapability(name) {
-			return fmt.Errorf("the container holds capability %s, which no entry may declare", name)
+			return fmt.Errorf("the container holds capability %s, which no entry may declare: drop it in securityContext.capabilities and do not add it", name)
 		}
 	}
 	granted, err := nriimagepolicy.ReadCapabilityGrant(grantDir, containerID)
@@ -276,7 +276,7 @@ func declaresAll(declared, beyond []string) bool {
 // the container can add to what the floor just allowed.
 func requireNoNewPrivileges(process *specs.Process) error {
 	if !process.NoNewPrivileges {
-		return errors.New("no_new_privs is not set")
+		return errors.New("no_new_privs is not set: set securityContext.allowPrivilegeEscalation: false")
 	}
 	return nil
 }
@@ -362,7 +362,7 @@ func joinedNamespace(linux *specs.Linux, kind specs.LinuxNamespaceType) string {
 // role: trusted policy reserves the number as both a UID and a GID.
 func requireUnreservedIdentity(user specs.User, floor nriimagepolicy.MeshFloor, role string) error {
 	if role == "" && user.UID == 0 {
-		return errors.New("a container outside every platform role runs as root")
+		return errors.New("a container outside every platform role runs as root: set securityContext.runAsUser to a nonzero uid")
 	}
 	for _, id := range append([]uint32{user.GID}, user.AdditionalGids...) {
 		if owner, reserved := floor.ReservedIDs[id]; reserved && owner.Name != role {

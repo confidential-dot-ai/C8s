@@ -272,7 +272,7 @@ func (p meshPolicy) requireRoleIdentity(ctr *api.Container, role string) error {
 func (p meshPolicy) requireUnreservedIdentity(ctr *api.Container, role string) error {
 	user := ctr.GetUser()
 	if user.GetUid() == 0 {
-		return errors.New("a gated pod container requires a nonzero uid")
+		return errors.New("a gated pod container requires a nonzero uid: set securityContext.runAsUser to a nonzero uid")
 	}
 	for _, id := range append([]uint32{user.GetUid(), user.GetGid()}, user.GetAdditionalGids()...) {
 		if owner, reserved := p.roleHolding(id); reserved && owner != role {

@@ -27,7 +27,7 @@ import (
 // the endpoint is given them.
 func rewriteWorkloadProbes(pod *corev1.Pod) []string {
 	var rendered []string
-	for _, c := range workloadProbeContainers(pod) {
+	for _, c := range authorContainers(pod) {
 		for _, probe := range []*corev1.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
 			target := meshProbeTarget(c, probe)
 			if target == "" {
@@ -45,7 +45,7 @@ func rewriteWorkloadProbes(pod *corev1.Pod) []string {
 
 // rejectRenderedProbeInput reserves the forwarding route for initial mutation.
 func rejectRenderedProbeInput(pod *corev1.Pod) error {
-	for _, c := range workloadProbeContainers(pod) {
+	for _, c := range authorContainers(pod) {
 		for _, probe := range []*corev1.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
 			if probesThePod(probe) && strings.HasPrefix(probe.HTTPGet.Path, workloadclaims.MeshProbePrefix) {
 				return fmt.Errorf("%w: container %q: probe path %q is reserved for generated probes; supply the application's HTTP path and port", errInvalidInjectionAnnotation, c.Name, probe.HTTPGet.Path)
@@ -56,7 +56,7 @@ func rejectRenderedProbeInput(pod *corev1.Pod) error {
 }
 
 func rejectUnforwardableProbes(pod *corev1.Pod) error {
-	for _, c := range workloadProbeContainers(pod) {
+	for _, c := range authorContainers(pod) {
 		if err := rejectContainerProbeShapes(c); err != nil {
 			return fmt.Errorf("%w: container %q: %v", errInvalidInjectionAnnotation, c.Name, err)
 		}
@@ -186,9 +186,9 @@ func isMeshPort(port int32) bool {
 		port == workloadclaims.MeshHealthPort
 }
 
-// workloadProbeContainers are the pod's own containers, in the order their
-// probes are rendered. A platform container's probes are the injector's.
-func workloadProbeContainers(pod *corev1.Pod) []*corev1.Container {
+// authorContainers are the pod's own containers, init then regular, without
+// the platform containers the injector owns.
+func authorContainers(pod *corev1.Pod) []*corev1.Container {
 	var containers []*corev1.Container
 	for _, list := range [][]corev1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
 		for i := range list {

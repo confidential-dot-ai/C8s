@@ -139,6 +139,18 @@ func TestFloorRefusals(t *testing.T) {
 			wants:  "capabilities BPF",
 		},
 		{
+			// containerd adds NET_RAW, SETUID and SETGID to a container that
+			// drops nothing (its defaultUnixCaps).
+			name: "a container that drops nothing",
+			bundle: func(s *specs.Spec) {
+				undropped := bundleCapabilities("NET_RAW", "SETUID", "SETGID")
+				s.Process.Capabilities.Bounding = append(s.Process.Capabilities.Bounding, undropped...)
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, undropped...)
+				s.Process.Capabilities.Permitted = append(s.Process.Capabilities.Permitted, undropped...)
+			},
+			wants: "capability NET_RAW, which no entry may declare: drop it in securityContext.capabilities and do not add it",
+		},
+		{
 			name:   "no capability sets at all",
 			bundle: func(s *specs.Spec) { s.Process.Capabilities = nil },
 			wants:  "no capability sets",
@@ -146,7 +158,7 @@ func TestFloorRefusals(t *testing.T) {
 		{
 			name:   "no_new_privs unset",
 			bundle: func(s *specs.Spec) { s.Process.NoNewPrivileges = false },
-			wants:  "no_new_privs is not set",
+			wants:  "no_new_privs is not set: set securityContext.allowPrivilegeEscalation: false",
 		},
 		{
 			name: "privileged: every device allowed",
@@ -248,7 +260,7 @@ func TestFloorRefusals(t *testing.T) {
 				s.Process.User.UID = 0
 				s.Process.User.GID = 0
 			},
-			wants: "runs as root",
+			wants: "runs as root: set securityContext.runAsUser to a nonzero uid",
 		},
 		{
 			name:   "a reserved gid",

@@ -12,6 +12,11 @@ After step 3, do only the steps you need; terms left undefined here are in
   private key you installed it with.
 - Every image in the pod template pinned by digest: a tag names whatever the
   registry serves at pull time.
+- Every container running as a nonzero UID, from its image's `USER` or its
+  `runAsUser`: a C8s node refuses a container that runs as root. The webhook
+  sets the rest of the node's privilege floor on a container that leaves it
+  unset, `allowPrivilegeEscalation: false` with `NET_RAW`, `SETGID` and
+  `SETUID` dropped ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 - `kubectl` on PATH, and `crane` for any container that sets no `command`:
   `derive` then reads that image's `Entrypoint` and `Cmd` from the registry.
 - `mkfs.erofs` for step 5, or `mkfs.ext4` with `--mutable`: `c8s volume create`
@@ -233,9 +238,14 @@ is evidence a client can check:
 
 ## 8. Confirm, or find out why not
 
-`kubectl -n <NAMESPACE> get pods` shows the pod running. A pod that runs but
-never gets its secret or volume was refused by CDS, and only CDS can say why —
-the container set it compared is invisible to the pod:
+`kubectl -n <NAMESPACE> get pods` shows the pod running. A pod that never
+appears was refused at admission: `kubectl -n <NAMESPACE> describe rs` says why.
+A container stuck in `CreateContainerError` or `RunContainerError` was refused
+by its node: `kubectl -n <NAMESPACE> describe pod <POD>` shows the refusal, and
+one from the privilege floor names the `securityContext` field to set.
+
+A pod that runs but never gets its secret or volume was refused by CDS, and only
+CDS can say why — the container set it compared is invisible to the pod:
 
 ```sh
 c8s secrets explain --sandbox <SANDBOX_ID> $PIN $KEY
