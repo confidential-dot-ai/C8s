@@ -127,7 +127,7 @@ func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 		change func(*AttestHandler, *types.AttestRequestBody)
 	}{
 		{"node pins are not Pod pins", func(h *AttestHandler, r *types.AttestRequestBody) {
-			h.NodeImages = certifying(h.PodImages...)
+			h.Images = h.PodImages
 			h.PodImages = nil
 		}},
 		{"mixed token", func(h *AttestHandler, r *types.AttestRequestBody) { r.SandboxToken = json.RawMessage(`{}`) }},
@@ -218,23 +218,62 @@ func TestPodAttestProfileRefusesEachConfusion(t *testing.T) {
 	}
 }
 
-// anyChallenge redeems a challenge of any length. CDS's own store mints the
-// 32 bytes the claims binding requires, so nothing else reaches it.
-type anyChallenge struct{}
-
-func (anyChallenge) Create() ([32]byte, error) { return [32]byte{}, nil }
-func (anyChallenge) Consume([]byte) bool       { return true }
-
-// Claims no quote can bind are a denied CSR, not a malformed request: the
-// profile is authorized and only the binding fails.
+// Claims no quote binds get no leaf. The challenge store mints only 32-byte
+// challenges, so a challenge the claims binding cannot use (the binding needs
+// 32 bytes) is refused as unissued before anything is verified; under an
+// issued challenge, a quote bound to other claims fails the report-data check.
 func TestPodAttestRefusesClaimsThatDoNotBind(t *testing.T) {
-	p := podTestClaims(t, wlDigestA)
-	h, _ := podTestHandler(t, p)
-	h.Challenges = anyChallenge{}
-	req := podRequest(t, h, p)
-	req.Challenge = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 16))
+	t.Run("a challenge the binding cannot use", func(t *testing.T) {
+		p := podTestClaims(t, wlDigestA)
+		h, stub := podTestHandler(t, p)
+		req := podRequest(t, h, p)
+		req.Challenge = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 16))
 
-	wantRefusal(t, postPodRequest(t, h, req), http.StatusForbidden, types.ErrorCodeCSRDenied)
+		w := postPodRequest(t, h, req)
+		wantRefusal(t, w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
+		if got := len(stub.VerifyRequests()); got != 0 {
+			t.Fatalf("/verify called %d times, want 0", got)
+		}
+	})
+	t.Run("a quote bound to other claims", func(t *testing.T) {
+		p := podTestClaims(t, wlDigestA)
+		h, stub := podTestHandler(t, p)
+		quoted := podRequest(t, h, p)
+		sent := p
+		other := sha256.Sum256([]byte("claims the quote does not bind"))
+		sent.ClientDocumentDigest = hex.EncodeToString(other[:])
+		req := quoted
+		req.PodClaims, _ = sent.Canonical()
+		csr, err := certutil.ParseCSRPEM([]byte(req.CSR))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce, _ := base64.StdEncoding.DecodeString(req.Challenge)
+		if len(nonce) != 32 {
+			t.Fatalf("issued challenge is %d bytes, want 32", len(nonce))
+		}
+		expected, err := workloadclaims.PodReportData(csr.PublicKey, nonce, req.PodClaims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inQuote, err := workloadclaims.PodReportData(csr.PublicKey, nonce, quoted.PodClaims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(expected, inQuote) {
+			t.Fatal("the claims are not bound into the report data")
+		}
+		v := podTestVerdict(t, p)
+		v.ReportDataMatch = teetypes.Ptr(false)
+		stub.SetVerdict(v)
+
+		w := postPodRequest(t, h, req)
+		wantRefusal(t, w, http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
+		requests := stub.VerifyRequests()
+		if len(requests) != 1 || requests[0].Params == nil || !bytes.Equal(requests[0].Params.ExpectedReportData, expected) {
+			t.Fatal("the verifier was not held to the report data of the claims sent")
+		}
+	})
 }
 
 // A pod whose launch measurement is outside PodImages is refused on its

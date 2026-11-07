@@ -234,8 +234,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	var floor struct {
 		Allowlist struct {
 			Pull struct {
-				URL      string                  `yaml:"url"`
-				PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
+				URL string `yaml:"url"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -257,8 +256,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("node-ip = %q, %v; want this host's primary address", got, err)
 	}
 	pull := floor.Allowlist.Pull
-	if pull.URL != "https://cds.acme.example:8443" || pull.PinFloor != doc.CDS.PinFloor {
-		t.Errorf("pull = %+v, want the document's CDS and pin floor %d", pull, doc.CDS.PinFloor)
+	if pull.URL != "https://cds.acme.example:8443" {
+		t.Errorf("pull = %+v, want the document's CDS", pull)
 	}
 	roles := floor.Mesh.Roles
 	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == nriimagepolicy.CredentialRole }); i < 0 || roles[i].Port != 8443 {

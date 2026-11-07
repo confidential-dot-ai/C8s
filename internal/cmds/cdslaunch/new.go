@@ -63,7 +63,6 @@ func write(opts options) error {
 		ClusterCIDRs:    append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...),
 		LeafDNSNames:    opts.leafDNSNames,
 		LeafDNSPatterns: opts.leafDNSPatterns,
-		HA:              opts.ha,
 		KMS:             kms,
 		ManifestPath:    opts.manifest,
 		Family:          family,

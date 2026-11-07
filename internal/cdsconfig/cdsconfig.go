@@ -4,7 +4,6 @@
 package cdsconfig
 
 import (
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"net"
@@ -30,8 +29,7 @@ type Config struct {
 	// OperatorKeys authorize policy writes.
 	OperatorKeys operatorauth.KeyBundle
 	Workloads    *allowlist.Allowlist
-	// Nodes pins the node launch identities CDS admits and serves. A replica
-	// set's may be empty, and its Genesis then names the first set.
+	// Nodes pins the node launch identities CDS admits and serves.
 	Nodes refvalues.ReferenceValues
 	// PodImages authorize quote-bound Pod mesh issuance only, never node callbacks.
 	PodImages []remote.ImagePin
@@ -41,8 +39,6 @@ type Config struct {
 	// compiled from the document's leaf names and patterns. Empty admits no
 	// DNS SAN, as issuer.CSRPolicy defines.
 	DNSSANPatterns []*regexp.Regexp
-	// HA is the replica set this CDS belongs to; nil runs the singleton.
-	HA *HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 }
@@ -60,7 +56,6 @@ type wire struct {
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
-	HA                 *haWire  `yaml:"ha,omitempty"`
 	KMS                *kmsWire `yaml:"kms,omitempty"`
 }
 
@@ -75,11 +70,11 @@ func Parse(data []byte) (*Config, error) {
 }
 
 func (w wire) parse() (*Config, error) {
-	if err := checkSchemaVersion(w.SchemaVersion); err != nil {
-		return nil, err
+	if w.SchemaVersion != SchemaVersion {
+		return nil, fmt.Errorf("schemaVersion must be %s", SchemaVersion)
 	}
-	if err := checkClusterID(w.ClusterID); err != nil {
-		return nil, err
+	if len(validation.IsDNS1123Label(w.ClusterID)) != 0 {
+		return nil, fmt.Errorf("clusterID must be an RFC1123 label")
 	}
 	operatorKeys, err := operatorauth.ParseKeyBundle([]byte(w.OperatorPublicKeys))
 	if err != nil {
@@ -109,12 +104,8 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	ha, err := w.HA.parse()
-	if err != nil {
-		return nil, err
-	}
-	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
-		return nil, err
+	if nodes.Empty() {
+		return nil, errors.New("nodes: CDS certifies only the nodes its launch file names, and this one names none")
 	}
 	kms, err := w.KMS.parse()
 	if err != nil {
@@ -131,7 +122,6 @@ func (w wire) parse() (*Config, error) {
 		PodImages:      podImages,
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
-		HA:             ha,
 		KMS:            kms,
 	}
 	if err := cfg.ValidatePodAuthorities(); err != nil {
@@ -150,72 +140,6 @@ func parseNodes(document string) (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
 	}
 	return nodes, nil
-}
-
-// checkSingleCDSNamesNodes requires a single CDS to name its nodes: it
-// certifies the launch file's set for life, where a replica set's Genesis
-// may name the first.
-func checkSingleCDSNamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
-	if runsASingleCDS(ha) && nodes.Empty() {
-		return errors.New("nodes: a single CDS certifies only the nodes its launch file names, and this one names none")
-	}
-	return nil
-}
-
-// Cluster is what a client takes from the launch file it pins its CDS to.
-// A file naming a single CDS leaves the other fields empty.
-type Cluster struct {
-	ClusterID    string
-	OperatorKeys []*ecdsa.PublicKey
-	Replicated   bool
-}
-
-// ReadCluster reads those fields out of launchFile and nothing else, so a
-// setting only CDS acts on cannot keep a client from starting.
-func ReadCluster(launchFile []byte) (Cluster, error) {
-	var document wire
-	if err := yamlutil.Decode(launchFile, &document); err != nil {
-		return Cluster{}, err
-	}
-	if err := checkSchemaVersion(document.SchemaVersion); err != nil {
-		return Cluster{}, err
-	}
-	if document.HA == nil {
-		return Cluster{}, nil
-	}
-	if err := checkVoters(document.HA.Voters); err != nil {
-		return Cluster{}, err
-	}
-	if err := checkClusterID(document.ClusterID); err != nil {
-		return Cluster{}, err
-	}
-	keys, err := operatorauth.ParseKeyBundle([]byte(document.OperatorPublicKeys))
-	if err != nil {
-		return Cluster{}, fmt.Errorf("operatorPublicKeys: %w", err)
-	}
-	if len(keys.Keys()) == 0 {
-		return Cluster{}, errors.New("operatorPublicKeys names no key, and every decree of this cluster is signed under one")
-	}
-	return Cluster{
-		ClusterID:    document.ClusterID,
-		OperatorKeys: keys.Keys(),
-		Replicated:   true,
-	}, nil
-}
-
-func checkSchemaVersion(version string) error {
-	if version != SchemaVersion {
-		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
-	}
-	return nil
-}
-
-// checkClusterID: a cluster's own names are built from its id.
-func checkClusterID(id string) error {
-	if len(validation.IsDNS1123Label(id)) != 0 {
-		return fmt.Errorf("clusterID must be an RFC1123 label")
-	}
-	return nil
 }
 
 // parseNodeCIDRs builds the inventory bound CDS dials within. Each entry must

@@ -163,13 +163,6 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	store := newPolicyStore(cfg.Allowlist.Base)
 
-	// Every CDS client of this node is built on one pin source, so the
-	// source comes before the first of them.
-	cdsPins, decrees, err := cdsPinSource(cfg, logger)
-	if err != nil {
-		return err
-	}
-
 	var (
 		wlClient      allowlistclient.Client
 		pull          *allowlistPull
@@ -177,7 +170,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	)
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver)
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.Mesh.Resolver)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
@@ -196,7 +189,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 	var podSecretsClient *http.Client
 	if cfg.PullEnabled() && cfg.podRole() {
-		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
 			return fmt.Errorf("create Pod secrets client: %w", err)
 		}
 	}
@@ -218,10 +211,9 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	target := policyTargetFor(cfg, plugin)
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
-	if err := plugin.prepareCDSPins(cdsPins); err != nil {
+	if err := plugin.prepareCDSPins(); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
-	holdContainersForFirstDecree(plugin, decrees)
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
 	}
@@ -264,16 +256,11 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, cdsPins, plugin, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
 
-	// INVARIANT: after NRI registration started. A CDS that drops packets
-	// holds the look for its whole budget, and containerd kills a plugin
-	// that misses its registration timeout.
-	plugin.serveAfterFirstDecreeLook(decrees)
-	pollForNewerDecrees(ctx, decrees, logger)
 	if cfg.Worker {
 		workers.Add(1)
 		go func() {
@@ -355,87 +342,33 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	return nil
 }
 
-// decreePollInterval spaces the looks no CDS connection prompted.
-const decreePollInterval = time.Minute
-
-// cdsPinSource is the set this node holds its CDS to, and the decree source
-// behind it. A node that reaches no CDS at all has neither.
-func cdsPinSource(cfg *config, logger *slog.Logger) (armtls.PinSource, *followedPins, error) {
-	if !cfg.PullEnabled() {
-		return nil, nil, nil
-	}
-	return cfg.Allowlist.Pull.cdsPinSource(logger)
-}
-
-// holdContainersForFirstDecree refuses every container the node's CDS pins
-// would be mounted into: a rebooted node's launch pins may name an image the
-// operator has since retired.
-func holdContainersForFirstDecree(p *plugin, decrees *followedPins) {
-	if decrees == nil {
-		return
-	}
-	decrees.mountInto(p.cdsPins)
-	if p.cdsPins != "" {
-		p.awaitingDecree.Store(true)
-	}
-}
-
-// serveAfterFirstDecreeLook hands CDS pins out whether or not the look
-// succeeded: holding CDS to the launch document's pins is worth an error
-// rather than a node that admits nothing.
-func (p *plugin) serveAfterFirstDecreeLook(decrees *followedPins) {
-	if decrees == nil {
-		return
-	}
-	defer p.awaitingDecree.Store(false)
-	if err := decrees.Refresh(); err != nil {
-		p.logger.Error("no CDS pin decree at start: holding CDS to the launch document's pins until a look succeeds", "error", err)
-	}
-}
-
-// pollForNewerDecrees moves a node talking to no CDS at all.
-func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slog.Logger) {
-	if decrees == nil {
-		return
-	}
-	go func() {
-		for sleepCtx(ctx, decreePollInterval) {
-			if err := decrees.Refresh(); err != nil {
-				logger.Warn("could not look for a newer CDS pin decree", "error", err)
-			}
-		}
-	}()
-}
-
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
-	return cdsHTTPClientWithLeaf(cfg, pins, clusterDNS, nil)
-}
-
-// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
-// set, as its TLS client certificate.
-func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
-	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
-	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
-		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
-		if err != nil {
-			return nil, err
-		}
-		built.DialContext = dial
-		if clientCert != nil {
-			built.TLSClientConfig.GetClientCertificate = clientCert
-		}
-		return built, nil
-	})
+func allowlistPullHTTPClient(cfg pullConfig, clusterDNS netip.Addr) (*http.Client, error) {
+	set, err := cfg.policySet()
+	if err != nil {
+		return nil, err
+	}
+	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
-	return &http.Client{
-		Timeout:   cfg.Timeout,
-		Transport: transport,
-	}, nil
+	// armtls.HTTPClient always builds an *http.Transport.
+	client.Transport.(*http.Transport).DialContext = clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
+	client.Timeout = cfg.Timeout
+	return client, nil
+}
+
+// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert as
+// its TLS client certificate.
+func cdsHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
+	client, err := allowlistPullHTTPClient(cfg, clusterDNS)
+	if err != nil {
+		return nil, err
+	}
+	client.Transport.(*http.Transport).TLSClientConfig.GetClientCertificate = clientCert
+	return client, nil
 }
 
 type healthServerConfig struct {
@@ -588,7 +521,11 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
+	set, err := cfg.Allowlist.Pull.policySet()
+	if err != nil {
+		return err
+	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	var journal string
 	if cfg.WorkloadClaims.SocketDir != "" {
@@ -599,14 +536,14 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, cdsPins, journal)
+		attestationApiURL, armtls.Pins(set.Policy()), journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
 // Without pull config there is no CDS in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -625,7 +562,7 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
 	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, cdsPins, resolver, s)
+		return startSandboxDigests(ctx, logger, cfg, resolver, s)
 	})
 	return nil
 }

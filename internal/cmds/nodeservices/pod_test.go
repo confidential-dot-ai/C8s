@@ -129,7 +129,7 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	root := preparePodRoot(t)
 	withExemption := strings.Replace(podFloor, "  enforce_existing: true\n",
 		"  enforce_existing: true\n  exempt_repositories:\n    kube-system: [mcr.microsoft.com/oss/kubernetes/]\n", 1)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    measure_policies: false", 1)))
 	assigned := assignedPod(t, podManifest)
 	runtime, err := RenderPodRuntime(root, assigned)
 	if err != nil {
@@ -152,9 +152,6 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	pull, ok := a["pull"].(map[string]any)
 	if !ok || pull["url"] != cmdsutil.CDSURL(assigned.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
 		t.Fatalf("pod CDS pull = %v", pull)
-	}
-	if floor := publishedPinFloor(t, pull); floor != assigned.CDS.PinFloor {
-		t.Fatalf("pod CDS pin floor = %d, want signed floor %d", floor, assigned.CDS.PinFloor)
 	}
 	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
 		if _, exists := pull[legacy]; exists {

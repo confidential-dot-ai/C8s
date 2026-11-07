@@ -265,7 +265,7 @@ func TestAttest_SandboxWorkload_NoTokenSkipsGate(t *testing.T) {
 func TestAttest_SandboxWorkload_UnpinnedNodeImagesDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	h.NodeImages = certifying()
+	h.Images = nil
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA}}, key: signer.PublicKey()}
 

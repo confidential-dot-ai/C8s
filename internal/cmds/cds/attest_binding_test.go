@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -88,7 +89,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	h.SandboxBindings = binder
 	// Pin a node image the stub does not report, so the request fails after
 	// the sandbox token has been verified.
-	h.NodeImages = certifying(imagePin(t, "node-next", otherLaunchDigest))
+	h.Images = []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)}
 	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
@@ -103,7 +104,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10).Local()
+	ledger := sandboxledger.New(time.Hour, 10)
 	h.SandboxBindings = ledger
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
@@ -129,10 +130,9 @@ func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 func TestAttest_SigningFailureDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10).Local()
+	ledger := sandboxledger.New(time.Hour, 10)
 	h.SandboxBindings = ledger
-	signing, _ := h.MeshCA.Current()
-	signing.CA.Key = nil
+	h.MeshCA.Current().CA.Key = nil
 	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))

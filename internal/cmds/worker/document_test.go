@@ -134,7 +134,6 @@ func testDocument(t *testing.T) Document {
 		CDS: cmdsutil.CDS{
 			Address:      "cds.acme.example:8443",
 			Measurements: testCDSPin(t, cdsConfig(t, "192.168.0.0/16")),
-			PinFloor:     1,
 		},
 		TLSSAN: "c8s.acme.example",
 		Router: &nodeservices.Router{Hostnames: []string{"api.acme.example"}, ACMEEmail: "ops@acme.example"},

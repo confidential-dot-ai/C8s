@@ -53,7 +53,6 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 		CDS: cmdsutil.CDS{
 			Address:      "cds.example.org:8443",
 			Measurements: testCDSPin(t, teetypes.FamilySNP, 2),
-			PinFloor:     9,
 		},
 	}
 	if platform == "tdx" {

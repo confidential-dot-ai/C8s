@@ -78,12 +78,11 @@ its root:
 - `bootstrap-token`: the Kubernetes bootstrap token the kubelet requests its
   client certificate with, outside the measurement.
 
-`c8s worker new` drafts a document, and `c8s cds ha decree node-images` admits
-it under the worker image's measurements, which is what lets CDS certify a
-worker booted on it. There is no diskless boot: a missing or unbound document
+`c8s worker new` drafts a document. CDS certifies a worker booted on it only
+under a node image entry that binds the document's digest. There is no diskless boot: a missing or unbound document
 fails staging, and `worker-stage.service` powers the VM off.
 
-Every field, the admission decree and the boot-time staging order are
+Every field, the admission rule and the boot-time staging order are
 [docs/launch-configuration.md](../../docs/launch-configuration.md). Each boot
 registers the worker under a node name derived from its primary IPv4 address.
 

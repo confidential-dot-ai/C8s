@@ -11,7 +11,7 @@ import (
 // Its contents matter only to a test that also reports the matching binding.
 const CDSLaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
 
-// NextCDSImage is the image a CDS pin decree moves a test cluster to.
+// NextCDSImage is a CDS image other than the one a test cluster pins.
 const NextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
 // CDSPinDocument renders the only pin shape a CDS client accepts: a refvalues

@@ -16,19 +16,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-// nodeCDSPins is the pin source Run builds from the node's configuration.
-func nodeCDSPins(t *testing.T, p *plugin) armtls.PinSource {
-	t.Helper()
-	pins, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger())
-	if err != nil {
-		t.Fatalf("the node's CDS pins: %v", err)
-	}
-	return pins
-}
 
 // A node hands its CDS pin on whole, so every injected client holds CDS to the
 // same launch file the node does.
@@ -41,7 +30,7 @@ func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
@@ -73,7 +62,7 @@ func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: rootOnly}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	staged, err := os.Stat(p.cdsPins)
@@ -96,7 +85,7 @@ func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	rendered, err := refvalues.Load(p.cdsPins)
@@ -112,7 +101,7 @@ func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
 // nothing to render and nothing to mount.
 func TestPrepareCDSPinsEmptyWithoutInventory(t *testing.T) {
 	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}}})
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	if p.cdsPins != "" {
@@ -132,7 +121,7 @@ func TestPrepareCDSPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPinFile(t, unbound)}},
 	})
 
-	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if err := p.prepareCDSPins(); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("prepareCDSPins = %v, want a launch-binding refusal", err)
 	}
 }
@@ -147,7 +136,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -228,7 +217,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
 	})
 	p.policy = newPolicyStore(base)
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -283,8 +272,8 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 // policy.
 func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "pins no image") {
-		t.Fatalf("the node's CDS pins = %v, want the unpinned-CDS refusal", err)
+	if err := p.prepareCDSPins(); err == nil || !strings.Contains(err.Error(), "pins no image") {
+		t.Fatalf("prepareCDSPins() = %v, want the unpinned-CDS refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -346,7 +335,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	p.policy = newPolicyStore(base)
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.inventory = newAdmissionInventory(t.TempDir())
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{

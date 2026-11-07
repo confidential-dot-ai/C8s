@@ -19,14 +19,6 @@ func TestInEffectWaitsOutTheDelay(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	store.SetNodeDelay(30 * time.Second)
-	t0 := time.Now().Add(-25 * time.Second)
-	apply := func(cmd Command, at time.Time) {
-		t.Helper()
-		cmd.AtMS = at.UnixMilli()
-		if err := store.Apply(cmd).Err(sentinels); err != nil {
-			t.Fatalf("%s: %v", cmd.Op, err)
-		}
-	}
 	doc := func(digest string) *pkgallowlist.Allowlist {
 		al, err := pkgallowlist.ParseJSON(canonicalDoc(t, map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digest))}))
 		if err != nil {
@@ -43,33 +35,29 @@ func TestInEffectWaitsOutTheDelay(t *testing.T) {
 		return objectDigest(body)
 	}
 
-	apply(Command{Op: OpStartJournal}, t0)
-	seed := nodes(t0)
-	apply(Command{Op: OpReplaceAll, Allowlist: doc(digestA)}, t0.Add(time.Second))
-	apply(Command{Op: OpReplaceAll, Allowlist: doc(digestB)}, t0.Add(11*time.Second))
+	if err := store.StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	seed := nodes(time.Now())
+	for _, digest := range []string{digestA, digestB} {
+		if err := store.ReplaceAll(doc(digest), OperatorWrite{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	written := time.Now()
 	newest, _, err := store.Served()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct {
-		name  string
-		at    time.Duration
-		want  string
-		depth int
-	}{
-		{"before the newest write takes effect", 40 * time.Second, seed, 3},
-		{"once the newest write takes effect", 41 * time.Second, objectDigest(newest), 1},
-	} {
-		if got := nodes(t0.Add(tc.at)); got != tc.want {
-			t.Errorf("%s: nodes served %s, want %s", tc.name, got, tc.want)
-		}
-		if depth, err := store.InEffectDepth(t0.Add(tc.at)); err != nil || depth != tc.depth {
-			t.Errorf("%s: InEffectDepth = %d, %v, want %d", tc.name, depth, err, tc.depth)
-		}
+	if got := nodes(written); got != seed {
+		t.Errorf("before the newest write takes effect: nodes served %s, want the seed %s", got, seed)
+	}
+	if got := nodes(written.Add(31 * time.Second)); got != objectDigest(newest) {
+		t.Errorf("once the newest write takes effect: nodes served %s, want %s", got, objectDigest(newest))
 	}
 
-	h := Handler{Allowlist: store.Local()}
+	h := Handler{Store: &store}
 	for query, want := range map[string]string{"": objectDigest(newest), "?" + pkgallowlist.NodeQuery: seed} {
 		w := httptest.NewRecorder()
 		h.HandleList(w, httptest.NewRequest(http.MethodGet, "/allowlist"+query, nil))

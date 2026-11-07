@@ -4,8 +4,7 @@ CDS — the Certificate Distribution Service, the VM outside the cluster that
 holds C8s policy and signs every workload certificate — does not run on the
 cloud that runs the cluster. This page covers where it runs instead, the flows
 it needs, and where the node pins come from on AKS and GKE. What CDS does for a
-cluster is [operator.md](operator.md); running several of them is
-[cds-ha.md](cds-ha.md).
+cluster is [operator.md](operator.md).
 
 ## Where it runs
 
@@ -33,7 +32,6 @@ cds-pin.json` carries into the release, and nothing else of it.
 | The operator's workstation | CDS | the `--cds-address` port | `c8s install`, allowlist, route and secret writes, `c8s cds verify` |
 | CDS, every confidential node, and the operator's workstation | `kdsintf.amd.com`, `api.trustedservices.intel.com` | TCP 443 | the endorsement certificate for evidence that carries none, and revocation lists |
 | CDS | the KMS of `c8s cds config new --kms-url`, when set | that URL's port | Pod CVM secret release ([pod-secrets.md](pod-secrets.md)) |
-| Each CDS replica | the other replicas | TCP 8444 | the replicated log, HA only ([cds-ha.md](cds-ha.md#addresses)) |
 
 CDS dialing a node on 1019 is the flow a cloud network breaks. Each sandbox
 token names the node's own address and CDS dials that address, so the CDS host
@@ -187,6 +185,4 @@ What that pin is worth, and what it costs:
   cluster to what that node reported and to no build you can audit.
 - A provider change that moves the digest stops issuance on the nodes that
   carry the new one, and re-pinning costs a new configuration, a new pin, a
-  CDS relaunch and `c8s install --cds-pin` again — for a replicated CDS too,
-  whose later `node-images` decrees take only entries that bind a launch
-  ([cds-ha.md](cds-ha.md#the-node-images-the-cluster-certifies)).
+  CDS relaunch and `c8s install --cds-pin` again.

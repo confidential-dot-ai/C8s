@@ -545,13 +545,11 @@ Bare-metal nodes use their measured, baked attestation service.
 C8s is built around a strong threat model, and we would rather list the holes
 than let you discover them:
 
-- **CDS state lives in memory.** A singleton restart mints a new mesh CA
-  and workloads re-bootstrap. An HA CDS retains its CA and state across
-  replica replacement while a serving quorum survives.
+- **CDS state lives in memory.** A restart mints a new mesh CA and workloads
+  re-bootstrap.
 
 - **Secrets and volume keys live only in CDS memory.** There is no persistent
-  or external key store: a singleton restart, or loss of all HA replicas'
-  in-memory state, destroys every secret and volume key. Every workload
+  or external key store: a CDS restart destroys every secret and volume key. Every workload
   holding one must be rolled, and volume keys come back only
   from the operator's escrow file. Rotation, versioning and delete are absent
   — a replaced value is gone, and pods keep what they read at startup.

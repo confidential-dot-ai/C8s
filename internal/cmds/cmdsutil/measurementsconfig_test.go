@@ -203,25 +203,25 @@ func writeCDSPins(t *testing.T, document string) string {
 func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
 	path := writeCDSPins(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
 
-	pins, fromNode, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{})
+	policy, fromNode, err := ResolveCDSPins(path, ImagePolicySource{})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
-	if images := pins.Current().Images; len(images) != 1 || len(images[0].LaunchFile) == 0 {
-		t.Fatalf("node policy = %+v, want the launch-bound image", images)
+	if len(policy.Images) != 1 || len(policy.Images[0].LaunchFile) == 0 {
+		t.Fatalf("node policy = %+v, want the launch-bound image", policy.Images)
 	}
 	if !fromNode {
 		t.Fatal("the node policy did not decide")
 	}
 
 	// One exact message, so the client is told which argument to drop.
-	_, _, err = ResolveCDSPins(t.Context(), path, ImagePolicySource{File: "/tmp/other.json"})
+	_, _, err = ResolveCDSPins(path, ImagePolicySource{File: "/tmp/other.json"})
 	want := "this node provides " + path + "; remove --image-policy-file"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 
-	_, _, err = ResolveCDSPins(t.Context(), path, ImagePolicySource{JSON: "{}"})
+	_, _, err = ResolveCDSPins(path, ImagePolicySource{JSON: "{}"})
 	if err == nil || !strings.Contains(err.Error(), "--image-policy-json") {
 		t.Fatalf("error = %v, want it to name --image-policy-json", err)
 	}
@@ -237,7 +237,7 @@ func TestResolveCDSPinsRequiresALaunchBinding(t *testing.T) {
 		"empty node document": writeCDSPins(t, `{"schema_version":"1","tee":"sev-snp","measurements":[]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{}); err == nil {
+			if _, _, err := ResolveCDSPins(path, ImagePolicySource{}); err == nil {
 				t.Fatal("a pin that is not one CDS VM's identity was accepted")
 			}
 		})
@@ -247,12 +247,12 @@ func TestResolveCDSPinsRequiresALaunchBinding(t *testing.T) {
 // Without the mount the caller's own document applies: the CLI and a
 // chart-rendered platform client have no enforcer to read.
 func TestResolveCDSPinsFallsBackToTheArgument(t *testing.T) {
-	pins, fromNode, err := ResolveCDSPins(t.Context(), filepath.Join(t.TempDir(), "absent.json"), ImagePolicySource{JSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)})
+	policy, fromNode, err := ResolveCDSPins(filepath.Join(t.TempDir(), "absent.json"), ImagePolicySource{JSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
-	if images := pins.Current().Images; len(images) != 1 {
-		t.Fatalf("policy images = %+v, want the supplied document's", images)
+	if len(policy.Images) != 1 {
+		t.Fatalf("policy images = %+v, want the supplied document's", policy.Images)
 	}
 	if fromNode {
 		t.Fatal("a node that mounts no policy decided")
@@ -290,11 +290,11 @@ func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
 			previous := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 			t.Cleanup(func() { slog.SetDefault(previous) })
-			pins, err := ClientCDSPins(t.Context(), tc.nodePolicy, tc.source)
+			pins, err := ClientCDSPins(tc.nodePolicy, tc.source)
 			if err != nil {
 				t.Fatalf("ClientCDSPins: %v", err)
 			}
-			if images := pins.Current().Images; len(images) != 1 {
+			if images := pins.Images; len(images) != 1 {
 				t.Fatalf("policy images = %+v, want the one pinned image", images)
 			}
 			line := logged.String()
@@ -370,7 +370,7 @@ func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 		t.Skip("root reads through a 0000 directory")
 	}
 
-	_, _, err := ResolveCDSPins(t.Context(), filepath.Join(dir, "cds-pins.json"), ImagePolicySource{})
+	_, _, err := ResolveCDSPins(filepath.Join(dir, "cds-pins.json"), ImagePolicySource{})
 	if err == nil {
 		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
 	}
