@@ -166,6 +166,36 @@ image that exits, the secret collected in that window and read when it restarts.
 The cost is that a pod which ever ran an image outside its entry never receives
 a secret, which is the correct direction for a release decision.
 
+## Pod CVMs (proof of concept)
+
+A pod CVM has no node inventory and no sandbox token, so the path above does
+not apply to it. Instead its guest broker asks CDS directly:
+
+1. The signed pod manifest names what the pod reads:
+   `confidential.ai/pod-secrets: data-key=/users/alice/data` (comma-separated,
+   at most 8), and declares a memory `emptyDir` named `c8s-pod-secrets`.
+   Workload containers that need the values mount it read-only.
+2. After each admission the broker takes a challenge from `POST /secrets`,
+   quotes `SHA-384("c8s-pod-secret/v1" 0x00 || SHA-384(response key) ||
+   challenge || SHA-384(claims) || SHA-384(path))` and sends `POST
+   /pod-secrets` with the evidence, its pod claims, the path and a
+   single-use X25519 response key.
+3. CDS checks the evidence, Pod authority and image membership as for Pod
+   issuance, then picks the one allowlist entry with a `secrets` grant whose
+   container images equal the pod's workload images (every admitted image
+   without a platform role). It reads the path, or mints it when the entry may
+   write it, and returns the value sealed with HPKE to the response key, the
+   entry name and the entry's image digests.
+4. The broker writes each value into the volume as a `0444` file. Only
+   workload containers whose image the entry names may mount the volume;
+   the mesh endpoint never may.
+
+Release waits for the complete workload image set, so containers must wait
+for their file. Digest-only claims cannot tell two entries with the same
+images apart; such a request is refused. Per-user keys in one cluster need a
+pod identity in the claims (the assigned workload ID); `MatchPodGrant` has
+the hook for it.
+
 ## Restarts
 
 A CDS restart destroys every secret, and you must roll every workload that holds

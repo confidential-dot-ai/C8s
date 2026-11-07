@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // dependencies bundles everything the cds router needs.
@@ -35,6 +36,7 @@ type dependencies struct {
 	SecretsChallenges attestation.Challenges
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	PodSecrets        *PodSecretHandler        // pod CVM release; routed with SecretsHandler, nil without Pod authority
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -100,6 +102,9 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
+		if deps.PodSecrets != nil {
+			r.Method(http.MethodPost, workloadclaims.PodSecretRoute, deps.protected(deps.PodSecrets))
+		}
 	}
 
 	for route, handler := range deps.ClusterRoutes {

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -42,9 +41,12 @@ type PodClaims struct {
 	Containers        []PodContainer `json:"containers"`
 }
 
-// PodContainer is one admitted container of a pod CVM: its image digest.
+// PodContainer is one admitted container of a pod CVM: its image digest and,
+// for a platform container, the role the measured guest policy assigns it
+// (guest OB3). A workload container carries no role.
 type PodContainer struct {
 	Digest string `json:"digest"`
+	Role   string `json:"role,omitempty"`
 }
 
 // InstanceID names one guest boot and runtime sandbox. Its framing is JSON,
@@ -64,13 +66,19 @@ func (p PodClaims) Canonical() ([]byte, error) {
 		return nil, err
 	}
 	containers := slices.Clone(p.Containers)
-	slices.SortFunc(containers, func(a, b PodContainer) int { return strings.Compare(a.Digest, b.Digest) })
+	slices.SortFunc(containers, func(a, b PodContainer) int { return bytes.Compare(a.wire(), b.wire()) })
 	p.Containers = containers
 	b, err := json.Marshal(p)
 	if err != nil || len(b) > MaxPodClaimsBytes {
 		return nil, fmt.Errorf("invalid or oversized Pod claims")
 	}
 	return b, nil
+}
+
+// wire is the container's compact encoding, the key Canonical orders by.
+func (c PodContainer) wire() []byte {
+	b, _ := json.Marshal(c)
+	return b
 }
 
 // DecodePodClaims rejects alternate encodings, unknown fields, duplicate keys
@@ -120,12 +128,28 @@ func (p PodClaims) validate() error {
 		if !types.IsCanonicalDigest(c.Digest) {
 			return fmt.Errorf("invalid Pod container digest")
 		}
+		if !validPodRole(c.Role) {
+			return fmt.Errorf("invalid Pod container role")
+		}
 		observed[c.Digest] = true
 	}
 	if !maps.Equal(measured, observed) {
 		return fmt.Errorf("pod observations disagree with complete measurement journal")
 	}
 	return nil
+}
+
+// validPodRole accepts no role or a short lowercase role token.
+func validPodRole(role string) bool {
+	if len(role) > 63 {
+		return false
+	}
+	for _, r := range role {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // PodReportData binds a fresh quote to one CSR and one complete canonical

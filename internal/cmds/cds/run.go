@@ -227,6 +227,15 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 	}
+	if secretsHandler != nil && len(cfg.measured.PodImages) > 0 {
+		deps.PodSecrets = &PodSecretHandler{
+			Attest:     deps.AttestHandler,
+			Challenges: secretsChallenges,
+			Store:      secretsHandler.Store,
+			Policy:     secretsHandler.Policy,
+		}
+		slog.Info("serving " + workloadclaims.PodSecretRoute + "; pod CVM release is gated on Pod authority and an allowlist secrets grant")
+	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 

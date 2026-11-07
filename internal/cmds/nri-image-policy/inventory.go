@@ -360,7 +360,7 @@ func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.Pod
 	}
 	digests := make([]workloadclaims.PodContainer, len(containers))
 	for i, c := range containers {
-		digests[i] = workloadclaims.PodContainer{Digest: c.Digest}
+		digests[i] = workloadclaims.PodContainer{Digest: c.Digest, Role: c.Role}
 	}
 	return digests, b.revision, nil
 }
