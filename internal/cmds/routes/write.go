@@ -232,6 +232,10 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 		m = &edited
 	}
 	done, err := change(m)
+	if errors.Is(err, errUnchanged) {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s at revision %d\n", err, m.Revision)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
