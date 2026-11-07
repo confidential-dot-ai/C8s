@@ -20,6 +20,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Pod annotations that ask `c8s routes sync` for a route.
@@ -63,7 +65,9 @@ func newSyncCmd(o *options) *cobra.Command {
 ` + RouteWorkloadAnnotation + `=<allowlist workload>, and route each host,
 path / by prefix, to the ClusterIP of the pod's Service (the Service of the
 pod's name the Pod CVM provider maintains) with --workload set to the
-annotated workload. ` + RoutePortAnnotation + ` picks the Service port when it
+annotated workload. A pod that carries ` + workloadclaims.AnnotationWorkloadID + `=<id>
+also pins the route to that assigned workload ID, so the router reaches only
+the pod CVM whose leaf CDS stamped with it. ` + RoutePortAnnotation + ` picks the Service port when it
 has more than one.
 
 sync owns every host ending in --host-suffix: it replaces their routes with
@@ -164,6 +168,11 @@ func desiredRoutes(ctx context.Context, kube kubernetes.Interface, namespace, se
 			skip("no %s annotation", RouteWorkloadAnnotation)
 			continue
 		}
+		assigned := pod.Annotations[workloadclaims.AnnotationWorkloadID]
+		if assigned != "" && !workloadname.Valid(assigned) {
+			skip("%s %q is not a valid workload name", workloadclaims.AnnotationWorkloadID, assigned)
+			continue
+		}
 		svc, err := kube.CoreV1().Services(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {
 			skip("no Service: %v", err)
@@ -176,6 +185,7 @@ func desiredRoutes(ctx context.Context, kube kubernetes.Interface, namespace, se
 		}
 		want[host] = pkgroutes.Route{Path: "/", Match: pkgroutes.MatchPrefix, Backend: pkgroutes.Backend{
 			Address: net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(int(port))), Workload: workload,
+			AssignedWorkloadID: assigned,
 		}}
 	}
 	return want, nil
@@ -230,7 +240,7 @@ func equalHosts(a, b map[string]pkgroutes.Host) bool {
 		for host, h := range in {
 			for _, r := range h.Routes {
 				b := r.Backend
-				out[host] = append(out[host], pkgroutes.Route{Path: r.Path, Match: r.Match, Backend: pkgroutes.Backend{Address: b.Address, Workload: b.Workload, ServerName: b.ServerName, CA: b.CA}})
+				out[host] = append(out[host], pkgroutes.Route{Path: r.Path, Match: r.Match, Backend: pkgroutes.Backend{Address: b.Address, Workload: b.Workload, AssignedWorkloadID: b.AssignedWorkloadID, ServerName: b.ServerName, CA: b.CA}})
 			}
 		}
 		return out

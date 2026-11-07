@@ -78,6 +78,10 @@ type Backend struct {
 	// Workload is the allowlist workload name the peer's named leaf must
 	// carry (B1).
 	Workload string
+	// AssignedWorkloadID, optional on a workload backend, is the
+	// assigned workload ID (armTLS extension 1.3.6.1.4.1.66378.1.8) the
+	// peer's leaf must also carry: one pod CVM's per-pod identity.
+	AssignedWorkloadID string
 	// ServerName is the TLS server name an address backend must present.
 	ServerName string
 	// CA is the PEM bundle of trust anchors for an address backend.
@@ -289,7 +293,7 @@ func checkRoutePath(p string) error {
 // parseBackend enforces D7, and with it D9: both backend forms verify the
 // peer, and members rejects anything else, such as a protocol.
 func parseBackend(raw json.RawMessage, at string) (Backend, error) {
-	obj, err := members(raw, at, []string{"address"}, []string{"workload", "serverName", "ca"})
+	obj, err := members(raw, at, []string{"address"}, []string{"workload", "assignedWorkloadID", "serverName", "ca"})
 	if err != nil {
 		return Backend{}, err
 	}
@@ -303,6 +307,7 @@ func parseBackend(raw json.RawMessage, at string) (Backend, error) {
 	_, hasWorkload := obj["workload"]
 	_, hasServerName := obj["serverName"]
 	_, hasCA := obj["ca"]
+	_, hasAssigned := obj["assignedWorkloadID"]
 	switch {
 	case hasWorkload && !hasServerName && !hasCA:
 		if b.Workload, err = stringValue(obj["workload"], at+".workload"); err != nil {
@@ -311,7 +316,15 @@ func parseBackend(raw json.RawMessage, at string) (Backend, error) {
 		if !workloadname.Valid(b.Workload) {
 			return Backend{}, fmt.Errorf("%s.workload: %q is not a valid allowlist workload name", at, b.Workload)
 		}
-	case !hasWorkload && hasServerName && hasCA:
+		if hasAssigned {
+			if b.AssignedWorkloadID, err = stringValue(obj["assignedWorkloadID"], at+".assignedWorkloadID"); err != nil {
+				return Backend{}, err
+			}
+			if !workloadname.Valid(b.AssignedWorkloadID) {
+				return Backend{}, fmt.Errorf("%s.assignedWorkloadID: %q is not a valid workload name", at, b.AssignedWorkloadID)
+			}
+		}
+	case !hasWorkload && hasServerName && hasCA && !hasAssigned:
 		if b.ServerName, err = stringValue(obj["serverName"], at+".serverName"); err != nil {
 			return Backend{}, err
 		}
@@ -328,7 +341,7 @@ func parseBackend(raw json.RawMessage, at string) (Backend, error) {
 			return Backend{}, fmt.Errorf("%s.ca: %w", at, err)
 		}
 	default:
-		return Backend{}, fmt.Errorf("%s: must have exactly one of workload, or serverName with ca", at)
+		return Backend{}, fmt.Errorf("%s: must have exactly one of workload (optionally with assignedWorkloadID), or serverName with ca", at)
 	}
 	return b, nil
 }

@@ -29,10 +29,11 @@ type routeJSON struct {
 }
 
 type backendJSON struct {
-	Address    string `json:"address"`
-	Workload   string `json:"workload,omitempty"`
-	ServerName string `json:"serverName,omitempty"`
-	CA         string `json:"ca,omitempty"`
+	Address            string `json:"address"`
+	Workload           string `json:"workload,omitempty"`
+	AssignedWorkloadID string `json:"assignedWorkloadID,omitempty"`
+	ServerName         string `json:"serverName,omitempty"`
+	CA                 string `json:"ca,omitempty"`
 }
 
 // Encode writes m as new manifest bytes. It authors a new revision; a stored
@@ -50,7 +51,7 @@ func Encode(m *pkgroutes.Manifest) ([]byte, error) {
 		for _, r := range h.Routes {
 			b := r.Backend
 			rs = append(rs, routeJSON{Path: r.Path, Match: r.Match, Backend: backendJSON{
-				Address: b.Address, Workload: b.Workload, ServerName: b.ServerName, CA: b.CA,
+				Address: b.Address, Workload: b.Workload, AssignedWorkloadID: b.AssignedWorkloadID, ServerName: b.ServerName, CA: b.CA,
 			}})
 		}
 		doc.Hosts[name] = hostJSON{Routes: rs}

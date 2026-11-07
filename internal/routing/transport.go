@@ -206,7 +206,7 @@ func (t *Transports) Retain(m *routes.Manifest) {
 }
 
 func backendKey(b routes.Backend) string {
-	return strings.Join([]string{b.Address, b.Workload, b.ServerName, b.CA}, "\x00")
+	return strings.Join([]string{b.Address, b.Workload, b.AssignedWorkloadID, b.ServerName, b.CA}, "\x00")
 }
 
 func (t *Transports) build(b routes.Backend) *http.Transport {
@@ -223,7 +223,7 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 		// headers only when generation ends. The proxy bounds the request.
 	}
 	if b.Workload != "" {
-		transport.DialTLSContext = t.dialWorkload(b.Workload, t.routerDigest, t.routerDigestKnown, dialer)
+		transport.DialTLSContext = t.dialWorkload(b, t.routerDigest, t.routerDigestKnown, dialer)
 		return transport
 	}
 	// A fresh pool, never nil: a nil RootCAs means the system roots.
@@ -250,11 +250,11 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 // connections into the cluster uncaptured, so this handshake is the one that
 // crosses the pod boundary. Once the router digest is known, a leaf renewed
 // under another one retires the pools instead of dialling.
-func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown bool, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+func (t *Transports) dialWorkload(b routes.Backend, routerDigest string, digestKnown bool, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
-		cfg, digest, err := t.meshClientConfig(workload)
+		cfg, digest, err := t.meshClientConfig(b)
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +282,7 @@ func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown boo
 // meshClientConfig is the armTLS mesh client configuration for one workload
 // backend, built on one published generation: the leaf it presents, the CA it
 // trusts and the allowlist digest it requires are the ones published together.
-func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, error) {
+func (t *Transports) meshClientConfig(b routes.Backend) (*tls.Config, []byte, error) {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh credential: %w", err)
@@ -298,10 +298,10 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload, digest),
+		AcceptPeer:   acceptWorkload(b.Workload, b.AssignedWorkloadID, digest),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
+		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", b.Workload, err)
 	}
 	return cfg, digest, nil
 }
@@ -328,8 +328,10 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 // acceptWorkload fails the handshake unless the peer the chain path
 // authenticated is the workload the signed route names (B1), stamped under
 // the router's own allowlist digest (B8). A leaf CDS stamped no workload on
-// names none, and is refused with the rest.
-func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
+// names none, and is refused with the rest. A route that pins an assigned
+// workload ID also requires exactly that ID on the leaf; a leaf without one
+// is refused, never read as a wildcard.
+func acceptWorkload(workload, assigned string, routerDigest []byte) func(armtls.Peer) error {
 	router := "with no router allowlist digest"
 	if routerDigest != nil {
 		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
@@ -340,6 +342,9 @@ func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) erro
 		}
 		if peer.WorkloadName != workload {
 			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q %s", peer.WorkloadName, peer.AllowlistDigest, workload, router)
+		}
+		if assigned != "" && peer.AssignedWorkloadID != assigned {
+			return fmt.Errorf("routing: backend leaf carries assigned workload ID %q, and this route requires %q", peer.AssignedWorkloadID, assigned)
 		}
 		if routerDigest == nil {
 			return nil // B9: an unstamped router binds no policy digest

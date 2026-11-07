@@ -29,7 +29,10 @@ catches each:
 - **Endpoint substitution.** Repointing DNS or a Service changes no manifest
   byte, so attestation still succeeds. The router's backend check rejects the
   substitute: a workload backend must present a leaf carrying the manifest's
-  workload name, whatever address the name resolved to.
+  workload name, whatever address the name resolved to. A backend that also
+  names `assignedWorkloadID` must present a pod CVM leaf carrying exactly that
+  assigned workload ID ([certificate-extensions.md](certificate-extensions.md#assigned-workload-id-18)),
+  so a Service repointed at another user's pod of the same workload is refused.
 - **Policy redefinition.** An allowlist write can redefine an entry, so a pod
   running other code earns the same workload name. The router takes a workload
   backend only under the allowlist digest stamped on its own leaf — the policy
