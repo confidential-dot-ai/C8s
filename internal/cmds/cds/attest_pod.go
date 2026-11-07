@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -57,22 +59,36 @@ func enforcePodImages(resp remote.VerifyResponse, pins []remote.ImagePin, platfo
 	return fmt.Errorf("pod image, launch key or complete runtime journal not allowed")
 }
 
-// authorizePodMembership admits a pod CVM's complete image journal against one
-// atomic policy snapshot: every measured digest must be in the current
-// workload policy. The claims carry digests only, so a pod CVM gets the
-// membership leaf and never a matched-workload stamp.
-func (h AttestHandler) authorizePodMembership(pod workloadclaims.PodClaims) error {
+// resolvePodWorkload admits a pod CVM's complete image journal and every
+// retained workload observation against one atomic policy snapshot, then
+// stamps the matched workload when the whole observation set matches exactly
+// one entry. A subset sufficient for bootstrap gets the membership leaf.
+func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaims.PodClaims) (*armtls.MatchedWorkload, error) {
 	if h.AllowlistStore == nil {
-		return fmt.Errorf("pod issuance requires an allowlist")
+		return nil, fmt.Errorf("pod issuance requires an allowlist")
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	membership := make(map[string]struct{}, len(pod.RuntimeExtensions))
 	for _, d := range pod.RuntimeExtensions {
 		if !snapshot.Contains(d) {
-			return fmt.Errorf("pod image membership not authorized")
+			return nil, fmt.Errorf("pod image membership not authorized")
+		}
+		membership[d] = struct{}{}
+	}
+	// Pod observations are authenticated by the guest quote, so membership
+	// can and must check the full launch against this same policy snapshot.
+	// A former admission under looser policy cannot regain an unnamed leaf
+	// merely because its image still appears somewhere in the current policy.
+	// Only platform roles bound by the measured guest base are excluded; the
+	// requester cannot assert roles with the exported TLS key.
+	for _, observed := range secrets.WorkloadContainers(pod.Containers) {
+		if !snapshot.admissions.AdmitsContainer(observed) {
+			return nil, fmt.Errorf("pod container observation not authorized")
 		}
 	}
-	return nil
+	resp := workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers}
+	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}), nil
 }

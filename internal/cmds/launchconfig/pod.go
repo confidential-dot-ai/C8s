@@ -27,6 +27,18 @@ type PodSpec struct {
 	MeshPeers []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
 }
 
+// WorkloadID is the signed manifest's confidential.ai/cw annotation, the
+// per-pod identity the guest carries in its claims and CDS stamps on the
+// leaf; "" when the manifest names none. The manifest is the one source: the
+// assignment signature covers it, and validate checks the annotation's grammar.
+func (p *PodSpec) WorkloadID() (string, error) {
+	pod, err := ParsePodManifest([]byte(p.Manifest))
+	if err != nil {
+		return "", err
+	}
+	return pod.Annotations[workloadclaims.AnnotationWorkloadID], nil
+}
+
 // validate is defence in depth: NRI's sandbox policy is the enforcement
 // point. It refuses what the pod role can never need, so a bad assignment
 // fails at signing time instead of at container start.

@@ -55,6 +55,9 @@ type podConfig struct {
 	Namespace string            `yaml:"namespace"`
 	Name      string            `yaml:"name"`
 	Images    map[string]string `yaml:"images"`
+	// WorkloadID is the signed manifest's confidential.ai/cw annotation, the
+	// per-pod identity the broker carries in its claims; "" when it has none.
+	WorkloadID string `yaml:"workload_id,omitempty"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -582,6 +585,11 @@ func (c *config) validatePod() error {
 	}
 	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
 		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
+	}
+	if c.Pod.WorkloadID != "" {
+		if err := armtls.ValidateWorkloadID(c.Pod.WorkloadID); err != nil {
+			return fmt.Errorf("the Pod broker cannot carry the signed workload id: %w", err)
+		}
 	}
 	if err := c.Mesh.Pod.validate(); err != nil {
 		return err

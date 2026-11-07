@@ -688,3 +688,17 @@ func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
 		t.Fatalf("journal elsewhere than its readers look: %v", err)
 	}
 }
+
+// The broker carries a workload ID only in the grammar the leaf extension
+// accepts.
+func TestPodBrokerWorkloadIDFollowsTheSignedAssignment(t *testing.T) {
+	cfg := podRoleConfig(t)
+	cfg.Pod.WorkloadID = "user-alice"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("assigned pod with a workload ID: %v", err)
+	}
+	cfg.Pod.WorkloadID = "user alice"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "workload id") {
+		t.Fatalf("workload ID the leaf cannot carry: %v", err)
+	}
+}

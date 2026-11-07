@@ -207,6 +207,8 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A pod CVM's tenant identity rides its verified claims into the leaf.
+	var assignedWorkloadID string
 	expectedReportData, err := armtls.ReportDataForKey(csrPubKey, challengeBytes)
 	if err != nil {
 		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
@@ -221,6 +223,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		copy(expectedReportData[:], bound)
 		sandbox.SandboxID = pod.InstanceID()
+		assignedWorkloadID = pod.AssignedWorkloadID
 	}
 
 	evidenceJSON, err := json.Marshal(req.Evidence)
@@ -269,11 +272,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// actually running (once), load one atomic policy snapshot, gate issuance
 	// on membership, and resolve the matched-workload stamp from the same two
 	// answers. The requester never gets a say in either.
-	// A pod CVM's claims carry image digests only: it gets the membership
-	// leaf, never a matched-workload stamp.
 	var matched *armtls.MatchedWorkload
 	if pod != nil {
-		err = h.authorizePodMembership(*pod)
+		matched, err = h.resolvePodWorkload(ctx, *pod)
 	} else {
 		matched, err = h.resolveSandboxWorkload(ctx, sandbox)
 	}
@@ -326,11 +327,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
-		CSR:             csr,
-		TTL:             ttl,
-		Evidence:        evidenceJSON,
-		SandboxID:       sandbox.SandboxID,
-		MatchedWorkload: matched,
+		CSR:                csr,
+		TTL:                ttl,
+		Evidence:           evidenceJSON,
+		SandboxID:          sandbox.SandboxID,
+		MatchedWorkload:    matched,
+		AssignedWorkloadID: assignedWorkloadID,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
 		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)

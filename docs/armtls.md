@@ -201,9 +201,12 @@ inventory callback. The guest authenticates CDS against the signed launch
 document's independent server pins, then sends an empty-subject CSR, a fresh
 challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
 bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
-revision, the complete ordered image measurement list and the image digest of
-every retained admission, completed containers included. The claims carry image
-digests only, no argument, environment, mount or role observation;
+revision, the complete ordered image measurement list and every retained
+admission observation, completed containers included: image digest, argv,
+environment commitment, mounts with their named volumes and the platform role,
+plus `spec_digest`, a canonical SHA-256 over the argv, environment commitment
+and mounts admission checked. The claims also carry `assigned_workload_id`,
+the signed manifest's `confidential.ai/cw` annotation, when it has one.
 `pkg/workloadclaims` owns their encoding. The report data is:
 
 ```text
@@ -212,9 +215,13 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 
 CDS verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
-policy. The leaf is the unnamed membership leaf: a pod CVM never carries the
-matched-workload stamp, since its claims name no arguments, environment or
-mounts to match an entry against. Neither a status quote nor a node inventory
+policy, and every workload observation must be admitted by it. When the whole
+observation set matches exactly one entry, the leaf carries the matched-workload
+stamp, so the router's named routes reach the pod; a subset sufficient for
+bootstrap gets the unnamed membership leaf. A pod with a workload ID gets the
+assigned-workload-ID extension
+([certificate-extensions.md](certificate-extensions.md#assigned-workload-id-18)).
+Neither a status quote nor a node inventory
 token substitutes for this profile.
 
 Measured Pod launch keys remain separate from node and operator authority. In
