@@ -84,7 +84,7 @@ fails staging, and `worker-stage.service` powers the VM off.
 
 Every field, the admission decree and the boot-time staging order are
 [docs/launch-configuration.md](../../docs/launch-configuration.md). Each boot
-registers the worker under a new node name, derived from the kernel's boot ID.
+registers the worker under a node name derived from its primary IPv4 address.
 
 Additional optional disks:
 

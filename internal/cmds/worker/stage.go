@@ -39,8 +39,8 @@ then publish the CDS pin and router settings under /run/c8s-node, write
 the NRI floor with the document's CDS, pod and Service ranges and cluster
 DNS, publish the node's primary IPv4 for the NRI inventory, and write
 the kubelet's configuration, bootstrap kubeconfig and static pods under
-/run/kubernetes. The node name is derived from this boot's ID. Every output
-is removed first, and again if any step fails.`,
+/run/kubernetes. The node name is derived from the primary IPv4 address.
+Every output is removed first, and again if any step fails.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -60,9 +60,14 @@ is removed first, and again if any step fails.`,
 // stage removes every output, then writes them from the document at
 // documentPath and the bootstrap token at tokenPath. On any error it removes
 // them again, so nothing usable is left behind. Off a worker image it touches
-// nothing. rootDir rebases the outputs, the marker, the static pod templates
-// and the boot ID for tests.
-func stage(ctx context.Context, rootDir, documentPath, tokenPath, attestationAPIURL string) error {
+// nothing. rootDir rebases the outputs, marker and static pod templates for tests.
+func stage(
+	ctx context.Context,
+	rootDir string,
+	documentPath string,
+	tokenPath string,
+	attestationAPIURL string,
+) error {
 	if err := requireWorkerImage(rootDir); err != nil {
 		return err
 	}
@@ -132,15 +137,19 @@ const DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 
 // writeOutputs checks the floor it writes before writing the node address and
 // the kubelet's inputs, the outputs clearOutputs removes first.
-func writeOutputs(rootDir string, doc *Document, token string) error {
-	name, err := nodeName(rootDir)
-	if err != nil {
-		return err
-	}
+func writeOutputs(
+	rootDir string,
+	doc *Document,
+	token string,
+) error {
 	address, err := cmdsutil.PrimaryIPv4()
 	if err != nil {
 		return fmt.Errorf("resolve node address: %w", err)
 	}
+	if !address.Is4() {
+		return fmt.Errorf("resolve node address: expected IPv4, got %s", address)
+	}
+	name := nodeName(address.As4())
 	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address.String())
 	if err != nil {
 		return err
