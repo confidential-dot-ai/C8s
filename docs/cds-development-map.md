@@ -118,11 +118,11 @@ the old branches back into the active implementation.
 No CDS pilot branch was found in c8s-workspace. Other authors' or parallel
 workstreams' CDS/cloud branches are outside this cleanup.
 
-## Old draft PRs
+## Closed pilot drafts
 
-These four drafts are superseded for ongoing replacement development. Their
-original descriptions and evidence should remain available beneath a supersession
-notice pointing here.
+These four drafts were closed as superseded on 2026-11-07. Their original
+descriptions and evidence remain available beneath a supersession notice
+pointing here.
 
 | Draft | Disposition |
 | --- | --- |
@@ -131,14 +131,12 @@ notice pointing here.
 | [#1272](https://github.com/confidential-dot-ai/C8s/pull/1272), WAL plus transactional metadata | Retain as the metadata-WAL comparison baseline; the current candidate commits current records directly instead. |
 | [#1273](https://github.com/confidential-dot-ai/C8s/pull/1273), CA renewal and rotation | Its branch is an ancestor of the active branch; do not maintain it as a separate pilot. |
 
-The first cleanup changes draft titles/descriptions and adds this map. Closing
-drafts is a separate remaining step because the repository's
-[CLA workflow](https://github.com/confidential-dot-ai/C8s/blob/main/.github/workflows/cla.yml)
-runs on `pull_request_target: types: [opened, closed, synchronize]`, including
-closure. Under the current no-CI instruction, metadata edits can proceed while
-closure waits for an explicit exception for that administrative workflow.
-The active branch has no consolidated draft PR yet; opening one also triggers
-repository automation.
+The cleanup marked these drafts superseded and closed them after explicit
+approval for the repository's automatic
+[CLA gate](https://github.com/confidential-dot-ai/C8s/blob/main/.github/workflows/cla.yml)
+on closure. Their head branches and original comparison evidence are retained;
+none of these PRs was merged. The active branch has no consolidated draft PR yet;
+opening one is a separate step and also triggers repository automation.
 
 This map is an inventory and development decision. It does not merge a PR,
 change production defaults, launch a cloud fixture, or qualify unfinished code.
