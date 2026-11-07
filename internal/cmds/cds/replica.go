@@ -275,7 +275,7 @@ func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
 }
 
 func (r *clusterCDS) Gate(next http.Handler) http.Handler {
-	return haGate(r.Ready, r.node.ConfirmRead, next)
+	return haGate(r.Ready, next)
 }
 
 // KeepMeshCA publishes the mesh CA the cluster's log carries whenever it

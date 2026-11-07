@@ -96,22 +96,14 @@ func writeJSON(w http.ResponseWriter, report any) {
 	_, _ = w.Write(body)
 }
 
-// haGate requires a fresh committed watermark for every route but
-// servedUnjoined. Readiness alone is a cached lease: a follower can still be
-// ready while its policy predates an acknowledged revocation. Confirmation
-// waits for the leader's barrier and this replica's application of its watermark
-// before a handler can issue a leaf, release a secret or read policy.
-func haGate(serving func() bool, confirmRead func() error, next http.Handler) http.Handler {
+// haGate refuses every route but servedUnjoined while this replica may not
+// serve its cluster: it must not issue a leaf, release a secret or hand out
+// policy the cluster has moved past.
+func haGate(serving func() bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !servedUnjoined(r.URL.Path) {
-			if !serving() {
-				http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
-				return
-			}
-			if err := confirmRead(); err != nil {
-				http.Error(w, "cds-ha: no current read watermark", http.StatusServiceUnavailable)
-				return
-			}
+		if !servedUnjoined(r.URL.Path) && !serving() {
+			http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
