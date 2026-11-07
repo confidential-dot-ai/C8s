@@ -20,18 +20,25 @@ import (
 // Decoding into this rather than the k8s API types keeps the CLI free of a
 // client-go dependency for what is a pure text transformation.
 type podTemplate struct {
-	InitContainers []templateContainer `json:"initContainers"`
-	Containers     []templateContainer `json:"containers"`
+	InitContainers  []templateContainer     `json:"initContainers"`
+	Containers      []templateContainer     `json:"containers"`
+	SecurityContext templateSecurityContext `json:"securityContext"`
 	// annotations are the pod's, from the object or its pod template.
 	annotations map[string]string
 }
 
+type templateSecurityContext struct {
+	RunAsUser    *int64 `json:"runAsUser"`
+	RunAsNonRoot *bool  `json:"runAsNonRoot"`
+}
+
 type templateContainer struct {
-	Name         string   `json:"name"`
-	Image        string   `json:"image"`
-	Command      []string `json:"command"`
-	Args         []string `json:"args"`
-	VolumeMounts []struct {
+	Name            string                  `json:"name"`
+	Image           string                  `json:"image"`
+	Command         []string                `json:"command"`
+	Args            []string                `json:"args"`
+	SecurityContext templateSecurityContext `json:"securityContext"`
+	VolumeMounts    []struct {
 		Name        string `json:"name"`
 		MountPath   string `json:"mountPath"`
 		SubPath     string `json:"subPath"`
@@ -63,6 +70,39 @@ func (c templateContainer) emptyDirMounts(volume, fallback string) ([]allowlist.
 		rules = append(rules, allowlist.MountRule{Destination: fallback, Kind: allowlist.MountEmptyDir})
 	}
 	return rules, nil
+}
+
+func effectiveSecurityContext(pod, ctr templateSecurityContext) templateSecurityContext {
+	out := pod
+	if ctr.RunAsUser != nil {
+		out.RunAsUser = ctr.RunAsUser
+	}
+	if ctr.RunAsNonRoot != nil {
+		out.RunAsNonRoot = ctr.RunAsNonRoot
+	}
+	return out
+}
+
+func statesNonzeroUID(sc templateSecurityContext) bool {
+	if sc.RunAsUser != nil {
+		return *sc.RunAsUser != 0
+	}
+	return sc.RunAsNonRoot != nil && *sc.RunAsNonRoot
+}
+
+func rootUIDWarning(name string) string {
+	return fmt.Sprintf("container %q does not state a nonzero uid, and a C8s node refuses a container that runs as uid 0: "+
+		"set a nonzero runAsUser, or runAsNonRoot: true if its image's USER is a nonzero uid", name)
+}
+
+func rootUIDWarnings(spec podTemplate) []string {
+	var out []string
+	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+		if !statesNonzeroUID(effectiveSecurityContext(spec.SecurityContext, c.SecurityContext)) {
+			out = append(out, rootUIDWarning(c.Name))
+		}
+	}
+	return out
 }
 
 // podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
@@ -250,7 +290,9 @@ The entry pins argv, so it expires the moment a container command changes:
 re-derive and re-apply whenever the workload is edited.
 
 Containers c8s injects are dropped and named on stderr, so an admitted pod
-derives the same entry as the manifest it was admitted from.`,
+derives the same entry as the manifest it was admitted from. A container whose
+spec does not state a nonzero uid is named on stderr too: a C8s node refuses a
+container that runs as uid 0.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := readFileOrStdin(cmd, args[1])
@@ -267,6 +309,9 @@ derives the same entry as the manifest it was admitted from.`,
 			dropped = append(dropped, mains...)
 			if len(dropped) > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
+			}
+			for _, warning := range rootUIDWarnings(spec) {
+				fmt.Fprintln(cmd.ErrOrStderr(), warning)
 			}
 			requireCrane := sync.OnceValue(crane.Require)
 			resolve := func(image string) ([]string, []string, error) {
