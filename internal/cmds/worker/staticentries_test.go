@@ -123,7 +123,7 @@ func TestStaticPodEntryPinsTheTemplate(t *testing.T) {
 		t.Fatal("the staged floor marks another entry than the agent's a static pod's")
 	}
 	base := stagedBase(t, root)
-	node := mustNodeName(t, root)
+	node := "n-10-0-0-7"
 	argv := []string{"/agent", "--cluster-cidr=10.100.0.0/16", "--node=" + node}
 	launch := observed(t, agentDigest, argv, "PATH=/bin", "NODE="+node)
 	if !base.AdmitsContainer(launch) {

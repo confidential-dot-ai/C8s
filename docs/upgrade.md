@@ -91,9 +91,8 @@ the highest number from step 2. A node that stays higher takes nothing until its
 plugin restarts: restart containerd there, one node at a time, having published
 every entry its pods need, since on that first pull the plugin kills what the
 new document does not admit. A measured worker has no shell for that, so
-relaunch its VM instead; it stages the new policy at boot and registers under a
-new node name. Repeat step 2 until every node reports a version at or above
-this one.
+relaunch its VM instead; it stages the new policy at boot. Repeat step 2 until
+every node reports a version at or above this one.
 
 ## 5. Run the upgrade
 

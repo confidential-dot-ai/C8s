@@ -82,8 +82,9 @@ rather than a file on the node's filesystem, because a node running the C8s node
 image — the measured guest image — keeps its writable state on an ephemeral disk
 that no reboot survives. The device is attached to one node, so the pod must be
 pinned there, with the `nodeSelector` that `c8s volume create --node` prints.
-A worker takes its node name from its boot ID, so it registers under a new one
-at every boot and a pod pinned to it must be pinned again after it reboots.
+A worker's node name follows its primary IPv4 address, so the pin survives a
+reboot at the same address. Keep the device attached to that worker slot; a
+worker at a different address needs a new pin.
 
 ### Attaching the image
 

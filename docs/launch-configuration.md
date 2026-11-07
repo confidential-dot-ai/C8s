@@ -129,9 +129,9 @@ rerun after the NRI plugin measured a policy still passes. On SEV-SNP,
 It then reads the Kubernetes bootstrap token from `--bootstrap-token-file`:
 a regular file holding `<6 lowercase letters or digits>.<16 lowercase
 letters or digits>` and at most one newline. The launch disk carries it
-beside the document, outside the measurement. The node name is `n-` and 16
-hex digits derived from the kernel's boot ID, so every boot registers a new
-node.
+beside the document, outside the measurement. The node name is `n-` followed
+by the node's primary IPv4 octets separated by hyphens, for example
+`n-10-0-0-7`. A reboot at the same address rejoins the same Node.
 
 Every template under `/usr/lib/c8s/worker/static-pods` is rendered with this
 worker's `${NODE_NAME}` and `${POD_CIDR}`. Each may appear only as a whole
@@ -223,8 +223,17 @@ token and run the client-certificate signer and approver, give each node a pod
 range from `kubernetes.podCIDR` (Cilium's `ipam` is `kubernetes`), and deploy no
 CNI, kube-proxy or cluster DNS of its own: a worker refuses them. A worker needs
 no cloud controller manager: its kubelet joins untainted and reports the staged
-`--node-ip` as the node's InternalIP. Each boot registers the worker as a new
-node.
+`--node-ip` as the node's InternalIP. Keep each worker slot's IPv4 address
+exclusive to one VM; stop or fence its previous VM before reusing the address.
+The Node retains its labels, taints and pod range across boots, and pods may
+remain assigned to it.
+
+When upgrading workers that registered with boot-derived names, record their old
+Node names before the upgrade. After stopping or fencing each old VM, delete its
+exact old Node with `kubectl delete node <OLD_NODE_NAME>`. Do the same when a
+worker is permanently removed or its address changes. Kubernetes and Cilium
+clean up associated resources asynchronously; check their removal before relying
+on the released pod range.
 
 A k3s or RKE2 server prints its bootstrap token as `K10<hash>::<id>.<secret>`.
 The worker's `--bootstrap-token-file` takes only `<id>.<secret>`: strip the
