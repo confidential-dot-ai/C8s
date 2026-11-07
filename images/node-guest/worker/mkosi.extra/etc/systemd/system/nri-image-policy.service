@@ -7,6 +7,8 @@
 # reconnects it too.
 [Unit]
 Description=nri-image-policy, the admission plugin containerd requires
+# It reads the floor staging writes.
+Requires=worker-stage.service
 After=worker-stage.service containerd.service
 StartLimitIntervalSec=0
 
