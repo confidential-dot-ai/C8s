@@ -72,7 +72,7 @@ func (a *Allowlist) MatchWorkload(running []RunningContainer) (string, Workload,
 		matches   int
 	)
 	for name, w := range a.Workloads {
-		if !w.describes(running) {
+		if w.AssignedOnly || !w.describes(running) {
 			continue
 		}
 		matches++
@@ -85,6 +85,16 @@ func (a *Allowlist) MatchWorkload(running []RunningContainer) (string, Workload,
 		return "", Workload{}, ErrNoMatch
 	}
 	return foundName, found, nil
+}
+
+// MatchAssigned resolves a running set to the entry a pod CVM's signed
+// assignment names. It is the only match an AssignedOnly entry takes part in.
+func (a *Allowlist) MatchAssigned(name string, running []RunningContainer) (Workload, error) {
+	w, ok := a.Workloads[name]
+	if !ok || len(running) == 0 || !w.describes(running) {
+		return Workload{}, ErrNoMatch
+	}
+	return w, nil
 }
 
 // EntryDiff is the distance between an entry and a running set: what is running

@@ -194,6 +194,11 @@ not apply to it. Instead its guest broker asks CDS directly:
    workload containers whose image the entry names may mount the volume;
    the mesh endpoint never may.
 
+Per-user entries that share one shape (same image, args and env) set
+`"assignedOnly": true`: such an entry matches only a pod whose assignment
+names it, never a match by observation alone, and `c8s allowlist lint` does
+not report entries marked this way as ambiguous.
+
 Release waits for the complete workload, so containers must wait for their
 file. Without an assigned workload ID, entries that the observations cannot
 tell apart are refused.

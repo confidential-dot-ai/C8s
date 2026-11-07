@@ -91,6 +91,24 @@ func TestMatchPodGrantRefuses(t *testing.T) {
 
 // Without an assigned ID, entries whose launches differ are told apart by the
 // observed spec, which the claims' spec digests commit to.
+// Assigned-only entries share a shape by design; a pod reaches one only
+// through its assignment, never by observation.
+func TestMatchPodGrantAssignedOnly(t *testing.T) {
+	al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{}}
+	for _, user := range []string{"alice", "bob"} {
+		e := podEntry(t, userGrant(user), podApp, "/opencode")
+		e.AssignedOnly = true
+		al.Workloads[user] = e
+	}
+	if g, err := MatchPodGrant(al, podClaims(t, "bob", "/opencode")); err != nil || g.Workload != "bob" {
+		t.Fatalf("grant=%q err=%v", g.Workload, err)
+	}
+	solo := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"alice": al.Workloads["alice"]}}
+	if g, err := MatchPodGrant(solo, podClaims(t, "", "/opencode")); err == nil {
+		t.Fatalf("a pod without an assignment reached %q", g.Workload)
+	}
+}
+
 func TestMatchPodGrantBySpecWithoutAssignedWorkload(t *testing.T) {
 	al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{
 		"user-a": podEntry(t, userGrant("a"), podApp, "/opencode", "--user=a"),

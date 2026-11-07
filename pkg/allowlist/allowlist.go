@@ -76,6 +76,11 @@ type Workload struct {
 	// StaticPod marks a kubelet static pod's entry. YAML-only, like
 	// Container.Role: only a measured boot config sets it.
 	StaticPod bool `json:"-" yaml:"staticPod,omitempty"`
+	// AssignedOnly makes the entry match only a pod CVM whose signed
+	// assignment names it (confidential.ai/cw = the entry name). Matching by
+	// observation alone (MatchWorkload) skips it, so per-user entries may share
+	// one shape without becoming ambiguous for anything else.
+	AssignedOnly bool `json:"assignedOnly,omitempty" yaml:"assignedOnly,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
