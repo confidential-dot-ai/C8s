@@ -93,7 +93,7 @@ func (c *Config) signedRequest(doc launchconfig.Document, ports []uint16) (creat
 	}
 	rules := []ingress{{Name: "pod-status", Port: 8443}}
 	for _, p := range ports {
-		rules = append(rules, ingress{Name: fmt.Sprintf("app-%d", p), Port: int(p)})
+		rules = append(rules, ingress{Name: fmt.Sprintf("%s%d", appEndpointPrefix, p), Port: int(p)})
 	}
 	name := doc.Node.Name
 	return createRequest{

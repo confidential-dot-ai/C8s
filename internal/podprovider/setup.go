@@ -62,6 +62,11 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 		WatchesRawSource(source.Kind(pods, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{})).Complete(r); err != nil {
 		return err
 	}
+	ingress := &ingressReconciler{client: direct, nodeName: cfg.NodeName, providerID: cfg.ProviderID}
+	if err := ctrl.NewControllerManagedBy(mgr).Named("pod-cvm-ingress").
+		WatchesRawSource(source.Kind(pods, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{})).Complete(ingress); err != nil {
+		return err
+	}
 	n := &virtualNode{cfg: cfg, cloud: api, kube: kube, node: nodeObject(cfg)}
 	r.ownsNode = n.checkOwnership
 	if err := mgr.Add(n); err != nil {

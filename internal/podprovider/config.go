@@ -28,6 +28,9 @@ const (
 	ownerLabel          = "confidential.ai/pod-cvm-provider"
 	finalizer           = "confidential.ai/pod-cvm"
 	endpointsAnnotation = "confidential.ai/pod-cvm-endpoints"
+	// appEndpointPrefix names the Cloud ingress rule of a declared
+	// containerPort: app-<port>.
+	appEndpointPrefix = "app-"
 )
 
 // Config is trusted operator configuration. Paths name mounted files, never
