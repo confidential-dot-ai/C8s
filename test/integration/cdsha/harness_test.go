@@ -306,6 +306,16 @@ func replicaHost(index int) string {
 // Genesis of the first, and returns once every replica serves.
 func newCluster(t *testing.T, size shape) *cluster {
 	t.Helper()
+	c := bootReplicas(t, size)
+	c.genesis(c.replicas[0])
+	c.waitServing(time.Minute)
+	return c
+}
+
+// bootReplicas boots the replicas of a cluster of this shape, none of which
+// holds a cluster until an operator decrees its Genesis.
+func bootReplicas(t *testing.T, size shape) *cluster {
+	t.Helper()
 	c := &cluster{t: t, dir: t.TempDir()}
 	c.requireFreeAddresses(size.replicas)
 	c.operator = newKey(t)
@@ -315,8 +325,6 @@ func newCluster(t *testing.T, size shape) *cluster {
 	for i := range size.replicas {
 		c.replicas = append(c.replicas, c.start(i))
 	}
-	c.genesis(c.replicas[0])
-	c.waitServing(time.Minute)
 	return c
 }
 

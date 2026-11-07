@@ -2,6 +2,8 @@ package cds
 
 import (
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestNewCmdDurationFlagDefaults pins the shipped default for every duration
@@ -45,4 +47,26 @@ func TestNewCmdTakesNoKubeconfig(t *testing.T) {
 	if f := NewCmd().Flags().Lookup("kubeconfig"); f != nil {
 		t.Fatal("cds defines --kubeconfig")
 	}
+}
+
+// replicaDialers are the `ha` commands that read or post to a replica, each of
+// which verifies it against --cds-pin.
+func replicaDialers(t *testing.T) []*cobra.Command {
+	t.Helper()
+	var dialers []*cobra.Command
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		if cmd.Flags().Lookup("cds-pin") != nil {
+			dialers = append(dialers, cmd)
+		}
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+	walk(newHACmd())
+	// status, decrees, pin-policy and the eight decree kinds.
+	if len(dialers) != 11 {
+		t.Fatalf("found %d ha commands that dial a replica, want 11", len(dialers))
+	}
+	return dialers
 }

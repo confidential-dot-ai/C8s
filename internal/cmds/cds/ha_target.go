@@ -55,6 +55,7 @@ type replica struct {
 // so it verifies the replica being replaced and the one replacing it.
 func bindTargetFlags(cmd *cobra.Command, target *replica) {
 	target.verifier = cdsconn.LocalVerifier{}
+	bindAttestationAPIFlag(cmd, &target.verifier)
 	f := cmd.Flags()
 	f.StringVar(&target.address, "target", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of the replica this decree is for (REQUIRED)")
 	f.StringVar(&target.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED)")
@@ -65,6 +66,7 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 // the cluster's leader, and the pin document it is verified against.
 func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	to.verifier = cdsconn.LocalVerifier{}
+	bindAttestationAPIFlag(cmd, &to.verifier)
 	f := cmd.Flags()
 	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
 	f.StringVar(&to.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which the replica posted to is verified against (REQUIRED)")

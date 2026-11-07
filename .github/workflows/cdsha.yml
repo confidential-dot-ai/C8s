@@ -6,6 +6,7 @@ on:
     # The packages and lane scripts these jobs run.
     paths: &cdsha-paths
       - "internal/cdsha/**"
+      - "internal/cmds/cds/ha_*.go"
       - "test/integration/cdsha/**"
   push:
     branches: [main]
