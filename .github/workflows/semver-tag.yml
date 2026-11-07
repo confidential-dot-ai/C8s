@@ -113,13 +113,18 @@ jobs:
           fi
 
       # Fetch only after serialization: an older run may create the baseline
-      # tag while this run is waiting.
+      # tag while this run is waiting. The scripts below run from this
+      # checkout, so it is the pushed commit itself, never a caller's input.
       - name: Checkout current release history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.target-sha }}
+
+      - name: Confirm the checkout is the release target
+        env:
+          TARGET_SHA: ${{ inputs.target-sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
       - name: Load complete release image matrix
         id: release-images
