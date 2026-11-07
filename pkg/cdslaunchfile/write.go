@@ -1,7 +1,7 @@
 // The generator side of a CDS launch file: what an operator's tooling puts
 // into one and the rules it checks before writing it.
 
-package cdsconfig
+package cdslaunchfile
 
 import (
 	"errors"
@@ -27,8 +27,7 @@ type Document struct {
 	ClusterID string
 	// OperatorKeys authorize policy writes.
 	OperatorKeys operatorauth.KeyBundle
-	// Workloads is the cluster's allowlist, as MergeWorkloads builds it.
-	Workloads *allowlist.Allowlist
+	Workloads    *allowlist.Allowlist
 	// Nodes is the measurements document pinning the nodes CDS admits.
 	Nodes []byte
 	// NodeCIDRs are the subnets CDS may call a sandbox inventory on.
@@ -75,45 +74,14 @@ func (d Document) wire() (wire, error) {
 	}, nil
 }
 
-// MergeWorkloads builds the document's allowlist: the cluster's component
-// entries with the tenant's workloads added. A tenant entry may not take a
-// component entry's name. A nil tenant document means a cluster running
-// components only; empty bytes are a document that does not parse.
-func MergeWorkloads(components, tenant []byte) (*allowlist.Allowlist, error) {
-	merged, err := allowlist.ParseJSON(components)
-	if err != nil {
-		return nil, fmt.Errorf("component entries: %w", err)
-	}
-	if tenant != nil {
-		if err := addTenantWorkloads(merged, tenant); err != nil {
-			return nil, err
-		}
-	}
-	return merged, nil
-}
-
-func addTenantWorkloads(merged *allowlist.Allowlist, tenant []byte) error {
-	extra, err := allowlist.ParseJSON(tenant)
-	if err != nil {
-		return fmt.Errorf("tenant workloads: %w", err)
-	}
-	if merged.Workloads == nil {
-		merged.Workloads = make(map[string]allowlist.Workload, len(extra.Workloads))
-	}
-	for name, workload := range extra.Workloads {
-		if _, taken := merged.Workloads[name]; taken {
-			return fmt.Errorf("tenant workload %q is a component entry", name)
-		}
-		merged.Workloads[name] = workload
-	}
-	return nil
-}
-
 // CheckNodeSubnets refuses a node subnet overlapping one of the cluster's pod
 // or service ranges: CDS dials a node address for a sandbox's admission
 // inventory, and a pod inside that bound could answer as one. A generator
 // applies it, holding the ranges the document does not carry.
-func CheckNodeSubnets(nodeCIDRs, clusterCIDRs []string) error {
+func CheckNodeSubnets(
+	nodeCIDRs []string,
+	clusterCIDRs []string,
+) error {
 	if len(clusterCIDRs) == 0 {
 		return errors.New("the cluster's pod and service ranges are required to check a node subnet against")
 	}
@@ -135,7 +103,10 @@ func CheckNodeSubnets(nodeCIDRs, clusterCIDRs []string) error {
 	return nil
 }
 
-func parsePrefixes(field string, cidrs []string) ([]netip.Prefix, error) {
+func parsePrefixes(
+	field string,
+	cidrs []string,
+) ([]netip.Prefix, error) {
 	out := make([]netip.Prefix, 0, len(cidrs))
 	for _, cidr := range cidrs {
 		prefix, err := netip.ParsePrefix(cidr)

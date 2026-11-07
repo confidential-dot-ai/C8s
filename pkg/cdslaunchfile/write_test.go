@@ -1,4 +1,4 @@
-package cdsconfig
+package cdslaunchfile
 
 import (
 	"bytes"
@@ -8,7 +8,11 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-func testDocumentFor(t *testing.T, operatorPEM string, anchorPEM string) Document {
+func testDocumentFor(
+	t *testing.T,
+	operatorPEM string,
+	anchorPEM string,
+) Document {
 	t.Helper()
 	workloads, err := allowlist.ParseJSON([]byte(testWorkloads))
 	if err != nil {
@@ -70,27 +74,6 @@ func TestFormatRefusesADocumentCDSWouldRefuse(t *testing.T) {
 	document.NodeCIDRs = []string{"0.0.0.0/0"}
 	if _, err := Format(document); err == nil {
 		t.Fatal("Format wrote a default route as a node subnet")
-	}
-}
-
-func TestMergeWorkloadsKeepsComponentEntries(t *testing.T) {
-	const tenant = `{"schema":"c8s.allowlist/v1","workloads":{"tenant-app":{"containers":[{"digest":"sha256:` +
-		"2222222222222222222222222222222222222222222222222222222222222222" + `"}]}}}`
-	merged, err := MergeWorkloads([]byte(testWorkloads), []byte(tenant))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := merged.Workloads["c8s-router"]; !ok {
-		t.Fatalf("merged lost the component entries: %v", merged.Workloads)
-	}
-	if _, ok := merged.Workloads["tenant-app"]; !ok {
-		t.Fatalf("merged lost the tenant entries: %v", merged.Workloads)
-	}
-	if _, err := MergeWorkloads([]byte(testWorkloads), []byte(testWorkloads)); err == nil {
-		t.Fatal("a tenant document replaced a component entry")
-	}
-	if _, err := MergeWorkloads([]byte(testWorkloads), []byte{}); err == nil {
-		t.Fatal("an empty tenant document parsed as no tenant workloads")
 	}
 }
 

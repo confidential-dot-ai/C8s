@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/c8s/pkg/cdslaunchfile"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -340,15 +341,11 @@ func (d Decree) checkPins() error {
 	return nil
 }
 
-const MaxVoterSeats = 9
+// A voters decree moves the seat count the launch file seeds, under its rule.
+const MaxVoterSeats = cdslaunchfile.MaxVoterSeats
 
-// An even seat count tolerates no more loss than the odd count below it.
-// Callers name the field they read the count from.
 func CheckVoterSeats(seats int) error {
-	if seats < 1 || seats > MaxVoterSeats || seats%2 == 0 {
-		return fmt.Errorf("must be odd, between 1 and %d", MaxVoterSeats)
-	}
-	return nil
+	return cdslaunchfile.CheckVoterSeats(seats)
 }
 
 func (d Decree) checkSeats() error {

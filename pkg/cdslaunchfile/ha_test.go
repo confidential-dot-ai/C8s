@@ -1,12 +1,10 @@
-package cdsconfig
+package cdslaunchfile
 
 import (
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 )
 
 func testHAWire() haWire {
@@ -19,7 +17,11 @@ func testHAWire() haWire {
 	}
 }
 
-func testHADocument(t *testing.T, operatorPEM, anchorPEM string) wire {
+func testHADocument(
+	t *testing.T,
+	operatorPEM string,
+	anchorPEM string,
+) wire {
 	t.Helper()
 	document := testDocument(t, operatorPEM, anchorPEM)
 	block := testHAWire()
@@ -74,7 +76,7 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 		{"an empty replica", func(h *haWire) { h.Replicas = []string{""} }, "ha.replicas"},
 		{"no voter", func(h *haWire) { h.Voters = 0 }, "ha.voters"},
 		{"an even voter count", func(h *haWire) { h.Voters = 4 }, "ha.voters"},
-		{"more voters than seats", func(h *haWire) { h.Voters = cdsdecree.MaxVoterSeats + 2 }, "ha.voters"},
+		{"more voters than seats", func(h *haWire) { h.Voters = MaxVoterSeats + 2 }, "ha.voters"},
 	}
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)

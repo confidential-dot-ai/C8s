@@ -313,6 +313,7 @@ attestation and reports the operator keys it pins.
 | [`pkg/workloadclaims`](pkg/workloadclaims/) | Sandbox-token fetch and the admission-inventory socket contract |
 | [`pkg/overenc`](pkg/overenc/) | Post-quantum over-encryption channel and its identity transcript |
 | [`pkg/operatorauth`](pkg/operatorauth/) | Operator-key signing and verification for allowlist and secret writes |
+| [`pkg/cdslaunchfile`](pkg/cdslaunchfile/) | The `c8s-cds/v1` CDS launch file: parse, format, and the rules a generator checks |
 | [`pkg/types`](pkg/types/) | Shared request/response types for the C8s protocols (the attestation-api wire types live in [attestation-go/remote](https://github.com/confidential-dot-ai/attestation-go)) |
 | [`attestation-go/runtimemeasure`](https://github.com/confidential-dot-ai/attestation-go/tree/main/runtimemeasure) | TDX image-pin manifests and RTMR[3] measurement replay, consumed from attestation-go |
 | [`pkg/certutil`](pkg/certutil/) | Certificate utility functions |

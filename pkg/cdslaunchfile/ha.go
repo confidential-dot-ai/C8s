@@ -5,7 +5,7 @@
 // lives. Every other field fixes the cluster for its life, because every
 // replica boots one document and clients pin it.
 
-package cdsconfig
+package cdslaunchfile
 
 import (
 	"errors"
@@ -13,9 +13,6 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // HA is the replica set one cluster's CDS runs as.
@@ -95,11 +92,23 @@ func checkReplica(entry string) error {
 	if strings.Contains(entry, ":") {
 		return fmt.Errorf("%q must not carry a port", entry)
 	}
-	return cmdsutil.ValidateDNSName(entry)
+	return ValidateDNSName(entry)
+}
+
+const MaxVoterSeats = 9
+
+// CheckVoterSeats refuses a seat count a replica set cannot hold. An even
+// count tolerates no more loss than the odd count below it. Callers name the
+// field they read the count from.
+func CheckVoterSeats(seats int) error {
+	if seats < 1 || seats > MaxVoterSeats || seats%2 == 0 {
+		return fmt.Errorf("must be odd, between 1 and %d", MaxVoterSeats)
+	}
+	return nil
 }
 
 func checkVoters(voters int) error {
-	if err := cdsdecree.CheckVoterSeats(voters); err != nil {
+	if err := CheckVoterSeats(voters); err != nil {
 		return fmt.Errorf("ha.voters: %w", err)
 	}
 	return nil
