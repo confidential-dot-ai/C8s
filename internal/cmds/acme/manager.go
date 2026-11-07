@@ -151,6 +151,11 @@ func (m *manager) run(ctx context.Context) {
 			m.failures++
 		}
 		wait := m.recheck
+		if m.extraDomainsFile != "" {
+			// A check with nothing to issue only reads two files, so pick up
+			// route host changes at the retry pace.
+			wait = m.retry
+		}
 		if m.needsIssue() {
 			wait = min(m.retry<<min(m.failures, 6), m.recheck)
 		}
