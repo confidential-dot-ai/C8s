@@ -230,8 +230,8 @@ the snapshot's version and digest; anything else — a malformed answer, no matc
 mid-lifecycle, an ambiguous match — issues the unnamed, membership-only leaf,
 since an incomplete pod still needs a certificate. The digest pins which policy
 decided the match, so a client holding the same bytes detects skew. The router
-keeps a route's backend inside its own allowlist by requiring the two stamps to
-carry the same digest, checking the name alone while its own leaf carries no
+keeps a route's backend inside its own allowlist by requiring the entry the
+backend's stamp names to be the same in both stamps' documents, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
 parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
 reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),

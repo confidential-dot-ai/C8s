@@ -98,7 +98,15 @@ func (n *Node) CA() (*issuer.CA, bool) {
 	if !n.Serving().OK {
 		return nil, false
 	}
-	ca := n.fsm.CA()
+	return n.grantCA(n.fsm.CA())
+}
+
+func (n *Node) grantCA(ca *issuer.CA) (*issuer.CA, bool) {
+	n.clockMu.Lock()
+	defer n.clockMu.Unlock()
+	if n.clockFault != nil {
+		return nil, false
+	}
 	return ca, ca != nil
 }
 

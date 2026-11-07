@@ -1,5 +1,5 @@
 # containerd starts only on a staged floor and after every boot gate; the NRI
-# plugin it launches admits each container (nri-image-policy.toml).
+# plugin it requires admits each container (nri-image-policy.toml).
 [Unit]
 Description=containerd for the worker's kubelet
 Requires=worker-stage.service apparmor-enforce.service c8s-modules-latch.service scratch-enforce.service gpu-cc-enforce.service

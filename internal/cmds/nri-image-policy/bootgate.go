@@ -15,13 +15,11 @@ import (
 // On a measured node image nothing proves that no container ran before
 // admission existed.
 //
-// The node image pre-registers this plugin in containerd's configuration and
-// lists it in required_plugins, so containerd refuses to create a container
-// while it is absent. Ordering — the plugin's unit before containerd, and
-// containerd before the kubelet — is asserted by systemd, not by this
-// enforcer. A container already running at Synchronize means one of those
-// assumptions did not hold, and by then it has already executed: stopping it
-// is too late, so the node powers off instead.
+// The node image lists this plugin in containerd's required_plugins, so
+// containerd refuses to create a container while it is not registered, and
+// systemd runs it (nri-image-policy.service). A container already running at
+// the first Synchronize since boot means that did not hold, and by then it has
+// already executed: stopping it is too late, so the node powers off instead.
 //
 // A plugin restart is a different event. containerd stays up, its containers
 // legitimately keep running, and powering a healthy node off on every restart

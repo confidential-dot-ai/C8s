@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,7 +118,7 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 	})
 	for path, unserved := range map[string]int{
 		"/healthz":          answered,
-		"/readyz":           answered,
+		"/readyz":           http.StatusServiceUnavailable,
 		"/metrics":          answered,
 		"/ha/status":        answered,
 		"/ha/pins":          answered,
@@ -129,13 +130,72 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 		"/secrets/a/secret": http.StatusServiceUnavailable,
 	} {
 		for serving, want := range map[bool]int{true: answered, false: unserved} {
-			gated := haGate(func() bool { return serving }, routed)
+			gated := haGate(func() cdsha.Serving { return cdsha.Serving{OK: serving} }, noClockError, confirmed, routed)
 			w := httptest.NewRecorder()
 			gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 			if w.Code != want {
 				t.Errorf("GET %s with serving=%v = %d, want %d", path, serving, w.Code, want)
 			}
 		}
+	}
+}
+
+// Readiness can remain true while a follower still holds a revoked grant.
+// Each protected request must advance to the leader's committed watermark
+// before the handler decides whether to release a secret.
+func TestTheGateReadsCommittedPolicyInsteadOfACachedGrant(t *testing.T) {
+	committedGrant, appliedGrant := true, true
+	confirmations := 0
+	gated := haGate(alwaysServing, noClockError, func() error {
+		confirmations++
+		appliedGrant = committedGrant
+		return nil
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !appliedGrant {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	if code := get(t, gated, http.MethodGet, "/secrets/a/secret"); code != http.StatusOK {
+		t.Fatalf("initial secret read: HTTP %d", code)
+	}
+	committedGrant = false // The revocation has been acknowledged by the leader.
+	if code := get(t, gated, http.MethodGet, "/secrets/a/secret"); code != http.StatusForbidden {
+		t.Fatalf("secret read after acknowledged revocation: HTTP %d", code)
+	}
+	if confirmations != 2 {
+		t.Fatalf("confirmed %d reads, want one per protected request", confirmations)
+	}
+}
+
+// A valid cached readiness lease is insufficient when the quorum cannot be
+// reached. Recovery and diagnostic routes must remain reachable in that state.
+func TestTheGateRefusesUnconfirmedReadsWhileReady(t *testing.T) {
+	for _, path := range []string{"/attest", "/allowlist", "/ca", "/measurements", "/secrets/a/secret"} {
+		t.Run(path, func(t *testing.T) {
+			called := false
+			gated := haGate(alwaysServing, noClockError, func() error {
+				return errors.New("quorum unavailable")
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			if code := get(t, gated, http.MethodGet, path); code != http.StatusServiceUnavailable || called {
+				t.Fatalf("unconfirmed %s: HTTP %d, handler called=%v", path, code, called)
+			}
+		})
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/ha/status", "/ha/pins", "/ha/decrees"} {
+		t.Run(path, func(t *testing.T) {
+			gated := haGate(alwaysServing, noClockError, func() error {
+				t.Fatal("recovery route tried to confirm a read")
+				return nil
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			if code := get(t, gated, http.MethodGet, path); code != http.StatusOK {
+				t.Fatalf("recovery route %s: HTTP %d", path, code)
+			}
+		})
 	}
 }
 
@@ -155,6 +215,31 @@ func TestAReplicaCertifiesTheNodeImagesOfItsCluster(t *testing.T) {
 	}
 	if certified.Generation() != 0 {
 		t.Errorf("a replica that holds no cluster names node image version %d", certified.Generation())
+	}
+}
+
+func TestClockSkewFitsNonnegativeDuration(t *testing.T) {
+	cfg, state := replicatedRunConfig(t, attestingAPI(t))
+	for _, tt := range []struct {
+		name    string
+		skew    int64
+		invalid bool
+	}{
+		{"negative", -1, true},
+		{"minimum integer", math.MinInt64, true},
+		{"positive overflow to zero", 1 << 55, true},
+		{"first unrepresentable second", math.MaxInt64/int64(time.Second) + 1, true},
+		{"last representable second", math.MaxInt64 / int64(time.Second), false},
+		{"zero", 0, false},
+		{"default", 30, false},
+		{"custom", 17, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg.jwtClockSkew = tt.skew
+			if _, err := newMember(cfg, state); (err != nil) != tt.invalid {
+				t.Fatalf("JWT allowance %d seconds: error = %v, want invalid=%v", tt.skew, err, tt.invalid)
+			}
+		})
 	}
 }
 
@@ -233,3 +318,9 @@ func statusOf(t *testing.T, client *http.Client, url string) int {
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
+
+func alwaysServing() cdsha.Serving { return cdsha.Serving{OK: true} }
+
+func noClockError() error { return nil }
+
+func confirmed() error { return nil }

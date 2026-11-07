@@ -213,6 +213,38 @@ func TestVolumedServesWhereTheTmpfilesCreate(t *testing.T) {
 	}
 }
 
+// containerd launches its plugin_path only when it starts itself, so systemd
+// runs the admission plugin containerd requires and brings it back whenever it
+// exits, and containerd launches no second copy.
+func TestSystemdRestartsTheRequiredPlugin(t *testing.T) {
+	service := baked(t, "etc/systemd/system/nri-image-policy.service")
+	if got := unitValue(t, service, "Restart"); got != "always" {
+		t.Errorf("Restart = %q, want always: containerd never relaunches a plugin it dropped", got)
+	}
+	if got := unitValue(t, service, "StartLimitIntervalSec"); got != "0" {
+		t.Errorf("StartLimitIntervalSec = %q, want 0, so systemd never gives up", got)
+	}
+	if !slices.Contains(lines(t, baked(t, "usr/lib/systemd/system-preset/50-worker.preset")), "enable nri-image-policy.service") {
+		t.Error("the preset does not enable nri-image-policy.service")
+	}
+	var cfg struct {
+		Plugins map[string]struct {
+			PluginPath string `toml:"plugin_path"`
+		} `toml:"plugins"`
+	}
+	data, err := os.ReadFile(baked(t, containerdDropIns+"/nri-image-policy.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	pluginPath := cfg.Plugins["io.containerd.nri.v1.nri"].PluginPath
+	if plugin := unitValue(t, service, "ExecStart"); filepath.Dir(plugin) == pluginPath {
+		t.Errorf("plugin_path = %q, from which containerd would launch a second copy of %s", pluginPath, plugin)
+	}
+}
+
 // Every unit containerd requires, and every unit the presets enable, is one
 // the worker image has or its base provides.
 func TestUnitsNameUnitsTheImageHas(t *testing.T) {

@@ -97,8 +97,9 @@ type Config struct {
 	// peers dial.
 	Peer netip.AddrPort
 	// AttestationURL is the attestation-api on this VM's own loopback.
-	AttestationURL string
-	Timing         Timing
+	AttestationURL    string
+	Timing            Timing
+	OperatorClockSkew time.Duration
 	// Replicas are the names and addresses the cluster's replicas answer at,
 	// as the configuration lists them.
 	Replicas []string
@@ -123,6 +124,8 @@ func (c Config) resolve(ctx context.Context, entry string) ([]netip.AddrPort, er
 
 func (c Config) check() error {
 	switch {
+	case c.OperatorClockSkew < 0:
+		return errors.New("cds-ha: operator clock skew must be nonnegative")
 	case len(c.LaunchFile) == 0:
 		return errors.New("cds-ha: a replica launches with the configuration file it booted")
 	case !c.Peer.IsValid() || c.Peer.Addr().IsUnspecified():
@@ -186,6 +189,9 @@ type Node struct {
 	outage     atomic.Pointer[readOutage]
 	barriers   oneBarrier
 	clockJumps atomic.Uint64
+	clockMu    sync.Mutex
+	clockFault *clockFault
+	clockNow   func() time.Time
 	// servingSince and seatbook carry the seat duty between passes
 	// (serving.go, seats.go).
 	servingSince servingState
@@ -239,6 +245,7 @@ func NewNode(cfg Config) (*Node, error) {
 		seatbook:  newSeatBook(),
 		failures:  newHeartbeatFailures(),
 		transfers: newTransfers(),
+		clockNow:  time.Now,
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -567,8 +574,11 @@ func (n *Node) propose(e Entry) (Result, error) {
 // commit appends an entry to the log of the cluster this replica leads, and
 // answers the index it applied at.
 func (n *Node) commit(entry []byte) (Result, uint64, error) {
-	committed := n.raft.Apply(entry, n.cfg.Timing.Apply)
-	if err := committed.Error(); err != nil {
+	var committed raft.ApplyFuture
+	if err := n.enqueueMutation(func() raft.Future {
+		committed = n.raft.Apply(entry, n.cfg.Timing.Apply)
+		return committed
+	}); err != nil {
 		return Result{}, 0, err
 	}
 	res, applied := committed.Response().(Result)
@@ -584,6 +594,9 @@ func (n *Node) commit(entry []byte) (Result, uint64, error) {
 
 // proposable refuses an entry this replica must not put on the log.
 func (n *Node) proposable(e Entry, entry []byte) error {
+	if err := n.ClockError(); err != nil {
+		return err
+	}
 	if e.Kind != KindDecree && !n.fsm.ClusterState().Joined() {
 		return errors.New("cds-ha: this replica holds no cluster")
 	}
