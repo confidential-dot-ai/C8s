@@ -31,9 +31,11 @@ func write(opts options) error {
 			return err
 		}
 	}
-	nodes, err := readInput("node-pins", opts.nodePins)
-	if err != nil {
-		return err
+	var nodes []byte
+	if opts.nodePins != "" {
+		if nodes, err = readInput("node-pins", opts.nodePins); err != nil {
+			return err
+		}
 	}
 	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.clusterID,

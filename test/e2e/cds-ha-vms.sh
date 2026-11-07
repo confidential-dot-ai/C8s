@@ -15,7 +15,7 @@
 # NODE_CIDR, CDS_ALLOWLIST_SEED (the allowlist-seed.json 'c8s node-image
 # render' wrote at the worker image's release digests) and CDS_NODE_PINS (a
 # measurements document naming the node launch identities this cluster
-# starts out certifying, the 'c8s cds config new --node-pins' input).
+# starts out certifying, the Genesis decree's --nodes).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=test/e2e/lib.sh
@@ -111,7 +111,6 @@ c8s cds config new \
   --cluster-id "$cluster" \
   --operator-keys operator-pub.pem \
   --allowlist-seed "$CDS_ALLOWLIST_SEED" \
-  --node-pins "$CDS_NODE_PINS" \
   --node-cidr "$NODE_CIDR" \
   --pod-cidr 10.52.0.0/16 \
   --service-cidr 10.53.0.0/16 \
@@ -192,6 +191,7 @@ c8s cds ha decree genesis \
   --config launch/cds-config.yaml --operator-key operator.key \
   --target "${addresses[0]}:$port" --cds-pin launch/cds-pin.json \
   --platform sev-snp --vcpus "$SMP" --image-manifest "$CDS_IMAGE_MANIFEST" \
+  --nodes "$CDS_NODE_PINS" \
   --resume-version 0 \
   --out genesis.json
 intent=$(jq -er .decree.intent_id genesis.json)

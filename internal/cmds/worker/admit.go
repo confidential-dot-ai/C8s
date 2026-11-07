@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -32,8 +33,8 @@ type AdmitInputs struct {
 }
 
 // Admission is a worker document that passed every check. Nodes is the set
-// admitting it: every entry of AdmitInputs.Nodes, then each worker image entry
-// bound to the document's launch file digest.
+// admitting it: the set in force, if any, then each worker image entry bound
+// to the document's launch file digest.
 type Admission struct {
 	Nodes    []byte
 	document *Document
@@ -46,10 +47,42 @@ type Admission struct {
 // launch_file_digest.
 const launchDigestSchema = "2"
 
-// Admit checks a worker document and returns the node image set that admits
-// workers launched with it. It reads the document once, so the entries it
-// adds bind the bytes Parse checked.
+// Admit checks a worker document and returns the node image set in force with
+// the workers launched with it added.
 func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
+	image, err := parseWorkerImage(in.WorkerImage)
+	if err != nil {
+		return Admission{}, err
+	}
+	nodes, err := parseSetInForce(in.Nodes, image.Family)
+	if err != nil {
+		return Admission{}, err
+	}
+	return admit(document, in.CDSPin, image, nodes)
+}
+
+// AdmitFirst checks a worker document and returns the first node image set of
+// a cluster of workers: the workers launched with it, alone.
+func AdmitFirst(
+	document io.Reader,
+	cdsPin []byte,
+	workerImage []byte,
+) (Admission, error) {
+	image, err := parseWorkerImage(workerImage)
+	if err != nil {
+		return Admission{}, err
+	}
+	return admit(document, cdsPin, image, refvalues.ReferenceValues{Family: image.Family})
+}
+
+// admit adds the worker image, bound to the document, to nodes. It reads the
+// document once, so the entries it adds bind the bytes Parse checked.
+func admit(
+	document io.Reader,
+	cdsPin []byte,
+	image refvalues.ReferenceValues,
+	nodes refvalues.ReferenceValues,
+) (Admission, error) {
 	data, err := readutil.ReadAll(document, MaxDocumentSize)
 	if err != nil {
 		return Admission{}, fmt.Errorf("--worker-document: %w", err)
@@ -62,11 +95,7 @@ func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
 	if err != nil {
 		return Admission{}, err
 	}
-	if err := checkCDSPin(doc.CDS, in.CDSPin); err != nil {
-		return Admission{}, err
-	}
-	nodes, image, err := nodesAndWorkerImage(in)
-	if err != nil {
+	if err := checkCDSPin(doc.CDS, cdsPin); err != nil {
 		return Admission{}, err
 	}
 	digest, err := runtimemeasure.LaunchFileDigest(nodes.Family, data)
@@ -80,7 +109,7 @@ func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
 	nodes.Images = append(nodes.Images, added...)
 	set, err := admittedSet(nodes)
 	if err != nil {
-		return Admission{}, fmt.Errorf("--nodes with the worker image added: %w", err)
+		return Admission{}, fmt.Errorf("the node images with the worker image added: %w", err)
 	}
 	names := make([]string, len(added))
 	for i, pin := range added {
@@ -89,24 +118,31 @@ func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
 	return Admission{Nodes: set, document: doc, ca: ca, digest: digest, added: names}, nil
 }
 
-// nodesAndWorkerImage are the set in force and the worker image's
-// measurements, of one TEE family, the worker image binding no launch yet.
-func nodesAndWorkerImage(in AdmitInputs) (nodes, image refvalues.ReferenceValues, err error) {
-	if nodes, err = refvalues.Parse(in.Nodes); err != nil {
-		return nodes, image, fmt.Errorf("--nodes: %w", err)
-	}
-	if image, err = refvalues.Parse(in.WorkerImage); err != nil {
-		return nodes, image, fmt.Errorf("--worker-image: %w", err)
-	}
-	if image.Family != nodes.Family {
-		return nodes, image, fmt.Errorf("--worker-image pins a %s image and --nodes %s ones: one node image set holds one TEE family", image.Family, nodes.Family)
+// parseWorkerImage is the worker image's measurements, binding no launch yet.
+func parseWorkerImage(measurements []byte) (refvalues.ReferenceValues, error) {
+	image, err := refvalues.Parse(measurements)
+	if err != nil {
+		return image, fmt.Errorf("--worker-image: %w", err)
 	}
 	for _, pin := range image.Images {
 		if cdsdecree.EntryBindsLaunch(pin) {
-			return nodes, image, fmt.Errorf("--worker-image entry %q binds a launch already: pass the image's measurements as 'c8s measurements derive' writes them", pin.Name)
+			return image, fmt.Errorf("--worker-image entry %q binds a launch already: pass the image's measurements as 'c8s measurements derive' writes them", pin.Name)
 		}
 	}
-	return nodes, image, nil
+	return image, nil
+}
+
+// parseSetInForce is the node image set a worker joins, of the worker image's
+// TEE family.
+func parseSetInForce(nodes []byte, family teetypes.Family) (refvalues.ReferenceValues, error) {
+	set, err := refvalues.Parse(nodes)
+	if err != nil {
+		return set, fmt.Errorf("--nodes: %w", err)
+	}
+	if set.Family != family {
+		return set, fmt.Errorf("--worker-image pins a %s image and --nodes %s ones: one node image set holds one TEE family", family, set.Family)
+	}
+	return set, nil
 }
 
 // boundTo is each entry of image bound to the launch file of digest, named

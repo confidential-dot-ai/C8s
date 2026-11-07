@@ -53,7 +53,10 @@ The replicas are booted and none of them holds a cluster.
    `--resume-version 0` is the first cluster under this cluster id. Every
    later Genesis names the highest version the old cluster reached.
    `--nodes` overrides the node images the cluster starts out certifying; the
-   launch file's `nodes` is the default.
+   launch file's `nodes` is the default. A cluster of workers whose launch
+   file names no nodes starts from its first worker document instead: add
+   `--worker-document worker.yaml --worker-image worker-image.json`
+   ([launch-configuration.md](launch-configuration.md#admitting-a-worker-document)).
 
 3. Wait for the cluster. Within a few seconds of the decree being posted, the
    decreed replica leads and the others join:

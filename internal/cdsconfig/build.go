@@ -16,7 +16,8 @@ type Inputs struct {
 	// the operator's own, nil for a cluster running components only.
 	ComponentSeed   []byte
 	TenantWorkloads []byte
-	// Nodes is the measurements document pinning the nodes CDS admits.
+	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// for a replica set whose Genesis names the first set.
 	Nodes []byte
 	// NodeCIDRs are the subnets CDS may dial a sandbox inventory in;
 	// ClusterCIDRs are the pod and service ranges they may not reach into.

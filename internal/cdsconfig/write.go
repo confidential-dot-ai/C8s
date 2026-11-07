@@ -29,7 +29,8 @@ type Document struct {
 	OperatorKeys operatorauth.KeyBundle
 	// Workloads is the cluster's allowlist, as MergeWorkloads builds it.
 	Workloads *allowlist.Allowlist
-	// Nodes is the measurements document pinning the nodes CDS admits.
+	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// for a replica set whose Genesis names the first set.
 	Nodes []byte
 	// NodeCIDRs are the subnets CDS may call a sandbox inventory on.
 	NodeCIDRs []string
