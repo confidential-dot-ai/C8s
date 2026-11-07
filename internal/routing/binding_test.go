@@ -383,3 +383,39 @@ func TestListenerChecksTheExpectedAllowlist(t *testing.T) {
 		t.Fatalf("backend served %d requests after refusals, want %d", got, hits)
 	}
 }
+
+// TestListenerChecksTheExpectedRoute: a request carrying X-C8s-Expect-Route is
+// routed only while that digest is the applied one, and the backend never sees
+// the header.
+func TestListenerChecksTheExpectedRoute(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	digest := f.state.Current().Signed.Digest()
+	get := func(expect string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = testHost
+		r.Header.Set(ExpectRouteHeader, expect)
+		w := httptest.NewRecorder()
+		f.proxy.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := get(hex.EncodeToString(digest[:])); w.Code != http.StatusOK {
+		t.Fatalf("GET / expecting the applied route digest = %d %q, want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := web.seen().header.Values(ExpectRouteHeader); len(got) != 0 {
+		t.Fatalf("backend saw %s %q, want it dropped", ExpectRouteHeader, got)
+	}
+
+	hits := web.hits.Load()
+	f.apply(t, simpleManifest(2, web.addr()))
+	for _, expect := range []string{hex.EncodeToString(digest[:]), "not hex", hex.EncodeToString(digest[:16])} {
+		if w := get(expect); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
+			t.Fatalf("GET / expecting %q = %d %q, want 503 %q", expect, w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
+		}
+	}
+	if got := web.hits.Load(); got != hits {
+		t.Fatalf("backend served %d requests after refusals, want %d", got, hits)
+	}
+}
