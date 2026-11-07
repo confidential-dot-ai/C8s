@@ -28,11 +28,10 @@ import (
 
 type routeFixture struct {
 	router   http.Handler
-	store    *allowlist.Handle
+	store    *allowlist.Store
 	signer   *operatorauth.Signer
 	rogue    *operatorauth.Signer
 	key      *ecdsa.PublicKey
-	mesh     ownCA
 	meshCA   *x509.Certificate
 	meshPEM  string
 	otherPEM string
@@ -57,11 +56,10 @@ func operatorSigner(t *testing.T) (*operatorauth.Signer, *ecdsa.PublicKey) {
 
 // newRouteFixture mounts the route handler on the production router with the
 // production operator verifier, over store.
-func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
+func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	t.Helper()
 	mesh := testMeshCA(t)
-	issuing, _ := mesh.Current()
-	meshCert := issuing.CA.Cert
+	meshCert := mesh.Current().CA.Cert
 	other, err := issuer.NewCA("backend ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -71,14 +69,9 @@ func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
 	authorize := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize
 	return &routeFixture{
 		router: newRouter(dependencies{
-			Routes: routeHandler{
-				Allowlist: store,
-				Authorize: authorize,
-				MeshCA:    mesh,
-			},
+			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: meshCert},
 			ReadyFn:          func() bool { return true },
 			MeshCA:           mesh,
-			NodeImages:       certifying(),
 			RateLimiter:      newTestRateLimiter(t),
 			ChallengeLimiter: newTestRateLimiter(t),
 			MaxRequestSize:   65536,
@@ -87,21 +80,20 @@ func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
 		signer:   signer,
 		rogue:    rogue,
 		key:      key,
-		mesh:     mesh,
 		meshCA:   meshCert,
 		meshPEM:  string(certutil.EncodeCertPEM(meshCert.Raw)),
 		otherPEM: string(certutil.EncodeCertPEM(other.Cert.Raw)),
 	}
 }
 
-func inMemoryStore(t *testing.T) *allowlist.Handle {
+func inMemoryStore(t *testing.T) *allowlist.Store {
 	t.Helper()
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	return store.Local()
+	return &store
 }
 
 // manifest returns manifest bytes at revision with one workload route, plus
@@ -304,11 +296,7 @@ func TestRoutePutWithoutOperatorKeys(t *testing.T) {
 		"disabled": operatorauth.Verifier{}.Authorize,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := routeHandler{
-				Allowlist: store,
-				Authorize: authorize,
-				MeshCA:    f.mesh,
-			}
+			h := routeHandler{Store: store, Authorize: authorize, MeshCA: f.meshCA}
 			req := httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b))
 			req.Header.Set("Authorization", auth)
 			w := httptest.NewRecorder()
@@ -420,10 +408,10 @@ func TestRoutesSurviveRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return s
+		return &s
 	}
 	first := open()
-	f := newRouteFixture(t, first.Local())
+	f := newRouteFixture(t, first)
 	b := manifest(t, 2, "")
 	if w := f.put(t, b, sign(t, f.signer, http.MethodPut, routes.Path, b)); w.Code != http.StatusNoContent {
 		t.Fatalf("PUT /routes = %d, want 204", w.Code)
@@ -435,7 +423,7 @@ func TestRoutesSurviveRestart(t *testing.T) {
 
 	second := open()
 	t.Cleanup(func() { _ = second.Close() })
-	g := newRouteFixture(t, second.Local())
+	g := newRouteFixture(t, second)
 	if w := g.get(t); w.Code != http.StatusOK || w.Body.String() != before {
 		t.Fatalf("GET /routes after restart = %d %s, want 200 %s", w.Code, w.Body, before)
 	}
@@ -450,11 +438,10 @@ func TestRouteHandlersReturn500OnStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed := store.Local()
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f := newRouteFixture(t, closed)
+	f := newRouteFixture(t, &store)
 	if w := f.get(t); w.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /routes = %d, want 500", w.Code)
 	}
@@ -464,38 +451,23 @@ func TestRouteHandlersReturn500OnStoreFailure(t *testing.T) {
 	}
 }
 
-// holdsNoCA is a replica that may not issue under its cluster's mesh CA.
-type holdsNoCA struct{}
-
-func (holdsNoCA) Current() (issuer.CurrentCA, bool) {
-	return issuer.CurrentCA{}, false
-}
-
-// C3 cannot run its mesh-CA check while the CDS holds no mesh CA, so writes
-// fail closed, after authorization.
-func TestRoutePutWhileTheCDSHoldsNoMeshCA(t *testing.T) {
+// C3 cannot run its mesh-CA check without the mesh CA, so writes fail closed,
+// after authorization.
+func TestRoutePutWithoutMeshCA(t *testing.T) {
 	store := inMemoryStore(t)
 	f := newRouteFixture(t, store)
-	h := routeHandler{
-		Allowlist: store,
-		Authorize: func(*http.Request, []byte) error { return nil },
-		MeshCA:    holdsNoCA{},
-	}
+	h := routeHandler{Store: store, Authorize: func(*http.Request, []byte) error { return nil }}
 	b := manifest(t, 1, f.otherPEM)
 	w := httptest.NewRecorder()
 	h.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("PUT /routes while the CDS holds no mesh CA = %d, want 503", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("PUT /routes without a mesh CA = %d, want 500", w.Code)
 	}
 	if _, err := store.LoadRoutes(); err == nil {
 		t.Fatal("a manifest was stored without the mesh CA check")
 	}
 
-	unauthenticated := routeHandler{
-		Allowlist: store,
-		Authorize: func(*http.Request, []byte) error { return errors.New("no token") },
-		MeshCA:    holdsNoCA{},
-	}
+	unauthenticated := routeHandler{Store: store, Authorize: func(*http.Request, []byte) error { return errors.New("no token") }}
 	w = httptest.NewRecorder()
 	unauthenticated.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))
 	if w.Code != http.StatusUnauthorized {

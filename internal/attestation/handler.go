@@ -8,20 +8,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // HandleAuthenticate returns a handler that issues a single-use base64
-// challenge nonce. A replica that cannot mint one answers 503, so the caller
-// retries instead of holding a nonce nothing will redeem.
-func HandleAuthenticate(challenges Challenges) http.HandlerFunc {
+// challenge nonce.
+func HandleAuthenticate(challenges *ChallengeStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		challenge, err := challenges.Create()
-		if err != nil {
-			httputil.WriteUnavailable(w, err)
-			return
-		}
+		challenge := challenges.Create()
 		encoded := base64.StdEncoding.EncodeToString(challenge[:])
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: encoded})

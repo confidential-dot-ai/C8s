@@ -23,11 +23,7 @@ func TestAttestKeepsNodeOperatorBoundToImage(t *testing.T) {
 	server, agent := []byte("server key"), []byte("agent key")
 	stub := newStubAttestationApi(t, hex.EncodeToString(digest))
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.NodeImages = certifying(remote.ImagePin{
-		Name:   "server",
-		Digest: digest,
-		Anchor: server,
-	})
+	h.Images = []remote.ImagePin{{Name: "server", Digest: digest, Anchor: server}}
 	csr, _ := generateCSR(t)
 	for _, tc := range []struct {
 		name   string
@@ -78,11 +74,7 @@ func TestAttestReplaysRuntimeExtensions(t *testing.T) {
 	q := "sha256:" + strings.Repeat("2", 64)
 	stub := newStubAttestationApi(t, testMRTD)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.NodeImages = certifying(remote.ImagePin{
-		Name:   "server",
-		Digest: digest,
-		Anchor: anchor,
-	})
+	h.Images = []remote.ImagePin{{Name: "server", Digest: digest, Anchor: anchor}}
 	csr, _ := generateCSR(t)
 	for _, tc := range []struct {
 		name     string

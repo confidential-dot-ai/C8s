@@ -53,9 +53,6 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [cloud-cds.md](cloud-cds.md) | how-to | Where a cloud cluster's CDS runs, the flows it needs, node pins on AKS and GKE |
 | [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
 | [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
-| [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |
-| [cds-ha-runbooks.md](cds-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated CDS |
-| [cds-ha-alerts.md](cds-ha-alerts.md) | reference | What to watch on a replicated CDS |
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |

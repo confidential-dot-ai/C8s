@@ -91,10 +91,6 @@ type plugin struct {
 	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
 	cdsPins string
 
-	// awaitingDecree holds back every container cdsPins would be mounted
-	// into while the node takes its first CDS pin decree (main.go).
-	awaitingDecree atomic.Bool
-
 	// cdsAddress is the node-side path of the CDS endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
 	// prepareCDSAddress sets it before any container can be created

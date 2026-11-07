@@ -125,11 +125,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 				verdict.ReportDataMatch = teetypes.Ptr(false)
 			}
 			verifier.SetVerdict(verdict)
-			source, _, err := pull.cdsPinSource(discardLogger())
-			if err != nil {
-				t.Fatal(err)
-			}
-			client, err := allowlistPullHTTPClient(pull, source, testClusterDNS)
+			client, err := allowlistPullHTTPClient(pull, testClusterDNS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -167,7 +163,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 		if err := os.WriteFile(pinsPath, []byte(`{"schema_version":"1","tee":"tdx","measurements":[{"mrtd":"invalid"}]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := pull.cdsPinSource(discardLogger()); err == nil {
+		if _, err := allowlistPullHTTPClient(pull, testClusterDNS); err == nil {
 			t.Fatal("invalid staged CDS pins produced a client")
 		}
 	})

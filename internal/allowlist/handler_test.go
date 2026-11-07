@@ -32,20 +32,19 @@ const (
 	digestMissing = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 )
 
-// openInMemory opens an empty allowlist whose writes apply to its own store,
-// its history started as CDS starts it before serving.
-func openInMemory(t *testing.T) *allowlist.Handle {
+// openInMemory opens an empty allowlist store, its history started as CDS
+// starts it before serving.
+func openInMemory(t *testing.T) *allowlist.Store {
 	t.Helper()
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatalf("open in-memory store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	handle := store.Local()
-	if err := handle.StartJournal(); err != nil {
+	if err := store.StartJournal(); err != nil {
 		t.Fatalf("start journal: %v", err)
 	}
-	return handle
+	return &store
 }
 
 // testOperatorCredential generates an operator key pair: a Signer for minting
@@ -91,7 +90,7 @@ func testAllowlistApp(t *testing.T) (http.Handler, *readiness.Checker, *operator
 	// Writes authorize through the production operatorauth.Verifier, so these
 	// tests exercise the same auth path a deployment runs.
 	wh := allowlist.Handler{
-		Allowlist:       store,
+		Store:           store,
 		WriteAuthorizer: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{pub}, ClockSkew: 30 * time.Second}.Authorize,
 	}
 
@@ -299,14 +298,15 @@ func TestAllowlistReplaceIfMatch(t *testing.T) {
 // A precondition no version can satisfy is refused before the write is
 // authorized, so it does not spend the operator's one-shot token.
 func TestAllowlistReplaceRefusesUnmatchableIfMatchBeforeAuth(t *testing.T) {
-	spent := false
-	h := allowlist.Handler{
-		Allowlist: openInMemory(t),
-		WriteAuthorizer: func(*http.Request, []byte) error {
-			spent = true
-			return nil
-		},
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open in-memory store: %v", err)
 	}
+	spent := false
+	h := allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error {
+		spent = true
+		return nil
+	}}
 
 	if code := putAllowlistIfMatch(t, h, oneEntryDocument("web", digestA), `W/"1"`); code != http.StatusPreconditionFailed {
 		t.Fatalf("weak If-Match: got %d, want 412", code)
@@ -318,13 +318,10 @@ func TestAllowlistReplaceRefusesUnmatchableIfMatchBeforeAuth(t *testing.T) {
 
 // guardTestHandler builds a Handler with a permissive authorizer, for tests of
 // the post-auth request-decoding guards.
-func guardTestHandler(t *testing.T) (allowlist.Handler, *allowlist.Handle) {
+func guardTestHandler(t *testing.T) (allowlist.Handler, *allowlist.Store) {
 	t.Helper()
 	store := openInMemory(t)
-	h := allowlist.Handler{
-		Allowlist:       store,
-		WriteAuthorizer: func(*http.Request, []byte) error { return nil },
-	}
+	h := allowlist.Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
 	return h, store
 }
 
@@ -383,7 +380,7 @@ func TestAllowlistReplaceExplicitEmptyClears(t *testing.T) {
 
 // seedEntry makes the stored allowlist the document holding one named entry
 // at digest.
-func seedEntry(t *testing.T, store *allowlist.Handle, name, digest string) {
+func seedEntry(t *testing.T, store *allowlist.Store, name, digest string) {
 	t.Helper()
 	d, err := types.ParseDigest(digest)
 	if err != nil {
@@ -482,7 +479,7 @@ func TestReplaceRejectsBodyOverConfiguredCap(t *testing.T) {
 	asClient := remote.NewClient("http://localhost:0")
 	checker := readiness.NewChecker(asClient, 10*time.Second)
 	wh := allowlist.Handler{
-		Allowlist:         store,
+		Store:             store,
 		WriteAuthorizer:   operatorauth.Verifier{Keys: []*ecdsa.PublicKey{pub}, ClockSkew: 30 * time.Second}.Authorize,
 		MaxWriteBodyBytes: 64,
 	}
@@ -584,7 +581,7 @@ func TestAllowlistListTagsTheServedBytes(t *testing.T) {
 	store := openInMemory(t)
 	seedEntry(t, store, "web", digestA)
 
-	rec := list(allowlist.Handler{Allowlist: store}, "")
+	rec := list(allowlist.Handler{Store: store}, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -609,7 +606,7 @@ func TestAllowlistListTagsTheServedBytes(t *testing.T) {
 // not the bytes.
 func TestAllowlistListAnswers304ToTheServedTag(t *testing.T) {
 	store := openInMemory(t)
-	h := allowlist.Handler{Allowlist: store}
+	h := allowlist.Handler{Store: store}
 	wantNotModified := func(after, tag string) {
 		t.Helper()
 		rec := list(h, tag)
@@ -659,7 +656,7 @@ func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
 	if previousVersion != version {
 		t.Fatalf("the stores are at versions %s and %s; the case needs one version", previousVersion, version)
 	}
-	h := allowlist.Handler{Allowlist: current}
+	h := allowlist.Handler{Store: current}
 	wantServed := func(tag, webDigest string) {
 		t.Helper()
 		rec := list(h, tag)
@@ -675,7 +672,7 @@ func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
 		}
 	}
 
-	wantServed(servedTag(t, allowlist.Handler{Allowlist: previous}), digestMissing)
+	wantServed(servedTag(t, allowlist.Handler{Store: previous}), digestMissing)
 	earlier := servedTag(t, h)
 	seedEntry(t, current, "web", digestA)
 	wantServed(earlier, digestA)
@@ -686,8 +683,11 @@ func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
 // TestAllowlistWritesRejectedWithoutAuthorizer pins the fail-closed default:
 // a Handler wired without a WriteAuthorizer refuses every mutation.
 func TestAllowlistWritesRejectedWithoutAuthorizer(t *testing.T) {
-	store := openInMemory(t)
-	h := allowlist.Handler{Allowlist: store}
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open in-memory store: %v", err)
+	}
+	h := allowlist.Handler{Store: &store}
 
 	rec := httptest.NewRecorder()
 	h.HandleReplaceAll(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(oneEntryDocument("web", digestA))))
@@ -726,14 +726,10 @@ func TestAllowlistHandlersReturn500OnStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open in-memory store: %v", err)
 	}
-	allowlistWrites := store.Local()
 	if err := store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	h := allowlist.Handler{
-		Allowlist:       allowlistWrites,
-		WriteAuthorizer: func(*http.Request, []byte) error { return nil },
-	}
+	h := allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
 
 	for _, tc := range []struct {
 		name    string
