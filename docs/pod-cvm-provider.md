@@ -274,6 +274,24 @@ Ordinary Kubernetes Service/EndpointSlice routing therefore cannot use those
 shared endpoints. With `publicIP: "dedicated"`, a Pod IP is published only after
 all declared endpoints preserve their original ports on one address.
 
+For each Pod with published application endpoints, the provider also keeps a
+selector-less ClusterIP Service of the Pod's name and one EndpointSlice that
+points at those endpoints. Service port `<containerPort>` (named
+`app-<containerPort>`) reaches the Cloud endpoint for that port, ready only
+while the Pod is `Ready`. The Pod owns both objects, so Kubernetes collects them
+with it; the provider deletes them as soon as it withdraws the endpoints. It
+never adopts an existing Service or EndpointSlice the Pod does not control. In
+the cluster the router dials a Pod CVM at this ClusterIP, which its mesh
+endpoint leaves uncaptured, so the router's own armTLS connection is not
+wrapped a second time.
+
+`c8s routes sync --host-suffix .<domain>` routes Pods annotated
+`confidential.ai/route-host=<host>` and
+`confidential.ai/route-workload=<allowlist workload>` to that Service, and
+stores a new signed route manifest only when the hosts under the suffix change.
+`confidential.ai/route-port` picks the port of a Service with several. It needs
+the operator key, so run it where the key lives, once or with `--interval`.
+
 Signed `meshPeers` enable authenticated TCP connections to known peer tuples.
 Other IPv4 TCP/UDP traffic uses the guest's internet egress and upstream DNS.
 This provider does not discover peers dynamically, select a Cloud private network
