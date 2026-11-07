@@ -108,7 +108,7 @@ jobs:
       # The replace and go.work do not reach importers of the root, so a root
       # change that needs unpublished pkg/launchfile code lands in two steps.
       - name: Build as a pkg/launchfile importer
-        run: .github/scripts/launchfile-module.sh downstream-build
+        run: bash .github/scripts/launchfile-module.sh downstream-build
 
       - name: Build macOS CLI
         run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/c8s-darwin ./cmd/c8s

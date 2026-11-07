@@ -163,7 +163,7 @@ jobs:
         env:
           TARGET_SHA: ${{ inputs.target-sha }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: .github/scripts/launchfile-module.sh release-plan
+        run: bash .github/scripts/launchfile-module.sh release-plan
 
   images:
     name: Build release image (${{ matrix.binary }})
