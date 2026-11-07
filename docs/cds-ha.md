@@ -75,6 +75,12 @@ that one name, or a load balancer in front of them, is what makes a client's
 request survive the loss of a replica: ordinary DNS resolution and the
 client's own retry do the failover.
 
+A load balancer in front of the replicas must pass TLS through to them
+without terminating it: the TLS session to a replica is the attested channel.
+It must also health-check each replica with an HTTPS `GET /readyz` on 8443. A
+replica that does not serve fails `/readyz` but still accepts connections, so
+a TCP health check keeps it in rotation.
+
 ## Decrees
 
 An operator instructs a cluster by signing a decree with a key the launch file
