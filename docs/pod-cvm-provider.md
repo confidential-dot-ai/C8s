@@ -289,7 +289,12 @@ wrapped a second time.
 `confidential.ai/route-host=<host>` and
 `confidential.ai/route-workload=<allowlist workload>` to that Service, and
 stores a new signed route manifest only when the hosts under the suffix change.
-`confidential.ai/route-port` picks the port of a Service with several. It needs
+`confidential.ai/route-port` picks the port of a Service with several. A Pod
+that also carries `confidential.ai/cw=<id>` gets a route pinned to that
+assigned workload ID (`assignedWorkloadID` on the backend): the router then
+requires the ID in the Pod CVM's leaf as well as the workload name, so one
+user's host never reaches another user's Pod running the same workload
+(`c8s routes add --assigned-workload` writes the same pin by hand). It needs
 the operator key, so run it where the key lives, once or with `--interval`.
 
 Signed `meshPeers` enable authenticated TCP connections to known peer tuples.

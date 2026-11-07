@@ -75,3 +75,33 @@ func TestB1PodCVMBackend(t *testing.T) {
 		})
 	}
 }
+
+// A route that pins an assigned workload ID reaches only the pod CVM whose
+// leaf carries exactly that ID, besides the workload name; another user's
+// pod and a leaf without the ID are refused before any request is written.
+func TestB1PodCVMAssignedWorkloadPin(t *testing.T) {
+	f := newFixture(t)
+	for i, tc := range []struct {
+		name string
+		leaf tls.Certificate
+		want int
+	}{
+		{"match", podLeaf(t, f.mesh, "web", "user-alice"), http.StatusOK},
+		{"mismatch", podLeaf(t, f.mesh, "web", "user-bob"), http.StatusBadGateway},
+		{"missing", podLeaf(t, f.mesh, "web", ""), http.StatusBadGateway},
+		{"match but another workload", podLeaf(t, f.mesh, "admin", "user-alice"), http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := startBackend(t, "web", tc.leaf)
+			r := workloadRoute("/", "prefix", b.addr(), "web")
+			r.backend["assignedWorkloadID"] = "user-alice"
+			f.apply(t, manifestSpec{revision: uint64(i + 1), hosts: map[string][]route{testHost: {r}}})
+			if got := f.get("/").Code; got != tc.want {
+				t.Fatalf("GET / = %d, want %d", got, tc.want)
+			}
+			if tc.want != http.StatusOK && b.hits.Load() != 0 {
+				t.Fatalf("backend saw %d requests after a refused pin, want 0", b.hits.Load())
+			}
+		})
+	}
+}

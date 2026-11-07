@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func routedPod(name, host string, age time.Duration) *corev1.Pod {
@@ -108,5 +109,33 @@ func TestSyncRefusesBadSuffixAndUnroutableServices(t *testing.T) {
 		if !strings.Contains(h.stderr.String(), "skipping pod agents/"+pod) {
 			t.Fatalf("stderr does not report %s: %s", pod, h.stderr.String())
 		}
+	}
+}
+
+// sync pins each route to the pod's confidential.ai/cw, rewrites the route
+// when that changes, and skips a pod whose value no leaf could carry.
+func TestSyncPinsTheAssignedWorkloadID(t *testing.T) {
+	h := newHarness(t)
+	alice := routedPod("alice", "alice.agents.example", time.Hour)
+	alice.Annotations[workloadclaims.AnnotationWorkloadID] = "user-alice"
+	bad := routedPod("bad", "bad.agents.example", 0)
+	bad.Annotations[workloadclaims.AnnotationWorkloadID] = "user bad"
+	kube := fakeKube(t, alice, podService("alice", "10.43.0.10", 4096), bad, podService("bad", "10.43.0.14", 4096))
+	sync := []string{"sync", "--new", "--host-suffix", ".agents.example"}
+	h.mustRun(t, sync...)
+	m := h.cds.stored(t)
+	if got := m.Hosts["alice.agents.example"].Routes[0].Backend; got.Workload != "opencode" || got.AssignedWorkloadID != "user-alice" {
+		t.Fatalf("alice backend = %+v", got)
+	}
+	if _, ok := m.Hosts["bad.agents.example"]; ok || !strings.Contains(h.stderr.String(), "skipping pod agents/bad") {
+		t.Fatalf("pod with an invalid workload ID routed: %+v, stderr %s", m.Hosts, h.stderr.String())
+	}
+	alice.Annotations[workloadclaims.AnnotationWorkloadID] = "user-alice2"
+	if _, err := kube.CoreV1().Pods("agents").Update(t.Context(), alice, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustRun(t, sync...)
+	if got := h.cds.stored(t).Hosts["alice.agents.example"].Routes[0].Backend.AssignedWorkloadID; got != "user-alice2" {
+		t.Fatalf("changed annotation not synced: %q", got)
 	}
 }
