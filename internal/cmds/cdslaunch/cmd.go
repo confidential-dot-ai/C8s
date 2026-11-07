@@ -79,7 +79,7 @@ fix the cluster for its life.`,
 	f.StringVar(&opts.operatorKeys, "operator-keys", "", "PEM bundle of the operator public keys authorizing policy writes")
 	f.StringVar(&opts.allowlistSeed, "allowlist-seed", "", "JSON allowlist holding this cluster's component entries")
 	f.StringVar(&opts.workloads, "workloads", "", "JSON allowlist of tenant workloads added to the seed; an entry may not take a component entry's name")
-	f.StringVar(&opts.nodePins, "node-pins", "", "measurements config pinning the node launch identities CDS admits and serves")
+	f.StringVar(&opts.nodePins, "node-pins", "", "measurements config pinning the node launch identities CDS admits and serves (required without --replica: a replica set's Genesis decree may name them instead)")
 	f.StringArrayVar(&opts.nodeCIDRs, "node-cidr", nil, "subnet holding the node addresses CDS may dial for a sandbox's admission inventory; repeatable")
 	f.StringArrayVar(&opts.podCIDRs, "pod-cidr", nil, "the cluster's pod range; a node subnet reaching into it is refused; repeatable")
 	f.StringArrayVar(&opts.serviceCIDRs, "service-cidr", nil, "the cluster's service range; a node subnet reaching into it is refused; repeatable")
@@ -95,7 +95,6 @@ fix the cluster for its life.`,
 		"cluster-id",
 		"operator-keys",
 		"allowlist-seed",
-		"node-pins",
 		"node-cidr",
 		"pod-cidr",
 		"service-cidr",

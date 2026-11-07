@@ -40,7 +40,7 @@ cluster; the log rules afterwards.
 
 | Field | Role | How it changes |
 |---|---|---|
-| `nodes` | the node images the cluster certifies at its Genesis | a `node-images` decree, which carries the whole set |
+| `nodes` | the node images the cluster certifies at its Genesis, if any | a `node-images` decree, which carries the whole set |
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
@@ -236,6 +236,9 @@ posted to refuse one that binds none. A Genesis carries the nodes it names as
 they are. An upgrade is two decrees with the node relaunches between them:
 first the old and the new image together, then the new image alone. No launch
 file, client pin or CDS VM changes for it. Runbook 5 has the steps.
+
+A launch file may name no nodes. The Genesis of a cluster of workers then
+certifies only the workers of its first worker document (`--worker-document`).
 
 For a verifier this moves where the set comes from. The launch file's `nodes`
 is only the set the cluster started from, so

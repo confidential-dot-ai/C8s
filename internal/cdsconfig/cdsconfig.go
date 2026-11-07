@@ -29,7 +29,8 @@ type Config struct {
 	// OperatorKeys authorize policy writes.
 	OperatorKeys operatorauth.KeyBundle
 	Workloads    *allowlist.Allowlist
-	// Nodes pins the node launch identities CDS admits and serves.
+	// Nodes pins the node launch identities CDS admits and serves. A replica
+	// set's may be empty, and its Genesis then names the first set.
 	Nodes refvalues.ReferenceValues
 	// NodeCIDRs bounds the addresses CDS may call a sandbox inventory on.
 	NodeCIDRs workloadclaims.CIDRHosts
@@ -49,7 +50,7 @@ type wire struct {
 	ClusterID          string   `yaml:"clusterID"`
 	OperatorPublicKeys string   `yaml:"operatorPublicKeys"`
 	Workloads          string   `yaml:"workloads"`
-	Nodes              string   `yaml:"nodes"`
+	Nodes              string   `yaml:"nodes,omitempty"`
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
@@ -81,9 +82,9 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workloads: %w", err)
 	}
-	nodes, err := refvalues.Parse([]byte(w.Nodes))
+	nodes, err := parseNodes(w.Nodes)
 	if err != nil {
-		return nil, fmt.Errorf("nodes: %w", err)
+		return nil, err
 	}
 	subnets, err := parseNodeCIDRs(w.NodeCIDRs)
 	if err != nil {
@@ -97,6 +98,9 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
+		return nil, err
+	}
 	return &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
@@ -106,6 +110,28 @@ func (w wire) parse() (*Config, error) {
 		DNSSANPatterns: patterns,
 		HA:             ha,
 	}, nil
+}
+
+// parseNodes reads the node pins a launch file names, which may be none.
+func parseNodes(document string) (refvalues.ReferenceValues, error) {
+	if document == "" {
+		return refvalues.ReferenceValues{}, nil
+	}
+	nodes, err := refvalues.Parse([]byte(document))
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
+	}
+	return nodes, nil
+}
+
+// checkSingleCDSNamesNodes requires a single CDS to name its nodes: it
+// certifies the launch file's set for life, where a replica set's Genesis
+// may name the first.
+func checkSingleCDSNamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
+	if runsASingleCDS(ha) && nodes.Empty() {
+		return errors.New("nodes: a single CDS certifies only the nodes its launch file names, and this one names none")
+	}
+	return nil
 }
 
 // Cluster is what a client takes from the launch file it pins its CDS to.

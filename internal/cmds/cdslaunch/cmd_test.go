@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,6 +86,12 @@ func inputs(t *testing.T, out string) []string {
 		"--platform", "sev-snp",
 		"--vcpus", "4",
 	}
+}
+
+// withoutNodePins are args with --node-pins and its value taken out.
+func withoutNodePins(args []string) []string {
+	flag := slices.Index(args, "--node-pins")
+	return slices.Concat(args[:flag], args[flag+2:])
 }
 
 func run(t *testing.T, args ...string) error {
@@ -210,6 +217,28 @@ func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 	}
 	if cfg := parseWritten(t, out); cfg.HA != nil {
 		t.Fatalf("replica set = %+v, want the singleton CDS", cfg.HA)
+	}
+}
+
+// A replica set's Genesis may name its first node set; a single CDS has no
+// Genesis.
+func TestNewNeedsNodePinsOnlyForASingleCDS(t *testing.T) {
+	single := filepath.Join(t.TempDir(), "cds")
+	if err := run(t, withoutNodePins(inputs(t, single))...); err == nil {
+		t.Fatal("a single CDS naming no nodes was written")
+	}
+	if _, err := os.Stat(single); !os.IsNotExist(err) {
+		t.Fatal("the refused run still wrote its outputs")
+	}
+	replicated := filepath.Join(t.TempDir(), "cds")
+	args := append(withoutNodePins(inputs(t, replicated)),
+		"--replica", "cds-1.acme.example",
+		"--voters", "1")
+	if err := run(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := parseWritten(t, replicated); !cfg.Nodes.Empty() {
+		t.Fatalf("nodes = %+v, want none", cfg.Nodes)
 	}
 }
 

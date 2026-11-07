@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -267,10 +268,100 @@ func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile 
 	return set.Images, nil
 }
 
+// workerFlags name a worker document whose workers a decree also certifies,
+// and the worker image they launch.
+type workerFlags struct {
+	document string
+	image    string
+}
+
+func bindWorkerFlags(cmd *cobra.Command, w *workerFlags) {
+	f := cmd.Flags()
+	f.StringVar(&w.document, "worker-document", "", "worker document, as 'c8s worker new' writes it, whose workers the decree also certifies")
+	f.StringVar(&w.image, "worker-image", "", "measurements document pinning the worker image, as 'c8s measurements derive' writes it")
+	cmd.MarkFlagsRequiredTogether("worker-document", "worker-image")
+}
+
+func (w workerFlags) given() bool {
+	return w.document != ""
+}
+
+// addTo is nodes with the workers launched with the document added, once the
+// operator confirms the cluster facts the document carries.
+func (w workerFlags) addTo(
+	cmd *cobra.Command,
+	cdsPinPath string,
+	nodes []byte,
+) ([]byte, error) {
+	files, err := w.read(cdsPinPath)
+	if err != nil {
+		return nil, err
+	}
+	a, err := worker.Admit(bytes.NewReader(files.document), worker.AdmitInputs{CDSPin: files.cdsPin, WorkerImage: files.image, Nodes: nodes})
+	if err != nil {
+		return nil, err
+	}
+	return confirmedSet(cmd, a)
+}
+
+// firstSet is the workers launched with the document alone, once the operator
+// confirms the cluster facts the document carries.
+func (w workerFlags) firstSet(
+	cmd *cobra.Command,
+	cdsPinPath string,
+) ([]byte, error) {
+	files, err := w.read(cdsPinPath)
+	if err != nil {
+		return nil, err
+	}
+	a, err := worker.AdmitFirst(bytes.NewReader(files.document), files.cdsPin, files.image)
+	if err != nil {
+		return nil, err
+	}
+	return confirmedSet(cmd, a)
+}
+
+// admissionFiles are the worker document, the CDS pin it must carry, and the
+// worker image's measurements.
+type admissionFiles struct {
+	document []byte
+	cdsPin   []byte
+	image    []byte
+}
+
+func (w workerFlags) read(cdsPinPath string) (admissionFiles, error) {
+	document, err := os.ReadFile(w.document)
+	if err != nil {
+		return admissionFiles{}, fmt.Errorf("--worker-document: %w", err)
+	}
+	cdsPin, err := os.ReadFile(cdsPinPath)
+	if err != nil {
+		return admissionFiles{}, fmt.Errorf("--cds-pin: %w", err)
+	}
+	image, err := os.ReadFile(w.image)
+	if err != nil {
+		return admissionFiles{}, fmt.Errorf("--worker-image: %w", err)
+	}
+	return admissionFiles{document: document, cdsPin: cdsPin, image: image}, nil
+}
+
+// confirmedSet is the set an admission certifies, once the operator confirms
+// the cluster facts its document carries.
+func confirmedSet(cmd *cobra.Command, a worker.Admission) ([]byte, error) {
+	if err := a.Report(cmd.ErrOrStderr()); err != nil {
+		return nil, err
+	}
+	if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
+		return nil, errors.New("not signed: the worker document's facts were not confirmed")
+	}
+	return a.Nodes, nil
+}
+
 // genesisOptions start a cluster on one replica that holds none.
 type genesisOptions struct {
 	decreeOptions
 	pins          pinFlags
+	worker        workerFlags
 	target        replica
 	nodes         string
 	resumeVersion uint64
@@ -283,15 +374,21 @@ func newGenesisCmd() *cobra.Command {
 		"The replica this decree names mints the mesh CA, seeds the allowlist from the configuration's\n"+
 			"workloads, and begins with the CDS and node image sets the decree carries. A cluster started\n"+
 			"again under this cluster id resumes above --resume-version, so no decree of the old one applies\n"+
-			"a second time and nodes keep taking the newest pin decree.",
+			"a second time and nodes keep taking the newest pin decree.\n\n"+
+			"The cluster starts out certifying the node images --nodes names, else the configuration's\n"+
+			"nodes. A cluster of workers, whose configuration names none, starts with --worker-document:\n"+
+			"the decree certifies only the worker image launched with that exact document. The facts it\n"+
+			"carries are printed, and the decree is signed only once you confirm them.",
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindPinFlags(cmd, &o.pins)
 	bindTargetFlags(cmd, &o.target)
+	bindWorkerFlags(cmd, &o.worker)
 	f := cmd.Flags()
 	f.StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies (default: the configuration's nodes)")
 	f.Uint64Var(&o.resumeVersion, "resume-version", 0, "the highest version a cluster under this cluster id reached (REQUIRED, 0 for the first)")
 	f.BoolVar(&o.alone, "alone", false, "start the cluster even where discovery finds no other replica (a one-replica cluster only)")
 	requireFlags(cmd, "resume-version")
+	cmd.MarkFlagsMutuallyExclusive("nodes", "worker-document")
 	return cmd
 }
 
@@ -304,15 +401,15 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	nodePins, err := o.nodePins(c)
-	if err != nil {
-		return err
-	}
 	target, address, err := o.target.statusAtAddress(cmd.Context())
 	if err != nil {
 		return err
 	}
 	if err := checkGenesisTarget(target, c.parsed.ClusterID); err != nil {
+		return err
+	}
+	nodePins, err := o.confirmedNodePins(cmd, c)
+	if err != nil {
 		return err
 	}
 	if o.alone {
@@ -330,18 +427,21 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	})
 }
 
-// nodePins are the node images the cluster starts out certifying. The decree
-// carries them, so a cluster started again certifies the set the operator
-// names now rather than the one the configuration was written with.
-func (o genesisOptions) nodePins(c decreeConfig) (*cdsdecree.NodeImages, error) {
-	if o.nodes == "" {
-		measurements, err := refvalues.Format(c.parsed.Nodes)
-		if err != nil {
-			return nil, fmt.Errorf("the configuration's nodes: %w", err)
-		}
-		return cdsdecree.NewNodeImages(measurements)
+// confirmedNodePins are the node images the cluster starts out certifying:
+// --nodes, the first workers of --worker-document once the operator confirms
+// them, or the configuration's nodes. The decree carries them, so a cluster
+// started again certifies the set the operator names now rather than the one
+// the configuration was written with.
+func (o genesisOptions) confirmedNodePins(cmd *cobra.Command, c decreeConfig) (*cdsdecree.NodeImages, error) {
+	switch {
+	case o.nodes != "":
+		return readNodeImages(o.nodes)
+	case o.worker.given():
+		return o.firstWorkers(cmd, c)
+	case c.parsed.Nodes.Empty():
+		return nil, errors.New("the configuration names no nodes, so the cluster would certify none: pass --nodes or --worker-document")
 	}
-	return readNodeImages(o.nodes)
+	return configuredNodeImages(c)
 }
 
 // The whole set the cluster is to certify, as `c8s cds config new --nodes`
@@ -358,41 +458,32 @@ func readNodeImages(path string) (*cdsdecree.NodeImages, error) {
 	return images, nil
 }
 
-// admitWorker is nodes with the worker image bound to --worker-document added,
-// once the operator confirms the cluster facts the document carries.
-func (o nodeImagesOptions) admitWorker(cmd *cobra.Command, nodes []byte) ([]byte, error) {
-	document, err := os.Open(o.workerDocument)
-	if err != nil {
-		return nil, fmt.Errorf("--worker-document: %w", err)
+// firstWorkers are the workers of --worker-document alone: the first set of a
+// cluster of workers, whose configuration names no nodes.
+func (o genesisOptions) firstWorkers(cmd *cobra.Command, c decreeConfig) (*cdsdecree.NodeImages, error) {
+	if !c.parsed.Nodes.Empty() {
+		return nil, errors.New("--worker-document starts a cluster of workers, and the configuration names nodes: pass --nodes, or admit the worker by a node-images decree after Genesis")
 	}
-	defer document.Close()
-	cdsPin, err := os.ReadFile(o.to.cdsPin)
-	if err != nil {
-		return nil, fmt.Errorf("--cds-pin: %w", err)
-	}
-	workerImage, err := os.ReadFile(o.workerImage)
-	if err != nil {
-		return nil, fmt.Errorf("--worker-image: %w", err)
-	}
-	a, err := worker.Admit(document, worker.AdmitInputs{CDSPin: cdsPin, WorkerImage: workerImage, Nodes: nodes})
+	measurements, err := o.worker.firstSet(cmd, o.target.cdsPin)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.Report(cmd.ErrOrStderr()); err != nil {
-		return nil, err
+	return cdsdecree.NewNodeImages(measurements)
+}
+
+func configuredNodeImages(c decreeConfig) (*cdsdecree.NodeImages, error) {
+	measurements, err := refvalues.Format(c.parsed.Nodes)
+	if err != nil {
+		return nil, fmt.Errorf("the configuration's nodes: %w", err)
 	}
-	if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
-		return nil, errors.New("not signed: the worker document's facts were not confirmed")
-	}
-	return a.Nodes, nil
+	return cdsdecree.NewNodeImages(measurements)
 }
 
 type nodeImagesOptions struct {
 	decreeOptions
-	nodes          string
-	workerDocument string
-	workerImage    string
-	to             replica
+	nodes  string
+	worker workerFlags
+	to     replica
 }
 
 func newNodeImagesCmd() *cobra.Command {
@@ -409,18 +500,13 @@ func newNodeImagesCmd() *cobra.Command {
 		})
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindDeliveryFlags(cmd, &o.to)
-	f := cmd.Flags()
-	f.StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies, or with --worker-document the set in force it extends (REQUIRED)")
-	f.StringVar(&o.workerDocument, "worker-document", "", "worker document, as 'c8s worker new' writes it, whose workers the decree also certifies")
-	f.StringVar(&o.workerImage, "worker-image", "", "measurements document pinning the worker image, as 'c8s measurements derive' writes it")
+	bindWorkerFlags(cmd, &o.worker)
+	cmd.Flags().StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies, or with --worker-document the set in force it extends (REQUIRED)")
 	requireFlags(cmd, "nodes")
 	return cmd
 }
 
 func (o nodeImagesOptions) run(cmd *cobra.Command) error {
-	if (o.workerDocument == "") != (o.workerImage == "") {
-		return errors.New("--worker-document and --worker-image go together")
-	}
 	c, err := readDecreeConfig(o.config)
 	if err != nil {
 		return err
@@ -429,8 +515,8 @@ func (o nodeImagesOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("--nodes: %w", err)
 	}
-	if o.workerDocument != "" {
-		if measurements, err = o.admitWorker(cmd, measurements); err != nil {
+	if o.worker.given() {
+		if measurements, err = o.worker.addTo(cmd, o.to.cdsPin, measurements); err != nil {
 			return err
 		}
 	}

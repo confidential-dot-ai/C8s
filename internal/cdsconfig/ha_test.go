@@ -133,6 +133,40 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	}
 }
 
+// A replica set's Genesis may name its first node set; a single CDS has no
+// Genesis.
+func TestFormatWritesNoNodesOnlyForAReplicaSet(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	document := testDocumentFor(t, operatorPEM, anchorPEM)
+	document.Nodes = nil
+	if _, err := Format(document); err == nil {
+		t.Fatal("Format wrote a single CDS that certifies no node")
+	}
+	document.HA = HA{
+		Replicas: []string{"cds.acme.example"},
+		Voters:   1,
+	}
+	data, err := Format(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := yaml.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, written := fields["nodes"]; written {
+		t.Fatalf("a launch file naming no nodes carries a nodes field:\n%s", data)
+	}
+	cfg, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Nodes.Empty() {
+		t.Fatalf("nodes = %+v, want none", cfg.Nodes)
+	}
+}
+
 // Format writes only what Parse accepts back, the ha block included.
 func TestFormatRefusesAReplicaSetParseWouldRefuse(t *testing.T) {
 	for name, change := range map[string]func(*HA){
