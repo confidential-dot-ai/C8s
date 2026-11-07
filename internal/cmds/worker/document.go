@@ -13,7 +13,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
+	"github.com/confidential-dot-ai/c8s/pkg/launchfile/yamlutil"
 )
 
 const SchemaVersion = "c8s-worker/v1"

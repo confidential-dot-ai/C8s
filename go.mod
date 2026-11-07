@@ -8,6 +8,7 @@ require (
 	github.com/anishathalye/porcupine v1.3.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/confidential-dot-ai/attestation-go v0.8.3
+	github.com/confidential-dot-ai/c8s/pkg/launchfile v0.0.0
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.2
 	github.com/containerd/errdefs v1.0.0
@@ -175,3 +176,5 @@ exclude (
 )
 
 tool github.com/go-gremlins/gremlins/cmd/gremlins
+
+replace github.com/confidential-dot-ai/c8s/pkg/launchfile => ./pkg/launchfile

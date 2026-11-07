@@ -9,8 +9,10 @@ import (
 	"encoding/pem"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -23,7 +25,7 @@ const testWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"c8s-router":{"
 
 const testServicePattern = cmdsutil.ServiceDNSSANPattern
 
-func testKey(t *testing.T) (*ecdsa.PublicKey, string) {
+func testKey(t testing.TB) (*ecdsa.PublicKey, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -42,7 +44,10 @@ func testKey(t *testing.T) (*ecdsa.PublicKey, string) {
 
 // testNodePins anchors the node pins to a launch key of their own: the
 // operator key authorizes writes, a launch key says which node booted.
-func testNodePins(t *testing.T, anchor string) string {
+func testNodePins(
+	t testing.TB,
+	anchor string,
+) string {
 	t.Helper()
 	pins, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
@@ -58,21 +63,30 @@ func testNodePins(t *testing.T, anchor string) string {
 	return string(pins)
 }
 
-func testDocument(t *testing.T, operatorPEM, anchorPEM string) wire {
+// testDocument is a launch file as a map, so a test can write a field the
+// writer would refuse.
+func testDocument(
+	t testing.TB,
+	operatorPEM string,
+	anchorPEM string,
+) map[string]any {
 	t.Helper()
-	return wire{
-		SchemaVersion:      SchemaVersion,
-		ClusterID:          "acme-prod",
-		OperatorPublicKeys: operatorPEM,
-		Workloads:          testWorkloads,
-		Nodes:              testNodePins(t, anchorPEM),
-		NodeCIDRs:          []string{"10.0.0.0/24"},
-		LeafDNSNames:       []string{"cds.acme.example"},
-		LeafDNSPatterns:    []string{testServicePattern},
+	return map[string]any{
+		"schemaVersion":      SchemaVersion,
+		"clusterID":          "acme-prod",
+		"operatorPublicKeys": operatorPEM,
+		"workloads":          testWorkloads,
+		"nodes":              testNodePins(t, anchorPEM),
+		"nodeCIDRs":          []string{"10.0.0.0/24"},
+		"leafDNSNames":       []string{"cds.acme.example"},
+		"leafDNSPatterns":    []string{testServicePattern},
 	}
 }
 
-func render(t *testing.T, document wire) []byte {
+func render(
+	t testing.TB,
+	document map[string]any,
+) []byte {
 	t.Helper()
 	data, err := yaml.Marshal(document)
 	if err != nil {
@@ -103,67 +117,96 @@ func TestParseReturnsEverySettingParsed(t *testing.T) {
 	if cfg.Nodes.Family != teetypes.FamilySNP || len(cfg.Nodes.Images) != 1 {
 		t.Fatalf("node pins = %+v", cfg.Nodes)
 	}
-	if !bytes.Equal(cfg.Nodes.Images[0].Anchor, []byte(anchorPEM)) {
-		t.Fatal("node pin lost its launch-key anchor")
-	}
 	if !cfg.NodeCIDRs.Contains("10.0.0.5") || cfg.NodeCIDRs.Contains("10.1.0.5") {
 		t.Fatalf("node subnets = %v", cfg.NodeCIDRs)
 	}
 	if len(cfg.DNSSANPatterns) != 2 {
 		t.Fatalf("DNS SAN rules = %v", cfg.DNSSANPatterns)
 	}
-	if !cfg.DNSSANPatterns[0].MatchString("mesh.c8s.svc") {
-		t.Fatal("lost the document's service DNS pattern")
-	}
-	// A leaf name is a literal identity: it matches whole, or not at all.
-	if !cfg.DNSSANPatterns[1].MatchString("cds.acme.example") || cfg.DNSSANPatterns[1].MatchString("evil.cds.acme.example") {
-		t.Fatal("leaf name is not matched as a whole name")
-	}
 }
 
-func TestParseRefusesEachMalformedField(t *testing.T) {
+// The launch file module leaves these two policies to C8s's own parsers.
+func TestParseRefusesEachMalformedEmbeddedPolicy(t *testing.T) {
 	tests := []struct {
-		name   string
-		change func(*wire)
-		want   string
+		name  string
+		field string
+		value string
 	}{
-		{"schema", func(w *wire) { w.SchemaVersion = "c8s-cds/v2" }, "schemaVersion"},
-		{"cluster label", func(w *wire) { w.ClusterID = "Acme_Prod" }, "clusterID"},
-		{"no operator keys", func(w *wire) { w.OperatorPublicKeys = "" }, "operatorPublicKeys"},
-		{"operator key is not a key", func(w *wire) { w.OperatorPublicKeys = "not a key" }, "operatorPublicKeys"},
-		{"no workloads", func(w *wire) { w.Workloads = "" }, "workloads"},
-		{"no node pins", func(w *wire) { w.Nodes = "" }, "nodes"},
-		{"node pins pin nothing", func(w *wire) {
-			w.Nodes = `{"schema_version":"1","tee":"sev-snp","measurements":[]}`
-		}, "nodes"},
-		{"no node subnet", func(w *wire) { w.NodeCIDRs = nil }, "nodeCIDRs"},
-		{"default route", func(w *wire) { w.NodeCIDRs = []string{"0.0.0.0/0"} }, "nodeCIDRs"},
-		{"subnet host bits", func(w *wire) { w.NodeCIDRs = []string{"10.0.0.5/24"} }, "nodeCIDRs"},
-		{"bare node address", func(w *wire) { w.NodeCIDRs = []string{"10.0.0.5"} }, "nodeCIDRs"},
-		{"leaf address", func(w *wire) { w.LeafDNSNames = []string{"10.0.0.5"} }, "leafDNSNames"},
-		{"leaf wildcard", func(w *wire) { w.LeafDNSNames = []string{"*.acme.example"} }, "leafDNSNames"},
-		{"uncompilable pattern", func(w *wire) { w.LeafDNSPatterns = []string{"^[a-"} }, "leafDNSPatterns"},
+		{
+			name:  "no operator keys",
+			field: "operatorPublicKeys",
+			value: "",
+		},
+		{
+			name:  "operator key is not a key",
+			field: "operatorPublicKeys",
+			value: "not a key",
+		},
+		{
+			name:  "no workloads",
+			field: "workloads",
+			value: "",
+		},
 	}
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			document := testDocument(t, operatorPEM, anchorPEM)
-			tc.change(&document)
+			document[tc.field] = tc.value
 			_, err := Parse(render(t, document))
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("got %v, want %q", err, tc.want)
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("got %v, want %q", err, tc.field)
 			}
 		})
 	}
 }
 
-// A measured document carries only the settings this schema defines.
-func TestParseRefusesAnUndeclaredField(t *testing.T) {
-	_, operatorPEM := testKey(t)
-	_, anchorPEM := testKey(t)
-	data := append(render(t, testDocument(t, operatorPEM, anchorPEM)), []byte("cdsAddress: 10.0.0.1:8443\n")...)
-	if _, err := Parse(data); err == nil {
-		t.Fatal("Parse accepted a setting CDS does not define")
+// The launch file module carries its own RFC 1123 label check so that it
+// needs no Kubernetes module; this holds it to apimachinery's.
+func FuzzClusterIDRuleIsApimachinerys(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"a",
+		"0",
+		"acme-prod",
+		"a--b",
+		"-a",
+		"a-",
+		"A",
+		"acme_prod",
+		"acme.prod",
+		"a\n",
+		"\na",
+		"é",
+		strings.Repeat("a", 63),
+		strings.Repeat("a", 64),
+		strings.Repeat("a", 62) + "-",
+	} {
+		f.Add(seed)
 	}
+	_, operatorPEM := testKey(f)
+	_, anchorPEM := testKey(f)
+	document := testDocument(f, operatorPEM, anchorPEM)
+	f.Fuzz(func(t *testing.T, id string) {
+		if !utf8.ValidString(id) {
+			t.Skip("YAML carries only UTF-8")
+		}
+		document["clusterID"] = id
+		data := render(t, document)
+		var written struct {
+			ClusterID string `yaml:"clusterID"`
+		}
+		if err := yaml.Unmarshal(data, &written); err != nil || written.ClusterID != id {
+			t.Skip("YAML does not carry this string unchanged")
+		}
+		_, err := Parse(data)
+		if err != nil && !strings.Contains(err.Error(), "clusterID") {
+			t.Fatalf("clusterID %q: %v", id, err)
+		}
+		apimachinery := len(validation.IsDNS1123Label(id)) == 0
+		if (err == nil) != apimachinery {
+			t.Fatalf("clusterID %q: accepted=%v, apimachinery accepts=%v", id, err == nil, apimachinery)
+		}
+	})
 }
