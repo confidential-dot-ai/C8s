@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const helmCommand = "helm template c8s internal/helmchart/c8s"
+const helmCommand = "helm template c8s internal/helmchart/cloud"
 
 // helmExample matches a `helm template` command of the chart in a docs code
 // block, through its last continuation line. A backslash followed by trailing
@@ -20,7 +20,7 @@ var helmExample = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(helmCommand) + `
 // The operator guide's helm template examples render as written.
 func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm CLI not found")
+		t.Fatal("helm CLI not found")
 	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -41,7 +41,7 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseCDSPinDocument(t)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	chart := "helm template c8s " + filepath.Join(root, "internal", "helmchart", "c8s")
+	chart := "helm template c8s " + filepath.Join(root, "internal", "helmchart", repoChart)
 	for _, example := range examples {
 		// The helm client's simulated cluster may predate the chart's kubeVersion.
 		script := "set -e\n" + strings.Replace(example, helmCommand, chart+" --kube-version 1.30.0", 1)

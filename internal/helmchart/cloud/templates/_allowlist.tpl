@@ -11,7 +11,7 @@
 {{- define "c8s.components" -}}
 {{- $root := . -}}
 {{- $out := list -}}
-{{- range $c := .Values.c8sComponents -}}
+{{- range $c := include "c8s.componentList" . | fromJsonArray -}}
 {{- $img := include "c8s.valueAtPath" (dict "root" $root.Values "path" $c.valuePath) | fromJson -}}
 {{- /* enabledPath points at a JSON boolean; valueAtPath returns it as the
    string "true"/"false". Compare the string rather than `| fromJson`, whose
@@ -35,17 +35,17 @@
 {{- if eq (get $c "name") $.name -}}{{- $found = $c -}}{{- end -}}
 {{- end -}}
 {{- if not $found -}}
-{{- fail (printf "c8sComponents has no entry %s" .name) -}}
+{{- fail (printf "files/components.yaml has no component %s" .name) -}}
 {{- end -}}
 {{ $found | toJson }}
 {{- end -}}
 
 {{/* The command of a container running a component image: the entrypoint
-     c8sComponents declares for valuePath, as a JSON list. Spelling it out
+     the component table declares for valuePath, as a JSON list. Spelling it out
      makes the argv the allowlist pins independent of the image's own
      ENTRYPOINT and CMD. Takes root and valuePath. */ -}}
 {{- define "c8s.entrypoint" -}}
-{{- range $c := .root.Values.c8sComponents -}}
+{{- range $c := include "c8s.componentList" .root | fromJsonArray -}}
 {{- if eq $c.valuePath $.valuePath -}}{{- $c.entrypoint | toJson -}}{{- end -}}
 {{- end -}}
 {{- end -}}
@@ -64,10 +64,10 @@
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
 {{- if not (get $c "entrypoint") -}}
-{{- fail (printf "c8sComponents entry %s has no entrypoint: the derived allowlist entry must pin the image's executable" (get $c "name")) -}}
+{{- fail (printf "component %s has no entrypoint: the derived allowlist entry must pin the image's executable" (get $c "name")) -}}
 {{- end -}}
 {{- if not (hasKey $c "imageEnv") -}}
-{{- fail (printf "c8sComponents entry %s has no imageEnv: the derived allowlist entry must match the image's environment" (get $c "name")) -}}
+{{- fail (printf "component %s has no imageEnv: the derived allowlist entry must match the image's environment" (get $c "name")) -}}
 {{- end -}}
 {{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint") "imageEnv" (get $c "imageEnv")) -}}
 {{- end -}}
@@ -75,20 +75,21 @@
 {{- end -}}
 {{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
        independently versioned and digest-pinned, so it is not in the
-       tag-locked c8sComponents derive set (the resolver would `crane digest
+       tag-locked component derive set (the resolver would `crane digest
        nginx:<c8s-tag>`). Seed it from its pinned digest whenever router is
        enabled, independent of deriveComponents, so a default install admits
        the nginx it ships without the operator hand-writing an entry for it. */}}
 {{- if .Values.router.enabled -}}
-{{- $lbImg := .Values.router.nginx.image -}}
+{{- $nginx := include "c8s.routerNginxPin" . | fromJson -}}
+{{- $lbImg := $nginx.image -}}
 {{- if $lbImg.digest -}}
-{{- if not .Values.router.nginx.entrypoint -}}
-{{- fail "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
+{{- if not $nginx.entrypoint -}}
+{{- fail "routerNginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
 {{- end -}}
-{{- if not (hasKey .Values.router.nginx "imageEnv") -}}
-{{- fail "router.nginx.imageEnv is required: the nginx self-entry must match the image's environment" -}}
+{{- if not (hasKey $nginx "imageEnv") -}}
+{{- fail "routerNginx.imageEnv is required: the nginx self-entry must match the image's environment" -}}
 {{- end -}}
-{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "imageEnv" (.Values.router.nginx.imageEnv | default dict)) -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" $nginx.entrypoint "imageEnv" ($nginx.imageEnv | default dict)) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
@@ -520,7 +521,7 @@
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
 {{- with get (get $c "image") "digest" -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- end -}}
-{{- with .Values.router.nginx.image.digest -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
+{{- with (include "c8s.routerNginxPin" . | fromJson).image.digest -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
@@ -703,7 +704,7 @@ null
 {{- $argvs = append $argvs (dict "role" "credentials" "container" "allowlist-proxy" "argv" (list "/c8s" "allowlist-proxy") "pinnedOnly" true) -}}
 {{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
 {{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
-{{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
+{{- else if eq $repository (include "c8s.imageRepository" (include "c8s.routerNginxPin" $root | fromJson).image.repository) -}}
 {{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
 {{- end -}}
 {{- range $a := $argvs -}}
@@ -843,7 +844,7 @@ null
        so router.expectedWorkload can call it. */ -}}
 {{- define "c8s.routerEntryBlocker" -}}
 {{- if not .Values.router.enabled -}}router.enabled is false
-{{- else if not .Values.router.nginx.image.digest -}}router.nginx.image.digest is unset
+{{- else if not (include "c8s.routerNginxPin" . | fromJson).image.digest -}}routerNginx.image.digest is unset
 {{- else if not .Values.image.digest -}}image.digest is unset
 {{- /* The entry pins the c8s image's containers like its component entry,
        which deriveComponents seeds. */ -}}
@@ -869,7 +870,7 @@ null
 {{- $pins := dict -}}
 {{- $envs := dict -}}
 {{- $refs := dict -}}
-{{- range $digest := list .Values.router.nginx.image.digest .Values.image.digest -}}
+{{- range $digest := list (include "c8s.routerNginxPin" . | fromJson).image.digest .Values.image.digest -}}
 {{- with get $components $digest -}}
 {{- $_ := set $pins $digest (get . "entrypoint") -}}
 {{- $_ := set $envs $digest (get . "imageEnv") -}}
@@ -926,7 +927,7 @@ null
 {{- define "c8s.routerWorkloadName" -}}
 {{- if hasKey . "routerNamePlaceholder" -}}<default>
 {{- else -}}
-{{- $ctx := dict "Values" .Values "Release" .Release "Chart" .Chart "Capabilities" .Capabilities "Template" .Template "Files" .Files "routerNamePlaceholder" true -}}
+{{- $ctx := merge (dict "routerNamePlaceholder" true) . -}}
 {{- printf "c8s-router-%s" (include "c8s.routerEntry" $ctx | sha256sum | trunc 12) -}}
 {{- end -}}
 {{- end -}}

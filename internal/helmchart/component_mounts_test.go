@@ -221,7 +221,7 @@ func componentPins(t *testing.T, out string, args []string) map[string]component
 	for _, w := range renderedPodSpecs(t, out) {
 		for _, c := range w.spec.Containers {
 			if strings.Contains(c.Image, "nginx-unprivileged@") {
-				pins[imageDigest(c.Image)] = values["router.nginx"]
+				pins[imageDigest(c.Image)] = values["routerNginx"]
 			}
 		}
 	}

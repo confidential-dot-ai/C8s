@@ -363,22 +363,8 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "entrypoint": {},
             "httpsPort": {},
-            "imageEnv": {},
-            "image": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "digest": {},
-                "pullPolicy": {},
-                "repository": {},
-                "tag": {}
-              }
-            },
+            "imagePullPolicy": {},
             "replicas": {},
             "resolver": {
               "$comment": "Removed with router.upstream. Listed only so validations.yaml can answer with the migration message."
@@ -491,7 +477,7 @@
         "tolerations": {}
       }
     },
-    "c8sComponents": {},
+    "c8s-lib": {},
     "image": {},
     "operator": {},
     "imagePullSecrets": {},

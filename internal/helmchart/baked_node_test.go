@@ -22,7 +22,7 @@ var bakedArgs = []string{
 	"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
 	"--set", "image.pullPolicy=Never",
 	"--set", "armtlsMesh.image.pullPolicy=Never",
-	"--set", "router.nginx.image.pullPolicy=Never",
+	"--set", "router.nginx.imagePullPolicy=Never",
 	"--set", "router.attest.enabled=true",
 }
 

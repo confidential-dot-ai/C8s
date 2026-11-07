@@ -46,7 +46,7 @@ var (
 
 func TestNodeImageRender(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not installed")
+		t.Fatal("helm CLI not found")
 	}
 	for _, platform := range []string{"tdx", "sev-snp"} {
 		t.Run(platform, func(t *testing.T) {
@@ -59,8 +59,7 @@ func TestNodeImageRender(t *testing.T) {
 				"--output-dir", out,
 			}
 			if platform == "sev-snp" {
-				args = append(args, "--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "c8s"),
-					"--router-image-digest", nodeImageTestRouterDigest, "--router-image-repository", "registry.example.com/nginx")
+				args = append(args, "--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "cloud"))
 			}
 			cmd.SetArgs(args)
 			if err := cmd.Execute(); err != nil {
@@ -364,10 +363,8 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"invalid Kubernetes version", func(c *nodeImageRenderConfig) { c.kubeVersion = "latest" }},
 		{"missing digest", func(c *nodeImageRenderConfig) { c.imageDigest = "" }},
 		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.armtlsMeshImageDigest = "" }},
-		{"invalid router digest", func(c *nodeImageRenderConfig) { c.routerImageDigest = "latest" }},
 		{"tagged mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "example.com/armtls-mesh:main" }},
 		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "invalid repo" }},
-		{"digested router repository", func(c *nodeImageRenderConfig) { c.routerImageRepository = "example.com/nginx@" + testDigest }},
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
 		{"missing output", func(c *nodeImageRenderConfig) { c.outputDir = "" }},
@@ -927,7 +924,7 @@ const containerdDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 // sets none, so this fixture and the chart's own template must name one
 // string.
 func TestContainerdDefaultPathMatchesChart(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "helmchart", "c8s", "templates", "_allowlist.tpl"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "helmchart", "cloud", "templates", "_allowlist.tpl"))
 	if err != nil {
 		t.Fatal(err)
 	}

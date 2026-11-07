@@ -300,7 +300,7 @@ image-policy installer, so only image tags are needed; the full shape wants
 image digests, the DNS resolver and the cluster CIDRs.
 
 ```sh
-helm template c8s internal/helmchart/c8s \
+helm template c8s internal/helmchart/cloud \
   --namespace c8s-system \
   --set cds.address=10.0.0.9:8443 \
   --set-file cds.measurementsConfig=cds-pin.json \

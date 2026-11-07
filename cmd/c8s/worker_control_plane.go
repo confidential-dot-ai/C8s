@@ -66,8 +66,6 @@ this renders is the one its floor pins.`,
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
-	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
-	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml (required)")
 	cmd.AddCommand(render, newWorkerCredentialsCmd())
@@ -106,6 +104,7 @@ func renderWorkerCluster(ctx context.Context, cfg nodeImageRenderConfig, host st
 	// launch differs from the image build's render.
 	extra := []string{
 		"--set", "hostNamespacePolicy.enabled=false",
+		"--set-string", "router.nginx.imagePullPolicy=IfNotPresent",
 	}
 	for _, input := range cfg.images() {
 		extra = append(extra, "--set-string", input.valuePath+".pullPolicy=IfNotPresent")

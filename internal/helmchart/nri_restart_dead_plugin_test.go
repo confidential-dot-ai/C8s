@@ -40,14 +40,11 @@ data:
 func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 	t.Helper()
 	dir := t.TempDir()
-	chart := filepath.Join(dir, "c8s")
-	if err := os.CopyFS(chart, os.DirFS("c8s")); err != nil {
-		t.Fatal(err)
-	}
+	chart := extractedChart(t)
 	if err := os.WriteFile(filepath.Join(chart, "templates", "zz-restart-tail.yaml"), []byte(restartTailTemplate), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := helmTemplateIn(t, dir)
+	out, err := helmTemplateIn(t, chart)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

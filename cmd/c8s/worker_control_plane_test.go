@@ -28,13 +28,11 @@ func workerRenderConfig() nodeImageRenderConfig {
 	return nodeImageRenderConfig{
 		platform:                  "sev-snp",
 		kubeVersion:               "v1.36.4",
-		chartDir:                  filepath.Join("..", "..", "internal", "helmchart", "c8s"),
+		chartDir:                  filepath.Join("..", "..", "internal", "helmchart", "cloud"),
 		imageDigest:               testDigest,
 		imageRepository:           "registry.example.com/c8s-operator",
 		armtlsMeshImageDigest:     nodeImageTestMeshDigest,
 		armtlsMeshImageRepository: "registry.example.com/armtls-mesh",
-		routerImageDigest:         nodeImageTestRouterDigest,
-		routerImageRepository:     "registry.example.com/nginx",
 	}
 }
 
@@ -83,7 +81,7 @@ func routerLaunch(t *testing.T, objects map[string]unstructured.Unstructured) an
 // worker image's floor pins, pulled rather than baked, on any worker.
 func TestWorkerClusterHoldsTheChartForWorkers(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not installed")
+		t.Fatal("helm CLI not found")
 	}
 	cfg := workerRenderConfig()
 	doc := &worker.Document{Kubernetes: worker.Kubernetes{ClusterDNS: "10.53.0.10"}}

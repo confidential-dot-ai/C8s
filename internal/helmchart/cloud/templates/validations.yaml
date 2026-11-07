@@ -100,7 +100,7 @@
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
 {{- if not (hasKey $c "imageEnv") -}}
-{{- fail (printf "c8sComponents entry %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
+{{- fail (printf "component %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
 {{- end -}}
 {{- $_ := set $pins (get $img "digest") (get $c "entrypoint") -}}
 {{- $_ := set $envs (get $img "digest") (get $c "imageEnv") -}}

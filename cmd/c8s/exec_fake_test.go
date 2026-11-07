@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -93,6 +95,35 @@ func writeChart(t *testing.T, values string) string {
 		t.Fatalf("write chart values: %v", err)
 	}
 	return dir
+}
+
+// writeChartWithComponents is writeChart with c8s-lib's files/components.yaml.
+func writeChartWithComponents(t *testing.T, values string, components string) string {
+	t.Helper()
+	dir := writeChart(t, values)
+	file := filepath.Join(dir, "charts", "c8s-lib", "files", "components.yaml")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(components), 0o600); err != nil {
+		t.Fatalf("write chart components: %v", err)
+	}
+	return dir
+}
+
+// helmRenderOnly runs helm and returns its stdout alone: helm reports the
+// chart's symlinked c8s-lib subchart on stderr, which must stay out of the
+// rendered YAML.
+func helmRenderOnly(t *testing.T, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("helm", args...)
+	var diagnostics bytes.Buffer
+	cmd.Stderr = &diagnostics
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("helm %s: %v\n%s", strings.Join(args, " "), err, diagnostics.Bytes())
+	}
+	return out
 }
 
 // resetCLIState pins every install/uninstall/render-values flag global to its

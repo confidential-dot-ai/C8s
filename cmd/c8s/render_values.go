@@ -85,7 +85,7 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 			return fmt.Errorf("helm CLI not found on PATH: %w", err)
 		}
 
-		dir, err := extractChart()
+		dir, err := helmchart.ExtractTemp()
 		if err != nil {
 			return fmt.Errorf("extract embedded chart: %w", err)
 		}
@@ -149,7 +149,7 @@ func buildValueArgs(
 	// (e.g. 0640 -> 640).
 	if !installResolveDigests {
 		for _, c := range components {
-			setArgs = append(setArgs, "--set-string", c.valuePrefix+".tag="+imageTag)
+			setArgs = append(setArgs, "--set-string", c.valuesPath+".tag="+imageTag)
 		}
 	}
 	setArgs = appendInstallCRDArgs(setArgs, installCRDs)

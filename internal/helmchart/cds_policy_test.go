@@ -62,7 +62,7 @@ func TestChartHandsTheNodeItsCDSAddressOnlyWhereOneCopiesIt(t *testing.T) {
 func TestChartRefusesACDSPinThatBindsNoLaunchFile(t *testing.T) {
 	t.Parallel()
 	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+baseCDSDigest+`"}]}`)
-	out, err := helmTemplateUnpinned(t, ".", "--set-string", "cds.address="+baseCDSAddress, "--set-file", "cds.measurementsConfig="+flat)
+	out, err := helmTemplateUnpinned(t, repoChart, "--set-string", "cds.address="+baseCDSAddress, "--set-file", "cds.measurementsConfig="+flat)
 	if err == nil {
 		t.Fatalf("helm template accepted a pin binding no launch file\n%s", out)
 	}

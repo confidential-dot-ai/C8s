@@ -69,8 +69,8 @@ initContainers:
   {{- end }}
 containers:
   - name: nginx
-    image: {{ include "c8s-common.image" .Values.router.nginx.image }}
-    imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
+    image: {{ include "c8s-common.image" (include "c8s.routerNginxPin" . | fromJson).image }}
+    imagePullPolicy: {{ .Values.router.nginx.imagePullPolicy }}
     {{- /* nginx runs as the child of serve.sh, which stops it when the
            front-door certificate is withdrawn (router-configmap.yaml). The
            allowlist pins this argv exactly and admits no argument beside it,
