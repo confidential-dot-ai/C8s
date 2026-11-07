@@ -883,7 +883,7 @@ router:
     attestationApiURL: ""
     # -- attest-pq and attest-lb requests per second each client address may
     # make, and how many it may make at once (`--establish-rate`,
-    # `--establish-burst`). null keeps the sidecar's defaults (10/s, burst 20).
+    # `--establish-burst`). null keeps the sidecar's defaults (50/s, burst 100).
     # A baked node renders the chart with these unset, so it runs the defaults.
     establishRate: null
     establishBurst: null

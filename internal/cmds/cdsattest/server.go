@@ -62,8 +62,8 @@ const (
 	// Session establishment: one attestation report, one X-Wing encapsulation
 	// and one session per request. Defaults for --establish-rate and
 	// --establish-burst.
-	defaultEstablishRate  = 10 // requests per second per client
-	defaultEstablishBurst = 20
+	defaultEstablishRate  = 50 // requests per second per client
+	defaultEstablishBurst = 100
 	// One established session's application traffic, charged to the session.
 	sessionRateLimit = 200
 	sessionRateBurst = 400
