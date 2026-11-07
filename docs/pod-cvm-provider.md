@@ -177,7 +177,7 @@ allowlist entries and mesh peers, and the verification deadline. Only then does
 it create the instance, with the guest status port and the Pod's declared
 application ports open from the start. The record counts against `maxPods` from
 the moment it is written until Cloud confirms the instance destroyed; a Pod
-that would exceed the budget gets no record and reports `LaunchRefused` until
+that would exceed the budget gets no record and reports `CapacityLimit` until
 capacity is released.
 
 Once the instance runs and reports its endpoints, the provider verifies fresh
@@ -238,7 +238,9 @@ verification withdraws readiness and advertised endpoints.
 
 `verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
 of 30 to 86400 seconds. The initial window begins when the provider persists the
-Pod's launch intent, including Cloud provisioning and boot. A fresh, verified
+Pod's launch intent, including Cloud provisioning and boot. While Cloud has no
+room for the Pod CVM size, the Pod reports `InsufficientCapacity` and the
+provider retries the create within this window. A fresh, verified
 status projection matching the assigned Pod clears the window. A later failure
 of the guest itself (refused attestation, a status naming another Pod, a reboot,
 an ended or replaced instance) begins another window of the same frozen
@@ -290,8 +292,10 @@ provider records or finalizers to bypass cleanup.
 
 A create whose response was lost is resolved, however old, by replaying the
 exact saved request under its idempotency key: Cloud returns the instance it
-created, or creates the one the provider then destroys. Cleanup therefore never
-waits on an unresolved create.
+created, or creates the one the provider then destroys. A replay Cloud refuses
+outright, for example for lack of capacity, shows that nothing exists under the
+key, and the Pod is released without an instance. Cleanup therefore never waits
+on an unresolved create.
 
 Existing records retain their original launch inputs when configuration changes.
 Records key on the provider ID and the Pod UID, not on the Cloud credential, so

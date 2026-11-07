@@ -287,7 +287,7 @@ func TestRecordBudgetCountsEveryHeldRecord(t *testing.T) {
 	if err := reconcile(t, r, other); err == nil {
 		t.Fatal("record over the pod budget was written")
 	}
-	if got := getPod(t, r, other); got.Status.Reason != "LaunchRefused" || cloud.createCalls != 1 {
+	if got := getPod(t, r, other); got.Status.Reason != "CapacityLimit" || cloud.createCalls != 1 {
 		t.Fatalf("pod over the budget was not refused: %s %d", got.Status.Reason, cloud.createCalls)
 	}
 	if err := r.client.Delete(t.Context(), getPod(t, r, pod)); err != nil {
