@@ -14,8 +14,8 @@ PLATFORM="kind (mock attestation)"
 
 # The served allowlist the scenarios assume: "nginx" admitted under any argv.
 # The install seed admits that digest only under its entrypoint (it is the
-# router's nginx), so the entry is the backend's to write, as on metal; the
-# shape is the one `c8s allowlist add` writes.
+# router's nginx), so the entry is the backend's to write; the shape is the
+# one `c8s allowlist add` writes.
 nginx_entry=conformance-nginx
 setup() {
     local ref digest entry

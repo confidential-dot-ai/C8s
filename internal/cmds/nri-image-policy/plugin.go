@@ -1003,7 +1003,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.nodeTCBExempt(cfg, pod, rc) {
+		if p.nodeTCBExempt(pod, rc) {
 			return verdictAllow, ""
 		}
 	}
@@ -1064,25 +1064,15 @@ func staticPod(pod *api.PodSandbox) bool {
 }
 
 // nodeTCBExempt reports whether the measured base excuses a launch holding
-// host privilege:
-//   - a kubelet static pod whose launch the base admits: its manifest is
-//     written only on the node, from the measured image and launch document.
-//     On a worker the entry must also pin the launch;
-//   - an API pod on a server or an agent, for a launch a base entry pins
-//     (allowlist.Container.LaunchPinned). A worker's control plane, outside
-//     its TEE, writes its API pods, so a worker excuses none.
+// host privilege: a kubelet static pod whose launch a base entry pins
+// (allowlist.Container.LaunchPinned). Its manifest is written on the worker
+// alone, from the measured image and the worker document, while the control
+// plane that writes every other pod sits outside this TEE.
 //
 // An open entry (command, args or mounts any) therefore admits its image but
-// never hands an API pod host privilege, the host network included.
-func (p *plugin) nodeTCBExempt(cfg *config, pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
-	switch {
-	case staticPod(pod) && cfg.Worker:
-		return p.policy.baseAdmitsPinned(rc)
-	case staticPod(pod):
-		return p.policy.baseAdmits(rc, launchFinal)
-	default:
-		return !cfg.Worker && p.policy.baseAdmitsPinned(rc)
-	}
+// never hands a pod host privilege, the host network included.
+func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
+	return staticPod(pod) && p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,

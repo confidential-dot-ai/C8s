@@ -21,7 +21,7 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
   cds.json: {{ $cds | quote }}
-  {{- if include "c8s.nodeReadsCDSAddress" . }}
+  {{- if include "c8s.installerCopiesCDSAddress" . }}
   cds-address: {{ .Values.cds.address | quote }}
   {{- end }}
 ---

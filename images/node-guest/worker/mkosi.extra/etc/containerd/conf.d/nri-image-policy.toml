@@ -1,0 +1,14 @@
+version = 4
+[plugins."io.containerd.nri.v1.nri"]
+  disable = false
+  # systemd runs nri-image-policy (nri-image-policy.service) and restarts it,
+  # so containerd launches nothing: this directory does not exist on the
+  # read-only root.
+  plugin_path = "/opt/nri/none"
+  plugin_config_path = "/etc/nri/conf.d"
+  plugin_registration_timeout = "10s"
+  plugin_request_timeout = "2s"
+  socket_path = "/var/run/nri/nri.sock"
+[plugins."io.containerd.nri.v1.nri".default_validator]
+  enable = true
+  required_plugins = ["nri-image-policy"]

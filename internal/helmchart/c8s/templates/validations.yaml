@@ -15,6 +15,28 @@
 {{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and write teeProxy.upstream as a route manifest with `c8s routes add`, then drop the teeProxy block." -}}
 {{- end -}}
 {{- /*
+  The same for the two values the node guest image switched on: a release that
+  carried them keeps rendering, with no admission plugin or no metrics, unless
+  the chart says what replaced each.
+*/ -}}
+{{- if hasKey $nri "baked" -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.baked is set, but the installer has one shape: a measured image carries the plugin, its containerd registration and its config. Set nriImagePolicy.enabled=false on such a cluster (`c8s install --cvm-mode=bare-metal` does) and drop the baked key." -}}
+{{- end -}}
+{{- /*
+  The same for the host distro: the installer targets the upstream containerd
+  layout, and a release carrying the RKE2 value would keep rendering against
+  /etc/containerd with no sign that it stopped selecting anything. The plugin's
+  own sandbox-mount baseline is compiled for containerd's directories
+  (internal/cmds/nri-image-policy/mounts.go), so the values below move the
+  config the installer writes, not the layout a node may have.
+*/ -}}
+{{- if hasKey $nri "distro" -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: nriImagePolicy.distro is set, but the installer targets one host layout: upstream containerd, whose config directory, socket and restart are nriImagePolicy.containerd.configDir, .socket and .restartCommand. A node whose containerd keeps its state elsewhere is unsupported — the plugin admits sandbox mounts under /var/lib/containerd and /run/containerd. Drop the distro key." -}}
+{{- end -}}
+{{- if hasKey .Values "kubeStateMetrics" -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: kubeStateMetrics.* values are set, but kube-state-metrics was removed with the node guest image, whose measured mesh policy named its Service as every member pod's exit. Deploy it from its own chart outside this release, and drop the kubeStateMetrics block." -}}
+{{- end -}}
+{{- /*
   The same for the router's own backend configuration: the operator-signed
   route manifest replaced it, and a carried-over value would otherwise leave
   the front door answering 503 with no hint why.
@@ -46,22 +68,14 @@
 {{- end -}}
 
 {{- /*
-  Where the node-baked plugin does not run, host nri-image-policy is the ONLY
+  Where no measured image carries the plugin, host nri-image-policy is the ONLY
   image-admission enforcement — the attested allowlist gate. Disabling it there
   runs confidential workloads with no image admission at all, a silent security
-  downgrade. cvmMode=bare-metal carries its own fail-closed nri-image-policy, so host
-  nri is mandatory in exactly the remaining shapes.
+  downgrade. A cvmMode=bare-metal node runs the fail-closed plugin its measured
+  image carries, so host nri is mandatory in exactly the remaining shapes.
 */ -}}
 {{- if and (not .Values.nriImagePolicy.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
-{{- fail "VALIDATION_ERROR kind=require_host_image_policy: nriImagePolicy.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster host nri-image-policy is the only image-admission enforcement; disabling it leaves confidential workloads with no attested allowlist gate. Under cvmMode=bare-metal the node image bakes the plugin — but leaving the installer off there also leaves the baked plugin without this release's CDS pins, so prefer nriImagePolicy.enabled=true with nriImagePolicy.baked=true (`c8s install --cvm-mode=bare-metal` sets both)." -}}
-{{- end -}}
-{{- /*
-  nriImagePolicy.baked says the plugin, its containerd registration and its boot
-  config come from the node image. Only a node-as-CVM ships those, so anywhere
-  else it would skip the install and leave the node with no plugin at all.
-*/ -}}
-{{- if and .Values.nriImagePolicy.baked (ne .Values.attestationApi.cvmMode "bare-metal") -}}
-{{- fail (printf "VALIDATION_ERROR kind=nri_baked_requires_node: nriImagePolicy.baked=true requires attestationApi.cvmMode=bare-metal (got %q). Only the node-as-CVM image bakes the plugin and its containerd registration; anywhere else the installer must install them, so baked would leave the node with no image admission at all." .Values.attestationApi.cvmMode) -}}
+{{- fail "VALIDATION_ERROR kind=require_host_image_policy: nriImagePolicy.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster host nri-image-policy is the only image-admission enforcement; disabling it leaves confidential workloads with no attested allowlist gate. Under cvmMode=bare-metal the measured worker image carries the plugin, its containerd registration and its config, which the installer would write over (`c8s install --cvm-mode=bare-metal` sets nriImagePolicy.enabled=false)." -}}
 {{- end -}}
 
 {{- /*
@@ -187,7 +201,7 @@
 {{- if include "c8s.cdsFromValues" . -}}
 {{- $_ := include "c8s.cdsPinDocument" . -}}
 {{- end -}}
-{{- if include "c8s.nodeReadsCDSAddress" . -}}
+{{- if include "c8s.installerCopiesCDSAddress" . -}}
 {{- include "c8s.checkCDSAddress" .Values.cds.address -}}
 {{- end -}}
 {{- /* The operator keys the router holds the route manifest to, which it reads
@@ -251,9 +265,8 @@
 {{- end -}}
 
 {{- /*
-  On a baked node the mesh's exempt namespaces are measured into the image
-  (images/node-guest/c8s/image-policy.yaml.in): kube-system and c8s-system host
-  no member pods. The webhooks' scope is this release's namespaceSelector, so a
+  On a baked node the mesh's exempt namespaces come from the measured floor,
+  not from chart values: kube-system and c8s-system host no member pods. The webhooks' scope is this release's namespaceSelector, so a
   release namespace the measured set does not name, or an extra exclusion it
   does not know, would inject pods the node refuses to protect — or leave a
   namespace uninjected that the node would have.

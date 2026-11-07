@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# check-doc-install-commands.sh — doc/CLI parity gate for the install flows.
+# check-doc-install-commands.sh — doc/CLI parity gate for the documented flows.
 #
-# Runs every c8s command from the fenced sh blocks of docs/QUICKSTART.md and
-# docs/DEMO.md exactly as written (line continuations and heredocs included)
+# Runs every c8s command from the fenced sh blocks of docs/DEMO.md
+# exactly as written (line continuations and heredocs included)
 # against a dead kubeconfig. A command passes when it clears flag validation
 # and the pre-cluster preflights: exit 0, or a failure whose output shows it
 # reached cluster contact. Failing earlier — unknown/invalid/missing flag, a
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-docs=("$repo_root/docs/QUICKSTART.md" "$repo_root/docs/DEMO.md")
+docs=("$repo_root/docs/DEMO.md")
 
 for tool in c8s helm kubectl openssl; do
   command -v "$tool" >/dev/null || { echo "check-doc-install-commands: '$tool' is not on PATH" >&2; exit 2; }

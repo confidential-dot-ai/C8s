@@ -178,7 +178,7 @@ func onlyMountAt(t *testing.T, mounts []allowlist.ObservedMount, destination str
 
 func routerNodeMountPlugin(t *testing.T) *plugin {
 	t.Helper()
-	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	cfg, err := parseConfig([]byte(renderWorkerImagePolicy(t)))
 	if err != nil {
 		t.Fatal(err)
 	}

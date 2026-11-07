@@ -20,7 +20,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -130,13 +131,13 @@ func testDocument(t *testing.T) Document {
 	t.Helper()
 	return Document{
 		SchemaVersion: SchemaVersion,
-		CDS: launchconfig.CDS{
+		CDS: cmdsutil.CDS{
 			Address:      "cds.acme.example:8443",
 			Measurements: testCDSPin(t, cdsConfig(t, "192.168.0.0/16")),
 			PinFloor:     1,
 		},
 		TLSSAN: "c8s.acme.example",
-		Router: &launchconfig.Router{Hostnames: []string{"api.acme.example"}, ACMEEmail: "ops@acme.example"},
+		Router: &nodeservices.Router{Hostnames: []string{"api.acme.example"}, ACMEEmail: "ops@acme.example"},
 		Kubernetes: Kubernetes{
 			APIServer:     "acme.k8s.example:443",
 			CACertificate: selfSigned(t, caTemplate()),
@@ -228,14 +229,14 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		change func(*Document)
 		want   string
 	}{
-		{"schema", func(d *Document) { d.SchemaVersion = "c8s-launch/v2" }, "schemaVersion must be c8s-worker/v1"},
+		{"schema", func(d *Document) { d.SchemaVersion = "c8s-worker/v2" }, "schemaVersion must be c8s-worker/v1"},
 		{"cds address without port", func(d *Document) { d.CDS.Address = "cds.acme.example" }, "must be <host>:<port>"},
 		{"cds pin binding no configuration", func(d *Document) { d.CDS.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
 		{"cds pin entries disagreeing on node subnets", func(d *Document) {
 			d.CDS.Measurements = testCDSPin(t, cdsConfig(t, "192.168.0.0/16"), cdsConfig(t, "172.16.0.0/12"))
 		}, "binds another configuration"},
 		{"cds pin binding something else", func(d *Document) { d.CDS.Measurements = testCDSPin(t, "kind: Pod\n") }, "the pinned CDS configuration"},
-		{"router", func(d *Document) { d.Router = &launchconfig.Router{ACMEEmail: "ops@acme.example"} }, "require router.hostnames"},
+		{"router", func(d *Document) { d.Router = &nodeservices.Router{ACMEEmail: "ops@acme.example"} }, "require router.hostnames"},
 
 		{"api server with a scheme", func(d *Document) { d.Kubernetes.APIServer = "https://acme.k8s.example:443" }, "must not carry a scheme"},
 		{"api server with a path", func(d *Document) { d.Kubernetes.APIServer = "acme.k8s.example:443/healthz" }, "must not carry a path"},

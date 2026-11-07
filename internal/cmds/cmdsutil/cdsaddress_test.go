@@ -1,6 +1,7 @@
 package cmdsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,5 +151,54 @@ func TestCDSURLAddress(t *testing.T) {
 				t.Fatalf("address = %q, %v; want %q", address, err, tc.want)
 			}
 		})
+	}
+}
+
+// A certificate or a server block carries a literal lowercase DNS name, never
+// an address or a pattern.
+func TestValidateHostnameTakesALowercaseDNSNameOnly(t *testing.T) {
+	for _, name := range []string{"api.example.com", "c8s.local", "a-b.example"} {
+		if err := ValidateHostname(name); err != nil {
+			t.Errorf("ValidateHostname(%q) = %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "10.0.0.1", "*.example.com", "API.example.com", "a.example.com;"} {
+		if err := ValidateHostname(name); !errors.Is(err, ErrNotDNSHostname) {
+			t.Errorf("ValidateHostname(%q) = %v, want %v", name, err, ErrNotDNSHostname)
+		}
+	}
+	if err := ValidateHostname(strings.Repeat("a", 254)); err == nil {
+		t.Error("ValidateHostname took a name over the DNS length limit")
+	}
+}
+
+// A node reads addresses it may not publish; a mapped IPv6 literal is not one.
+func TestValidateIPv4TakesIPv4Text(t *testing.T) {
+	for _, raw := range []string{"192.0.2.10", "127.0.0.1", "0.0.0.0", "224.0.0.1"} {
+		if err := ValidateIPv4(raw); err != nil {
+			t.Errorf("ValidateIPv4(%q) = %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"2001:db8::1", "::ffff:192.0.2.1", "not-an-ip", ""} {
+		if err := ValidateIPv4(raw); !errors.Is(err, ErrNotIPv4) {
+			t.Errorf("ValidateIPv4(%q) = %v, want %v", raw, err, ErrNotIPv4)
+		}
+	}
+}
+
+// A published or dialled address must be one a peer can reach.
+func TestValidateRoutableIPv4PublishesReachableAddressesOnly(t *testing.T) {
+	if err := ValidateRoutableIPv4("192.0.2.10"); err != nil {
+		t.Errorf("ValidateRoutableIPv4(192.0.2.10) = %v", err)
+	}
+	for _, raw := range []string{"127.0.0.1", "0.0.0.0", "224.0.0.1"} {
+		if err := ValidateRoutableIPv4(raw); !errors.Is(err, ErrNotRoutableIPv4) {
+			t.Errorf("ValidateRoutableIPv4(%q) = %v, want %v", raw, err, ErrNotRoutableIPv4)
+		}
+	}
+	for _, raw := range []string{"2001:db8::1", "not-an-ip"} {
+		if err := ValidateRoutableIPv4(raw); !errors.Is(err, ErrNotIPv4) {
+			t.Errorf("ValidateRoutableIPv4(%q) = %v, want %v", raw, err, ErrNotIPv4)
+		}
 	}
 }

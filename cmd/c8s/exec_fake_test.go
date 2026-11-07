@@ -103,7 +103,7 @@ func resetCLIState(t *testing.T) {
 	saved := struct {
 		installNamespace, installRelease, installCvmMode                          string
 		installHardwarePlatform, installImagePullSecret, installImageTag          string
-		installOperatorKeys, installUpstream, renderValuesDistro                  string
+		installOperatorKeys, installUpstream                                      string
 		uninstallNamespace, uninstallRelease                                      string
 		installCDSAddress, installCDSPin, installSeedOut                          string
 		installValues, installWorkloadRefs                                        []string
@@ -119,7 +119,7 @@ func resetCLIState(t *testing.T) {
 	}{
 		installNamespace, installRelease, installCvmMode,
 		installHardwarePlatform, installImagePullSecret, installImageTag,
-		installOperatorKeys, installUpstream, renderValuesDistro,
+		installOperatorKeys, installUpstream,
 		uninstallNamespace, uninstallRelease,
 		installCDSAddress, installCDSPin, installSeedOut,
 		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
@@ -136,7 +136,7 @@ func resetCLIState(t *testing.T) {
 	t.Cleanup(func() {
 		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
 		installHardwarePlatform, installImagePullSecret, installImageTag = saved.installHardwarePlatform, saved.installImagePullSecret, saved.installImageTag
-		installOperatorKeys, installUpstream, renderValuesDistro = saved.installOperatorKeys, saved.installUpstream, saved.renderValuesDistro
+		installOperatorKeys, installUpstream = saved.installOperatorKeys, saved.installUpstream
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
 		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
 		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
@@ -167,7 +167,6 @@ func resetCLIState(t *testing.T) {
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
-	renderValuesDistro = ""
 	installOperatorKey, installRoutesOut, installRoutesMaxAge = "", "routes.json", 24*time.Hour
 	prevOutSet, prevMaxAgeSet := installRoutesOutSet, installRoutesMaxAgeSet
 	prevRevision := installRoutesRevision

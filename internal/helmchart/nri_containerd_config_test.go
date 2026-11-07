@@ -1,9 +1,7 @@
 package helmchart
 
 import (
-	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -120,63 +118,67 @@ func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
 	wantArgv := []string{"/bin/sh", "-c",
 		"exec /usr/local/bin/c8s nri-image-policy plugin-ready --plugin-path='" + pluginDir + "/10-nri-image-policy' --addr=:8080",
 	}
-	for _, baked := range []bool{false, true} {
-		t.Run(fmt.Sprintf("baked=%v", baked), func(t *testing.T) {
-			out, err := helmTemplate(t,
-				"--set", "nriImagePolicy.baked="+strconv.FormatBool(baked),
-				"--set", "nriImagePolicy.hostPaths.pluginDir="+pluginDir)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-			if !worker.Spec.Template.Spec.HostPID {
-				t.Fatal("installer pod is not hostPID; the endpoint cannot see the host plugin")
-			}
-			c := renderedDaemonSetContainer(t, out, "c8s-nri-image-policy-worker", "plugin-ready")
-			if got := append(append([]string{}, c.Command...), c.Args...); !reflect.DeepEqual(got, wantArgv) {
-				t.Errorf("plugin-ready argv = %q, want %q", got, wantArgv)
-			}
-			// A liveness restart reruns neither the install nor containerd, so
-			// it cannot bring the plugin back.
-			if c.LivenessProbe != nil {
-				t.Errorf("plugin-ready has a liveness probe %+v; restarting it does not recover the plugin", c.LivenessProbe)
-			}
-			// HTTP, not exec: the locked node image denies runc exec.
-			probe := c.ReadinessProbe
-			if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/readyz" {
-				t.Fatalf("plugin-ready readiness probe = %+v, want httpGet /readyz", probe)
-			}
-			if len(c.Ports) != 1 || c.Ports[0].ContainerPort != 8080 || probe.HTTPGet.Port.String() != c.Ports[0].Name {
-				t.Errorf("readiness probe port %v does not name the endpoint's port %+v", probe.HTTPGet.Port.String(), c.Ports)
-			}
+	out, err := helmTemplate(t, "--set", "nriImagePolicy.hostPaths.pluginDir="+pluginDir)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	if !worker.Spec.Template.Spec.HostPID {
+		t.Fatal("installer pod is not hostPID; the endpoint cannot see the host plugin")
+	}
+	c := renderedDaemonSetContainer(t, out, "c8s-nri-image-policy-worker", "plugin-ready")
+	if got := append(append([]string{}, c.Command...), c.Args...); !reflect.DeepEqual(got, wantArgv) {
+		t.Errorf("plugin-ready argv = %q, want %q", got, wantArgv)
+	}
+	// A liveness restart reruns neither the install nor containerd, so
+	// it cannot bring the plugin back.
+	if c.LivenessProbe != nil {
+		t.Errorf("plugin-ready has a liveness probe %+v; restarting it does not recover the plugin", c.LivenessProbe)
+	}
+	// HTTP, not exec: the locked node image denies runc exec.
+	probe := c.ReadinessProbe
+	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/readyz" {
+		t.Fatalf("plugin-ready readiness probe = %+v, want httpGet /readyz", probe)
+	}
+	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != 8080 || probe.HTTPGet.Port.String() != c.Ports[0].Name {
+		t.Errorf("readiness probe port %v does not name the endpoint's port %+v", probe.HTTPGet.Port.String(), c.Ports)
+	}
 
-			// The seed admits exactly this invocation, and only without a host
-			// mount: the container carries none.
-			if len(c.VolumeMounts) != 0 {
-				t.Errorf("plugin-ready mounts %v; its argv-pinned seed entry denies mounts", c.VolumeMounts)
-			}
-			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
-			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-			if err != nil {
-				t.Fatal(err)
-			}
-			idx := seed.BuildIndex()
-			hostMount := []pkgallowlist.ObservedMount{{Source: "/", Destination: "/host", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown}}
-			for _, tc := range []struct {
-				name   string
-				argv   []string
-				mounts []pkgallowlist.ObservedMount
-				want   bool
-			}{
-				{"rendered", wantArgv, []pkgallowlist.ObservedMount{}, true},
-				{"with host mount", wantArgv, hostMount, false},
-				{"other script", []string{"/bin/sh", "-c", wantArgv[2] + "; sh"}, []pkgallowlist.ObservedMount{}, false},
-			} {
-				if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: tc.mounts}); got != tc.want {
-					t.Errorf("seed admits %s = %v, want %v", tc.name, got, tc.want)
-				}
-			}
-		})
+	// The seed admits exactly this invocation, and only without a host
+	// mount: the container carries none.
+	if len(c.VolumeMounts) != 0 {
+		t.Errorf("plugin-ready mounts %v; its argv-pinned seed entry denies mounts", c.VolumeMounts)
+	}
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
+	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := seed.BuildIndex()
+	hostMount := []pkgallowlist.ObservedMount{{
+		Source:      "/",
+		Destination: "/host",
+		Class:       pkgallowlist.MountHost,
+		Storage:     pkgallowlist.MountUnknown,
+	}}
+	for _, tc := range []struct {
+		name   string
+		argv   []string
+		mounts []pkgallowlist.ObservedMount
+		want   bool
+	}{
+		{"rendered", wantArgv, []pkgallowlist.ObservedMount{}, true},
+		{"with host mount", wantArgv, hostMount, false},
+		{"other script", []string{"/bin/sh", "-c", wantArgv[2] + "; sh"}, []pkgallowlist.ObservedMount{}, false},
+	} {
+		container := pkgallowlist.RunningContainer{
+			Digest: baseNRIDigest,
+			Argv:   tc.argv,
+			Mounts: tc.mounts,
+		}
+		if got := idx.AdmitsContainer(container); got != tc.want {
+			t.Errorf("seed admits %s = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

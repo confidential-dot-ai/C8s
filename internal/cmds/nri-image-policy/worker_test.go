@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -70,7 +69,6 @@ func TestWorkerConfigValidation(t *testing.T) {
 		{"an audited sandbox", func(c *config) { c.Policy.Sandbox = SandboxAudit }, "policy.sandbox"},
 		{"containers without an image annotation", func(c *config) { c.Policy.DenyMissingAnnotation = false }, "deny_missing_annotation"},
 		{"a mesh-exempt namespace", func(c *config) { c.Mesh.ExemptNamespaces = []string{"kube-system"} }, "mesh.exempt_namespaces"},
-		{"a mesh exit", func(c *config) { c.Mesh.Exits = []netip.AddrPort{netip.MustParseAddrPort("10.43.0.11:8080")} }, "mesh.exits"},
 		{"a credential attestation port", func(c *config) { c.Mesh.CredentialAttestationPort = 8400 }, "credential_attestation_port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +101,9 @@ func TestCheckWorkerConfig(t *testing.T) {
 		{"no worker key", strings.Replace(workerDocument, "\nworker: true\n", "\n", 1), "worker: true"},
 		{"a config marked as no worker", strings.Replace(workerDocument, "\nworker: true\n", "\nworker: false\n", 1), "worker: true"},
 		{"a refused worker", strings.Replace(workerDocument, "\nmesh:\n", "\nmesh:\n  exempt_namespaces: [kube-system]\n", 1), "worker requires no mesh.exempt_namespaces"},
+		// The gate reaches each exit uncaptured, so a config naming one is a
+		// key the plugin does not read, not a destination it honours.
+		{"a mesh exit", strings.Replace(workerDocument, "\nmesh:\n", "\nmesh:\n  exits: [\"10.43.0.11:8080\"]\n", 1), "field exits not found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := CheckWorkerConfig([]byte(tc.config))
@@ -116,10 +117,20 @@ func TestCheckWorkerConfig(t *testing.T) {
 	}
 }
 
+// A measured base is a worker image's floor, so a config claiming one without
+// the worker key is refused when it parses, wherever it was loaded from.
+func TestNodeTCBWithoutWorkerIsRefusedAtParse(t *testing.T) {
+	document := strings.Replace(workerDocument, "\nworker: true\n", "\n", 1)
+	_, err := parseConfig([]byte(document))
+	if err == nil || !strings.Contains(err.Error(), "allowlist.node_tcb requires worker: true") {
+		t.Fatalf("parseConfig = %v, want a refusal naming the worker key", err)
+	}
+}
+
 // On a worker, an API pod holds only the host binds an entry pinning its
 // launch declares, in any namespace, and none a static pod's entry declares;
 // any other host privilege is refused. A static pod is excused for a pinned
-// launch alone. A server excuses an API pod for a pinned launch.
+// launch alone: its control plane, outside the TEE, writes every other pod.
 func TestWorkerExcusesNoAPIPod(t *testing.T) {
 	pinned := func(argv string) allowlist.Container {
 		return allowlist.Container{
@@ -157,7 +168,6 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 	}
 	tests := []struct {
 		name         string
-		server       bool
 		source       string
 		namespace    string
 		pod          func(*api.PodSandbox)
@@ -180,7 +190,6 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 		{name: "a pod without a source, copying a static pod", namespace: "kube-system", ctr: privileged, argv: "/floor", want: verdictDeny},
 		{name: "a pinned static pod", source: staticPodSource, namespace: "kube-system", pod: hostNetwork, ctr: privileged, argv: "/floor", want: verdictAllow},
 		{name: "a static pod an open entry admits", source: staticPodSource, namespace: "kube-system", ctr: privileged, argv: "/open", want: verdictDeny},
-		{name: "a server's API pod on a pinned launch", server: true, source: "api", namespace: "kube-system", pod: hostNetwork, ctr: privileged, argv: "/floor", want: verdictAllow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,7 +213,7 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 			cfg := &config{
 				Allowlist: allowlistConfig{Base: base, NodeTCB: true},
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
-				Worker:    !tt.server,
+				Worker:    true,
 			}
 			p := newTestPlugin(cfg)
 			p.policy = newPolicyStore(base)

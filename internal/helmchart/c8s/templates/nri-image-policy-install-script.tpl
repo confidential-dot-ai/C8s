@@ -82,12 +82,14 @@ if install_file /usr/local/bin/nri-image-policy "/host{{ include "nri-image-poli
 fi
 
 CONTAINERD_DIR=/host{{ include "nri-image-policy.containerdConfigDir" $root }}
-CONTAINERD_CONFIG_MODE={{ include "nri-image-policy.containerdConfigMode" $root | quote }}
 MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
 MARK_END='# END c8s-nri-image-policy (managed)'
 
-# containerd/RKE2 always render the active config to config.toml.
+# containerd renders the active config to config.toml. Its absence means this
+# node's containerd is not laid out as upstream's: a file holding only the
+# managed block below would drop whatever the host configured elsewhere.
 main_config="$CONTAINERD_DIR/config.toml"
+[ -f "$main_config" ] || { echo "ERROR: $main_config not found; point nriImagePolicy.containerd.configDir at this node's containerd config directory" >&2; exit 1; }
 
 render_nri_toml() {
   cat <<EOF
@@ -113,47 +115,17 @@ read_managed_block() {
 }
 
 containerd_changed=0
-if [ "$CONTAINERD_CONFIG_MODE" = "dropin" ]; then
-  ver=$(sed -n '/^[[:space:]]*\[/q; s/#.*//; s/^[[:space:]]*version[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$main_config" | head -n1)
-  if [ "${ver:-0}" -ge 3 ] 2>/dev/null; then
-    dropin_dir="$CONTAINERD_DIR/config-v3.toml.d"
-  elif [ "${ver:-}" = "2" ]; then
-    dropin_dir="$CONTAINERD_DIR/config.toml.d"
-  else
-    echo "ERROR: cannot determine containerd schema version from $main_config" >&2
-    exit 1
-  fi
-  CONFIG="$dropin_dir/nri-image-policy.toml"
-  if ! grep -qF "$(basename "$dropin_dir")" "$main_config" 2>/dev/null; then
-    echo "ERROR: $main_config does not import $(basename "$dropin_dir"); containerd-prep should have added it" >&2
-    exit 1
-  fi
-  desired=$(render_nri_toml)
-  mkdir -p "$dropin_dir"
-  if ! printf '%s\n' "$desired" | cmp -s - "$CONFIG" 2>/dev/null; then
-    containerd_changed=1
-    printf '%s\n' "$desired" > "$CONFIG.tmp"
-    mv -f "$CONFIG.tmp" "$CONFIG"
-    echo "containerd drop-in written: $CONFIG"
-  fi
-else
-  CONFIG="$main_config"
-  desired=$(printf '%s\n%s\n%s' "$MARK_BEGIN" "$(render_nri_toml)" "$MARK_END")
-  if [ "$(read_managed_block "$CONFIG")" != "$desired" ]; then
-    containerd_changed=1
-    if [ -f "$CONFIG" ]; then
-      awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-        $0==b { skip=1; next }
-        $0==e { skip=0; next }
-        !skip { print }
-      ' "$CONFIG" > "$CONFIG.tmp"
-    else
-      : > "$CONFIG.tmp"
-    fi
-    printf '\n%s\n' "$desired" >> "$CONFIG.tmp"
-    mv -f "$CONFIG.tmp" "$CONFIG"
-    echo "containerd config patched: $CONFIG"
-  fi
+desired=$(printf '%s\n%s\n%s' "$MARK_BEGIN" "$(render_nri_toml)" "$MARK_END")
+if [ "$(read_managed_block "$main_config")" != "$desired" ]; then
+  containerd_changed=1
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    $0==b { skip=1; next }
+    $0==e { skip=0; next }
+    !skip { print }
+  ' "$main_config" > "$main_config.tmp"
+  printf '\n%s\n' "$desired" >> "$main_config.tmp"
+  mv -f "$main_config.tmp" "$main_config"
+  echo "containerd config patched: $main_config"
 fi
 
 restart_needed=0
@@ -181,9 +153,8 @@ RESTART_COMMAND={{ include "nri-image-policy.restartCommand" $root | quote }}
 # A plugin that already died stays dead until containerd restarts, and this
 # pod's plugin-ready container would then hold the rollout forever. Restart
 # for that too, at most once per window: a plugin that dies again right away
-# gets the health failure below, not a containerd restart per init retry. On
-# RKE2 that restart is the whole rke2-server/agent unit. The stamp is on
-# tmpfs, so a reboot clears it.
+# gets the health failure below, not a containerd restart per init retry. The
+# stamp is on tmpfs, so a reboot clears it.
 #
 # A plugin whose health socket still answers is alive whatever the process
 # check says, so a check that misreads this node's process tree leaves the
@@ -214,10 +185,11 @@ if [ "$restart_needed" = "1" ]; then
   echo "restarting containerd (detached via systemd-run): $RESTART_COMMAND"
   # The restart tears down this pod's own containerd shim. Running it in this
   # pod's process tree (nsenter ... sh -c) means it is killed together with the
-  # pod mid-restart — and on a sole control-plane node that interrupts the rke2
-  # bootstrap and wedges it (etcd/apiserver static manifests never rewritten,
-  # API server stays down). Hand the restart to host PID 1 via systemd-run so it
-  # runs as a transient unit and completes regardless of this pod's fate. The
+  # pod mid-restart — and on a sole control-plane node that interrupts the
+  # cluster bootstrap and wedges it (etcd/apiserver static manifests never
+  # rewritten, API server stays down). Hand the restart to host PID 1 via
+  # systemd-run so it runs as a transient unit and completes regardless of
+  # this pod's fate. The
   # RESTART_COMMAND is `systemctl restart ...`, so systemd — and thus
   # systemd-run — is always present on the host.
   # shellcheck disable=SC2086
@@ -256,40 +228,6 @@ until health=$(curl --unix-socket "$health_socket" --silent --fail --max-time 2 
   sleep 1
 done
 echo "==> nri-image-policy installer finished; plugin healthy: $health"
-{{- end }}
-
-{{/*
-Policy-measurement script for a node-as-CVM (--cvm-mode=bare-metal), where the node image bakes the
-plugin binary, its containerd registration and the boot config — base included,
-whose RKE2 system digests only the image build resolves, and the CDS its launch
-staging pins. The policy-measurement switch is the one thing that config cannot
-carry, so the installer patches that key into it and restarts containerd when it
-changes.
-
-Caller dict: .root.
-*/}}
-{{- define "nri-image-policy.measurePoliciesScript" -}}
-{{- $root := .root -}}
-set -eu
-
-echo "==> nri-image-policy policy-measurement installer starting"
-
-# Components read this as $(NODE_IP) (cmdsutil.NodeIPPath) as a non-root
-# user; nri-node-ip.service on earlier node images publishes it 0600.
-if [ -f "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip" ]; then
-  chmod 0644 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip"
-fi
-
-result=$(/usr/local/bin/c8s nri-image-policy set-measure-policies \
-  --config "/host{{ include "nri-image-policy.hostConfigPath" $root }}" \
-  --measure-policies={{ $root.Values.nriImagePolicy.measurePolicies }})
-echo "policy measurement $result"
-
-restart_needed=0
-if [ "$result" = "updated" ]; then
-  restart_needed=1
-fi
-{{ include "nri-image-policy.restartAndWait" (dict "root" $root) }}
 {{- end }}
 
 {{/*
@@ -340,7 +278,7 @@ policy:
        TCB against the cluster admin, which needs a measured base allowlist to exempt;
        the base above is rendered from chart values, so the same admin chooses
        it. cvmMode=node runs the node image's baked config instead, where the
-       base is measured — see images/node-guest/c8s/image-policy.yaml.in. */}}
+       base is measured — see images/node-guest/worker/image-policy.yaml.in. */}}
   sandbox: "off"
 {{- if $root.Values.nriImagePolicy.policy.exemptNamespaces }}
   exempt_namespaces:
@@ -359,7 +297,7 @@ logging:
   level: {{ $root.Values.nriImagePolicy.logLevel | quote }}
 {{- if not $root.Values.node.baked }}
 {{/* The mesh policy of an install: the same shape the node image measures
-     (images/node-guest/c8s/image-policy.yaml.in), rendered from chart values
+     (images/node-guest/worker/image-policy.yaml.in), rendered from chart values
      because nothing here is measured. The enforcer accepts it only on this
      lane, which is for test clusters (decision 5). */}}
 {{- if not $root.Values.nriImagePolicy.mesh.resolver }}

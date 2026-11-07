@@ -8,7 +8,7 @@ After step 3, do only the steps you need; terms left undefined here are in
 
 ## Prerequisites
 
-- A cluster running C8s ([QUICKSTART.md](QUICKSTART.md)) and the operator
+- A cluster running C8s ([operator.md](operator.md)) and the operator
   private key you installed it with.
 - Every image in the pod template pinned by digest: a tag names whatever the
   registry serves at pull time.

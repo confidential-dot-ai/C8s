@@ -2,8 +2,10 @@ package deployment
 
 import "fmt"
 
-// BakedAttestationAndNRIPlugin identifies the services supplied by the measured node image.
-func BakedAttestationAndNRIPlugin(mode string) (bool, error) {
+// MeasuredImageCarriesAttestationAndNRIPlugin reports whether a node of this
+// shape runs the attestation API and the admission plugin from its measured
+// image, which is what leaves the chart to render neither.
+func MeasuredImageCarriesAttestationAndNRIPlugin(mode string) (bool, error) {
 	switch mode {
 	case "bare-metal":
 		return true, nil

@@ -458,6 +458,7 @@ func measuredConfig(t *testing.T, mesh bool) string {
 	t.Helper()
 	document := `
 platform: snp
+worker: true
 allowlist:
   node_tcb: true
   base:
@@ -473,12 +474,13 @@ allowlist:
 policy:
   mode: fail-closed
   fatal_existing: true
+  sandbox: enforce
+  deny_missing_annotation: true
   boot_marker_path: /run/nri-image-policy/registered
 `
 	if mesh {
 		document += `
 mesh:
-  exempt_namespaces: [kube-system]
   resolver: "10.43.0.10"
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
@@ -762,7 +764,7 @@ func TestFloorRefusesAWorkingDirOnSuppliedContent(t *testing.T) {
 		{name: "an unclean path onto a data mount", cwd: "/app/../mnt/c8s-data/config/", wants: "mount at /mnt/c8s-data/config"},
 		{name: "a relative link onto a data mount", cwd: "/data", wants: "mount at /mnt/c8s-data/config"},
 		{name: "an emptyDir", cwd: "/app/cache", mount: bind("/app/cache", pod+"kubernetes.io~empty-dir/cache")},
-		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
+		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
 		{name: "a kernel filesystem", cwd: "/tmp", mount: specs.Mount{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs"}},
 		{name: "a host mount", cwd: "/srv", mount: bind("/srv", "/srv/data"), wants: "mount at /srv"},
 		{name: "another pod's emptyDir", cwd: "/app/cache", mount: bind("/app/cache", "/var/lib/kubelet/pods/other/volumes/kubernetes.io~empty-dir/cache"), wants: "mount at /app/cache"},

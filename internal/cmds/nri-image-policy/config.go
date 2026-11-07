@@ -83,8 +83,8 @@ type workloadClaimsConfig struct {
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
 // entries. The chart's component entries pin each container's argv and mount
-// table and leave env open; the node image's generated RKE2 system entries
-// leave command and args open.
+// table and leave env open; a worker image's floor pins every command and
+// leaves args open only where the pod chooses them.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -251,8 +251,8 @@ const defaultPullTimeout = 30 * time.Second
 const NodeIPFile = "node-ip"
 
 // DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, the file set-measure-policies patches, and the
-// measured policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+// resolves for this plugin, and the measured policy the node's runtime
+// wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -308,9 +308,8 @@ func CheckWorkerConfig(data []byte) error {
 	return nil
 }
 
-// parseConfig validates static configuration for the plugin and
-// set-measure-policies.
-// loadConfig completes runtime role bindings before validating them.
+// parseConfig validates static configuration for the plugin. loadConfig
+// completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -497,6 +496,12 @@ func (c *config) Validate() error {
 	if c.Allowlist.NodeTCB && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.node_tcb needs a non-empty allowlist.base: it exempts the base's digests from the sandbox policy")
 	}
+	// The exemption rests on the base being measured with the image, which is
+	// the worker image's floor; the only other base is a chart-rendered one,
+	// chosen by the admin the policy defends against.
+	if c.Allowlist.NodeTCB && !c.Worker {
+		return errors.New("allowlist.node_tcb requires worker: true: a measured base is a worker image's floor")
+	}
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
@@ -534,9 +539,6 @@ func (c *config) validateWorker() error {
 	}
 	if len(c.Mesh.ExemptNamespaces) > 0 {
 		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
-	}
-	if len(c.Mesh.Exits) > 0 {
-		return fmt.Errorf("worker requires no mesh.exits, got %v: a member's connections to them leave the mesh in the clear, for endpoints the control plane chooses", c.Mesh.Exits)
 	}
 	if c.Mesh.CredentialAttestationPort != 0 {
 		return errors.New("worker requires no mesh.credential_attestation_port: its credential clients verify through the node's attestation socket")

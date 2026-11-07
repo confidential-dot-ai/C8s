@@ -21,7 +21,7 @@ import (
 // against the containers this package builds: a drift fails here instead of
 // leaving an injected container role-less on a confidential node.
 const (
-	measuredPolicyTemplate = "../../images/node-guest/c8s/image-policy.yaml.in"
+	measuredPolicyTemplate = "../../images/node-guest/worker/image-policy.yaml.in"
 	meshDockerfile         = "../../cmd/armtls-mesh/Dockerfile"
 	operatorDockerfile     = "../../cmd/c8s/Dockerfile"
 )

@@ -1,6 +1,6 @@
 ## Render Kubernetes core services into the measured node image at build time.
 ## Signed launch policies are staged on each node at /run/c8s-node; the host
-## owns attestation, RKE2 and NRI. Ordinary Helm installs leave this off.
+## owns attestation and NRI. Ordinary Helm installs leave this off.
 ##
 ## A baked router takes its public hostnames from the launch file at
 ## /run/c8s-node/router/ instead of the chart, so router.publicTLS.mode stays
@@ -283,7 +283,7 @@ attestationApi:
 
 ## The per-pod mesh endpoint the admission webhook injects into every pod it
 ## covers. Its ports, identity and packet rules are the node's measured policy,
-## not chart values (images/node-guest/c8s/image-policy.yaml.in).
+## not chart values (images/node-guest/worker/image-policy.yaml.in).
 armtlsMesh:
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
@@ -292,39 +292,6 @@ armtlsMesh:
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent
-
-## kube-state-metrics: cluster object metadata as Prometheus metrics, a
-## platform add-on of the measured node image (node.baked only). It runs in
-## kube-system, outside the mesh, with read-only RBAC that excludes Secrets
-## and ConfigMaps, and serves plain HTTP on a fixed Service address that the
-## measured mesh policy gives every member pod as an exit
-## (images/node-guest/c8s/image-policy.yaml.in mesh.exits).
-kubeStateMetrics:
-  enabled: false
-  image:
-    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
-    # Resolve registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0 to bump this digest.
-    digest: "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b"
-    tag: ""
-    pullPolicy: IfNotPresent
-  # The image's executable, which the seeded entry pins. Bump with the image.
-  entrypoint: ["/kube-state-metrics"]
-  # The image config's Env, which the seeded entry's env match pins. Bump
-  # with the image.
-  imageEnv:
-    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
-  # INVARIANT: equal to the measured mesh policy's exit. Inside service-cidr,
-  # beside the cluster DNS address, in the low band the apiserver hands out
-  # only on request.
-  clusterIP: 10.53.0.11
-  port: 8080
-  resources:
-    requests:
-      cpu: 10m
-      memory: 64Mi
-    limits:
-      memory: 256Mi
 
 nriImagePolicy:
   ## The TEE family this cluster's nodes run on, which the plugin presents
@@ -345,23 +312,11 @@ nriImagePolicy:
 
   ## Host-side NRI image admission: the installer DaemonSet. Its enabled state is
   ## bound to the cvmMode shape, not free: it MUST be true on gke/aks, where host NRI is the only allowlist gate
-  ## (require_host_image_policy). On cvmMode=bare-metal it runs in its baked form
-  ## (below) — the plugin comes from the node image, which carries its own CDS
-  ## pin from launch staging. `c8s install` sets both from --cvm-mode. The
+  ## (require_host_image_policy). On cvmMode=bare-metal the measured image
+  ## carries the plugin, its containerd registration and its config, and
+  ## `c8s install --cvm-mode=bare-metal` sets this to false. The
   ## bootstrapAllowlist below still feeds the seed CDS serves.
   enabled: true
-  ## Node-as-CVM (`c8s install --cvm-mode=bare-metal`, which sets this): the node image
-  ## bakes the plugin binary, its containerd registration and the boot config —
-  ## floor included, whose RKE2 system-image digests only the image build
-  ## resolves. The installer then writes this release's measurePolicies into
-  ## that config and restarts containerd when it changes, touching nothing
-  ## else. Requires attestationApi.cvmMode=bare-metal (nri_baked_requires_node).
-  baked: false
-  ## Host Kubernetes distro for the nri-image-policy installer: k8s | rke2.
-  ## Selects the containerd config layout it targets — see the subchart's
-  ## values.yaml. `c8s install` sets this to the distro detected from the
-  ## cluster's kubelet versions (an install with -f values owns it instead).
-  distro: k8s
   image:
     repository: ghcr.io/confidential-dot-ai/nri-image-policy
     # -- Image tag. Required: the chart does not pin a default; the consumer
@@ -373,12 +328,10 @@ nriImagePolicy:
     digest: ""
     pullPolicy: IfNotPresent
 
-  # RKE2-only containerd-prep initContainer. Runs privileged with the host
-  # containerd config directory mounted to wire up the drop-in import before
-  # the installer writes its NRI drop-in. The seed admits it argv-pinned
-  # (the prep script verbatim), never by digest alone — a busybox floor
-  # entry would admit any command line on any pod. Digest-pin this image
-  # because it runs as root on every selected node.
+  # The image `c8s uninstall` runs its host sweep in on a release whose
+  # nriImagePolicy.image carries no digest or tag — an install with the host
+  # installer off (`--cvm-mode=bare-metal`). Digest-pinned: the sweep runs it
+  # privileged on every node.
   containerdPrep:
     image:
       repository: busybox
@@ -440,38 +393,32 @@ nriImagePolicy:
   ## CDS must be able to reach every node on it.
   ##
   ## The advertised host defaults to the --node-ip of a separate kubelet
-  ## process, as RKE2 runs it, else the default-route interface's address. k3s
-  ## runs its kubelet inside the k3s process, so set this on a k3s node with
-  ## more than one interface. The plugin follows a changed address in node-ip
-  ## and in the tokens it signs, and components dialing node-ip restart onto
-  ## it. Set it on nodes whose kubelet registers an address neither finds: CDS
-  ## checks tokens against the Node's InternalIP. An IP here is also the node-ip that components dial the
+  ## process, else the default-route interface's address. The plugin follows a
+  ## changed address in node-ip and in the tokens it signs, and components
+  ## dialing node-ip restart onto it. Set it on nodes whose kubelet registers
+  ## an address neither finds: CDS checks tokens against the Node's
+  ## InternalIP. An IP here is also the node-ip that components dial the
   ## attestation-api on.
   sandboxDigests:
     advertiseHost: ""
 
-  # Containerd configuration the installer targets. The config directory,
-  # socket, and restart command default from distro; set the fields below only
-  # for a distro the built-in values do not cover.
+  # Containerd configuration the installer targets. Set these only for a host
+  # whose containerd is not laid out as upstream's.
   containerd:
-    # Empty derives from distro (k8s -> /etc/containerd,
-    # rke2 -> /var/lib/rancher/rke2/agent/etc/containerd).
+    # Empty is /etc/containerd.
     configDir: ""
-    # Empty derives from distro (k8s -> /run/containerd/containerd.sock,
-    # rke2 -> /run/k3s/containerd/containerd.sock).
+    # Empty is /run/containerd/containerd.sock.
     socket: ""
     namespace: k8s.io
-    # Empty derives from distro (k8s -> "systemctl restart containerd",
-    # rke2 -> restart whichever of rke2-server/rke2-agent is active on the
-    # node, so server/control-plane and worker nodes are both handled).
+    # Empty is "systemctl restart containerd".
     restartCommand: ""
 
   refresh:
     # How often the worker plugin pulls the current allowlist from CDS. A
     # written entry keeps its previous admission verdict at container start —
     # an added entry refused, a narrowed one still admitted — for up to one
-    # interval after CDS commits the write. Under `baked` the plugin runs the
-    # equal value measured into the node image, which an override cannot reach.
+    # interval after CDS commits the write. A measured image's plugin runs the
+    # equal value measured into it, which an override cannot reach.
     interval: 5s
 
   # Extend TDX RTMR[3] with each pulled allowlist's digest before applying it,
@@ -482,9 +429,7 @@ nriImagePolicy:
   # still require the bare operator-key seed. Needs the default
   # hostPaths.runtimeDir and attestationApi.enabled, so certificate producers
   # mount the journal; node.baked is refused, since its image owns the plugin
-  # config. With nriImagePolicy.baked the policy-measurement installer patches it into the
-  # node image's config, which a node image predating the key ignores. After
-  # 256 policies the node applies no new one until it reboots.
+  # config. After 256 policies the node applies no new one until it reboots.
   measurePolicies: false
 
   # containerd's NRI plugin_request_timeout: how long containerd waits on one
@@ -493,8 +438,8 @@ nriImagePolicy:
   # installer pod goes NotReady when that happens. Raise it on nodes where the
   # plugin resolves image tags against a busy containerd. A Go duration
   # ("2s", "500ms"). Changing it restarts containerd on each node as the
-  # installer rolls out. Under
-  # `baked` the node image's drop-in sets it, which an override cannot reach.
+  # installer rolls out. On a measured image the drop-in it carries sets it,
+  # which an override cannot reach.
   requestTimeout: 2s
 
   # --- Bootstrap allowlist ---
@@ -658,9 +603,8 @@ router:
   # on the node's host port so external clients reach the front door directly
   # on the node IP (kubelet/CNI portmap DNATs the host port to the in-pod
   # unprivileged listener, so nginx needs no privileged bind). This grabs the
-  # node's 443: on clusters whose ingress already owns it (notably RKE2, which
-  # bundles an ingress on hostPort 80/443 — rke2-ingress-nginx through v1.35,
-  # rke2-traefik from v1.36) the router pod stays
+  # node's 443: on a cluster whose own ingress controller already owns it on
+  # every node the router pod stays
   # Pending ("didn't have free ports for the requested pod ports"); set
   # enabled: false there (reach router through its Service or your own
   # ingress) or point https at a free host port. https is the host port to
@@ -937,6 +881,12 @@ router:
     # or node.baked) and attest.enabled is true, the sidecar also reads the
     # node's measured-policy journal under nriImagePolicy.hostPaths.runtimeDir.
     attestationApiURL: ""
+    # -- attest-pq and attest-lb requests per second each client address may
+    # make, and how many it may make at once (`--establish-rate`,
+    # `--establish-burst`). null keeps the sidecar's defaults (10/s, burst 20).
+    # A baked node renders the chart with these unset, so it runs the defaults.
+    establishRate: null
+    establishBurst: null
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity
     # leaf is a usable credential carrying a matched-workload stamp with

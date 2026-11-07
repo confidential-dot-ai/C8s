@@ -1,5 +1,5 @@
-# CoreDNS for the cluster's names, at RKE2 v1.36.4's version, on every worker,
-# behind the control plane's kube-dns Service at the documents' clusterDNS.
+# CoreDNS for the cluster's names, on every worker, behind the control plane's
+# kube-dns Service at the documents' clusterDNS.
 apiVersion: v1
 kind: Pod
 metadata:

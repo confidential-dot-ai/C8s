@@ -1,12 +1,11 @@
-# Build + publish the C8s confidential node image (TDX-measured RKE2 + NRI +
-# attestation-api + NVIDIA stack in the verity rootfs). confos is the build
-# tree (pinned CONFOS_REF); callers select the baked commit and publish policy.
+# Build + publish the C8s confidential worker image (the measured kubelet,
+# containerd, NRI plugin, attestation-api and NVIDIA stack in the verity
+# rootfs). confos is the build tree (pinned CONFOS_REF); callers select the
+# baked commit and publish policy.
 # Output: ghcr.io/confidential-dot-ai/node-guest-base, one image per TEE:
-# tags :rke2-{tdx,snp}[-cdi] / :rke2-{tdx,snp}[-cdi]-<sha>. Stable releases
-# also receive :rke2-{tdx,snp}[-cdi]-vX.Y.Z in c8s-image-publish.yml. The
-# pre-matrix :rke2[-cdi]* tags are frozen (TDX builds up to the rename).
-# (pre-flip images stay frozen under c8s-base)
-# (CDI image) + :rke2 / :rke2-<sha> (oras artifact). dev=true -> :rke2-dev-*.
+# tags :worker-{tdx,snp}-cdi (CDI image) and :worker-{tdx,snp} (oras
+# artifact), each also with a -<sha> suffix. Stable releases receive
+# :worker-{tdx,snp}[-cdi]-vX.Y.Z in c8s-image-publish.yml.
 #
 # The same callers publish the CDS image from images/cds-guest/:
 # ghcr.io/confidential-dot-ai/cds-guest-base, tags :cds[-cdi][-<sha>]. One
@@ -15,15 +14,6 @@
 on:
   workflow_call:
     inputs:
-      dev:
-        required: false
-        type: boolean
-        default: false
-      ssh:
-        description: "With dev, add the confos ssh profile (OpenSSH server, no baked keys). Never ship."
-        required: false
-        type: boolean
-        default: false
       c8s_ref:
         required: false
         type: string
@@ -71,17 +61,15 @@ concurrency:
   # The inputs are part of the identity, not decoration. A workflow_dispatch has
   # no workflow_run event, so the commit term falls through to github.sha —
   # main's head — which is the SAME value for every dispatch between two pushes.
-  # Without the inputs, two c8s_ref rebuilds, or a dev and a non-dev build, share
-  # a group and queue behind each other (cancel-in-progress is false) despite
-  # producing different images. Nothing about them needs serializing: a c8s_ref
-  # rebuild pushes only :<variant>[-cdi]-<ref>, which is distinct per ref, and
-  # dev builds carry their own -dev tags. They are empty on the workflow_run
-  # path, so the auto path groups exactly as before.
+  # Without the inputs, two c8s_ref rebuilds share a group and queue behind each
+  # other (cancel-in-progress is false) despite producing different images.
+  # Nothing about them needs serializing: a c8s_ref rebuild pushes only
+  # :<variant>[-cdi]-<ref>, which is distinct per ref. They are empty on the
+  # workflow_run path, so the auto path groups exactly as before.
   group: >-
     ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha
-    }}-${{ inputs.c8s_ref }}-${{ inputs.dev }}-${{ inputs.ssh
-    }}-${{ inputs.confos_ref }}-${{ inputs.release_tag }}-${{ inputs.gate
-    }}-${{ inputs.leg }}
+    }}-${{ inputs.c8s_ref }}-${{ inputs.confos_ref }}-${{ inputs.release_tag
+    }}-${{ inputs.gate }}-${{ inputs.leg }}
   cancel-in-progress: false
 
 env:
@@ -161,7 +149,7 @@ jobs:
           key: apt-debs-${{ steps.image.outputs.key }}-${{ hashFiles('confidential-os-builder/bin/host-deps', 'confidential-os-builder/mkosi/base/mkosi.sandbox/etc/apt/sources.list.d/mkosi.sources') }}
 
   build-and-push:
-    name: Build c8s node image (${{ matrix.platform }})
+    name: Build c8s worker image (${{ matrix.platform }})
     needs: host-deps
     # Auto path: Docker succeeded on main (its PR runs don't publish components).
     # Gate legs arrive via workflow_call, where event_name is the caller's.
@@ -290,19 +278,7 @@ jobs:
         # VARIANT drives C8S_NAME (-> output/$VARIANT/) and the push tags.
         run: |
           echo "IMAGE=${REGISTRY}/confidential-dot-ai/node-guest-base" >> "$GITHUB_ENV"
-          if [ "${{ inputs.ssh }}" = "true" ] && [ "${{ inputs.dev }}" != "true" ]; then
-            echo "::error::ssh=true requires dev=true: SSH builds are debug-only"
-            exit 1
-          fi
-          if [ "${{ inputs.dev }}" = "true" ]; then
-            echo "VARIANT=rke2-${{ matrix.platform }}-dev${{ inputs.ssh && '-ssh' || '' }}" >> "$GITHUB_ENV"
-            echo "KERNEL_FLAVOR=rke2-dev" >> "$GITHUB_ENV"
-            echo "C8S_DEV=1" >> "$GITHUB_ENV"
-          else
-            echo "VARIANT=rke2-${{ matrix.platform }}" >> "$GITHUB_ENV"
-            echo "KERNEL_FLAVOR=rke2" >> "$GITHUB_ENV"
-            echo "C8S_DEV=0" >> "$GITHUB_ENV"
-          fi
+          echo "VARIANT=worker-${{ matrix.platform }}" >> "$GITHUB_ENV"
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
@@ -386,7 +362,7 @@ jobs:
           path: |
             confidential-os-builder/output/gpu/staged
             confidential-os-builder/output/gpu/stage.stamp
-          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
+          key: ${{ runner.os }}-gpu-staged-worker-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
 
       - name: Cache kernel-builder tools tree
         # mkosi.output (image + stamp) is what the kernel short-circuit path
@@ -412,7 +388,7 @@ jobs:
           path: |
             confidential-os-builder/output/kernel
             c8s/images/node-guest/kernel/config-x86_64-*.snapshot
-          key: ${{ runner.os }}-kernel-v3-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt') }}
+          key: ${{ runner.os }}-kernel-v3-worker-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt') }}
 
       - name: Rebuild the kernel when its toolchain is gone
         # confos kernel short-circuits on the manifest before it ensures the
@@ -427,7 +403,7 @@ jobs:
           path: |
             confidential-os-builder/mkosi/base/mkosi.tools
             confidential-os-builder/mkosi/base/mkosi.tools.manifest
-          key: ${{ runner.os }}-c8s-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/node-guest/c8s/mkosi.conf') }}
+          key: ${{ runner.os }}-c8s-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/node-guest/worker/mkosi.conf') }}
 
       - name: Cache apt package cache
         # mkosi's package cache for every subimage (initrd, base, main). Keeps
@@ -441,33 +417,19 @@ jobs:
             !confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
           # conf-only globs: profile mkosi.extra trees carry dangling systemd
           # enablement symlinks, which hashFiles refuses to hash.
-          key: ${{ runner.os }}-pkgcache-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/node-guest/c8s/mkosi.conf') }}
+          key: ${{ runner.os }}-pkgcache-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/node-guest/worker/mkosi.conf') }}
           restore-keys: |
             ${{ runner.os }}-pkgcache-
 
       - name: Cache c8s artifact downloads
-        # ~3.5G rke2 tarball + airgap bundles, sha256-verified on reuse.
+        # The RKE2 runtime bundle, Helm, the CNI plugins and the plugin image's
+        # binary, each sha256- or digest-verified on reuse.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
-            !confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
-          key: ${{ runner.os }}-c8s-artifacts-${{ hashFiles('c8s/images/node-guest/c8s/mkosi.sync') }}
+          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
+          key: ${{ runner.os }}-c8s-artifacts-v2-${{ hashFiles('c8s/images/node-guest/worker/mkosi.sync') }}
           restore-keys: |
-            ${{ runner.os }}-c8s-artifacts-
-
-      - name: Restore pinned core images
-        # OCI layouts of the digest-pinned core images. The C8s images change
-        # with the ref, so this keys on it rather than on mkosi.sync, whose
-        # exact-key hits would never save them. airgap-images.sh reuses a
-        # layout only after re-hashing every blob and prunes stale digests.
-        id: core-images
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
-          key: ${{ runner.os }}-c8s-core-images-${{ inputs.c8s_ref || github.event.workflow_run.head_sha || github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-c8s-core-images-
+            ${{ runner.os }}-c8s-artifacts-v2-
 
       - name: Cache NVIDIA driver downloads
         # ~500MB, sha-verified; keyed on the script that carries the pins.
@@ -531,7 +493,7 @@ jobs:
           # Must actually link libnvat (not a silent fallback).
           ldd target/release/attestation-api | grep -q libnvat
 
-      - name: Build c8s image
+      - name: Build the worker image
         # Warm builds take 2 minutes; a cold pkgcache or driver download
         # took 20 in the last 40 runs. Bounded so a wedged mirror fails
         # here rather than at the job's 3h limit, which exists for the
@@ -559,12 +521,11 @@ jobs:
           # hands C8S_REF to mkosi.sync via confos --sync-input (can't cross
           # mkosi's sudo sandbox as an env var). The c8s_ref input overrides
           # it to rebuild a published release. Definition lives in this repo:
-          # the script stages ../c8s/images/node-guest/c8s via --profile-dir.
+          # the script stages ../c8s/images/node-guest/worker via --profile-dir.
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # The build script requires an explicit platform (no default). The
           # matrix publishes both measured platform variants.
-          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/images/node-guest/build \
-            ${{ inputs.ssh && '--profile ssh' || '' }}
+          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/images/node-guest/build
 
       - name: Make the tools trees cache-safe
         # The post-job cache tar runs unprivileged; mkosi builds these trees as
@@ -582,14 +543,6 @@ jobs:
         id: tools-built
         run: echo "built=$([ -d confidential-os-builder/mkosi/kernel-builder/mkosi.output/image ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - name: Save pinned core images
-        # Gate builds copy a PR's own images, which no later ref pins.
-        if: inputs.gate != true && steps.core-images.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
-          key: ${{ steps.core-images.outputs.cache-primary-key }}
-
       - name: Save kernel-builder tools tree
         if: steps.tools-tree.outputs.cache-hit != 'true' && steps.tools-built.outputs.built == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -604,7 +557,7 @@ jobs:
           path: |
             confidential-os-builder/output/gpu/staged
             confidential-os-builder/output/gpu/stage.stamp
-          key: ${{ runner.os }}-gpu-staged-${{ env.KERNEL_FLAVOR }}-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','c8s/images/node-guest/kernel/c8s-dev.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
+          key: ${{ runner.os }}-gpu-staged-worker-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','c8s/images/node-guest/kernel/c8s.config','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','c8s/images/node-guest/kernel/config-x86_64-*.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version','c8s/images/node-guest/build','c8s/images/node-guest/module-signing.crt','confidential-os-builder/bin/confos-fetch-gpu') }}
 
       - name: Upload measurement evidence (gate)
         # Gate mode ends here: evidence out, nothing published.
@@ -619,50 +572,18 @@ jobs:
 
       - name: Upload resolved kernel snapshot (gate)
         # The lineage lockfile these inputs resolve to, so a fragment PR can
-        # commit it without a local Linux builder (confos#66). One cell —
-        # the snapshot is per-KERNEL_FLAVOR, not per-platform or per-leg. A
-        # cache-restored copy is equally valid: the exact key hashes the
-        # fragments, so the cached snapshot was resolved from these same
-        # inputs (by a sibling leg or an earlier run of them).
+        # commit it without a local Linux builder (confos#66). One cell — the
+        # snapshot is per-kernel, not per-platform or per-leg. A cache-restored
+        # copy is equally valid: the exact key hashes the fragments, so the
+        # cached snapshot was resolved from these same inputs (by a sibling leg
+        # or an earlier run of them).
         if: inputs.gate == true && matrix.platform == 'tdx' && inputs.leg != 'b'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kernel-snapshot-${{ github.run_id }}
-          path: c8s/images/node-guest/kernel/config-x86_64-${{ inputs.dev && 'c8s-dev' || 'c8s' }}.snapshot
+          path: c8s/images/node-guest/kernel/config-x86_64-c8s.snapshot
           if-no-files-found: error
           retention-days: 7
-
-      # A release image must bake the allowlist seed that the release statement
-      # lists for its platform (docs/releases.md). semver-tag.yml publishes both
-      # inside the parent Docker run, before this build starts. A statement
-      # from a commit without seed assets (an older commit, or beta before it
-      # has this change) lists none, so there is nothing to check.
-      - name: Check the baked allowlist seed against the release
-        if: inputs.gate != true && inputs.release_tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          PLATFORM: ${{ matrix.platform }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          release="$RUNNER_TEMP/release-seed"
-          mkdir -p "$release"
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
-            --pattern release-statement.json
-          jq -e --arg repository "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg commit "$HEAD_SHA" \
-            '.repository == $repository and .tag == $tag and .commit == $commit' \
-            "$release/release-statement.json" > /dev/null
-          if ! jq -e 'has("allowlistSeeds")' "$release/release-statement.json" > /dev/null; then
-            echo "::notice::$RELEASE_TAG publishes no allowlist seed assets; skipping the seed check"
-            exit 0
-          fi
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
-            --pattern "allowlist-seed-$PLATFORM.json"
-          sudo bash c8s/.github/scripts/release-seeds.sh baked \
-            "confidential-os-builder/output/$VARIANT/disk.raw" "$release/baked.json"
-          # rke2-<platform>-cdi is the same disk.
-          bash c8s/.github/scripts/release-seeds.sh check "$release" "$PLATFORM" "$release/baked.json"
 
       - name: Check whether the rootfs changed
         if: inputs.gate != true
@@ -670,7 +591,7 @@ jobs:
         # commit-suffixed tags are always pushed from this build's own output:
         # a floating tag can be repointed by a concurrent build between a
         # check and an alias, and the CDI image carries no provenance to
-        # verify against (#648's neighbour 4007fb7 got 29dbf4d's rke2-snp).
+        # verify against.
         id: changed
         working-directory: confidential-os-builder
         env:
@@ -688,7 +609,7 @@ jobs:
               exit 1
             fi
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "release $RELEASE_TAG requires exact node artifacts"
+            echo "release $RELEASE_TAG requires exact worker artifacts"
             exit 0
           fi
           # A beta build never compares against or moves the floating tags,
@@ -747,72 +668,12 @@ jobs:
             --registry "$IMAGE" \
             --tag "$ORAS_TAGS"
 
-      - name: Capture exact TDX image acceptance evidence
-        if: >-
-          inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
-          matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
-          github.event.workflow_run.event == 'push' &&
-          github.event.workflow_run.head_repository.full_name == github.repository &&
-          (github.event.workflow_run.head_branch == 'main' ||
-           github.event.workflow_run.head_branch == 'beta')
-        env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git -C c8s rev-parse HEAD)" = "$HEAD_SHA"
-          short="${HEAD_SHA:0:7}"
-          cdi_digest=$(oras resolve "$IMAGE:$VARIANT-cdi-$short")
-          artifact_digest=$(oras resolve "$IMAGE:$VARIANT-$short")
-          evidence="$RUNNER_TEMP/tdx-image-acceptance"
-          mkdir -p "$evidence"
-          # An unchanged rootfs is not enough: compare the complete disk, UKI
-          # and TDX tuple. BuildConfig.timestamp is not measured and changes
-          # on rebuilds, so retain the actual published manifest as evidence.
-          published_sha=$(oras manifest fetch "$IMAGE@$artifact_digest" | jq -er '
-            [.layers[] | select(.annotations["org.opencontainers.image.title"] == "manifest.json")]
-            | if length == 1 then .[0].digest else error("expected one manifest.json layer") end')
-          [[ "$published_sha" =~ ^sha256:[0-9a-f]{64}$ ]]
-          oras blob fetch "$IMAGE@$published_sha" --output "$evidence/manifest.json"
-          jq -e -s '
-            map({disk: .outputs.disk_image.sha256, uki: .outputs.uki.sha256,
-              mrtd: .tdx.mrtd, rtmr1: .tdx.rtmr1, rtmr2: .tdx.rtmr2}) |
-            .[0] == .[1] and
-            (.[0] | [.disk, .uki] | all(.[]; type == "string" and test("^[0-9a-f]{64}$"))) and
-            (.[0] | [.mrtd, .rtmr1, .rtmr2] | all(.[]; type == "string" and test("^[0-9a-f]{96}$")))
-          ' "confidential-os-builder/output/$VARIANT/manifest.json" "$evidence/manifest.json" >/dev/null
-          manifest_sha=$(sha256sum "$evidence/manifest.json" | cut -d ' ' -f1)
-          test "$published_sha" = "sha256:$manifest_sha"
-          jq -n --arg source "$HEAD_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg c8s_ref "$short" --arg image "$IMAGE@$cdi_digest" \
-            --arg artifact "$IMAGE@$artifact_digest" --arg manifest "$manifest_sha" \
-            '{schema: 1, source_sha: $source, run_id: $run, build_attempt: $attempt, c8s_ref: $c8s_ref,
-              variant: "rke2-tdx", launch_config_version: "c8s-launch/v2", image: $image, artifact: $artifact,
-              manifest_sha256: $manifest}' > "$evidence/acceptance.json"
-          bash c8s/.github/scripts/tdx-image-acceptance.sh validate \
-            "$evidence" "$HEAD_SHA" "$GITHUB_RUN_ID" >/dev/null
-
-      - name: Upload exact TDX image acceptance evidence
-        if: >-
-          inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
-          matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
-          github.event.workflow_run.event == 'push' &&
-          github.event.workflow_run.head_repository.full_name == github.repository &&
-          (github.event.workflow_run.head_branch == 'main' ||
-           github.event.workflow_run.head_branch == 'beta')
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: node-image-acceptance-rke2-tdx-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tdx-image-acceptance/
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Summary
         env:
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
           {
-            echo "### ${VARIANT} confidential node image"
+            echo "### ${VARIANT} confidential worker image"
             echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- confos ref: \`${CONFOS_REF}\`"
@@ -821,8 +682,8 @@ jobs:
   cds-image:
     name: Build the C8s CDS image
     needs: host-deps
-    # Published from the same c8s ref as the node image. Repro-gate legs
-    # build the node image only.
+    # Published from the same c8s ref as the worker image. Repro-gate legs
+    # build the worker image only.
     if: |
       inputs.gate != true &&
       (github.event_name == 'workflow_dispatch' ||
@@ -870,7 +731,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
-          # Pinned for the same reason as the node image's leg: rustc builds
+          # Pinned for the same reason as the worker image's leg: rustc builds
           # the measured attestation-api and confos's measurement tooling.
           toolchain: "1.98.0"
           cache-workspaces: confidential-os-builder
@@ -888,7 +749,7 @@ jobs:
         run: echo "key=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Restore build-dep debs
-        # Same key as the node legs, so the host-deps job's seed serves both.
+        # Same key as the worker legs, so the host-deps job's seed serves both.
         id: apt-debs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -908,7 +769,7 @@ jobs:
 
       - name: Cache kernel
         # The CDS image passes no kernel fragment, so this flavor's inputs are
-        # confos's own kernel configs; it shares nothing with the rke2 flavors.
+        # confos's own kernel configs; it shares nothing with the worker's.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: confidential-os-builder/output/kernel
@@ -982,7 +843,7 @@ jobs:
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          # CDI first, oras artifact last, as the node image publishes: a
+          # CDI first, oras artifact last, as the worker image publishes: a
           # partial failure re-publishes everything on the next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \

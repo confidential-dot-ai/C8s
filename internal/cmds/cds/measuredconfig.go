@@ -11,7 +11,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 )
 
 // runMeasuredConfig runs CDS on the configuration document its VM was launched
@@ -26,7 +26,7 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err := requireLoopbackAttestationAPI(cfg.attestationApiURL); err != nil {
 		return err
 	}
-	platform, err := credrelease.VerifyMeasuredLaunchFile(ctx, cfg.attestationApiURL, document)
+	platform, err := launchbinding.VerifyMeasuredLaunchFile(ctx, cfg.attestationApiURL, document)
 	if err != nil {
 		return fmt.Errorf("--config %s is not the document this VM was launched with: %w", cfg.configPath, err)
 	}

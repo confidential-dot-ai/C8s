@@ -6,7 +6,7 @@ set -u
 
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$TESTS_DIR/lib.sh"
-SCRIPT=${SCRATCH_SCRIPT:-"$TESTS_DIR/../c8s/mkosi.extra/usr/local/bin/scratch-enforce.sh"}
+SCRIPT=${SCRATCH_SCRIPT:-"$TESTS_DIR/../worker/mkosi.extra/usr/local/bin/scratch-enforce.sh"}
 [[ -x "$SCRIPT" ]] || { echo "script not found: $SCRIPT"; exit 2; }
 
 WORK=$(mktemp -d)

@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
 const letsEncryptDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
@@ -189,7 +188,7 @@ func validateConfig(cfg *config) error {
 	}
 	seen := make(map[string]struct{}, len(cfg.domains))
 	for _, d := range cfg.domains {
-		if err := launchconfig.ValidateHostname(d); err != nil {
+		if err := cmdsutil.ValidateHostname(d); err != nil {
 			return fmt.Errorf("--domains: %w", err)
 		}
 		if _, dup := seen[d]; dup {

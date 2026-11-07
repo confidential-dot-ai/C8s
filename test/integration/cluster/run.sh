@@ -22,8 +22,7 @@
 # operator token server-side.
 #
 # What this deliberately is not: a confidential-cluster test. Nothing here
-# asserts TEE properties — that is what the metal lanes (snp-metal-e2e,
-# tdx-metal-e2e) are for. See docs/integration-tests.md.
+# asserts TEE properties. See docs/integration-tests.md.
 #
 # Prerequisites: docker (or podman via KIND_EXPERIMENTAL_PROVIDER=podman),
 # kind, kubectl, helm, go, openssl, curl, python3. Run from the repo root via
@@ -173,9 +172,8 @@ with open(sys.argv[2], "w") as f:
             "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
         ]},
         "nriImagePolicy": {
-            # The kind node bakes no plugin or boot config, so the chart's
-            # installer stays off: its baked form would find no config to
-            # patch. The full installer is applied out-of-band below.
+            # The release installs no plugin: the lane applies the full
+            # installer out-of-band below, under its own render.
             "enabled": False,
             "bootstrapAllowlist": {"workloads": workloads},
         },
@@ -347,11 +345,10 @@ pass "CDS serves the cluster its own launch binds it to"
 # --- NRI image-policy plugin ---
 
 log "Installing the NRI image-policy plugin"
-# Under --cvm-mode=bare-metal the chart renders the installer only in its baked
-# pins-patching form, and the install below leaves even that off (values.yaml):
-# the kind node bakes no plugin for it to pin. The harness renders the full
-# installer from the chart source (above) and applies it out-of-band — same
-# installer, same containerd patch, same plugin.
+# Under --cvm-mode=bare-metal the install renders no installer: a measured
+# node carries the plugin, and this kind node carries none. The harness
+# renders the installer from the chart source (above) and applies it
+# out-of-band — same installer, same containerd patch, same plugin.
 #
 # Before the install, as a baked node has it: a member pod's credential
 # clients read the CDS endpoint the enforcer mounts and name no other, so the

@@ -54,31 +54,18 @@ jobs:
           tar xzf actionlint.tar.gz actionlint
 
       - name: Lint workflows
-        # Ignores clear findings that pre-exist on origin/main (c8s-image.yml's
-        # undeclared workflow_call input; shellcheck hits in the metal e2e
-        # workflows, surfaced by the runners' preinstalled shellcheck) so only
-        # new findings fail the gate.
+        # Ignores the findings that pre-exist on origin/main so only new ones
+        # fail the gate: c8s-image.yml's undeclared workflow_call input, the
+        # loop variables and A && B || C in cvm-e2e.yml, docker.yml's word-wise
+        # read and grype.yml's unquoted expansion.
         run: |
           set -euo pipefail
-          lint() {
-            ./actionlint \
-              -ignore 'property "gate_intree" is not defined in object type' \
-              -ignore 'SC2006' \
-              -ignore 'SC2013' \
-              -ignore 'SC2015' \
-              -ignore 'SC2016' \
-              -ignore 'SC2034' \
-              -ignore 'SC2086' \
-              -ignore 'SC2129' "$@"
-          }
-          lint
-          # Keep expression/shell coverage after extracting the TDX steps.
-          # yq and jq are supplied by the hosted Ubuntu runner image. Feed
-          # the unchanged composite steps to actionlint as a string-input job.
-          yq -o=json '.' .github/actions/tdx-metal-e2e/action.yml |
-            jq '{on:{workflow_call:{inputs:(.inputs|with_entries(.value.type="string"))}},
-                 jobs:{e2e:{"runs-on":"ubuntu-latest",steps:.runs.steps}}}' |
-            lint -stdin-filename .github/workflows/tdx-composite-lint.yml -
+          ./actionlint \
+            -ignore 'property "gate_intree" is not defined in object type' \
+            -ignore 'SC2013' \
+            -ignore 'SC2015' \
+            -ignore 'SC2034' \
+            -ignore 'SC2086'
 
       - name: Shellcheck scripts
         run: |

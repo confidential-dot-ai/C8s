@@ -5,7 +5,7 @@ what the admission webhook injected into the pod.
 
 ## Prerequisites
 
-- C8s installed ([QUICKSTART.md](QUICKSTART.md)) and its operator key.
+- C8s installed ([operator.md](operator.md)) and its operator key.
 - `crane` on PATH: the sample sets no `command`, so the entry takes that image's
   baked argv from the registry.
 

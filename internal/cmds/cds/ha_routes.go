@@ -45,6 +45,10 @@ const maxDecreeBody = 1 << 20
 // cluster, and answers what the cluster made of it.
 func takeDecree(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := node.ClockError(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		body, err := readutil.ReadAll(r.Body, maxDecreeBody)
 		if err != nil {
 			http.Error(w, "cds-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
@@ -57,7 +61,12 @@ func takeDecree(node *cdsha.Node) http.HandlerFunc {
 		}
 		delivered, err := node.TakeDecree(signed)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			status := http.StatusBadRequest
+			if fault := node.ClockError(); fault != nil {
+				status = http.StatusServiceUnavailable
+				err = fault
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		writeJSON(w, delivered)
@@ -99,11 +108,19 @@ func writeJSON(w http.ResponseWriter, report any) {
 // haGate refuses every route but servedUnjoined while this replica may not
 // serve its cluster: it must not issue a leaf, release a secret or hand out
 // policy the cluster has moved past.
-func haGate(serving func() bool, next http.Handler) http.Handler {
+func haGate(serving func() cdsha.Serving, clockError func() error, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !servedUnjoined(r.URL.Path) && !serving() {
-			http.Error(w, "cds-ha: this replica is not serving its cluster", http.StatusServiceUnavailable)
-			return
+		if r.Method == http.MethodPost && r.URL.Path == "/ha/decrees" {
+			if err := clockError(); err != nil {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+		}
+		if !servedUnjoined(r.URL.Path) || r.URL.Path == "/readyz" {
+			if status := serving(); !status.OK {
+				http.Error(w, status.Reason, http.StatusServiceUnavailable)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

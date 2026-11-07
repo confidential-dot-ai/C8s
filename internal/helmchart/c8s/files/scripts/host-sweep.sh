@@ -13,17 +13,18 @@
 # the pod's termination grace period (and the runtime restart it triggers can
 # kill the pod mid-cleanup), the mesh preStop deliberately keeps its
 # fail-closed guard, and none of them knows about the C8s-side artifacts
-# (the RKE2 containerd-prep template, `c8s volume attach` LIO disks). This
-# sweep is the idempotent last word and runs on every uninstall, whatever
-# the release's shape: leftovers may come from a previous install of a
-# different shape, which this release's values cannot see.
+# (a containerd config template an earlier install managed, `c8s volume attach`
+# LIO disks). This sweep is the idempotent last word and
+# runs on every uninstall, whatever the release's shape: leftovers may come
+# from a previous install of a different shape, which this release's values
+# cannot see.
 #
-# Baked node image exception: on the C8s node image the NRI plugin, its floor
-# config, the containerd drop-in, and the managed RKE2 containerd template
-# are baked into the measured image at the same paths the chart uses. They
-# are node-image state, not release state — deleting them strips the node's
-# fail-closed image admission until reimage — so the NRI and template steps
-# below are skipped when the baked-only nri-node-ip.service unit exists.
+# Measured image exception: on the C8s worker image the NRI plugin, its floor
+# config and its containerd registration are baked into the measured image at
+# the same paths the chart uses. They are node-image state, not release state
+# — deleting them strips the node's fail-closed image admission until reimage
+# — so the NRI steps below are skipped when the baked-only
+# nri-node-ip.service unit exists.
 #
 # Fatal vs warn: containerd config removal and the runtime restart
 # fail the sweep (the CLI then keeps the
@@ -35,9 +36,8 @@
 #
 # Env (all required unless noted; set by `c8s uninstall` from the release's
 # computed values):
-#   HOST_CONTAINERD_DIR    — host containerd config directory (nriImagePolicy.distro)
-#   RKE2_PREP              — "true" when the install ran the RKE2 containerd-prep
-#                            initContainer whose template/lock this sweep owns
+#   HOST_CONTAINERD_DIR    — host containerd config directory
+#                            (nriImagePolicy.containerd.configDir)
 #   RESTART_COMMAND        — host runtime restart, run detached via systemd-run
 #   NRI_PLUGIN_DIR         — NRI plugin directory (nriImagePolicy.hostPaths.pluginDir)
 #   NRI_PLUGIN_FILENAME    — plugin filename inside it (nriImagePolicy.pluginFilename)
@@ -61,7 +61,7 @@ sweep_failed=0
 baked_node=0
 if [ -f /host/etc/systemd/system/nri-node-ip.service ]; then
   baked_node=1
-  echo "c8s node image detected — the baked NRI stack and managed containerd template are image state; leaving them"
+  echo "c8s worker image detected — the baked NRI stack is image state; leaving it"
 fi
 
 # == Phase 1: containerd configuration =======================================
@@ -70,18 +70,9 @@ fi
 # the registration gone, no interruption can leave the fail-closed NRI
 # validator requiring a plugin whose binary is already deleted.
 
-# The NRI image-policy's containerd registration: the standalone drop-in
-#    (rke2), or the sentinel-delimited block in config.toml (k8s patch mode).
-#    Mirrors the chart's files/scripts/uninstall.sh.
 if [ "$baked_node" = "0" ]; then
-  for d in config-v3.toml.d config.toml.d; do
-    f="${CONTAINERD_DIR}/${d}/nri-image-policy.toml"
-    if [ -f "$f" ]; then
-      rm -f "$f"
-      config_changed=1
-      echo "containerd drop-in removed: $f"
-    fi
-  done
+  # The NRI image-policy's containerd registration: the sentinel-delimited
+  #    block in config.toml. Mirrors the chart's files/scripts/uninstall.sh.
   MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
   MARK_END='# END c8s-nri-image-policy (managed)'
   main_config="${CONTAINERD_DIR}/config.toml"
@@ -95,36 +86,29 @@ if [ "$baked_node" = "0" ]; then
     echo "containerd config block removed from $main_config"
     config_changed=1
   fi
-fi
 
-# RKE2 containerd-prep leftovers: the sentinel-marked managed template
-#    (which would re-add the drop-in import on every RKE2 config regen) and
-#    the prep lock file. Only a sentinel-marked template is removed — an
-#    operator-owned template is never touched, and a legacy pre-sentinel
-#    template is left for the prep's own next-install self-repair rather than
-#    deleted on content guesswork. On a baked node image the template is
-#    image state (same sentinel by design) and stays.
-if [ "${RKE2_PREP}" = "true" ]; then
-  if [ "$baked_node" = "0" ]; then
-    SENTINEL='c8s-containerd-prep:managed-template'
-    for t in config-v3.toml.tmpl config.toml.tmpl; do
-      f="${CONTAINERD_DIR}/${t}"
-      [ -f "$f" ] || continue
-      if grep -qF "$SENTINEL" "$f"; then
-        rm -f "$f"
-        echo "managed containerd template removed: $f"
-      else
-        echo "leaving ${t}: not the c8s-managed template"
-      fi
-    done
-  fi
+  # A containerd config template an earlier install managed: sentinel-marked,
+  #    it would re-add an import for a drop-in nothing writes now. A template
+  #    without the sentinel is the operator's and stays. The prep lock beside
+  #    it goes too.
+  SENTINEL='c8s-containerd-prep:managed-template'
+  for t in config-v3.toml.tmpl config.toml.tmpl; do
+    f="${CONTAINERD_DIR}/${t}"
+    [ -f "$f" ] || continue
+    if grep -qF "$SENTINEL" "$f"; then
+      rm -f "$f"
+      echo "managed containerd template removed: $f"
+    else
+      echo "leaving ${t}: not the c8s-managed template"
+    fi
+  done
   rm -f "${CONTAINERD_DIR}/.c8s-containerd-prep.lock"
 fi
 
 # == Phase 2: one runtime restart ============================================
-# Detached via systemd-run: restarting rke2/containerd kills this pod's own
+# Detached via systemd-run: restarting containerd kills this pod's own
 # shim, and a restart in the pod's process tree dies with it mid-restart,
-# which on a sole control-plane node can wedge the rke2 bootstrap.
+# which on a sole control-plane node can wedge the cluster bootstrap.
 if [ "$config_changed" = "1" ]; then
   echo "restarting containerd (detached via systemd-run): ${RESTART_COMMAND}"
   # shellcheck disable=SC2086

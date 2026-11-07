@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -59,10 +58,10 @@ var volumePodJSONPath = `{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.
 // hostUninstallConfig is the slice of the release's computed values the host
 // sweep needs. It is read from `helm get values --all` BEFORE the release is
 // deleted — afterwards the -f/--set overrides from install time (custom
-// distro and nriImagePolicy.hostPaths) are unrecoverable.
+// containerd layout and nriImagePolicy.hostPaths) are unrecoverable.
 type hostUninstallConfig struct {
-	Distro              string
 	ContainerdConfigDir string
+	RestartCommand      string
 	SweepImage          string
 	// SweepArgv/PauseArgv are the OCI argv the sweep DaemonSet's init and
 	// pause containers run. Default: this CLI's embedded sweep spec; when the
@@ -103,20 +102,18 @@ shape: a previous install on the same host may have had a different shape
 release is gone the sweep runs a short-lived privileged DaemonSet on every
 linux node — with the release's NRI plugin image where the fail-closed
 plugin is live (the sweep image must already be on the allowlist; the sweep
-is what removes the plugin), else the digest-pinned busybox image the
-install's containerd-prep uses — and removes, idempotently:
+is what removes the plugin), else the chart's digest-pinned busybox
+(nriImagePolicy.containerdPrep.image) — and removes, idempotently:
 
-  - the NRI image-policy host plugin: containerd registration (drop-in or
-    managed config block), the plugin binary, its config/cache/runtime dirs —
-    skipped entirely on c8s node images, where the whole stack is baked into
-    the measured image (detected via nri-node-ip.service) and is the image's
-    to keep, not the release's to delete
+  - the NRI image-policy host plugin: its containerd registration, the plugin
+    binary, its config/cache/runtime dirs — skipped entirely on c8s node
+    images, where the whole stack is baked into the measured image (detected
+    via nri-node-ip.service) and is the image's to keep, not the release's to
+    delete
   - the armtls-mesh netfilter state: the ARMTLS-MESH chains and their
     base-chain jumps in iptables and ip6tables, and the ARMTLS-MESH-* ipsets
     (the mesh's own preStop deliberately keeps the fail-closed guard, so this
     survives every healthy uninstall too)
-  - on RKE2: the c8s-managed containerd template (skipped on c8s node images,
-    same baked-state rule) and the containerd-prep lock
   - the LIO loopback disks 'c8s volume attach' built: only a backstore whose
     unit serial is c8s-vol-<name> and the target attach derived for it, torn
     down as 'c8s volume detach' does. A disk that has a holder (an open
@@ -127,12 +124,12 @@ install's containerd-prep uses — and removes, idempotently:
     step leaves these disks: run 'c8s volume detach <name>' for them (the
     uninstall says so when it applies)
 
-Which host paths and distro layout to sweep is read from the release's
-computed values ('helm get values --all') before the release is deleted, so
+Which host paths to sweep is read from the release's computed values ('helm get
+values --all') before the release is deleted, so
 -f overrides from install time are honored. For a release that is already
 gone (e.g. a previous bare 'helm uninstall' left the hosts dirty), pass
 --host-sweep-only: the helm step is skipped and the sweep uses the embedded
-chart's defaults plus the distro detected from the cluster.
+chart's defaults.
 
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so
@@ -181,7 +178,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 				cfg.SweepArgv, cfg.PauseArgv = resolveSweepArgvs(ctx, uninstallNamespace, uninstallRelease, cfg)
 			}
 		} else {
-			fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults and detected distro\n", uninstallRelease)
+			fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults\n", uninstallRelease)
 			cfg, err = chartDefaultHostConfig(ctx)
 			if err != nil {
 				return err
@@ -284,9 +281,7 @@ func releaseValues(ctx context.Context, release, namespace string) (map[string]a
 
 // chartDefaultHostConfig builds the sweep config for the --host-sweep-only
 // path when the release (and with it the install-time values) is already
-// gone: the embedded chart's defaults, with the distro detected from the
-// cluster exactly as the install detects it (the chart default k8s would
-// silently mis-target RKE2 hosts).
+// gone: the embedded chart's defaults.
 func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 	dir, err := extractChart()
 	if err != nil {
@@ -303,16 +298,10 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 		return hostUninstallConfig{}, fmt.Errorf("parse chart values: %w", err)
 	}
 
-	distro, err := detectDistro(ctx)
-	if err != nil {
-		return hostUninstallConfig{}, err
-	}
-	fmt.Fprintf(os.Stdout, "+ detected host distro: %s\n", distro)
+	// With the release gone the baked plugin still enforces the
+	// release-pinned nri-image-policy digest; sweeping with the CLI's own
+	// version tag resolves to that same digest on a same-version install.
 	if nri, ok := nestedMap(tree, "nriImagePolicy"); ok {
-		nri["distro"] = distro
-		// With the release gone the baked plugin still enforces the
-		// release-pinned nri-image-policy digest; sweeping with the CLI's own
-		// version tag resolves to that same digest on a same-version install.
 		if img, ok := nestedMap(nri, "image"); ok {
 			img["tag"] = resolveImageTag()
 		}
@@ -327,23 +316,20 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 
 // hostConfigFromValues extracts the sweep config from a decoded values tree
 // (helm get values --all, or helm show values for the chart-defaults path).
-// Any missing piece is an error: sweeping with a guessed path either misses
-// the artifacts or removes the wrong directory, both silently.
+// An unpinned sweep image is an error: the rest of the config falls back to
+// the layout the chart defaults, which is where the install wrote.
 func hostConfigFromValues(tree map[string]any) (hostUninstallConfig, error) {
-	distro := stringOrDefault(tree, "nriImagePolicy.distro", "k8s")
-	override := stringOrDefault(tree, "nriImagePolicy.containerd.configDir", "")
-	dir, err := containerdConfigDirFor(override, distro)
+	sweepImage, err := sweepImageRef(tree)
 	if err != nil {
 		return hostUninstallConfig{}, err
 	}
-	cfg := hostUninstallConfig{Distro: distro, ContainerdConfigDir: dir}
-	cfg.SweepImage, err = sweepImageRef(tree)
-	if err != nil {
-		return hostUninstallConfig{}, err
+	cfg := hostUninstallConfig{
+		ContainerdConfigDir: valueOrDefault(tree, "nriImagePolicy.containerd.configDir", hostContainerdConfigDir),
+		RestartCommand:      valueOrDefault(tree, "nriImagePolicy.containerd.restartCommand", hostRestartCommand),
+		SweepImage:          sweepImage,
+		SweepArgv:           []string{"/bin/sh", "-c", hostSweepScript},
+		PauseArgv:           []string{"/bin/sleep", "2147483647"}, // busybox sleep has no "infinity"
 	}
-	cfg.SweepArgv = []string{"/bin/sh", "-c", hostSweepScript}
-	cfg.PauseArgv = []string{"/bin/sleep", "2147483647"} // busybox sleep has no "infinity"
-
 	cfg = nriConfigFromValues(tree, cfg)
 	cfg.ImagePullSecretRef = imagePullSecretNames(tree)
 	return cfg, nil
@@ -393,35 +379,22 @@ func imagePullSecretNames(tree map[string]any) []string {
 	return names
 }
 
-// containerdConfigDirFor resolves the host containerd config directory a
-// component targeted — the same mapping as the chart's helpers
-// (nri-image-policy.containerdConfigDir), so the
-// sweep cleans exactly where the install wrote.
-func containerdConfigDirFor(override, distro string) (string, error) {
-	if override != "" {
-		return override, nil
-	}
-	switch distro {
-	case "rke2":
-		return "/var/lib/rancher/rke2/agent/etc/containerd", nil
-	case "k8s":
-		return "/etc/containerd", nil
-	}
-	return "", fmt.Errorf("nriImagePolicy.distro %q has no known containerd config dir and nriImagePolicy.containerd.configDir is unset", distro)
-}
+// The host containerd layout and restart the sweep cleans against where the
+// release set neither, as the chart's helpers default them
+// (nri-image-policy.containerdConfigDir, nri-image-policy.restartCommand).
+// The sweep only restarts when it removed a still-registered NRI config block.
+const (
+	hostContainerdConfigDir = "/etc/containerd"
+	hostRestartCommand      = "systemctl restart containerd"
+)
 
-// hostRestartCommand picks the host service restart that makes containerd
-// drop the host runtime registration — the same per-distro choice as the
-// chart's nri-image-policy.restartCommand helper. The sweep only runs it
-// when it removed a still-registered drop-in.
-func hostRestartCommand(distro string) string {
-	if distro == "rke2" {
-		// A server/control-plane node runs rke2-server (which owns
-		// containerd); a worker runs rke2-agent. Restart whichever is active
-		// so single-node/server clusters work too.
-		return "if systemctl is-active --quiet rke2-server; then systemctl restart rke2-server; else systemctl restart rke2-agent; fi"
+// valueOrDefault is stringOrDefault for a value the chart carries as an empty
+// string, which means the same as absent: take the fallback.
+func valueOrDefault(tree map[string]any, path, fallback string) string {
+	if v := stringOrDefault(tree, path, ""); v != "" {
+		return v
 	}
-	return "systemctl restart containerd"
+	return fallback
 }
 
 // resolveSweepArgvs replays the sweep and pause argv the release's allowlist
@@ -748,8 +721,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 						Command:         cfg.SweepArgv,
 						Env: []corev1.EnvVar{
 							{Name: "HOST_CONTAINERD_DIR", Value: cfg.ContainerdConfigDir},
-							{Name: "RKE2_PREP", Value: strconv.FormatBool(cfg.Distro == "rke2")},
-							{Name: "RESTART_COMMAND", Value: hostRestartCommand(cfg.Distro)},
+							{Name: "RESTART_COMMAND", Value: cfg.RestartCommand},
 							{Name: "NRI_PLUGIN_DIR", Value: cfg.NriPluginDir},
 							{Name: "NRI_PLUGIN_FILENAME", Value: cfg.NriPluginFilename},
 							{Name: "NRI_CONFIG_DIR", Value: cfg.NriConfigDir},
@@ -816,8 +788,8 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, RKE2 prep template, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults and the distro detected from the cluster when the release values are unavailable")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults when the release values are unavailable")
 	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteNamespace, "delete-namespace", false, "also delete the release namespace (and everything left in it, e.g. an operator-created image pull Secret)")
