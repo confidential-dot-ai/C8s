@@ -47,7 +47,7 @@ func podWithProbedApp() *corev1.Pod {
 // appContainerNamed is one of the pod's own containers.
 func appContainerNamed(t *testing.T, pod *corev1.Pod, name string) *corev1.Container {
 	t.Helper()
-	for _, c := range workloadProbeContainers(pod) {
+	for _, c := range authorContainers(pod) {
 		if c.Name == name {
 			return c
 		}

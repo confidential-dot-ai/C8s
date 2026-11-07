@@ -630,7 +630,7 @@ func (cfg Config) rejectUnservedRequests(inj *injection) error {
 // rejectReservedResources refuses a pod in scope that occupies something the
 // injector owns and cannot safely reconcile: a reserved container name, a
 // reserved volume under another shape, a credential mount outside the platform
-// containers, or a mesh port.
+// containers, a mesh port, or a container the privilege floor always refuses.
 func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error {
 	if err := rejectHostNetwork(pod); err != nil {
 		return err
@@ -658,6 +658,9 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 		return err
 	}
 	if err := rejectUnforwardableProbes(pod); err != nil {
+		return err
+	}
+	if err := rejectPrivilegesAboveFloor(pod); err != nil {
 		return err
 	}
 	return rejectSharedNamespaces(pod)
@@ -835,6 +838,10 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	// a Service is added; the KUBERNETES_* variables stay either way.
 	pod.Spec.EnableServiceLinks = new(false)
 	pod.Spec.AutomountServiceAccountToken = new(false)
+
+	for _, c := range authorContainers(pod) {
+		c.SecurityContext = withPrivilegeFloor(c.SecurityContext)
+	}
 
 	probes := rewriteWorkloadProbes(pod)
 	// The pod's own endpoint leads: it runs before any credential exists.

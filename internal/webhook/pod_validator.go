@@ -124,7 +124,7 @@ func validateFinalSpec(pod *corev1.Pod, namespace string, cfg Config) error {
 // rendered: a probe moved back onto an application port is a plaintext request
 // into the port the mesh listener answers.
 func matchesWorkloadProbes(want, got *corev1.Pod) error {
-	wantContainers, gotContainers := workloadProbeContainers(want), workloadProbeContainers(got)
+	wantContainers, gotContainers := authorContainers(want), authorContainers(got)
 	if len(wantContainers) != len(gotContainers) {
 		return fmt.Errorf("%w: workload containers changed", errUninjectedPod)
 	}
