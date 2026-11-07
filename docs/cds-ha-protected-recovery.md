@@ -1,5 +1,9 @@
 # Combined HA and hardware-protected recovery
 
+This is the single active CDS replacement branch. See the
+[development map](cds-development-map.md) for the earlier pilots, superseded
+drafts, and the current qualification boundary.
+
 The next acceptance proof combines the [completed three-host HA fixture](cds-three-host-qualification.md)
 with hardware custody. The local combined test passes with real CDS and etcd
 processes and software custody. **The combined native hardware run is pending.**
