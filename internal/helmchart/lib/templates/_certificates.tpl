@@ -34,9 +34,9 @@
     {{- range .extraArgs }}
     - {{ . }}
     {{- end }}
-  {{- with (include "c8s.attestationApiHostIPEnv" $root) }}
-  # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node IP so
-  # this pod-netns sidecar reaches the node-baked host attestation-api.
+  {{- with .hostIPEnv }}
+  # Expands $(HOST_IP) in --attestation-api-url to the node IP so this
+  # pod-netns sidecar reaches the node-baked host attestation-api.
   env:
     {{- . | nindent 4 }}
   {{- end }}

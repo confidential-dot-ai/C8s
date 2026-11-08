@@ -1,18 +1,4 @@
 {{/*
-Expand the name of the chart.
-*/}}
-{{- define "router.name" -}}
-{{- default "router" .Values.router.nameOverride | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
-Create a default fully qualified app name.
-*/}}
-{{- define "router.fullname" -}}
-{{- printf "%s-router" .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
 The single identity baked into the CDS-issued mesh cert (get-cert), which the
 CDS's own leaf DNS rules must admit: the first entry of the router.san list,
 or the chart-managed Service DNS name (<release>-router.c8s-router.svc) where
@@ -33,15 +19,6 @@ them all.
 {{- end -}}
 
 {{/*
-Common labels.
-*/}}
-{{- define "router.labels" -}}
-helm.sh/chart: router-0.5.0
-{{ include "router.selectorLabels" . }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
 Validate that a san entry is a DNS hostname or a wildcard (e.g. *.example.com).
 */}}
 {{- define "router.validateSan" -}}
@@ -49,14 +26,6 @@ Validate that a san entry is a DNS hostname or a wildcard (e.g. *.example.com).
 {{- fail (printf "san contains invalid characters: %s - only alphanumeric, dots, hyphens, and wildcards are allowed" .) -}}
 {{- end -}}
 {{- end -}}
-
-{{/*
-Selector labels.
-*/}}
-{{- define "router.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "router.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
 
 {{/* A baked node renders the measured worker image's front door
      (router-worker.tpl), every other release the cloud's. */}}
@@ -66,8 +35,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.node.baked -}}{{ include "c8s.routerWorkerConfigDir" . }}{{- else -}}{{ include "router.cloudConfigDir" . }}{{- end -}}
 {{- end -}}
 
-{{/* nginx's ports: name, containerPort, and publicPort, the node and Service
-     port each is published on. */}}
+{{/* nginx's ports: name, containerPort, and publicPort, the host port the
+     node publishes it on and the Service port that targets it. */}}
 {{- define "router.publicPorts" -}}
 {{- if .Values.node.baked -}}{{ include "router.workerPublicPorts" . }}{{- else -}}{{ include "router.cloudPublicPorts" . }}{{- end -}}
 {{- end -}}
@@ -276,6 +245,19 @@ true
 {{- end -}}
 {{- end -}}
 
+{{/* The allowlist proxy reaches the attestation-api through the inventory's
+     socket directory where the pod mounts it, and through the socket mount
+     otherwise. */}}
+{{- define "router.allowlistProxyMounts" -}}
+{{- if eq (include "router.mountInventorySocket" .) "true" -}}
+- name: workload-claims
+  mountPath: /run/c8s/workload-claims
+  readOnly: true
+{{- else -}}
+{{- include "c8s.attestationApiSocketMount" . -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 c8s-cert native sidecar (restartPolicy: Always): obtains the leaf on startup
 and renews it on a ticker. nginx reads the renewed leaf on its next TLS
@@ -315,10 +297,11 @@ door's san or sanFile, publicTLSArgs, and the args and mounts it adds.
 {{- include "c8s.getCertContainers" (dict
   "root" $root
   "attestationApiURL" (include "router.credentialsVerifierURL" $root)
-  "san" $getCert.san
-  "sanFile" $getCert.sanFile
-  "renewInterval" $root.Values.router.certProvisioning.renewInterval
   "extraArgs" $extraArgs
   "extraMounts" (join "\n" $mounts)
+  "hostIPEnv" (include "c8s.attestationApiHostIPEnv" $root)
+  "renewInterval" $root.Values.router.certProvisioning.renewInterval
+  "san" $getCert.san
+  "sanFile" $getCert.sanFile
 ) -}}
 {{- end }}

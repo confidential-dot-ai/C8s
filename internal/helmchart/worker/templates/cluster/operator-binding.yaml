@@ -1,0 +1,15 @@
+{{- /* The operator runs beside the control plane and authenticates as this user. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "c8s.operatorName" . }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "c8s.operatorName" . }}
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: c8s-operator

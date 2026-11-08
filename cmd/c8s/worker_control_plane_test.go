@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -21,6 +22,14 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+)
+
+// The objects both the worker chart and a cluster of workers name.
+const (
+	routerDeploymentKey = "Deployment/c8s-router/c8s-router"
+	releaseNamespaceKey = "Namespace//c8s-system"
+	clusterSeedKey      = "ConfigMap/c8s-system/c8s-allowlist-seed"
 )
 
 // workerRenderConfig is the worker image build's render configuration.
@@ -54,19 +63,25 @@ func renderedObjects(t *testing.T, data []byte) map[string]unstructured.Unstruct
 	}
 }
 
-// routerLaunch is what the worker image's floor pins of the router: its
-// containers, pulling alike, and the volumes they mount.
-func routerLaunch(t *testing.T, objects map[string]unstructured.Unstructured) any {
+// routerDeployment is the router Deployment of a render.
+func routerDeployment(t *testing.T, objects map[string]unstructured.Unstructured) appsv1.Deployment {
 	t.Helper()
 	var d appsv1.Deployment
-	data, err := yaml.Marshal(objects["Deployment/c8s-router/c8s-router"].Object)
+	data, err := yaml.Marshal(objects[routerDeploymentKey].Object)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := yaml.Unmarshal(data, &d); err != nil || len(d.Spec.Template.Spec.Containers) == 0 {
 		t.Fatalf("no router Deployment: %v", err)
 	}
-	spec := d.Spec.Template.Spec
+	return d
+}
+
+// routerLaunch is what the worker image's floor pins of the router: its
+// containers, pulling alike, and the volumes they mount.
+func routerLaunch(t *testing.T, objects map[string]unstructured.Unstructured) any {
+	t.Helper()
+	spec := routerDeployment(t, objects).Spec.Template.Spec
 	for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
 		for i := range containers {
 			containers[i].ImagePullPolicy = ""
@@ -90,7 +105,7 @@ func TestWorkerClusterHoldsTheChartForWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := renderedObjects(t, cluster)
-	want := append([]string{"Namespace//c8s-system"}, workerClusterKeeps...)
+	want := append([]string{releaseNamespaceKey}, workerClusterKeeps...)
 	want = append(want,
 		"ClusterRole//c8s-worker-cilium", "ClusterRoleBinding//c8s-worker-cilium", "ClusterRoleBinding//c8s-worker-kube-proxy",
 		"ClusterRoleBinding//c8s-worker-bootstrap", "ClusterRoleBinding//c8s-worker-bootstrap-client-cert",
@@ -124,7 +139,7 @@ func TestWorkerClusterHoldsTheChartForWorkers(t *testing.T) {
 	if ip, _, _ := unstructured.NestedString(objects["Service/kube-system/kube-dns"].Object, "spec", "clusterIP"); ip != "10.53.0.10" {
 		t.Fatalf("kube-dns clusterIP = %q, want the document's clusterDNS", ip)
 	}
-	containers, _, _ := unstructured.NestedSlice(objects["Deployment/c8s-router/c8s-router"].Object, "spec", "template", "spec", "containers")
+	containers, _, _ := unstructured.NestedSlice(objects[routerDeploymentKey].Object, "spec", "template", "spec", "containers")
 	for _, c := range containers {
 		if policy := c.(map[string]any)["imagePullPolicy"]; policy != "IfNotPresent" {
 			t.Fatalf("router container %v pulls %v, want IfNotPresent: a worker bakes none of its images", c.(map[string]any)["name"], policy)
@@ -137,7 +152,7 @@ func TestWorkerClusterHoldsTheChartForWorkers(t *testing.T) {
 	if !reflect.DeepEqual(routerLaunch(t, objects), routerLaunch(t, renderedObjects(t, image))) {
 		t.Fatal("the router differs from the one the worker image's floor pins")
 	}
-	if selector, _, _ := unstructured.NestedMap(objects["Deployment/c8s-router/c8s-router"].Object, "spec", "template", "spec", "nodeSelector"); len(selector) > 0 {
+	if selector, _, _ := unstructured.NestedMap(objects[routerDeploymentKey].Object, "spec", "template", "spec", "nodeSelector"); len(selector) > 0 {
 		t.Fatalf("router nodeSelector = %v, which no worker carries", selector)
 	}
 }
@@ -164,6 +179,118 @@ func TestWorkerClusterRebindsOnlyTheOperatorsAccount(t *testing.T) {
 		binding := unstructured.Unstructured{Object: map[string]any{"kind": "ClusterRoleBinding", "subjects": subjects}}
 		if err := forWorkerCluster(&binding, "ClusterRoleBinding//c8s-operator", "127.0.0.1"); err == nil || !strings.Contains(err.Error(), "not the operator's service account alone") {
 			t.Fatalf("subjects %v: err = %v, want them refused", subjects, err)
+		}
+	}
+}
+
+// helmTemplateWorkerChart renders the c8s-worker chart with the stock file for
+// cfg's platform and cfg's images.
+func helmTemplateWorkerChart(t *testing.T, cfg nodeImageRenderConfig) []byte {
+	t.Helper()
+	chart := filepath.Join("..", "..", "internal", "helmchart", "worker")
+	args := []string{
+		"template", "c8s", chart,
+		"--namespace", nodeImageNamespace,
+		"--kube-version", cfg.kubeVersion,
+		"--include-crds",
+		"-f", filepath.Join(chart, "values-"+cfg.platform+".yaml"),
+	}
+	for _, input := range cfg.images() {
+		args = append(args,
+			"--set-string", input.valuePath+".repository="+input.repository,
+			"--set-string", input.valuePath+".digest="+input.digest,
+		)
+	}
+	out, err := exec.Command("helm", args...).Output()
+	if err != nil {
+		t.Fatalf("helm template the worker chart: %v", err)
+	}
+	return out
+}
+
+// canonicalSeed is an allowlist seed's workloads in canonical form.
+func canonicalSeed(t *testing.T, seed []byte) map[string]pkgallowlist.Workload {
+	t.Helper()
+	parsed, err := pkgallowlist.ParseJSON(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := parsed.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed, err = pkgallowlist.ParseJSON(canonical); err != nil {
+		t.Fatal(err)
+	}
+	return parsed.Workloads
+}
+
+// routerEntryName is the allowlist entry the router pod's c8s-cert sidecar is
+// pinned to, which is the entry its launch has to match.
+func routerEntryName(t *testing.T, objects map[string]unstructured.Unstructured) string {
+	t.Helper()
+	for _, container := range routerDeployment(t, objects).Spec.Template.Spec.InitContainers {
+		for _, arg := range container.Args {
+			if name, pinned := strings.CutPrefix(arg, "--expected-workload="); pinned {
+				return name
+			}
+		}
+	}
+	t.Fatal("no container of the router pod names its allowlist entry")
+	return ""
+}
+
+// The worker chart renders the objects a cluster of workers holds as
+// `worker control-plane render` does, and the router entry `node-image render`
+// seeds. Its router pod carries no checksum of the cloud's nginx ConfigMap,
+// which no worker holds.
+func TestWorkerChartRendersTheWorkerCommandsObjects(t *testing.T) {
+	for _, platform := range []string{"sev-snp", "tdx"} {
+		cfg := workerRenderConfig()
+		cfg.platform = platform
+		cluster, err := renderWorkerCluster(context.Background(), cfg, "127.0.0.1", &worker.Document{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := renderedObjects(t, cluster)
+		chart := renderedObjects(t, helmTemplateWorkerChart(t, cfg))
+		if _, annotated, _ := unstructured.NestedMap(chart[routerDeploymentKey].Object, "spec", "template", "metadata", "annotations"); annotated {
+			t.Errorf("%s: the chart's router pod template carries annotations", platform)
+		}
+		unstructured.RemoveNestedField(want[routerDeploymentKey].Object, "spec", "template", "metadata", "annotations")
+		for _, key := range append([]string{releaseNamespaceKey}, workerClusterKeeps...) {
+			object, rendered := chart[key]
+			if !rendered {
+				t.Errorf("%s: the chart renders no %s, which a cluster of workers holds", platform, key)
+				continue
+			}
+			if !reflect.DeepEqual(object.Object, want[key].Object) {
+				t.Errorf("%s: the chart renders %s unlike worker control-plane render", platform, key)
+			}
+		}
+		for key := range chart {
+			if _, held := want[key]; !held && key != clusterSeedKey {
+				t.Errorf("%s: the chart renders %s, which a cluster of workers does not hold", platform, key)
+			}
+		}
+
+		cfg.outputDir = t.TempDir()
+		if err := renderNodeImage(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		imageSeed, err := os.ReadFile(filepath.Join(cfg.outputDir, "allowlist-seed.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		chartSeed, _, _ := unstructured.NestedString(chart[clusterSeedKey].Object, "data", "allowlist-seed.json")
+		name := routerEntryName(t, chart)
+		fromChart, seeded := canonicalSeed(t, []byte(chartSeed))[name]
+		fromImage, baked := canonicalSeed(t, imageSeed)[name]
+		if !seeded || !baked {
+			t.Fatalf("%s: router entry %s seeded by the chart: %v, by node-image render: %v", platform, name, seeded, baked)
+		}
+		if !reflect.DeepEqual(fromChart, fromImage) {
+			t.Errorf("%s: the chart seeds router entry %s unlike node-image render", platform, name)
 		}
 	}
 }

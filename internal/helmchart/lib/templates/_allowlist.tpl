@@ -91,21 +91,15 @@
 {{ $digests | toJson }}
 {{- end -}}
 
-{{/* The pod specs of the enabled component workloads, as a JSON list of
-     {name, spec}: the same named templates the workloads render, so the
-     shapes derived from them cannot drift from what runs. */ -}}
+{{/* The pod specs of the component workloads, as a JSON list of {name, spec}:
+     the same named templates the workloads render, so the shapes derived from
+     them cannot drift from what runs. Takes root and templates, the chart's
+     list of [name, pod spec template] as JSON. */ -}}
 {{- define "c8s.componentPods" -}}
-{{- $templates := list (list "operator" "c8s.operatorPodSpec") -}}
-{{- if .Values.attestationApi.enabled -}}{{- $templates = append $templates (list "attestation-api" "c8s.attestationApiPodSpec") -}}{{- end -}}
-{{- if .Values.armtlsMesh.enabled -}}{{- $templates = append $templates (list "armtls-mesh" "armtls-mesh.podSpec") -}}{{- end -}}
-{{- if .Values.volumed.enabled -}}
-{{- $templates = append $templates (list "volumed" "c8s.volumedPodSpec") -}}
-{{- $templates = append $templates (list "volumed-teardown" "c8s.volumedTeardownPodSpec") -}}
-{{- end -}}
-{{- $templates = append $templates (list "router" "router.podSpec") -}}
+{{- $root := .root -}}
 {{- $pods := list -}}
-{{- range $t := $templates -}}
-{{- $spec := include (index $t 1) $ | fromYaml -}}
+{{- range $t := fromJsonArray .templates -}}
+{{- $spec := include (index $t 1) $root | fromYaml -}}
 {{- if hasKey $spec "Error" -}}
 {{- fail (printf "%s pod spec does not parse: %s" (index $t 0) (get $spec "Error")) -}}
 {{- end -}}
@@ -366,9 +360,11 @@
 {{/* Every component shape the chart runs, as digest -> {image, containers}:
      the containers of the component pods (c8s.podShapes) and, for the C8s
      image, the sidecars the webhook injects (c8s.injectedShapes). Only the
-     digests c8s.imageAllowlist derives are included. */ -}}
+     digests c8s.imageAllowlist derives are included. Takes root and
+     templates, the chart's component pod templates. */ -}}
 {{- define "c8s.componentShapes" -}}
-{{- $components := include "c8s.imageAllowlist" . | fromJson -}}
+{{- $root := .root -}}
+{{- $components := include "c8s.imageAllowlist" $root | fromJson -}}
 {{- $pins := dict -}}
 {{- $envs := dict -}}
 {{- $refs := dict -}}
@@ -378,22 +374,22 @@
 {{- $_ := set $refs $digest (get $entry "image") -}}
 {{- end -}}
 {{- $shapes := dict -}}
-{{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
+{{- range $pod := (include "c8s.componentPods" (dict "root" $root "templates" .templates) | fromJsonArray) -}}
 {{- range $c := (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray) -}}
 {{- $list := get $shapes (get $c "digest") | default list -}}
 {{- if not (has $c $list) -}}{{- $_ := set $shapes (get $c "digest") (append $list $c) -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $operator := default "" .Values.image.digest -}}
+{{- $operator := default "" $root.Values.image.digest -}}
 {{- if hasKey $components $operator -}}
-{{- $injected := include "c8s.injectedShapes" (dict "root" . "digest" $operator "image" (get $refs $operator) "imageEnv" (get $envs $operator)) | fromJsonArray -}}
+{{- $injected := include "c8s.injectedShapes" (dict "root" $root "digest" $operator "image" (get $refs $operator) "imageEnv" (get $envs $operator)) | fromJsonArray -}}
 {{- $_ := set $shapes $operator (concat (get $shapes $operator | default list) $injected) -}}
 {{- end -}}
 {{- /* The mesh endpoint runs in every covered pod, injected like the
        sidecars, so no chart container names it. */ -}}
-{{- $mesh := default "" .Values.armtlsMesh.image.digest -}}
+{{- $mesh := default "" $root.Values.armtlsMesh.image.digest -}}
 {{- if hasKey $components $mesh -}}
-{{- $endpoint := include "c8s.meshShapes" (dict "root" . "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
+{{- $endpoint := include "c8s.meshShapes" (dict "root" $root "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
 {{- $_ := set $shapes $mesh (concat (get $shapes $mesh | default list) $endpoint) -}}
 {{- end -}}
 {{- $out := dict -}}
@@ -485,21 +481,23 @@
      across entries, so keeping the operator's containers apart from the
      chart's admits the same launches and leaves each entry's per-variable
      evidence budget to its own containers. The boot config excludes
-     argv-pinned images, which are admitted by the served seed. */ -}}
+     argv-pinned images, which are admitted by the served seed. Takes root and
+     templates, the chart's component pod templates. */ -}}
 {{- define "c8s.baseWorkloads" -}}
+{{- $root := .root -}}
 {{- $workloads := dict -}}
 {{- $excluded := list -}}
-{{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
-{{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
+{{- range $d := (include "c8s.argvPinnedDigests" $root | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
+{{- range $digest, $entry := (include "c8s.generatedShapes" (dict "root" $root "templates" .templates) | fromJson) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" (get $entry "containers")) -}}
 {{- /* The base alone carries the platform roles: the field is YAML-only,
        so the seed this same shape set feeds cannot claim one. */ -}}
 {{- $tagged := list -}}
 {{- range $c := (get $entry "containers") -}}
-{{- with include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
+{{- with include "c8s.platformRole" (dict "root" $root "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
 {{- $c = merge (dict "role" .) $c -}}
 {{- if and (has . (list "credentials" "mesh")) (eq (get (get $c "mounts") "policy") "exact") -}}
-{{- $c = merge (dict "mounts" (dict "policy" "exact" "rules" (include "c8s.bindInjectedVolumes" (dict "root" $ "rules" (get (get $c "mounts") "rules")) | fromJsonArray))) $c -}}
+{{- $c = merge (dict "mounts" (dict "policy" "exact" "rules" (include "c8s.bindInjectedVolumes" (dict "root" $root "rules" (get (get $c "mounts") "rules")) | fromJsonArray))) $c -}}
 {{- end -}}
 {{- end -}}
 {{- $tagged = append $tagged $c -}}
@@ -510,13 +508,13 @@
        one digest are one entry. */ -}}
 {{- $images := dict -}}
 {{- $containers := dict -}}
-{{- range $digest, $entry := (include "c8s.openArgsEntries" . | fromJson) -}}
+{{- range $digest, $entry := (include "c8s.openArgsEntries" $root | fromJson) -}}
 {{- $key := lower $digest -}}
 {{- if not (hasKey $images $key) -}}{{- $_ := set $images $key (get $entry "image") -}}{{- end -}}
 {{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $entry) | fromJson -}}
 {{- $_ := set $containers $key (append (get $containers $key | default list) $container) -}}
 {{- end -}}
-{{- range $digest, $list := (include "c8s.pinnedComponentEntries" . | fromJson) -}}
+{{- range $digest, $list := (include "c8s.pinnedComponentEntries" $root | fromJson) -}}
 {{- if not (hasKey $images $digest) -}}{{- $_ := set $images $digest (default "" (get (first $list) "image")) -}}{{- end -}}
 {{- $_ := set $containers $digest (concat (get $containers $digest | default list) $list) -}}
 {{- end -}}
@@ -526,7 +524,7 @@
 {{- $_ := set $workloads (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image)) (dict "label" $image "initContainers" list "containers" $list) -}}
 {{- end -}}
 {{- end -}}
-{{- range $name, $entry := (include "c8s.roleFloorWorkloads" . | fromJson) -}}
+{{- range $name, $entry := (include "c8s.roleFloorWorkloads" (dict "root" $root "templates" .templates) | fromJson) -}}
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{ $workloads | toJson }}
@@ -618,10 +616,11 @@ null
      entry (the integration lane's image-store scan): that entry pins nothing
      but the image's executable, so the subcommand a role rides on has to be
      named here. A digest with a rendered component shape is tagged in place
-     (c8s.baseWorkloads) instead. Takes the chart context. */ -}}
+     (c8s.baseWorkloads) instead. Takes root and templates, the chart's
+     component pod templates. */ -}}
 {{- define "c8s.roleFloorWorkloads" -}}
-{{- $root := . -}}
-{{- $shaped := include "c8s.generatedShapes" $root | fromJson -}}
+{{- $root := .root -}}
+{{- $shaped := include "c8s.generatedShapes" (dict "root" $root "templates" .templates) | fromJson -}}
 {{- $tables := include "c8s.injectedMountTables" (dict "root" $root "bind" true) | fromJson -}}
 {{- $args := include "c8s.injectedArgs" $root | fromJson -}}
 {{- $modes := include "c8s.injectedModes" $root | fromJsonArray -}}
@@ -863,14 +862,15 @@ null
 {{/* The component shapes the chart generates entries for:
      c8s.componentShapes less the argv-pinned images and those an operator
      entry named c8s.digestWorkloadName replaces. The seed and the boot base
-     both build from it, so an override replaces the generated entry in
-     both. */ -}}
+     both build from it, so an override replaces the generated entry in both.
+     Takes root and templates, the chart's component pod templates. */ -}}
 {{- define "c8s.generatedShapes" -}}
+{{- $root := .root -}}
 {{- $shapes := dict -}}
 {{- $excluded := list -}}
-{{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
-{{- $overrides := .Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
-{{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
+{{- range $d := (include "c8s.argvPinnedDigests" $root | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
+{{- $overrides := $root.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
+{{- range $digest, $entry := (include "c8s.componentShapes" (dict "root" $root "templates" .templates) | fromJson) -}}
 {{- if not (or (has (lower $digest) $excluded) (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get $entry "image"))))) -}}
 {{- $_ := set $shapes $digest $entry -}}
 {{- end -}}
@@ -878,25 +878,35 @@ null
 {{ $shapes | toJson }}
 {{- end -}}
 
-{{- define "c8s.allowlistSeedJSON" -}}
+{{/* One seed workload per component shape, named c8s.shapeWorkloadName, as
+     JSON. Takes the shapes as JSON (digest -> {image, containers}). */}}
+{{- define "c8s.shapeWorkloads" -}}
 {{- $workloads := dict -}}
-{{- $overrides := .Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
-{{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
+{{- range $digest, $entry := fromJson . -}}
 {{- $image := get $entry "image" -}}
 {{- $containers := get $entry "containers" -}}
 {{- $_ := set $workloads (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $image "containers" $containers)) (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
+{{ $workloads | toJson }}
+{{- end -}}
+
+{{/* The seed CDS serves, as JSON. Takes root and templates, the chart's
+     component pod templates. */}}
+{{- define "c8s.allowlistSeedJSON" -}}
+{{- $root := .root -}}
+{{- $workloads := include "c8s.shapeWorkloads" (include "c8s.generatedShapes" .) | fromJson -}}
+{{- $overrides := $root.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
 {{- /* An argv-pinned entry yields to an override like a component shape. */}}
-{{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}
+{{- range $name, $entry := (include "c8s.argvPinnedEntries" $root | fromJson) -}}
 {{- $digest := get (first (get $entry "containers")) "digest" -}}
 {{- if not (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get $entry "label")))) -}}
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{- end -}}
-{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
-{{- $_ := set $workloads (include "c8s.routerWorkloadName" .) (include "c8s.routerEntry" . | fromJson) -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" $root) "true" -}}
+{{- $_ := set $workloads (include "c8s.routerWorkloadName" $root) (include "c8s.routerEntry" $root | fromJson) -}}
 {{- end -}}
-{{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
+{{- range $name, $entry := ($root.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{ dict "schema" "c8s.allowlist/v1" "workloads" $workloads | toJson }}

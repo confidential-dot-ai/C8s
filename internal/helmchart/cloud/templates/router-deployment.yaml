@@ -21,12 +21,17 @@ initContainers:
 containers:
   {{- include "c8s.routerContainers" (dict
     "root" .
-    "config" (include "router.configDir" .)
-    "ports" (include "router.publicPorts" . | fromJsonArray)
+    "allowlistProxyMounts" (include "router.allowlistProxyMounts" .)
+    "allowlistResources" .Values.router.allowlist.resources
+    "attestationApiMounts" (include "c8s.attestationApiSocketMount" .)
+    "attestationApiURL" (include "router.credentialsVerifierURL" .)
     "certificateMounts" $frontDoor.certificateMounts
-    "settingsMounts" $frontDoor.settingsMounts
     "cdsAttestArgs" (required "the front door declares cds-attest's argv" $frontDoor.cdsAttestArgs)
     "cdsAttestMounts" (required "the front door declares cds-attest's mounts" $frontDoor.cdsAttestMounts)
+    "config" (include "router.configDir" .)
+    "hostIPEnv" (include "c8s.attestationApiHostIPEnv" .)
+    "ports" (include "router.publicPorts" . | fromJsonArray)
+    "settingsMounts" $frontDoor.settingsMounts
   ) | nindent 2 }}
 volumes:
   {{- toYaml (required "the front door declares its volumes" $frontDoor.volumes) | nindent 2 }}

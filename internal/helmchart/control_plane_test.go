@@ -68,6 +68,27 @@ func TestControlPlaneWebhookClientConfig(t *testing.T) {
 	}
 }
 
+// With webhook.url set, the API server calls the operator at that address
+// under each webhook's path.
+func TestControlPlaneWebhookURL(t *testing.T) {
+	t.Parallel()
+	mutating, validating := renderedWebhookConfigurations(t, helmTemplateControlPlane(t, "--set-string", "webhook.url=https://127.0.0.1:9443"))
+	for _, hook := range mutating.Webhooks {
+		assertWebhookURL(t, hook.ClientConfig, "https://127.0.0.1:9443/mutate-pods")
+	}
+	for _, hook := range validating.Webhooks {
+		assertWebhookURL(t, hook.ClientConfig, "https://127.0.0.1:9443/validate-pods")
+	}
+}
+
+// assertWebhookURL requires a client config to name url and no Service.
+func assertWebhookURL(t *testing.T, config admissionregv1.WebhookClientConfig, url string) {
+	t.Helper()
+	if config.Service != nil || config.URL == nil || *config.URL != url {
+		t.Errorf("client config = %+v, want the URL %s alone", config, url)
+	}
+}
+
 // webhookService is the operator Service a webhook client config names.
 func webhookService(t *testing.T, config admissionregv1.WebhookClientConfig) *admissionregv1.ServiceReference {
 	t.Helper()

@@ -1,5 +1,20 @@
 {{/* The router pod's nginx files and the containers that serve them. */}}
 
+{{/* The router's names and labels. */}}
+{{- define "router.fullname" -}}
+{{- printf "%s-router" .Release.Name -}}
+{{- end }}
+
+{{- define "router.selectorLabels" -}}
+app.kubernetes.io/name: router
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "router.labels" -}}
+{{ include "router.selectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
 {{/* The node's verified launch staging, and the directories the nginx files
      name: where the worker image installs them
      (nodeservices.RouterTLSSnippetDir) and where its node stages the
@@ -80,12 +95,17 @@
 {{/*
 The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   root
-  config           the directory nginx reads the files from
-  ports            nginx's ports: name, containerPort, publicPort
-  certificateMounts  nginx's mounts of the certificates it serves beside the mesh leaf
-  settingsMounts   nginx's mounts of the settings its files include
-  cdsAttestArgs    cds-attest's argv after the entrypoint
-  cdsAttestMounts  the mounts cdsAttestArgs names beside the mesh leaf and attestation-api
+  allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies CDS through, as YAML
+  allowlistResources    the proxy's container resources
+  attestationApiMounts  cds-attest's mounts of the attestation-api it attests through, as YAML
+  attestationApiURL     the attestation-api URL a credentials-role container of this pod dials
+  certificateMounts     nginx's mounts of the certificates it serves beside the mesh leaf
+  cdsAttestArgs         cds-attest's argv after the entrypoint
+  cdsAttestMounts       the mounts cdsAttestArgs names beside the mesh leaf and attestation-api
+  config                the directory nginx reads the files from
+  hostIPEnv             the env a sidecar expands the node's address from, as YAML
+  ports                 nginx's ports: name, containerPort, publicPort
+  settingsMounts        nginx's mounts of the settings its files include
 */}}
 {{- define "c8s.routerContainers" -}}
 {{- $root := .root -}}
@@ -156,7 +176,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     {{- toYaml .cdsAttestArgs | nindent 4 }}
-  {{- with (include "c8s.attestationApiHostIPEnv" $root) }}
+  {{- with .hostIPEnv }}
   env:
     {{- . | nindent 4 }}
   {{- end }}
@@ -164,7 +184,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
       readOnly: true
-    {{- include "c8s.attestationApiSocketMount" $root | nindent 4 }}
+    {{- .attestationApiMounts | nindent 4 }}
     {{- with .cdsAttestMounts }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -190,20 +210,14 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   imagePullPolicy: {{ default "IfNotPresent" $root.Values.image.pullPolicy }}
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
-    {{- include "router.allowlistProxyArgs" $root | fromJsonArray | toYaml | nindent 4 }}
-  {{- with (include "c8s.attestationApiHostIPEnv" $root) }}
+    {{- include "router.allowlistProxyArgs" (dict "root" $root "attestationApiURL" .attestationApiURL) | fromJsonArray | toYaml | nindent 4 }}
+  {{- with .hostIPEnv }}
   env:
     {{- . | nindent 4 }}
   {{- end }}
-  {{- if or (eq (include "router.mountInventorySocket" $root) "true") (include "c8s.attestationApiSocketPresent" $root) (include "c8s.attestationApiNodeIPFile" $root) }}
+  {{- with .allowlistProxyMounts }}
   volumeMounts:
-    {{- if eq (include "router.mountInventorySocket" $root) "true" }}
-    - name: workload-claims
-      mountPath: /run/c8s/workload-claims
-      readOnly: true
-    {{- else }}
-    {{- include "c8s.attestationApiSocketMount" $root | nindent 4 }}
-    {{- end }}
+    {{- . | nindent 4 }}
   {{- end }}
   securityContext:
     allowPrivilegeEscalation: false
@@ -215,7 +229,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     capabilities:
       drop:
         - ALL
-  {{- with $v.allowlist.resources }}
+  {{- with .allowlistResources }}
   resources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -223,7 +237,8 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
 
 {{/* The proxy holds the credentials role, so the node hands it the one CDS
      its pod may reach and the pins to verify it with, and refuses an argument
-     naming either (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins). */}}
+     naming either (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins).
+     Takes root and attestationApiURL. */}}
 {{- define "router.allowlistProxyArgs" -}}
-{{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "router.allowlistProxyPort" .)) (printf "--attestation-api-url=%s" (include "router.credentialsVerifierURL" .)) | toJson -}}
+{{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "router.allowlistProxyPort" .root)) (printf "--attestation-api-url=%s" .attestationApiURL) | toJson -}}
 {{- end -}}

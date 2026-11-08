@@ -8,8 +8,11 @@ expression both webhook configurations share, so the release namespace, the
 router's, the Kubernetes system namespaces and `webhook.extraExcluded` receive
 the same treatment.
 
-`c8s.webhookClientConfig` points a webhook at the operator's Service in the
-release namespace, on the shared `c8s.webhookServicePort`, under its own path.
+`c8s.webhookClientConfig` points a webhook at `webhook.url` plus its path.
+`webhook.url` is `https://<host>:<port>` — the address of an operator the API
+server reaches off-cluster, as a cluster of workers does. Without it the
+webhook is pointed at the operator's Service in the release namespace, on the
+shared `c8s.webhookServicePort`, under its own path.
 
 `c8s.webhookAnnotationsBlock` renders the `annotations` key from
 `webhook.annotations`, and nothing when that map is empty.

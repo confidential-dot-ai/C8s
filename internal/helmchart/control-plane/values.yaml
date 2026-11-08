@@ -6,3 +6,6 @@ webhook:
   ## Namespaces the webhooks leave alone besides the release's, the router's
   ## and the Kubernetes system namespaces.
   extraExcluded: []
+  ## url: https://<host>:<port> of an operator the API server reaches
+  ## off-cluster, as a cluster of workers does. Without it both webhooks go to
+  ## the operator's Service in the release namespace.
