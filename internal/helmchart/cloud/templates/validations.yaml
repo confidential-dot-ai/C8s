@@ -3,7 +3,7 @@
 {{- /* The operator keys the router holds the route manifest to, which it reads
        from its own namespace (templates/cds-operator-keys.yaml). */ -}}
 {{- if and .Values.cds.operatorKeys (not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys)) -}}
-{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>" -}}
+{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>` or helm --set-file cds.operatorKeys=<file>" -}}
 {{- end -}}
 {{- /* The keys that name the cluster's confidential VMs. A stock values file
        values-<platform>.yaml sets all three; nothing else can know them.

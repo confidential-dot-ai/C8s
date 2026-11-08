@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
+	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -298,7 +300,7 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 	// version tag resolves to that same digest on a same-version install.
 	if nri, ok := nestedMap(tree, "nriImagePolicy"); ok {
 		if img, ok := nestedMap(nri, "image"); ok {
-			img["tag"] = resolveImageTag()
+			img["tag"] = sweepImageTag(version.Version)
 		}
 	}
 
@@ -307,6 +309,21 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 		return hostUninstallConfig{}, err
 	}
 	return cfg, nil
+}
+
+// fallbackImageTag is the tag every C8s component publishes from main.
+const fallbackImageTag = "main"
+
+// stableReleaseTag matches a vX.Y.Z CLI version, which names its own image tag.
+var stableReleaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
+// sweepImageTag is the image tag a CLI version names: its stable release tag,
+// or fallbackImageTag.
+func sweepImageTag(cliVersion string) string {
+	if stableReleaseTag.MatchString(cliVersion) {
+		return cliVersion
+	}
+	return fallbackImageTag
 }
 
 // hostConfigFromValues extracts the sweep config from a decoded values tree

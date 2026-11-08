@@ -97,20 +97,6 @@ func writeChart(t *testing.T, values string) string {
 	return dir
 }
 
-// writeChartWithComponents is writeChart with c8s-lib's files/components.yaml.
-func writeChartWithComponents(t *testing.T, values string, components string) string {
-	t.Helper()
-	dir := writeChart(t, values)
-	file := filepath.Join(dir, "charts", "c8s-lib", "files", "components.yaml")
-	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(file, []byte(components), 0o600); err != nil {
-		t.Fatalf("write chart components: %v", err)
-	}
-	return dir
-}
-
 // helmRenderOnly runs helm and returns its stdout alone: helm reports the
 // chart's symlinked c8s-lib subchart on stderr, which must stay out of the
 // rendered YAML.
@@ -126,19 +112,19 @@ func helmRenderOnly(t *testing.T, args ...string) []byte {
 	return out
 }
 
-// resetCLIState pins every install/uninstall/render-values flag global to its
+// resetCLIState pins every install/uninstall flag global to its
 // registered default and restores the prior values afterwards, so rootCmd runs
 // cannot leak state across tests.
 func resetCLIState(t *testing.T) {
 	t.Helper()
 	saved := struct {
 		installNamespace, installRelease, installPlatform                         string
-		installImagePullSecret, installImageTag                                   string
+		installImagePullSecret, installChartDir                                   string
 		installOperatorKeys, installUpstream                                      string
 		uninstallNamespace, uninstallRelease                                      string
 		installCDSAddress, installCDSPin, installSeedOut                          string
 		installValues, installWorkloadRefs                                        []string
-		installWait, installForce, installResolveDigests                          bool
+		installWait, installForce                                                 bool
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
 		installOperatorKey, installRoutesOut                                      string
@@ -146,12 +132,12 @@ func resetCLIState(t *testing.T) {
 		installCDS                                                                *cdsPin
 	}{
 		installNamespace, installRelease, installPlatform,
-		installImagePullSecret, installImageTag,
+		installImagePullSecret, installChartDir,
 		installOperatorKeys, installUpstream,
 		uninstallNamespace, uninstallRelease,
 		installCDSAddress, installCDSPin, installSeedOut,
 		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
-		installWait, installForce, installResolveDigests,
+		installWait, installForce,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installOperatorKey, installRoutesOut,
@@ -160,12 +146,12 @@ func resetCLIState(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		installNamespace, installRelease, installPlatform = saved.installNamespace, saved.installRelease, saved.installPlatform
-		installImagePullSecret, installImageTag = saved.installImagePullSecret, saved.installImageTag
+		installImagePullSecret, installChartDir = saved.installImagePullSecret, saved.installChartDir
 		installOperatorKeys, installUpstream = saved.installOperatorKeys, saved.installUpstream
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
 		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
 		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
-		installWait, installForce, installResolveDigests = saved.installWait, saved.installForce, saved.installResolveDigests
+		installWait, installForce = saved.installWait, saved.installForce
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
@@ -176,11 +162,10 @@ func resetCLIState(t *testing.T) {
 	installNamespace, installRelease = "c8s-system", "c8s"
 	installValues, installWait = nil, true
 	installPlatform = ""
-	installImagePullSecret, installImageTag = "", ""
+	installImagePullSecret, installChartDir = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil
-	installResolveDigests = true
 	installCDSAddress, installCDSPin, installSeedOut = "", "", ""
 	installCDS = nil
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"

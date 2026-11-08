@@ -70,46 +70,21 @@ func TestCDSPinPreflight(t *testing.T) {
 	}
 }
 
-func TestDefaultInstallImageTag(t *testing.T) {
-	tests := []struct {
-		name         string
-		buildVersion string
-		want         string
-	}{
-		{name: "release tag used verbatim", buildVersion: "v0.1.0", want: "v0.1.0"},
-		{name: "empty falls back", buildVersion: "", want: "main"},
-		{name: "unstamped default falls back", buildVersion: "dev", want: "main"},
-		{name: "git describe derivative falls back", buildVersion: "v0.1.0-5-gabc1234", want: "main"},
-		{name: "dirty tree falls back", buildVersion: "v0.1.0-dirty", want: "main"},
-		{name: "bare commit sha falls back", buildVersion: "abc1234", want: "main"},
-		{name: "branch name falls back", buildVersion: "feat-phase5-chart-docs", want: "main"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := defaultInstallImageTag(tt.buildVersion)
-			if got != tt.want {
-				t.Fatalf("defaultInstallImageTag(%q) = %q, want %q", tt.buildVersion, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestResolveImageTag(t *testing.T) {
-	prev := installImageTag
-	defer func() { installImageTag = prev }()
-
-	// --image-tag set wins over the build-version default.
-	installImageTag = "v9.9.9"
-	if got := resolveImageTag(); got != "v9.9.9" {
-		t.Errorf("with --image-tag set: got %q, want v9.9.9", got)
-	}
-
-	// Unset falls back to the build-version default. An unstamped test build is
-	// not a release tag, so that default is the fallback tag.
-	installImageTag = ""
-	if got := resolveImageTag(); got != fallbackImageTag {
-		t.Errorf("unset: got %q, want the fallback tag %q", got, fallbackImageTag)
+func TestReleaseChartVersion(t *testing.T) {
+	for cliVersion, want := range map[string]string{
+		"":                       "",
+		"abc1234":                "",
+		"dev":                    "",
+		"v0.1.0":                 "0.1.0",
+		"v0.1.0-5-gabc1234":      "",
+		"v0.1.0-dirty":           "",
+		"v0.92.0-beta.2":         "0.92.0-beta.2",
+		"v0.92.0-beta.2-1-gabc1": "",
+	} {
+		got, ok := releaseChartVersion(cliVersion)
+		if got != want || ok != (want != "") {
+			t.Errorf("releaseChartVersion(%q) = %q, %v, want %q", cliVersion, got, ok, want)
+		}
 	}
 }
 
@@ -1065,243 +1040,6 @@ func TestHostPortConflict(t *testing.T) {
 	}
 }
 
-// testComponents mirrors the chart's component table for the resolver tests,
-// which exercise buildDigestArgs without reading a real chart. The chart-read
-// path (chartComponents) is covered separately by TestChartComponentsFromEmbeddedChart.
-var testComponents = []c8sComponent{
-	{valuesPath: "image", repository: "ghcr.io/confidential-dot-ai/c8s-operator"},
-	{valuesPath: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", enabledPath: "attestationApi.enabled"},
-	{valuesPath: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-	{valuesPath: "armtlsMesh.image", repository: "ghcr.io/confidential-dot-ai/armtls-mesh", enabledPath: "armtlsMesh.enabled"},
-	{valuesPath: "nriImagePolicy.image", repository: "ghcr.io/confidential-dot-ai/nri-image-policy", enabledPath: "nriImagePolicy.enabled"},
-}
-
-// allEnabled is the buildDigestArgs predicate for tests that resolve every
-// component (the skip path is covered by TestBuildDigestArgsSkipsDisabledComponent).
-func allEnabled(string) (bool, error) { return true, nil }
-
-func TestBuildDigestArgsPinsEveryComponent(t *testing.T) {
-	// Deterministic fake resolver: digest derived from the ref so each
-	// component gets a distinct, predictable value.
-	resolve := func(ref string) (string, error) {
-		switch ref {
-		case "ghcr.io/confidential-dot-ai/c8s-operator:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000aa", nil
-		case "ghcr.io/confidential-dot-ai/attestation-api:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000bb", nil
-		case "ghcr.io/confidential-dot-ai/cds:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000cc", nil
-		case "ghcr.io/confidential-dot-ai/armtls-mesh:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000dd", nil
-		case "ghcr.io/confidential-dot-ai/nri-image-policy:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000ee", nil
-		}
-		t.Fatalf("unexpected ref resolved: %q", ref)
-		return "", nil
-	}
-
-	got, err := buildDigestArgs([]string{"upgrade"}, "v1", testComponents, resolve, allEnabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	assertArgsEqual(t, got, []string{
-		"upgrade",
-		// Each component pins both repository and digest so an -f repository
-		// override cannot diverge from the digest resolved against it.
-		"--set-string", "image.repository=ghcr.io/confidential-dot-ai/c8s-operator",
-		"--set-string", "image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000aa",
-		"--set-string", "attestationApi.image.repository=ghcr.io/confidential-dot-ai/attestation-api",
-		"--set-string", "attestationApi.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000bb",
-		"--set-string", "cds.image.repository=ghcr.io/confidential-dot-ai/cds",
-		"--set-string", "cds.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-		"--set-string", "armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
-		"--set-string", "armtlsMesh.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000dd",
-		"--set-string", "nriImagePolicy.image.repository=ghcr.io/confidential-dot-ai/nri-image-policy",
-		"--set-string", "nriImagePolicy.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000ee",
-	})
-}
-
-// Each component repository is resolved at most once per install (no wasted
-// registry round-trips).
-func TestBuildDigestArgsResolvesEachComponentOnce(t *testing.T) {
-	calls := map[string]int{}
-	resolve := func(ref string) (string, error) {
-		calls[ref]++
-		return "sha256:1111111111111111111111111111111111111111111111111111111111111111", nil
-	}
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled); err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for ref, n := range calls {
-		if n != 1 {
-			t.Errorf("ref %q resolved %d times, want 1", ref, n)
-		}
-	}
-}
-
-// A component whose enabledPath resolves to false never renders, so its tag
-// must not be resolved (that image may be unpublished at the install tag) and
-// it must contribute no --set args.
-// Enabled components still resolve and pin.
-func TestBuildDigestArgsSkipsDisabledComponent(t *testing.T) {
-	resolved := map[string]bool{}
-	resolve := func(ref string) (string, error) {
-		resolved[ref] = true
-		return "sha256:3333333333333333333333333333333333333333333333333333333333333333", nil
-	}
-	disabled := map[string]bool{"attestationApi.enabled": true, "nriImagePolicy.enabled": true}
-	enabled := func(path string) (bool, error) { return !disabled[path], nil }
-
-	args, err := buildDigestArgs(nil, "v1", testComponents, resolve, enabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, ref := range []string{
-		"ghcr.io/confidential-dot-ai/attestation-api:v1",
-		"ghcr.io/confidential-dot-ai/nri-image-policy:v1",
-	} {
-		if resolved[ref] {
-			t.Errorf("disabled component %q was resolved, want skipped", ref)
-		}
-	}
-	joined := strings.Join(args, " ")
-	for _, prefix := range []string{"attestationApi.image", "nriImagePolicy.image"} {
-		if strings.Contains(joined, prefix+".repository") || strings.Contains(joined, prefix+".digest") {
-			t.Errorf("disabled component %q emitted --set args: %v", prefix, args)
-		}
-	}
-	// Enabled components still pin both repository and digest.
-	for _, want := range []string{
-		"cds.image.repository=ghcr.io/confidential-dot-ai/cds",
-		"armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
-		"image.repository=ghcr.io/confidential-dot-ai/c8s-operator",
-	} {
-		if !slices.Contains(args, want) {
-			t.Errorf("enabled component arg %q missing from %v", want, args)
-		}
-	}
-	if !resolved["ghcr.io/confidential-dot-ai/cds:v1"] {
-		t.Error("enabled component cds was not resolved")
-	}
-}
-
-// A predicate error (the effective-enabled read failed) must abort rather than
-// silently resolve or skip the component.
-func TestBuildDigestArgsFailsClosedOnEnabledError(t *testing.T) {
-	resolve := func(string) (string, error) {
-		return "sha256:4444444444444444444444444444444444444444444444444444444444444444", nil
-	}
-	enabled := func(string) (bool, error) { return false, errTestResolve }
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, enabled); err == nil {
-		t.Fatal("buildDigestArgs ignored an enabled-predicate error, want fail-closed")
-	}
-}
-
-// A resolution failure for any component must abort: a partially pinned floor
-// would pass the render guard while the served allowlist pointed at a wrong or
-// missing digest.
-func TestBuildDigestArgsFailsClosedOnResolveError(t *testing.T) {
-	resolve := func(ref string) (string, error) {
-		if ref == "ghcr.io/confidential-dot-ai/cds:v1" {
-			return "", errTestResolve
-		}
-		return "sha256:2222222222222222222222222222222222222222222222222222222222222222", nil
-	}
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled); err == nil {
-		t.Fatal("buildDigestArgs ignored a resolver error, want fail-closed")
-	}
-}
-
-// A missing tag (registry MANIFEST_UNKNOWN) must abort with the tag-coupling
-// guidance explaining the lockstep publish model while preserving the cause.
-func TestBuildDigestArgsExplainsTagCouplingOnMissingTag(t *testing.T) {
-	notFound := errors.New(`crane digest "ghcr.io/confidential-dot-ai/c8s-operator:gpu-test": exit status 1: MANIFEST_UNKNOWN: manifest unknown`)
-	resolve := func(string) (string, error) { return "", notFound }
-	_, err := buildDigestArgs(nil, "gpu-test", testComponents, resolve, allEnabled)
-	if err == nil {
-		t.Fatal("buildDigestArgs accepted a missing tag, want fail-closed")
-	}
-	if !errors.Is(err, notFound) {
-		t.Errorf("wrapped error must preserve the cause, got: %v", err)
-	}
-	// The hint must be self-contained (end users don't have the repo, so no
-	// docs/ paths) and explain how to check the component tag.
-	for _, want := range []string{"lockstep"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error must mention %q, got: %v", want, err)
-		}
-	}
-	if strings.Contains(err.Error(), "docs/") {
-		t.Errorf("user-facing hint must not reference in-repo docs paths, got: %v", err)
-	}
-}
-
-// A component released on another repository's cadence has no image at a C8s
-// release tag, so its chart-declared pinnedDigest must be used verbatim and the
-// resolver must never be asked for it — asking is what aborted the whole
-// install, since a C8s tag can only 404 against that repository.
-func TestBuildDigestArgsUsesPinnedDigestWithoutResolving(t *testing.T) {
-	const pinned = "sha256:00000000000000000000000000000000000000000000000000000000000000ff"
-	comps := []c8sComponent{
-		{valuesPath: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-		{valuesPath: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", pinnedDigest: pinned},
-	}
-	resolve := func(ref string) (string, error) {
-		if strings.Contains(ref, "attestation-api") {
-			return "", fmt.Errorf("resolver must not be called for a pinned component, got %q", ref)
-		}
-		return "sha256:1111111111111111111111111111111111111111111111111111111111111111", nil
-	}
-	got, err := buildDigestArgs(nil, "v0.1.15", comps, resolve, allEnabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, want := range []string{
-		"attestationApi.image.repository=ghcr.io/confidential-dot-ai/attestation-api",
-		"attestationApi.image.digest=" + pinned,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
-		}
-	}
-}
-
-// A pinned component that the effective config disables must not be pinned
-// either: the enabled check has to run first, or the install would carry a
-// floor entry for a DaemonSet it never renders.
-func TestBuildDigestArgsSkipsDisabledPinnedComponent(t *testing.T) {
-	comps := []c8sComponent{{
-		valuesPath:   "attestationApi.image",
-		repository:   "ghcr.io/confidential-dot-ai/attestation-api",
-		enabledPath:  "attestationApi.enabled",
-		pinnedDigest: "sha256:00000000000000000000000000000000000000000000000000000000000000ff",
-	}}
-	resolve := func(string) (string, error) { return "", errTestResolve }
-	got, err := buildDigestArgs(nil, "v0.1.15", comps, resolve, func(string) (bool, error) { return false, nil })
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, arg := range got {
-		if strings.Contains(arg, "attestationApi.image") {
-			t.Errorf("disabled pinned component was still pinned: %v", got)
-		}
-	}
-}
-
-// Auth/network resolve failures must pass through without the tag-coupling
-// hint — advising a tag change for a 401 would send the operator down the
-// wrong path.
-func TestBuildDigestArgsLeavesOtherResolveErrorsUnhinted(t *testing.T) {
-	resolve := func(string) (string, error) { return "", errTestResolve }
-	_, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled)
-	if err == nil {
-		t.Fatal("buildDigestArgs ignored a resolver error, want fail-closed")
-	}
-	if strings.Contains(err.Error(), "lockstep") {
-		t.Errorf("non-not-found error must not carry the tag-coupling hint: %v", err)
-	}
-}
-
 // chartComponents reads the component set from the chart's c8s-lib table;
 // this asserts the parse against the embedded chart so the install-time list
 // cannot silently diverge from what the chart declares.
@@ -1334,29 +1072,10 @@ func TestChartComponentsFromEmbeddedChart(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("chart components = %v, want %v", got, want)
 	}
-
-	// Exactly the components released outside the C8s train may carry a
-	// pinnedDigest. Pinning one that does publish at the install tag would
-	// freeze it there silently, and unpinning attestation-api puts back the
-	// abort that made `--image-tag <release>` uninstallable.
-	pinned := map[string]string{}
-	for _, c := range comps {
-		if c.pinnedDigest != "" {
-			pinned[c.valuesPath] = c.pinnedDigest
-		}
-	}
-	if len(pinned) != 1 || pinned["attestationApi.image"] == "" {
-		t.Errorf("pinnedDigest components = %v, want only attestationApi.image", pinned)
-	}
-	if !strings.HasPrefix(pinned["attestationApi.image"], "sha256:") || len(pinned["attestationApi.image"]) != len("sha256:")+64 {
-		t.Errorf("attestationApi pinnedDigest is not a sha256 digest: %q", pinned["attestationApi.image"])
-	}
 }
 
 // effectiveValues must honor a -f values file, not just chart
-// defaults and --set. volumed defaults to disabled; a -f file that enables it
-// has to make the resolver see it as enabled, or its digest is never pinned and
-// the render fails with no image ref.
+// defaults and --set.
 func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
@@ -1388,15 +1107,13 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 		t.Fatalf("effectiveValues (-f): %v", err)
 	}
 	if !boolAtPath(tree, "volumed.enabled") {
-		t.Fatal("volumed.enabled false despite a -f file enabling it; the resolver would skip pinning its digest")
+		t.Fatal("volumed.enabled false despite a -f file enabling it")
 	}
 }
 
 // helmchart.MergeValues must deep-merge a -f overlay the way helm coalesces
 // it: a nested map merges key-by-key (so enabling volumed via -f does not
-// wipe its sibling image/hostPaths defaults), while a scalar replaces. This
-// is the fix for the resolver treating a -f-enabled, default-disabled
-// component as still off.
+// wipe its sibling image/hostPaths defaults), while a scalar replaces.
 func TestMergeValuesDeepMergesOverlay(t *testing.T) {
 	base := map[string]any{
 		"volumed": map[string]any{

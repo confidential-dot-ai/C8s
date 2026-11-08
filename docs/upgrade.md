@@ -29,11 +29,11 @@ not the ones its pods need — the same flags and `-f` file:
 
 ```sh
 CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
-c8s render-values --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
-  --operator-keys c8s-operator-pub.pem > computed.yaml
-helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
-helm template c8s ./c8s --namespace c8s-system --kube-version 1.31.0 \
-  -f ./c8s/values-<PLATFORM>.yaml -f values.yaml -f computed.yaml \
+helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s-cloud --version <X.Y.Z> --untar
+helm template c8s ./c8s-cloud --namespace c8s-system --kube-version 1.31.0 \
+  -f ./c8s-cloud/values-<PLATFORM>.yaml -f values.yaml \
+  --set-string cds.address=<CDS_ADDRESS> --set-file cds.measurementsConfig=cds-pin.json \
+  --set-file cds.operatorKeys=c8s-operator-pub.pem \
   --show-only templates/allowlist-seed.yaml |
   yq '.data["allowlist-seed.json"]' > seed.json
 c8s allowlist lint seed.json
@@ -41,7 +41,8 @@ c8s allowlist lint seed.json
 
 The lint prints `ok: no findings`. `<PLATFORM>` (`aks-snp`, `aks-tdx`,
 `gke-snp`) is the chart stock file this cluster installs with, and `<X.Y.Z>`
-the version without its leading `v`.
+the version without its leading `v`. The chart carries the release's image
+digests. Add `--set volumed.enabled=true` if you install with `--volumes`.
 
 ## 2. Note what each node's admission plugin enforces
 

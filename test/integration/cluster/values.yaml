@@ -1,5 +1,6 @@
 ## The kind lane's release values over the cloud chart's values.yaml; run.sh
-## adds the store-scan floor and the loaded nri-image-policy digest.
+## adds the image tags, the store-scan floor and the loaded nri-image-policy
+## digest.
 attestationApi:
   ## The mock serves synthetic SNP reports and reads no device.
   devices: []

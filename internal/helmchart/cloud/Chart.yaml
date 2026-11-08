@@ -1,5 +1,5 @@
 apiVersion: v2
-name: c8s
+name: c8s-cloud
 description: |
   Confidential Kubernetes platform. Installs the c8s Deployment
   (admission webhook + status-mirror controllers), CRDs, the

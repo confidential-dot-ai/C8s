@@ -5,12 +5,9 @@
 ##   - enabledPath: dotted path to its deploy toggle; absent means the
 ##                  component is always deployed. A disabled component is
 ##                  not derived into the NRI allowlist.
-##   - pinnedDigest: the digest `c8s install` pins for this component instead of
-##                  resolving its repository at --image-tag, for a component
-##                  released on another repository's cadence and therefore
-##                  absent at a C8s release tag. Only `c8s install` reads it, so
-##                  a chart consumer that sets the component's image.tag or
-##                  image.digest itself is unaffected.
+##   - pinnedDigest: the digest a release stamps for this component, released
+##                  on another repository's cadence and so built by no C8s
+##                  release. Only the release stamp reads it.
 ##   - entrypoint:  the executable the derived allowlist entry pins the image
 ##                  to, as the argv prefix every container running the image
 ##                  starts with (the image's ENTRYPOINT, plus the subcommand
@@ -19,12 +16,12 @@
 ##                  Required unless argvPinned.
 ##   - imageEnv:    the image config's Env, as name: value. Each derived
 ##                  entry's env match pins these exact beside the variables
-##                  the pod spec and the runtime set; `c8s install
-##                  --resolve-digests` refuses an image whose config differs.
-##                  Bump with the image. Required unless argvPinned; {} for
-##                  an image that sets none.
-## Consumed by the c8s.components helper (NRI allowlist derivation) and by
-## `c8s install` (digest resolution).
+##                  the pod spec and the runtime set; the release stamp
+##                  refuses an image whose config differs. Bump with the
+##                  image. Required unless argvPinned; {} for an image that
+##                  sets none.
+## Consumed by the c8s.components helper (NRI allowlist derivation), the
+## release stamp (.github/scripts/chart-stamp.sh) and `c8s install`.
 components:
   - valuePath: image
     entrypoint: ["/c8s"]

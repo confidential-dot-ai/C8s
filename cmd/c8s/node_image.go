@@ -68,7 +68,7 @@ func newNodeImageCmd() *cobra.Command {
 	return cmd
 }
 
-var nodeImageDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var imageDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func (cfg nodeImageRenderConfig) validate() error {
 	if err := validateHardwarePlatform(cfg.platform); err != nil {
@@ -78,7 +78,7 @@ func (cfg nodeImageRenderConfig) validate() error {
 		return fmt.Errorf("--kube-version must specify the baked Kubernetes semantic version: %w", err)
 	}
 	for _, input := range cfg.images() {
-		if (input.required || input.digest != "") && !nodeImageDigestPattern.MatchString(input.digest) {
+		if (input.required || input.digest != "") && !imageDigestPattern.MatchString(input.digest) {
 			return fmt.Errorf("--%s-digest must be sha256 followed by 64 lowercase hexadecimal digits", input.flag)
 		}
 		if input.repository == "" {

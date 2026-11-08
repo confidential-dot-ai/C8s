@@ -1,7 +1,7 @@
 //go:build !c8s_node
 
-// Package helmchart bundles the C8s Helm charts into the Go binary
-// so `c8s install` is a single-file install tool — no side chart download.
+// Package helmchart bundles the C8s Helm charts into the Go binary, so
+// `c8s install` renders the chart it was built with.
 //
 // The charts live under this package: cloud/ (the installed chart),
 // worker/ (c8s-worker, which the worker render commands template),
@@ -76,16 +76,16 @@ func ExtractTemp() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := extractCharts(dir); err != nil {
+	if err := Extract(dir); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	return dir, nil
 }
 
-// extractCharts writes the embedded charts under dir, each chart with its
+// Extract writes the embedded charts under dir, each chart with its
 // Chart.yaml dependencies linked into its charts/ directory.
-func extractCharts(dir string) error {
+func Extract(dir string) error {
 	if err := os.CopyFS(dir, ChartFS); err != nil {
 		return err
 	}

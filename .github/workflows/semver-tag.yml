@@ -12,7 +12,7 @@ permissions: {}
 
 env:
   CHART_DIR: internal/helmchart/cloud
-  CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s
+  CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s-cloud
   CHART_REPO: ghcr.io/confidential-dot-ai/charts
   COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
   COSIGN_VERSION: "3.1.3"
@@ -214,11 +214,13 @@ jobs:
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             echo "reusing $IMAGE:$staging_tag at $digest"
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push commit-scoped staging image
+        id: build
         if: steps.staging.outputs.exists != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -234,15 +236,28 @@ jobs:
           # see docker.yml.
           cache-from: type=registry,ref=${{ matrix.image }}:main
 
-      - name: Validate commit-scoped staging image
+      # The chart job stamps the digest this leg pushed or reused.
+      - name: Validate and record commit-scoped staging image
         env:
+          BINARY: ${{ matrix.binary }}
           IMAGE: ${{ matrix.image }}
+          PUSHED_DIGEST: ${{ steps.build.outputs.digest || steps.staging.outputs.digest }}
           TARGET_SHA: ${{ inputs.target-sha }}
         run: |
           set -euo pipefail
 
-          digest="$(oras resolve "$IMAGE:release-$TARGET_SHA")"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PUSHED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(oras resolve "$IMAGE:release-$TARGET_SHA")" = "$PUSHED_DIGEST"
+          mkdir -p release-digest
+          printf '%s\t%s\n' "$IMAGE" "$PUSHED_DIGEST" > "release-digest/$BINARY.tsv"
+
+      - name: Upload release image digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-digest-${{ matrix.binary }}-${{ inputs.target-sha }}
+          path: release-digest/${{ matrix.binary }}.tsv
+          if-no-files-found: error
+          retention-days: 1
 
       - uses: ./.github/actions/setup-grype
 
@@ -264,8 +279,8 @@ jobs:
 
   chart:
     name: Build release chart
-    needs: calculate
-    if: needs.calculate.outputs.publish == 'true'
+    needs: [calculate, images]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -285,6 +300,36 @@ jobs:
       - name: Lint and render chart
         run: .github/scripts/chart-verify.sh
 
+      - name: Download release image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-digest-*-${{ inputs.target-sha }}
+          path: ${{ runner.temp }}/release-digest
+          merge-multiple: true
+
+      - name: Install crane (checksum-pinned)
+        env:
+          VERSION: v0.21.6
+          # SHA256 from the release's checksums.txt (Linux_x86_64).
+          SHA256: 7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d -- "$RUNNER_TEMP/crane.XXXXXX")
+          curl -fsSL --retry 3 -o "$dir/crane.tar.gz" \
+            "https://github.com/google/go-containerregistry/releases/download/$VERSION/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "$SHA256  $dir/crane.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/crane.tar.gz" -C "$dir" crane
+          echo "$dir" >>"$GITHUB_PATH"
+          "$dir/crane" version
+
+      - name: Stamp release image digests
+        run: |
+          set -euo pipefail
+
+          cat "$RUNNER_TEMP"/release-digest/*.tsv > "$RUNNER_TEMP/release-image-digests"
+          cp -rL "$CHART_DIR" "$RUNNER_TEMP/c8s-cloud"
+          .github/scripts/chart-stamp.sh stamp "$RUNNER_TEMP/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
+
       - name: Package deterministic release chart
         env:
           TARGET_SHA: ${{ inputs.target-sha }}
@@ -300,27 +345,28 @@ jobs:
           raw="$RUNNER_TEMP/chart-raw"
           tree="$RUNNER_TEMP/chart-tree"
           mkdir -p "$raw" "$tree" dist
-          helm package "$CHART_DIR" \
+          helm package "$RUNNER_TEMP/c8s-cloud" \
             --version "$VERSION" \
             --app-version "$VERSION" \
             --destination "$raw"
-          tar -xzf "$raw/c8s-$VERSION.tgz" -C "$tree"
+          tar -xzf "$raw/c8s-cloud-$VERSION.tgz" -C "$tree"
           if find "$tree" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
             echo "::error::chart package contains a non-regular entry"
             exit 1
           fi
           tar --sort=name --owner=0 --group=0 --numeric-owner \
-            --mtime="@$source_epoch" -C "$tree" -cf - c8s \
-            | gzip -n > "dist/c8s-$VERSION.tgz"
-          (cd dist && sha256sum "c8s-$VERSION.tgz" > SHA256SUMS)
-          helm show chart "dist/c8s-$VERSION.tgz" > /dev/null
+            --mtime="@$source_epoch" -C "$tree" -cf - c8s-cloud \
+            | gzip -n > "dist/c8s-cloud-$VERSION.tgz"
+          (cd dist && sha256sum "c8s-cloud-$VERSION.tgz" > SHA256SUMS)
+          helm show chart "dist/c8s-cloud-$VERSION.tgz" > /dev/null
+          CHART_DIR="$tree/c8s-cloud" .github/scripts/chart-verify.sh
 
       - name: Upload release chart
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: c8s-release-chart-${{ inputs.target-sha }}
           path: |
-            dist/c8s-*.tgz
+            dist/c8s-cloud-*.tgz
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 1
@@ -339,7 +385,16 @@ jobs:
     environment:
       name: release
       deployment: false
+    outputs:
+      chart-digest: ${{ steps.chart.outputs.digest }}
     steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.target-sha }}
+          sparse-checkout: .github/scripts
+
       - name: Download release chart
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -382,11 +437,11 @@ jobs:
             echo "::error::release payload contains a non-regular entry"
             exit 1
           fi
-          chart="dist/c8s-$VERSION.tgz"
+          chart="dist/c8s-cloud-$VERSION.tgz"
           test -f "$chart"
           test ! -L "$chart"
           manifest_hash="$(
-            awk -v file="c8s-$VERSION.tgz" \
+            awk -v file="c8s-cloud-$VERSION.tgz" \
               '$2 == file { count++; digest=$1 } END { if (count == 1) print digest; else exit 1 }' \
               dist/SHA256SUMS
           )"
@@ -453,6 +508,10 @@ jobs:
               >> "$RUNNER_TEMP/release-image-digests"
           done < "$RUNNER_TEMP/release-images"
 
+          mkdir -p "$RUNNER_TEMP/stamped"
+          tar -xzf "dist/c8s-cloud-$VERSION.tgz" -C "$RUNNER_TEMP/stamped"
+          .github/scripts/chart-stamp.sh check "$RUNNER_TEMP/stamped/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
+
           chart_tags="$(oras repo tags "$CHART_IMAGE")"
           chart_exists=false
           if grep -Fxq -- "$VERSION" <<< "$chart_tags"; then
@@ -460,8 +519,8 @@ jobs:
             mkdir -p "$RUNNER_TEMP/chart-preflight"
             helm pull "oci://$CHART_IMAGE" --version "$VERSION" \
               --destination "$RUNNER_TEMP/chart-preflight"
-            cmp "dist/c8s-$VERSION.tgz" \
-              "$RUNNER_TEMP/chart-preflight/c8s-$VERSION.tgz"
+            cmp "dist/c8s-cloud-$VERSION.tgz" \
+              "$RUNNER_TEMP/chart-preflight/c8s-cloud-$VERSION.tgz"
           fi
           echo "chart-exists=$chart_exists" >> "$GITHUB_OUTPUT"
 
@@ -578,6 +637,7 @@ jobs:
           done < "$RUNNER_TEMP/release-image-digests"
 
       - name: Publish or verify Helm chart
+        id: chart
         env:
           CHART_EXISTS: ${{ steps.preflight.outputs.chart-exists }}
           VERSION: ${{ needs.calculate.outputs.version }}
@@ -585,16 +645,20 @@ jobs:
           set -euo pipefail
 
           if [ "$CHART_EXISTS" = false ]; then
-            helm push "dist/c8s-$VERSION.tgz" "oci://$CHART_REPO"
+            helm push "dist/c8s-cloud-$VERSION.tgz" "oci://$CHART_REPO"
           fi
           mkdir -p "$RUNNER_TEMP/chart-verify"
           helm pull "oci://$CHART_IMAGE" --version "$VERSION" \
             --destination "$RUNNER_TEMP/chart-verify"
-          cmp "dist/c8s-$VERSION.tgz" \
-            "$RUNNER_TEMP/chart-verify/c8s-$VERSION.tgz"
+          cmp "dist/c8s-cloud-$VERSION.tgz" \
+            "$RUNNER_TEMP/chart-verify/c8s-cloud-$VERSION.tgz"
+          digest="$(oras resolve "$CHART_IMAGE:$VERSION")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-  # A keyless Sigstore signature over {repository, tag, commit} lets downstream
-  # automation trust a tag without trusting everyone who can push tags. Only
+  # A keyless Sigstore signature over {repository, tag, commit, chart} lets
+  # downstream automation trust a tag, and the chart manifest it names, without
+  # trusting everyone who can push tags. Only
   # this job holds an OIDC token. It neither checks out nor runs repository
   # source.
   sign:
@@ -611,6 +675,7 @@ jobs:
     env:
       BUNDLE: release-statement.sigstore.json
       CHANNEL: ${{ needs.calculate.outputs.channel }}
+      CHART_DIGEST: ${{ needs.publish.outputs.chart-digest }}
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
       STATEMENT: release-statement.json
@@ -680,12 +745,14 @@ jobs:
           )"
           test "$target_type" = commit
           test "$target_sha" = "$TARGET_SHA"
+          [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
-            '{repository: $repository, tag: $tag, commit: $commit}' \
+            --arg chart "$CHART_IMAGE@$CHART_DIGEST" \
+            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart}' \
             > "$STATEMENT"
           cat "$STATEMENT"
 

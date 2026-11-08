@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -33,7 +32,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -49,17 +47,16 @@ var (
 	installPlatform        string
 	installVolumes         bool
 	installImagePullSecret string
-	installImageTag        string
 	installOperatorKeys    string
 	installForce           bool
 
 	installUpstream     string
 	installWorkloadRefs []string
 
-	installResolveDigests bool
-	installCDSAddress     string
-	installCDSPin         string
-	installSeedOut        string
+	installChartDir   string
+	installCDSAddress string
+	installCDSPin     string
+	installSeedOut    string
 
 	// installCDS is the pin this install holds its CDS to, resolved once from
 	// the values the release renders with, so the chart, the clients this
@@ -71,6 +68,7 @@ var (
 // gate or an arg-builder call). Naming them once keeps the references from
 // drifting.
 const (
+	flagChart            = "chart"
 	flagPlatform         = "platform"
 	flagHardwarePlatform = "hardware-platform"
 	flagWorkloadRef      = "workload-ref"
@@ -99,7 +97,7 @@ func validatePlatform(platform string) error {
 
 // orderedValuesFiles are the -f files a release renders with, in helm's
 // precedence order: the stock file --platform selects, then the operator's own.
-// Install and render-values pass this list to everything that reads the values.
+// Install passes this list to everything that reads the values.
 func orderedValuesFiles(chartPath, platform string, userFiles []string) []string {
 	if platform == "" {
 		return userFiles
@@ -108,22 +106,11 @@ func orderedValuesFiles(chartPath, platform string, userFiles []string) []string
 	return append([]string{stock}, userFiles...)
 }
 
-// c8sComponent maps a chart image to the helm value keys --resolve-digests
-// pins. name is the image object declaring it, a values path for a table
-// component and routerNginx.image for the router's nginx; repository is that
-// object's default repository, against which the tag is resolved.
-// resolveDigests pins both the repository and the digest it resolved against,
-// so an operator's -f override of a repository cannot leave the chart
-// deploying repoA@<digest-of-repoB>.
+// c8sComponent is a chart image from the component table: the values path of
+// its image object and that object's default repository.
 type c8sComponent struct {
-	name         string            // the image object declaring the component, e.g. "armtlsMesh.image"
-	valuesPath   string            // values path the pin args set ("" = the components file pins the image)
-	repository   string            // default repository the tag is resolved against
-	enabledPath  string            // values path guarding the render, e.g. "volumed.enabled" ("" = always rendered)
-	pinnedDigest string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
-	entrypoint   []string          // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
-	imageEnv     map[string]string // the image config's Env the seeded entry's env match pins
-	pinsPath     string            // components.yaml path declaring entrypoint and imageEnv, e.g. "routerNginx"
+	valuesPath string
+	repository string
 }
 
 // componentsFile is c8s-lib's files/components.yaml: the component table the
@@ -135,17 +122,11 @@ type componentsFile struct {
 }
 
 type componentDeclaration struct {
-	ValuePath    string             `yaml:"valuePath"`
-	EnabledPath  string             `yaml:"enabledPath"`
-	PinnedDigest string             `yaml:"pinnedDigest"`
-	Entrypoint   []string           `yaml:"entrypoint"`
-	ImageEnv     map[string]*string `yaml:"imageEnv"`
+	ValuePath string `yaml:"valuePath"`
 }
 
 type routerNginxDeclaration struct {
-	Image      componentImagePin  `yaml:"image"`
-	Entrypoint []string           `yaml:"entrypoint"`
-	ImageEnv   map[string]*string `yaml:"imageEnv"`
+	Image componentImagePin `yaml:"image"`
 }
 
 type componentImagePin struct {
@@ -212,57 +193,12 @@ func componentsFromFile(components componentsFile, values map[string]any) ([]c8s
 		if err != nil {
 			return nil, fmt.Errorf("component %q: %w", declared.ValuePath, err)
 		}
-		imageEnv, err := seedImageEnv(declared.Entrypoint, declared.ImageEnv)
-		if err != nil {
-			return nil, fmt.Errorf("component %q: %w", declared.ValuePath, err)
-		}
 		comps = append(comps, c8sComponent{
-			name:         declared.ValuePath,
-			valuesPath:   declared.ValuePath,
-			repository:   repo,
-			enabledPath:  declared.EnabledPath,
-			pinnedDigest: declared.PinnedDigest,
-			entrypoint:   declared.Entrypoint,
-			imageEnv:     imageEnv,
-			pinsPath:     "components[]",
+			valuesPath: declared.ValuePath,
+			repository: repo,
 		})
 	}
 	return comps, nil
-}
-
-// routerNginxComponent reads the router's nginx image as a component: the
-// chart seeds it like one, outside the component table because it is
-// versioned apart from C8s. pinnedDigest is the digest the release renders,
-// which no install argument pins.
-func routerNginxComponent(components componentsFile) (c8sComponent, error) {
-	nginx := components.RouterNginx
-	imageEnv, err := seedImageEnv(nginx.Entrypoint, nginx.ImageEnv)
-	if err != nil {
-		return c8sComponent{}, fmt.Errorf("routerNginx: %w", err)
-	}
-	return c8sComponent{
-		name:         "routerNginx.image",
-		repository:   nginx.Image.Repository,
-		pinnedDigest: nginx.Image.Digest,
-		entrypoint:   nginx.Entrypoint,
-		imageEnv:     imageEnv,
-		pinsPath:     "routerNginx",
-	}, nil
-}
-
-// seedImageEnv is the env a declaration's seeded entry matches. A null
-// imageEnv value removes a default variable, as Helm deletes null keys.
-func seedImageEnv(entrypoint []string, declared map[string]*string) (map[string]string, error) {
-	if declared == nil && len(entrypoint) > 0 {
-		return nil, errors.New("entrypoint is set but imageEnv is missing: list the image config's Env under imageEnv")
-	}
-	imageEnv := map[string]string{}
-	for name, value := range declared {
-		if value != nil {
-			imageEnv[name] = *value
-		}
-	}
-	return imageEnv, nil
 }
 
 // cdsPreflight refuses an install that names no CDS: no --cds-address and
@@ -805,7 +741,7 @@ const exemptNamespacesPath = "nriImagePolicy.policy.exemptNamespaces"
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install C8s on a cloud cluster of confidential VMs via Helm",
-	Long: `Extracts the bundled c8s Helm chart and runs
+	Long: `Extracts the bundled c8s-cloud chart and runs
 'helm upgrade --install' against the current kubeconfig context. --platform
 names the cluster's confidential VMs (aks-snp, aks-tdx or gke-snp) and selects
 the chart's values-<platform>.yaml, which -f files override; without it the -f
@@ -829,19 +765,18 @@ cluster is already running:
 registering the plugin restarts containerd, and a denied control-plane container
 does not come back. --force installs anyway.
 
-By default each component image tag is resolved to its registry digest (via the
-'crane' CLI) and pinned, including the CDS digest the image-policy floor and
-render guard require, so the chart adds the resolved images to the NRI
-allowlist. This makes a plain install satisfy the floor with no hand-written
-values. Pass --resolve-digests=false when you supply the digests yourself via -f; the
-render guards then require those values.
+A release build pins each component image to the digest the c8s-cloud chart of
+its own version carries for the same repository
+(oci://ghcr.io/confidential-dot-ai/charts/c8s-cloud), and reads nothing else
+from that chart. --chart renders a chart directory instead, with the image digests
+or tags it and the -f files set; a build that is not a release needs it.
 
 When the c8s images live in a registry that requires authentication, create a
 kubernetes.io/dockerconfigjson Secret in the release namespace and pass
 --image-pull-secret <name>: the chart wires it into every component's
 imagePullSecrets, so pods authenticate from first start.
-This is the cluster-side (kubelet) credential; digest resolution runs locally
-via crane and uses your local docker login.
+This is the cluster-side (kubelet) credential; --workload-ref images resolve
+locally via crane and your local docker login.
 
 --volumes deploys volumed, the node agent that opens a pod's encrypted volumes
 into its mount namespace (docs/volumes.md).
@@ -851,7 +786,7 @@ The release namespace is excluded from workload injection, so adopted workloads
 must live in a separate namespace. After the chart is ready, install patches each
 workload's pod template with confidential.ai/cw=<id>; the rollout then goes
 through the c8s webhook and the operator provisions the c8s-<id> headless Service.
-With --resolve-digests, install also writes one
+Install also writes one
 nriImagePolicy.bootstrapAllowlist.workloads entry per adopted workload, named
 after its cw id and listing every image of its pod template under any command
 and args, with mounts limited to the template's memory-backed emptyDirs (the
@@ -878,8 +813,8 @@ when storing fails, it writes the manifest to --routes-out and prints the
 the stored one plus one and the current Unix time in seconds, or
 --routes-revision. The router answers 503 until a manifest is stored.
 
-Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
---resolve-digests=false.`,
+Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
+--workload-ref image named by tag.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validatePlatform(installPlatform); err != nil {
 			return err
@@ -892,14 +827,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		}
 		defer stdinCleanup()
 		installValues = substituted
-
-		dir, err := helmchart.ExtractTemp()
-		if err != nil {
-			return fmt.Errorf("extract embedded chart: %w", err)
-		}
-		defer os.RemoveAll(dir)
-		chartPath := filepath.Join(dir, helmchart.ChartRoot)
-		valuesFiles := orderedValuesFiles(chartPath, installPlatform, installValues)
 
 		adoptions, err := collectWorkloadAdoptions(installWorkloadRefs)
 		if err != nil {
@@ -939,10 +866,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if _, err := exec.LookPath("kubectl"); err != nil {
 			return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
 		}
-		// Always read the adopted workloads, even when --resolve-digests=false
-		// discards workloadImages: this is the only pre-install existence check,
-		// so it fails fast before any helm install or post-install patch runs.
-		// Don't gate it on installResolveDigests.
 		adopted := make([]adoptedWorkload, 0, len(adoptions))
 		for _, adoption := range adoptions {
 			template, err := adoptedWorkloadTemplate(cmd.Context(), adoption.ref)
@@ -953,33 +876,31 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			adopted = append(adopted, adoptedWorkload{workloadAdoption: adoption, template: template})
 		}
 
-		components, err := chartComponents(cmd.Context(), chartPath)
-		if err != nil {
-			return fmt.Errorf("read chart components: %w", err)
-		}
 		// The cluster before the registry: an install that cannot reach the
-		// cluster it is for says so without first resolving every digest.
+		// cluster it is for says so without first pulling a chart.
 		kubeVersion, err := clusterKubeVersion(cmd.Context())
 		if err != nil {
 			return err
 		}
-		imageTag := resolveImageTag()
-		// The computed values are shared with `c8s render-values` via
-		// buildValueArgs, then written to one values file rather than passed as a
-		// pile of --set flags. The contract that the CLI's flag-derived values
-		// override an operator's -f is preserved by ordering: the computed file
-		// is the LAST -f, so it wins on the keys it sets (matching the previous
-		// "--set beats -f" precedence) while the operator's files supply the rest.
-		setArgs, err := buildValueArgs(cmd.Context(), chartPath, valuesFiles, components, imageTag, appendResolvedDigestArgs)
+		work, err := os.MkdirTemp("", "c8s-install-*")
 		if err != nil {
 			return err
 		}
-		var adoptedEntries map[string]adoptedEntry
-		if installResolveDigests {
-			setArgs, adoptedEntries, err = appendResolvedWorkloadImageArgs(cmd.Context(), setArgs, adopted, installUpstream)
-			if err != nil {
-				return err
-			}
+		defer os.RemoveAll(work)
+		chart, err := installChart(cmd.Context(), work)
+		if err != nil {
+			return err
+		}
+		valuesFiles := orderedValuesFiles(chart.path, installPlatform, installValues)
+		// The computed values reach helm as the last -f, so they win over the
+		// operator's files on the keys they set.
+		valueArgs, err := buildValueArgs(chart.imagePins)
+		if err != nil {
+			return err
+		}
+		setArgs, adoptedEntries, err := appendResolvedWorkloadImageArgs(cmd.Context(), valueArgs, adopted, installUpstream)
+		if err != nil {
+			return err
 		}
 		computedValues, err := writeComputedValues(setArgs)
 		if err != nil {
@@ -987,7 +908,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		}
 		defer os.Remove(computedValues)
 		render := seedRender{
-			chart:       chartPath,
+			chart:       chart.path,
 			release:     installRelease,
 			namespace:   installNamespace,
 			kubeVersion: kubeVersion,
@@ -997,7 +918,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if seedOnly {
 			return writeInstallSeed(cmd.Context(), render, installSeedOut)
 		}
-		helmArgs := buildInstallHelmArgs(chartPath, computedValues, valuesFiles, installWait)
+		helmArgs := buildInstallHelmArgs(chart.path, computedValues, valuesFiles, installWait)
 
 		// Fail fast when router's host port is already taken cluster-wide (e.g.
 		// an existing ingress owns 443), which would otherwise wedge `--wait`.
@@ -1013,7 +934,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 
 		// The values the release will actually render with (chart defaults + -f
 		// + computed), read once and shared by the checks below.
-		values, err := effectiveValues(cmd.Context(), chartPath, valuesFiles, setArgs)
+		values, err := effectiveValues(cmd.Context(), chart.path, valuesFiles, setArgs)
 		if err != nil {
 			return err
 		}
@@ -1034,9 +955,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 				return fmt.Errorf("--%s needs a DNS name in router.san to route requests for: a route manifest host cannot be a wildcard, an IP address or end in a numeric label", flagUpstream)
 			}
 			routes = upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}
-			if !installResolveDigests {
-				fmt.Fprintf(os.Stderr, "warning: --resolve-digests=false writes no allowlist entry named %q, so the router refuses the %s backend until an entry of that name describes its pod (c8s allowlist)\n", installUpstream, installUpstream)
-			}
 			if cdsURL, err = installCDSURL(values); err != nil {
 				return err
 			}
@@ -1046,7 +964,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		// cluster's own platform pods: registering the plugin restarts
 		// containerd, and a denied control-plane static pod takes the API
 		// server with it. Read-only, so it runs with -f too.
-		if warn, err := preflightImagePolicy(cmd.Context(), os.Stdout, values, components, installNamespace, installForce); err != nil {
+		if warn, err := preflightImagePolicy(cmd.Context(), os.Stdout, values, chart.components, installNamespace, installForce); err != nil {
 			return err
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
@@ -1130,28 +1048,6 @@ func namespaceManifest(namespace string) ([]byte, error) {
 	return json.Marshal(ns)
 }
 
-// fallbackImageTag is installed whenever the build is not stamped with a
-// release version. It is the branch every C8s component publishes; it is
-// deliberately not "latest", which cds does not publish (so
-// `crane digest ghcr.io/confidential-dot-ai/cds:latest` under --resolve-digests would
-// abort with MANIFEST_UNKNOWN).
-const fallbackImageTag = "main"
-
-// releaseVersion matches a clean release tag (vMAJOR.MINOR.PATCH), the only
-// version for which CI publishes a matching image tag. A `git describe`
-// derivative (e.g. v1.2.3-5-gabc, a bare commit SHA, or empty) has no published
-// image, so defaultInstallImageTag falls back to fallbackImageTag.
-var releaseVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
-
-// defaultInstallImageTag picks the image tag for an install: the build version
-// when it is a published release tag, otherwise fallbackImageTag.
-func defaultInstallImageTag(buildVersion string) string {
-	if releaseVersion.MatchString(buildVersion) {
-		return buildVersion
-	}
-	return fallbackImageTag
-}
-
 // buildInstallHelmArgs assembles the `helm upgrade --install` argv. Ordering is
 // load-bearing: the operator's -f files come first and the computed values file
 // LAST, so the CLI's computed values win on the keys they set (helm merges -f
@@ -1172,10 +1068,9 @@ func buildInstallHelmArgs(chartPath, computedValues string, valueFiles []string,
 	return helmArgs
 }
 
-// writeComputedValues turns the buildValueArgs --set/--set-string pairs into a
+// writeComputedValues turns the computed --set/--set-string pairs into a
 // values.yaml in a tmpfile and returns its path (caller removes it). install
-// passes it as a -f instead of shelling a pile of --set flags; the conversion
-// is the same one `c8s render-values` uses for its output.
+// passes it as a -f instead of shelling a pile of --set flags.
 func writeComputedValues(setArgs []string) (string, error) {
 	values, err := valueArgsToTree(setArgs)
 	if err != nil {
@@ -1194,18 +1089,6 @@ func writeComputedValues(setArgs []string) (string, error) {
 		return "", fmt.Errorf("write computed values: %w", err)
 	}
 	return path, nil
-}
-
-// resolveImageTag returns the tag to resolve component images at: the explicit
-// --image-tag when set, otherwise the build-version default. The CLI and its
-// component images publish in lockstep, so the default is correct for a normal
-// install; --image-tag overrides it to pin a specific branch/tag/release —
-// e.g. a fleet promoting `main` from a release-stamped CLI build.
-func resolveImageTag() string {
-	if installImageTag != "" {
-		return installImageTag
-	}
-	return defaultInstallImageTag(version.Version)
 }
 
 // allowedPlatforms is what --hardware-platform takes: the canonical family
@@ -1648,7 +1531,7 @@ func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upst
 			var err error
 			if mounts[i], err = injectedMountRules(w.template, c); err != nil {
 				if w.cwID == upstream {
-					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist), or pass --resolve-digests=false", w.cwID, err, w.cwID)
+					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist)", w.cwID, err, w.cwID)
 				}
 				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so a route to it trusts those mounts\n", w.cwID, err)
 				exact = false
@@ -1823,112 +1706,10 @@ func workloadImageAllowlistEntry(image string, resolve func(ref string) (string,
 	return parsed, repo + "@" + parsed.String(), nil
 }
 
-// tagCouplingHint explains a missing component image in terms of the C8s
-// publish model, so the operator lands on the right knob instead of retrying
-// tags. The C8s component images (operator, cds, …) publish in lockstep
-// (docker.yml) and the chart+operator ship as a unit. Falling back to a
-// mismatched component tag is worse than failing: an operator predating the
-// chart's webhook features silently mis-injects.
-func tagCouplingHint(repo string) string {
-	return fmt.Sprintf("the c8s component images publish in lockstep, so each must exist at the install tag; a mismatched older operator would silently lack webhook features the chart expects. If %s is released on its own cadence rather than with c8s, give its components.yaml entry a pinnedDigest. Verify with: crane ls %s", repo, repo)
-}
-
-// appendResolvedDigestArgs resolves each chart component's repo:tag to its
-// registry digest (via crane) and appends the helm --set flags that pin it.
-// Every pinned image, resolved or chart-pinned, and the router's nginx image
-// are checked against the entrypoint and env the components file seeds them
-// under: an image that starts with another executable or sets other variables
-// would render a seed that denies it on its own node.
-func appendResolvedDigestArgs(
-	ctx context.Context,
-	chartPath string,
-	valuesFiles []string,
-	helmArgs []string,
-	tag string,
-	components []c8sComponent,
-) ([]string, error) {
-	if !crane.Available() {
-		return nil, fmt.Errorf("digest resolution needs the 'crane' CLI on PATH; install it or pass --resolve-digests=false and supply digests via -f")
-	}
-	tree, err := effectiveValues(ctx, chartPath, valuesFiles, helmArgs)
-	if err != nil {
-		return nil, err
-	}
-	enabled := func(valuePath string) (bool, error) { return boolAtPath(tree, valuePath), nil }
-	file, err := chartComponentsFile(chartPath)
-	if err != nil {
-		return nil, err
-	}
-	// nginx is versioned apart from C8s: check the digest the release
-	// renders, never one resolved at the C8s tag.
-	nginx, err := routerNginxComponent(file)
-	if err != nil {
-		return nil, err
-	}
-	byRef := map[string]c8sComponent{}
-	for _, c := range components {
-		byRef[c.repository+":"+tag] = c
-	}
-	for _, c := range append(slices.Clone(components), nginx) {
-		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPath(tree, c.enabledPath) {
-			continue
-		}
-		if err := checkComponentImage(ctx, c, c.pinnedDigest); err != nil {
-			return nil, err
-		}
-	}
-	return buildDigestArgs(helmArgs, tag, components, func(ref string) (string, error) {
-		digest, err := crane.Digest(ctx, ref)
-		if err != nil {
-			return "", err
-		}
-		// Progress to stderr: render-values writes the values bundle to stdout,
-		// so stdout must stay clean. Install's stdout is diagnostic too.
-		fmt.Fprintf(os.Stderr, "+ resolved %s -> %s\n", ref, digest)
-		if c, ok := byRef[ref]; ok {
-			if err := checkComponentImage(ctx, c, digest); err != nil {
-				return "", err
-			}
-		}
-		return digest, nil
-	}, enabled)
-}
-
-// checkComponentImage reads the image config at repo@digest and requires the
-// component's seeded entrypoint to be a prefix of the argv the image bakes
-// (ENTRYPOINT then CMD) and its imageEnv to equal the image's Env. A component
-// without an entrypoint is seeded argv-pinned elsewhere and has nothing to
-// check.
-func checkComponentImage(ctx context.Context, c c8sComponent, digest string) error {
-	if len(c.entrypoint) == 0 {
-		return nil
-	}
-	ref := c.repository + "@" + digest
-	cfg, err := crane.Config(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("component %s: read the image config to check its entrypoint and env (set %s.repository to a reachable mirror if the registry is blocked): %w", c.name, c.name, err)
-	}
-	baked := slices.Concat(cfg.Config.Entrypoint, cfg.Config.Cmd)
-	if len(baked) < len(c.entrypoint) || !slices.Equal(baked[:len(c.entrypoint)], c.entrypoint) {
-		return fmt.Errorf("component %s: image %s starts with %q, but the chart seeds it pinned to %q (%s.entrypoint); the node plugin would deny it. Align the entrypoint with the image", c.name, ref, baked, c.entrypoint, c.pinsPath)
-	}
-	env := map[string]string{}
-	for _, entry := range cfg.Config.Env {
-		name, value, _ := strings.Cut(entry, "=")
-		env[name] = value
-	}
-	if !maps.Equal(env, c.imageEnv) {
-		return fmt.Errorf("component %s: image %s sets env %q, but the chart seeds it matching %q (%s.imageEnv); the node plugin would deny it. Align imageEnv with the image", c.name, ref, cfg.Config.Env, c.imageEnv, c.pinsPath)
-	}
-	return nil
-}
-
 // effectiveValues resolves the values tree the release will actually render
 // with, in helm's precedence order: chart defaults < -f files in order <
-// --set. Callers that decide on a value the operator may have overridden (the
-// digest resolver, the TEE-node preflight) must read this, not the defaults:
-// a component that defaults to disabled and is turned on through -f (e.g.
-// volumed.enabled) must still have its digest pinned.
+// --set. Callers that decide on a value the operator may have overridden must
+// read this, not the defaults.
 func effectiveValues(
 	ctx context.Context,
 	chartPath string,
@@ -1955,56 +1736,6 @@ func effectiveValues(
 	return helmchart.MergeValues(tree, computed), nil
 }
 
-// buildDigestArgs appends, for every component, the --set flags that pin both
-// its repository and the digest resolved against that repository. Pinning the
-// repository too means an operator's -f override of a repository cannot leave
-// the chart deploying repoA@<digest-of-repoB>: helm gives --set strict
-// precedence over -f, so the repository and digest move together. A component's
-// value path covers its workload and its allowlist-seed / floor entry alike,
-// which all read it. Any resolution failure aborts: a
-// partially-pinned floor would let the render guard pass while the served
-// allowlist pointed at the wrong digest. The resolver is injected so the arg
-// assembly is testable without a registry.
-//
-// A component carrying a chart-declared pinnedDigest is pinned to it and never
-// resolved: it is released on another repository's cadence, so no C8s tag names
-// an image of it and resolving one can only fail.
-func buildDigestArgs(helmArgs []string, tag string, components []c8sComponent, resolve func(ref string) (string, error), enabled func(valuePath string) (bool, error)) ([]string, error) {
-	for _, c := range components {
-		// Skip components the effective config disables: they never render, so
-		// resolving their tag is pointless and aborts a valid install if that
-		// image is unpublished at the install tag.
-		if c.enabledPath != "" {
-			on, err := enabled(c.enabledPath)
-			if err != nil {
-				return nil, fmt.Errorf("component %s: resolve %s: %w", c.name, c.enabledPath, err)
-			}
-			if !on {
-				continue
-			}
-		}
-		repo := c.repository
-		digest := c.pinnedDigest
-		if digest == "" {
-			var err error
-			digest, err = resolve(repo + ":" + tag)
-			if err != nil {
-				if crane.IsNotFound(err) {
-					return nil, fmt.Errorf("component %s: image %s:%s is not published — %s: %w", c.name, repo, tag, tagCouplingHint(repo), err)
-				}
-				return nil, err
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "+ pinned %s@%s (chart pinnedDigest; not resolved at %s)\n", repo, digest, tag)
-		}
-		helmArgs = append(helmArgs,
-			"--set-string", c.valuesPath+".repository="+repo,
-			"--set-string", c.valuesPath+".digest="+digest,
-		)
-	}
-	return helmArgs, nil
-}
-
 func init() {
 	installCmd.Flags().StringVar(&installNamespace, "namespace", "c8s-system", "namespace to install into")
 	installCmd.Flags().StringVar(&installRelease, "release", "c8s", "Helm release name")
@@ -2018,12 +1749,11 @@ func init() {
 	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one CDS stores; default the later of the stored revision plus one and the current Unix time. After a CDS reset, pass one above the highest revision any router applied")
 	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")
 	installCmd.Flags().StringVar(&installPlatform, flagPlatform, "", "the cluster's confidential VMs: aks-snp and aks-tdx (Azure, evidence from the vTPM), or gke-snp (GKE, unverified). Selects the chart's values-<platform>.yaml; without it the -f files set the platform's values")
-	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist. Also reads each pinned image config, the router nginx image included. On by default; pass --resolve-digests=false when supplying digests via -f")
+	installCmd.Flags().StringVar(&installChartDir, flagChart, "", "chart directory to render instead of the bundled chart, with the component images it and the -f files set; required for a build that is not a release")
 	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address: the VM 'c8s cds config new' wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose port is the only one their packet rules admit outside the cluster")
 	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
 	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input 'c8s cds config new --allowlist-seed' takes before the CDS this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
-	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
 	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; sets cds.operatorKeys. Without it the router uses the keys the pinned CDS serves. CDS's own write keys come from 'c8s cds config new --operator-keys'")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "install despite a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)

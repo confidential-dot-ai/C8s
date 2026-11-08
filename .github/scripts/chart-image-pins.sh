@@ -28,9 +28,9 @@
 # the registry no longer serves is an error, and the other rows still print.
 # check reads each pinned image's config (crane, linux/amd64) and requires
 # the `entrypoint` declared beside the digest to be a prefix of its
-# ENTRYPOINT+CMD and the `imageEnv` to equal its Env, as `c8s install
-# --resolve-digests` requires for the components it pins; a block that
-# declares no entrypoint is seeded argv-pinned and is skipped. Needs yq.
+# ENTRYPOINT+CMD and the `imageEnv` to equal its Env, which the seeded entry
+# matches; a block that declares no entrypoint is seeded argv-pinned and is
+# skipped. Needs yq.
 # set rewrites the digest under the one line naming REPOSITORY:TAG, in place,
 # so the comments survive; pin-watch runs it for a rebuilt tag, and a version
 # bump edits the tag on that line, then runs set with the new tag's digest.
@@ -136,14 +136,7 @@ check_pins() {
       bad=1
       continue
     fi
-    verdict=$(jq -r --argjson want "$want" '
-      def envmap: ((.config.Env // []) | map(split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries);
-      ((.config.Entrypoint // []) + (.config.Cmd // [])) as $argv
-      | $want.entrypoint as $ep
-      | ($want.imageEnv // {} | with_entries(select(.value != null) | .value |= tostring)) as $env
-      | if $argv[:($ep | length)] != $ep then "starts with \($argv | tojson), not the seeded entrypoint \($ep | tojson)"
-        elif envmap != $env then "sets env \(envmap | tojson), not the seeded imageEnv \($env | tojson)"
-        else "ok" end' <<<"$cfg")
+    verdict=$(jq -r --argjson want "$want" -f "$script_dir/image-config-verdict.jq" <<<"$cfg")
     if [[ "$verdict" == ok ]]; then
       echo "$repo $tag ok"
     else
