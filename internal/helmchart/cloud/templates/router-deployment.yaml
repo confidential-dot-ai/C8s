@@ -65,7 +65,7 @@ volumes:
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
 securityContext:
   runAsNonRoot: true
-  fsGroup: {{ include "c8s.certFsGroup" . }}
+  fsGroup: {{ include "c8s.certFsGroup" .Values.podSecurityContext.fsGroup }}
   {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) }}
   # workloadclaims.InventorySocketGID: the inventory and attest-proxy
   # chgrp their sockets to this group so the non-root get-cert sidecar

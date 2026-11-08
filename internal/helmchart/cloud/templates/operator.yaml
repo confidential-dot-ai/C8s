@@ -32,7 +32,7 @@ containers:
       {{- range .Values.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
-      - --cert-fs-group={{ include "c8s.certFsGroup" . }}
+      - --cert-fs-group={{ include "c8s.certFsGroup" .Values.podSecurityContext.fsGroup }}
       {{- /* Below the 6h named-leaf TTL, the shortest CDS issues. */}}
       - --get-cert-renew-interval=2h
 

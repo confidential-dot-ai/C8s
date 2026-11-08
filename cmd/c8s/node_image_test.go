@@ -917,7 +917,7 @@ const containerdDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 // sets none, so this fixture and the chart's own template must name one
 // string.
 func TestContainerdDefaultPathMatchesChart(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "helmchart", "cloud", "templates", "_allowlist.tpl"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "helmchart", "lib", "templates", "_allowlist.tpl"))
 	if err != nil {
 		t.Fatal(err)
 	}

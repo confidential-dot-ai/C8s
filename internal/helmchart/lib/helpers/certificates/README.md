@@ -14,7 +14,7 @@ grants to the pinned argv they run ([mesh endpoint helpers](../mesh/README.md)),
 so the credential paths, the `c8s-certs` volume, the reserved identity and the
 wait container's timeout are the injector's: `c8s.certDir`, `c8s.certFile`,
 `c8s.keyFile`, `c8s.caFile` and `c8s.credentialsUID` in
-[_helpers.tpl](../../templates/_helpers.tpl) are the single source for them.
+[_identities.tpl](../../templates/_identities.tpl) are the single source for them.
 
 The wait container gates workload startup on the certificate file using
 `/c8s probe-file`. Init-container completion holds the workload until its
