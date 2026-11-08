@@ -224,7 +224,6 @@
           }
         },
         "imagePullSecrets": {},
-        "nameOverride": {},
         "nginx": {
           "type": [
             "object",

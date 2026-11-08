@@ -87,9 +87,10 @@ the same names.
 
 ## Component shapes
 
-`c8s.componentPods` renders the pod spec of every enabled component workload
-(operator, CDS, attestation-api, armtls-mesh, volumed and its teardown hook,
-router) through the same named templates the workloads use, and
+`c8s.componentPods` renders the pod spec of every component workload its
+`templates` field names (the cloud chart: operator, attestation-api,
+armtls-mesh, volumed and its teardown hook, router; the worker chart: router)
+through the same named templates the workloads use, and
 `c8s.podShapes` turns each container whose image is a component digest into an
 allowlist container:
 
@@ -167,7 +168,11 @@ per combination of the optional probe variable.
 
 `c8s.componentShapes` collects them per digest, tagging each shape the node
 grants a platform role with `role` (`c8s.platformRole`). Every component
-digest must have a rendered container, or the render fails.
+digest must have a rendered container, or the render fails. It takes the same
+`root` and `templates` pair as `c8s.componentPods`, as do
+`c8s.generatedShapes`, `c8s.baseWorkloads`, `c8s.roleFloorWorkloads` and
+`c8s.allowlistSeedJSON`: the chart that renders the component workloads is the
+one that names them.
 [component_mounts_test.go](../../../component_mounts_test.go) checks that the
 seed and the base admit every rendered component container exactly as
 rendered, with the environment it launches with, and refuse it with one

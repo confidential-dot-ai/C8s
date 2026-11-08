@@ -14,4 +14,4 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
     app.kubernetes.io/component: cds
 data:
-  allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" . | trim | quote }}
+  allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" (dict "root" . "templates" (include "c8s.componentPodTemplates" .)) | trim | quote }}

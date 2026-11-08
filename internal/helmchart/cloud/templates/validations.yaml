@@ -71,7 +71,7 @@
   URL to the sidecars it injects, whose args are the pod's anyway.
 */ -}}
 {{- if include "c8s.imagePolicyFailClosed" . -}}
-{{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
+{{- range $pod := (include "c8s.componentPods" (dict "root" . "templates" (include "c8s.componentPodTemplates" .)) | fromJsonArray) -}}
 {{- if ne (get $pod "name") "operator" -}}
 {{- range $c := concat (default list $pod.spec.initContainers) (default list $pod.spec.containers) -}}
 {{- range $token := concat (default list $c.command) (default list $c.args) -}}

@@ -1,0 +1,18 @@
+{{- /* Holds the operator's leader lease. */ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+---
+{{- /* The namespace the mesh policy names for the router role. Privileged:
+       the router pod mounts the node's inventory and attestation-api
+       sockets. */}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged

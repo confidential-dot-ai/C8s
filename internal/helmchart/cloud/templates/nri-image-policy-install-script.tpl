@@ -265,7 +265,7 @@ allowlist:
     measure_policies: false
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
-    {{- $base := include "c8s.baseWorkloads" $root | fromJson -}}
+    {{- $base := include "c8s.baseWorkloads" (dict "root" $root "templates" (include "c8s.componentPodTemplates" $root)) | fromJson -}}
     {{- dict "schema" "c8s.allowlist/v1" "workloads" $base | toJson | nindent 4 }}
 containerd:
   socket: {{ include "nri-image-policy.containerdSocket" $root | quote }}

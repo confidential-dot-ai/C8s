@@ -27,9 +27,13 @@ annotations:
 {{/* Takes root and path. */}}
 {{- define "c8s.webhookClientConfig" -}}
 clientConfig:
+{{- if .root.Values.webhook.url }}
+  url: {{ printf "%s%s" .root.Values.webhook.url .path | quote }}
+{{- else }}
   service:
     namespace: {{ .root.Release.Namespace }}
     name: {{ include "c8s.operatorName" .root }}
     path: {{ .path }}
     port: {{ include "c8s.webhookServicePort" . }}
+{{- end }}
 {{- end -}}

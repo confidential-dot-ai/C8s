@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "armtlsMesh",
+    "image",
+    "router"
+  ],
+  "properties": {
+    "armtlsMesh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "digest"
+          ],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            },
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "c8s-lib": {},
+    "certProvisioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initialRetryTimeout": {
+          "type": "string"
+        }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "c8s-lib": {},
+        "global": {},
+        "webhook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "extraExcluded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https://[^/]+$"
+            }
+          }
+        }
+      }
+    },
+    "global": {},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "router": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attest"
+      ],
+      "properties": {
+        "attest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation",
+            "platform"
+          ],
+          "properties": {
+            "generation": {
+              "type": "string"
+            },
+            "platform": {
+              "enum": [
+                "snp",
+                "tdx"
+              ]
+            }
+          }
+        },
+        "nginx": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "imagePullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
