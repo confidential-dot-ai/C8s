@@ -38,17 +38,16 @@
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
 {{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
 {{- end -}}
-{{- /*
-  Rate budget for the built-in /allowlist route: each per-client bound must
-  fit inside the nginx aggregate. router.allowlistLimits parses and bounds
-  each value, so this template and the zone rendering fail alike.
-*/ -}}
-{{- $allowlist := include "router.allowlistLimits" . | fromJson -}}
-{{- if gt $allowlist.writeRate $allowlist.writeTotalRate -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.requestsPerSecond must not exceed rateLimit.totalRequestsPerSecond (%d), got: %d" (int $allowlist.writeTotalRate) (int $allowlist.writeRate)) -}}
+{{- /* The forms cds-attest's routing flags take. */ -}}
+{{- $routing := .Values.router.routing -}}
+{{- $poll := toString $routing.pollInterval -}}
+{{- if or (not (regexMatch `^[0-9]+(ms|s|m|h)$` $poll)) (regexMatch `^0+(ms|s|m|h)$` $poll) -}}
+{{- fail (printf "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: %v" $routing.pollInterval) -}}
 {{- end -}}
-{{- if gt $allowlist.writeBurst $allowlist.writeTotalBurst -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (%d), got: %d" (int $allowlist.writeTotalBurst) (int $allowlist.writeBurst)) -}}
+{{- with $routing.tunnelBudget -}}
+{{- if not (regexMatch `^[1-9][0-9]*(Ki|Mi|Gi|Ti|k|M|G|T)?$` (toString .)) -}}
+{{- fail (printf "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: %v" .) -}}
+{{- end -}}
 {{- end -}}
 {{- /* A baked node takes both from its measured launch file, which the chart
        cannot see. */ -}}

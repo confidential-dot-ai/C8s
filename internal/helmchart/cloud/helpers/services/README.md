@@ -41,7 +41,7 @@ router, mesh and operator use the same Kubernetes templates as ordinary installs
 The router is a singleton workload. Every client reaches the CDS the node's
 worker document names.
 
-`c8s.nodeConfigVolume` and `c8s.nodeConfigMount` expose only the nonsecret verified
+The router's `node-config` volume (`router-worker.tpl`) exposes only the nonsecret verified
 launch files in `/run/c8s-node`, read-only. The mesh verifies peers with
 `peers.json`; every CDS client uses the `cds.json` policy the launch file
 carries. The router's cds-attest reads the operator public key to verify route

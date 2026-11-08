@@ -126,6 +126,12 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
+	chartDir, cleanup, err := resolveChartDir(cfg.chartDir)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	cfg.chartDir = chartDir
 	rendered, err := renderNodeImageChart(ctx, cfg, nil)
 	if err != nil {
 		return err
@@ -147,8 +153,24 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
 		{"router-image.txt", []byte(artifacts.routerImage + "\n")},
 	}
-	for _, name := range routerNginxFiles {
-		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
+	nginxDir := filepath.Join(cfg.chartDir, helmchart.RouterNginxDir)
+	nginxFiles, err := os.ReadDir(nginxDir)
+	if err != nil {
+		return fmt.Errorf("read the router's nginx files in %s: %w", nginxDir, err)
+	}
+	if len(nginxFiles) == 0 {
+		return fmt.Errorf("the router's nginx files are missing from %s", nginxDir)
+	}
+	for _, file := range nginxFiles {
+		if !file.Type().IsRegular() {
+			continue
+		}
+		path := filepath.Join(nginxDir, file.Name())
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read the router's nginx file %s: %w", path, err)
+		}
+		files = append(files, artifact{filepath.Join("router-nginx", file.Name()), body})
 	}
 	for _, artifact := range files {
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
@@ -158,19 +180,28 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	return nil
 }
 
+// resolveChartDir is dir, or the bundled chart extracted to a temporary
+// directory, with the cleanup that removes it.
+func resolveChartDir(dir string) (string, func(), error) {
+	if dir != "" {
+		return dir, func() {}, nil
+	}
+	tmp, err := helmchart.ExtractTemp()
+	if err != nil {
+		return "", func() {}, fmt.Errorf("extract node integration chart: %w", err)
+	}
+	return filepath.Join(tmp, helmchart.ChartRoot), func() { os.RemoveAll(tmp) }, nil
+}
+
 // renderNodeImageChart renders the bundled chart, or cfg.chartDir, in the
 // measured node image's shape, with extra Helm arguments after its own so they
 // win.
 func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra []string) ([]byte, error) {
-	chartDir := cfg.chartDir
-	if chartDir == "" {
-		tmp, err := helmchart.ExtractTemp()
-		if err != nil {
-			return nil, fmt.Errorf("extract node integration chart: %w", err)
-		}
-		defer os.RemoveAll(tmp)
-		chartDir = filepath.Join(tmp, helmchart.ChartRoot)
+	chartDir, cleanup, err := resolveChartDir(cfg.chartDir)
+	if err != nil {
+		return nil, err
 	}
+	defer cleanup()
 	args, err := appendCvmModeInstallArgs(nil, "bare-metal", cfg.platform)
 	if err != nil {
 		return nil, err
@@ -212,17 +243,11 @@ type nodeImageArtifacts struct {
 	integration []byte
 	seed        []byte
 	images      []string
-	routerNginx map[string]string
 
 	// routerImage is the front door's own image, which the measured base
 	// pins for the router role. Only the chart carries that digest.
 	routerImage string
 }
-
-// routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
-// in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
-// baked router mounts them instead of the ConfigMap.
-var routerNginxFiles = []string{"nginx.conf", "serve.sh", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
@@ -253,8 +278,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		// The namespace the measured mesh policy names for the router role.
 		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
-		"ConfigMap/c8s-router-nginx":                                     false,
-		"ConfigMap/c8s-allowlist-seed":                                   false,
+		seedConfigMapKey: false,
 	}
 	seen := make(map[string]bool)
 	images := make(map[string]*bakedImage)
@@ -284,6 +308,11 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			return nil, fmt.Errorf("duplicate node-image resource %s", key)
 		}
 		seen[key] = true
+		// The image ships c8s-lib's nginx files, so the integration
+		// manifests carry no editable copy of them.
+		if key == routerNginxConfigMapKey {
+			continue
+		}
 		switch kind {
 		case "Deployment", "DaemonSet":
 			if _, expected := required[key]; !expected {
@@ -300,14 +329,10 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 				artifacts.routerImage = image
 			}
 		case "ConfigMap":
-			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
-				return nil, err
-			}
-			if key == "ConfigMap/c8s-router-nginx" {
-				// Shipped as image files; a ConfigMap would only be an
-				// editable copy nothing mounts.
-				required[key] = true
-				continue
+			if key == seedConfigMapKey {
+				if err := collectSeedArtifact(object, &artifacts); err != nil {
+					return nil, err
+				}
 			}
 		case "Namespace", "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 		default:
@@ -675,7 +700,11 @@ func namespacedNodeImageKind(kind string) bool {
 
 // routerWorkloadKey is the workload whose front-door container the measured
 // base pins (images/node-guest/worker/image-policy.yaml.in).
-const routerWorkloadKey = "Deployment/c8s-router"
+const (
+	routerWorkloadKey       = "Deployment/c8s-router"
+	routerNginxConfigMapKey = "ConfigMap/c8s-router-nginx"
+	seedConfigMapKey        = "ConfigMap/c8s-allowlist-seed"
+)
 
 // frontDoorImage is the image the router's nginx container runs. The node
 // image measures that digest for the router role, and the chart is the only
@@ -844,37 +873,21 @@ func recordPinnedImage(image, key, name string, images map[string]*bakedImage) (
 	return baked, nil
 }
 
-// collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
-// files: the CDS bootstrap seed, which is written beside the manifests, and
-// the router's nginx configuration (routerNginxFiles).
-func collectConfigMapArtifact(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
-	if key != "ConfigMap/c8s-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
-		return nil
-	}
+// collectSeedArtifact lifts the CDS bootstrap seed, the one ConfigMap the
+// build consumes as a file, which is written beside the manifests.
+func collectSeedArtifact(object unstructured.Unstructured, artifacts *nodeImageArtifacts) error {
 	var cm corev1.ConfigMap
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &cm); err != nil {
-		return fmt.Errorf("decode chart ConfigMap %q: %w", name, err)
+		return fmt.Errorf("decode chart ConfigMap %q: %w", seedConfigMapKey, err)
 	}
-	if name == "c8s-allowlist-seed" {
-		// Baked and published in canonical bytes, so the release asset of
-		// each variant (docs/releases.md) is byte for byte the measured file.
-		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-		if err != nil {
-			return fmt.Errorf("decode node-image bootstrap seed: %w", err)
-		}
-		if artifacts.seed, err = seed.Canonical(); err != nil {
-			return fmt.Errorf("encode node-image bootstrap seed: %w", err)
-		}
-		return unstructured.SetNestedField(object.Object, string(artifacts.seed), "data", "allowlist-seed.json")
+	// Baked and published in canonical bytes, so the release asset of each
+	// variant (docs/releases.md) is byte for byte the measured file.
+	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
+	if err != nil {
+		return fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
-	if len(cm.Data) != len(routerNginxFiles) {
-		return fmt.Errorf("rendered nginx ConfigMap has keys %v, want %v", slices.Sorted(maps.Keys(cm.Data)), routerNginxFiles)
+	if artifacts.seed, err = seed.Canonical(); err != nil {
+		return fmt.Errorf("encode node-image bootstrap seed: %w", err)
 	}
-	for _, file := range routerNginxFiles {
-		if cm.Data[file] == "" {
-			return fmt.Errorf("rendered nginx ConfigMap has no %s", file)
-		}
-	}
-	artifacts.routerNginx = cm.Data
-	return nil
+	return unstructured.SetNestedField(object.Object, string(artifacts.seed), "data", "allowlist-seed.json")
 }

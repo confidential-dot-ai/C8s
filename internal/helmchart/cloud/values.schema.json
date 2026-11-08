@@ -195,30 +195,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "rateLimit": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "burst": {},
-                "requestsPerSecond": {},
-                "totalBurst": {},
-                "totalRequestsPerSecond": {}
-              }
-            },
-            "readRateLimit": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "burst": {},
-                "requestsPerSecond": {}
-              }
-            },
             "resources": {}
           }
         },
@@ -232,7 +208,6 @@
             "attestationApiURL": {},
             "generation": {},
             "platform": {},
-            "port": {},
             "resources": {}
           }
         },
@@ -260,8 +235,7 @@
             "imagePullPolicy": {},
             "replicas": {},
             "resources": {},
-            "tunnelBodySpace": {},
-            "tunnelConnectionsPerClient": {}
+            "tunnelBodySpace": {}
           }
         },
         "routePublication": {
@@ -281,11 +255,8 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "backendTimeout": {},
             "maxRequestBodyBytes": {},
             "pollInterval": {},
-            "port": {},
-            "readTimeout": {},
             "tunnelBudget": {}
           }
         },

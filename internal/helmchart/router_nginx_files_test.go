@@ -2,40 +2,35 @@ package helmchart
 
 import (
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
-const routerNginxConfigMap = "c8s-router-nginx"
+const (
+	routerNginxConfigMap = "c8s-router-nginx"
+	// The directories c8s-lib's files name (c8s.routerWorkerConfigDir and
+	// c8s.routerWorkerSettingsDir), which the cloud's one mount replaces.
+	workerRouterConfigDir   = "/usr/lib/c8s/router-nginx"
+	workerRouterSettingsDir = "/run/c8s-node/router"
+)
 
-// c8s-lib's nginx files are byte for byte the ones the worker image installs:
-// the baked render's nginx ConfigMap.
-func TestLibRouterNginxFilesAreTheWorkerImages(t *testing.T) {
+// The cloud serves c8s-lib's nginx files, the worker image's, with its own
+// mount in place of the worker's directories, and stages its own settings
+// beside them.
+func TestCloudRouterNginxFilesAreTheWorkerImages(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	rendered := renderedConfigMap(t, out, routerNginxConfigMap).Data
-	dir := filepath.Join("lib", "files", "router-nginx")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(body) != rendered[e.Name()] {
-			t.Errorf("%s differs from the baked render's", e.Name())
+	cloud := cloudRouterNginxFiles(t)
+	lib := libRouterNginxFiles(t)
+	moved := strings.NewReplacer(workerRouterConfigDir, routerConfigDir, workerRouterSettingsDir, routerConfigDir)
+	for _, name := range slices.Sorted(maps.Keys(lib)) {
+		if cloud[name] != moved.Replace(lib[name]) {
+			t.Errorf("the cloud's %s is not c8s-lib's with %s in place of the worker's directories", name, routerConfigDir)
 		}
 	}
-	if want := slices.Sorted(maps.Keys(rendered)); !slices.Equal(names, want) {
-		t.Errorf("c8s-lib holds %v, the baked render %v", names, want)
+	want := append(slices.Collect(maps.Keys(lib)), "request-body.conf", "tls.conf")
+	slices.Sort(want)
+	if got := slices.Sorted(maps.Keys(cloud)); !slices.Equal(got, want) {
+		t.Errorf("the cloud ConfigMap holds %v, want c8s-lib's files and its settings %v", got, want)
 	}
 }

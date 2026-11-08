@@ -88,7 +88,7 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 			t.Fatalf("default chart missing a manifest labelled %s: %s", label[0], label[1])
 		}
 	}
-	renderedRouterNginxConfig(t, out).server(t).assertDirective(t, "server_name", "c8s-router.c8s-router.svc")
+	renderedRouterNginxConfig(t, out).server(t).assertDirective(t, "server_name", "_")
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
 		"get-cert",
@@ -1006,7 +1006,9 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template -f: %v\n%s", err, out)
 	}
-	renderedRouterNginxConfig(t, out).location(t, "prefix", "/").assertDirective(t, "client_max_body_size", "67108864")
+	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 67108864;\n" {
+		t.Errorf("request-body.conf = %q, want the plain integer", got)
+	}
 }
 
 // c8s.int must fail the render on a non-integer rather than silently coercing to
@@ -1016,12 +1018,12 @@ func TestChartIntValueRejectsNonInteger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte("router:\n  routing:\n    port: notanumber\n"), 0o600); err != nil {
+	if err := os.WriteFile(vals, []byte("router:\n  routing:\n    maxRequestBodyBytes: notanumber\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err := helmTemplate(t, "-f", vals)
 	if err == nil {
-		t.Fatalf("expected render to fail on a non-integer port, got success:\n%s", out)
+		t.Fatalf("expected render to fail on a non-integer body size, got success:\n%s", out)
 	}
 	if !strings.Contains(out, "expected an integer") {
 		t.Errorf("want 'expected an integer' error, got: %s", out)
@@ -1349,8 +1351,19 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
-	server.assertDirective(t, "ssl_certificate", "/etc/c8s/certs/tls.crt$per_handshake")
-	server.assertDirective(t, "ssl_certificate_key", "/etc/c8s/certs/tls.key$per_handshake")
+	// The cloud's tls.conf names the mesh leaf, which cds-attest's pinned
+	// --front-door-mode=cds attests.
+	server.assertDirective(t, "include", "/mnt/c8s-data/nginx/tls.conf")
+	files := renderedConfigMap(t, out, "c8s-router-nginx").Data
+	if got := files["tls.conf"]; got != "include /mnt/c8s-data/nginx/tls-cds.conf;\n" {
+		t.Errorf("tls.conf = %q, want the mesh leaf's snippet", got)
+	}
+	tls := parseNginxConfig(t, "server {\n"+files["tls-cds.conf"]+"\n}").servers[0]
+	tls.assertDirective(t, "ssl_certificate", "/etc/c8s/certs/tls.crt$per_handshake")
+	tls.assertDirective(t, "ssl_certificate_key", "/etc/c8s/certs/tls.key$per_handshake")
+	if _, ok := files["front-door-mode"]; ok {
+		t.Error("the cloud ConfigMap carries front-door-mode, which cds-attest takes as pinned argv")
+	}
 	ciphers := server.directives["ssl_ciphers"]
 	if len(ciphers) != 1 || len(ciphers[0]) != 1 ||
 		!slices.Contains(strings.Split(ciphers[0][0], ":"), "ECDHE-RSA-AES128-GCM-SHA256") {
@@ -1580,16 +1593,16 @@ func TestChartBakedRouterACMESidecar(t *testing.T) {
 		t.Fatalf("cds-attest mounts the front door's serving key at %s", m.MountPath)
 	}
 
-	cfg := renderedRouterNginxConfig(t, out)
+	cfg := parseNginxConfig(t, libRouterNginxFiles(t)["nginx.conf"])
 	if len(cfg.servers) != 2 {
 		t.Fatalf("nginx config has %d server blocks, want the :443 and :80 pair", len(cfg.servers))
 	}
-	cfg.servers[1].assertDirective(t, "listen", "8080")
-	cfg.location(t, "prefix", "/.well-known/acme-challenge/").
+	http := cfg.httpServer(t)
+	http.assertDirective(t, "listen", "8080")
+	http.location(t, "prefix", "/.well-known/acme-challenge/").
 		assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
-	// The :80 server renders last, so its catch-all is the "/" the parser
-	// keeps: everything but the challenge upgrades.
-	cfg.location(t, "prefix", "/").assertDirective(t, "return", "301", "https://$host$request_uri")
+	// Everything but the challenge upgrades.
+	http.location(t, "prefix", "/").assertDirective(t, "return", "301", "https://$host$request_uri")
 
 	// The Service and the ingress policy must open the :80 path the
 	// validators arrive on.
@@ -1743,10 +1756,7 @@ var routerRoutingArgs = []string{
 
 func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "router.attest.port=8800",
-		"--set-string", "router.attest.generation=milan",
-	)
+	out, err := helmTemplate(t, "--set-string", "router.attest.generation=milan")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -1818,11 +1828,6 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
 		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
 	}
-	capOut, err := helmTemplate(t, "--set", "router.nginx.tunnelConnectionsPerClient=512")
-	if err != nil {
-		t.Fatalf("helm template (tunnelConnectionsPerClient=512): %v\n%s", err, capOut)
-	}
-	renderedRouterNginxConfig(t, capOut).location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "512")
 	if out, err := helmTemplate(t, "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
 		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
 	}
@@ -2104,34 +2109,30 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 	}
 }
 
-func TestRouterAllowlistRateLimitsAreConfigurable(t *testing.T) {
+// Both lanes rate-limit /allowlist per client and in aggregate below CDS's
+// own per-source bucket, which the whole front door shares.
+func TestRouterAllowlistRateLimits(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "allowlist.rateLimit.requestsPerSecond=2",
-		"--set", "allowlist.rateLimit.burst=7",
-		"--set", "allowlist.rateLimit.totalRequestsPerSecond=9",
-		"--set", "allowlist.rateLimit.totalBurst=19",
-		"--set", "allowlist.readRateLimit.requestsPerSecond=50",
-		"--set", "allowlist.readRateLimit.burst=100",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	if cfg.http == nil {
-		t.Fatal("nginx config missing http block")
-	}
-	cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_write_rate_key", "zone=allowlist_write_per_client:10m", "rate=2r/s")
-	cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_write_total_key", "zone=allowlist_write_total:1m", "rate=9r/s")
-	cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_read_rate_key", "zone=allowlist_read_per_client:10m", "rate=50r/s")
-	for _, key := range []nginxLocationKey{
-		{match: "exact", path: "/allowlist"},
-		{match: "prefix", path: "/allowlist/"},
+	for name, files := range map[string]func(*testing.T) map[string]string{
+		"cloud":  cloudRouterNginxFiles,
+		"worker": libRouterNginxFiles,
 	} {
-		location := cfg.location(t, key.match, key.path)
-		location.assertDirective(t, "limit_req", "zone=allowlist_write_per_client", "burst=7", "nodelay")
-		location.assertDirective(t, "limit_req", "zone=allowlist_write_total", "burst=19", "nodelay")
-		location.assertDirective(t, "limit_req", "zone=allowlist_read_per_client", "burst=100", "nodelay")
+		t.Run(name, func(t *testing.T) {
+			cfg := parseNginxConfig(t, files(t)["nginx.conf"])
+			cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_write_rate_key", "zone=allowlist_write_per_client:10m", "rate=1r/s")
+			cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_write_total_key", "zone=allowlist_write_total:1m", "rate=8r/s")
+			cfg.http.assertDirective(t, "limit_req_zone", "$allowlist_read_rate_key", "zone=allowlist_read_per_client:10m", "rate=20r/s")
+			for _, key := range []nginxLocationKey{
+				{match: "exact", path: "/allowlist"},
+				{match: "prefix", path: "/allowlist/"},
+			} {
+				location := cfg.location(t, key.match, key.path)
+				location.assertDirective(t, "limit_req", "zone=allowlist_write_per_client", "burst=15", "nodelay")
+				location.assertDirective(t, "limit_req", "zone=allowlist_write_total", "burst=15", "nodelay")
+				location.assertDirective(t, "limit_req", "zone=allowlist_read_per_client", "burst=40", "nodelay")
+				location.assertDirective(t, "limit_req_status", "429")
+			}
+		})
 	}
 }
 
@@ -2161,6 +2162,8 @@ func renderedRouterNginxConf(t *testing.T, manifest string) string {
 type nginxConfig struct {
 	upstreams map[string]*nginxBlock
 	maps      map[nginxMapKey]*nginxBlock
+	// locations holds each location of the first server declaring it, the
+	// HTTPS server.
 	locations map[nginxLocationKey]*nginxBlock
 	http      *nginxBlock
 	servers   []*nginxBlock
@@ -2179,6 +2182,7 @@ type nginxLocationKey struct {
 
 type nginxBlock struct {
 	directives map[string][][]string
+	locations  map[nginxLocationKey]*nginxBlock
 }
 
 func renderedRouterNginxConfig(t *testing.T, manifest string) nginxConfig {
@@ -2195,6 +2199,7 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 	}
 
 	var stack []*nginxBlock
+	var server *nginxBlock
 	for line := range strings.SplitSeq(conf, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -2202,13 +2207,14 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 		}
 		if before, ok := strings.CutSuffix(trimmed, "{"); ok {
 			fields := strings.Fields(strings.TrimSpace(before))
-			block := &nginxBlock{directives: make(map[string][][]string)}
+			block := &nginxBlock{directives: make(map[string][][]string), locations: make(map[nginxLocationKey]*nginxBlock)}
 			cfg.all = append(cfg.all, block)
 			if len(fields) == 1 && fields[0] == "http" {
 				cfg.http = block
 			}
 			if len(fields) == 1 && fields[0] == "server" {
 				cfg.servers = append(cfg.servers, block)
+				server = block
 			}
 			if len(fields) == 2 && fields[0] == "upstream" {
 				cfg.upstreams[fields[1]] = block
@@ -2224,7 +2230,12 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 				if strings.HasPrefix(fields[1], "@") {
 					key = nginxLocationKey{match: "named", path: fields[1]}
 				}
-				cfg.locations[key] = block
+				if _, seen := cfg.locations[key]; !seen {
+					cfg.locations[key] = block
+				}
+				if server != nil {
+					server.locations[key] = block
+				}
 			}
 			stack = append(stack, block)
 			continue
@@ -2232,6 +2243,9 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 		if trimmed == "}" {
 			if len(stack) == 0 {
 				t.Fatalf("nginx config has unmatched closing brace")
+			}
+			if stack[len(stack)-1] == server {
+				server = nil
 			}
 			stack = stack[:len(stack)-1]
 			continue
@@ -2262,12 +2276,44 @@ func (cfg nginxConfig) location(t *testing.T, match, path string) *nginxBlock {
 	return location
 }
 
+func (b *nginxBlock) location(t *testing.T, match, path string) *nginxBlock {
+	t.Helper()
+	key := nginxLocationKey{match: match, path: path}
+	location, ok := b.locations[key]
+	if !ok {
+		t.Fatalf("nginx server missing location %#v; got %v", key, b.locations)
+	}
+	return location
+}
+
+// server is the HTTPS server, the one listening with ssl.
 func (cfg nginxConfig) server(t *testing.T) *nginxBlock {
 	t.Helper()
-	if len(cfg.servers) != 1 {
-		t.Fatalf("nginx config has %d server blocks, want 1", len(cfg.servers))
+	var https []*nginxBlock
+	for _, s := range cfg.servers {
+		if slices.ContainsFunc(s.directives["listen"], func(args []string) bool { return slices.Contains(args, "ssl") }) {
+			https = append(https, s)
+		}
 	}
-	return cfg.servers[0]
+	if len(https) != 1 {
+		t.Fatalf("nginx config has %d HTTPS server blocks, want 1", len(https))
+	}
+	return https[0]
+}
+
+// httpServer is the plain-HTTP server, the one listening without ssl.
+func (cfg nginxConfig) httpServer(t *testing.T) *nginxBlock {
+	t.Helper()
+	var plain []*nginxBlock
+	for _, s := range cfg.servers {
+		if !slices.ContainsFunc(s.directives["listen"], func(args []string) bool { return slices.Contains(args, "ssl") }) {
+			plain = append(plain, s)
+		}
+	}
+	if len(plain) != 1 {
+		t.Fatalf("nginx config has %d plain-HTTP server blocks, want 1", len(plain))
+	}
+	return plain[0]
 }
 
 // assertNoDirectivePrefix fails if any block in the config carries a directive
@@ -2310,12 +2356,13 @@ func (block *nginxBlock) assertNoDirective(t *testing.T, name string) {
 	}
 }
 
-// assertRouterFrontDoorPorts pins the four sites that must name the same public
-// port set: nginx's listen directives, the nginx containerPorts, the Service's
-// targets, and the ingress policy. A port wired in one and missing from another
-// is unreachable in exactly one direction, and hostPort must bind all of them
-// or none — a partial bind publishes a port the pod does not answer.
-func assertRouterFrontDoorPorts(t *testing.T, manifest string) {
+// assertRouterFrontDoorPorts pins the sites that must name the same public
+// port set: the nginx containerPorts, the Service's targets and the ingress
+// policy, each a port nginx listens on. A port wired in one and missing from
+// another is unreachable in exactly one direction, and hostPort must bind all
+// of them or none — a partial bind publishes a port the pod does not answer.
+// It returns the published ports.
+func assertRouterFrontDoorPorts(t *testing.T, manifest string) []int32 {
 	t.Helper()
 	var listens []int32
 	for _, server := range renderedRouterNginxConfig(t, manifest).servers {
@@ -2337,8 +2384,10 @@ func assertRouterFrontDoorPorts(t *testing.T, manifest string) {
 		if p.HostPort != 0 {
 			hostBound = append(hostBound, p.ContainerPort)
 		}
+		if !slices.Contains(listens, p.ContainerPort) {
+			t.Errorf("nginx declares port %d, but listens on %v", p.ContainerPort, listens)
+		}
 	}
-	assertSamePorts(t, "nginx containerPorts", declared, listens)
 
 	var targeted []int32
 	for _, p := range renderedService(t, manifest, "c8s-router").Spec.Ports {
@@ -2348,7 +2397,7 @@ func assertRouterFrontDoorPorts(t *testing.T, manifest string) {
 		}
 		targeted = append(targeted, port)
 	}
-	assertSamePorts(t, "Service targets", targeted, listens)
+	assertSamePorts(t, "Service targets", targeted, declared)
 
 	var np networkingv1.NetworkPolicy
 	if !findDoc(t, manifest, "NetworkPolicy", "c8s-router-ingress", &np) {
@@ -2363,20 +2412,21 @@ func assertRouterFrontDoorPorts(t *testing.T, manifest string) {
 			admitted = append(admitted, int32(p.Port.IntValue()))
 		}
 	}
-	assertSamePorts(t, "ingress policy", admitted, listens)
+	assertSamePorts(t, "ingress policy", admitted, declared)
 
 	if len(hostBound) != 0 && len(hostBound) != len(declared) {
 		t.Errorf("hostPort binds %v of the front-door ports %v", hostBound, declared)
 	}
+	return declared
 }
 
-func assertSamePorts(t *testing.T, site string, got, listens []int32) {
+func assertSamePorts(t *testing.T, site string, got, declared []int32) {
 	t.Helper()
 	slices.Sort(got)
-	want := slices.Clone(listens)
+	want := slices.Clone(declared)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
-		t.Errorf("%s = %v, but nginx listens on %v", site, got, want)
+		t.Errorf("%s = %v, but nginx declares %v", site, got, want)
 	}
 }
 
@@ -2390,68 +2440,6 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 		want string
 	}{
 		{
-			name: "allowlist-write-rate-not-positive",
-			args: []string{
-				"--set", "allowlist.rateLimit.requestsPerSecond=0",
-			},
-			want: "router.allowlist.rateLimit.requestsPerSecond must be a positive integer, got: 0",
-		},
-		{
-			name: "allowlist-write-rate-exceeds-total",
-			args: []string{
-				"--set", "allowlist.rateLimit.requestsPerSecond=9",
-			},
-			want: "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.requestsPerSecond must not exceed rateLimit.totalRequestsPerSecond (8), got: 9",
-		},
-		{
-			name: "allowlist-write-burst-not-positive",
-			args: []string{
-				"--set", "allowlist.rateLimit.burst=0",
-			},
-			want: "router.allowlist.rateLimit.burst must be a positive integer, got: 0",
-		},
-		{
-			name: "allowlist-write-burst-exceeds-total",
-			args: []string{
-				"--set", "allowlist.rateLimit.burst=16",
-			},
-			want: "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (15), got: 16",
-		},
-		{
-			name: "allowlist-read-rate-not-positive",
-			args: []string{
-				"--set", "allowlist.readRateLimit.requestsPerSecond=0",
-			},
-			want: "router.allowlist.readRateLimit.requestsPerSecond must be a positive integer, got: 0",
-		},
-		{
-			name: "allowlist-read-burst-not-positive",
-			args: []string{
-				"--set", "allowlist.readRateLimit.burst=0",
-			},
-			want: "router.allowlist.readRateLimit.burst must be a positive integer, got: 0",
-		},
-		{
-			name: "routing-port-out-of-range",
-			args: []string{"--set", "routing.port=70000"},
-			want: "router.routing.port must be between 1 and 65535, got: 70000",
-		},
-		{
-			name: "routing-port-collides-with-attestation",
-			args: []string{"--set", "routing.port=8800"},
-			want: "router.routing.port must differ from router.attest.port, got: 8800",
-		},
-		{
-			name: "routing-port-collides-with-allowlist-proxy",
-			args: []string{"--set", "routing.port=8801"},
-			want: "router.routing.port must differ from the allowlist proxy port, got: 8801",
-		},
-		{
-			name: "routing-port-collides-with-nginx",
-			args: []string{"--set", "routing.port=8443"},
-			want: "router.routing.port must differ from the nginx HTTPS port, got: 8443",
-		},
-		{
 			name: "routing-maxRequestBodyBytes-zero",
 			args: []string{"--set", "routing.maxRequestBodyBytes=0"},
 			want: "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: 0",
@@ -2462,16 +2450,6 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 			want: `expected an integer, got "1m; return 200"`,
 		},
 		{
-			name: "routing-readTimeout-injection",
-			args: []string{"--set-string", "routing.readTimeout=1h; return 200"},
-			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 1h; return 200",
-		},
-		{
-			name: "routing-readTimeout-zero",
-			args: []string{"--set-string", "routing.readTimeout=0s"},
-			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 0s",
-		},
-		{
 			name: "routing-pollInterval-not-a-duration",
 			args: []string{"--set-string", "routing.pollInterval=soon"},
 			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: soon",
@@ -2480,28 +2458,6 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 			name: "routing-pollInterval-zero",
 			args: []string{"--set-string", "routing.pollInterval=0s"},
 			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0s",
-		},
-		{
-			name: "routing-backendTimeout-sub-nanosecond",
-			args: []string{"--set-string", "routing.backendTimeout=0.1ns"},
-			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0.1ns",
-		},
-		{
-			name: "routing-backendTimeout-not-a-duration",
-			args: []string{"--set-string", "routing.backendTimeout=1d"},
-			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 1d",
-		},
-		{
-			// nginx reads it as the tunnel's proxy_read_timeout.
-			name: "routing-backendTimeout-microseconds",
-			args: []string{"--set-string", "routing.backendTimeout=500us"},
-			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 500us",
-		},
-		{
-			// nginx's proxy_read_timeout rejects a multi-unit value.
-			name: "routing-backendTimeout-multi-unit",
-			args: []string{"--set-string", "routing.backendTimeout=30m1h"},
-			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 30m1h",
 		},
 		{
 			name: "routing-tunnelBudget-not-a-quantity",
@@ -2568,14 +2524,14 @@ func TestRouterRollsOnNginxConfigChange(t *testing.T) {
 	}
 
 	changedOut, err := helmTemplateRouter(t,
-		"--set", "routing.port=8803",
+		"--set", "routing.maxRequestBodyBytes=2097152",
 	)
 	if err != nil {
 		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
 	}
 	changedChecksum := renderedDeployment(t, changedOut, "c8s-router").Spec.Template.Annotations["checksum/nginx-config"]
 	if changedChecksum == defaultChecksum {
-		t.Fatalf("checksum/nginx-config did not change after changing routing.port: %s", defaultChecksum)
+		t.Fatalf("checksum/nginx-config did not change after changing routing.maxRequestBodyBytes: %s", defaultChecksum)
 	}
 }
 
@@ -2995,29 +2951,137 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 	cfg := renderedRouterNginxConfig(t, out)
 	route := cfg.location(t, "prefix", "/")
 	assertRouterRoutingLocation(t, route, "8802", "3600s")
-	route.assertDirective(t, "client_max_body_size", "1048576")
+	route.assertDirective(t, "include", "/mnt/c8s-data/nginx/request-body.conf")
+	route.assertNoDirective(t, "client_max_body_size")
 	route.assertNoDirective(t, "add_header")
 	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 	cfg.http.assertNoDirective(t, "resolver")
 	if len(cfg.upstreams) != 0 {
 		t.Fatalf("nginx renders upstream blocks %v, want none: cds-attest dials every backend", cfg.upstreams)
 	}
+	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 1048576;\n" {
+		t.Errorf("request-body.conf = %q, want the default body limit", got)
+	}
 
 	out, err = helmTemplate(t,
-		"--set", "router.routing.port=9900",
-		"--set-string", "router.routing.readTimeout=900s",
 		"--set-string", "router.routing.pollInterval=5s",
-		"--set-string", "router.routing.backendTimeout=2h",
 		"--set", "router.routing.maxRequestBodyBytes=67108864",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	route = renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
-	assertRouterRoutingLocation(t, route, "9900", "900s")
-	route.assertDirective(t, "client_max_body_size", "67108864")
-	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
-		"--routing-port=9900", "--routes-poll-interval=5s", "--backend-timeout=2h")
+	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 67108864;\n" {
+		t.Errorf("request-body.conf = %q, want router.routing.maxRequestBodyBytes", got)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--routes-poll-interval=5s")
+}
+
+// Both lanes' nginx files name the ports and paths their containers' argv and
+// mounts name: the loopback listeners nginx proxies to, the files get-cert
+// publishes, and the directories nginx reads its files and settings from.
+func TestRouterNginxMatchesItsContainers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		lane     string
+		args     []string
+		files    func(*testing.T) map[string]string
+		settings string
+	}{
+		{lane: "cloud", files: cloudRouterNginxFiles, settings: "/mnt/c8s-data/nginx"},
+		{lane: "worker", args: bakedArgs, files: libRouterNginxFiles, settings: "/run/c8s-node/router"},
+	} {
+		t.Run(tc.lane, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			files := tc.files(t)
+			cfg := parseNginxConfig(t, files["nginx.conf"])
+			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+			nginx, _ := findContainer(pod.Containers, "nginx")
+			attest, _ := findContainer(pod.Containers, "cds-attest")
+			proxy, _ := findContainer(pod.Containers, "allowlist-proxy")
+			cert, _ := findContainer(pod.InitContainers, "c8s-cert")
+
+			https, ok := findContainerPort(nginx, "https")
+			if !ok {
+				t.Fatal("nginx declares no https port")
+			}
+			cfg.server(t).assertDirective(t, "listen", strconv.Itoa(int(https.ContainerPort)), "ssl")
+
+			attestPort := argValue(t, attest.Args, "--port=")
+			for _, key := range []nginxLocationKey{
+				{match: "prefix", path: "/.well-known/c8s/"},
+				{match: "exact", path: "/.well-known/c8s/tunnel"},
+				{match: "exact", path: "/readyz"},
+			} {
+				cfg.location(t, key.match, key.path).assertDirective(t, "proxy_pass", "http://127.0.0.1:"+attestPort)
+			}
+			assertContainerArgs(t, attest, "--routing-host=127.0.0.1")
+			cfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:"+argValue(t, attest.Args, "--routing-port="))
+			backend, err := time.ParseDuration(argValue(t, attest.Args, "--backend-timeout="))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// nginx outwaits cds-attest's own timeout reply by 30s.
+			cfg.location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "proxy_read_timeout", fmt.Sprintf("%ds", int((backend+30*time.Second).Seconds())))
+			for _, key := range []nginxLocationKey{
+				{match: "exact", path: "/allowlist"},
+				{match: "prefix", path: "/allowlist/"},
+			} {
+				cfg.location(t, key.match, key.path).assertDirective(t, "proxy_pass", "http://127.0.0.1:"+argValue(t, proxy.Args, "--port=")+"$request_uri")
+			}
+
+			cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", argValue(t, cert.Args, "--discovery-out="))
+			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-cds-cert-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--cert-path="))
+			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-mesh-ca-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--ca-path="))
+			spool, ok := containerVolumeMount(nginx, "nginx-tunnel-body")
+			if !ok {
+				t.Fatal("nginx mounts no tunnel body spool")
+			}
+			cfg.location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "client_body_temp_path", spool.MountPath)
+
+			config, ok := containerVolumeMount(nginx, "nginx-config")
+			if !ok || !config.ReadOnly {
+				t.Fatalf("nginx config mount = (%+v, %v), want read-only", config, ok)
+			}
+			if want := []string{"/bin/sh", config.MountPath + "/serve.sh"}; !slices.Equal(nginx.Command, want) {
+				t.Errorf("nginx command = %v, want %v", nginx.Command, want)
+			}
+			if want := "nginx -c " + config.MountPath + "/nginx.conf "; !strings.Contains(files["serve.sh"], want) {
+				t.Errorf("serve.sh does not start %q", want)
+			}
+			cfg.server(t).assertDirective(t, "include", tc.settings+"/tls.conf")
+			cfg.location(t, "prefix", "/").assertDirective(t, "include", tc.settings+"/request-body.conf")
+			if !slices.ContainsFunc(nginx.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.ReadOnly && strings.HasPrefix(tc.settings+"/", m.MountPath+"/")
+			}) {
+				t.Errorf("nginx mounts nothing read-only over its settings at %s: %+v", tc.settings, nginx.VolumeMounts)
+			}
+
+			acmeHTTP := cfg.httpServer(t)
+			acmeHTTP.location(t, "prefix", "/.well-known/acme-challenge/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
+			acmeHTTP.assertDirective(t, "listen", "8080")
+			if acme, ok := findContainer(pod.InitContainers, "acme"); ok {
+				assertContainerArgs(t, acme, "--challenge-port=8402", "--http-port=8080")
+			}
+		})
+	}
+}
+
+// argValue is the value of the one argument with prefix.
+func argValue(t *testing.T, args []string, prefix string) string {
+	t.Helper()
+	var values []string
+	for _, arg := range args {
+		if v, ok := strings.CutPrefix(arg, prefix); ok {
+			values = append(values, v)
+		}
+	}
+	if len(values) != 1 {
+		t.Fatalf("args %v carry %d %s arguments, want 1", args, len(values), prefix)
+	}
+	return values[0]
 }
 
 // TestChartRouterTunnelBusyCORS checks that nginx's tunnel_busy answer carries
@@ -3088,7 +3152,8 @@ func splitManifestDocs(manifest string) []string {
 		if strings.TrimSpace(doc) == "" {
 			continue
 		}
-		out = append(out, doc)
+		// The separator's newline ends the doc's last line.
+		out = append(out, doc+"\n")
 	}
 	return out
 }
@@ -3462,406 +3527,6 @@ func prefixRouterSetArgs(args []string) []string {
 		i++
 	}
 	return out
-}
-
-// Example_routerConfig renders the router ConfigMap — the built-in /allowlist
-// route, discovery, the attestation endpoints, /readyz, application routing on
-// location / and /healthz — and prints the generated nginx.conf. It doubles as
-// a golden test of templates/router-configmap.yaml: a template edit that
-// changes the rendered config must be reflected in the Output block, so the
-// full config diff surfaces in review. helm is required, as it is for every
-// test in this package; without it the render errors and the example fails.
-func Example_routerConfig() {
-	fmt.Print(renderExampleRouterNginxConf())
-	// Output:
-	// worker_processes auto;
-	// # Each connection may hold a client socket, an upstream socket and a
-	// # request body temp file.
-	// worker_rlimit_nofile 65536;
-	// error_log /var/log/nginx/error.log warn;
-	// pid /tmp/nginx.pid;
-	//
-	// events {
-	//     worker_connections 16384;
-	// }
-	//
-	// http {
-	//     include /etc/nginx/mime.types;
-	//     default_type application/octet-stream;
-	//
-	//     log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-	//                     '$status $body_bytes_sent "$http_referer" '
-	//                     '"$http_user_agent"';
-	//     access_log /var/log/nginx/access.log main;
-	//
-	//     sendfile on;
-	//     # cds-attest drops a lapsed attest-lb binding once these three timeouts
-	//     # must have closed its connection (lbBindingLife); change them together.
-	//     # Locations that hold no binding set keepalive_timeout 0, or, where a
-	//     # client reads on the connection it attested (discovery, /allowlist),
-	//     # keepalive_time 1m, so a binding cannot lapse under a connection they
-	//     # keep open.
-	//     keepalive_timeout 65;
-	//     client_header_timeout 60s;
-	//     send_timeout 60s;
-	//
-	//     # Always empty. A certificate path naming a variable is read on every
-	//     # TLS handshake, so a renewal reaches new connections without a reload.
-	//     map $ssl_server_name $per_handshake {
-	//         default "";
-	//     }
-	//     # $nginx_start, which serve.sh writes at each start.
-	//     include /tmp/nginx-start.conf;
-	//
-	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
-	//     # other requests keep Connection: close to the routing listener.
-	//     map $http_upgrade $connection_upgrade {
-	//         default upgrade;
-	//         "" close;
-	//     }
-	//
-	//     # Rate-limit /allowlist while nginx still has the public client IP;
-	//     # empty map keys are not accounted by limit_req. Mutations count per
-	//     # client and in aggregate (the constant-key zone guards the shared
-	//     # per-pod-IP CDS bucket; see docs/operator.md), reads per client;
-	//     # OPTIONS (CORS preflight) is exempt. The total key chains off the
-	//     # write key so the exempt-method list exists once.
-	//     map $request_method $allowlist_write_rate_key {
-	//         default $binary_remote_addr;
-	//         GET "";
-	//         HEAD "";
-	//         OPTIONS "";
-	//     }
-	//     map $allowlist_write_rate_key $allowlist_write_total_key {
-	//         "" "";
-	//         default "all";
-	//     }
-	//     map $request_method $allowlist_read_rate_key {
-	//         default "";
-	//         GET $binary_remote_addr;
-	//         HEAD $binary_remote_addr;
-	//     }
-	//     limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate=1r/s;
-	//     limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate=8r/s;
-	//     limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate=20r/s;
-	//
-	//     # Bounds what one client address holds of the tunnel body spool.
-	//     limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
-	//
-	//     server {
-	//         listen 8443 ssl;
-	//         server_name c8s-router.c8s-router.svc;
-	//
-	//         ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;
-	//         ssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;
-	//
-	//         ssl_protocols TLSv1.2 TLSv1.3;
-	//         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
-	//         ssl_prefer_server_ciphers on;
-	//         # A resumed session keeps the leaf it began with, which a renewal
-	//         # replaces on disk and attest-lb would attest.
-	//         ssl_session_cache off;
-	//         ssl_session_tickets off;
-	//
-	//         # Headroom for upstream responses with large headers.
-	//         proxy_buffer_size 16k;
-	//         proxy_buffers 4 16k;
-	//         # Built-in control-plane route. The exact + slash-prefix pair
-	//         # exposes only /allowlist and its API subtree, not lookalike paths.
-	//         location = /allowlist {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             # Holds no attest-lb binding: the connection stays open only while it is
-	//             # younger than keepalive_time (see the discovery location).
-	//             keepalive_time 1m;
-	//             # These run before nginx collapses callers onto the loopback proxy source.
-	//             # Each zone's map key is empty for the methods it does not cover, so
-	//             # mutations count per client and in aggregate, reads per client only.
-	//             limit_req zone=allowlist_write_per_client burst=15 nodelay;
-	//             limit_req zone=allowlist_write_total burst=15 nodelay;
-	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
-	//             limit_req_status 429;
-	//             proxy_pass http://127.0.0.1:8801$request_uri;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header Authorization $http_authorization;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//         }
-	//         location /allowlist/ {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             # Holds no attest-lb binding: the connection stays open only while it is
-	//             # younger than keepalive_time (see the discovery location).
-	//             keepalive_time 1m;
-	//             # These run before nginx collapses callers onto the loopback proxy source.
-	//             # Each zone's map key is empty for the methods it does not cover, so
-	//             # mutations count per client and in aggregate, reads per client only.
-	//             limit_req zone=allowlist_write_per_client burst=15 nodelay;
-	//             limit_req zone=allowlist_write_total burst=15 nodelay;
-	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
-	//             limit_req_status 429;
-	//             proxy_pass http://127.0.0.1:8801$request_uri;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header Authorization $http_authorization;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//         }
-	//         location = /v1/discovery {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             # Holds no attest-lb binding. A client reads the allowlist on the
-	//             # connection whose leaf it attested here, so the connection stays
-	//             # open, but only while it is younger than keepalive_time: a binding
-	//             # cannot outlive its connection this way.
-	//             keepalive_time 1m;
-	//             access_log off;
-	//             default_type application/json;
-	//             add_header Cache-Control "no-store" always;
-	//             alias /discovery/discovery.json;
-	//         }
-	//
-	//         location = /.well-known/cds-cert.pem {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             keepalive_timeout 0;
-	//             access_log off;
-	//             default_type application/x-pem-file;
-	//             add_header Cache-Control "no-store" always;
-	//             alias /etc/c8s/certs/tls.crt;
-	//         }
-	//         location = /.well-known/mesh-ca.pem {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             keepalive_timeout 0;
-	//             access_log off;
-	//             default_type application/x-pem-file;
-	//             add_header Cache-Control "no-store" always;
-	//             alias /etc/c8s/certs/ca.crt;
-	//         }
-	//         # The sidecar's readiness gate, proxied so kubelet can reach it.
-	//         # cds-attest listens on loopback (its one listener also carries the
-	//         # attestation and tunnel routes, which must not be
-	//         # published on the pod IP). So the probe rides the front door:
-	//         # exact-match, ahead of location /.
-	//         location = /readyz {
-	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
-	//             keepalive_timeout 0;
-	//             access_log off;
-	//             proxy_pass http://127.0.0.1:8800;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//         }
-	//
-	//         # c8s-verify attestation + over-encryption sidecar (loopback).
-	//         # nginx serves the static cert(s) via discovery above; the dynamic
-	//         # per-session endpoints — the attest-pq attestation + key exchange,
-	//         # the attest-lb challenge, and the over-encrypted tunnel — are
-	//         # proxied to the in-pod `cds-attest` sidecar.
-	//         # X-Real-IP is the address the sidecar meters each client by.
-	//         # nginx reads each request body whole before proxying it, so a slow
-	//         # upload holds no sidecar budget; replies past proxy_buffers stream
-	//         # instead of spilling.
-	//         location /.well-known/c8s/ {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             proxy_pass http://127.0.0.1:8800;
-	//             proxy_buffering on;
-	//             proxy_request_buffering on;
-	//             proxy_max_temp_file_size 0;
-	//             proxy_read_timeout 3630s;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
-	//             client_max_body_size 16k;
-	//             client_body_buffer_size 16k;
-	//         }
-	//
-	//         # Tunnel records go up to 8 MiB. Past 16k they spill to a sized
-	//         # tmpfs that holds only the bytes received, where an 8m buffer
-	//         # would be allocated whole once a client declared the size. A full
-	//         # volume fails the upload with 500. The per-address cap stops one
-	//         # client filling it before cds-attest sees a session.
-	//         location = /.well-known/c8s/tunnel {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//             proxy_pass http://127.0.0.1:8800;
-	//             proxy_buffering on;
-	//             proxy_request_buffering on;
-	//             proxy_max_temp_file_size 0;
-	//             proxy_read_timeout 3630s;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
-	//             client_max_body_size 8m;
-	//             client_body_buffer_size 16k;
-	//             client_body_temp_path /var/lib/c8s-tunnel-body;
-	//             client_body_timeout 10s;
-	//             limit_conn c8s_tunnel_per_client 64;
-	//             limit_conn_status 503;
-	//             # Only nginx's own 503 lands here: proxy_intercept_errors is
-	//             # off, so a 503 from cds-attest passes through as sent.
-	//             error_page 503 @tunnel_busy;
-	//         }
-	//
-	//         # The per-address cap answers like the cds-attest bounds (A7).
-	//         location @tunnel_busy {
-	//             proxy_hide_header Access-Control-Allow-Origin;
-	//             proxy_hide_header Access-Control-Allow-Methods;
-	//             proxy_hide_header Access-Control-Allow-Headers;
-	//             proxy_hide_header Access-Control-Allow-Credentials;
-	//             proxy_hide_header Access-Control-Expose-Headers;
-	//             if ($request_method = 'OPTIONS') {
-	//                 add_header Access-Control-Allow-Origin  "*" always;
-	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-	//                 add_header Access-Control-Max-Age       "600" always;
-	//                 add_header Content-Length 0;
-	//                 return 204;
-	//             }
-	//             add_header Access-Control-Allow-Origin "*" always;
-	//
-	//             keepalive_timeout 0;
-	//             default_type application/json;
-	//             return 503 '{"error":"tunnel_busy","message":"too many tunnelled requests from this client"}';
-	//         }
-	//
-	//         # Application routing (route policy A7): every request no location
-	//         # above claims goes to the cds-attest routing listener, which routes
-	//         # it by the applied route manifest and dials the backend itself. No
-	//         # URI on proxy_pass, so the listener sees the request target as the
-	//         # client sent it, which path matching needs (M4).
-	//         location / {
-	//             # $host would drop a trailing dot and fall back to
-	//             # server_name; the listener matches the client's Host (M1).
-	//             if ($http_host = "") {
-	//                 return 400;
-	//             }
-	//             proxy_pass http://127.0.0.1:8802;
-	//             proxy_set_header Host $http_host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//             # Replaces any client value.
-	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
-	//             proxy_set_header Upgrade $http_upgrade;
-	//             proxy_set_header Connection $connection_upgrade;
-	//             client_max_body_size 1048576;
-	//             # Stream request bodies to the routing listener: a body held
-	//             # whole would spool to the nginx-cache volume, which a few
-	//             # large uploads would fill. client_max_body_size still applies.
-	//             proxy_request_buffering off;
-	//             # A non-streaming completion sends nothing until it is done, so
-	//             # nginx's 60s default read timeout would 504 long generations.
-	//             # A dead routing listener must fail fast instead.
-	//             proxy_connect_timeout 5s;
-	//             proxy_read_timeout 3600s;
-	//             proxy_send_timeout 3600s;
-	//             proxy_buffering off;
-	//             proxy_http_version 1.1;
-	//         }
-	//
-	//         # Exact: a prefix match would also claim manifest paths such as
-	//         # /healthz-ui.
-	//         location = /healthz {
-	//             keepalive_timeout 0;
-	//             access_log off;
-	//             return 200 "ok\n";
-	//             add_header Content-Type text/plain;
-	//         }
-	//     }
-	// }
 }
 
 // containerVolumeMount returns the named volume mount from a container
@@ -4512,45 +4177,6 @@ func TestChartNriComponentCoveredByArgvPin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nri digest without a base entry must render (argv-pinned): %v\n%s", err, out)
 	}
-}
-
-// renderExampleRouterNginxConf renders the nginx.conf Example_routerConfig
-// prints, with trailing whitespace trimmed so the golden stays gofmt-clean.
-// Render errors are returned verbatim so the example fails loudly rather than
-// masking a broken template.
-func renderExampleRouterNginxConf() string {
-	cmd := exec.Command("helm",
-		"template", "c8s", repoChart,
-		"--kube-version", "1.30.0",
-		"--namespace", "c8s-system",
-		"--set", "image.tag=dev",
-		"--set", "attestationApi.image.tag=dev",
-		"--set-string", "cds.address="+baseCDSAddress,
-		"--set-file", "cds.measurementsConfig="+baseCDSPinPath,
-		"--set", "armtlsMesh.image.tag=dev",
-		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
-		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
-		// nri-image-policy is enabled in this render
-		// (require_host_image_policy); pin its digest (the seed admits it
-		// argv-pinned). The render is scoped to the router ConfigMap, so nri
-		// manifests do not appear.
-		"--set", "nriImagePolicy.image.tag=dev",
-		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
-		"--show-only", "templates/router-configmap.yaml",
-	)
-	out, err := helmOutput(cmd)
-	if err != nil {
-		return fmt.Sprintf("helm template failed: %v\n%s", err, out)
-	}
-	var cm corev1.ConfigMap
-	if err := sigsyaml.Unmarshal(out, &cm); err != nil {
-		return fmt.Sprintf("decode router ConfigMap: %v\n%s", err, out)
-	}
-	lines := strings.Split(cm.Data["nginx.conf"], "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
-	}
-	return strings.Join(lines, "\n")
 }
 
 // --- install-time image pull secret (imagePullSecret, a Secret name) ---
@@ -5509,7 +5135,10 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 		t.Fatalf("the front-door rule names sources (%v); external clients would be refused", np.Spec.Ingress[0].From)
 	}
 
-	assertRouterFrontDoorPorts(t, out)
+	// The cloud runs no acme sidecar, so nginx's :80 server stays unpublished.
+	if published := assertRouterFrontDoorPorts(t, out); !slices.Equal(published, []int32{8443}) {
+		t.Errorf("the cloud router publishes %v, want only the HTTPS port 8443", published)
+	}
 }
 
 func TestChartRejectsImagePolicyOffOnManagedNodes(t *testing.T) {

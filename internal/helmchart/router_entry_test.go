@@ -325,7 +325,7 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"--set", "image.digest=sha256:" + strings.Repeat("3", 64)},
-		{"--set", "router.attest.port=8900"},
+		{"--set-string", "router.routing.pollInterval=5s"},
 	} {
 		if got := name(args...); got == base {
 			t.Errorf("%v kept router entry name %q", args, got)

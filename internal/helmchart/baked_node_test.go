@@ -113,9 +113,8 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	if !ok || port.ContainerPort != 8443 || port.HostPort != 443 {
 		t.Error("router must expose host 443 through unprivileged container port 8443")
 	}
-	config := renderedConfigMap(t, out, "c8s-router-nginx")
-	if config.Namespace != workloadclaims.RouterNamespace || !strings.Contains(config.Data["nginx.conf"], "server_name _;") {
-		t.Error("baked router must retain its namespaced nginx config with a default virtual host")
+	if !strings.Contains(libRouterNginxFiles(t)["nginx.conf"], "server_name _;") {
+		t.Error("the worker's nginx config must answer as the default virtual host")
 	}
 }
 
@@ -125,7 +124,8 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	conf := renderedConfigMap(t, out, "c8s-router-nginx").Data["nginx.conf"]
+	snippets := libRouterNginxFiles(t)
+	conf := snippets["nginx.conf"]
 	for _, want := range []string{
 		"server_name _;",
 		"include /run/c8s-node/router/tls.conf;",
@@ -168,7 +168,6 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	route.assertDirective(t, "include", "/run/c8s-node/router/request-body.conf")
 	route.assertNoDirective(t, "client_max_body_size")
 
-	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
 		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;\nssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;",
 		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem$per_handshake;\nssl_certificate_key /etc/c8s-acme-key/key.pem$per_handshake;",
@@ -235,16 +234,6 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 
-// A baked router runs the ACME sidecar whatever router.publicTLS.mode says.
-func TestChartBakedRouterRoutingPortAvoidsACMEPorts(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set", "router.routing.port=8080")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want the ACME port collision refused\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routing.port must differ from the ACME HTTP port, got: 8080")
-}
-
 // A regular Helm install never reads launch files.
 func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 	t.Parallel()
@@ -252,7 +241,7 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file"} {
+	for _, unwanted := range []string{"/run/c8s-node", "/usr/lib/c8s", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unbaked render contains %q", unwanted)
 		}
