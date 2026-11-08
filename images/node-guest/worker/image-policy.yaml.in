@@ -447,9 +447,8 @@ allowlist:
     timeout: "30s"
     attestation_api_url: "http://127.0.0.1:8400"
     cds_measurements_config: "/run/c8s-node/cds.json"
-    # measure_policies (extend RTMR[3] with each pulled allowlist) is off
-    # here; the chart's policy-measurement installer patches it from
-    # nriImagePolicy.measurePolicies.
+    # measure_policies (extend RTMR[3] with each pulled allowlist) is set by
+    # `c8s worker floor`.
 
 # The measured mesh policy: what a member pod's packet ruleset is built from,
 # and the identity each platform role runs as. The enforcer requires it

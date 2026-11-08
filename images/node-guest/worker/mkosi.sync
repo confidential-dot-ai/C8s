@@ -7,9 +7,9 @@
 #   2. the multi-command c8s binary, also as the NRI plugin and c8s-runc:
 #      either the one images/node-guest/build pre-stages at usr/local/bin/c8s,
 #      or the one nri-image-policy:<c8s-ref> carries.
-#   3. the router's nginx files and the worker's NRI floor, rendered from the
-#      chart in that binary, this profile's floor template and its static pod
-#      templates.
+#   3. the router's nginx files, the static pod templates and the worker's NRI
+#      floor, rendered from the worker chart in that binary and this profile's
+#      floor template.
 #
 # The core image digests resolve from the registry, or from the local OCI
 # layouts the build shares between the image repro gate's two runs.
@@ -276,6 +276,8 @@ PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
     --armtls-mesh-image-repository "$MESH_REPO" \
     --armtls-mesh-image-digest "$MESH_DIGEST" \
     --output-dir "$RENDER"
+STATIC_PODS="$RENDER/static-pods"
+[ -d "$STATIC_PODS" ] || fail "the render wrote no static pod templates at $STATIC_PODS"
 ROUTER_IMAGE=$(cat "$RENDER/router-image.txt")
 case "$ROUTER_IMAGE" in *@sha256:*) ;; *) fail "the render's router image '$ROUTER_IMAGE' is not pinned by digest" ;; esac
 sed \
@@ -288,15 +290,16 @@ sed \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
     "$FLOOR_TEMPLATE" > "$TMP/floor-template.yaml"
 ! grep -o '@[A-Z_]*@' "$TMP/floor-template.yaml" || fail "the floor template names a placeholder this sync does not fill"
-TEMPLATES="$SRCDIR/mkosi.profiles/worker/mkosi.extra/usr/lib/c8s/worker/static-pods"
-[ -d "$TEMPLATES" ] || fail "no static pod templates at $TEMPLATES"
 "$C8S" worker floor \
     --floor-template "$TMP/floor-template.yaml" \
     --render-dir "$RENDER" \
-    --static-pods "$TEMPLATES" \
+    --static-pods "$STATIC_PODS" \
     --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
 printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
 install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/router-nginx" "$RENDER"/router-nginx/*
+mapfile -t STATIC_POD_FILES < <(find "$STATIC_PODS" -maxdepth 1 -type f)
+[ "${#STATIC_POD_FILES[@]}" -gt 0 ] || fail "no static pod template in $STATIC_PODS"
+install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/worker/static-pods" "${STATIC_POD_FILES[@]}"
 # The initrd overlays only directories the image bakes (usr/lib/confai/state.d).
 mkdir -p "$STAGE_DIR/etc/cni/net.d" "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/nri/conf.d"
 CNI_PLUGINS="$CACHE_DIR/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz"

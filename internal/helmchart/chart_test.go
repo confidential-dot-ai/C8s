@@ -1366,15 +1366,15 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 func TestChartRendersNoExecProbes(t *testing.T) {
 	t.Parallel()
 	// Every rendering that adds pod templates of its own: the default stack,
-	// the baked router's acme front door, and the volumed/GPU opt-ins.
-	renderings := map[string][]string{
-		"default": nil,
-		"baked":   bakedArgs,
-		"volumed": {"--set", "volumed.enabled=true", "--set", "volumed.image.tag=dev"},
+	// the worker router's acme front door, and the volumed opt-in.
+	renderings := map[string]chartRender{
+		"default": {render: helmTemplate},
+		"volumed": {render: helmTemplate, args: []string{"--set", "volumed.enabled=true", "--set", "volumed.image.tag=dev"}},
+		"worker":  {render: helmTemplateWorker},
 	}
-	for name, args := range renderings {
+	for name, rendering := range renderings {
 		t.Run(name, func(t *testing.T) {
-			out, err := helmTemplate(t, args...)
+			out, err := rendering.render(t, rendering.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -1451,13 +1451,13 @@ func findExecHooks(node any) []string {
 	return found
 }
 
-// TestChartBakedRouterACMESidecar pins a baked router's acme front door: the
+// TestWorkerChartRouterACMESidecar pins the worker router's acme front door: the
 // `c8s acme` native sidecar issues the leaf into a Memory emptyDir it alone
 // writes, nginx and cds-attest read it, and the :80 server proxies HTTP-01 to
 // the sidecar's loopback challenge port and 301s everything else.
-func TestChartBakedRouterACMESidecar(t *testing.T) {
+func TestWorkerChartRouterACMESidecar(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
+	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -1557,7 +1557,7 @@ func TestChartBakedRouterACMESidecar(t *testing.T) {
 	if httpSvcPort == nil || httpSvcPort.Port != 80 || httpSvcPort.TargetPort.StrVal != "http" {
 		t.Fatalf("router Service must expose port 80 -> http, got %+v", svc.Spec.Ports)
 	}
-	assertRouterFrontDoorPorts(t, out)
+	assertRouterFrontDoorPorts(t, out, libRouterNginxFiles(t)["nginx.conf"])
 }
 
 // findContainerPort returns the named container port.
@@ -1567,7 +1567,7 @@ func TestChartBakedRouterACMESidecar(t *testing.T) {
 // by the mesh listener, which speaks mTLS, so the probe never passes and the
 // container it gates never starts.
 func TestChartRouterProbePortsAreUncaptured(t *testing.T) {
-	out, err := helmTemplateBakedNode(t)
+	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -1809,15 +1809,15 @@ func TestChartRouterRoutePublication(t *testing.T) {
 func TestChartRouterCDSPins(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		args    []string
+		chart   chartRender
 		want    string
 		mounted bool
 	}{
-		{name: "an external CDS", want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
-		{name: "a baked node", args: bakedArgs, want: "--image-policy-file=/run/c8s-node/cds.json"},
+		{name: "an external CDS", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
+		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/cds.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
+			out, err := tc.chart.render(t, tc.chart.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -1878,7 +1878,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 			name: "a CDS named by a DNS name",
 			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)},
 		},
-		{name: "node.baked", args: bakedArgs},
+		{name: "node.baked", args: cloudBakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
@@ -2303,10 +2303,10 @@ func (block *nginxBlock) assertNoDirective(t *testing.T, name string) {
 // another is unreachable in exactly one direction, and hostPort must bind all
 // of them or none — a partial bind publishes a port the pod does not answer.
 // It returns the published ports.
-func assertRouterFrontDoorPorts(t *testing.T, manifest string) []int32 {
+func assertRouterFrontDoorPorts(t *testing.T, manifest, nginxConf string) []int32 {
 	t.Helper()
 	var listens []int32
-	for _, server := range renderedRouterNginxConfig(t, manifest).servers {
+	for _, server := range parseNginxConfig(t, nginxConf).servers {
 		for _, args := range server.directives["listen"] {
 			port, err := strconv.Atoi(args[0])
 			if err != nil {
@@ -2924,15 +2924,15 @@ func TestRouterNginxMatchesItsContainers(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		lane     string
-		args     []string
+		render   func(t *testing.T, args ...string) (string, error)
 		files    func(*testing.T) map[string]string
 		settings string
 	}{
-		{lane: "cloud", files: cloudRouterNginxFiles, settings: "/mnt/c8s-data/nginx"},
-		{lane: "worker", args: bakedArgs, files: libRouterNginxFiles, settings: "/run/c8s-node/router"},
+		{lane: "cloud", render: helmTemplate, files: cloudRouterNginxFiles, settings: "/mnt/c8s-data/nginx"},
+		{lane: "worker", render: helmTemplateWorker, files: libRouterNginxFiles, settings: "/run/c8s-node/router"},
 	} {
 		t.Run(tc.lane, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
+			out, err := tc.render(t)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -4833,15 +4833,15 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 		"cds-attest":      "upstream",
 		"acme":            "acme",
 	}
-	// The measured base is the baked node's, whose launch file carries the
+	// The measured base is the worker's, whose launch file carries the
 	// front-door mode, so one render covers both: the acme sidecar is there
 	// either way and the pinned argv names the configuration directory that
 	// node measures (router.configDir).
-	args := append(slices.Clone(bakedArgs),
-		"--set-string", "armtlsMesh.image.digest="+meshDigest,
-		"--set-string", "image.digest="+operatorDigest,
-	)
-	out, err := helmTemplate(t, args...)
+	args := []string{
+		"--set-string", "armtlsMesh.image.digest=" + meshDigest,
+		"--set-string", "image.digest=" + operatorDigest,
+	}
+	out, err := helmTemplateWorker(t, args...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4870,12 +4870,12 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 // initContainers, a native sidecar whose startup probe holds every later
 // container back.
 func TestChartRouterPodStartsTheMeshEndpointFirst(t *testing.T) {
-	for name, mode := range map[string][]string{
-		"cds front door":   nil,
-		"baked front door": bakedArgs,
+	for name, render := range map[string]func(t *testing.T, args ...string) (string, error){
+		"cds front door":    helmTemplate,
+		"worker front door": helmTemplateWorker,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := helmTemplate(t, mode...)
+			out, err := render(t)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -5086,7 +5086,7 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 	}
 
 	// The cloud runs no acme sidecar, so nginx's :80 server stays unpublished.
-	if published := assertRouterFrontDoorPorts(t, out); !slices.Equal(published, []int32{8443}) {
+	if published := assertRouterFrontDoorPorts(t, out, renderedRouterNginxConf(t, out)); !slices.Equal(published, []int32{8443}) {
 		t.Errorf("the cloud router publishes %v, want only the HTTPS port 8443", published)
 	}
 }
@@ -5192,12 +5192,16 @@ func TestChartSweepMountAdmission(t *testing.T) {
 // M6). A location added without its reserved path fails here.
 func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 	location := regexp.MustCompile(`(?m)^\s*location\s+(?:=\s+)?(\S+)\s*\{`)
-	for name, args := range map[string][]string{
-		"default": nil,
-		"baked":   bakedArgs,
+	for _, tc := range []struct {
+		lane   string
+		render func(t *testing.T, args ...string) (string, error)
+		files  func(*testing.T) map[string]string
+	}{
+		{lane: "cloud", render: helmTemplate, files: cloudRouterNginxFiles},
+		{lane: "worker", render: helmTemplateWorker, files: libRouterNginxFiles},
 	} {
-		t.Run(name, func(t *testing.T) {
-			out, err := helmTemplate(t, args...)
+		t.Run(tc.lane, func(t *testing.T) {
+			out, err := tc.render(t)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -5216,7 +5220,7 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 					return p == r || strings.HasPrefix(p, r) && (strings.HasSuffix(r, "/") || p[len(r)] == '/')
 				})
 			}
-			matches := location.FindAllStringSubmatch(renderedRouterNginxConf(t, out), -1)
+			matches := location.FindAllStringSubmatch(tc.files(t)["nginx.conf"], -1)
 			if len(matches) < 3 {
 				t.Fatalf("found %d nginx locations, want the router's protocol endpoints", len(matches))
 			}
@@ -5357,5 +5361,65 @@ func TestChartMeshPolicyMatchesTheSharedConstants(t *testing.T) {
 	}
 	if ids["mesh"] != workloadclaims.MeshUID {
 		t.Errorf("mesh role uid = %d, want %d", ids["mesh"], workloadclaims.MeshUID)
+	}
+}
+
+// A regular Helm install never reads launch files.
+func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, unwanted := range []string{"/run/c8s-node", "/usr/lib/c8s", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("unbaked render contains %q", unwanted)
+		}
+	}
+}
+
+// cloudBakedArgs is the cloud chart's node.baked shape.
+var cloudBakedArgs = []string{
+	"--set", "node.baked=true",
+	"--set-json", "controlPlane.webhook.extraExcluded=[]",
+	"--set", "attestationApi.cvmMode=bare-metal",
+	"--set", "attestationApi.enabled=false",
+	"--set", "nriImagePolicy.enabled=false",
+	"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
+	"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
+}
+
+// On a baked node the mesh's exempt namespaces are measured into the image, so
+// the render refuses a release whose injection scope could diverge from them.
+func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
+	if out, err := helmTemplate(t, cloudBakedArgs...); err != nil {
+		t.Fatalf("the baked default must render: %v\n%s", err, out)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		kind string
+	}{
+		{
+			name: "another release namespace",
+			args: []string{"--namespace", "tenant-platform"},
+			kind: "kind=baked_release_namespace",
+		},
+		{
+			name: "an exclusion only the webhooks know",
+			args: []string{"--set", "controlPlane.webhook.extraExcluded={tenant-a}"},
+			kind: "kind=baked_webhook_exclusions",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, slices.Concat(cloudBakedArgs, tc.args)...)
+			if err == nil {
+				t.Fatalf("the render accepted %s: %s", tc.name, out)
+			}
+			if !strings.Contains(out, tc.kind) {
+				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
+			}
+		})
 	}
 }

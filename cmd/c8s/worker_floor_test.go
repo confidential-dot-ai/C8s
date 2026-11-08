@@ -15,8 +15,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// The chart's baked router pins its launch and reads only files worker stage
-// publishes, so a worker image's floor builds from it and the image's static
+// The worker chart's router pins its launch and reads only files worker stage
+// publishes, so a worker image's floor builds from the render and its static
 // pod templates, and the router's entry declares the HTTPS and HTTP host ports
 // its Deployment maps.
 func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
@@ -27,7 +27,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	cmd := newNodeImageCmd()
 	cmd.SetArgs([]string{
 		"render", "--hardware-platform", "sev-snp", "--kube-version", "v1.36.4",
-		"--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "cloud"),
+		"--chart-dir", workerChartDir,
 		"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 		"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
 		"--output-dir", out,
@@ -53,7 +53,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		"@OPERATOR_REPO@", "registry.example.com/c8s-operator", "@OPERATOR_DIGEST@", testDigest,
 		"@ROUTER_REPO@", routerRepo, "@ROUTER_DIGEST@", routerDigest,
 	).Replace(string(template))
-	templateDir := filepath.Join("..", "..", "images", "node-guest", "worker", "mkosi.extra", "usr", "lib", "c8s", "worker", "static-pods")
+	templateDir := filepath.Join(out, "static-pods")
 	entries, err := os.ReadDir(templateDir)
 	if err != nil {
 		t.Fatal(err)

@@ -1,13 +1,12 @@
-# What a cluster of workers holds for them beyond c8s's chart (c8s worker
-# control-plane render): the static pods' grants, which their node's kubelet
-# credentials carry, so every node holds them (CoreDNS needs nothing
-# c8s-worker-cilium does not grant); the grants a kubelet's bootstrap token and
-# client-certificate rotation rest on, which a control plane other than
-# kubeadm's leaves unbound; the Cilium operator's, which runs beside the control
-# plane as the user c8s-cilium-operator, since NodeRestriction keeps node
-# credentials from its leader lease; and the kube-dns Service in front of the
-# workers' CoreDNS, at the document's clusterDNS. Every worker runs CoreDNS, so
-# a lookup stays on its node.
+# What a cluster of workers holds for its nodes: the static pods' grants,
+# which their node's kubelet credentials carry, so every node holds them
+# (CoreDNS needs nothing c8s-worker-cilium does not grant); the grants a
+# kubelet's bootstrap token and client-certificate rotation rest on, which a
+# control plane other than kubeadm's leaves unbound; the Cilium operator's,
+# which runs beside the control plane as the user c8s-cilium-operator, since
+# NodeRestriction keeps node credentials from its leader lease; and the
+# kube-dns Service in front of the workers' CoreDNS, at clusterDNS. Every
+# worker runs CoreDNS, so a lookup stays on its node.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -444,7 +443,7 @@ metadata:
   labels:
     k8s-app: kube-dns
 spec:
-  clusterIP: '{{ .ClusterDNS }}'
+  clusterIP: {{ .Values.clusterDNS | quote }}
   internalTrafficPolicy: Local
   selector:
     k8s-app: kube-dns

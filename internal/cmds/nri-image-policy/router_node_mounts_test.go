@@ -16,7 +16,7 @@ import (
 )
 
 func TestChartRouterNodeMountAdmission(t *testing.T) {
-	deployment := renderBakedRouterDeployment(t)
+	deployment := renderWorkerRouterDeployment(t)
 	for _, client := range []struct {
 		name string
 		role string
@@ -240,26 +240,23 @@ func routerNodeMountObserver(p *plugin) mountObserver {
 	})
 }
 
-func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
+func renderWorkerRouterDeployment(t *testing.T) appsv1.Deployment {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/cloud",
-		"--show-only", "templates/router-deployment.yaml",
+	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/worker",
+		"--show-only", "templates/cluster/router-deployment.yaml",
 		"--namespace", "c8s-system", "--kube-version", "1.30.0",
-		"--set", "node.baked=true,attestationApi.enabled=false,nriImagePolicy.enabled=false",
-		"--set-json", "controlPlane.webhook.extraExcluded=[]",
+		"-f", "../../helmchart/worker/values-sev-snp.yaml",
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
-		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
-		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("render baked router: %v\n%s", err, stderr.Bytes())
+		t.Fatalf("render the worker router: %v\n%s", err, stderr.Bytes())
 	}
 	var deployment appsv1.Deployment
 	if err := sigsyaml.UnmarshalStrict(out, &deployment); err != nil {

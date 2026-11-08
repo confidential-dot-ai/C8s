@@ -777,12 +777,6 @@ null
 
 {{/* The router pod's workload entry. See ../helpers/allowlist/README.md#router-entry. */}}
 
-{{- /* The entry pins the nginx and c8s images by digest. Values-only. */ -}}
-{{- define "c8s.routerWorkloadSeeded" -}}
-{{- $nginxDigest := (include "c8s.routerNginxPin" . | fromJson).image.digest -}}
-{{- if and (not (empty $nginxDigest)) (not (empty .Values.image.digest)) -}}true{{- end -}}
-{{- end -}}
-
 {{- /* Every container of router.podSpec whose image is nginx or the c8s
        image, pinned and env-matched as c8s.podShapes pins a component's. */ -}}
 {{- define "c8s.routerEntry" -}}
@@ -852,13 +846,6 @@ null
 {{- end -}}
 {{- end -}}
 
-{{- /* The seeded entry the router pod should match, or "" when none is. */ -}}
-{{- define "c8s.routerEntryName" -}}
-{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
-{{- include "c8s.routerWorkloadName" . -}}
-{{- end -}}
-{{- end -}}
-
 {{/* The component shapes the chart generates entries for:
      c8s.componentShapes less the argv-pinned images and those an operator
      entry named c8s.digestWorkloadName replaces. The seed and the boot base
@@ -903,7 +890,9 @@ null
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{- end -}}
-{{- if eq (include "c8s.routerWorkloadSeeded" $root) "true" -}}
+{{- /* The router entry pins the nginx and c8s images by digest. */ -}}
+{{- $nginxDigest := (include "c8s.routerNginxPin" $root | fromJson).image.digest -}}
+{{- if and (not (empty $nginxDigest)) (not (empty $root.Values.image.digest)) -}}
 {{- $_ := set $workloads (include "c8s.routerWorkloadName" $root) (include "c8s.routerEntry" $root | fromJson) -}}
 {{- end -}}
 {{- range $name, $entry := ($root.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}

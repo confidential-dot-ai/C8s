@@ -182,13 +182,10 @@ given the worker image build's `--hardware-platform`, `--kube-version` and
 image flags, writes `DIR/cluster.yaml`, the objects the cluster holds for its
 workers:
 
-- the chart's, as the worker image's build renders them, with the webhooks at
-  `https://<--webhook-host>:9443` and the operator's grants bound to the user
-  `c8s-operator`; the router, pulled rather than baked, may run on any worker;
-- not the operator's own Deployment, Service, account and NetworkPolicy, the
-  allowlist seed, or the router's nginx ConfigMap, which the image bakes; the
-  host-namespace admission policies are off, and each worker's NRI plugin
-  admits host privilege;
+- the c8s-worker chart's CRD, namespaces, router and admission webhooks, with
+  the webhooks at `https://<--webhook-host>:9443` and the operator's grants
+  bound to the user `c8s-operator`; the router, pulled rather than baked, may
+  run on any worker; each worker's NRI plugin admits host privilege;
 - the grants the static pods need, bound to every node;
 - the grants a kubelet's join rests on, which only kubeadm binds: requesting a
   client certificate with the bootstrap token, and automatic approval of that
