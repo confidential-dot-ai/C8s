@@ -4,8 +4,9 @@
 // so `c8s install` is a single-file install tool — no side chart download.
 //
 // The charts live under this package: cloud/ (the installed chart),
+// worker/ (c8s-worker, which the worker render commands template),
 // control-plane/ (c8s-control-plane, its CRD, ClusterRole and webhooks) and
-// lib/ (c8s-lib, the library both depend on). Develop them with the `helm` CLI
+// lib/ (c8s-lib, the library they depend on). Develop them with the `helm` CLI
 // directly (helm lint internal/helmchart/cloud,
 // helm template test internal/helmchart/cloud).
 //
@@ -29,14 +30,16 @@ import (
 // template partials (_helpers.tpl). ExtractTemp adds the charts/ dependency
 // links, which go:embed skips.
 //
-//go:embed all:cloud all:control-plane all:lib
+//go:embed all:cloud all:control-plane all:lib all:worker
 var ChartFS embed.FS
 
 const (
 	// ChartRoot is the path prefix inside ChartFS that a helm action expects
 	// as a chart directory.
 	ChartRoot = "cloud"
-	// controlPlaneChart is the cloud chart's c8s-control-plane dependency.
+	// WorkerChart is the c8s-worker chart's path inside ChartFS.
+	WorkerChart = "worker"
+	// controlPlaneChart is the c8s-control-plane dependency of both charts.
 	controlPlaneChart = "control-plane"
 	// ComponentsFile is the component table and its image pins, relative to a
 	// chart directory whose c8s-lib dependency is linked.
@@ -45,6 +48,12 @@ const (
 	// /usr/lib/c8s/router-nginx, relative to a chart directory like
 	// ComponentsFile.
 	RouterNginxDir = "charts/c8s-lib/files/router-nginx"
+	// StaticPodsDir holds the worker image's static pod templates, relative to
+	// the worker chart.
+	StaticPodsDir = "files/static-pods"
+	// WorkerSeedTemplate renders the allowlist seed the worker image bakes,
+	// relative to the worker chart.
+	WorkerSeedTemplate = "templates/image/allowlist-seed.yaml"
 	// RouterHostPort is the node port the router's nginx binds; the chart's
 	// router Deployment renders the same number.
 	RouterHostPort = 443
@@ -74,17 +83,18 @@ func ExtractTemp() (string, error) {
 	return dir, nil
 }
 
-// extractCharts writes the embedded charts under dir, the cloud and
-// control-plane charts with their Chart.yaml dependencies linked into their
-// charts/ directories.
+// extractCharts writes the embedded charts under dir, each chart with its
+// Chart.yaml dependencies linked into its charts/ directory.
 func extractCharts(dir string) error {
 	if err := os.CopyFS(dir, ChartFS); err != nil {
 		return err
 	}
-	if err := linkDependencies(dir, controlPlaneChart); err != nil {
-		return err
+	for _, chart := range []string{ChartRoot, controlPlaneChart, WorkerChart} {
+		if err := linkDependencies(dir, chart); err != nil {
+			return err
+		}
 	}
-	return linkDependencies(dir, ChartRoot)
+	return nil
 }
 
 type chartDependency struct {

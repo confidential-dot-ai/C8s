@@ -1,6 +1,8 @@
 ## The worker image build and `c8s worker control-plane` render this chart with
 ## helm template; no release installs it. The stock files values-sev-snp.yaml
 ## and values-tdx.yaml set router.attest for the worker image's CPU TEE.
+## templates/image renders what the image bakes, templates/cluster what the
+## workers' control plane holds.
 
 ## The operator/get-cert image; the render sets its digest.
 image:
@@ -22,6 +24,9 @@ router:
     ## Pull policy for the nginx image c8s-lib's files/components.yaml pins; a
     ## worker bakes none of its images.
     imagePullPolicy: IfNotPresent
+
+## clusterDNS: the kube-dns Service's IPv4 address, which `c8s worker
+## control-plane render` takes from the worker document.
 
 controlPlane:
   webhook:

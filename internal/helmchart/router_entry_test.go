@@ -154,9 +154,9 @@ func assertRouterMatches(t *testing.T, out string) {
 	}
 }
 
-func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
+func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, bakedArgs...)
+	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -313,7 +313,7 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 	t.Parallel()
 	name := func(args ...string) string {
 		t.Helper()
-		out, err := helmTemplate(t, slices.Concat(bakedArgs, args)...)
+		out, err := helmTemplateWorker(t, args...)
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -324,8 +324,8 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 		t.Fatalf("router entry name is not stable: %q then %q", base, again)
 	}
 	for _, args := range [][]string{
-		{"--set", "image.digest=sha256:" + strings.Repeat("3", 64)},
-		{"--set-string", "router.routing.pollInterval=5s"},
+		{"--set-string", "image.digest=sha256:" + strings.Repeat("3", 64)},
+		{"--set-string", "router.attest.generation=milan"},
 	} {
 		if got := name(args...); got == base {
 			t.Errorf("%v kept router entry name %q", args, got)
@@ -353,7 +353,6 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 	}{
 		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
 		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
-		{name: "baked", args: bakedArgs, wantFlag: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
@@ -416,15 +415,15 @@ func TestChartRouterEntryDeclaresItsHostPorts(t *testing.T) {
 	https := pkgallowlist.HostPort{Protocol: "TCP", HostPort: 443, ContainerPort: 8443}
 	http := pkgallowlist.HostPort{Protocol: "TCP", HostPort: 80, ContainerPort: 8080}
 	for _, tc := range []struct {
-		name string
-		args []string
-		want []pkgallowlist.HostPort
+		name  string
+		chart chartRender
+		want  []pkgallowlist.HostPort
 	}{
-		{name: "the cloud front door's port", args: digestArgs, want: []pkgallowlist.HostPort{https}},
-		{name: "the baked front door's ports", args: bakedArgs, want: []pkgallowlist.HostPort{http, https}},
+		{name: "the cloud front door's port", chart: chartRender{render: helmTemplate, args: digestArgs}, want: []pkgallowlist.HostPort{https}},
+		{name: "the worker front door's ports", chart: chartRender{render: helmTemplateWorker}, want: []pkgallowlist.HostPort{http, https}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
+			out, err := tc.chart.render(t, tc.chart.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}

@@ -294,7 +294,7 @@ func TestThePinnedVersionsAreTheOnesTheTreeNames(t *testing.T) {
 	if got := sync["RUNC_VERSION"]; got != c8srunc.RuncVersion {
 		t.Errorf("the profile stages runc %s, and the wrapper parses the global options of %s", got, c8srunc.RuncVersion)
 	}
-	proxy, err := os.ReadFile(baked(t, "usr/lib/c8s/worker/static-pods/kube-proxy.yaml"))
+	proxy, err := os.ReadFile("../../../internal/helmchart/worker/files/static-pods/kube-proxy.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

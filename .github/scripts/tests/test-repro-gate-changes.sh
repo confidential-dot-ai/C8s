@@ -56,6 +56,11 @@ reset_case
 set_paths images/node-guest/worker/mkosi.extra/usr/share/doc/c8s/README.md
 expect_result true
 
+# mkosi.sync installs the worker chart's static pods.
+reset_case
+set_paths internal/helmchart/worker/files/static-pods/kube-proxy.yaml
+expect_result true
+
 # Beside the image sources but never baked: tests, lint tools, docs.
 reset_case
 set_paths images/node-guest/tests/immutable-root-test.sh \

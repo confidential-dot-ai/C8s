@@ -50,6 +50,10 @@
         }
       }
     },
+    "clusterDNS": {
+      "type": "string",
+      "format": "ipv4"
+    },
     "controlPlane": {
       "type": "object",
       "additionalProperties": false,

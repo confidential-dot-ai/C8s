@@ -10,8 +10,8 @@ plane runs outside every TEE
 
 Layout:
 
-- `worker/` — the mkosi profile (config, `mkosi.extra/`, `mkosi.sync`, the NRI
-  floor template and the static pod templates). Staged into the confos build via
+- `worker/` — the mkosi profile (config, `mkosi.extra/`, `mkosi.sync` and the
+  NRI floor template). Staged into the confos build via
   `confos build --profile-dir` (confos ≥ the release carrying
   confidential-os-builder#81); the dir basename **is** the profile name, so
   it must stay `worker`.
@@ -126,7 +126,8 @@ group.
 `worker/mkosi.sync` resolves the c8s binary and core image digests from
 `C8S_REF`, then runs `c8s node-image render` with the checksum-pinned
 build-time Helm binary and the baked Kubernetes version, and `c8s worker floor`
-over that render, this profile's floor template and its static pod templates.
+over that render, which carries the c8s-worker chart's static pod templates,
+and this profile's floor template.
 The CDS those components trust runs on a confidential VM of its own, which
 `c8s cds config new` writes the configuration and the pin for, so the image
 neither renders a CDS nor preloads its image.

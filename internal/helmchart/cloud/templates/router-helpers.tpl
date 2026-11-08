@@ -27,33 +27,15 @@ Validate that a san entry is a DNS hostname or a wildcard (e.g. *.example.com).
 {{- end -}}
 {{- end -}}
 
-{{/* A baked node renders the measured worker image's front door
-     (router-worker.tpl), every other release the cloud's. */}}
-
 {{/* The directory nginx reads the c8s.routerNginxFiles from. */}}
-{{- define "router.configDir" -}}
-{{- if .Values.node.baked -}}{{ include "c8s.routerWorkerConfigDir" . }}{{- else -}}{{ include "router.cloudConfigDir" . }}{{- end -}}
-{{- end -}}
-
-{{/* nginx's ports: name, containerPort, and publicPort, the host port the
-     node publishes it on and the Service port that targets it. */}}
-{{- define "router.publicPorts" -}}
-{{- if .Values.node.baked -}}{{ include "router.workerPublicPorts" . }}{{- else -}}{{ include "router.cloudPublicPorts" . }}{{- end -}}
-{{- end -}}
-
-{{/* The router pod's parts that differ between front doors, as YAML. */}}
-{{- define "router.frontDoor" -}}
-{{- if .Values.node.baked -}}{{ include "router.workerFrontDoor" . }}{{- else -}}{{ include "router.cloudFrontDoor" . }}{{- end -}}
-{{- end -}}
-
-{{- define "router.cloudConfigDir" -}}/mnt/c8s-data/nginx{{- end -}}
+{{- define "router.configDir" -}}/mnt/c8s-data/nginx{{- end -}}
 
 {{/* The files the cloud's nginx ConfigMap holds: c8s-lib's, read from one
      mount, with the settings a worker's node stages from its launch file
      beside them, less front-door-mode (cds-attest takes the mode as pinned
      argv). */}}
 {{- define "router.cloudNginxFiles" -}}
-{{- $dir := include "router.cloudConfigDir" . -}}
+{{- $dir := include "router.configDir" . -}}
 {{- $maxRequestBodyBytes := include "c8s.int" .Values.router.routing.maxRequestBodyBytes | int64 -}}
 {{- if lt $maxRequestBodyBytes 1 -}}
 {{- fail (printf "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: %d" $maxRequestBodyBytes) -}}
@@ -64,13 +46,15 @@ Validate that a san entry is a DNS hostname or a wildcard (e.g. *.example.com).
 {{- $files | toJson -}}
 {{- end -}}
 
-{{- define "router.cloudPublicPorts" -}}
+{{/* nginx's ports: name, containerPort, and publicPort, the host port the
+     node publishes it on and the Service port that targets it. */}}
+{{- define "router.publicPorts" -}}
 {{- list (dict "name" "https" "containerPort" (include "router.nginxHTTPSPort" . | int) "publicPort" 443) | toJson -}}
 {{- end -}}
 
-{{/* The files and their settings come from one ConfigMap; the CDS pin and
-     operator keys from values. */}}
-{{- define "router.cloudFrontDoor" -}}
+{{/* The router pod's front door, as YAML: the files and their settings come
+     from one ConfigMap; the CDS pin and operator keys from values. */}}
+{{- define "router.frontDoor" -}}
 {{- $operatorKeys := .Values.cds.operatorKeys -}}
 replicas: {{ .Values.router.nginx.replicas }}
 podAnnotations:

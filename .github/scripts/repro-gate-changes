@@ -42,7 +42,8 @@ main() {
         .github/workflows/image-repro-gate.yml)
         image=true
         ;;
-      images/node-guest/*/mkosi.extra/*)
+      images/node-guest/*/mkosi.extra/* | \
+        internal/helmchart/worker/files/static-pods/*)
         # Copied into the image whole; no exemption below may reach it.
         image=true
         ;;

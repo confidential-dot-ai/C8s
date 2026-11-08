@@ -15,9 +15,6 @@ initContainers:
          start, and every other container's traffic is captured into it. */}}
   {{- include "c8s.meshEndpointContainer" . | nindent 2 }}
   {{- include "router.getCertContainers" (dict "root" . "getCert" (required "the front door declares its get-cert" $frontDoor.getCert)) | nindent 2 }}
-  {{- with $frontDoor.sidecars }}
-  {{- toYaml . | nindent 2 }}
-  {{- end }}
 containers:
   {{- include "c8s.routerContainers" (dict
     "root" .
@@ -25,13 +22,11 @@ containers:
     "allowlistResources" .Values.router.allowlist.resources
     "attestationApiMounts" (include "c8s.attestationApiSocketMount" .)
     "attestationApiURL" (include "router.credentialsVerifierURL" .)
-    "certificateMounts" $frontDoor.certificateMounts
     "cdsAttestArgs" (required "the front door declares cds-attest's argv" $frontDoor.cdsAttestArgs)
     "cdsAttestMounts" (required "the front door declares cds-attest's mounts" $frontDoor.cdsAttestMounts)
     "config" (include "router.configDir" .)
     "hostIPEnv" (include "c8s.attestationApiHostIPEnv" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
-    "settingsMounts" $frontDoor.settingsMounts
   ) | nindent 2 }}
 volumes:
   {{- toYaml (required "the front door declares its volumes" $frontDoor.volumes) | nindent 2 }}

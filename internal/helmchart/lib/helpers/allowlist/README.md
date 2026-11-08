@@ -236,14 +236,13 @@ are pinned to their exact args, so they are not dropped as injected
 containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
 them.
 
-`c8s.routerWorkloadSeeded` returns `true` when the nginx pin's digest and
+`c8s.allowlistSeedJSON` seeds the entry when the nginx pin's digest and
 `image.digest` are both set. An argv reference the kubelet would expand fails
 the render in `c8s.kubeletExpand`, so the pinned argv is the one the runtime
 starts. The chart does not emulate `MatchWorkload`: a
 `bootstrapAllowlist.workloads` entry that also matches the router pod beside the
 seeded one makes the match ambiguous, and CDS issues the router's leaf
-unnamed. `c8s.routerEntryName` returns the seeded entry's name, which a baked
-router's `c8s-cert` receives as `--expected-workload`.
+unnamed.
 
 `c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
 the SHA-256 of the rendered entry, so a changed digest, argv or mount yields a
