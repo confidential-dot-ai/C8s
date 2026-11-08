@@ -11,7 +11,7 @@ on:
 permissions: {}
 
 env:
-  CHART_DIR: internal/helmchart/c8s
+  CHART_DIR: internal/helmchart/cloud
   CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s
   CHART_REPO: ghcr.io/confidential-dot-ai/charts
   COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71

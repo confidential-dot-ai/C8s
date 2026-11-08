@@ -1240,15 +1240,15 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 	}
 }
 
-// testComponents mirrors the chart's c8sComponents for the resolver tests,
+// testComponents mirrors the chart's component table for the resolver tests,
 // which exercise buildDigestArgs without reading a real chart. The chart-read
-// path (chartComponents) is covered separately by TestChartComponentsFromValues.
+// path (chartComponents) is covered separately by TestChartComponentsFromEmbeddedChart.
 var testComponents = []c8sComponent{
-	{valuePrefix: "image", repository: "ghcr.io/confidential-dot-ai/c8s-operator"},
-	{valuePrefix: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", enabledPath: "attestationApi.enabled"},
-	{valuePrefix: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-	{valuePrefix: "armtlsMesh.image", repository: "ghcr.io/confidential-dot-ai/armtls-mesh", enabledPath: "armtlsMesh.enabled"},
-	{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/confidential-dot-ai/nri-image-policy", enabledPath: "nriImagePolicy.enabled"},
+	{valuesPath: "image", repository: "ghcr.io/confidential-dot-ai/c8s-operator"},
+	{valuesPath: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", enabledPath: "attestationApi.enabled"},
+	{valuesPath: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
+	{valuesPath: "armtlsMesh.image", repository: "ghcr.io/confidential-dot-ai/armtls-mesh", enabledPath: "armtlsMesh.enabled"},
+	{valuesPath: "nriImagePolicy.image", repository: "ghcr.io/confidential-dot-ai/nri-image-policy", enabledPath: "nriImagePolicy.enabled"},
 }
 
 // allEnabled is the buildDigestArgs predicate for tests that resolve every
@@ -1420,8 +1420,8 @@ func TestBuildDigestArgsExplainsTagCouplingOnMissingTag(t *testing.T) {
 func TestBuildDigestArgsUsesPinnedDigestWithoutResolving(t *testing.T) {
 	const pinned = "sha256:00000000000000000000000000000000000000000000000000000000000000ff"
 	comps := []c8sComponent{
-		{valuePrefix: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-		{valuePrefix: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", pinnedDigest: pinned},
+		{valuesPath: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
+		{valuesPath: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", pinnedDigest: pinned},
 	}
 	resolve := func(ref string) (string, error) {
 		if strings.Contains(ref, "attestation-api") {
@@ -1448,7 +1448,7 @@ func TestBuildDigestArgsUsesPinnedDigestWithoutResolving(t *testing.T) {
 // floor entry for a DaemonSet it never renders.
 func TestBuildDigestArgsSkipsDisabledPinnedComponent(t *testing.T) {
 	comps := []c8sComponent{{
-		valuePrefix:  "attestationApi.image",
+		valuesPath:   "attestationApi.image",
 		repository:   "ghcr.io/confidential-dot-ai/attestation-api",
 		enabledPath:  "attestationApi.enabled",
 		pinnedDigest: "sha256:00000000000000000000000000000000000000000000000000000000000000ff",
@@ -1479,16 +1479,16 @@ func TestBuildDigestArgsLeavesOtherResolveErrorsUnhinted(t *testing.T) {
 	}
 }
 
-// chartComponents reads the component set from the chart's values.yaml; this
-// asserts the parse against the embedded chart so the install-time list cannot
-// silently diverge from what the chart declares.
-func TestChartComponentsFromValues(t *testing.T) {
+// chartComponents reads the component set from the chart's c8s-lib table;
+// this asserts the parse against the embedded chart so the install-time list
+// cannot silently diverge from what the chart declares.
+func TestChartComponentsFromEmbeddedChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
-		t.Fatalf("extractChart: %v", err)
+		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
@@ -1499,7 +1499,7 @@ func TestChartComponentsFromValues(t *testing.T) {
 
 	got := map[string]string{}
 	for _, c := range comps {
-		got[c.valuePrefix] = c.repository
+		got[c.valuesPath] = c.repository
 	}
 	want := map[string]string{
 		"image":                "ghcr.io/confidential-dot-ai/c8s-operator",
@@ -1519,7 +1519,7 @@ func TestChartComponentsFromValues(t *testing.T) {
 	pinned := map[string]string{}
 	for _, c := range comps {
 		if c.pinnedDigest != "" {
-			pinned[c.valuePrefix] = c.pinnedDigest
+			pinned[c.valuesPath] = c.pinnedDigest
 		}
 	}
 	if len(pinned) != 1 || pinned["attestationApi.image"] == "" {
@@ -1536,11 +1536,11 @@ func TestChartComponentsFromValues(t *testing.T) {
 // the render fails with no image ref.
 func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
-		t.Fatalf("extractChart: %v", err)
+		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
 	chartPath := filepath.Join(dir, helmchart.ChartRoot)
@@ -1856,7 +1856,7 @@ func TestAdmissibleDigests(t *testing.T) {
 			},
 		}},
 	}
-	got := admissibleDigests(values, []c8sComponent{{valuePrefix: "cds.image"}, {valuePrefix: "volumed.image"}})
+	got := admissibleDigests(values, []c8sComponent{{valuesPath: "cds.image"}, {valuesPath: "volumed.image"}})
 	want := map[string]bool{componentDigest: true, bootDigest: true, workloadDigest: true, initDigest: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("admissibleDigests = %v, want %v", got, want)

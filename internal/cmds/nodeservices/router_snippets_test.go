@@ -8,7 +8,7 @@ import (
 
 // The baked chart mounts the nginx TLS snippets where tls.conf expects them.
 func TestRouterTLSSnippetDirMatchesChart(t *testing.T) {
-	data, err := os.ReadFile("../../helmchart/c8s/templates/router-helpers.tpl")
+	data, err := os.ReadFile("../../helmchart/cloud/templates/router-helpers.tpl")
 	if err != nil {
 		t.Fatal(err)
 	}

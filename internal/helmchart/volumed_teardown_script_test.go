@@ -15,7 +15,7 @@ import (
 // That is how a swallowed close failure shipped, so these run the shipped bytes
 // against a fixture tree.
 
-const teardownScriptPath = "c8s/files/scripts/volumed-teardown.sh"
+const teardownScriptPath = ChartRoot + "/files/scripts/volumed-teardown.sh"
 
 type teardownFixture struct {
 	root   string

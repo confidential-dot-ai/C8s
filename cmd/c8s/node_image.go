@@ -42,8 +42,6 @@ type nodeImageRenderConfig struct {
 	imageRepository           string
 	armtlsMeshImageDigest     string
 	armtlsMeshImageRepository string
-	routerImageDigest         string
-	routerImageRepository     string
 	chartDir                  string
 	outputDir                 string
 }
@@ -71,8 +69,6 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
-	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
-	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json, images.txt and router-nginx/ (required)")
 	cmd.AddCommand(render)
@@ -118,12 +114,11 @@ type nodeImageInput struct {
 	required   bool // the image must be pinned for the render to succeed
 }
 
-// images maps build flags to the chart's authoritative image values.
+// images maps the chart's image values to the build flags that pin them.
 func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 	return []nodeImageInput{
 		{flag: "image", valuePath: "image", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
 		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
-		{flag: "router-image", valuePath: "router.nginx.image", repository: cfg.routerImageRepository, digest: cfg.routerImageDigest},
 	}
 }
 
@@ -169,7 +164,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra []string) ([]byte, error) {
 	chartDir := cfg.chartDir
 	if chartDir == "" {
-		tmp, err := extractChart()
+		tmp, err := helmchart.ExtractTemp()
 		if err != nil {
 			return nil, fmt.Errorf("extract node integration chart: %w", err)
 		}
@@ -191,6 +186,8 @@ func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra 
 		// Always on: the value is part of the measured image, and
 		// c8s verify --operator-keys reads the publication.
 		"--set", "router.routePublication.enabled=true",
+		// The nginx image is baked too; c8s-lib pins which one.
+		"--set-string", "router.nginx.imagePullPolicy=Never",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -684,7 +681,7 @@ const routerWorkloadKey = "Deployment/c8s-router"
 
 // frontDoorImage is the image the router's nginx container runs. The node
 // image measures that digest for the router role, and the chart is the only
-// place it is pinned (values.yaml router.nginx.image).
+// place it is pinned (c8s-lib's files/components.yaml).
 func frontDoorImage(object unstructured.Unstructured) (string, error) {
 	containers, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "containers")
 	if err != nil {

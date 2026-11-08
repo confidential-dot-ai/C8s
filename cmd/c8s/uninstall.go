@@ -283,7 +283,7 @@ func releaseValues(ctx context.Context, release, namespace string) (map[string]a
 // path when the release (and with it the install-time values) is already
 // gone: the embedded chart's defaults.
 func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
 		return hostUninstallConfig{}, fmt.Errorf("extract embedded chart: %w", err)
 	}

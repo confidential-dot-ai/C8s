@@ -12,70 +12,6 @@
 node:
   baked: false
 
-## The C8s component image set: the single source the chart and `c8s install`
-## both enumerate from, so adding a component is one edit here.
-##   - valuePath:   dotted path to the component's image object (repository/
-##                  tag/digest live there).
-##   - enabledPath: dotted path to its deploy toggle; absent means the
-##                  component is always deployed. A disabled component is
-##                  neither derived into the NRI allowlist nor
-##                  coverage-checked.
-##   - pinnedDigest: the digest `c8s install` pins for this component instead of
-##                  resolving its repository at --image-tag, for a component
-##                  released on another repository's cadence and therefore
-##                  absent at a C8s release tag. Only `c8s install` reads it, so
-##                  a chart consumer that sets the component's image.tag or
-##                  image.digest itself is unaffected.
-##   - entrypoint:  the executable the derived allowlist entry pins the image
-##                  to, as the argv prefix every container running the image
-##                  starts with (the image's ENTRYPOINT, plus the subcommand
-##                  when the image bakes one). The entry pins the arguments
-##                  and mounts of each container the chart renders too.
-##                  Required unless argvPinned.
-##   - imageEnv:    the image config's Env, as name: value. Each derived
-##                  entry's env match pins these exact beside the variables
-##                  the pod spec and the runtime set; `c8s install
-##                  --resolve-digests` refuses an image whose config differs.
-##                  Bump with the image. Required unless argvPinned; {} for
-##                  an image that sets none.
-## Consumed by the c8s.components helper (NRI allowlist derivation + render
-## guard) and by `c8s install` (digest resolution, via `helm show values`).
-c8sComponents:
-  - valuePath: image
-    entrypoint: ["/c8s"]
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
-  - valuePath: attestationApi.image
-    enabledPath: attestationApi.enabled
-    entrypoint: ["/attestation-api"]
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    ## A copy of .github/build-pins.json's attestation_api_digest: the image
-    ## of attestation_rs_tag (v0.6.0), which also carries the sha-<ref7> name
-    ## of attestation_rs_ref, and the bytes the CDS image stages. pin-watch
-    ## writes both; by hand, after bumping the manifest, run
-    ##   .github/scripts/chart-attestation-api-digest.sh set <attestation_api_digest>
-    ## pin-hygiene fails the PR when the manifest, the tags and this disagree.
-    pinnedDigest: sha256:8d983edc5beb9d56f74adf93c2dac8af8bda58c6bfd681f6ff576254df0dff8a
-    ## The injected mesh endpoint: every covered pod runs it, so the node
-    ## must admit it whatever else is deployed.
-  - valuePath: armtlsMesh.image
-    entrypoint: ["/app/c8s", "armtls-mesh"]
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  - valuePath: nriImagePolicy.image
-    enabledPath: nriImagePolicy.enabled
-    ## Seeded argv-pinned by the chart (the installer runs pinned shell
-    ## scripts), never as an any-argv entry. Exempt from
-    ## deriveComponents derivation and the uncovered_component_digest guard.
-    argvPinned: true
-  - valuePath: volumed.image
-    enabledPath: volumed.enabled
-    entrypoint: ["/app/c8s", "volumed"]
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
 ## `tag` and `digest` are consumer-supplied — the chart fails to render if
@@ -896,8 +832,7 @@ router:
     # door's committed mesh identity is unnamed. The named entry must match the
     # router pod's own container set that holds no platform role, which is
     # nginx alone. The chart seeds that entry as
-    # c8s-router-<12 hex of its content hash> when router.nginx.image.digest
-    # and image.digest are set and
+    # c8s-router-<12 hex of its content hash> when image.digest is set and
     # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
     #
     # Requires hostPort.enabled: false — readiness only withdraws Service
@@ -915,24 +850,9 @@ router:
     resources: {}
 
   nginx:
-    image:
-      repository: nginxinc/nginx-unprivileged
-      # Resolve nginxinc/nginx-unprivileged:1.30.6-alpine-slim to bump this digest.
-      digest: "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
-      tag: ""
-      pullPolicy: IfNotPresent
-    # The argv prefix the seeded allowlist entry pins this image to: its
-    # ENTRYPOINT and the first CMD token, which the entrypoint script requires
-    # before it execs anything. Bump with the image if either changes, along
-    # with nginxEntrypoint and nginxCmd in internal/helmchart/router_entry_test.go.
-    entrypoint: ["/docker-entrypoint.sh", "nginx"]
-    # The image config's Env, which the seeded entry's env match pins. Bump
-    # with the image.
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      NGINX_VERSION: "1.30.6"
-      PKG_RELEASE: "1"
-      DYNPKG_RELEASE: "1"
+    # -- Pull policy for the nginx image, which c8s-lib's files/components.yaml
+    #    pins.
+    imagePullPolicy: IfNotPresent
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs

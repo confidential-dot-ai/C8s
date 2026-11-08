@@ -14,7 +14,8 @@ on:
       - ".github/scripts/ghcr-digest.sh"
       - ".github/scripts/chart-attestation-api-digest.sh"
       - ".github/scripts/chart-image-pins.sh"
-      - "internal/helmchart/c8s/values.yaml"
+      - "internal/helmchart/cloud/values.yaml"
+      - "internal/helmchart/lib/files/components.yaml"
       - "images/node-guest/worker/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
@@ -88,37 +89,39 @@ jobs:
               echo "::error file=.github/build-pins.json::could not resolve attestation-api:$image_tag"; fail=1
             fi
           done
-          values=internal/helmchart/c8s/values.yaml
-          if chart_digest=$(bash .github/scripts/chart-attestation-api-digest.sh get "$values"); then
+          pins=internal/helmchart/lib/files/components.yaml
+          if chart_digest=$(bash .github/scripts/chart-attestation-api-digest.sh get "$pins"); then
             if [ "$chart_digest" != "$ATTESTATION_API_DIGEST" ]; then
-              echo "::error file=$values::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST; run .github/scripts/chart-attestation-api-digest.sh set"; fail=1
+              echo "::error file=$pins::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST; run .github/scripts/chart-attestation-api-digest.sh set"; fail=1
             fi
           else
-            echo "::error file=$values::could not read the chart's pinnedDigest"; fail=1
+            echo "::error file=$pins::could not read the chart's pinnedDigest"; fail=1
           fi
-          # The chart's third-party images (every digest in $values whose
-          # Resolve line names a tag) are digest-pinned into the
-          # seeded allowlist; the Resolve line above each digest names the tag
-          # it came from. A tag upstream has rebuilt since is a notice, not a
-          # failure: the pinned bytes are still served, and pin-watch proposes
-          # that bump. An unannotated digest, or a digest or tag the registry
-          # no longer serves, fails (the script names it). crane digest is a
-          # HEAD request, outside docker.io's anonymous pull quota.
-          if ! resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values"); then
-            echo "::error file=$values::a third-party image digest is unannotated, or it or its tag is no longer served (chart-image-pins.sh resolve, above)"; fail=1
-          fi
-          while read -r repo tag digest current; do
-            [ -n "$repo" ] && [ "$current" != "$digest" ] || continue
-            echo "::notice file=$values::$repo:$tag now names $current, not the pinned $digest; pin-watch proposes the bump"
-            echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
-          done <<<"$resolved"
-          # Each pinned image's config must match what the seeded entry pins
-          # beside its digest (the argv prefix and the exact env), as `c8s
-          # install --resolve-digests` requires for the router's nginx. A block
-          # without an entrypoint is argv-pinned and skipped.
-          if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
-            echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
-          fi
+          for values in "$pins" internal/helmchart/cloud/values.yaml; do
+            # The chart's third-party images (every digest in $values whose
+            # Resolve line names a tag) are digest-pinned into the
+            # seeded allowlist; the Resolve line above each digest names the tag
+            # it came from. A tag upstream has rebuilt since is a notice, not a
+            # failure: the pinned bytes are still served, and pin-watch proposes
+            # that bump. An unannotated digest, or a digest or tag the registry
+            # no longer serves, fails (the script names it). crane digest is a
+            # HEAD request, outside docker.io's anonymous pull quota.
+            if ! resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values"); then
+              echo "::error file=$values::a third-party image digest is unannotated, or it or its tag is no longer served (chart-image-pins.sh resolve, above)"; fail=1
+            fi
+            while read -r repo tag digest current; do
+              [ -n "$repo" ] && [ "$current" != "$digest" ] || continue
+              echo "::notice file=$values::$repo:$tag now names $current, not the pinned $digest; pin-watch proposes the bump"
+              echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
+            done <<<"$resolved"
+            # Each pinned image's config must match what the seeded entry pins
+            # beside its digest (the argv prefix and the exact env), as `c8s
+            # install --resolve-digests` requires for the router's nginx. A block
+            # without an entrypoint is argv-pinned and skipped.
+            if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
+              echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
+            fi
+          done
           # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' images/node-guest/worker/mkosi.sync; then
             echo "::error file=images/node-guest/worker/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1

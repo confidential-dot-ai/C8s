@@ -26,8 +26,6 @@ const defaultGate = "<seeded entry>"
 
 var c8sDigest = "sha256:" + strings.Repeat("1", 64)
 
-var nginxByTag = []string{"--set-string", "router.nginx.image.digest=", "--set", "router.nginx.image.tag=1.30.5-alpine-slim"}
-
 // digestArgs pins the c8s image outside the baked shape. deriveComponents
 // derives its pin.
 var digestArgs = []string{
@@ -35,7 +33,25 @@ var digestArgs = []string{
 	"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 }
 
-// nginxEntrypoint and nginxCmd are router.nginx.image's ENTRYPOINT and CMD.
+// The router's nginx image is pinned in c8s-lib's components file, so the
+// chart's values carry no image object for a release to retag or repin.
+func TestChartRouterNginxImageIsNotAValue(t *testing.T) {
+	t.Parallel()
+	for _, pin := range []string{
+		"router.nginx.image.digest=sha256:" + strings.Repeat("4", 64),
+		"router.nginx.image.tag=1.30.6-alpine-slim",
+	} {
+		out, err := helmTemplate(t, "--set-string", pin)
+		if err == nil {
+			t.Fatalf("--set-string %s rendered; the schema must refuse it\n%s", pin, out)
+		}
+		if !strings.Contains(out, "schema") || !strings.Contains(out, "image") {
+			t.Fatalf("--set-string %s was refused without naming the schema and the key:\n%s", pin, out)
+		}
+	}
+}
+
+// nginxEntrypoint and nginxCmd are the router nginx image's ENTRYPOINT and CMD.
 var (
 	nginxEntrypoint = []string{"/docker-entrypoint.sh"}
 	nginxCmd        = []string{"nginx", "-g", "daemon off;"}
@@ -54,7 +70,7 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 		_, digest, _ := strings.Cut(c.Image, "@")
 		imageEnv := envs["image"]
 		if strings.Contains(c.Image, "nginx-unprivileged@") {
-			imageEnv = envs["router.nginx"]
+			imageEnv = envs["routerNginx"]
 		}
 		command, args := c.Command, c.Args
 		switch {
@@ -278,7 +294,6 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "c8s image by digest", args: digestArgs, want: true},
 		{name: "components not derived", args: []string{"--set", "image.digest=" + c8sDigest, "--set", "nriImagePolicy.policy.mode=audit"}, want: false},
 		{name: "router disabled", args: append(slices.Clone(digestArgs), "--set", "router.enabled=false"), want: false},
-		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
 		// cds-attest runs for application routing even with its attestation endpoints off.
 		{name: "attest and allowlist disabled", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: true},
 		{
@@ -316,7 +331,6 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: defaultGate},
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
-		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
 		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), want: defaultGate},
 		// No inventory could stamp the leaf; the chart refuses the shape.
 		{name: "no inventory", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "nriImagePolicy.enabled=false", "--set", "attestationApi.cvmMode=gke"}), wantErr: "kind=require_host_image_policy"},
@@ -381,7 +395,6 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"--set", "image.digest=sha256:" + strings.Repeat("3", 64)},
-		{"--set", "router.nginx.image.digest=sha256:" + strings.Repeat("4", 64)},
 		{"--set", "router.attest.port=8900"},
 		// The default gate adds --expected-workload to cds-attest.
 		{"--set", "router.hostPort.enabled=false", "--set", "router.service.type=LoadBalancer"},
@@ -437,7 +450,6 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 		args  []string
 		cause string
 	}{
-		{name: "nginx by tag", args: nginxByTag, cause: "router.nginx.image.digest is unset"},
 		{name: "c8s image by tag", args: []string{"--set-string", "image.digest="}, cause: "image.digest is unset"},
 		{name: "components not derived", args: []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}, cause: "nriImagePolicy.bootstrapAllowlist.deriveComponents is false"},
 	} {
@@ -454,13 +466,12 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 // seeds none and passes the name through unchecked.
 func TestChartRouterOperatorGate(t *testing.T) {
 	t.Parallel()
-	nginxDigest := "sha256:" + strings.Repeat("5", 64)
+	nginxDigest := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	var containers []string
 	for _, digest := range []string{nginxDigest, c8sDigest} {
 		containers = append(containers, `{"digest":"`+digest+`","image":"r@`+digest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`)
 	}
 	entry := []string{
-		"--set", "router.nginx.image.digest=" + nginxDigest,
 		"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[],"containers":[` + strings.Join(containers, ",") + `]}`,
 	}
 	routerMatch := func(out string) (string, error) {
@@ -516,14 +527,11 @@ func TestChartRouterExpectedWorkloadType(t *testing.T) {
 	}
 
 	// A chart copy without its schema reaches the template's check.
-	dir := t.TempDir()
-	if err := os.CopyFS(filepath.Join(dir, "c8s"), os.DirFS("c8s")); err != nil {
+	chart := extractedChart(t)
+	if err := os.Remove(filepath.Join(chart, "values.schema.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(dir, "c8s", "values.schema.json")); err != nil {
-		t.Fatal(err)
-	}
-	out, err = helmTemplateIn(t, dir, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
+	out, err = helmTemplateIn(t, chart, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
 	if err == nil || !strings.Contains(out, "must be a string or null") {
 		t.Fatalf("boolean expectedWorkload without schema validation: err = %v, want the template's type error\n%s", err, out)
 	}

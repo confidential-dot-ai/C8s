@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # chart-image-pins.sh lists the chart's third-party digests by the Resolve
-# line above each, and rewrites one in a values.yaml copy; the production file
-# is read, never written.
+# line above each, and rewrites one in a values.yaml copy; the production files
+# are read, never written.
 set -euo pipefail
 
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$test_dir/../../.." && pwd)
 script="$repo_dir/.github/scripts/chart-image-pins.sh"
-values="$repo_dir/internal/helmchart/c8s/values.yaml"
+pins="$repo_dir/internal/helmchart/lib/files/components.yaml"
+values="$repo_dir/internal/helmchart/cloud/values.yaml"
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 tests=0
+cp "$pins" "$fixture/pins.before"
 cp "$values" "$fixture/values.before"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -27,9 +29,10 @@ expect_failure_naming() {
 }
 
 # Every non-empty digest in the production chart names its tag, and nothing
-# else is listed: the count of listed rows is the count of digest lines.
+# else is listed: the count of listed rows across the default files is the
+# count of digest lines in them.
 rows=$(bash "$script" list)
-digest_lines=$(grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:' "$values")
+digest_lines=$(cat "$pins" "$values" | grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:')
 [[ $(wc -l <<<"$rows") -eq "$digest_lines" ]] || fail "listed $(wc -l <<<"$rows") rows for $digest_lines digest lines"
 for repo in nginxinc/nginx-unprivileged busybox; do
   grep -qE "^$repo [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "$repo is not listed with a tag and digest"
@@ -109,6 +112,9 @@ done
 cmp -s "$good" "$copy" || fail "a refused set changed the file"
 expect_failure bash "$script" set busybox:1.38.0
 expect_failure bash "$script" frobnicate
+# Without a FILE, set rewrites the default file pinning the reference, and
+# refuses one nothing pins.
+expect_failure_naming 'no chart file pins alpine:3.20' bash "$script" set alpine:3.20 "$new"
 tests=$((tests + 1))
 
 # resolve asks a fake crane, digest requests only, for each pinned digest and
@@ -171,7 +177,8 @@ METRICS_CONFIG='{"config":{"Entrypoint":["/metrics","serve"],"Env":["PATH=/usr/b
   expect_failure_naming '"TOKEN":"a=b"' bash "$script" check "$good"
 tests=$((tests + 1))
 
-# The production file is never written by this test.
+# The production files are never written by this test.
+cmp -s "$pins" "$fixture/pins.before" || fail "the production components.yaml changed"
 cmp -s "$values" "$fixture/values.before" || fail "the production values.yaml changed"
 
 echo "chart-image-pins: $tests tests passed"

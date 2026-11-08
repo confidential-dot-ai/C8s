@@ -103,14 +103,14 @@ node_exec ctr -n k8s.io images pull "docker.io/$WORKLOAD_IMAGE" >/dev/null \
 # router's nginx is pulled at install time — after the floor scan — so its
 # chart-pinned digest is pulled by reference and seeded up front; otherwise
 # the plugin's enforce-existing check kills the front door's own container.
-ROUTER_NGINX_REF="$(helm show values internal/helmchart/c8s | python3 -c '
+ROUTER_NGINX_REF="$(python3 -c '
 import sys, yaml
-img = yaml.safe_load(sys.stdin)["router"]["nginx"]["image"]
+img = yaml.safe_load(sys.stdin)["routerNginx"]["image"]
 repo = img["repository"]
 # Bare docker-hub names (nginxinc/foo) need the registry made explicit for ctr.
 if "/" not in repo or ("." not in repo.split("/")[0] and ":" not in repo.split("/")[0] and repo.split("/")[0] != "localhost"):
     repo = "docker.io/" + repo
-print(repo + "@" + img["digest"])')"
+print(repo + "@" + img["digest"])' < internal/helmchart/lib/files/components.yaml)"
 node_exec ctr -n k8s.io images pull "$ROUTER_NGINX_REF" >/dev/null \
     || fail "could not pull $ROUTER_NGINX_REF into the node"
 
@@ -213,7 +213,7 @@ log "Rendering the NRI installer and its argv-pinned seed entry"
 # apply them. The caller names the CDS: the first render runs before one
 # exists.
 chart_render() {
-    helm template c8s internal/helmchart/c8s -n "$NS" \
+    helm template c8s internal/helmchart/cloud -n "$NS" \
         --kube-version "$KUBE_VERSION" \
         --set-string image.tag="$IMAGE_TAG" \
         --set-string attestationApi.cvmMode=bare-metal \

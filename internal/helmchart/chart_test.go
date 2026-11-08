@@ -203,7 +203,7 @@ func renderedKinds(t *testing.T, helmOut string) map[string]int {
 //     kubeVersion constraint makes helm fail early and clearly instead.
 func TestChartARMTLSKubeVersionPinned(t *testing.T) {
 	t.Parallel()
-	const path = "c8s/Chart.yaml"
+	const path = repoChart + "/Chart.yaml"
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -2248,7 +2248,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		{name: "node.baked", args: bakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateUnpinned(t, ".", tc.args...)
+			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -2268,7 +2268,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateUnpinned(t, ".", tc.args...)
+			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
 			if err == nil {
 				t.Fatalf("helm template accepted a release that names no CDS\n%s", out)
 			}
@@ -3314,15 +3314,32 @@ func helmOutput(cmd *exec.Cmd) ([]byte, error) {
 	return out, err
 }
 
-func helmTemplate(t *testing.T, args ...string) (string, error) {
+// repoChart is the cloud chart in the repository layout, where c8s-lib is the
+// committed charts/c8s-lib symlink.
+const repoChart = "cloud"
+
+// extractedChart is the cloud chart in the layout `c8s install` renders: the
+// tree ExtractTemp writes, where the subchart link is rebuilt from Chart.yaml.
+func extractedChart(t *testing.T) string {
 	t.Helper()
-	return helmTemplateIn(t, ".", args...)
+	dir, err := ExtractTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, ChartRoot)
 }
 
-// helmTemplateIn is helmTemplate on the chart directory c8s under dir, under a
+// helmTemplate renders the repository layout.
+func helmTemplate(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return helmTemplateIn(t, repoChart, args...)
+}
+
+// helmTemplateIn is helmTemplate on the chart at chartDir, under a
 // placeholder CDS unless the caller names its own: the chart refuses a release
 // naming no CDS (kind=cds_pins_required, kind=cds_address_required).
-func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
+func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
 		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address") || strings.HasPrefix(arg, "node.baked")
@@ -3330,19 +3347,19 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 	if !pinned {
 		args = append(baseCDSPolicy(t), args...)
 	}
-	return helmTemplateUnpinned(t, dir, args...)
+	return helmTemplateUnpinned(t, chartDir, args...)
 }
 
 // helmTemplateUnpinned is helmTemplateIn without the harness CDS pin, for the
 // tests that drive the chart's cds_pins_required refusal and the pin sources
 // that satisfy it.
-func helmTemplateUnpinned(t *testing.T, dir string, args ...string) (string, error) {
+func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm CLI not found")
+		t.Fatal("helm CLI not found")
 	}
 	base := []string{
-		"template", "c8s", "c8s",
+		"template", "c8s", chartDir,
 		// Pin the simulated cluster version at the chart's kubeVersion base
 		// so the tests do not depend on the helm client's compiled default
 		// (helm 3.14 simulates 1.29, below the base).
@@ -3368,7 +3385,6 @@ func helmTemplateUnpinned(t *testing.T, dir string, args ...string) (string, err
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
 	}
 	cmd := exec.Command("helm", append(base, args...)...)
-	cmd.Dir = dir
 	out, err := helmOutput(cmd)
 	return string(out), err
 }
@@ -3972,10 +3988,10 @@ func renderedDeploymentContainer(t *testing.T, manifest, deploymentName, contain
 func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm CLI not found")
+		t.Fatal("helm CLI not found")
 	}
 	base := []string{
-		"template", "c8s", "c8s",
+		"template", "c8s", repoChart,
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--set", "image.tag=dev",
@@ -3989,13 +4005,11 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		// templates below, so its manifests do not appear here.
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
-		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
 	}
 	base = append(base, baseCDSPolicy(t)...)
 	cmd := exec.Command("helm", append(base, prefixRouterSetArgs(args)...)...)
-	cmd.Dir = "."
 	out, err := helmOutput(cmd)
 	return string(out), err
 }
@@ -4447,8 +4461,8 @@ func TestChartBaseSkipsPinnedEntries(t *testing.T) {
 // The chart derives entry names with the rule pkg/allowlist DigestEntryName
 // pins (TestDigestEntryName), tag and digest stripping and the "image"
 // fallback included, then appends a policy hash; the image segment is cut to
-// 41 bytes so the name stays within 63. Driven through the router nginx image, whose repository the
-// operator sets freely.
+// 41 bytes so the name stays within 63. Driven through the operator image,
+// whose repository the operator sets freely.
 func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 	t.Parallel()
 	const d = "sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
@@ -4461,8 +4475,9 @@ func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			out, err := helmTemplate(t,
-				"--set-string", "router.nginx.image.repository="+tc.repository,
-				"--set-string", "router.nginx.image.digest="+d,
+				"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+				"--set-string", "image.repository="+tc.repository,
+				"--set-string", "image.digest="+d,
 			)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
@@ -4595,22 +4610,16 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 }
 
 // The router nginx image is a chart-deployed non-c8s system image: it is not in
-// the tag-locked c8sComponents derive set, so a default install would otherwise
+// the tag-locked component derive set, so a default install would otherwise
 // leave it out of the allowlist and the NRI plugin would reject the router
 // nginx container. It must be self-seeded from its pinned digest whenever
 // router is enabled — independent of deriveComponents (off here) — and dropped
 // when router is disabled.
 func TestChartAllowlistsRouterNginxSelfEntry(t *testing.T) {
 	t.Parallel()
-	const (
-		nxDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000b1"
-		nxRepo   = "example.test/nginx-unprivileged"
-	)
+	nxDigest := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	t.Run("enabled: self-entry present without deriveComponents", func(t *testing.T) {
-		out, err := helmTemplate(t,
-			"--set-string", "router.nginx.image.repository="+nxRepo,
-			"--set-string", "router.nginx.image.digest="+nxDigest,
-		)
+		out, err := helmTemplate(t)
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -4619,17 +4628,13 @@ func TestChartAllowlistsRouterNginxSelfEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed JSON does not parse: %v", err)
 		}
-		if got, want := seedLabel(seed, nxDigest), nxRepo+"@"+nxDigest; got != want {
+		if got, want := seedLabel(seed, nxDigest), "nginxinc/nginx-unprivileged@"+nxDigest; got != want {
 			t.Errorf("router nginx self-entry = %q, want %q\nseed: %v", got, want, seed.Workloads)
 		}
 	})
 
 	t.Run("disabled: no self-entry", func(t *testing.T) {
-		out, err := helmTemplate(t,
-			"--set", "router.enabled=false",
-			"--set-string", "router.nginx.image.repository="+nxRepo,
-			"--set-string", "router.nginx.image.digest="+nxDigest,
-		)
+		out, err := helmTemplate(t, "--set", "router.enabled=false")
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -4762,7 +4767,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/armtls-mesh@"+rmD {
 		t.Errorf("bare-metal-mode seed missing armtls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
 	}
-	nginxD := chartImageDigest(t, "router", "nginx", "image", "digest")
+	nginxD := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	if _, ok := seedEntry(seed, nginxD); !ok {
 		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
 	}
@@ -5029,7 +5034,7 @@ func TestChartNriComponentCoveredByArgvPin(t *testing.T) {
 // masking a broken template.
 func renderExampleRouterNginxConf() string {
 	cmd := exec.Command("helm",
-		"template", "c8s", "c8s",
+		"template", "c8s", repoChart,
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--set", "image.tag=dev",
@@ -5050,10 +5055,8 @@ func renderExampleRouterNginxConf() string {
 		// allowlist route and application routing.
 		"--set", "router.discovery.enabled=false",
 		"--set", "router.attest.enabled=false",
-		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
 	)
-	cmd.Dir = "."
 	out, err := helmOutput(cmd)
 	if err != nil {
 		return fmt.Sprintf("helm template failed: %v\n%s", err, out)
@@ -5522,7 +5525,7 @@ var schemaCoveredPaths = []string{"cds", "nriImagePolicy", "router", "volumed"}
 // YAML, so one decoder serves values.yaml and values.schema.json alike.
 func readChartFile(t *testing.T, name string, into any) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("c8s", name))
+	data, err := os.ReadFile(filepath.Join(repoChart, name))
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
@@ -5755,8 +5758,8 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 	const (
 		meshDigest     = "sha256:" + "aa00000000000000000000000000000000000000000000000000000000000001"
 		operatorDigest = "sha256:" + "bb00000000000000000000000000000000000000000000000000000000000002"
-		nginxDigest    = "sha256:" + "cc00000000000000000000000000000000000000000000000000000000000003"
 	)
+	nginxDigest := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	measured := measuredBaseAllowlist(t, map[string]string{
 		"@MESH_DIGEST@":     meshDigest,
 		"@OPERATOR_DIGEST@": operatorDigest,
@@ -5778,7 +5781,6 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 	args := append(slices.Clone(bakedArgs),
 		"--set-string", "armtlsMesh.image.digest="+meshDigest,
 		"--set-string", "image.digest="+operatorDigest,
-		"--set-string", "router.nginx.image.digest="+nginxDigest,
 	)
 	out, err := helmTemplate(t, args...)
 	if err != nil {
@@ -6113,7 +6115,7 @@ func TestChartSweepMountAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script, err := os.ReadFile("c8s/files/scripts/host-sweep.sh")
+	script, err := os.ReadFile(repoChart + "/files/scripts/host-sweep.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

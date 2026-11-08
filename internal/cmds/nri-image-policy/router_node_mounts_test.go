@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"os/exec"
 	"slices"
 	"testing"
@@ -244,19 +245,20 @@ func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/c8s",
+	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/cloud",
 		"--show-only", "templates/router-deployment.yaml",
 		"--namespace", "c8s-system", "--kube-version", "1.30.0",
 		"--set", "node.baked=true,attestationApi.enabled=false,nriImagePolicy.enabled=false,nriImagePolicy.bootstrapAllowlist.deriveComponents=true,router.attest.enabled=true",
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
-		"--set-string", "router.nginx.image.digest="+routerImageDigest,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("render baked router: %v\n%s", err, out)
+		t.Fatalf("render baked router: %v\n%s", err, stderr.Bytes())
 	}
 	var deployment appsv1.Deployment
 	if err := sigsyaml.UnmarshalStrict(out, &deployment); err != nil {

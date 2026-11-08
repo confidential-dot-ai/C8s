@@ -226,11 +226,11 @@ func TestHostSweepScriptMeshNetfilterNames(t *testing.T) {
 
 func TestHostConfigFromEmbeddedChartValues(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
-		t.Fatalf("extractChart: %v", err)
+		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
 

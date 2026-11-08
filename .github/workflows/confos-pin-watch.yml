@@ -16,7 +16,8 @@
 # as one GitHub-verified commit, one open PR at a time.
 #
 # A second step watches the chart's third-party image digests (every digest in
-# internal/helmchart/c8s/values.yaml whose Resolve line names a tag,
+# internal/helmchart/lib/files/components.yaml and
+# internal/helmchart/cloud/values.yaml whose Resolve line names a tag,
 # .github/scripts/chart-image-pins.sh) and opens its own PR when a tag
 # names a newer manifest than the pinned digest, as docker.io tags do when
 # their base is rebuilt. Each digest is seeded into the allowlist floor, so a
@@ -98,7 +99,7 @@ jobs:
           # The host DaemonSet's copy of the digest moves with the manifest (a
           # no-op when only confos moved). Both files are staged; the PR
           # carries whatever changed, and nothing else may have.
-          values=internal/helmchart/c8s/values.yaml
+          values=internal/helmchart/lib/files/components.yaml
           bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
           git add -- .github/build-pins.json "$values"
           bash .github/scripts/pin-watch-pr.sh \
@@ -115,30 +116,32 @@ jobs:
           # The previous step's PR lives on its branch; its staged files are
           # not this PR's.
           git reset -q --hard
-          values=internal/helmchart/c8s/values.yaml
-          resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")
+          pin_files=(internal/helmchart/lib/files/components.yaml internal/helmchart/cloud/values.yaml)
           moved=() names=()
-          while read -r repo tag digest current; do
-            [ "$current" != "$digest" ] || continue
-            bash .github/scripts/chart-image-pins.sh set "$repo:$tag" "$current" "$values"
-            names+=("${repo##*/}")
-            moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`")
-          done <<<"$resolved"
+          for values in "${pin_files[@]}"; do
+            resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")
+            while read -r repo tag digest current; do
+              [ "$current" != "$digest" ] || continue
+              bash .github/scripts/chart-image-pins.sh set "$repo:$tag" "$current" "$values"
+              names+=("${repo##*/}")
+              moved+=("- \`$repo:$tag\` from \`${digest:0:19}…\` to \`${current:0:19}…\`")
+            done <<<"$resolved"
+          done
           if [ "${#moved[@]}" -eq 0 ]; then
             echo "every chart image tag names its pinned digest" >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # pin-hygiene fails the PR until each rebuilt image's config matches
           # the entrypoint/imageEnv seeded beside its digest; say so up front.
-          if mismatch=$(bash .github/scripts/chart-image-pins.sh check "$values" 2>&1 >/dev/null); then
+          if mismatch=$(for values in "${pin_files[@]}"; do bash .github/scripts/chart-image-pins.sh check "$values" || exit 1; done 2>&1 >/dev/null); then
             configs="Every rebuilt image's config (entrypoint, cmd, env) still matches the \`entrypoint\` and \`imageEnv\` seeded beside its digest."
           else
             configs=$(printf '%s\n' "**An image's config moved; pin-hygiene fails this PR until the block beside its digest is aligned:**" "" '```' "$mismatch" '```')
           fi
-          git add -- "$values"
+          git add -- "${pin_files[@]}"
           joined=$(printf '%s, ' "${names[@]}")
           body=$(printf '%s\n' \
-            "Automated bump of the chart's third-party image digests in \`$values\`: the tag each digest was resolved from now names a newer manifest." \
+            "Automated bump of the chart's third-party image digests in \`${pin_files[*]}\`: the tag each digest was resolved from now names a newer manifest." \
             "" \
             "${moved[@]}" \
             "" \
@@ -148,6 +151,6 @@ jobs:
           bash .github/scripts/pin-watch-pr.sh \
             --branch "pin-watch/chart-images-$(git write-tree | cut -c1-12)" \
             --prefix pin-watch/chart-images- \
-            --allow "$values" \
+            --allow "${pin_files[0]}" --allow "${pin_files[1]}" \
             --title "build(chart): pin-watch bump — ${joined%, } rebuilt" \
             --body "$body"

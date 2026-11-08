@@ -24,30 +24,33 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// chartImageDigest reads the digest values.yaml pins for one third-party
-// image, so a bump by pin-watch or through
-// .github/scripts/chart-image-pins.sh set needs no edit here.
-func chartImageDigest(t *testing.T, path ...string) string {
+// componentsFile is c8s-lib's component table and image pins.
+const componentsFile = "lib/files/components.yaml"
+
+// chartImageDigest reads the digest file pins for one third-party image, so a
+// bump by pin-watch or through .github/scripts/chart-image-pins.sh set needs
+// no edit here.
+func chartImageDigest(t *testing.T, file string, path ...string) string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(file)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", file, err)
 	}
 	var values map[string]any
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", file, err)
 	}
 	var node any = values
 	for _, key := range path {
 		m, ok := node.(map[string]any)
 		if !ok {
-			t.Fatalf("values.yaml has no %s", strings.Join(path, "."))
+			t.Fatalf("%s has no %s", file, strings.Join(path, "."))
 		}
 		node = m[key]
 	}
 	digest, ok := node.(string)
 	if !ok || !strings.HasPrefix(digest, "sha256:") {
-		t.Fatalf("values.yaml %s is %v, not a digest", strings.Join(path, "."), node)
+		t.Fatalf("%s %s is %v, not a digest", file, strings.Join(path, "."), node)
 	}
 	return digest
 }
@@ -163,8 +166,8 @@ func TestChartPinnedSeedAdmitsTheSweepImage(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	digest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
-	script, err := os.ReadFile(filepath.Join("c8s", "files", "scripts", "host-sweep.sh"))
+	digest := chartImageDigest(t, filepath.Join(repoChart, "values.yaml"), "nriImagePolicy", "containerdPrep", "image", "digest")
+	script, err := os.ReadFile(filepath.Join(repoChart, "files", "scripts", "host-sweep.sh"))
 	if err != nil {
 		t.Fatalf("read host-sweep.sh: %v", err)
 	}
@@ -208,7 +211,7 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")} {
+	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, filepath.Join(repoChart, "values.yaml"), "nriImagePolicy", "containerdPrep", "image", "digest")} {
 		for name, w := range seed.Workloads {
 			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
 				if c.Digest.String() == digest && c.AnyArgv() {
@@ -293,37 +296,35 @@ var componentTestDigests = map[string]string{
 	"attestationApi.image": "sha256:1111000000000000000000000000000000000000000000000000000000000004",
 }
 
-// componentPinValues reads the entrypoints values.yaml declares for every
-// derived component, keyed by valuePath, plus the router nginx one under
-// "router.nginx".
+// componentPinValues reads the entrypoints the components file declares for
+// every derived component, keyed by valuePath, plus the router nginx one under
+// "routerNginx".
 func componentPinValues(t *testing.T) map[string][]string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(componentsFile)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", componentsFile, err)
 	}
 	var values struct {
 		Components []struct {
 			ValuePath  string   `json:"valuePath"`
 			ArgvPinned bool     `json:"argvPinned"`
 			Entrypoint []string `json:"entrypoint"`
-		} `json:"c8sComponents"`
-		Router struct {
-			Nginx struct {
-				Entrypoint []string `json:"entrypoint"`
-			} `json:"nginx"`
-		} `json:"router"`
+		} `json:"components"`
+		RouterNginx struct {
+			Entrypoint []string `json:"entrypoint"`
+		} `json:"routerNginx"`
 	}
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", componentsFile, err)
 	}
-	pins := map[string][]string{"router.nginx": values.Router.Nginx.Entrypoint}
+	pins := map[string][]string{"routerNginx": values.RouterNginx.Entrypoint}
 	for _, c := range values.Components {
 		if c.ArgvPinned {
 			continue
 		}
 		if len(c.Entrypoint) == 0 {
-			t.Errorf("c8sComponents %s declares no entrypoint", c.ValuePath)
+			t.Errorf("component %s declares no entrypoint", c.ValuePath)
 		}
 		pins[c.ValuePath] = c.Entrypoint
 	}
@@ -343,29 +344,27 @@ func withMatcher(t *testing.T, p pkgallowlist.EnvPolicy, name, matcher string) p
 	return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: variables}
 }
 
-// componentImageEnvValues reads the imageEnv values.yaml declares for every
-// derived component, keyed like componentPinValues.
+// componentImageEnvValues reads the imageEnv the components file declares for
+// every derived component, keyed like componentPinValues.
 func componentImageEnvValues(t *testing.T) map[string]map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(componentsFile)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", componentsFile, err)
 	}
 	var values struct {
 		Components []struct {
 			ValuePath string            `json:"valuePath"`
 			ImageEnv  map[string]string `json:"imageEnv"`
-		} `json:"c8sComponents"`
-		Router struct {
-			Nginx struct {
-				ImageEnv map[string]string `json:"imageEnv"`
-			} `json:"nginx"`
-		} `json:"router"`
+		} `json:"components"`
+		RouterNginx struct {
+			ImageEnv map[string]string `json:"imageEnv"`
+		} `json:"routerNginx"`
 	}
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", componentsFile, err)
 	}
-	envs := map[string]map[string]string{"router.nginx": values.Router.Nginx.ImageEnv}
+	envs := map[string]map[string]string{"routerNginx": values.RouterNginx.ImageEnv}
 	for _, c := range values.Components {
 		envs[c.ValuePath] = c.ImageEnv
 	}
@@ -405,7 +404,7 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 		"attestationApi.image": {"/attestation-api"},
 		// ENTRYPOINT plus the first CMD token: docker-entrypoint.sh execs
 		// whatever follows it, so the script alone pins nothing.
-		"router.nginx": {"/docker-entrypoint.sh", "nginx"},
+		"routerNginx": {"/docker-entrypoint.sh", "nginx"},
 	} {
 		if got := pins[valuePath]; !slices.Equal(got, want) {
 			t.Errorf("%s entrypoint = %q, want %q", valuePath, got, want)
@@ -467,7 +466,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	if nginxDigest == "" {
 		t.Fatal("the router's nginx container is not digest-pinned")
 	}
-	pinned[nginxDigest] = pins["router.nginx"]
+	pinned[nginxDigest] = pins["routerNginx"]
 
 	for digest, entrypoint := range pinned {
 		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {

@@ -174,12 +174,6 @@ func baseRoleFor(base pkgallowlist.Allowlist, argv []string) string {
 	return roles[0]
 }
 
-// The router pod's own containers hold the same roles, and the chart renders
-// that pod itself. Its nginx comes from Docker Hub, which an image reference
-// may name explicitly, so the lane's floor labels the front door's digest
-// docker.io/<repository>@<digest> while the component value names the bare
-// repository.
-const roleNginxDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000e3"
 const roleTenantNginxDigest = "sha256:e400000000000000000000000000000000000000000000000000000000000000"
 
 // routerPodRoles is the role every container of the rendered router pod takes.
@@ -199,10 +193,15 @@ var routerPodRoles = map[string]string{
 // bootstrapAllowlist entry labelled the way the cluster lane's store scan
 // writes it.
 func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
+	// The router pod's own containers hold the same roles, and the chart
+	// renders that pod itself. Its nginx comes from Docker Hub, which an image
+	// reference may name explicitly, so the lane's floor labels the front
+	// door's digest docker.io/<repository>@<digest> while the pin names the
+	// bare repository.
+	roleNginxDigest := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	digestArgs := []string{
 		"--set-string", "armtlsMesh.image.digest=" + roleMeshDigest,
 		"--set-string", "image.digest=" + roleOperatorDigest,
-		"--set-string", "router.nginx.image.digest=" + roleNginxDigest,
 		"--set", "router.attest.enabled=true",
 		"--set-string", "router.publicTLS.mode=acme",
 		"--set", "router.san={lb.example.com}",

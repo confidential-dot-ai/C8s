@@ -17,7 +17,6 @@ import (
 const (
 	meshSeedDigest         = "sha256:00000000000000000000000000000000000000000000000000000000000000f1"
 	meshSeedOperatorDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000f2"
-	meshSeedNginxDigest    = "sha256:00000000000000000000000000000000000000000000000000000000000000f3"
 )
 
 // meshCertMount is the injected credential volume as the node classifies it: a
@@ -74,7 +73,6 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "armtlsMesh.image.digest="+meshSeedDigest,
 		"--set-string", "image.digest="+meshSeedOperatorDigest,
-		"--set-string", "router.nginx.image.digest="+meshSeedNginxDigest,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -83,7 +81,7 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 	measured := measuredBaseAllowlist(t, map[string]string{
 		"@MESH_DIGEST@":     meshSeedDigest,
 		"@OPERATOR_DIGEST@": meshSeedOperatorDigest,
-		"@ROUTER_DIGEST@":   meshSeedNginxDigest,
+		"@ROUTER_DIGEST@":   chartImageDigest(t, componentsFile, "routerNginx", "image", "digest"),
 	}).BuildIndex()
 
 	// CDS refuses to issue a certificate to a pod running a digest its

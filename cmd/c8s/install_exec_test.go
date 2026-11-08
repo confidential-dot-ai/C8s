@@ -348,8 +348,8 @@ func TestPreflightImagePullSecretExec(t *testing.T) {
 
 func TestPreflightOperatorImageExec(t *testing.T) {
 	comps := []c8sComponent{
-		{valuePrefix: "cds.image", repository: "ghcr.io/x/cds"},
-		{valuePrefix: "image", repository: "ghcr.io/x/op"},
+		{valuesPath: "cds.image", repository: "ghcr.io/x/cds"},
+		{valuesPath: "image", repository: "ghcr.io/x/op"},
 	}
 
 	t.Run("published operator image passes", func(t *testing.T) {
@@ -508,8 +508,9 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 }
 
 func TestAppendResolvedDigestArgsExec(t *testing.T) {
-	comps := []c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds"}}
-	const values = "c8sComponents:\n  - valuePath: cds.image\ncds:\n  image:\n    repository: ghcr.io/x/cds\n"
+	comps := []c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}}
+	const values = "cds:\n  image:\n    repository: ghcr.io/x/cds\n"
+	const components = "components:\n  - valuePath: cds.image\n"
 
 	t.Run("crane off PATH is an actionable error", func(t *testing.T) {
 		newFakeBin(t)
@@ -523,7 +524,7 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "crane", fakeCrane(testDigest))
-		got, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, "main", comps)
+		got, err := appendResolvedDigestArgs(context.Background(), writeChartWithComponents(t, values, components), nil, "main", comps)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -533,33 +534,6 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		})
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/x/cds:main")
-	})
-
-	t.Run("checks the image against the effective imageEnv", func(t *testing.T) {
-		chart := writeChart(t, "c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv: {PATH: /bin}\ncds:\n  image:\n    repository: ghcr.io/x/cds\n")
-		override := filepath.Join(t.TempDir(), "env.yaml")
-		if err := os.WriteFile(override, []byte("c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv:\n      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		for name, tc := range map[string]struct {
-			values  []string
-			wantErr bool
-		}{
-			"chart default differs from the image": {wantErr: true},
-			"-f override matches the image":        {values: []string{override}},
-		} {
-			t.Run(name, func(t *testing.T) {
-				resetCLIState(t)
-				installValues = tc.values
-				f := newFakeBin(t)
-				f.tool(t, "helm", helmShowValuesBody)
-				f.tool(t, "crane", fakeCrane(testDigest))
-				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", comps)
-				if (err != nil) != tc.wantErr {
-					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
-				}
-			})
-		}
 	})
 
 	t.Run("checks the router's nginx image at its rendered digest", func(t *testing.T) {
@@ -581,7 +555,10 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 config) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],"Env":[`+tc.nginxEnv+`]}}' ;;
 *) echo `+testDigest+` ;;
 esac`)
-				chart := writeChart(t, values+fmt.Sprintf("router:\n  enabled: %t\n  nginx:\n    image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: %q}\n    entrypoint: [/docker-entrypoint.sh, nginx]\n    imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n", tc.enabled, nginxDigest))
+				chart := writeChartWithComponents(t,
+					values+fmt.Sprintf("router:\n  enabled: %t\n", tc.enabled),
+					components+fmt.Sprintf("routerNginx:\n  image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: %q}\n  entrypoint: [/docker-entrypoint.sh, nginx]\n  imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n", nginxDigest),
+				)
 				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", comps)
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
@@ -607,7 +584,7 @@ esac`)
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "crane", "exit 1")
-		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, "main", comps); err == nil {
+		if _, err := appendResolvedDigestArgs(context.Background(), writeChartWithComponents(t, values, components), nil, "main", comps); err == nil {
 			t.Fatal("want error when crane fails")
 		}
 	})
@@ -1379,8 +1356,8 @@ func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
 // entrypoint, or set the env, the chart seeds it under: the seed would deny it
 // on its own node.
 func TestInstallChecksComponentImages(t *testing.T) {
-	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
-	nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
+	comp := c8sComponent{name: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
+	nginx := c8sComponent{name: "routerNginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
 	for name, tc := range map[string]struct {
 		component c8sComponent
 		config    string
@@ -1428,32 +1405,34 @@ func TestInstallChecksComponentImages(t *testing.T) {
 	t.Run("no entrypoint, nothing to check", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if err := checkComponentImage(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
+		if err := checkComponentImage(context.Background(), c8sComponent{name: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }
 
-// A values file written for a chart without imageEnv fails up front rather
-// than on an env mismatch against an empty map.
-func TestComponentsFromValuesRequiresImageEnvWithEntrypoint(t *testing.T) {
-	values := func(c map[string]any) map[string]any {
-		return map[string]any{"image": map[string]any{"repository": "ghcr.io/x/op"}, "c8sComponents": []any{c}}
+// A component table entry without imageEnv fails up front rather than on an
+// env mismatch against an empty map.
+func TestComponentsFromFileRequiresImageEnvWithEntrypoint(t *testing.T) {
+	values := map[string]any{"image": map[string]any{"repository": "ghcr.io/x/op"}}
+	file := func(c componentDeclaration) componentsFile {
+		return componentsFile{Components: []componentDeclaration{c}}
 	}
-	if _, err := componentsFromValues(values(map[string]any{"valuePath": "image", "entrypoint": []any{"/c8s"}})); err == nil {
+	if _, err := componentsFromFile(file(componentDeclaration{ValuePath: "image", Entrypoint: []string{"/c8s"}}), values); err == nil {
 		t.Fatal("want an error for an entrypoint without imageEnv")
 	}
-	if _, err := componentsFromValues(values(map[string]any{"valuePath": "image"})); err != nil {
+	if _, err := componentsFromFile(file(componentDeclaration{ValuePath: "image"}), values); err != nil {
 		t.Fatalf("argv-pinned component without imageEnv: %v", err)
 	}
 }
 
 // A null imageEnv value removes a default variable, as Helm deletes null keys.
 func TestRouterNginxComponentDropsNullImageEnv(t *testing.T) {
-	nginx, err := routerNginxComponent(map[string]any{"router": map[string]any{"nginx": map[string]any{
-		"entrypoint": []any{"/docker-entrypoint.sh", "nginx"},
-		"imageEnv":   map[string]any{"PATH": "/bin", "NGINX_VERSION": nil},
-	}}})
+	path := "/bin"
+	nginx, err := routerNginxComponent(componentsFile{RouterNginx: routerNginxDeclaration{
+		Entrypoint: []string{"/docker-entrypoint.sh", "nginx"},
+		ImageEnv:   map[string]*string{"PATH": &path, "NGINX_VERSION": nil},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

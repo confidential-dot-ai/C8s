@@ -9,6 +9,10 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.30.0-0"
+dependencies:
+  - name: c8s-lib
+    version: 0.1.0
+    repository: file://../lib
 keywords:
   - confidential
   - tee
