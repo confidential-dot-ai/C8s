@@ -3,9 +3,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -99,6 +103,136 @@ func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 		t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)
 	}
 	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// A CNI that owns IP allocation leaves spec.podCIDR empty, so nothing in the
+// cluster states the range the CDS's node subnets must stay out of: the
+// operator states it with --pod-cidr, and the pods answering check the claim.
+func TestInstallPodCIDRWhereNodesPublishNone(t *testing.T) {
+	t.Run("refused without --pod-cidr", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.244.0.5")))
+		err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+		if err == nil || !strings.Contains(err.Error(), "publishes no podCIDR") || !strings.Contains(err.Error(), flagPodCIDR) {
+			t.Fatalf("install = %v, want the refusal naming --%s", err, flagPodCIDR)
+		}
+		mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+	})
+
+	t.Run("installs with a --pod-cidr holding the pods", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.244.0.5")))
+		if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", flagArg(flagPodCIDR), "10.244.0.0/16"); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
+			t.Fatalf("no helm upgrade logged:\n%s", strings.Join(s.f.calls(t), "\n"))
+		}
+	})
+
+	t.Run("refused when a pod answers outside --pod-cidr", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.99.0.5")))
+		err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", flagArg(flagPodCIDR), "10.244.0.0/16")
+		if err == nil || !strings.Contains(err.Error(), "pod ws/app answers at 10.99.0.5") {
+			t.Fatalf("install = %v, want the refusal naming the pod and its address", err)
+		}
+		mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+	})
+
+	t.Run("refused when a pod answers in a family no range covers", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "fd00::5")))
+		err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", flagArg(flagPodCIDR), "10.244.0.0/16")
+		if err == nil || !strings.Contains(err.Error(), "pod ws/app answers at fd00::5") {
+			t.Fatalf("install = %v, want the refusal naming the address family's pod", err)
+		}
+		mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+	})
+
+	t.Run("refused when no pod answers at an address of its own", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, hostNetworkPod("kube-system", "coredns", "192.0.2.10")))
+		err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", flagArg(flagPodCIDR), "10.244.0.0/16")
+		if err == nil || !strings.Contains(err.Error(), "nothing confirms the pod ranges") {
+			t.Fatalf("install = %v, want the refusal of an unconfirmed range", err)
+		}
+		mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+	})
+
+	t.Run("refused when the inventory bound reaches --pod-cidr", func(t *testing.T) {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.244.0.5")))
+		err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
+			flagArg(flagPodCIDR), "10.244.0.0/16",
+			flagArg(flagCDSAddress), "10.9.9.9:8443",
+			flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.244.1.0/24"))
+		if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {
+			t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)
+		}
+		mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+	})
+}
+
+// A cluster whose CNI publishes a pod range its pods answer outside of is the
+// same blind spot: the operator declares the range the pods are in.
+func TestInstallRefusesAPodOutsideThePublishedRange(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get pods --all-namespaces -o json") /bin/cat '`+podListFile(t, podAt("ws", "app", "10.99.0.5"))+`' ;;
+`))
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+	if err == nil || !strings.Contains(err.Error(), "pod ws/app answers at 10.99.0.5") {
+		t.Fatalf("install = %v, want the refusal naming the pod outside the published range", err)
+	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// overlayKubectl is a cluster whose CNI owns IP allocation: its node publishes
+// no spec.podCIDR, and these are the pods answering in it.
+func overlayKubectl(t *testing.T, applied string, pods ...corev1.Pod) string {
+	t.Helper()
+	nodes := nodeListFile(t, corev1.Node{
+		Name: "node-a",
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "192.0.2.10"},
+		}},
+	})
+	return clusterKubectl(applied, `"get nodes -o json") /bin/cat '`+nodes+`' ;;
+"get pods --all-namespaces -o json") /bin/cat '`+podListFile(t, pods...)+`' ;;
+`)
+}
+
+// nodeListFile writes a typed NodeList as the JSON `kubectl get nodes -o json`
+// would emit and returns its path.
+func nodeListFile(t *testing.T, nodes ...corev1.Node) string {
+	t.Helper()
+	data, err := json.Marshal(corev1.NodeList{Items: nodes})
+	if err != nil {
+		t.Fatalf("marshal node list: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write node list: %v", err)
+	}
+	return path
+}
+
+// podAt is a pod answering at its own address.
+func podAt(namespace, name, ip string) corev1.Pod {
+	return corev1.Pod{
+		Namespace: namespace, Name: name,
+		Status: corev1.PodStatus{PodIPs: []corev1.PodIP{{IP: ip}}},
+	}
+}
+
+// hostNetworkPod answers at its node's address, which the node subnets hold by
+// design.
+func hostNetworkPod(namespace, name, ip string) corev1.Pod {
+	return corev1.Pod{
+		Namespace: namespace, Name: name,
+		Spec:   corev1.PodSpec{HostNetwork: true},
+		Status: corev1.PodStatus{PodIPs: []corev1.PodIP{{IP: ip}}},
+	}
 }
 
 // flagArg is a flag as its command line spells it.

@@ -350,7 +350,13 @@ argv-pinned platform entries, and
 `nriImagePolicy.bootstrapAllowlist.workloads`;
 `c8s install --allowlist-seed-out` writes the same document for
 `c8s cds config new`, which merges it with the operator's tenant workloads
-into the configuration the CDS VM boots on. Each component entry's name
+into the configuration the CDS VM boots on. The seed is a render of this
+release under the flags the install was given, so it must be written with the
+flags the final install runs with, except `--cds-address` and `--cds-pin`,
+which name the CDS the seed is written before. `--chart`, `--platform`, `-f`,
+`--operator-keys`, `--volumes`, `--workload-ref`, `--namespace` and
+`--release` all change the entries; an install whose flags differ from the
+seed's finds the CDS serving another shape and refuses. Each component entry's name
 carries its image and the digests of its policy, so an image bump or a
 configuration change adds an entry beside the old one. Seeding runs once, at
 start: it adds every name the store lacks and retires the chart-generated

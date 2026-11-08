@@ -492,14 +492,15 @@ func releaseImage(name, digest string) string {
 }
 
 // clusterKubectl is a healthy single-node cluster: one vanilla linux node that
-// carries the SNP label, no pods, and namespace applies captured.
+// carries the SNP label, one pod answering inside the range that node
+// publishes, and namespace applies captured.
 // extra case arms are matched first, so scenarios override single answers.
 func clusterKubectl(applied, extra string) string {
 	return `case "$*" in
 ` + extra + `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
 "get nodes -l confidential.ai/sev-snp=true -o name") echo node/node-a ;;
 "get nodes -o json") echo '{"items":[{"metadata":{"name":"node-a"},"spec":{"podCIDR":"10.42.0.0/24"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
-"get pods --all-namespaces -o json") echo '{"items":[]}' ;;
+"get pods --all-namespaces -o json") echo '{"items":[{"metadata":{"name":"app","namespace":"ws"},"status":{"podIPs":[{"ip":"10.42.0.5"}]}}]}' ;;
 "version -o json") echo '{"serverVersion":{"gitVersion":"v1.31.0"}}' ;;
 "apply -f -") /bin/cat >> '` + applied + `' ;;
 esac`
@@ -905,11 +906,23 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 	})
 }
 
-// platformPodListKubectl answers the pod list with one static control-plane
-// pod, on top of the healthy-cluster answers.
-func platformPodListKubectl(applied, podsFile string) string {
+// platformPodListKubectl answers the pod list with these pods plus the one the
+// healthy cluster answers at, on top of the healthy-cluster answers.
+func platformPodListKubectl(t *testing.T, applied string, pods ...corev1.Pod) string {
+	t.Helper()
+	podsFile := podListFile(t, append(pods, podInNodeRange())...)
 	return clusterKubectl(applied, `"get pods --all-namespaces -o json") /bin/cat '`+podsFile+`' ;;
 `)
+}
+
+// podInNodeRange answers inside the range the healthy cluster's node publishes,
+// which is what confirms the ranges install checks the CDS against.
+func podInNodeRange() corev1.Pod {
+	return corev1.Pod{
+		Namespace: "ws",
+		Name:      "app",
+		Status:    corev1.PodStatus{PodIPs: []corev1.PodIP{{IP: "10.42.0.5"}}},
+	}
 }
 
 const etcdDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -932,8 +945,7 @@ func staticEtcdPod() corev1.Pod {
 // the plugin restarts containerd and the denied static pods never come back.
 func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	pods := podListFile(t, staticEtcdPod())
-	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, pods))
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 	// exemptNamespaces cleared: the shape a pre-#396 values file installs.
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
 
@@ -960,7 +972,7 @@ func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 // file at all.
 func TestInstallHostedLaneDefaultAdmitsPlatformPods(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -973,7 +985,7 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 	var err error
 	stderr := captureStderr(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 		values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "-f", values)
 	})
@@ -990,7 +1002,7 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 // no pod list to read.
 func TestInstallAuditPolicySkipsPlatformPodCheck(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    mode: audit\n    exemptNamespaces: []\n")
 	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "-f", values); err != nil {
 		t.Fatalf("install: %v", err)
@@ -1005,7 +1017,7 @@ func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 	var err error
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
@@ -1032,7 +1044,7 @@ func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 	var err error
 	stdout := captureStdout(t, func() {
 		s := newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
 		values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "-f", values)
 	})

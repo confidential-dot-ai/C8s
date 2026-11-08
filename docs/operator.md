@@ -43,9 +43,27 @@ this cluster's components resolve, or an IPv4 address. `--operator-keys` pins th
 the router verifies route manifests under; without it the router uses the keys
 the pinned CDS serves. CDS takes its own write keys from
 `c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
-policy that would deny the platform's own pods. A measured node image boots the
-chart its own build rendered, configured from the worker document it launches
-with ([launch-configuration.md](launch-configuration.md)). `c8s install`
+policy that would deny the platform's own pods.
+
+`--pod-cidr` is a range this cluster assigns pod addresses from, the one
+`c8s cds config new --pod-cidr` names; repeat it per range. CDS dials a node
+address for a sandbox's admission inventory, so install refuses a CDS whose
+node subnets reach a pod address: a pod inside that bound could answer as a
+node's inventory. The ranges it checks are the ones the nodes publish in
+`spec.podCIDR` plus the ones this flag declares, and every pod in the cluster
+must answer inside them, which is what catches a wrong range.
+
+Two kinds of cluster need the flag. An AKS cluster on Azure CNI Overlay, the
+AKS default, publishes no `spec.podCIDR` on its nodes, so without the flag
+install has nothing to check the node subnets against. A cluster whose CNI
+owns IP allocation (Calico IP pools, Cilium cluster-pool, a CNI on its own pod
+subnet) publishes a `spec.podCIDR` its pods answer outside of, so install
+refuses the pod it finds there until the real range is declared. Read the AKS
+range with
+`az aks show -g <group> -n <cluster> --query networkProfile.podCidr`.
+
+A measured node image boots the chart its own build rendered, configured from
+the worker document it launches with ([launch-configuration.md](launch-configuration.md)). `c8s install`
 refuses nodes running RKE2's or k3s's own containerd, which the installer
 cannot register the plugin with.
 
