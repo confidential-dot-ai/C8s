@@ -1,6 +1,6 @@
 # shellcheck shell=sh
-# C8s host sweep — run after the shared nri-containerd-config.sh by
-# `c8s uninstall` as a privileged init container on
+# C8s host sweep — run after the shared nri-containerd-config.sh and
+# nri-plugin-removal.sh by `c8s uninstall` as a privileged init container on
 # every linux node (a short-lived kubectl-applied DaemonSet; see
 # cmd/c8s/uninstall.go). These bytes are an interface: the chart pins them
 # into the served allowlist (c8s.argvPinnedEntries) and the CLI replays the
@@ -20,9 +20,9 @@
 # from a previous install of a different shape, which this release's values
 # cannot see.
 #
-# Fatal vs warn: containerd config removal and the runtime restart
-# fail the sweep (the CLI then keeps the
-# DaemonSet so its logs survive). Per-object netfilter failures warn and
+# Fatal vs warn: a plugin this sweep cannot take off containerd fails the
+# sweep (the CLI then keeps the DaemonSet so its logs survive), after every
+# other step ran. Per-object netfilter failures warn and
 # continue; a host with no iptables at all fails the sweep at the end, after
 # every other step ran. A `c8s volume attach` disk that is in use warns and
 # stays; one whose use cannot be read, or an idle one that will not tear
@@ -33,7 +33,6 @@
 #   HOST_CONTAINERD_DIR    — host containerd config directory
 #   RESTART_COMMAND        — host runtime restart, run detached via systemd-run
 #   NRI_PLUGIN_DIR         — NRI plugin directory (nriImagePolicy.hostPaths.pluginDir)
-#   NRI_PLUGIN_FILENAME    — plugin filename inside it
 #   NRI_CONFIG_DIR         — plugin config dir (nriImagePolicy.hostPaths.configDir)
 #   NRI_RUNTIME_DIR        — plugin runtime dir
 #   NRI_CACHE_DIR          — plugin cache dir
@@ -47,32 +46,9 @@ set -eu
 
 echo "==> c8s host sweep starting"
 
-CONTAINERD_DIR="/host${HOST_CONTAINERD_DIR}"
-config_changed=0
 sweep_failed=0
 
-# == Phase 1: containerd configuration =======================================
-# Everything that needs a runtime restart is removed first, the restart runs
-# once (phase 2), and only then are host artifacts deleted (phase 3): with
-# the registration gone, no interruption can leave the fail-closed NRI
-# validator requiring a plugin whose binary is already deleted.
-
-# The config the host wrote, back as it wrote it: the sentinel-delimited
-#    block gone and the host's own NRI tables in force. Mirrors the chart's
-#    files/scripts/uninstall.sh.
-#    A config the installer staged but never moved into place goes too.
-main_config="${CONTAINERD_DIR}/config.toml"
-rm -f "$main_config$CANDIDATE_SUFFIX"
-if [ -f "$main_config" ]; then
-  host_containerd_config "$main_config" > "$main_config.tmp"
-  if cmp -s "$main_config.tmp" "$main_config"; then
-    rm -f "$main_config.tmp"
-  else
-    mv -f "$main_config.tmp" "$main_config"
-    echo "containerd config restored: $main_config"
-    config_changed=1
-  fi
-fi
+# == Phase 1: containerd configuration templates =============================
 
 # A containerd config template an earlier install managed: sentinel-marked,
 #    it would re-add an import for a drop-in nothing writes now. A template
@@ -91,48 +67,27 @@ for t in config-v3.toml.tmpl config.toml.tmpl; do
 done
 rm -f "${CONTAINERD_DIR}/.c8s-containerd-prep.lock"
 
-# == Phase 2: one runtime restart ============================================
-# Detached via systemd-run: restarting containerd kills this pod's own
-# shim, and a restart in the pod's process tree dies with it mid-restart,
-# which on a sole control-plane node can wedge the cluster bootstrap.
-if [ "$config_changed" = "1" ]; then
-  echo "restarting containerd (detached via systemd-run): ${RESTART_COMMAND}"
-  # shellcheck disable=SC2086
-  nsenter -t 1 -m -u -i -n -p -- \
-    systemd-run --collect --description="c8s host sweep containerd restart" \
-    sh -c "${RESTART_COMMAND}"
+# == Phase 2: the NRI image-policy plugin ====================================
+# Every plugin binary an install of any shape wrote, then, once no plugin
+#    runs, its host artifacts. The rm -rf targets must carry the plugin's own
+#    directory name — the values come from the release and a bare parent dir
+#    (/var/run, /var/lib) is never deleted.
+if remove_plugin_from_containerd "/host${NRI_PLUGIN_DIR}"/*-nri-image-policy; then
+  rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
+  rm -f "/host${NRI_CONFIG_DIR}/cds-address"
+  rm -f "/host${NRI_CONFIG_DIR}/cds.json"
+  case "$NRI_RUNTIME_DIR" in
+    */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
+    *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;
+  esac
+  case "$NRI_CACHE_DIR" in
+    */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
+    *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
+  esac
+else
+  echo "ERROR: the NRI image-policy plugin is not off this node; its artifacts stay for the next sweep" >&2
+  sweep_failed=1
 fi
-
-# == Phase 3: host artifacts =================================================
-
-# The NRI plugin's host artifacts: the binary, its boot config, the health
-#    socket dir, and the allowlist cache. The rm -rf targets must carry the
-#    plugin's own directory name — the values come from the release and a
-#    bare parent dir (/var/run, /var/lib) is never deleted.
-plugin_glob_dir="/host${NRI_PLUGIN_DIR}"
-if [ -d "$plugin_glob_dir" ]; then
-  exact="${plugin_glob_dir}/${NRI_PLUGIN_FILENAME}"
-  if [ -f "$exact" ]; then
-    rm -f "$exact"
-    echo "NRI plugin removed: $exact"
-  fi
-  for f in "$plugin_glob_dir"/*-nri-image-policy; do
-    [ -f "$f" ] || continue
-    rm -f "$f"
-    echo "NRI plugin removed: $f"
-  done
-fi
-rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
-rm -f "/host${NRI_CONFIG_DIR}/cds-address"
-rm -f "/host${NRI_CONFIG_DIR}/cds.json"
-case "$NRI_RUNTIME_DIR" in
-  */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
-  *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;
-esac
-case "$NRI_CACHE_DIR" in
-  */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
-  *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
-esac
 
 # `c8s volume attach` LIO loopback disks. attach builds them through configfs
 #    (internal/cmds/volume/attach.go) and nothing in the release removes them,

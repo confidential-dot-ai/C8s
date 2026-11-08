@@ -52,11 +52,16 @@ const (
 	RouterHostPort = 443
 )
 
+// NriInstallerComponent labels the NRI image-policy installer DaemonSet, the
+// one workload a `c8s uninstall` removes ahead of the release itself.
+const NriInstallerComponent = "nri-installer-worker"
+
 // hostSweepScripts are the files the host sweep runs, in order: the shared NRI
 // helpers, then the sweep. A chart test holds this list to the one the chart's
 // own host-sweep remover renders.
 var hostSweepScripts = []string{
 	"nri-containerd-config.sh",
+	"nri-plugin-removal.sh",
 	"host-sweep.sh",
 }
 

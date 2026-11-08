@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // withCDSPin names pin as the CDS pin file of a boot config document.
@@ -112,4 +114,40 @@ func TestRunCheckContainerdConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The removers ask whether any image-policy plugin still runs under
+// containerd: an earlier install's path and a deleted binary count too. They
+// branch on the exit status, and anything other than a plain yes or no counts
+// as a running plugin.
+func TestRunPluginRunning(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		procs map[int]fakeProcess
+		want  int
+	}{
+		{"the plugin", kubeadmTree, 0},
+		{"an earlier install's path", with(kubeadmTree, map[int]fakeProcess{200: {cmdline: "/home/kubernetes/bin/nri/05-nri-image-policy\x00", comm: "05-nri-image-po", ppid: 100}}), 0},
+		{"no plugin", map[int]fakeProcess{1: systemd, 100: containerd(1)}, pluginNotRunningStatus},
+		{"a container naming itself the plugin", with(kubeadmTree, map[int]fakeProcess{200: pluginProc(300), 300: {cmdline: "/usr/bin/containerd-shim-runc-v2\x00", comm: "containerd-shim", ppid: 1}}), pluginNotRunningStatus},
+		{"a kernel thread, which carries no argv", with(kubeadmTree, map[int]fakeProcess{400: {comm: "kswapd0", ppid: 2}}), pluginNotRunningStatus},
+		{"a cmdline whose argv[0] does not end", with(kubeadmTree, map[int]fakeProcess{200: {cmdline: strings.Repeat("x", maxArgv0+1), comm: "long", ppid: 100}}), pluginUnknownStatus},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Run([]string{pluginRunningVerb, "--proc-root=" + fakeProc(t, tc.procs)})
+			if tc.want == 0 && err != nil {
+				t.Fatalf("plugin-running = %v, want the plugin reported running", err)
+			}
+			if tc.want != 0 && cmdsutil.ExitStatus(err) != tc.want {
+				t.Errorf("plugin-running = %v (status %d), want status %d", err, cmdsutil.ExitStatus(err), tc.want)
+			}
+		})
+	}
+
+	t.Run("an unreadable procfs", func(t *testing.T) {
+		err := Run([]string{pluginRunningVerb, "--proc-root=" + filepath.Join(t.TempDir(), "absent")})
+		if cmdsutil.ExitStatus(err) != pluginUnknownStatus {
+			t.Fatalf("plugin-running = %v, want an unknown answer without a procfs", err)
+		}
+	})
 }

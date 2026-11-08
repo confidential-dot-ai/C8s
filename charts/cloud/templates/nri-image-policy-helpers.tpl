@@ -71,11 +71,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* The host's syslog socket: the plugin logs to the host journal through it. */}}
 {{- define "nri-image-policy.syslogSocket" -}}/dev/log{{- end -}}
 
-{{/* The shared containerd-config helpers every remover runs before its own
-     steps (internal/helmchart hostSweepScripts joins the same list for the
-     CLI's sweep). */}}
+{{/* The shared containerd-config and plugin-removal helpers every remover runs
+     before its own steps (internal/helmchart hostSweepScripts joins the same
+     list for the CLI's sweep). */}}
 {{- define "nri-image-policy.removerPreamble" -}}
 {{ .Files.Get "files/scripts/nri-containerd-config.sh" }}
+{{ .Files.Get "files/scripts/nri-plugin-removal.sh" }}
 {{- end -}}
 
 {{- define "nri-image-policy.uninstallHookScript" -}}

@@ -22,15 +22,34 @@ import (
 
 // RunMain is the body of the per-binary thin shim under cmd/<name>/main.go.
 // It calls run with os.Args[1:], prints any error to stderr, and exits with
-// status 1 on failure. Each shim collapses to: cmdsutil.RunMain(pkg.Run).
+// ExitStatus. Each shim collapses to: cmdsutil.RunMain(pkg.Run).
 func RunMain(run func([]string) error) {
 	if err := run(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(ExitStatus(err))
 	}
+}
+
+// ExitStatusError carries the exit status a verb answers with, for a caller
+// that branches on more than success and failure.
+type ExitStatusError struct {
+	Status int
+	Err    error
+}
+
+func (e *ExitStatusError) Error() string { return e.Err.Error() }
+func (e *ExitStatusError) Unwrap() error { return e.Err }
+
+// ExitStatus is the status a failed run exits with: 1 unless err names one.
+func ExitStatus(err error) int {
+	var named *ExitStatusError
+	if errors.As(err, &named) {
+		return named.Status
+	}
+	return 1
 }
 
 // ValidateHTTPURL returns an error if u is not an http:// or https:// URL.

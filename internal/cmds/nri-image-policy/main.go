@@ -95,6 +95,8 @@ func Run(args []string) error {
 			return runCheckContainerdConfig(args[1:], os.Stdin)
 		case pluginReadyVerb:
 			return runPluginReady(args[1:])
+		case pluginRunningVerb:
+			return runPluginRunning(args[1:])
 		}
 	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)

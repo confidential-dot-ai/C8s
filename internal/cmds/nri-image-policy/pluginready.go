@@ -147,15 +147,11 @@ func cachedPluginScan(procRoot, pluginPath string, ttl time.Duration, now func()
 // A process that exits mid-scan is skipped, and one awaiting reaping has an
 // empty cmdline, so neither counts.
 func pluginRunning(procRoot, argv0 string) (bool, error) {
-	entries, err := os.ReadDir(procRoot)
+	pids, err := processIDs(procRoot)
 	if err != nil {
 		return false, err
 	}
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
+	for _, pid := range pids {
 		if argv0Is(procRoot, pid, argv0) && launchedByContainerd(procRoot, pid) {
 			return true, nil
 		}
