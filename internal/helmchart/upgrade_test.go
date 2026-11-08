@@ -26,7 +26,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
-	upgraded := append(slices.Clone(args), "--set", "webhook.extraExcluded={tenant-tools}")
+	upgraded := append(slices.Clone(args), "--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}")
 	after, err := helmTemplate(t, upgraded...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, after)

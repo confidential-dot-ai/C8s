@@ -197,10 +197,11 @@ func buildValueArgs(
 // int coerced; everything else stays a string); --set-string values stay
 // strings; --set-file values name a file whose content becomes the value
 // verbatim, mirroring helm. Any other flag is an error rather than a silently
-// mis-parsed value. Dotted keys nest; a trailing key[n] sets list element n
-// (see setNested) — the one indexed form the builder emits. This still does not
-// implement the rest of helm's --set grammar (escaped dots, nested indices)
-// because the builder never emits those.
+// mis-parsed value. Dotted keys nest, except at a backslash-escaped dot; a
+// trailing key[n] sets list element n (see setNested) — the one indexed form
+// the builder emits. This still does not implement the rest of helm's --set
+// grammar (nested indices, comma-joined values) because the builder never
+// emits those.
 func valueArgsToTree(setArgs []string) (map[string]any, error) {
 	root := map[string]any{}
 	for i := 0; i < len(setArgs); i += 2 {
@@ -229,7 +230,11 @@ func valueArgsToTree(setArgs []string) (map[string]any, error) {
 		default:
 			return nil, fmt.Errorf("unsupported value flag %q (want --set, --set-string, or --set-file)", flag)
 		}
-		if err := setNested(root, strings.Split(path, "."), value); err != nil {
+		segments, err := valuePath(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := setNested(root, segments, value); err != nil {
 			return nil, err
 		}
 	}
@@ -253,6 +258,25 @@ func coerce(raw string, typed bool) any {
 		return n
 	}
 	return raw
+}
+
+// valuePath splits a --set key at each dot that no backslash escapes. A key
+// whose last segment is a dangling escape names nothing, so it is an error.
+func valuePath(key string) ([]string, error) {
+	var path []string
+	pending := ""
+	for _, piece := range strings.Split(key, ".") {
+		if escaped, ok := strings.CutSuffix(piece, `\`); ok {
+			pending += escaped + "."
+			continue
+		}
+		path = append(path, pending+piece)
+		pending = ""
+	}
+	if pending != "" {
+		return nil, fmt.Errorf("value key %q ends in a backslash", key)
+	}
+	return path, nil
 }
 
 // setNested writes value at the dotted path, creating intermediate maps. A

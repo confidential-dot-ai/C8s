@@ -4,7 +4,7 @@ metadata:
   name: {{ include "c8s.fullname" . }}-pod-injector
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-  {{- include "c8s.webhookAnnotations" . | nindent 2 }}
+  {{- include "c8s.webhookAnnotationsBlock" . | nindent 2 }}
 webhooks:
   - name: pods.c8s.confidential.ai
     admissionReviewVersions: [v1]
@@ -17,7 +17,7 @@ webhooks:
     # excluded set is the whole opt-out. The reinject sweep excludes the same set.
     namespaceSelector:
       matchExpressions:
-        {{- include "c8s.webhookExcludedNamespaces" . | nindent 8 }}
+        {{- include "c8s.webhookExcludedNamespacesMatchExpression" . | nindent 8 }}
     rules:
       - operations: [CREATE]
         apiGroups: [""]
@@ -33,9 +33,4 @@ webhooks:
         apiVersions: [v1]
         resources: [pods/ephemeralcontainers]
         scope: Namespaced
-    clientConfig:
-      service:
-        namespace: {{ .Release.Namespace }}
-        name: {{ include "c8s.operatorName" . }}
-        path: /mutate-pods
-        port: {{ .Values.webhook.service.port }}
+    {{- include "c8s.webhookClientConfig" (dict "root" . "path" "/mutate-pods") | nindent 4 }}

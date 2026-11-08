@@ -13,6 +13,17 @@
 {{- define "c8s.meshInboundPort" -}}15006{{- end -}}
 {{- define "c8s.meshHealthPort" -}}15021{{- end -}}
 
+{{/* The operator Service port the API server dials the webhooks on. The
+     Service and both webhook configurations name the same port. */}}
+{{- define "c8s.webhookServicePort" -}}443{{- end -}}
+
+{{/* The fixed namespace whose pods serve the router's own ports, as the
+     enforcer compiles it (pkg/workloadclaims.RouterNamespace). Not the release
+     namespace, whose pods the mesh policy exempts. */}}
+{{- define "c8s.routerMeshNamespace" -}}
+c8s-router
+{{- end -}}
+
 {{/* The credential volume of a member pod: the directory and file names the
      injector fixes (internal/webhook/pod_mutator.go), which the measured base
      pins in the mesh endpoint's argv. A chart-rendered member pod publishes

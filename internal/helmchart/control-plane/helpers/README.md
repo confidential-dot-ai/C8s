@@ -1,0 +1,15 @@
+# Webhook helpers
+
+Source: [templates/_webhook.tpl](../templates/_webhook.tpl). Shared helpers
+live in [the c8s-lib chart](../../lib/helpers/README.md).
+
+`c8s.webhookExcludedNamespacesMatchExpression` renders the namespace selector
+expression both webhook configurations share, so the release namespace, the
+router's, the Kubernetes system namespaces and `webhook.extraExcluded` receive
+the same treatment.
+
+`c8s.webhookClientConfig` points a webhook at the operator's Service in the
+release namespace, on the shared `c8s.webhookServicePort`, under its own path.
+
+`c8s.webhookAnnotationsBlock` renders the `annotations` key from
+`webhook.annotations`, and nothing when that map is empty.

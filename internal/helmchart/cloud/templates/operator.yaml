@@ -26,10 +26,7 @@ containers:
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
       - --attestation-api-url={{ include "c8s.sidecarAttestationApiURL" . }}
-      {{- if not .Values.node.baked }}
-      - --exclude-namespaces=local-path-storage
-      {{- end }}
-      {{- range .Values.webhook.extraExcluded }}
+      {{- range .Values.controlPlane.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
       - --cert-fs-group={{ include "c8s.certFsGroup" .Values.podSecurityContext.fsGroup }}
@@ -135,9 +132,7 @@ spec:
     - name: metrics
       port: 8080
       targetPort: metrics
-    # Webhook service port. The API server dials this Service:port; the
-    # MutatingWebhookConfiguration's clientConfig.service.port matches.
-    # controller-runtime's webhook server listens on 9443 by default.
+    # targetPort 9443 is controller-runtime's webhook listener.
     - name: webhook
-      port: {{ .Values.webhook.service.port }}
+      port: {{ include "c8s.webhookServicePort" . }}
       targetPort: 9443

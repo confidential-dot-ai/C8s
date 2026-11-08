@@ -3,8 +3,9 @@
 // Package helmchart bundles the C8s Helm charts into the Go binary
 // so `c8s install` is a single-file install tool — no side chart download.
 //
-// The charts live under this package: cloud/ (the installed chart) and lib/
-// (c8s-lib, the library it depends on). Develop them with the `helm` CLI
+// The charts live under this package: cloud/ (the installed chart),
+// control-plane/ (c8s-control-plane, its CRD, ClusterRole and webhooks) and
+// lib/ (c8s-lib, the library both depend on). Develop them with the `helm` CLI
 // directly (helm lint internal/helmchart/cloud,
 // helm template test internal/helmchart/cloud).
 //
@@ -28,13 +29,15 @@ import (
 // template partials (_helpers.tpl). ExtractTemp adds the charts/ dependency
 // links, which go:embed skips.
 //
-//go:embed all:cloud all:lib
+//go:embed all:cloud all:control-plane all:lib
 var ChartFS embed.FS
 
 const (
 	// ChartRoot is the path prefix inside ChartFS that a helm action expects
 	// as a chart directory.
 	ChartRoot = "cloud"
+	// controlPlaneChart is the cloud chart's c8s-control-plane dependency.
+	controlPlaneChart = "control-plane"
 	// ComponentsFile is the component table and its image pins, relative to a
 	// chart directory whose c8s-lib dependency is linked.
 	ComponentsFile = "charts/c8s-lib/files/components.yaml"
@@ -71,10 +74,14 @@ func ExtractTemp() (string, error) {
 	return dir, nil
 }
 
-// extractCharts writes the embedded charts under dir, the cloud chart with its
-// Chart.yaml dependencies linked into its charts/ directory.
+// extractCharts writes the embedded charts under dir, the cloud and
+// control-plane charts with their Chart.yaml dependencies linked into their
+// charts/ directories.
 func extractCharts(dir string) error {
 	if err := os.CopyFS(dir, ChartFS); err != nil {
+		return err
+	}
+	if err := linkDependencies(dir, controlPlaneChart); err != nil {
 		return err
 	}
 	return linkDependencies(dir, ChartRoot)

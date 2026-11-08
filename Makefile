@@ -7,7 +7,7 @@ CONTROLLER_GEN         ?= controller-gen
 CONTROLLER_GEN_VERSION ?= v0.20.1
 
 # CRD YAMLs land in the helm chart's crds/ folder — the install vector.
-CRD_OUT_DIR    ?= ./internal/helmchart/cloud/crds
+CRD_OUT_DIR    ?= ./internal/helmchart/control-plane/crds
 
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_DIR  = ./build

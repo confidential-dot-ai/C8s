@@ -14,6 +14,7 @@ import (
 // bakedArgs is the chart shape `c8s node-image render` produces.
 var bakedArgs = []string{
 	"--set", "node.baked=true",
+	"--set-json", "controlPlane.webhook.extraExcluded=[]",
 	"--set", "attestationApi.cvmMode=bare-metal",
 	"--set", "attestationApi.enabled=false",
 	"--set", "nriImagePolicy.enabled=false",
@@ -296,6 +297,7 @@ func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 func TestChartRouterTakesItsCDSFromTheNode(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set", "node.baked=true",
+		"--set-json", "controlPlane.webhook.extraExcluded=[]",
 		"--set", "attestationApi.cvmMode=bare-metal",
 		"--set", "attestationApi.enabled=false",
 		"--set", "nriImagePolicy.enabled=false",
@@ -346,6 +348,7 @@ func assertNoArgWithPrefix(t *testing.T, name string, args []string, prefixes ..
 func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 	baked := []string{
 		"--set", "node.baked=true",
+		"--set-json", "controlPlane.webhook.extraExcluded=[]",
 		"--set", "attestationApi.cvmMode=bare-metal",
 		"--set", "attestationApi.enabled=false",
 		"--set", "nriImagePolicy.enabled=false",
@@ -368,7 +371,7 @@ func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 		},
 		{
 			name: "an exclusion only the webhooks know",
-			args: []string{"--set", "webhook.extraExcluded={tenant-a}"},
+			args: []string{"--set", "controlPlane.webhook.extraExcluded={tenant-a}"},
 			kind: "kind=baked_webhook_exclusions",
 		},
 	} {

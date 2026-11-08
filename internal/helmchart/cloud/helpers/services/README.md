@@ -50,10 +50,6 @@ default virtual host. The token-bearing launch directory is never mounted into p
 Missing policy files fail startup. Workload sidecars retain NRI socket injection.
 Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 
-`c8s.routerMeshNamespace` is the namespace whose pods serve the router's own
-ports (`c8s-router`). The chart renders that Namespace under the fixed name the
-enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
-
 The host plugin and the clients it injects reach the CDS by the address the
 installer copies to the node from the `-measurements` ConfigMap, beside the pin
 it holds it to (`cds.address`, `cds.measurementsConfig`).

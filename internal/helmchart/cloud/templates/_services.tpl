@@ -107,13 +107,6 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- if and (include "c8s.cdsFromValues" .) .Values.nriImagePolicy.enabled -}}true{{- end -}}
 {{- end -}}
 
-{{/* The fixed namespace whose pods serve the router's own ports, as the
-     enforcer compiles it (pkg/workloadclaims.RouterNamespace). Not the release
-     namespace, whose pods the mesh policy exempts. */}}
-{{- define "c8s.routerMeshNamespace" -}}
-c8s-router
-{{- end -}}
-
 {{- define "c8s.attestationApiConfig" -}}
 {{- $root := .root -}}
 [server]

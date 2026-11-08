@@ -249,6 +249,7 @@ func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
 		"--show-only", "templates/router-deployment.yaml",
 		"--namespace", "c8s-system", "--kube-version", "1.30.0",
 		"--set", "node.baked=true,attestationApi.enabled=false,nriImagePolicy.enabled=false",
+		"--set-json", "controlPlane.webhook.extraExcluded=[]",
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
