@@ -38,8 +38,10 @@ spec:
           effect: "NoExecute"
         - operator: "Exists"
           effect: "NoSchedule"
+      nodeSelector:
+        {{- include "c8s.confidentialNodeLabels" . | nindent 8 }}
       affinity:
-        {{- include "c8s.nriHostDaemonAffinity" . | nindent 8 }}
+        {{- include "c8s.hostDaemonAffinity" dict | nindent 8 }}
       initContainers:
         # Each script's argv is pinned in the seed as the runtime receives it,
         # and the install script embeds component argv that may hold $(NAME),

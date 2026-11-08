@@ -62,6 +62,18 @@ refuses the pod it finds there until the real range is declared. Read the AKS
 range with
 `az aks show -g <group> -n <cluster> --query networkProfile.podCidr`.
 
+Every node agent and the router run on the cluster's confidential nodes alone:
+the nodes carrying the labels `confidentialNodeSelector` names, which the stock
+file sets to the labels the platform puts on a confidential node pool. Without
+them a mixed cluster schedules the agents onto plain nodes, where they find no
+TEE device and the install never becomes ready. Install refuses a cluster where
+no node carries the labels, and checks host ports, images and the container
+runtime on the labelled nodes alone. A node outside them runs no C8s node
+agent; a confidential pod scheduled there waits for a certificate it never
+gets, because the request reaches neither the admission inventory nor the
+attestation API. Nothing steers confidential workloads onto the labelled nodes
+yet.
+
 A measured node image boots the chart its own build rendered, configured from
 the worker document it launches with ([launch-configuration.md](launch-configuration.md)). `c8s install`
 refuses nodes running RKE2's or k3s's own containerd, which the installer

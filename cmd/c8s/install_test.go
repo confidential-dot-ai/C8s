@@ -1486,3 +1486,23 @@ func TestReportExemptedImages(t *testing.T) {
 		t.Errorf("nothing exempted must print nothing, got:\n%s", buf.String())
 	}
 }
+
+func TestConfidentialNodeSelector(t *testing.T) {
+	t.Run("labels become one sorted selector", func(t *testing.T) {
+		values := map[string]any{"confidentialNodeSelector": map[string]any{
+			"kubernetes.azure.com/security-type": "ConfidentialVM",
+			"c8s.example/pool":                   "cvm",
+		}}
+		got, err := confidentialNodeSelector(values)
+		if want := "c8s.example/pool=cvm,kubernetes.azure.com/security-type=ConfidentialVM"; err != nil || got != want {
+			t.Fatalf("confidentialNodeSelector = (%q, %v), want (%q, nil)", got, err, want)
+		}
+	})
+
+	t.Run("a value that is not a label map is refused", func(t *testing.T) {
+		values := map[string]any{"confidentialNodeSelector": "ConfidentialVM"}
+		if _, err := confidentialNodeSelector(values); err == nil {
+			t.Fatal("want a refusal when the key holds no label map")
+		}
+	})
+}

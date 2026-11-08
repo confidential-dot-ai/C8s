@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2566,6 +2567,7 @@ func renderCloudChart(t *testing.T, chartDir string, args ...string) (string, er
 // attests through /dev/sev-guest.
 var basePlatformArgs = []string{
 	"--set-string", "attestationApi.devices[0]=/dev/sev-guest",
+	"--set-string", `confidentialNodeSelector.cloud\.google\.com/gke-confidential-nodes-instance-type=SEV_SNP`,
 	"--set-string", "nriImagePolicy.platform=snp",
 	"--set-string", "router.attest.generation=genoa",
 	"--set-string", "router.attest.platform=snp",
@@ -5006,5 +5008,79 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unbaked render contains %q", unwanted)
 		}
+	}
+}
+
+// confidentialNodeWorkloads are the cloud chart's pods that must run inside a
+// node's TEE: the node agents, their uninstall hooks, and the router.
+var confidentialNodeWorkloads = []string{
+	"c8s-attestation-api",
+	"c8s-nri-image-policy-uninstall",
+	"c8s-nri-image-policy-worker",
+	"c8s-router",
+	"c8s-volumed",
+	"c8s-volumed-teardown",
+}
+
+// Every one of them selects the nodes its stock file marks as confidential.
+func TestChartPlacesNodeAgentsOnConfidentialNodes(t *testing.T) {
+	t.Parallel()
+	for _, platform := range cloudPlatforms {
+		out, err := helmTemplatePlatform(t, platform, "--set", "volumed.enabled=true")
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", platform, err, out)
+		}
+		want := stockConfidentialNodeSelector(t, platform)
+		placed := map[string]bool{}
+		for _, w := range renderedPodSpecs(t, out) {
+			if !slices.Contains(confidentialNodeWorkloads, w.name) {
+				continue
+			}
+			placed[w.name] = true
+			if !maps.Equal(w.spec.NodeSelector, want) {
+				t.Errorf("%s: %s %s nodeSelector = %v, want %v", platform, w.kind, w.name, w.spec.NodeSelector, want)
+			}
+		}
+		for _, name := range confidentialNodeWorkloads {
+			if !placed[name] {
+				t.Errorf("%s renders no %s", platform, name)
+			}
+		}
+	}
+}
+
+// stockConfidentialNodeSelector reads the labels values-<platform>.yaml marks
+// a confidential node with.
+func stockConfidentialNodeSelector(t *testing.T, platform string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(cloudChartDir, "values-"+platform+".yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		ConfidentialNodeSelector map[string]string `yaml:"confidentialNodeSelector"`
+	}
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	if len(values.ConfidentialNodeSelector) == 0 {
+		t.Fatalf("values-%s.yaml marks no confidential node", platform)
+	}
+	return values.ConfidentialNodeSelector
+}
+
+// The schema requires the labels.
+func TestChartRefusesWithoutConfidentialNodeSelector(t *testing.T) {
+	t.Parallel()
+	unset := filepath.Join(t.TempDir(), "unset.yaml")
+	if err := os.WriteFile(unset, []byte("confidentialNodeSelector: null\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := helmTemplatePlatform(t, "aks-snp", "-f", unset)
+	if err == nil {
+		t.Fatalf("a release marking no confidential node rendered\n%s", out)
+	}
+	if !strings.Contains(out, "confidentialNodeSelector") {
+		t.Errorf("refusal does not name the key: %s", out)
 	}
 }

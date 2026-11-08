@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "$comment": "The root key set is closed, and the subtrees operators hand-write are sealed, so an unknown or misspelled key is a render-time error instead of a silently dropped value. Every key of those subtrees in values.yaml must appear here. Leaf types stay unconstrained except where a wrong value is otherwise accepted silently (see the enums and patterns below). The platform keys have no defaults: templates/validations.yaml fails a render that leaves them unset. Maps whose keys belong to the consumer (label maps, digest maps) are left open.",
+  "$comment": "The root key set is closed, and the subtrees operators hand-write are sealed, so an unknown or misspelled key is a render-time error instead of a silently dropped value. Every key of those subtrees in values.yaml must appear here. Leaf types stay unconstrained except where a wrong value is otherwise accepted silently (see the enums and patterns below). The platform keys have no defaults: templates/validations.yaml fails a render that leaves them unset, except confidentialNodeSelector, which this schema requires non-empty. Maps whose keys belong to the consumer (label maps, digest maps) are left open.",
   "type": "object",
-  "required": ["attestationApi", "nriImagePolicy", "router"],
+  "required": ["attestationApi", "confidentialNodeSelector", "nriImagePolicy", "router"],
   "properties": {
     "cds": {
       "type": [
@@ -200,6 +200,11 @@
     },
     "imagePullSecrets": {},
     "imagePullSecret": {},
+    "confidentialNodeSelector": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string" }
+    },
     "attestationApi": {
       "type": "object",
       "additionalProperties": false,

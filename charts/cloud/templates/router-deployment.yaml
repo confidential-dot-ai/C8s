@@ -3,6 +3,8 @@
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
 {{- include "c8s.imagePullSecrets" . | nindent 0 }}
+nodeSelector:
+  {{- include "c8s.confidentialNodeLabels" . | nindent 2 }}
 {{- /* Every container of this pod holds a platform role the measured base
        grants it, and runs as that role's reserved identity: c8s.meshUID for
        the endpoint, c8s.credentialsUID for get-cert, the probe-file gate and

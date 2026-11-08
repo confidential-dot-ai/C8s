@@ -25,9 +25,3 @@
 {{- $_ := set $affinity "nodeAffinity" $node -}}
 {{- toYaml $affinity -}}
 {{- end -}}
-
-{{/* Installer and uninstaller share the same host-node eligibility. */}}
-{{- define "c8s.nriHostDaemonAffinity" -}}
-{{- $linux := dict "key" "kubernetes.io/os" "operator" "In" "values" (list "linux") -}}
-{{- include "c8s.hostDaemonAffinity" (dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list (dict "matchExpressions" (list $linux)))))) -}}
-{{- end -}}

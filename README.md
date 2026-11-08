@@ -228,8 +228,9 @@ c8s install --platform=aks-snp --namespace c8s-system \
 
 `--platform` names the cluster's confidential VMs: `aks-snp`, `aks-tdx` or
 `gke-snp`, which is unverified on a GKE node. Without it the `-f` files must
-set `attestationApi.devices`, `nriImagePolicy.platform` and
-`router.attest.platform` themselves, or the chart refuses to render.
+set `confidentialNodeSelector`, `attestationApi.devices`,
+`nriImagePolicy.platform` and `router.attest.platform` themselves, or the
+chart refuses to render.
 
 `--workload-ref` adopts the workload, patches its pod template with
 `confidential.ai/cw: vllm`, and resolves its images into the bootstrap allowlist.

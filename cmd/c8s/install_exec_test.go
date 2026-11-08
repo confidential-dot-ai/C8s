@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,19 +76,52 @@ func hostPortPod(ns, name, node string, port int32) corev1.Pod {
 	}
 }
 
+// testNodeSelector is the confidential-node selector install derives from the
+// release's values.
+const testNodeSelector = "c8s.example/confidential=true"
+
+func TestConfidentialNodesExec(t *testing.T) {
+	t.Run("the labelled nodes are listed", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "kubectl", `case "$*" in
+"get nodes -l `+testNodeSelector+` -o jsonpath"*) /usr/bin/printf 'node-a\nnode-b\n' ;;
+esac`)
+		nodes, err := confidentialNodes(context.Background(), testNodeSelector)
+		if err != nil || !slices.Equal(nodes, []string{"node-a", "node-b"}) {
+			t.Fatalf("confidentialNodes = (%v, %v), want ([node-a node-b], nil)", nodes, err)
+		}
+	})
+
+	t.Run("a cluster with no labelled node is refused", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "kubectl", "exit 0")
+		_, err := confidentialNodes(context.Background(), testNodeSelector)
+		if err == nil || !strings.Contains(err.Error(), testNodeSelector) {
+			t.Fatalf("want the refusal naming the labels, got %v", err)
+		}
+	})
+
+	t.Run("node read failure surfaces", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "kubectl", "exit 1")
+		if _, err := confidentialNodes(context.Background(), testNodeSelector); err == nil {
+			t.Fatal("want error when kubectl fails")
+		}
+	})
+}
+
 func TestPreflightRouterHostPortExec(t *testing.T) {
-	kubectlBody := func(nodes, podsFile string) string {
+	kubectlBody := func(podsFile string) string {
 		return `case "$*" in
 "get pods --all-namespaces -o json") /bin/cat '` + podsFile + `' ;;
-"get nodes -o jsonpath"*) /usr/bin/printf '` + nodes + `' ;;
 esac`
 	}
 
 	t.Run("port taken on every node aborts", func(t *testing.T) {
 		pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "kubectl", kubectlBody(`node-a\n`, pods))
-		err := preflightRouterHostPort(context.Background())
+		f.tool(t, "kubectl", kubectlBody(pods))
+		err := preflightRouterHostPort(context.Background(), []string{"node-a"})
 		if err == nil {
 			t.Fatal("want error when the host port is bound on every node")
 		}
@@ -101,8 +135,8 @@ esac`
 	t.Run("a free node passes", func(t *testing.T) {
 		pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "kubectl", kubectlBody(`node-a\nnode-b\n`, pods))
-		if err := preflightRouterHostPort(context.Background()); err != nil {
+		f.tool(t, "kubectl", kubectlBody(pods))
+		if err := preflightRouterHostPort(context.Background(), []string{"node-a", "node-b"}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -110,17 +144,9 @@ esac`
 	t.Run("the router's own holder is ignored", func(t *testing.T) {
 		pods := podListFile(t, hostPortPod(workloadclaims.RouterNamespace, "c8s-router", "node-a", 443))
 		f := newFakeBin(t)
-		f.tool(t, "kubectl", kubectlBody(`node-a\n`, pods))
-		if err := preflightRouterHostPort(context.Background()); err != nil {
+		f.tool(t, "kubectl", kubectlBody(pods))
+		if err := preflightRouterHostPort(context.Background(), []string{"node-a"}); err != nil {
 			t.Fatalf("re-install must not flag its own router: %v", err)
-		}
-	})
-
-	t.Run("node read failure surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "kubectl", "exit 1")
-		if err := preflightRouterHostPort(context.Background()); err == nil {
-			t.Fatal("want error when kubectl fails")
 		}
 	})
 
@@ -130,8 +156,8 @@ esac`
 			t.Fatal(err)
 		}
 		f := newFakeBin(t)
-		f.tool(t, "kubectl", kubectlBody(`node-a\n`, bad))
-		if err := preflightRouterHostPort(context.Background()); err == nil {
+		f.tool(t, "kubectl", kubectlBody(bad))
+		if err := preflightRouterHostPort(context.Background(), []string{"node-a"}); err == nil {
 			t.Fatal("want error for unparseable pod list")
 		}
 	})
@@ -492,13 +518,13 @@ func releaseImage(name, digest string) string {
 }
 
 // clusterKubectl is a healthy single-node cluster: one vanilla linux node that
-// carries the SNP label, one pod answering inside the range that node
-// publishes, and namespace applies captured.
+// carries the confidential-node labels, one pod answering inside the range
+// that node publishes, and namespace applies captured.
 // extra case arms are matched first, so scenarios override single answers.
 func clusterKubectl(applied, extra string) string {
 	return `case "$*" in
-` + extra + `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
-"get nodes -l confidential.ai/sev-snp=true -o name") echo node/node-a ;;
+` + extra + `"get nodes -l "*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
+"get nodes -l "*'{.metadata.name}{"\n"}'*) /usr/bin/printf 'node-a\n' ;;
 "get nodes -o json") echo '{"items":[{"metadata":{"name":"node-a"},"spec":{"podCIDR":"10.42.0.0/24"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
 "get pods --all-namespaces -o json") echo '{"items":[{"metadata":{"name":"app","namespace":"ws"},"status":{"podIPs":[{"ip":"10.42.0.5"}]}}]}' ;;
 "version -o json") echo '{"serverVersion":{"gitVersion":"v1.31.0"}}' ;;
@@ -932,6 +958,7 @@ func staticEtcdPod() corev1.Pod {
 		Namespace:   "kube-system",
 		Name:        "etcd-node-a",
 		Annotations: map[string]string{corev1.MirrorPodAnnotationKey: "mirror"},
+		Spec:        corev1.PodSpec{NodeName: "node-a"},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
 			Name:    "etcd",
 			Image:   "index.docker.io/rancher/hardened-etcd:v3.6.12-k3s1",
@@ -1053,5 +1080,47 @@ func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 	}
 	if strings.Contains(stdout, "admitted by captured digest") {
 		t.Errorf("an install exempting nothing reported an exemption:\n%s", stdout)
+	}
+}
+
+// aksConfidentialNodeSelector is the selector --platform=aks-snp derives from
+// the stock values file.
+const aksConfidentialNodeSelector = "kubernetes.azure.com/security-type=ConfidentialVM"
+
+// A cluster whose nodes carry none of the confidential-node labels is refused.
+func TestInstallRefusesAClusterWithoutConfidentialNodes(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l "*'{.metadata.name}{"\n"}'*) ;;
+`))
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+	if err == nil || !strings.Contains(err.Error(), aksConfidentialNodeSelector) {
+		t.Fatalf("want the refusal naming the platform's confidential-node labels, got %v", err)
+	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// The host-port, image-policy and containerd preflights judge the
+// confidential nodes alone, so a plain node in the cluster neither blocks the
+// router's port nor fails the runtime check. The node-subnet check still reads
+// every node: CDS dials the inventory address of any node a sandbox lands on.
+func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	var reads []string
+	for _, call := range s.f.calls(t) {
+		if strings.HasPrefix(call, "kubectl get nodes") {
+			reads = append(reads, call)
+		}
+	}
+	want := []string{
+		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`,
+		`kubectl get nodes -o json`,
+		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}`,
+	}
+	if !slices.Equal(reads, want) {
+		t.Errorf("install read nodes as:\n%s\nwant:\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
 	}
 }

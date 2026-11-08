@@ -6,6 +6,10 @@ attestationApi:
   devices: []
   image:
     repository: ghcr.io/confidential-dot-ai/mock-attestation
+## The lane's single kind node stands in for a confidential node; run.sh
+## labels it.
+confidentialNodeSelector:
+  c8s.test/confidential: "true"
 nriImagePolicy:
   mesh:
     ## kind's cluster DNS and its pod and Service ranges.
