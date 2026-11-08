@@ -1072,6 +1072,10 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		if platform == "tdx" {
 			out = append(out, "--set-string", "nriImagePolicy.platform=tdx")
 		}
+		// AKS's admissions enforcer leaves both webhook configurations alone.
+		if mode == "aks" {
+			out = append(out, "--set-string", `controlPlane.webhook.annotations.admissions\.enforcer/disabled=true`)
+		}
 		// The attest sidecar's platform names the evidence shape the sidecar
 		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
 		// vTPM HCL report — bare snp/tdx would probe guest devices AKS nodes

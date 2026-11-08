@@ -305,13 +305,38 @@
       }
     },
     "c8s-lib": {},
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "c8s-lib": {},
+        "global": {},
+        "webhook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "extraExcluded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
     "image": {},
     "operator": {},
     "imagePullSecrets": {},
     "imagePullSecret": {},
     "certProvisioning": {},
     "serviceAccount": {},
-    "webhook": {},
     "attestationApi": {},
     "armtlsMesh": {},
     "podSecurityContext": {}

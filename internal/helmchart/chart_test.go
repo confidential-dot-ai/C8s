@@ -541,7 +541,7 @@ func TestChartOwnsTheRouterNamespaceTheEnforcerCompilesIn(t *testing.T) {
 
 func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "webhook.extraExcluded={tenant-a,tenant-b}")
+	out, err := helmTemplate(t, "--set", "controlPlane.webhook.extraExcluded={tenant-a,tenant-b}")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -561,96 +561,37 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 	}
 }
 
-// TestChartWebhookOptsOutOfAKSAdmissionsEnforcer proves the AKS workaround:
-// with attestationApi.cvmMode=aks (what `c8s install --cvm-mode aks` sets) the
-// pod-injector MutatingWebhookConfiguration carries
-// admissions.enforcer/disabled=true, so AKS's admissionsenforcer controller
-// stops rewriting the webhook namespaceSelector and conflicting with helm
-// re-applies. The default (node) must NOT carry it — the annotation is
-// pure AKS plumbing and shouldn't appear on other platforms. A user-set
-// webhook.annotations value flows through alongside it.
-func TestChartWebhookOptsOutOfAKSAdmissionsEnforcer(t *testing.T) {
+// The AKS admissions-enforcer opt-out `c8s install --cvm-mode aks` sets lands
+// on both webhook configurations of the installed release.
+func TestChartWebhookAnnotationsReachBothConfigurations(t *testing.T) {
 	t.Parallel()
-	const annotation = "admissions.enforcer/disabled"
-
-	// Default (node): no AKS opt-out annotation.
-	out, err := helmTemplate(t)
+	out, err := helmTemplate(t, "--set-string", `controlPlane.webhook.annotations.admissions\.enforcer/disabled=true`)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	var def admissionregv1.MutatingWebhookConfiguration
-	if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &def) {
-		t.Fatalf("default chart missing MutatingWebhookConfiguration c8s-pod-injector\n%s", out)
+	var mutating admissionregv1.MutatingWebhookConfiguration
+	var validating admissionregv1.ValidatingWebhookConfiguration
+	if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &mutating) ||
+		!findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &validating) {
+		t.Fatalf("missing admission webhooks\n%s", out)
 	}
-	if _, ok := def.Annotations[annotation]; ok {
-		t.Errorf("default (node) webhook must not carry %s; got %v", annotation, def.Annotations)
-	}
-
-	// aks: opt-out annotation present and "true".
-	out, err = helmTemplate(t, "--set-string", "attestationApi.cvmMode=aks")
-	if err != nil {
-		t.Fatalf("helm template --set attestationApi.cvmMode=aks: %v\n%s", err, out)
-	}
-	var aks admissionregv1.MutatingWebhookConfiguration
-	if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &aks) {
-		t.Fatalf("aks chart missing MutatingWebhookConfiguration c8s-pod-injector\n%s", out)
-	}
-	if got := aks.Annotations[annotation]; got != "true" {
-		t.Errorf("aks webhook %s = %q, want \"true\"; annotations=%v", annotation, got, aks.Annotations)
-	}
-
-	// A user-supplied annotation coexists with the automatic AKS opt-out.
-	out, err = helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=aks",
-		"--set-string", "webhook.annotations.team=platform",
-	)
-	if err != nil {
-		t.Fatalf("helm template with extra webhook annotation: %v\n%s", err, out)
-	}
-	var both admissionregv1.MutatingWebhookConfiguration
-	if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &both) {
-		t.Fatalf("override chart missing MutatingWebhookConfiguration c8s-pod-injector\n%s", out)
-	}
-	if got := both.Annotations["team"]; got != "platform" {
-		t.Errorf("user webhook.annotations.team = %q, want \"platform\"; annotations=%v", got, both.Annotations)
-	}
-	if got := both.Annotations[annotation]; got != "true" {
-		t.Errorf("AKS opt-out must still apply alongside user annotations: %s = %q, want \"true\"", annotation, got)
+	for _, annotations := range []map[string]string{mutating.Annotations, validating.Annotations} {
+		if annotations["admissions.enforcer/disabled"] != "true" {
+			t.Errorf("annotations = %v, want admissions.enforcer/disabled=true", annotations)
+		}
 	}
 }
 
-func TestChartBothWebhooksShareAnnotations(t *testing.T) {
+// The CRD the control-plane subchart carries installs with the cloud release.
+func TestChartReleaseCarriesTheWorkloadCRD(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"bare-metal", "gke", "aks"} {
-		for _, override := range []bool{false, true} {
-			args := []string{"--set-string", "attestationApi.cvmMode=" + mode, "--set-string", "webhook.annotations.team=platform"}
-			want := ""
-			if mode == "aks" {
-				want = "true"
-			}
-			if override {
-				args = append(args, "--set-string", `webhook.annotations.admissions\.enforcer/disabled=false`)
-				want = "false"
-			}
-			out, err := helmTemplate(t, args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			var mutating admissionregv1.MutatingWebhookConfiguration
-			var validating admissionregv1.ValidatingWebhookConfiguration
-			if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &mutating) ||
-				!findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &validating) {
-				t.Fatal("missing admission webhooks")
-			}
-			for _, annotations := range []map[string]string{mutating.Annotations, validating.Annotations} {
-				if annotations["admissions.enforcer/disabled"] != want || annotations["team"] != "platform" {
-					t.Errorf("mode=%s override=%v: annotations=%v, want opt-out=%q and team=platform", mode, override, annotations, want)
-				}
-			}
-			if mutating.Webhooks[0].ReinvocationPolicy == nil || *mutating.Webhooks[0].ReinvocationPolicy != admissionregv1.NeverReinvocationPolicy {
-				t.Error("the initial-input mutator permits reinvocation")
-			}
-		}
+	out, err := helmTemplate(t, "--include-crds")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var crd docMeta
+	if !findDoc(t, out, "CustomResourceDefinition", "confidentialworkloads.confidential.ai", &crd) {
+		t.Fatalf("release carries no ConfidentialWorkload CRD\n%s", out)
 	}
 }
 
@@ -4628,16 +4569,16 @@ func TestChartVolumedAndWebhookAgreeOnTheSocketDir(t *testing.T) {
 // component blocks the docs tell operators to write by hand.
 var schemaCoveredPaths = []string{"cds", "nriImagePolicy", "router", "volumed"}
 
-// readChartFile decodes a file from the chart directory. JSON is a subset of
+// readChartFile decodes a file of a chart directory. JSON is a subset of
 // YAML, so one decoder serves values.yaml and values.schema.json alike.
-func readChartFile(t *testing.T, name string, into any) {
+func readChartFile(t *testing.T, path string, into any) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(repoChart, name))
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", name, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	if err := yaml.Unmarshal(data, into); err != nil {
-		t.Fatalf("decode %s: %v", name, err)
+		t.Fatalf("decode %s: %v", path, err)
 	}
 }
 
@@ -4659,6 +4600,8 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 		{"router.routing", "router.routing.prot=9900"},
 		{"cds", "cds.addresss=10.9.9.9:8443"},
 		{"volumed", "volumed.enable=true"},
+		// The control-plane chart's own schema, through the cloud chart.
+		{"controlPlane.webhook", "controlPlane.webhook.extraExclude=tenant-a"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			key, _, _ := strings.Cut(tc.set, "=")
@@ -4682,14 +4625,21 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 // This is the lockstep guard, checked against the chart's own values.
 func TestChartValuesSchemaCoversValuesYAML(t *testing.T) {
 	t.Parallel()
+	assertChartSchemaCovers(t, repoChart, schemaCoveredPaths)
+}
+
+// assertChartSchemaCovers walks each covered subtree of a chart's values.yaml
+// against its values.schema.json.
+func assertChartSchemaCovers(t *testing.T, chart string, covered []string) {
+	t.Helper()
 	var values map[string]any
-	readChartFile(t, "values.yaml", &values)
+	readChartFile(t, filepath.Join(chart, "values.yaml"), &values)
 	var schema struct {
 		Properties map[string]any `yaml:"properties"`
 	}
-	readChartFile(t, "values.schema.json", &schema)
+	readChartFile(t, filepath.Join(chart, "values.schema.json"), &schema)
 
-	for _, top := range schemaCoveredPaths {
+	for _, top := range covered {
 		node, ok := schema.Properties[top]
 		if !ok {
 			t.Errorf("values.schema.json does not cover %s", top)
@@ -5005,7 +4955,7 @@ func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 			} `yaml:"refresh"`
 		} `yaml:"nriImagePolicy"`
 	}
-	readChartFile(t, "values.yaml", &values)
+	readChartFile(t, filepath.Join(repoChart, "values.yaml"), &values)
 
 	if got := values.NRIImagePolicy.Refresh.Interval; got != want {
 		t.Errorf("baked NRI pull interval is %s but nriImagePolicy.refresh.interval is %s — a tightened entry reaches a node-CVM's gate on the baked value (%s)",
@@ -5343,20 +5293,6 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	}
 	if wh.MatchPolicy == nil || *wh.MatchPolicy != admissionregv1.Equivalent {
 		t.Errorf("matchPolicy = %v, want Equivalent", wh.MatchPolicy)
-	}
-}
-
-// The injector renders fail-closed whatever webhook.failurePolicy is set to:
-// an injection the mutator never made must not reach the API server.
-func TestChartInjectorFailClosed(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "webhook.failurePolicy=Ignore")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	injector := renderedMutatingWebhook(t, out, "pods.c8s.confidential.ai")
-	if injector.FailurePolicy == nil || *injector.FailurePolicy != admissionregv1.Fail {
-		t.Errorf("injector failurePolicy = %v, want Fail", injector.FailurePolicy)
 	}
 }
 

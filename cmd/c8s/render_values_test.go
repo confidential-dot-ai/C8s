@@ -73,6 +73,13 @@ func TestValueArgsToTreeRejectsMalformedIndex(t *testing.T) {
 	}
 }
 
+// A key whose final segment is a dangling escape names nothing.
+func TestValueArgsToTreeRejectsDanglingEscape(t *testing.T) {
+	if _, err := valueArgsToTree([]string{"--set-string", `a.b\=x`}); err == nil {
+		t.Error("valueArgsToTree() accepted a key ending in a backslash")
+	}
+}
+
 // An inner key[n] builds a list of maps, as an allowlist entry's containers do.
 func TestValueArgsToTreeNestsListsOfMaps(t *testing.T) {
 	got, err := valueArgsToTree([]string{
@@ -280,11 +287,12 @@ func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 
 // coerceSafeValueArg is the value-arg grammar valueArgsToTree / coerce actually
 // handle: a single `dotted.path=value` token whose path segments are
-// [A-Za-z0-9.], optionally with a single trailing list index (`foo.bar[0]`).
-// Still excluded: escaped dots (`a\.b`), comma-joined multi-values (`a=1,b=2`),
+// [A-Za-z0-9/], dots as separators, or escaped dots (`a\.b`), optionally with a
+// single trailing list
+// index (`foo.bar[0]`). Still excluded: comma-joined multi-values (`a=1,b=2`),
 // nested indices. valueArgsToTree's doc opts out of the rest of helm's --set
 // grammar on the promise that buildValueArgs never emits those shapes.
-var coerceSafeValueArg = regexp.MustCompile(`^[A-Za-z0-9.]+(\[[0-9]+\])?=[^,]*$`)
+var coerceSafeValueArg = regexp.MustCompile(`^([A-Za-z0-9./]|\\\.)+(\[[0-9]+\])?=[^,]*$`)
 
 // TestBuildValueArgsStaysWithinParserGrammar is the lockstep guard between the
 // emitter (buildValueArgs / buildDigestArgs) and the parser (valueArgsToTree /
@@ -379,6 +387,30 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	}
 	if pin, _ := cds["measurementsConfig"].(string); !strings.Contains(pin, `"launch_file"`) {
 		t.Errorf("cds.measurementsConfig = %q, want the pin document's content", pin)
+	}
+
+	// Third pass: AKS opts both webhooks out of its admissions enforcer, under
+	// an annotation key whose dot the arg escapes.
+	aksArgs, err := appendCvmModeInstallArgs(nil, "aks", "sev-snp")
+	if err != nil {
+		t.Fatalf("appendCvmModeInstallArgs: %v", err)
+	}
+	if len(aksArgs)%2 != 0 {
+		t.Fatalf("appendCvmModeInstallArgs returned %d args, want flag/value pairs", len(aksArgs))
+	}
+	for i := 0; i < len(aksArgs); i += 2 {
+		if kv := aksArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
+			t.Errorf("AKS arg %q is outside the grammar", kv)
+		}
+	}
+	aksTree, err := valueArgsToTree(aksArgs)
+	if err != nil {
+		t.Fatalf("AKS args failed to parse: %v", err)
+	}
+	webhook, _ := aksTree["controlPlane"].(map[string]any)["webhook"].(map[string]any)
+	annotations, _ := webhook["annotations"].(map[string]any)
+	if annotations["admissions.enforcer/disabled"] != "true" {
+		t.Errorf("controlPlane.webhook.annotations = %#v, want admissions.enforcer/disabled=true", annotations)
 	}
 }
 

@@ -208,6 +208,8 @@ func renderNodeImageChart(ctx context.Context, cfg nodeImageRenderConfig, extra 
 	}
 	args = append(args,
 		"--set", "node.baked=true",
+		// A baked node's webhooks exclude only what its measured mesh policy names.
+		"--set-json", "controlPlane.webhook.extraExcluded=[]",
 		"--set", "nriImagePolicy.enabled=false",
 		// A baked node runs volumed as the host service volumed.service, not
 		// the chart DaemonSet, which the chart refuses on a baked node.

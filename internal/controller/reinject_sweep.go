@@ -91,7 +91,7 @@ func needsReinject(pod *corev1.Pod, excluded map[string]struct{}) bool {
 
 // excludedNamespaceSet builds the sweep's exclusion set from the release
 // namespace, the system namespaces, and the operator's extra exclusions
-// (mirroring webhook.extraExcluded so the two stay in sync).
+// (mirroring controlPlane.webhook.extraExcluded so the two stay in sync).
 func excludedNamespaceSet(releaseNS string, extra []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(systemExcludedNamespaces)+len(extra)+1)
 	if releaseNS != "" {

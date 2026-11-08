@@ -4,7 +4,7 @@ metadata:
   name: {{ include "c8s.fullname" . }}-pod-validator
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-  {{- include "c8s.webhookAnnotations" . | nindent 2 }}
+  {{- include "c8s.webhookAnnotationsBlock" . | nindent 2 }}
 webhooks:
   - name: pods-validate.c8s.confidential.ai
     admissionReviewVersions: [v1]
@@ -16,7 +16,7 @@ webhooks:
     timeoutSeconds: 5
     namespaceSelector:
       matchExpressions:
-        {{- include "c8s.webhookExcludedNamespaces" . | nindent 8 }}
+        {{- include "c8s.webhookExcludedNamespacesMatchExpression" . | nindent 8 }}
     rules:
       # UPDATE as well as CREATE: a change on a running pod is judged against
       # the same shape, and ephemeral containers are only visible there.
@@ -25,9 +25,4 @@ webhooks:
         apiVersions: [v1]
         resources: [pods, pods/ephemeralcontainers]
         scope: Namespaced
-    clientConfig:
-      service:
-        namespace: {{ .Release.Namespace }}
-        name: {{ include "c8s.operatorName" . }}
-        path: /validate-pods
-        port: {{ .Values.webhook.service.port }}
+    {{- include "c8s.webhookClientConfig" (dict "root" . "path" "/validate-pods") | nindent 4 }}

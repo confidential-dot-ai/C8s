@@ -68,19 +68,13 @@ certProvisioning:
 serviceAccount:
   imagePullSecrets: []
 
-## Mutating admission webhook that injects get-cert containers into pods
-## annotated with confidential.ai/cw.
-webhook:
-  ## -- Extra annotations for the MutatingWebhookConfiguration. When
-  ## attestationApi.cvmMode=aks (i.e. `c8s install --cvm-mode aks`) the chart
-  ## also adds `admissions.enforcer/disabled: "true"` automatically, so AKS's
-  ## Admissions Enforcer stops rewriting the webhook's namespaceSelector and
-  ## conflicting with `helm upgrade` re-applies. A value set here for the same
-  ## key takes precedence over that automatic default.
-  annotations: {}
-  service:
-    port: 443
-  extraExcluded: []
+## The c8s-control-plane chart: the CRD, the operator's ClusterRole and the
+## admission webhooks that inject and check the pods of confidential workloads.
+controlPlane:
+  webhook:
+    ## Namespaces the webhooks and the operator's reinject sweep leave alone.
+    extraExcluded:
+      - local-path-storage
 
 ## Certificate Distribution Service (cds): the C8s trust root, which serves
 ## attestation, the allowlist and mesh-CA leaf signing. It runs on a

@@ -695,7 +695,7 @@ owned_mesh_members_ready() {
 # Once per run, after the scenarios: what this backend kept for the run.
 teardown() { teardown_backend; }
 
-# A namespace the chart's webhook excludes (c8s.webhookExcludedNamespaces),
+# A namespace the chart's webhook excludes (c8s.webhookExcludedNamespacesMatchExpression),
 # which also admits the harness's pods.
 exempt_namespace() { echo kube-system; }
 # The fully qualified name of the cluster's API Service, which every

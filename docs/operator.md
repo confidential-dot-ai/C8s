@@ -82,8 +82,9 @@ node's and CDS's decision
 
 Every pod created in a namespace the injector's selector admits is injected, so
 the excluded set is the whole opt-out: the release namespace, `c8s-router`,
-`kube-system`, `kube-public`, `kube-node-lease`, and `webhook.extraExcluded`;
-an installed cluster (`node.baked=false`) also excludes `local-path-storage`.
+`kube-system`, `kube-public`, `kube-node-lease`, and
+`controlPlane.webhook.extraExcluded`, which an installed cluster
+(`node.baked=false`) defaults to `local-path-storage`.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 

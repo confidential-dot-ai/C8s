@@ -1305,12 +1305,10 @@ func resolveImageTag() string {
 // label selectors, and armtlsmesh's `--platform` similarly per-node.
 // Follow-up work.
 //
-// aks also opts the pod-injector MutatingWebhookConfiguration out of AKS's
+// aks also opts both webhook configurations out of AKS's
 // "admissionsenforcer" controller (annotation admissions.enforcer/disabled),
 // which otherwise rewrites the webhook namespaceSelector and makes every helm
-// re-apply conflict. That is rendered chart-side off attestationApi.cvmMode (so
-// GitOps/HelmRelease installs get it too), not emitted as a --set here; see
-// internal/helmchart/cloud/templates/webhook.yaml.
+// re-apply conflict.
 func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform string) ([]string, error) {
 	measuredImageCarriesAttestationAndPlugin, err := deployment.MeasuredImageCarriesAttestationAndNRIPlugin(cvmMode)
 	if err != nil {
@@ -1368,6 +1366,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 			attestPlatform = "az-tdx"
 		}
 		helmArgs = append(helmArgs,
+			"--set-string", `controlPlane.webhook.annotations.admissions\.enforcer/disabled=true`,
 			"--set-string", "router.attest.platform="+attestPlatform,
 			"--set-string", "router.attest.generation=",
 		)

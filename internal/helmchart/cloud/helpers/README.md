@@ -10,7 +10,6 @@ live in [the c8s-lib chart](../../lib/helpers/README.md).
 | [NRI image policy](nri-image-policy/README.md) | [nri-image-policy-helpers.tpl](../templates/nri-image-policy-helpers.tpl), [nri-image-policy-install-script.tpl](../templates/nri-image-policy-install-script.tpl) | The installer DaemonSet's paths and the scripts it runs |
 | [Router](router/README.md) | [router-helpers.tpl](../templates/router-helpers.tpl) | The cloud front door's identity, nginx files and ports |
 | [Services](services/README.md) | [_services.tpl](../templates/_services.tpl) | Attestation endpoints, socket access, node launch files |
-| [Webhook scope](webhook/README.md) | [_webhook.tpl](../templates/_webhook.tpl) | Namespace selector and annotations of the injection webhook |
 
 Keep purpose and invariant comments beside the template; keep longer contracts
 and cross-template coordination notes in these references. Documentation lives
