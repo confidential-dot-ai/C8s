@@ -7,7 +7,7 @@ set -euo pipefail
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$test_dir/../../.." && pwd)
 script="$repo_dir/.github/scripts/chart-stamp.sh"
-chart="$repo_dir/internal/helmchart/cloud"
+chart="$repo_dir/charts/cloud"
 table="$chart/charts/c8s-lib/files/components.yaml"
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT

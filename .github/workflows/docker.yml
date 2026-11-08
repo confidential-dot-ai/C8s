@@ -32,7 +32,7 @@ on:
       - "go.work.sum"
       - "cmd/**/Dockerfile"
       - "cmd/nri-image-policy/enable-nri.sh"
-      - "internal/helmchart/**"
+      - "charts/**"
       - "Makefile"
       - ".github/workflows/docker.yml"
   # Manual rebuild escape hatch, for a rebuild with NO new commit behind it: a
@@ -128,10 +128,9 @@ jobs:
             c8s:
               # cmd/c8s is the multi-mode binary used by the operator image;
               # it imports every internal/cmds subcommand, including get-cert.
-              # internal/helmchart is embedded into the binary (see
-              # internal/helmchart's //go:embed), so a chart-only change must
-              # rebuild it too.
-              - '{cmd/c8s/**,internal/cmds/**,internal/helmchart/**}'
+              # charts/ is embedded into the binary (see charts/embed.go), so
+              # a chart-only change must rebuild it too.
+              - '{charts/**,cmd/c8s/**,internal/cmds/**,internal/helmchart/**}'
             cds:
               - '{cmd/cds/**,internal/cmds/cds/**}'
             get-cert:

@@ -19,7 +19,7 @@ die() {
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-default_values="$script_dir/../../internal/helmchart/lib/files/components.yaml"
+default_values="$script_dir/../../charts/lib/files/components.yaml"
 pattern='^[[:space:]]*pinnedDigest:[[:space:]]*sha256:[0-9a-f]{64}$'
 
 current() {

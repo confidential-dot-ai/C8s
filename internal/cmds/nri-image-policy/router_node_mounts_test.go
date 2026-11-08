@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -245,10 +246,10 @@ func renderWorkerRouterDeployment(t *testing.T) appsv1.Deployment {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/worker",
+	cmd := exec.Command("helm", "template", "c8s", testutil.RepoPath("charts", "worker"),
 		"--show-only", "templates/cluster/router-deployment.yaml",
 		"--namespace", "c8s-system", "--kube-version", "1.30.0",
-		"-f", "../../helmchart/worker/values-sev-snp.yaml",
+		"-f", testutil.RepoPath("charts", "worker", "values-sev-snp.yaml"),
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
 	)

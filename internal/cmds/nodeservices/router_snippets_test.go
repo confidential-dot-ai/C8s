@@ -4,11 +4,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // The worker's router mounts the nginx TLS snippets where tls.conf expects them.
 func TestRouterTLSSnippetDirMatchesChart(t *testing.T) {
-	data, err := os.ReadFile("../../helmchart/lib/templates/_router.tpl")
+	data, err := os.ReadFile(testutil.RepoPath("charts", "lib", "templates", "_router.tpl"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ on:
       - "go.sum"
       - "go.work"
       - "go.work.sum"
-      - "internal/helmchart/lib/files/components.yaml"
+      - "charts/lib/files/components.yaml"
       - ".github/workflows/grype.yml"
       - ".grype.yaml"
 
@@ -69,10 +69,10 @@ jobs:
       id: image
       run: |
         set -euo pipefail
-        repo=$(yq -r '.routerNginx.image.repository' internal/helmchart/lib/files/components.yaml)
-        digest=$(yq -r '.routerNginx.image.digest' internal/helmchart/lib/files/components.yaml)
+        repo=$(yq -r '.routerNginx.image.repository' charts/lib/files/components.yaml)
+        digest=$(yq -r '.routerNginx.image.digest' charts/lib/files/components.yaml)
         if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-          echo "::error file=internal/helmchart/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
+          echo "::error file=charts/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
         fi
         echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
 

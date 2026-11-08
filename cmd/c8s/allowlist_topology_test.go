@@ -61,7 +61,7 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 
 func renderedTopologyAllowlist(t *testing.T, platform string) pkgallowlist.Allowlist {
 	t.Helper()
-	chart := filepath.Join("..", "..", "internal", "helmchart", "cloud")
+	chart := filepath.Join("..", "..", "charts", "cloud")
 	args := []string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system",
 		"-f", filepath.Join(chart, "values-"+platform+".yaml"),
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",

@@ -2,16 +2,20 @@ package helmchart
 
 import (
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 )
 
+// controlPlaneChartDir is the c8s-control-plane chart in the repository layout.
+var controlPlaneChartDir = filepath.Join(chartsDir, "control-plane")
+
 // helmTemplateControlPlane renders the c8s-control-plane chart on its own.
 func helmTemplateControlPlane(t *testing.T, args ...string) string {
 	t.Helper()
 	base := []string{
-		"template", "c8s", controlPlaneChart,
+		"template", "c8s", controlPlaneChartDir,
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 	}
@@ -132,5 +136,5 @@ func TestControlPlaneInjectorFailClosed(t *testing.T) {
 
 func TestControlPlaneValuesSchemaCoversValuesYAML(t *testing.T) {
 	t.Parallel()
-	assertChartSchemaCovers(t, controlPlaneChart, []string{"webhook"})
+	assertChartSchemaCovers(t, controlPlaneChartDir, []string{"webhook"})
 }

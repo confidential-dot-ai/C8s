@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/charts"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -155,15 +156,15 @@ func TestValidatePlatform(t *testing.T) {
 // operator's own -f files come after it, as helm's precedence needs.
 func TestCloudPlatformsHaveStockFiles(t *testing.T) {
 	for _, platform := range cloudPlatforms {
-		files := orderedValuesFiles(helmchart.ChartRoot, platform, []string{"own.yaml"})
-		if _, err := helmchart.ChartFS.ReadFile(files[0]); err != nil {
+		files := orderedValuesFiles(helmchart.CloudChartFSPath, platform, []string{"own.yaml"})
+		if _, err := charts.FS.ReadFile(files[0]); err != nil {
 			t.Errorf("--platform %s: %v", platform, err)
 		}
-		if want := []string{filepath.Join(helmchart.ChartRoot, "values-"+platform+".yaml"), "own.yaml"}; !reflect.DeepEqual(files, want) {
+		if want := []string{filepath.Join(helmchart.CloudChartFSPath, "values-"+platform+".yaml"), "own.yaml"}; !reflect.DeepEqual(files, want) {
 			t.Errorf("--platform %s selects %v, want %v", platform, files, want)
 		}
 	}
-	if files := orderedValuesFiles(helmchart.ChartRoot, "", []string{"own.yaml"}); !reflect.DeepEqual(files, []string{"own.yaml"}) {
+	if files := orderedValuesFiles(helmchart.CloudChartFSPath, "", []string{"own.yaml"}); !reflect.DeepEqual(files, []string{"own.yaml"}) {
 		t.Errorf("no --platform selects %v, want the -f files alone", files)
 	}
 }
@@ -1053,7 +1054,7 @@ func TestChartComponentsFromEmbeddedChart(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	comps, err := chartComponents(context.Background(), filepath.Join(dir, helmchart.ChartRoot))
+	comps, err := chartComponents(context.Background(), filepath.Join(dir, helmchart.CloudChartFSPath))
 	if err != nil {
 		t.Fatalf("chartComponents: %v", err)
 	}
@@ -1085,7 +1086,7 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
-	chartPath := filepath.Join(dir, helmchart.ChartRoot)
+	chartPath := filepath.Join(dir, helmchart.CloudChartFSPath)
 
 	vf := filepath.Join(t.TempDir(), "enable-volumed.yaml")
 	if err := os.WriteFile(vf, []byte("volumed:\n  enabled: true\n"), 0o600); err != nil {

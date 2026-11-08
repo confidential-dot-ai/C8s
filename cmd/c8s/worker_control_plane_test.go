@@ -27,7 +27,7 @@ import (
 const routerDeploymentKey = "Deployment/c8s-router/c8s-router"
 
 // workerChartDir is the c8s-worker chart in the repository layout.
-var workerChartDir = filepath.Join("..", "..", "internal", "helmchart", "worker")
+var workerChartDir = filepath.Join("..", "..", "charts", "worker")
 
 // workerRenderConfig is the worker image build's render configuration.
 func workerRenderConfig() nodeImageRenderConfig {

@@ -122,7 +122,7 @@ repo = img["repository"]
 # Bare docker-hub names (nginxinc/foo) need the registry made explicit for ctr.
 if "/" not in repo or ("." not in repo.split("/")[0] and ":" not in repo.split("/")[0] and repo.split("/")[0] != "localhost"):
     repo = "docker.io/" + repo
-print(repo + "@" + img["digest"])' < internal/helmchart/lib/files/components.yaml)"
+print(repo + "@" + img["digest"])' < charts/lib/files/components.yaml)"
 node_exec ctr -n k8s.io images pull "$ROUTER_NGINX_REF" >/dev/null \
     || fail "could not pull $ROUTER_NGINX_REF into the node"
 
@@ -202,7 +202,7 @@ KIND_SUBNET=$(cat "$WORKDIR/kind-subnet")
 python3 - "$IMAGE_TAG" > "$WORKDIR/image-tags.yaml" <<'PYEOF'
 import sys, yaml
 values = {}
-for component in yaml.safe_load(open("internal/helmchart/lib/files/components.yaml"))["components"]:
+for component in yaml.safe_load(open("charts/lib/files/components.yaml"))["components"]:
     node = values
     for key in component["valuePath"].split("."):
         node = node.setdefault(key, {})
@@ -215,7 +215,7 @@ PYEOF
 # cluster DNS and pod and Service ranges.
 c8s_install() {
     ./build/c8s install \
-        --chart internal/helmchart/cloud \
+        --chart charts/cloud \
         --namespace "$NS" \
         --operator-keys "$WORKDIR/operator-pub.pem" \
         -f "$WORKDIR/image-tags.yaml" \

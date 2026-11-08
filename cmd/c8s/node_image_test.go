@@ -27,10 +27,10 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/charts"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -122,13 +122,13 @@ func TestNodeImageRender(t *testing.T) {
 // chartFiles are the files of a directory of the embedded charts, by name.
 func chartFiles(t *testing.T, dir string) map[string][]byte {
 	t.Helper()
-	entries, err := fs.ReadDir(helmchart.ChartFS, dir)
+	entries, err := fs.ReadDir(charts.FS, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{}
 	for _, e := range entries {
-		body, err := fs.ReadFile(helmchart.ChartFS, path.Join(dir, e.Name()))
+		body, err := fs.ReadFile(charts.FS, path.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}

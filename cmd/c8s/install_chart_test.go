@@ -33,7 +33,7 @@ func TestInstallRendersTheChartFlagsChart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	chart := filepath.Join(dir, helmchart.ChartRoot)
+	chart := filepath.Join(dir, helmchart.CloudChartFSPath)
 	if err := runInstall(t, "--chart", chart, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
 		t.Fatalf("install: %v", err)
 	}

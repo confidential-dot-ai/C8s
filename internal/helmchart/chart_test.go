@@ -28,6 +28,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -179,7 +180,7 @@ func renderedKinds(t *testing.T, helmOut string) map[string]int {
 //     kubeVersion constraint makes helm fail early and clearly instead.
 func TestChartARMTLSKubeVersionPinned(t *testing.T) {
 	t.Parallel()
-	const path = repoChart + "/Chart.yaml"
+	path := filepath.Join(cloudChartDir, "Chart.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -1671,7 +1672,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
+			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -1691,7 +1692,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
+			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
 			if err == nil {
 				t.Fatalf("helm template accepted a release that names no CDS\n%s", out)
 			}
@@ -2461,9 +2462,12 @@ func helmOutput(cmd *exec.Cmd) ([]byte, error) {
 	return out, err
 }
 
-// repoChart is the cloud chart in the repository layout, where c8s-lib is the
+// chartsDir is the repository's charts/ directory.
+var chartsDir = testutil.RepoPath("charts")
+
+// cloudChartDir is the cloud chart in the repository layout, where c8s-lib is the
 // committed charts/c8s-lib symlink.
-const repoChart = "cloud"
+var cloudChartDir = filepath.Join(chartsDir, "cloud")
 
 // extractedChart is the cloud chart in the layout `c8s install` renders: the
 // tree ExtractTemp writes, where the subchart link is rebuilt from Chart.yaml.
@@ -2474,13 +2478,13 @@ func extractedChart(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, ChartRoot)
+	return filepath.Join(dir, CloudChartFSPath)
 }
 
 // helmTemplate renders the repository layout.
 func helmTemplate(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	return helmTemplateIn(t, repoChart, args...)
+	return helmTemplateIn(t, cloudChartDir, args...)
 }
 
 // helmTemplateIn is helmTemplate on the chart at chartDir, under a
@@ -2509,8 +2513,8 @@ func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string
 // in place of basePlatformArgs. Takes the platform, such as aks-snp.
 func helmTemplatePlatform(t *testing.T, platform string, args ...string) (string, error) {
 	t.Helper()
-	stock := []string{"-f", filepath.Join(repoChart, "values-"+platform+".yaml")}
-	return renderCloudChart(t, repoChart, slices.Concat(stock, baseCDSPolicy(t), args)...)
+	stock := []string{"-f", filepath.Join(cloudChartDir, "values-"+platform+".yaml")}
+	return renderCloudChart(t, cloudChartDir, slices.Concat(stock, baseCDSPolicy(t), args)...)
 }
 
 // cloudPlatforms name the cloud chart's stock values files.
@@ -3136,7 +3140,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		t.Fatal("helm CLI not found")
 	}
 	base := append([]string{
-		"template", "c8s", repoChart,
+		"template", "c8s", cloudChartDir,
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 	}, basePlatformArgs...)
@@ -4233,7 +4237,7 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 // This is the lockstep guard, checked against the chart's own values.
 func TestChartValuesSchemaCoversValuesYAML(t *testing.T) {
 	t.Parallel()
-	assertChartSchemaCovers(t, repoChart, schemaCoveredPaths)
+	assertChartSchemaCovers(t, cloudChartDir, schemaCoveredPaths)
 }
 
 // assertChartSchemaCovers walks each covered subtree of a chart's values.yaml
@@ -4598,7 +4602,7 @@ func TestChartRefusesARenderWithoutThePlatformKeys(t *testing.T) {
 	} {
 		t.Run(key, func(t *testing.T) {
 			args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey(key))
-			out, err := renderCloudChart(t, repoChart, args...)
+			out, err := renderCloudChart(t, cloudChartDir, args...)
 			if err == nil {
 				t.Fatalf("helm template rendered without %s\n%s", key, out)
 			}
@@ -4618,7 +4622,7 @@ func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 	t.Parallel()
 	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
 		[]string{"--set-json", "attestationApi.devices=[]"})
-	out, err := renderCloudChart(t, repoChart, args...)
+	out, err := renderCloudChart(t, cloudChartDir, args...)
 	if err != nil {
 		t.Fatalf("helm template refused an empty attestationApi.devices: %v\n%s", err, out)
 	}
@@ -4777,7 +4781,7 @@ func TestChartSweepMountAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script, err := os.ReadFile(repoChart + "/files/scripts/host-sweep.sh")
+	script, err := os.ReadFile(filepath.Join(cloudChartDir, "files", "scripts", "host-sweep.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}

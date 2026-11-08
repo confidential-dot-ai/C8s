@@ -525,9 +525,9 @@ release by image tags. The installer's image needs a digest, here a
 placeholder, and the mesh policy the cluster's DNS resolver and CIDRs.
 
 ```sh
-helm template c8s internal/helmchart/cloud \
+helm template c8s charts/cloud \
   --namespace c8s-system --kube-version 1.31.0 \
-  -f internal/helmchart/cloud/values-aks-snp.yaml \
+  -f charts/cloud/values-aks-snp.yaml \
   --set cds.address=10.0.0.9:8443 \
   --set-file cds.measurementsConfig=cds-pin.json \
   --set image.tag=main \

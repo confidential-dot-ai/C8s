@@ -169,7 +169,7 @@ digest must have a rendered container, or the render fails. It takes the same
 `c8s.generatedShapes`, `c8s.baseWorkloads`, `c8s.roleFloorWorkloads` and
 `c8s.allowlistSeedJSON`: the chart that renders the component workloads is the
 one that names them.
-[component_mounts_test.go](../../../component_mounts_test.go) checks that the
+[component_mounts_test.go](../../../../internal/helmchart/component_mounts_test.go) checks that the
 seed and the base admit every rendered component container exactly as
 rendered, with the environment it launches with, and refuse it with one
 argument or mount more, one mount fewer, `LD_PRELOAD` set or `PATH` moved, for
@@ -210,10 +210,10 @@ new entry name for additive seeding.
 calling `argvPinnedEntries` there would recurse through the install script's
 boot config. Keep the inclusion conditions of both helpers aligned.
 
-[pinned_seed_test.go](../../../pinned_seed_test.go) checks rendered invocations and mounts,
+[pinned_seed_test.go](../../../../internal/helmchart/pinned_seed_test.go) checks rendered invocations and mounts,
 rejection of different argv, and exclusion from the boot config's local base.
 The operator-facing bootstrap behavior is described in
-[Allowlist and capabilities](../../../../../docs/allowlist-and-capabilities.md#bootstrap).
+[Allowlist and capabilities](../../../../docs/allowlist-and-capabilities.md#bootstrap).
 
 ## Router entry
 
@@ -252,6 +252,6 @@ argv, as `c8s-cert`'s `--expected-workload`. The hash therefore renders the pod
 with `routerNamePlaceholder` set in the context, under which
 `c8s.routerWorkloadName` returns a fixed placeholder.
 
-[router_entry_test.go](../../../router_entry_test.go) feeds the rendered router
+[router_entry_test.go](../../../../internal/helmchart/router_entry_test.go) feeds the rendered router
 pod, with the argv and mounts a node observes, through
 `secrets.WorkloadContainers` and `MatchWorkload`.

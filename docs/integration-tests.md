@@ -40,7 +40,7 @@ produces hardware evidence for CDS and every other component. It runs get-cert,
 the sidecar that obtains a pod's certificate, through the real armTLS flow, and
 checks that nginx serves HTTPS with the issued certificate. The second boots a
 kind cluster, builds the component images, and runs `c8s install --chart
-internal/helmchart/cloud` with `test/integration/cluster/values.yaml`. The first two end with their check
+charts/cloud` with `test/integration/cluster/values.yaml`. The first two end with their check
 count:
 
 ```text

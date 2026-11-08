@@ -48,7 +48,7 @@ type config struct {
 
 // The front door's issued credential, split so that a reader of the chain
 // never holds the key. The chart mounts these two paths and serves the pair
-// from them (internal/helmchart/worker/templates/cluster/_router.tpl).
+// from them (charts/worker/templates/cluster/_router.tpl).
 const (
 	certDir = "/etc/c8s-acme-tls"
 	keyDir  = "/etc/c8s-acme-key"

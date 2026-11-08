@@ -411,7 +411,7 @@ so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
 is the published attestation-api image of that release: the CDS image fetches
 it by that digest (`images/cds-guest/cds/mkosi.sync`) and the host DaemonSet
 runs it as the chart's `attestationApi` `pinnedDigest`
-(`internal/helmchart/lib/files/components.yaml`), a copy that
+(`charts/lib/files/components.yaml`), a copy that
 `.github/scripts/chart-attestation-api-digest.sh` reads and writes and that
 pin-hygiene holds equal to the manifest. pin-hygiene also resolves
 `attestation-api:<attestation_rs_tag>` and
@@ -422,7 +422,7 @@ verify with the same attestation-api release. pin-watch resolves the digest of
 a new attestation-rs release and writes the manifest and the chart together.
 
 The chart's third-party image, the router's nginx, is digest-pinned in
-`internal/helmchart/lib/files/components.yaml` and seeded into the allowlist
+`charts/lib/files/components.yaml` and seeded into the allowlist
 floor. The line above each digest names the tag it was resolved from
 (`# Resolve REPOSITORY:TAG to bump this digest.`), which
 `.github/scripts/chart-image-pins.sh list` reads and `set` rewrites.

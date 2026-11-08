@@ -1,21 +1,19 @@
 //go:build !c8s_node
 
-// Package helmchart bundles the C8s Helm charts into the Go binary, so
-// `c8s install` renders the chart it was built with.
+// Package helmchart extracts the embedded C8s Helm charts into a renderable
+// tree, so `c8s install` renders the charts it was built with.
 //
-// The charts live under this package: cloud/ (the installed chart),
-// worker/ (c8s-worker, which the worker render commands template),
+// The charts live in the repository's charts/ directory: cloud/ (the installed
+// chart), worker/ (c8s-worker, which the worker render commands template),
 // control-plane/ (c8s-control-plane, its CRD, ClusterRole and webhooks) and
 // lib/ (c8s-lib, the library they depend on). Develop them with the `helm` CLI
-// directly (helm lint internal/helmchart/cloud,
-// helm template test internal/helmchart/cloud).
+// directly (helm lint charts/cloud, helm template test charts/cloud).
 //
 // Build tag: dropped from `-tags c8s_node` builds along with the
 // `c8s install` subcommand that consumes it.
 package helmchart
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
 	"os"
@@ -24,20 +22,15 @@ import (
 	"strings"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/confidential-dot-ai/c8s/charts"
 )
 
-// ChartFS contains the full chart trees including dotfiles and underscored
-// template partials (_helpers.tpl). ExtractTemp adds the charts/ dependency
-// links, which go:embed skips.
-//
-//go:embed all:cloud all:control-plane all:lib all:worker
-var ChartFS embed.FS
-
 const (
-	// ChartRoot is the path prefix inside ChartFS that a helm action expects
+	// CloudChartFSPath is the path prefix inside charts.FS that a helm action expects
 	// as a chart directory.
-	ChartRoot = "cloud"
-	// WorkerChart is the c8s-worker chart's path inside ChartFS.
+	CloudChartFSPath = "cloud"
+	// WorkerChart is the c8s-worker chart's path inside charts.FS.
 	WorkerChart = "worker"
 	// controlPlaneChart is the c8s-control-plane dependency of both charts.
 	controlPlaneChart = "control-plane"
@@ -62,7 +55,7 @@ const (
 // HostSweepScript is the uninstall host sweep script, normalized the way the
 // chart's argv pin renders it (trailing newlines collapsed to one).
 func HostSweepScript() string {
-	b, err := ChartFS.ReadFile(ChartRoot + "/files/scripts/host-sweep.sh")
+	b, err := charts.FS.ReadFile(CloudChartFSPath + "/files/scripts/host-sweep.sh")
 	if err != nil {
 		panic(err)
 	}
@@ -86,10 +79,10 @@ func ExtractTemp() (string, error) {
 // Extract writes the embedded charts under dir, each chart with its
 // Chart.yaml dependencies linked into its charts/ directory.
 func Extract(dir string) error {
-	if err := os.CopyFS(dir, ChartFS); err != nil {
+	if err := os.CopyFS(dir, charts.FS); err != nil {
 		return err
 	}
-	for _, chart := range []string{ChartRoot, controlPlaneChart, WorkerChart} {
+	for _, chart := range []string{CloudChartFSPath, controlPlaneChart, WorkerChart} {
 		if err := linkDependencies(dir, chart); err != nil {
 			return err
 		}
@@ -124,7 +117,7 @@ func linkDependencies(dir string, chart string) error {
 // chartDependencies reads the dependencies the embedded chart's Chart.yaml
 // lists.
 func chartDependencies(chart string) ([]chartDependency, error) {
-	data, err := ChartFS.ReadFile(path.Join(chart, "Chart.yaml"))
+	data, err := charts.FS.ReadFile(path.Join(chart, "Chart.yaml"))
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +137,7 @@ func linkDependency(chartsDir string, chart string, dependency chartDependency) 
 	if !ok {
 		return fmt.Errorf("dependency %s: repository %s is not a file:// directory", dependency.Name, dependency.Repository)
 	}
-	if _, err := fs.Stat(ChartFS, path.Join(chart, target)); err != nil {
+	if _, err := fs.Stat(charts.FS, path.Join(chart, target)); err != nil {
 		return fmt.Errorf("dependency %s: %w", dependency.Name, err)
 	}
 	targetFromChartsDir := filepath.Join("..", target)
