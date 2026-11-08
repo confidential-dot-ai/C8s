@@ -1,10 +1,7 @@
 {{- define "router.podSpec" -}}
+{{- $frontDoor := include "router.frontDoor" . | fromYaml -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
-{{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
-{{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
-{{- $operatorKeys := and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys -}}
-
 {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
 {{- /* Every container of this pod holds a platform role the measured base
        grants it, and runs as that role's reserved identity: c8s.meshUID for
@@ -17,261 +14,22 @@ initContainers:
   {{- /* The endpoint leads: the enforcer gates the rest of the pod on its
          start, and every other container's traffic is captured into it. */}}
   {{- include "c8s.meshEndpointContainer" . | nindent 2 }}
-  {{- include "router.getCertContainers" . | nindent 2 }}
-  {{- if $acmeSidecar }}
-  # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
-  # leaf for the sanList domains, answers HTTP-01 on loopback behind the
-  # :80 server and renews at 2/3 lifetime. nginx's own entrypoint
-  # reloads on the install (router-configmap.yaml).
-  - name: acme
-    image: {{ include "c8s.image" . }}
-    imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
-    restartPolicy: Always
-    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
-    args:
-      {{- include "router.acmeArgs" . | fromJsonArray | toYaml | nindent 6 }}
-    # nginx's config names the acme cert files, so nginx must not start
-    # before the bootstrap placeholder exists; regular containers wait
-    # for a native sidecar's startup probe. HTTP, not exec: a locked
-    # node image denies every runc exec it was not granted, so an exec probe can never pass
-    # there (internal/cmds/c8srunc). /readyz reports exactly what the
-    # probe-file exec reported — both files present and non-empty.
-    startupProbe:
-      httpGet:
-        path: /readyz
-        port: acme-ready
-      periodSeconds: 1
-      failureThreshold: 60
-    ports:
-      - name: acme-ready
-        containerPort: {{ include "router.acmeReadyPort" . | int }}
-    volumeMounts:
-      - name: acme-tls
-        mountPath: {{ include "router.acmeCertDir" . }}
-      {{- /* The serving key and the ACME account state, apart from the chain
-             so a reader of the chain never holds the key. */}}
-      - name: acme-key
-        mountPath: {{ include "router.acmeKeyDir" . }}
-      {{- if $launchDriven }}
-      - name: c8s-certs
-        mountPath: {{ include "c8s.certDir" . }}
-        readOnly: true
-      {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
-      {{- end }}
-    securityContext:
-      {{- include "c8s.getCertSecurityContext" (dict
-        "runAsUser" (include "c8s.acmeUID" .)
-        "runAsGroup" (include "c8s.acmeUID" .)
-      ) | nindent 6 }}
+  {{- include "router.getCertContainers" (dict "root" . "getCert" (required "the front door declares its get-cert" $frontDoor.getCert)) | nindent 2 }}
+  {{- with $frontDoor.sidecars }}
+  {{- toYaml . | nindent 2 }}
   {{- end }}
 containers:
-  - name: nginx
-    image: {{ include "c8s-common.image" (include "c8s.routerNginxPin" . | fromJson).image }}
-    imagePullPolicy: {{ .Values.router.nginx.imagePullPolicy }}
-    {{- /* nginx runs as the child of serve.sh, which stops it when the
-           front-door certificate is withdrawn (router-configmap.yaml). The
-           allowlist pins this argv exactly and admits no argument beside it,
-           so nothing a pod adds (-g load_module, another -c) runs under the
-           nginx entry. */}}
-    command:
-      - /bin/sh
-      - {{ include "router.configDir" . }}/serve.sh
-    ports:
-      - name: https
-        containerPort: {{ include "router.nginxHTTPSPort" . }}
-        hostPort: 443
-        protocol: TCP
-      {{- if $acmeSidecar }}
-      {{- /* HTTP-01 arrives on public :80. */}}
-      - name: http
-        containerPort: {{ include "router.acmeHTTPPort" . }}
-        hostPort: 80
-        protocol: TCP
-      {{- end }}
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      runAsNonRoot: true
-      runAsUser: {{ include "c8s.routerUID" . }}
-      runAsGroup: {{ include "c8s.routerUID" . }}
-      capabilities:
-        drop:
-          - ALL
-
-    readinessProbe:
-      httpGet:
-        path: /healthz
-        port: https
-        scheme: HTTPS
-      initialDelaySeconds: 5
-      periodSeconds: 10
-    volumeMounts:
-      - name: c8s-certs
-        mountPath: {{ include "c8s.certDir" . }}
-        readOnly: true
-      {{- if $acmeSidecar }}
-      - name: acme-tls
-        mountPath: {{ include "router.acmeCertDir" . }}
-        readOnly: true
-      {{- /* The front door is the only other container that mounts the key. */}}
-      - name: acme-key
-        mountPath: {{ include "router.acmeKeyDir" . }}
-        readOnly: true
-      {{- end }}
-      - name: discovery
-        mountPath: /discovery
-        readOnly: true
-      {{- /* The whole ConfigMap, beside the operator data rather than over
-             /etc/nginx: a component's ConfigMap mounts sit under
-             /mnt/c8s-data, and the args name the file. A baked node mounts
-             the image's copy instead; the launch file's tls.conf includes a
-             snippet from it. */}}
-      - name: nginx-config
-        mountPath: {{ include "router.configDir" . }}
-        readOnly: true
-      {{- if $launchDriven }}
-      {{- /* nginx.conf includes router/tls.conf from here. */}}
-      {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
-      {{- end }}
-      - name: nginx-cache
-        mountPath: /var/cache/nginx
-      - name: nginx-tmp
-        mountPath: /tmp
-      - name: nginx-tunnel-body
-        mountPath: {{ include "router.tunnelBodyDir" . }}
-    {{- with .Values.router.nginx.resources }}
-    resources:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-  {{- /* Its routing listener carries every application request nginx's
-  location / sends it (route policy A7). */}}
-  - name: cds-attest
-    image: {{ include "c8s.image" . }}
-    imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
-    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
-    # Argv and its rationale: router.cdsAttestArgs.
-    args:
-      {{- include "router.cdsAttestArgs" (dict "root" .) | fromJsonArray | toYaml | nindent 6 }}
-    {{- with (include "c8s.attestationApiHostIPEnv" .) }}
-    # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
-    # IP so this pod-netns pod reaches the node-baked host attestation-api.
-    env:
-      {{- . | nindent 6 }}
-    {{- end }}
-    volumeMounts:
-      - name: c8s-certs
-        mountPath: {{ include "c8s.certDir" . }}
-        readOnly: true
-      {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
-      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if include "c8s.cdsFromValues" . }}
-      - name: measurements-config
-        mountPath: /mnt/c8s-data/measurements
-        readOnly: true
-      {{- end }}
-      {{- if $operatorKeys }}
-      - name: operator-keys
-        mountPath: /mnt/c8s-data/operator-keys
-        readOnly: true
-      {{- end }}
-      {{- if $acmeSidecar }}
-      - name: acme-tls
-        mountPath: {{ include "router.acmeCertDir" . }}
-        readOnly: true
-      {{- end }}
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      runAsNonRoot: true
-      {{- /* It holds the signed route manifest and dials each member backend
-             itself, so it runs as the upstream role's reserved identity: the
-             one identity of this pod the node leaves uncaptured into the
-             cluster. */}}
-      runAsUser: {{ include "c8s.upstreamUID" . }}
-      runAsGroup: {{ include "c8s.upstreamUID" . }}
-      capabilities:
-        drop:
-          - ALL
-    {{- with .Values.router.attest.resources }}
-    resources:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-  # nginx terminates the public, router-attested connection and forwards
-  # /allowlist over pod loopback. This sidecar establishes the second
-  # trust hop: it verifies CDS's armTLS evidence before proxying.
-  - name: allowlist-proxy
-    image: {{ include "c8s.image" . }}
-    imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
-    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
-    args:
-      {{- include "router.allowlistProxyArgs" . | fromJsonArray | toYaml | nindent 6 }}
-    {{- with (include "c8s.attestationApiHostIPEnv" .) }}
-    # cvmMode=bare-metal: the proxy verifies CDS through the node-baked
-    # attestation-api, reached from this pod via its node IP.
-    env:
-      {{- . | nindent 6 }}
-    {{- end }}
-    {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) (include "c8s.attestationApiNodeIPFile" .) }}
-    volumeMounts:
-      {{- if eq (include "router.mountInventorySocket" .) "true" }}
-      # The inventory socket directory at the compiled path get-cert mounts it
-      # on, so this sidecar names the node's own verifier.
-      - name: workload-claims
-        mountPath: /run/c8s/workload-claims
-        readOnly: true
-      {{- else }}
-      {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
-      {{- end }}
-    {{- end }}
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      runAsNonRoot: true
-      {{- /* It dials CDS, so it holds the credentials role. */}}
-      runAsUser: {{ include "c8s.credentialsUID" . }}
-      runAsGroup: {{ include "c8s.credentialsUID" . }}
-      capabilities:
-        drop:
-          - ALL
-    {{- with .Values.router.allowlist.resources }}
-    resources:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
+  {{- include "c8s.routerContainers" (dict
+    "root" .
+    "config" (include "router.configDir" .)
+    "ports" (include "router.publicPorts" . | fromJsonArray)
+    "certificateMounts" $frontDoor.certificateMounts
+    "settingsMounts" $frontDoor.settingsMounts
+    "cdsAttestArgs" (required "the front door declares cds-attest's argv" $frontDoor.cdsAttestArgs)
+    "cdsAttestMounts" (required "the front door declares cds-attest's mounts" $frontDoor.cdsAttestMounts)
+  ) | nindent 2 }}
 volumes:
-  {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
-  - name: c8s-certs
-    emptyDir:
-      medium: Memory
-      sizeLimit: 1Mi
-  {{- if include "c8s.cdsFromValues" . }}
-  - name: measurements-config
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-  {{- end }}
-  {{- if $operatorKeys }}
-  - name: operator-keys
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.fullname" . }}-operator-keys
-  {{- end }}
-  {{- if $acmeSidecar }}
-  # ACME key, cert, and account state. Memory-medium: TEE-protected and
-  # lost on pod recreation, so the sidecar re-issues (LE duplicate-cert
-  # limits apply; use the staging directoryURL for tests).
-  - name: acme-tls
-    emptyDir:
-      medium: Memory
-      sizeLimit: 1Mi
-  # The serving key and the ACME account key, which the sidecar writes and
-  # the front door alone mounts.
-  - name: acme-key
-    emptyDir:
-      medium: Memory
-      sizeLimit: 1Mi
-  {{- end }}
+  {{- toYaml (required "the front door declares its volumes" $frontDoor.volumes) | nindent 2 }}
   - name: discovery
     emptyDir:
       medium: Memory
@@ -294,16 +52,7 @@ volumes:
       medium: Memory
       sizeLimit: {{ required "router.nginx.tunnelBodySpace is required" .Values.router.nginx.tunnelBodySpace }}
   - name: nginx-config
-    {{- if .Values.node.baked }}
-    hostPath:
-      path: {{ include "router.bakedNginxDir" . }}
-      type: Directory
-    {{- else }}
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "router.fullname" . }}-nginx
-    {{- end }}
+    {{- toYaml (required "the front door declares its config volume" $frontDoor.configVolume) | nindent 4 }}
   {{- if eq (include "router.mountInventorySocket" .) "true" }}
   # get-cert redeems a sandbox token over the node inventory's Unix socket
   # (see router.getCertContainers). Read-only: the sidecar only connects.
@@ -327,6 +76,7 @@ securityContext:
     type: RuntimeDefault
 {{- end -}}
 
+{{- $frontDoor := include "router.frontDoor" . | fromYaml }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -335,7 +85,7 @@ metadata:
   labels:
     {{- include "router.labels" . | nindent 4 }}
 spec:
-  replicas: {{ ternary 1 .Values.router.nginx.replicas .Values.node.baked }}
+  replicas: {{ required "the front door declares its replicas" $frontDoor.replicas }}
   strategy:
     {{- /* Two pods on a node would collide on the host port; on a single-node
     cluster a surge pod could never schedule, deadlocking the roll. */}}
@@ -348,15 +98,10 @@ spec:
       labels:
         {{- include "router.selectorLabels" . | nindent 8 }}
       annotations:
-        {{- /* On a baked node this tracks the image's copy of the config. */}}
+        {{- /* A ConfigMap edit alone leaves the pod template unchanged. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        {{- if include "c8s.cdsFromValues" . }}
-        # A ConfigMap edit alone does not change the pod template, so without
-        # this a tightened pin would not roll the router.
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- end }}
-        {{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys }}
-        checksum/operator-keys: {{ .Values.cds.operatorKeys | sha256sum }}
+        {{- with $frontDoor.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
 {{- include "router.podSpec" . | nindent 6 }}

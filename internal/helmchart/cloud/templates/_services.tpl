@@ -6,25 +6,6 @@ API socket exists: either the chart runs the API or the node image bakes it. */}
 {{- if or .Values.attestationApi.enabled .Values.node.baked -}}true{{- end -}}
 {{- end -}}
 
-{{/* Public launch policy only: the token-bearing /run/confos/launch is never
-mounted into pods. Directory requires verified staging to have completed. */}}
-{{- define "c8s.nodeConfigVolume" -}}
-{{- if .Values.node.baked }}
-- name: node-config
-  hostPath:
-    path: /run/c8s-node
-    type: Directory
-{{- end }}
-{{- end -}}
-
-{{- define "c8s.nodeConfigMount" -}}
-{{- if .Values.node.baked }}
-- name: node-config
-  mountPath: /run/c8s-node
-  readOnly: true
-{{- end }}
-{{- end -}}
-
 {{- define "c8s.attestationApiURL" -}}
 {{- if include "c8s.attestationApiSocketPresent" . -}}
 unix://{{ include "c8s.attestationApiSocket" . }}

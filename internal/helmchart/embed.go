@@ -38,6 +38,10 @@ const (
 	// ComponentsFile is the component table and its image pins, relative to a
 	// chart directory whose c8s-lib dependency is linked.
 	ComponentsFile = "charts/c8s-lib/files/components.yaml"
+	// RouterNginxDir holds the files the worker image installs in
+	// /usr/lib/c8s/router-nginx, relative to a chart directory like
+	// ComponentsFile.
+	RouterNginxDir = "charts/c8s-lib/files/router-nginx"
 	// RouterHostPort is the node port the router's nginx binds; the chart's
 	// router Deployment renders the same number.
 	RouterHostPort = 443

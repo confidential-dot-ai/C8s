@@ -131,8 +131,8 @@ func BindRouterFlags(f *pflag.FlagSet, router *Router) {
 }
 
 // RouterTLSSnippetDir is where the node image installs tls-cds.conf and
-// tls-acme.conf and the baked router mounts them. The chart's
-// router.bakedNginxDir must equal it.
+// tls-acme.conf and the baked router mounts them. c8s-lib's
+// c8s.routerWorkerConfigDir must equal it.
 const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
 
 // optionalLine renders an optional single-line value: empty stays empty.

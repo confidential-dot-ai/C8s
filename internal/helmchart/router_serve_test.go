@@ -19,8 +19,37 @@ import (
 )
 
 // routerConfigDir is where the chart mounts the router's nginx configuration,
-// serve.sh included (the chart's router.configDir).
+// serve.sh included (the chart's router.cloudConfigDir).
 const routerConfigDir = "/mnt/c8s-data/nginx"
+
+// libRouterNginxFiles are c8s-lib's nginx files: the worker image's.
+func libRouterNginxFiles(t *testing.T) map[string]string {
+	t.Helper()
+	dir := filepath.Join("lib", "files", "router-nginx")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make(map[string]string)
+	for _, e := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[e.Name()] = string(body)
+	}
+	return files
+}
+
+// cloudRouterNginxFiles are the cloud chart's nginx ConfigMap.
+func cloudRouterNginxFiles(t *testing.T) map[string]string {
+	t.Helper()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	return renderedConfigMap(t, out, routerNginxConfigMap).Data
+}
 
 // nginx is its entrypoint's child, so the credential watch needs no shared
 // process namespace, which would expose the credential containers' /proc to
@@ -88,18 +117,14 @@ func TestChartRouterServeWatchesTheServedCredentials(t *testing.T) {
 // needs no reload, which would close every idle connection.
 func TestChartRouterReadsItsCertificatePerHandshake(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
+		name  string
+		files func(*testing.T) map[string]string
 	}{
-		{name: "cds"},
-		{name: "baked", args: bakedArgs},
+		{name: "cloud", files: cloudRouterNginxFiles},
+		{name: "worker", files: libRouterNginxFiles},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			data := renderedConfigMap(t, out, "c8s-router-nginx").Data
+			data := tc.files(t)
 			cfg := parseNginxConfig(t, data["nginx.conf"])
 			perHandshake, ok := cfg.maps[nginxMapKey{source: "$ssl_server_name", target: "$per_handshake"}]
 			if !ok {
@@ -132,7 +157,7 @@ func TestChartRouterReadsItsCertificatePerHandshake(t *testing.T) {
 // A renewal replaces the certificate and key nginx serves; the entrypoint
 // signals nothing and nginx keeps running, so no connection is closed.
 func TestRouterServeLeavesNginxRunningThroughARenewal(t *testing.T) {
-	run := startServeScript(t, nil, func(tlsDir string) {
+	run := startServeScript(t, cloudServeScript, func(tlsDir string) {
 		for _, name := range []string{"tls.key", "tls.crt", "ca.crt"} {
 			writeAtomic(t, filepath.Join(tlsDir, name), "pair-1")
 		}
@@ -151,7 +176,7 @@ func TestRouterServeLeavesNginxRunningThroughARenewal(t *testing.T) {
 }
 
 func TestRouterServeRecoversAfterCredentialWithdrawal(t *testing.T) {
-	run := startServeScript(t, nil, func(tlsDir string) {
+	run := startServeScript(t, cloudServeScript, func(tlsDir string) {
 		for _, name := range []string{"tls.key", "tls.crt", "ca.crt"} {
 			writeAtomic(t, filepath.Join(tlsDir, name), "pair-1")
 		}
@@ -162,30 +187,48 @@ func TestRouterServeRecoversAfterCredentialWithdrawal(t *testing.T) {
 	}
 }
 
-// A baked node takes its front-door mode from the launch file at runtime, so
-// the entrypoint adds the ACME certificate and key to the watch when that mode
-// is acme.
-func TestChartBakedRouterServeWatchesTheACMECertificate(t *testing.T) {
-	out, err := helmTemplate(t, bakedArgs...)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	script := renderedConfigMap(t, out, "c8s-router-nginx").Data["serve.sh"]
+// A worker takes its front-door mode from the launch file at runtime, so the
+// entrypoint adds the ACME certificate and key to the watch when that mode is
+// acme.
+func TestWorkerRouterServeWatchesTheACMECertificate(t *testing.T) {
+	script := libRouterNginxFiles(t)["serve.sh"]
 	for _, line := range []string{
 		`if [ "$(cat /run/c8s-node/router/front-door-mode)" = acme ]; then`,
 		`watched="$watched /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"`,
 	} {
 		if !strings.Contains(script, line) {
-			t.Errorf("baked serve.sh does not carry the line %s:\n%s", line, script)
+			t.Errorf("the worker's serve.sh does not carry the line %s:\n%s", line, script)
 		}
 	}
 }
 
-// Running the baked script in both front-door modes: each stops nginx when
+// The cloud ConfigMap names no front-door mode, so the script serves as in cds
+// mode: it watches the mesh leaf alone, starts nginx once with no ACME files,
+// and says the mode file is missing once, at start.
+func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
+	run := startServeScript(t, cloudServeScript, func(dir string) {
+		for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
+			writeAtomic(t, filepath.Join(dir, name), "mesh-1")
+		}
+	})
+	run.waitTicks(t, 10)
+	if run.exited() {
+		t.Fatalf("the entrypoint exited without a front-door mode:\n%s", scriptLog(t, run.log))
+	}
+	if starts := tickCount(run.starts); starts != 1 {
+		t.Fatalf("nginx started %d times, want once", starts)
+	}
+	if log := scriptLog(t, run.log); strings.Count(log, "\n") > 1 || (log != "" && !strings.Contains(log, "front-door-mode")) {
+		t.Fatalf("the entrypoint logged more than the missing mode file once:\n%s", log)
+	}
+	run.withdrawAndRestore(t, filepath.Join(run.tlsDir, "tls.crt"))
+}
+
+// Running the worker's script in both front-door modes: each stops nginx when
 // a credential it serves is withdrawn, the mesh leaf in either mode and the
 // ACME certificate in acme mode. In cds mode the standby acme sidecar writes no
 // ACME files, and their absence is no withdrawal.
-func TestBakedRouterServeFollowsTheFrontDoorMode(t *testing.T) {
+func TestWorkerRouterServeFollowsTheFrontDoorMode(t *testing.T) {
 	for _, tc := range []struct {
 		mode, withdraw string
 	}{
@@ -195,7 +238,7 @@ func TestBakedRouterServeFollowsTheFrontDoorMode(t *testing.T) {
 		{mode: "cds", withdraw: "mesh/tls.crt"},
 	} {
 		t.Run(tc.mode+" "+tc.withdraw, func(t *testing.T) {
-			run := startServeScript(t, bakedArgs, func(dir string) {
+			run := startServeScript(t, workerServeScript, func(dir string) {
 				for _, d := range []string{"mesh", "acme", "launch"} {
 					if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
 						t.Fatal(err)
@@ -220,7 +263,7 @@ func TestBakedRouterServeFollowsTheFrontDoorMode(t *testing.T) {
 }
 
 func TestRouterServeWaitsForInitialCredentials(t *testing.T) {
-	run := launchServeScript(t, nil, func(string) {})
+	run := launchServeScript(t, cloudServeScript, func(string) {})
 	writeAtomic(t, filepath.Join(run.tlsDir, "tls.crt"), "pair-1")
 	writeAtomic(t, filepath.Join(run.tlsDir, "tls.key"), "pair-1")
 	run.waitTicks(t, 3)
@@ -235,7 +278,7 @@ func TestRouterServeShutdown(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT} {
 		for _, serving := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/serving=%t", sig, serving), func(t *testing.T) {
-				run := launchServeScript(t, nil, func(dir string) {
+				run := launchServeScript(t, cloudServeScript, func(dir string) {
 					if serving {
 						writeAtomic(t, filepath.Join(dir, "tls.crt"), "pair-1")
 						writeAtomic(t, filepath.Join(dir, "tls.key"), "pair-1")
@@ -269,7 +312,7 @@ func TestRouterServeShutdown(t *testing.T) {
 }
 
 func TestRouterServePropagatesUnexpectedNginxExit(t *testing.T) {
-	run := startServeScript(t, nil, func(dir string) {
+	run := startServeScript(t, cloudServeScript, func(dir string) {
 		writeAtomic(t, filepath.Join(dir, "tls.crt"), "pair-1")
 		writeAtomic(t, filepath.Join(dir, "tls.key"), "pair-1")
 		writeAtomic(t, filepath.Join(dir, "ca.crt"), "pair-1")
@@ -292,7 +335,7 @@ func TestRouterServePropagatesUnexpectedNginxExit(t *testing.T) {
 func TestRouterServeNamesEachStart(t *testing.T) {
 	var starts []string
 	for range 2 {
-		run := startServeScript(t, nil, func(tlsDir string) {
+		run := startServeScript(t, cloudServeScript, func(tlsDir string) {
 			for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
 				writeAtomic(t, filepath.Join(tlsDir, name), "pair-1")
 			}
@@ -345,21 +388,53 @@ type serveRun struct {
 	process   *os.Process
 }
 
-// startServeScript runs the rendered script against fixture credentials until nginx starts.
+// startServeScript runs a serve.sh against fixture credentials until nginx starts.
 func startServeScript(
 	t *testing.T,
-	args []string,
+	script func(*testing.T, *serveRun) string,
 	stage func(dir string),
 ) *serveRun {
 	t.Helper()
-	run := launchServeScript(t, args, stage)
+	run := launchServeScript(t, script, stage)
 	run.waitStarts(t, 1)
 	return run
 }
 
+// cloudServeScript is the cloud chart's serve.sh, reading the mesh leaf from
+// run.tlsDir and its settings and any ACME files from subdirectories that
+// stay empty.
+func cloudServeScript(t *testing.T, run *serveRun) string {
+	t.Helper()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	script := renderedConfigMap(t, out, "c8s-router-nginx").Data["serve.sh"]
+	return strings.NewReplacer(
+		"/tmp/nginx-start.conf", run.startConf,
+		"/etc/c8s/certs/", run.tlsDir+"/",
+		"/etc/c8s-acme-tls/", run.tlsDir+"/acme/",
+		"/etc/c8s-acme-key/", run.tlsDir+"/acme/",
+		routerConfigDir+"/", run.tlsDir+"/settings/",
+	).Replace(script)
+}
+
+// workerServeScript is the worker image's serve.sh, reading the mesh and ACME
+// credentials and the launch settings from subdirectories of run.tlsDir.
+func workerServeScript(t *testing.T, run *serveRun) string {
+	t.Helper()
+	return strings.NewReplacer(
+		"/tmp/nginx-start.conf", run.startConf,
+		"/etc/c8s/certs/", run.tlsDir+"/mesh/",
+		"/etc/c8s-acme-tls/", run.tlsDir+"/acme/",
+		"/etc/c8s-acme-key/", run.tlsDir+"/acme/",
+		"/run/c8s-node/router/", run.tlsDir+"/launch/",
+	).Replace(libRouterNginxFiles(t)["serve.sh"])
+}
+
 func launchServeScript(
 	t *testing.T,
-	args []string,
+	script func(*testing.T, *serveRun) string,
 	stage func(dir string),
 ) *serveRun {
 	t.Helper()
@@ -378,23 +453,8 @@ func launchServeScript(
 	}
 	stage(run.tlsDir)
 
-	out, err := helmTemplate(t, args...)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	paths := []string{"/tmp/nginx-start.conf", run.startConf, "/etc/c8s/certs/", run.tlsDir + "/"}
-	if args != nil {
-		paths = []string{
-			"/tmp/nginx-start.conf", run.startConf,
-			"/etc/c8s/certs/", run.tlsDir + "/mesh/",
-			"/etc/c8s-acme-tls/", run.tlsDir + "/acme/",
-			"/etc/c8s-acme-key/", run.tlsDir + "/acme/",
-			"/run/c8s-node/router/", run.tlsDir + "/launch/",
-		}
-	}
-	body := strings.NewReplacer(paths...).Replace(renderedConfigMap(t, out, "c8s-router-nginx").Data["serve.sh"])
-	script := filepath.Join(dir, "serve.sh")
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	path := filepath.Join(dir, "serve.sh")
+	if err := os.WriteFile(path, []byte(script(t, run)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -404,7 +464,7 @@ func launchServeScript(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { logFile.Close() })
-	cmd := exec.Command("/bin/sh", script)
+	cmd := exec.Command("/bin/sh", path)
 	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"))
 	cmd.Env = append(cmd.Env, "C8S_TEST_NGINX_STARTS="+run.starts, "C8S_TEST_NGINX_SIGNALS="+run.signals)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

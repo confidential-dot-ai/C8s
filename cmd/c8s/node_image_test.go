@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -211,17 +213,26 @@ func TestNodeImageRender(t *testing.T) {
 			if docs["c8s-router/ConfigMap/c8s-router-nginx"] != nil {
 				t.Error("integration manifests kept the router nginx ConfigMap")
 			}
-			// mkosi.sync installs every file in router-nginx/.
+			// mkosi.sync installs every file in router-nginx/: c8s-lib's, byte for byte.
 			entries, err := os.ReadDir(filepath.Join(out, "router-nginx"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			var names []string
-			for _, e := range entries {
-				names = append(names, e.Name())
+			libEntries, err := fs.ReadDir(helmchart.ChartFS, "lib/files/router-nginx")
+			if err != nil {
+				t.Fatal(err)
 			}
-			if want := slices.Sorted(slices.Values(routerNginxFiles)); !slices.Equal(names, want) {
-				t.Errorf("router-nginx/ holds %q, want %q", names, want)
+			if len(entries) != len(libEntries) {
+				t.Errorf("router-nginx/ holds %d files, c8s-lib %d", len(entries), len(libEntries))
+			}
+			for _, e := range libEntries {
+				want, err := fs.ReadFile(helmchart.ChartFS, "lib/files/router-nginx/"+e.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := os.ReadFile(filepath.Join(out, "router-nginx", e.Name())); err != nil || !bytes.Equal(got, want) {
+					t.Errorf("router-nginx/%s differs from c8s-lib's: %v", e.Name(), err)
+				}
 			}
 			nginxConf, err := os.ReadFile(filepath.Join(out, "router-nginx", "nginx.conf"))
 			if err != nil {
@@ -575,9 +586,6 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	if after["c8s-router/ConfigMap/c8s-router-nginx"] != nil {
 		t.Error("integration manifests kept the router nginx ConfigMap the image ships as files")
 	}
-	if got := artifacts.routerNginx["nginx.conf"]; got != "# a document-looking line remains nginx content\n---\nevents {}\n" {
-		t.Errorf("router nginx.conf = %q, want the ConfigMap's content", got)
-	}
 	delete(before, "c8s-router/ConfigMap/c8s-router-nginx")
 	for key, doc := range before {
 		var want, got map[string]any
@@ -633,21 +641,6 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 			input := nodeImageCollectFixture() + "---\n" + tc.resource
 			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
 				t.Fatal("accepted an invalid resource alongside otherwise complete chart artifacts")
-			}
-		})
-	}
-}
-
-func TestNodeImageCollectRejectsIncompleteRouterNginx(t *testing.T) {
-	for name, replacement := range map[string]string{
-		"missing snippet": "",
-		"empty snippet":   "  tls-acme.conf: \"\"\n",
-		"extra key":       "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n  extra.conf: x\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			input := strings.Replace(nodeImageCollectFixture(), "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n", replacement, 1)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
-				t.Fatal("accepted a router nginx ConfigMap that does not hold exactly routerNginxFiles")
 			}
 		})
 	}
