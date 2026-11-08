@@ -121,8 +121,8 @@ annotations:
 {{- define "c8s.certDir" -}}/etc/c8s/certs{{- end -}}
 {{/* The volume's group, which kubelet adds to every container of the pod, so
      the roles that read a credential can read what the credentials role
-     wrote. The injector applies it to a tenant pod (webhook.certVolume). */}}
-{{- define "c8s.certFsGroup" -}}{{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}{{- end -}}
+     wrote. The injector applies it to a tenant pod (--cert-fs-group). */}}
+{{- define "c8s.certFsGroup" -}}{{ include "c8s.int" .Values.podSecurityContext.fsGroup }}{{- end -}}
 {{- define "c8s.certFile" -}}{{ include "c8s.certDir" . }}/tls.crt{{- end -}}
 {{- define "c8s.keyFile" -}}{{ include "c8s.certDir" . }}/tls.key{{- end -}}
 {{- define "c8s.caFile" -}}{{ include "c8s.certDir" . }}/ca.crt{{- end -}}

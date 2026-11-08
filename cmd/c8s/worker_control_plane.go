@@ -44,8 +44,9 @@ func newWorkerControlPlaneCmd() *cobra.Command {
 		Short: "Render the objects a cluster of workers holds",
 		Long: `Render, into --output-dir/cluster.yaml, the objects a cluster of workers holds:
 the chart's, as the worker image's build renders them, less the operator's own
-Deployment, Service, account and NetworkPolicy, the allowlist seed and the
-router's nginx ConfigMap, with its webhooks at https://<--webhook-host>:9443,
+Deployment, Service, account and NetworkPolicy, the allowlist seed, the
+router's nginx ConfigMap and the host-namespace admission policies, with its
+webhooks at https://<--webhook-host>:9443,
 its grants bound to the user c8s-operator and the router free to run on any
 worker; the grants the workers' static pods and the Cilium operator (the user
 c8s-cilium-operator) need; and the kube-dns Service at the document's
@@ -103,7 +104,6 @@ func renderWorkerCluster(ctx context.Context, cfg nodeImageRenderConfig, host st
 	// Workers pull what the node image bakes; nothing else on the router's
 	// launch differs from the image build's render.
 	extra := []string{
-		"--set", "hostNamespacePolicy.enabled=false",
 		"--set-string", "router.nginx.imagePullPolicy=IfNotPresent",
 	}
 	for _, input := range cfg.images() {
@@ -149,6 +149,12 @@ var (
 		// The worker image bakes these files where the router mounts them.
 		"ConfigMap/c8s-router/c8s-router-nginx",
 	}
+	// The workers' node floor checks each container's privileges instead of the
+	// chart's admission policies.
+	workerClusterDroppedKinds = []string{
+		"ValidatingAdmissionPolicy",
+		"ValidatingAdmissionPolicyBinding",
+	}
 )
 
 // workerClusterObjects selects the chart's objects a cluster of workers holds,
@@ -173,6 +179,8 @@ func workerClusterObjects(rendered []byte, host string) ([]byte, error) {
 		}
 		key := strings.Join([]string{object.GetKind(), object.GetNamespace(), object.GetName()}, "/")
 		switch {
+		case slices.Contains(workerClusterDroppedKinds, object.GetKind()):
+			continue
 		case slices.Contains(workerClusterDrops, key):
 			continue
 		case !slices.Contains(workerClusterKeeps, key):

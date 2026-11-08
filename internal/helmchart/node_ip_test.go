@@ -14,7 +14,6 @@ import (
 var bareMetalHostAPI = []string{
 	"--set", "attestationApi.cvmMode=bare-metal",
 	"--set", "attestationApi.enabled=false",
-	"--set", "router.attest.enabled=true",
 }
 
 // attestationURLs maps each rendered container that takes an attestation-api

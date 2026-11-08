@@ -23,7 +23,7 @@ a measured node releases none.
 `--cvm-mode` (`bare-metal`, `gke`, `aks`) and `--hardware-platform` (`sev-snp`,
 `tdx`). All three CVM modes are node-as-CVM: the node is itself the confidential
 VM, its pods processes inside it ([overview.md](overview.md)); dotted names
-here, such as `router.publicTLS.mode`, are chart values.
+here, such as `router.san`, are chart values.
 
 | Resource | Role |
 |---|---|
@@ -32,7 +32,7 @@ here, such as `router.publicTLS.mode`, are chart values.
 | `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the measured node image carries both, so the chart renders neither |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
-| `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); `--install-crds=false` skips the CRD |
+| `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); the CRD backs `kubectl get cwl` |
 
 Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
 name the CDS this cluster trusts and the guest it runs in, and the chart
@@ -90,8 +90,8 @@ for the platform containers alone, and these containers ahead of the pod's own:
 - `c8s-mesh`: the pod's mesh endpoint, carrying its traffic over armTLS
   ([armtls.md](armtls.md)).
 - `c8s-cert`: get-cert, which obtains the first leaf before the application
-  starts and then renews on the chart default `webhook.getCert.renewInterval`
-  (2h); the cadence rule is [armtls.md](armtls.md).
+  starts and then renews every 2h; the cadence rule is
+  [armtls.md](armtls.md).
 - `c8s-cert-wait`: a run-once gate holding the application containers until the
   first `tls.crt` exists.
 - `c8s-secret`, `c8s-volume`: the fetchers, when the pod requests secrets or
@@ -151,14 +151,14 @@ volume opens once its consumer's entry and its key are both back
 
 The router is the cluster's only public entry point, in its own `c8s-router`
 namespace. Its pod holds nginx, `cds-attest`, the allowlist-route proxy and the
-member shape the chart renders rather than injects. `router.publicTLS.mode`
-selects what terminates public TLS:
+member shape the chart renders rather than injects. Its front-door mode
+selects what terminates public TLS: `cds` on an installed cluster, and on a
+baked node whichever its signed launch file names:
 
 | Mode | Credential | Attested handshakes |
 |---|---|---|
 | `cds` (default) | A CDS-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
 | `acme` | A multi-SAN WebPKI leaf the in-pod `c8s acme` sidecar obtains over HTTP-01; TEE-held, `bare-metal` only | attest-pq and attest-lb |
-| `webpki` | An operator-supplied Secret in `c8s-router`; the key is host-visible | attest-pq only |
 
 The two attested handshakes, attest-pq and attest-lb, are
 [routes-evidence.md](routes-evidence.md)'s. The mode is a trust statement:
@@ -176,10 +176,11 @@ expired. In mode `cds`, an expired intermediate in `tls.crt` gets
 503 `binding_unavailable` from attest-lb; `/readyz` and attest-pq are
 unaffected.
 
-ACME issuance covers the names the sidecar is configured with — `router.san` on
-an installed cluster, the launch file's `hostnames` on a baked node — and never
-one outside that set. It keeps one certificate for those whose public challenge
-path reaches this router, probing each with a one-off token first, so an
+ACME issuance covers the names the sidecar is configured with — a baked node's
+launch file `router.hostnames`
+([launch-configuration.md](launch-configuration.md)) — and never one outside
+that set. It keeps one certificate for those whose public challenge path
+reaches this router, probing each with a one-off token first, so an
 unreachable name blocks no other. The certificate is kept while it covers the
 reachable names, renewal fires at two thirds of its lifetime, and a covered name
 that stops answering is dropped only in the last sixth — so moving a production
@@ -246,9 +247,9 @@ detectable only by pinning the route digest or the operator keys.
 
 ### Built-in allowlist route
 
-The chart publishes CDS's `/allowlist` API through the router by default
-(`router.allowlist.enabled`), as an exact `/allowlist` location and an
-`/allowlist/` prefix, so a lookalike path is not exposed. An in-pod proxy holds
+The chart publishes CDS's `/allowlist` API through the router, as an exact
+`/allowlist` location and an `/allowlist/` prefix, so a lookalike path is not
+exposed. An in-pod proxy holds
 CDS to the endpoint and pins the admission plugin bind-mounts for a container
 holding the credentials platform role, refusing a flag naming another; on an
 install they come from `--cds-pin`. Reads stay unauthenticated at CDS; a
@@ -285,8 +286,8 @@ refuses, so write that entry yourself
 
 The chart ships one ingress policy per component it installs, each admitting
 only the ports that pod answers on: 9443, 8081 and 8080 for the operator pod,
-`router.nginx.httpsPort` for the router plus the ACME HTTP-01 port `8080` in
-mode `acme`, and nothing at all for attestation-api and volumed, which answer
+8443 for the router plus the ACME HTTP-01 port `8080` on a baked node, and
+nothing at all for attestation-api and volumed, which answer
 on pod loopback and a node-local socket. None of them carries a `from`, so each
 narrows which port answers, not who may connect: the router is public and the
 API server's address is not nameable. They are ingress-only — outward reach is

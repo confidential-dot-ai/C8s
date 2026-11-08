@@ -19,7 +19,7 @@ containers:
     args:
       - operator
       - --leader-election-namespace={{ .Release.Namespace }}
-      - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
+      - --status-mirror-enabled=true
       - --get-cert-image={{ include "c8s.image" . }}
       - --mesh-image={{ include "c8s-common.image" .Values.armtlsMesh.image }}
       - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
@@ -32,8 +32,9 @@ containers:
       {{- range .Values.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
-      - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
-      - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
+      - --cert-fs-group={{ include "c8s.certFsGroup" . }}
+      {{- /* Below the 6h named-leaf TTL, the shortest CDS issues. */}}
+      - --get-cert-renew-interval=2h
 
       {{- /* Workload-digest claims (docs/armtls.md): get-cert
              redeems a sandbox token from the node's inventory over a

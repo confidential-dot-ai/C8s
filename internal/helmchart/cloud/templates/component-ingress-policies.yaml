@@ -59,7 +59,6 @@ spec:
   policyTypes:
     - Ingress
 {{- end }}
-{{- if .Values.router.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -77,15 +76,14 @@ spec:
     - Ingress
   ingress:
     # The public front door, from anywhere: the Service's only port targets it,
-    # and so does hostPort when enabled. Naming it leaves the cds-attest and
+    # and so does the host port. Naming it leaves the cds-attest and
     # allowlist-proxy sidecars — which bind pod loopback and are reached through
     # nginx — unreachable if one ever rebinds.
     - ports:
         - protocol: TCP
-          port: {{ .Values.router.nginx.httpsPort }}
+          port: {{ include "router.nginxHTTPSPort" . }}
         {{- if eq (include "router.acmeSidecar" .) "true" }}
         # The :80 HTTP-01/redirect server.
         - protocol: TCP
           port: {{ include "router.acmeHTTPPort" . }}
         {{- end }}
-{{- end }}

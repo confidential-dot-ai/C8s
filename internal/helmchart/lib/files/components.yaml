@@ -4,8 +4,7 @@
 ##                  values (repository/tag/digest live there).
 ##   - enabledPath: dotted path to its deploy toggle; absent means the
 ##                  component is always deployed. A disabled component is
-##                  neither derived into the NRI allowlist nor
-##                  coverage-checked.
+##                  not derived into the NRI allowlist.
 ##   - pinnedDigest: the digest `c8s install` pins for this component instead of
 ##                  resolving its repository at --image-tag, for a component
 ##                  released on another repository's cadence and therefore
@@ -24,8 +23,8 @@
 ##                  --resolve-digests` refuses an image whose config differs.
 ##                  Bump with the image. Required unless argvPinned; {} for
 ##                  an image that sets none.
-## Consumed by the c8s.components helper (NRI allowlist derivation + render
-## guard) and by `c8s install` (digest resolution).
+## Consumed by the c8s.components helper (NRI allowlist derivation) and by
+## `c8s install` (digest resolution).
 components:
   - valuePath: image
     entrypoint: ["/c8s"]
@@ -53,8 +52,7 @@ components:
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     ## Seeded argv-pinned by the chart (the installer runs pinned shell
-    ## scripts), never as an any-argv entry. Exempt from
-    ## deriveComponents derivation and the uncovered_component_digest guard.
+    ## scripts), never as an any-argv entry. Exempt from derivation.
     argvPinned: true
   - valuePath: volumed.image
     enabledPath: volumed.enabled

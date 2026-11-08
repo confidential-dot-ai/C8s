@@ -31,9 +31,6 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "baked": {
-          "$comment": "Removed value, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
-        },
         "platform": {},
         "mesh": {
           "type": "object",
@@ -50,7 +47,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "deriveComponents": {},
             "workloads": {}
           }
         },
@@ -89,9 +85,6 @@
             }
           }
         },
-        "distro": {
-          "$comment": "Removed value, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
-        },
         "enabled": {},
         "healthSocketName": {},
         "hostPaths": {
@@ -125,7 +118,6 @@
         },
         "imagePullSecrets": {},
         "logLevel": {},
-        "measurePolicies": { "type": "boolean" },
         "nodeAffinity": {
           "type": [
             "object",
@@ -186,16 +178,6 @@
           "properties": {
             "advertiseHost": {}
           }
-        },
-        "uninstall": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {}
-          }
         }
       }
     },
@@ -206,17 +188,6 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "acme": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "directoryURL": {},
-            "email": {}
-          }
-        },
         "allowlist": {
           "type": [
             "object",
@@ -224,8 +195,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "enabled": {},
-            "proxyPort": {},
             "rateLimit": {
               "type": [
                 "object",
@@ -261,27 +230,6 @@
           "additionalProperties": false,
           "properties": {
             "attestationApiURL": {},
-            "enabled": {},
-            "establishBurst": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 1
-            },
-            "establishRate": {
-              "type": [
-                "number",
-                "null"
-              ],
-              "exclusiveMinimum": 0
-            },
-            "expectedWorkload": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "generation": {},
             "platform": {},
             "port": {},
@@ -300,61 +248,7 @@
             "verbose": {}
           }
         },
-        "cors": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "allowCredentials": {},
-            "allowHeaders": {},
-            "allowMethods": {},
-            "allowOrigins": {},
-            "enabled": {},
-            "exposeHeaders": {},
-            "maxAge": {},
-            "protocolEndpoints": {}
-          }
-        },
-        "discovery": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "cdsCertPath": {},
-            "enabled": {},
-            "fileName": {},
-            "meshCAPath": {},
-            "mountPath": {},
-            "path": {}
-          }
-        },
-        "enabled": {},
-        "hostPort": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {},
-            "https": {}
-          }
-        },
         "imagePullSecrets": {},
-        "meshCA": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "expose": {}
-          }
-        },
         "nameOverride": {},
         "nginx": {
           "type": [
@@ -363,29 +257,11 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "httpsPort": {},
             "imagePullPolicy": {},
             "replicas": {},
-            "resolver": {
-              "$comment": "Removed with router.upstream. Listed only so validations.yaml can answer with the migration message."
-            },
             "resources": {},
             "tunnelBodySpace": {},
             "tunnelConnectionsPerClient": {}
-          }
-        },
-        "publicTLS": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "certKey": {},
-            "keyKey": {},
-            "mode": {},
-            "mountPath": {},
-            "secretName": {}
           }
         },
         "routePublication": {
@@ -397,9 +273,6 @@
           "properties": {
             "enabled": { "type": "boolean" }
           }
-        },
-        "routes": {
-          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
         },
         "routing": {
           "type": [
@@ -416,24 +289,7 @@
             "tunnelBudget": {}
           }
         },
-        "san": {},
-        "service": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "annotations": {},
-            "externalTrafficPolicy": {},
-            "port": {},
-            "type": {}
-          }
-        },
-        "strategy": {},
-        "upstream": {
-          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
-        }
+        "san": {}
       }
     },
     "volumed": {
@@ -484,18 +340,10 @@
     "imagePullSecret": {},
     "certProvisioning": {},
     "serviceAccount": {},
-    "statusMirror": {},
-    "hostNamespacePolicy": {},
     "webhook": {},
     "attestationApi": {},
     "armtlsMesh": {},
-    "podSecurityContext": {},
-    "teeProxy": {
-      "$comment": "Removed component, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
-    },
-    "kubeStateMetrics": {
-      "$comment": "Removed component, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
-    }
+    "podSecurityContext": {}
   },
   "additionalProperties": false
 }

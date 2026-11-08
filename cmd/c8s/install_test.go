@@ -142,54 +142,24 @@ func TestNamespaceManifestSetsPrivilegedPodSecurityLabels(t *testing.T) {
 	}
 }
 
-func TestAppendInstallCRDArgsDisablesStatusMirrorWhenSkippingCRDs(t *testing.T) {
-	// Emits the value only; helm's --skip-crds invocation flag is added at the
-	// install call site, not here (these args become a values tree).
-	got := appendInstallCRDArgs([]string{"--set", "image.tag=main"}, false)
-	want := []string{"--set", "image.tag=main", "--set", "statusMirror.enabled=false"}
-	if len(got) != len(want) {
-		t.Fatalf("args length = %d, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
-		}
-	}
-}
-
-func TestAppendInstallCRDArgsLeavesStatusMirrorEnabledWithCRDs(t *testing.T) {
-	got := appendInstallCRDArgs([]string{"--set", "image.tag=main"}, true)
-	want := []string{"--set", "image.tag=main"}
-	if len(got) != len(want) {
-		t.Fatalf("args length = %d, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
-		}
-	}
-}
-
 // The helm argv ordering is load-bearing: operator -f files before the computed
-// file (last -f wins, so computed values win on the keys they set), and
-// --skip-crds present iff CRDs are skipped.
+// file (last -f wins, so computed values win on the keys they set).
 func TestBuildInstallHelmArgsOrdering(t *testing.T) {
 	prevRel, prevNs := installRelease, installNamespace
 	defer func() { installRelease, installNamespace = prevRel, prevNs }()
 	installRelease, installNamespace = "c8s", "c8s-system"
 
-	// CRDs installed, two operator -f files, wait on: computed file is LAST -f.
-	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", []string{"a.yaml", "b.yaml"}, true, true), []string{
+	// Two operator -f files, wait on: computed file is LAST -f.
+	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", []string{"a.yaml", "b.yaml"}, true), []string{
 		"upgrade", "--install", "c8s", "/chart", "--namespace", "c8s-system",
 		"-f", "a.yaml", "-f", "b.yaml", "-f", "/tmp/computed.yaml",
 		"--wait", "--timeout=5m",
 	})
 
-	// CRDs skipped, no operator -f, wait off: --skip-crds present, computed file
-	// still the last (only) -f, no --wait.
-	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", nil, false, false), []string{
+	// No operator -f, wait off: computed file the only -f, no --wait.
+	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", nil, false), []string{
 		"upgrade", "--install", "c8s", "/chart", "--namespace", "c8s-system",
-		"--skip-crds", "-f", "/tmp/computed.yaml",
+		"-f", "/tmp/computed.yaml",
 	})
 
 }
@@ -846,7 +816,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		}
 		v := map[string]any{
 			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginxinc/nginx-unprivileged", "digest": dN}}},
-			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"deriveComponents": true, "workloads": workloads}},
+			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": workloads}},
 		}
 		return helmchart.MergeValues(v, extra)
 	}
@@ -1002,45 +972,6 @@ func TestBundledKubeletNodes(t *testing.T) {
 	}
 }
 
-func TestRouterHostPort(t *testing.T) {
-	hp := func(https any) map[string]any {
-		return map[string]any{"router": map[string]any{"hostPort": map[string]any{"https": https}}}
-	}
-	for _, tc := range []struct {
-		name string
-		tree map[string]any
-		want int32
-	}{
-		{"empty string derives 443", hp(""), 443},
-		{"no hostPort map", map[string]any{"router": map[string]any{}}, 443},
-		{"string override", hp("8443"), 8443},
-		{"int override", hp(9443), 9443},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := routerHostPort(tc.tree)
-			if err != nil || got != tc.want {
-				t.Fatalf("routerHostPort = (%d, %v), want (%d, nil)", got, err, tc.want)
-			}
-		})
-	}
-	for _, tc := range []struct {
-		name  string
-		https any
-	}{
-		{"non-numeric string", "https"},
-		{"string overflows int32", "4294967297"}, // 2^32 + 1 — would wrap to 1 on a bare int32 cast
-		{"string above port range", "70000"},
-		{"int above port range", 70000},
-		{"zero is not a port", 0},
-	} {
-		t.Run(tc.name+" errors", func(t *testing.T) {
-			if _, err := routerHostPort(hp(tc.https)); err == nil {
-				t.Fatalf("want error for %v", tc.https)
-			}
-		})
-	}
-}
-
 func TestHostPortConflict(t *testing.T) {
 	pod := func(ns, name, node string, port int32) corev1.Pod {
 		return corev1.Pod{
@@ -1121,12 +1052,6 @@ func TestHostPortConflict(t *testing.T) {
 }
 
 func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
-	// The attestation sidecar is on by default; the arg-builder reads the
-	// package flag, which cobra would set. Mirror that default here.
-	prevAttest := installAttestEnabled
-	installAttestEnabled = true
-	t.Cleanup(func() { installAttestEnabled = prevAttest })
-
 	// Two orthogonal axes:
 	//  --cvm-mode: bare-metal (node-as-CVM) / gke (managed) / aks (vTPM)
 	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (ConfigFS TSM)
@@ -1293,8 +1218,6 @@ func TestBuildDigestArgsPinsEveryComponent(t *testing.T) {
 		"--set-string", "armtlsMesh.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000dd",
 		"--set-string", "nriImagePolicy.image.repository=ghcr.io/confidential-dot-ai/nri-image-policy",
 		"--set-string", "nriImagePolicy.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000ee",
-		// Resolving component digests enables their derivation into the NRI allowlist.
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 	})
 }
 

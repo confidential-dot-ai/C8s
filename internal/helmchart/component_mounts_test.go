@@ -249,9 +249,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	for valuePath, digest := range componentTestDigests {
 		digests = append(digests, "--set", valuePath+".digest="+digest)
 	}
-	derived := append([]string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}, digests...)
-	measurements := strings.Repeat("a", 96)
-	measurementsConfig := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[{"name":"first","mrtd":"`+measurements+`"}]}`)
+	derived := digests
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -261,15 +259,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 		{"gke", append(slices.Clone(derived), "--set", "attestationApi.cvmMode=gke", "--set", "attestationApi.enabled=true", "--set", "volumed.enabled=true"), true},
 		{"bare-metal", append(slices.Clone(derived),
 			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.enabled=false", "--set", "router.attest.enabled=true", "--set", "volumed.enabled=true"), false},
-		{"bare-metal router gate", append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.enabled=false",
-			"--set", "router.attest.enabled=true", "--set", "router.attest.expectedWorkload=front", "--set", "router.hostPort.enabled=false"), false},
-		{"webpki and discovery", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=webpki", "--set", "router.publicTLS.secretName=pub", "--set", "router.discovery.enabled=true",
-			"--set-file", "armtlsMesh.measurementsConfig="+measurementsConfig), true},
-		{"acme", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
+			"--set", "nriImagePolicy.enabled=false", "--set", "volumed.enabled=true"), false},
 		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {

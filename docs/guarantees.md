@@ -25,8 +25,7 @@ storage, so a key that leaks opens every copy of it the host kept, and a
 - **Encrypted volumes**: host-stored dm-crypt images opened inside the CVM for
   a pod the allowlist names — [volumes.md](volumes.md).
 - **Keys made where they are used**: pod keys and the mesh CA are generated in
-  TEE memory and never written out; public TLS mode `webpki` is the exception,
-  its serving private key coming from an operator Secret the host can read.
+  TEE memory and never written out.
 
 A node is one trust domain: its pods share its TEE, so distrusting tenants
 belong on separate nodes; availability, side channels, and physical attacks are
@@ -125,10 +124,9 @@ route manifest names for it, and tells a client which manifest it is serving.
 
 The router is the front door for application traffic. It answers 503 until a
 manifest is applied, refuses one whose write token does not verify, and binds
-the digest of the manifest it applied into the attested handshakes a TEE-held
-front door offers (`cds`, `acme`; a `webpki` one offers attest-pq alone), so a
-session routes by the two digests that handshake bound — the manifest's and the
-router's own allowlist digest — and nothing else.
+the digest of the manifest it applied into the attested handshakes its front
+door offers, so a session routes by the two digests that handshake bound — the
+manifest's and the router's own allowlist digest — and nothing else.
 CDS's own API is reachable separately, at the address the install named with
 `--cds-address`.
 

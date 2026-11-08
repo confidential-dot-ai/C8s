@@ -1,12 +1,10 @@
-{{- if .Values.hostNamespacePolicy.enabled }}
 {{- /*
 Enforce Restricted Pod Security controls in workload namespaces, including a
 blanket hostPath denial. The inventory socket directory reaches credential
 sidecars through NRI below the Pod spec, so no volume or image exception is
 needed here.
 
-The release namespace, the router role's own, kube-system, and configured
-exemptions host trusted platform components that legitimately
+The release namespace, the router role's own, and kube-system host trusted platform components that legitimately
 need privileges which tenant workloads must never receive: a front-door pod
 binds the node's port and reads its inventory socket.
 */}}
@@ -37,9 +35,6 @@ spec:
             - kube-system
             {{- if not .Values.node.baked }}
             - local-path-storage
-            {{- end }}
-            {{- range .Values.hostNamespacePolicy.exemptNamespaces }}
-            - {{ . | quote }}
             {{- end }}
   validations:
     - expression: >-
@@ -375,9 +370,6 @@ spec:
             {{- if not .Values.node.baked }}
             - local-path-storage
             {{- end }}
-            {{- range .Values.hostNamespacePolicy.exemptNamespaces }}
-            - {{ . | quote }}
-            {{- end }}
   validations:
     - expression: >-
         !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
@@ -534,4 +526,3 @@ spec:
   policyName: {{ include "c8s.fullname" . }}-deny-host-namespaces-ephemeral
   validationActions:
     - Deny
-{{- end }}

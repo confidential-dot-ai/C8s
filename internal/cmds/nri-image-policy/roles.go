@@ -47,7 +47,7 @@ const routerNamespace = workloadclaims.RouterNamespace
 // forwards outside the cluster is captured wherever its name resolves.
 //
 // INVARIANT: routerListeners are the container ports the chart's router pod
-// binds (router.nginx.httpsPort, the HTTP-01 port and the acme sidecar's
+// binds (the nginx HTTPS port, the HTTP-01 port and the acme sidecar's
 // readiness port), and acmeEgressPorts are the ports public certificate
 // issuance uses: the directory the sidecar orders from, and the plain HTTP
 // port each public name is checked on before validation.

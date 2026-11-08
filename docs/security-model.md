@@ -39,11 +39,6 @@ of its own.
   volume has no tree, so keep such data immutable ([volumes.md](volumes.md));
   [Data stays in the TEE](guarantees.md#data-stays-in-the-tee).
 
-In router mode `webpki` the public-TLS key is an operator Secret the host can
-read, so the router refuses attest-lb, the attested handshake that binds the
-serving leaf of a client's own connection: clients that need it must run mode
-`cds` or `acme` ([operator.md](operator.md#the-router)).
-
 ## The Kubernetes control plane and the cluster administrator
 
 This adversary holds the control plane: it can create any pod and edit every
@@ -84,9 +79,11 @@ object in the cluster.
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 
 The node-side defences above are the measured node image's. On the chart lanes
-(`gke`, `aks`) the plugin's own base allowlist and mode, the host-namespace
-policy, and the exec path are chart values the same administrator writes
-([overview.md](overview.md#cvm-modes-and-hardware-platforms)), so an
+(`gke`, `aks`) the plugin's own base allowlist and mode are chart values the
+same administrator writes
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)), and the
+host-namespace policy is a cluster policy the chart always renders, which that
+administrator can delete, so an
 adversarial administrator means the measured node image. Deleting CDS drops the
 served entries, the secrets, and the route manifest, after which every member
 pod must be recreated ([operator.md](operator.md#cds-is-a-singleton)).

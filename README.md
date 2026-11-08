@@ -367,9 +367,9 @@ make clean
 CDS serves the image-digest allowlist that `nri-image-policy` consumes alongside
 its node policy. The `c8s allowlist` command reads and mutates it. By default,
 router publishes the complete `/allowlist` API and verifies CDS's attestation before forwarding requests.
-When router uses the chart default CDS-issued public certificate
-(`router.publicTLS.secretName` is empty, discovery mode `cds`), point the CLI at
-the same router URL used for application traffic; no port-forward is required.
+When router serves the CDS-issued public certificate (discovery mode `cds`),
+point the CLI at the same router URL used for application traffic; no
+port-forward is required.
 
 ```sh
 ROUTER=https://<router-host>
@@ -411,17 +411,6 @@ credential signing it, would go to whatever answered. A plaintext `--insecure`
 dev endpoint is exempt: it already declares that nothing about it is
 attested.
 
-Do not point this CLI at router when `router.publicTLS.secretName` is set. That
-front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
-not cryptographically bound to the discovery attestation, so the CLI
-deliberately refuses it. Use the CDS address the install was given instead, with
-the pin it was given:
-
-```sh
-c8s allowlist export --url https://<CDS_ADDRESS> \
-  --image-policy-file cds-pin.json
-```
-
 Writes are authorized by an operator EC keypair whose **public** half CDS
 pins in its measured launch configuration. Reuse the matching keypair from
 [Install](#install), supplying the same public key to the router:
@@ -439,9 +428,7 @@ replayed against a different payload. The private key remains on the operator
 machine: router forwards only
 the signed request and CDS verifies it against the pinned public key.
 
-Set `router.allowlist.enabled=false` to remove the built-in public route. A
-direct connection to the CDS address can still be passed explicitly with
-`--url`.
+A direct connection to the CDS address can also be passed with `--url`.
 
 Verify CDS's root of trust — its launch measurement and the operator key set it
 serves — before exposing public ingress, using your own install inputs (the

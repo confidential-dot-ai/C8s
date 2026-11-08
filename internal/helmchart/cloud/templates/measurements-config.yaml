@@ -25,7 +25,6 @@ data:
   cds-address: {{ .Values.cds.address | quote }}
   {{- end }}
 ---
-{{- if .Values.router.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,6 +34,4 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
   cds.json: {{ $cds | quote }}
----
-{{- end }}
 {{- end }}

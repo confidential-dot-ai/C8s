@@ -16,14 +16,12 @@ The derived name is the component's `valuePath`. `c8s.valueAtPath` takes
 Boolean gates compare that JSON text to `true`: Helm's `fromJson` expects an
 object, so scalar booleans must be handled as text here.
 
-The component inventory drives both allowlist derivation and the coverage guard
-in [validations.yaml](../../templates/validations.yaml); `c8s install` also reads
+The component inventory drives allowlist derivation; `c8s install` also reads
 it. Components marked `argvPinned` are covered by argv-pinned
 seed entries and excluded from component derivation.
 
 `c8s.imageAllowlist` returns a digest-to-`{image, entrypoint}` map containing enabled,
-digest-pinned components when `bootstrapAllowlist.deriveComponents` is true,
-plus enabled router nginx. Nginx is independently versioned and derives from
+digest-pinned components, plus router nginx. Nginx is independently versioned and derives from
 its own pin (`routerNginx` in `files/components.yaml`). A derived
 component without an entrypoint fails the render. `c8s.componentShapes` turns
 each such image into its allowlist containers; see
@@ -48,15 +46,7 @@ the operator's containers for a digest share one named
 `c8s.digestWorkloadName`, so each entry's per-variable evidence budget counts
 only its own containers. Workloads that pin
 args, env or mounts for any other digest remain in the served seed without
-reaching the base. With `deriveComponents` off, the coverage guard in
-[validations.yaml](../../templates/validations.yaml) requires every container
-the chart runs a component's executable in to be admitted by an operator
-entry: `c8s.admitsShape` checks the entry's command, args and mount rules
-against the container's derived shape, and its env: `any`, or a `match` over
-the shape's names whose `exact` matchers pin the values the shape pins. An
-entry pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
-`/docker-entrypoint.sh nginx`) with mounts or env `any`, or with args `any`
-outside a sidecar invocation, covers nothing: `c8s allowlist lint` refuses that shape.
+reaching the base.
 
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per
 `c8s.generatedShapes` digest, with its containers, followed by
@@ -233,7 +223,7 @@ matched.
 |---|---|
 | nginx | main |
 | cds-attest | main |
-| allowlist-proxy, when `router.renderAllowlistRoute` | main |
+| allowlist-proxy | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 
 A declared init container is admitted but not required. The router's own `c8s-cert` and `c8s-cert-wait`
@@ -241,44 +231,22 @@ are pinned to their exact args, so they are not dropped as injected
 containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
 them.
 
-`c8s.routerEntryBlocker` returns why the entry cannot be derived, or `""`: the
-router is disabled, the nginx pin's digest or `image.digest` is unset,
-`bootstrapAllowlist.deriveComponents` is false (it supplies the c8s image's
-pin). An argv reference the kubelet would expand fails the render in
-`c8s.kubeletExpand`, so the pinned argv is the one the runtime starts.
-`c8s.routerWorkloadSeeded` returns `true` when nothing blocks the entry and
-`c8s.routerOperatorGate` is empty.
-
-`c8s.routerOperatorGate` returns `router.attest.expectedWorkload` when it is a
-non-empty string outside `c8s-router-*`. That names the operator's own router
-entry: the chart seeds none, passes the name to cds-attest and the router's
-`c8s-cert` as written, and does not check that the entry exists or matches.
-The chart does not emulate `MatchWorkload` either: a
+`c8s.routerWorkloadSeeded` returns `true` when the nginx pin's digest and
+`image.digest` are both set. An argv reference the kubelet would expand fails
+the render in `c8s.kubeletExpand`, so the pinned argv is the one the runtime
+starts. The chart does not emulate `MatchWorkload`: a
 `bootstrapAllowlist.workloads` entry that also matches the router pod beside the
 seeded one makes the match ambiguous, and CDS issues the router's leaf
-unnamed. To supply your own router entry, name it in
-`router.attest.expectedWorkload`, which turns the seeded entry off.
-`c8s.routerEntryName` returns the seeded entry's name or the operator gate,
-which the router's `c8s-cert` receives as `--expected-workload` whenever
-workload claims are wired.
+unnamed. `c8s.routerEntryName` returns the seeded entry's name, which a baked
+router's `c8s-cert` receives as `--expected-workload`.
 
 `c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
 the SHA-256 of the rendered entry, so a changed digest, argv or mount yields a
 new name. CDS seeds additively by name, so the new entry lands beside the old
 one, as with the digest-named entries. The entry's own name sits inside its
-argv: cds-attest's gate, defaulted or an explicit `c8s-router-*` value, and
-`c8s-cert`'s `--expected-workload`. The hash therefore renders the pod with
-`routerNamePlaceholder` set in the context, under which
-`c8s.routerWorkloadName` returns a fixed placeholder; freezing the rendered
-default keeps the name.
-
-`router.expectedWorkload` defaults the cds-attest readiness gate to
-`c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
-entry is seeded, `router.hostPort.enabled` is false, and the inventory is
-reachable. An explicit string, including `""`, wins;
-any other non-null value fails the render. An explicit `c8s-router-*` value
-fails the render unless it equals the derived name; when nothing is derivable
-the message names `c8s.routerEntryBlocker`'s cause.
+argv, as `c8s-cert`'s `--expected-workload`. The hash therefore renders the pod
+with `routerNamePlaceholder` set in the context, under which
+`c8s.routerWorkloadName` returns a fixed placeholder.
 
 [router_entry_test.go](../../../router_entry_test.go) feeds the rendered router
 pod, with the argv and mounts a node observes, through

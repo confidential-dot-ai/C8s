@@ -4,7 +4,7 @@ which a projected volume cannot leave. Public key material — not a secret, and
 checked for content in validations.yaml. A baked node's router reads the same
 keys from its measured launch staging instead.
 */ -}}
-{{- if and (include "c8s.cdsFromValues" .) .Values.router.enabled .Values.cds.operatorKeys }}
+{{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

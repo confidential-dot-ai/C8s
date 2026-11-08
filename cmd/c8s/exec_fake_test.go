@@ -138,12 +138,9 @@ func resetCLIState(t *testing.T) {
 		uninstallNamespace, uninstallRelease                                      string
 		installCDSAddress, installCDSPin, installSeedOut                          string
 		installValues, installWorkloadRefs                                        []string
-		installWait, installCRDs, installGetCertRunAsNonRoot                      bool
-		installForce, installResolveDigests, installAttestEnabled                 bool
+		installWait, installForce, installResolveDigests                          bool
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup     int64
-		installGetCertRenewInterval                                               time.Duration
 		installOperatorKey, installRoutesOut                                      string
 		installRoutesMaxAge                                                       time.Duration
 		installCDS                                                                *cdsPin
@@ -154,12 +151,9 @@ func resetCLIState(t *testing.T) {
 		uninstallNamespace, uninstallRelease,
 		installCDSAddress, installCDSPin, installSeedOut,
 		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
-		installWait, installCRDs, installGetCertRunAsNonRoot,
-		installForce, installResolveDigests, installAttestEnabled,
+		installWait, installForce, installResolveDigests,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
-		installGetCertRenewInterval,
 		installOperatorKey, installRoutesOut,
 		installRoutesMaxAge,
 		installCDS,
@@ -171,28 +165,22 @@ func resetCLIState(t *testing.T) {
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
 		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
 		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
-		installWait, installCRDs, installGetCertRunAsNonRoot = saved.installWait, saved.installCRDs, saved.installGetCertRunAsNonRoot
-		installForce, installResolveDigests, installAttestEnabled = saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
+		installWait, installForce, installResolveDigests = saved.installWait, saved.installForce, saved.installResolveDigests
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup = saved.installCertFSGroup, saved.installGetCertRunAsUser, saved.installGetCertRunAsGroup
-		installGetCertRenewInterval = saved.installGetCertRenewInterval
 		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
 		installCDS = saved.installCDS
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
-	installValues, installWait, installCRDs = nil, true, true
-	installCertFSGroup = 65532
-	installGetCertRenewInterval = 2 * time.Hour
-	installGetCertRunAsUser, installGetCertRunAsGroup, installGetCertRunAsNonRoot = 65532, 65532, true
+	installValues, installWait = nil, true
 	installCvmMode, installHardwarePlatform = "", "sev-snp"
 	installImagePullSecret, installImageTag = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil
-	installResolveDigests, installAttestEnabled = true, true
+	installResolveDigests = true
 	installCDSAddress, installCDSPin, installSeedOut = "", "", ""
 	installCDS = nil
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"

@@ -1,4 +1,3 @@
-{{- if .Values.router.enabled }}
 {{- $tunnelConnsPerClient := include "c8s.positiveInt" (dict "value" .Values.router.nginx.tunnelConnectionsPerClient "label" "router.nginx.tunnelConnectionsPerClient") | int -}}
 {{- $sans := include "router.sanList" . | fromJsonArray -}}
 {{- range $s := $sans -}}{{- include "router.validateSan" $s -}}{{- end -}}
@@ -8,10 +7,8 @@
        issuance reads that SAN from the verified host file at runtime. */ -}}
 {{- $serverNames = "_" -}}
 {{- end -}}
-{{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
-{{- $defaultMeshCAPath := include "c8s.caFile" . -}}
 {{- $startConf := "/tmp/nginx-start.conf" -}}
 {{- $routingPort := include "router.routingPort" . -}}
 {{- $maxRequestBodyBytes := include "c8s.int" .Values.router.routing.maxRequestBodyBytes | int64 -}}
@@ -38,35 +35,7 @@
 {{- if eq (mod $tunnelReadTimeoutMs 1000) 0 -}}
 {{- $tunnelReadTimeout = printf "%ds" (div $tunnelReadTimeoutMs 1000) -}}
 {{- end -}}
-{{- $renderAllowlistRoute := eq (include "router.renderAllowlistRoute" .) "true" -}}
-{{- $allowlistProxyPort := 0 -}}
-{{- $allowlistWriteRate := 0 -}}
-{{- $allowlistWriteBurst := 0 -}}
-{{- $allowlistWriteTotalRate := 0 -}}
-{{- $allowlistWriteTotalBurst := 0 -}}
-{{- $allowlistReadRate := 0 -}}
-{{- $allowlistReadBurst := 0 -}}
-{{- if $renderAllowlistRoute -}}
-{{- $allowlistProxyPort = include "c8s.int" .Values.router.allowlist.proxyPort | int -}}
-{{- if or (lt $allowlistProxyPort 1) (gt $allowlistProxyPort 65535) -}}
-{{- fail (printf "router.allowlist.proxyPort must be between 1 and 65535, got: %d" $allowlistProxyPort) -}}
-{{- end -}}
-{{- if eq $allowlistProxyPort (int .Values.router.attest.port) -}}
-{{- fail (printf "router.allowlist.proxyPort must differ from router.attest.port, got: %d" $allowlistProxyPort) -}}
-{{- end -}}
-{{- if eq $allowlistProxyPort (int .Values.router.nginx.httpsPort) -}}
-{{- fail (printf "router.allowlist.proxyPort must differ from router.nginx.httpsPort, got: %d" $allowlistProxyPort) -}}
-{{- end -}}
-{{- $allowlistWriteRate = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.rateLimit.requestsPerSecond "label" "router.allowlist.rateLimit.requestsPerSecond")) -}}
-{{- $allowlistWriteBurst = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.rateLimit.burst "label" "router.allowlist.rateLimit.burst")) -}}
-{{- $allowlistWriteTotalRate = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.rateLimit.totalRequestsPerSecond "label" "router.allowlist.rateLimit.totalRequestsPerSecond")) -}}
-{{- $allowlistWriteTotalBurst = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.rateLimit.totalBurst "label" "router.allowlist.rateLimit.totalBurst")) -}}
-{{- $allowlistReadRate = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.readRateLimit.requestsPerSecond "label" "router.allowlist.readRateLimit.requestsPerSecond")) -}}
-{{- $allowlistReadBurst = int (include "c8s.positiveInt" (dict "value" .Values.router.allowlist.readRateLimit.burst "label" "router.allowlist.readRateLimit.burst")) -}}
-{{- /* Cross-value budget invariants (per-client <= total < cds bucket) live
-   in validations.yaml, kind=router_allowlist_rate_budget. */ -}}
-{{- end -}}
-{{- include "router.validateCORS" .Values.router.cors }}
+{{- $allowlist := include "router.allowlistLimits" . | fromJson }}
 
 apiVersion: v1
 kind: ConfigMap
@@ -192,10 +161,6 @@ data:
             default upgrade;
             "" close;
         }
-{{- if default false .Values.router.cors.enabled }}
-        {{- include "router.corsMap" . | nindent 8 }}
-{{- end }}
-{{- if $renderAllowlistRoute }}
 
         # Rate-limit /allowlist while nginx still has the public client IP;
         # empty map keys are not accounted by limit_req. Mutations count per
@@ -218,18 +183,15 @@ data:
             GET $binary_remote_addr;
             HEAD $binary_remote_addr;
         }
-        limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate={{ $allowlistWriteRate }}r/s;
-        limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
-        limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
-{{- end }}
-{{- if .Values.router.attest.enabled }}
+        limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate={{ int $allowlist.writeRate }}r/s;
+        limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ int $allowlist.writeTotalRate }}r/s;
+        limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ int $allowlist.readRate }}r/s;
 
         # Bounds what one client address holds of the tunnel body spool.
         limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
-{{- end }}
 
         server {
-            listen {{ .Values.router.nginx.httpsPort }} ssl;
+            listen {{ include "router.nginxHTTPSPort" . }} ssl;
             server_name {{ $serverNames }};
             {{- if $launchDriven }}
 
@@ -238,8 +200,8 @@ data:
             include {{ include "router.launchDir" . }}/tls.conf;
             {{- else }}
 
-            ssl_certificate     {{ include "router.publicCertPath" . }}$per_handshake;
-            ssl_certificate_key {{ include "router.publicKeyPath" . }}$per_handshake;
+            ssl_certificate     {{ include "c8s.certFile" . }}$per_handshake;
+            ssl_certificate_key {{ include "c8s.keyFile" . }}$per_handshake;
             {{- end }}
 
             ssl_protocols TLSv1.2 TLSv1.3;
@@ -253,22 +215,13 @@ data:
             # Headroom for upstream responses with large headers.
             proxy_buffer_size 16k;
             proxy_buffers 4 16k;
-
-            {{- if $renderAllowlistRoute }}
             # Built-in control-plane route. The exact + slash-prefix pair
             # exposes only /allowlist and its API subtree, not lookalike paths.
-            {{- $allowlistLocationArgs := dict "root" $ "proxyPort" $allowlistProxyPort "writeBurst" $allowlistWriteBurst "writeTotalBurst" $allowlistWriteTotalBurst "readBurst" $allowlistReadBurst }}
+            {{- $allowlistLocationArgs := dict "root" $ "proxyPort" (include "router.allowlistProxyPort" $) "writeBurst" (int $allowlist.writeBurst) "writeTotalBurst" (int $allowlist.writeTotalBurst) "readBurst" (int $allowlist.readBurst) }}
             {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/allowlist") $allowlistLocationArgs) | nindent 12 }}
             {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/allowlist/") $allowlistLocationArgs) | nindent 12 }}
-
-            {{- end }}
-            {{- if .Values.router.discovery.enabled }}
-            location = {{ .Values.router.discovery.path }} {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
+            location = {{ include "router.discoveryPath" . }} {
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
                 # Holds no attest-lb binding. A client reads the allowlist on the
                 # connection whose leaf it attested here, so the connection stays
                 # open, but only while it is younger than keepalive_time: a binding
@@ -280,35 +233,22 @@ data:
                 alias {{ include "router.discoveryFilePath" . }};
             }
 
-            location = {{ .Values.router.discovery.cdsCertPath }} {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
+            location = {{ include "router.cdsCertPath" . }} {
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
                 keepalive_timeout 0;
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
                 alias {{ include "c8s.certFile" . }};
             }
-
-            {{- if .Values.router.meshCA.expose }}
-            location = {{ .Values.router.discovery.meshCAPath }} {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
+            location = {{ include "router.meshCAPath" . }} {
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
                 keepalive_timeout 0;
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
-                alias {{ $defaultMeshCAPath }};
+                alias {{ include "c8s.caFile" . }};
             }
-            {{- end }}
-
-            {{- end }}
             # The sidecar's readiness gate, proxied so kubelet can reach it.
             # cds-attest listens on loopback (its one listener also carries the
             # attestation and tunnel routes, which must not be
@@ -324,7 +264,6 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
             }
-            {{- if .Values.router.attest.enabled }}
 
             # c8s-verify attestation + over-encryption sidecar (loopback).
             # nginx serves the static cert(s) via discovery above; the dynamic
@@ -367,17 +306,12 @@ data:
                 return 503 '{"error":"tunnel_busy","message":"too many tunnelled requests from this client"}';
             }
 
-            {{- end }}
-
             # Application routing (route policy A7): every request no location
             # above claims goes to the cds-attest routing listener, which routes
             # it by the applied route manifest and dials the backend itself. No
             # URI on proxy_pass, so the listener sees the request target as the
             # client sent it, which path matching needs (M4).
             location / {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- end }}
                 # $host would drop a trailing dot and fall back to
                 # server_name; the listener matches the client's Host (M1).
                 if ($http_host = "") {
@@ -469,4 +403,3 @@ data:
     ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem$per_handshake;
     ssl_certificate_key {{ include "router.acmeKeyDir" . }}/key.pem$per_handshake;
   {{- end }}
-{{- end }}

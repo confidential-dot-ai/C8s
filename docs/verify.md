@@ -121,11 +121,11 @@ their bytes cannot be reproduced outside the build.
 
 Verify the router's attested handshake, which binds the connection you opened
 and the routes the router serves ([routes-evidence.md](routes-evidence.md)
-explains `attest-lb` and `attest-pq`). The router serves `attest-lb` when its
-public TLS mode is `cds` or `acme` (chart default `cds`); a `webpki` front door
-refuses it, leaving `--mode attest-pq`. CDS answers on its own endpoint, where
-a hostname or chain mismatch does not fail the run: the evidence is verified,
-not WebPKI.
+explains `attest-lb` and `attest-pq`). The router serves `attest-lb` on an
+installed cluster, where its public TLS mode is `cds`, and on a baked node
+whose launch file selects `cds` or `acme`. CDS answers on its own endpoint,
+where a hostname or chain mismatch does not fail the run: the evidence is
+verified, not WebPKI.
 
 ```sh
 c8s verify https://<ROUTER_HOST> --kind lb --mode attest-lb \

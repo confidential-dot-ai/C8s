@@ -37,9 +37,8 @@ func validateOperatorKeysFile(path string) error {
 // renderValuesCmd emits the resolved Helm values an install would apply, as a
 // values.yaml, without touching a cluster. It runs the same value computation
 // as `c8s install` — resolve each component image tag to its registry digest
-// (via crane), map --cvm-mode to the TEE devices, and enable the NRI
-// allowlist derivation — but writes the values to stdout instead of running
-// helm upgrade --install.
+// (via crane) and map --cvm-mode to the TEE devices — but writes the values to
+// stdout instead of running helm upgrade --install.
 //
 // This is the GitOps seam: a Flux HelmRelease (or any chart consumer) can
 // valuesFrom a bundle produced here instead of recomputing digests and device
@@ -55,11 +54,10 @@ var renderValuesCmd = &cobra.Command{
 	Use:   "render-values",
 	Short: "Print the resolved Helm values an install would apply (no cluster needed)",
 	Long: `Computes the install-time Helm values that need a registry or the chart
-to resolve — resolved image digests, --cvm-mode TEE devices, and the NRI
-allowlist derivation — and writes them to stdout as a values.yaml, without
-contacting a cluster. Per-cluster tuning a
-consumer already owns (webhook cert settings, router, nodeSelectors, …) is not
-emitted; layer it in the consuming HelmRelease values.
+to resolve — resolved image digests and --cvm-mode TEE devices — and writes
+them to stdout as a values.yaml, without contacting a cluster. Per-cluster
+tuning a consumer already owns (router, nodeSelectors, …) is not emitted;
+layer it in the consuming HelmRelease values.
 
 Use it to feed a GitOps consumer: a Flux HelmRelease can valuesFrom the bundle
 this produces rather than recomputing digests and device mappings. No preflight
@@ -97,7 +95,7 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 			return fmt.Errorf("read chart components: %w", err)
 		}
 
-		setArgs, err := buildValueArgs(cmd.Context(), cmd, chartPath, components, resolveImageTag(), appendResolvedDigestArgs)
+		setArgs, err := buildValueArgs(cmd.Context(), chartPath, components, resolveImageTag(), appendResolvedDigestArgs)
 		if err != nil {
 			return err
 		}
@@ -133,7 +131,6 @@ type digestResolver func(ctx context.Context, chartPath string, setArgs []string
 // converts these to a values tree.
 func buildValueArgs(
 	ctx context.Context,
-	cmd *cobra.Command,
 	chartPath string,
 	components []c8sComponent,
 	imageTag string,
@@ -152,7 +149,6 @@ func buildValueArgs(
 			setArgs = append(setArgs, "--set-string", c.valuesPath+".tag="+imageTag)
 		}
 	}
-	setArgs = appendInstallCRDArgs(setArgs, installCRDs)
 	// --cvm-mode is required and validated in RunE, so always emit the mode's
 	// teeDevices/attestation-api values (and the --hardware-platform propagation).
 	setArgs, err := appendCvmModeInstallArgs(setArgs, installCvmMode, installHardwarePlatform)
@@ -191,30 +187,7 @@ func buildValueArgs(
 			return nil, err
 		}
 	}
-	return appendWebhookInstallArgs(setArgs, cmd), nil
-}
-
-// appendWebhookInstallArgs emits the webhook cert / get-cert tuning values, each
-// only when its flag was passed (so an unset flag leaves the chart default or an
-// operator's -f to stand). Split out of buildValueArgs because the five clauses
-// are a mechanical block, not part of its core flow.
-func appendWebhookInstallArgs(setArgs []string, cmd *cobra.Command) []string {
-	if cmd.Flags().Changed("webhook-cert-fs-group") {
-		setArgs = append(setArgs, "--set", fmt.Sprintf("webhook.certVolume.fsGroup=%d", installCertFSGroup))
-	}
-	if cmd.Flags().Changed("webhook-get-cert-renew-interval") {
-		setArgs = append(setArgs, "--set-string", "webhook.getCert.renewInterval="+installGetCertRenewInterval.String())
-	}
-	if cmd.Flags().Changed("webhook-get-cert-run-as-user") {
-		setArgs = append(setArgs, "--set", fmt.Sprintf("webhook.getCert.runAsUser=%d", installGetCertRunAsUser))
-	}
-	if cmd.Flags().Changed("webhook-get-cert-run-as-group") {
-		setArgs = append(setArgs, "--set", fmt.Sprintf("webhook.getCert.runAsGroup=%d", installGetCertRunAsGroup))
-	}
-	if cmd.Flags().Changed("webhook-get-cert-run-as-non-root") {
-		setArgs = append(setArgs, "--set", fmt.Sprintf("webhook.getCert.runAsNonRoot=%t", installGetCertRunAsNonRoot))
-	}
-	return setArgs
+	return setArgs, nil
 }
 
 // valueArgsToTree turns the flat helm value-flag pairs the builder emits into
@@ -378,13 +351,12 @@ func init() {
 	// render-values reuses the install value flags (same vars, same semantics)
 	// so the two stay in lockstep; it drops the cluster-only flags (namespace,
 	// release, wait, values files).
-	renderValuesCmd.Flags().BoolVar(&installCRDs, "install-crds", true, "emit values for chart CRDs (false sets statusMirror.enabled=false, matching install --install-crds=false)")
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, quotes through ConfigFS TSM at /sys/kernel/config). Under --cvm-mode=aks it picks the Azure vTPM evidence shape: sev-snp selects az-snp, tdx selects az-tdx")
 	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address. Emits cds.address")
 	renderValuesCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json). Emits cds.measurementsConfig as the file's content")
-	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
+	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane) and pin it")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")
 	renderValuesCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main'). Override to pin a specific branch/tag/release")
 	renderValuesCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; the file's content is embedded as cds.operatorKeys in the emitted values (the chart value is PEM content, never a path). Without it the router uses the keys the pinned CDS serves. CDS's own write keys come from 'c8s cds config new --operator-keys'")

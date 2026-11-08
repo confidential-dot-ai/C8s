@@ -363,11 +363,12 @@ kubectl label namespace "$NS" --overwrite \
 # The installer copies the CDS address and pin to the node from the chart's
 # own ConfigMap, applied here under the release the install below adopts it
 # into. The router's copy of it lands with that install, which creates the
-# namespace it belongs to.
+# namespace it belongs to, so only the release namespace's copy applies here.
+# The filter reads the whole render: exiting early SIGPIPEs helm under pipefail.
 chart_render --set-string cds.address="$CDS_ADDRESS" \
     --set-file cds.measurementsConfig="$WORKDIR/cds/cds-pin.json" \
-    --set router.enabled=false \
     --show-only templates/measurements-config.yaml \
+    | python3 -c 'import sys, yaml; yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["metadata"]["namespace"] == sys.argv[1]], sys.stdout)' "$NS" \
     | kubectl apply -f - || fail "could not apply the measurements ConfigMap"
 kubectl -n "$NS" annotate configmap c8s-measurements --overwrite \
     meta.helm.sh/release-name=c8s "meta.helm.sh/release-namespace=$NS"

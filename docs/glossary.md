@@ -60,7 +60,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | **Ingress and routing** | | |
 | attest-lb | Attested handshake that binds the serving leaf of the connection a client is already on. | [routes-evidence.md](routes-evidence.md) |
 | attest-pq | Attested handshake whose X-Wing key exchange lets a client over-encrypt requests inside ordinary TLS. | [routes-evidence.md](routes-evidence.md) |
-| public TLS mode | How the router gets its public certificate: `cds`, `acme`, or `webpki`. | [operator.md](operator.md) |
+| public TLS mode | How the router gets its public certificate: `cds` or `acme`. | [operator.md](operator.md) |
 | route digest | The SHA-256 of the route manifest bytes, bound into the router's attestation. | [routes-evidence.md](routes-evidence.md) |
 | route manifest | Operator-signed hosts, paths, and backends. The router serves nothing else. | [operator.md](operator.md#route-manifest) |
 | router | The front door: terminates public TLS and routes application traffic by the signed manifest. | [operator.md](operator.md) |
