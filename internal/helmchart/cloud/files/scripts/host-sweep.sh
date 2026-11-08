@@ -19,13 +19,6 @@
 # from a previous install of a different shape, which this release's values
 # cannot see.
 #
-# Measured image exception: on the C8s worker image the NRI plugin, its floor
-# config and its containerd registration are baked into the measured image at
-# the same paths the chart uses. They are node-image state, not release state
-# — deleting them strips the node's fail-closed image admission until reimage
-# — so the NRI steps below are skipped when the baked-only
-# nri-node-ip.service unit exists.
-#
 # Fatal vs warn: containerd config removal and the runtime restart
 # fail the sweep (the CLI then keeps the
 # DaemonSet so its logs survive). Per-object netfilter failures warn and
@@ -37,13 +30,12 @@
 # Env (all required unless noted; set by `c8s uninstall` from the release's
 # computed values):
 #   HOST_CONTAINERD_DIR    — host containerd config directory
-#                            (nriImagePolicy.containerd.configDir)
 #   RESTART_COMMAND        — host runtime restart, run detached via systemd-run
 #   NRI_PLUGIN_DIR         — NRI plugin directory (nriImagePolicy.hostPaths.pluginDir)
-#   NRI_PLUGIN_FILENAME    — plugin filename inside it (nriImagePolicy.pluginFilename)
+#   NRI_PLUGIN_FILENAME    — plugin filename inside it
 #   NRI_CONFIG_DIR         — plugin config dir (nriImagePolicy.hostPaths.configDir)
-#   NRI_RUNTIME_DIR        — plugin runtime dir (nriImagePolicy.hostPaths.runtimeDir)
-#   NRI_CACHE_DIR          — plugin cache dir (nriImagePolicy.hostPaths.cacheDir)
+#   NRI_RUNTIME_DIR        — plugin runtime dir
+#   NRI_CACHE_DIR          — plugin cache dir
 
 # The admission pin covers argv, not PATH resolution.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -58,52 +50,44 @@ CONTAINERD_DIR="/host${HOST_CONTAINERD_DIR}"
 config_changed=0
 sweep_failed=0
 
-baked_node=0
-if [ -f /host/etc/systemd/system/nri-node-ip.service ]; then
-  baked_node=1
-  echo "c8s worker image detected — the baked NRI stack is image state; leaving it"
-fi
-
 # == Phase 1: containerd configuration =======================================
 # Everything that needs a runtime restart is removed first, the restart runs
 # once (phase 2), and only then are host artifacts deleted (phase 3): with
 # the registration gone, no interruption can leave the fail-closed NRI
 # validator requiring a plugin whose binary is already deleted.
 
-if [ "$baked_node" = "0" ]; then
-  # The NRI image-policy's containerd registration: the sentinel-delimited
-  #    block in config.toml. Mirrors the chart's files/scripts/uninstall.sh.
-  MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
-  MARK_END='# END c8s-nri-image-policy (managed)'
-  main_config="${CONTAINERD_DIR}/config.toml"
-  if [ -f "$main_config" ] && grep -qF "$MARK_BEGIN" "$main_config"; then
-    awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-      $0==b { skip=1; next }
-      $0==e { skip=0; next }
-      !skip { print }
-    ' "$main_config" > "$main_config.tmp"
-    mv -f "$main_config.tmp" "$main_config"
-    echo "containerd config block removed from $main_config"
-    config_changed=1
-  fi
-
-  # A containerd config template an earlier install managed: sentinel-marked,
-  #    it would re-add an import for a drop-in nothing writes now. A template
-  #    without the sentinel is the operator's and stays. The prep lock beside
-  #    it goes too.
-  SENTINEL='c8s-containerd-prep:managed-template'
-  for t in config-v3.toml.tmpl config.toml.tmpl; do
-    f="${CONTAINERD_DIR}/${t}"
-    [ -f "$f" ] || continue
-    if grep -qF "$SENTINEL" "$f"; then
-      rm -f "$f"
-      echo "managed containerd template removed: $f"
-    else
-      echo "leaving ${t}: not the c8s-managed template"
-    fi
-  done
-  rm -f "${CONTAINERD_DIR}/.c8s-containerd-prep.lock"
+# The NRI image-policy's containerd registration: the sentinel-delimited
+#    block in config.toml. Mirrors the chart's files/scripts/uninstall.sh.
+MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
+MARK_END='# END c8s-nri-image-policy (managed)'
+main_config="${CONTAINERD_DIR}/config.toml"
+if [ -f "$main_config" ] && grep -qF "$MARK_BEGIN" "$main_config"; then
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    $0==b { skip=1; next }
+    $0==e { skip=0; next }
+    !skip { print }
+  ' "$main_config" > "$main_config.tmp"
+  mv -f "$main_config.tmp" "$main_config"
+  echo "containerd config block removed from $main_config"
+  config_changed=1
 fi
+
+# A containerd config template an earlier install managed: sentinel-marked,
+#    it would re-add an import for a drop-in nothing writes now. A template
+#    without the sentinel is the operator's and stays. The prep lock beside
+#    it goes too.
+SENTINEL='c8s-containerd-prep:managed-template'
+for t in config-v3.toml.tmpl config.toml.tmpl; do
+  f="${CONTAINERD_DIR}/${t}"
+  [ -f "$f" ] || continue
+  if grep -qF "$SENTINEL" "$f"; then
+    rm -f "$f"
+    echo "managed containerd template removed: $f"
+  else
+    echo "leaving ${t}: not the c8s-managed template"
+  fi
+done
+rm -f "${CONTAINERD_DIR}/.c8s-containerd-prep.lock"
 
 # == Phase 2: one runtime restart ============================================
 # Detached via systemd-run: restarting containerd kills this pod's own
@@ -123,32 +107,30 @@ fi
 #    socket dir, and the allowlist cache. The rm -rf targets must carry the
 #    plugin's own directory name — the values come from the release and a
 #    bare parent dir (/var/run, /var/lib) is never deleted.
-if [ "$baked_node" = "0" ]; then
-  plugin_glob_dir="/host${NRI_PLUGIN_DIR}"
-  if [ -d "$plugin_glob_dir" ]; then
-    exact="${plugin_glob_dir}/${NRI_PLUGIN_FILENAME}"
-    if [ -f "$exact" ]; then
-      rm -f "$exact"
-      echo "NRI plugin removed: $exact"
-    fi
-    for f in "$plugin_glob_dir"/*-nri-image-policy; do
-      [ -f "$f" ] || continue
-      rm -f "$f"
-      echo "NRI plugin removed: $f"
-    done
+plugin_glob_dir="/host${NRI_PLUGIN_DIR}"
+if [ -d "$plugin_glob_dir" ]; then
+  exact="${plugin_glob_dir}/${NRI_PLUGIN_FILENAME}"
+  if [ -f "$exact" ]; then
+    rm -f "$exact"
+    echo "NRI plugin removed: $exact"
   fi
-  rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
-  rm -f "/host${NRI_CONFIG_DIR}/cds-address"
-  rm -f "/host${NRI_CONFIG_DIR}/cds.json"
-  case "$NRI_RUNTIME_DIR" in
-    */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
-    *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;
-  esac
-  case "$NRI_CACHE_DIR" in
-    */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
-    *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
-  esac
+  for f in "$plugin_glob_dir"/*-nri-image-policy; do
+    [ -f "$f" ] || continue
+    rm -f "$f"
+    echo "NRI plugin removed: $f"
+  done
 fi
+rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
+rm -f "/host${NRI_CONFIG_DIR}/cds-address"
+rm -f "/host${NRI_CONFIG_DIR}/cds.json"
+case "$NRI_RUNTIME_DIR" in
+  */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
+  *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;
+esac
+case "$NRI_CACHE_DIR" in
+  */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
+  *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
+esac
 
 # `c8s volume attach` LIO loopback disks. attach builds them through configfs
 #    (internal/cmds/volume/attach.go) and nothing in the release removes them,

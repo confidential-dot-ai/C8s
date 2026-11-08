@@ -730,22 +730,9 @@ null
 {{- $entries := dict -}}
 {{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
 {{- $sweep := printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/host-sweep.sh") "") -}}
-{{- /* `c8s uninstall` sweeps in the installer's image where the release pinned
-       one, else in this one, whose two containers are the sweep script and the
-       pause that holds its pod (cmd/c8s/uninstall.go). A measured node image
-       carries its own floor and stages this seed as a file, which keeps the
-       script out of it (node_image.go holds the two byte for byte). */ -}}
-{{- if not (or .Values.nriImagePolicy.enabled .Values.node.baked) -}}
-{{- with .Values.nriImagePolicy.containerdPrep.image -}}
-{{- if .digest -}}
-{{- $ref := printf "%s@%s" .repository .digest -}}
-{{- $containers := list (dict "digest" .digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list $sweep))) (dict "digest" .digest "image" $ref "command" (dict "policy" "exact" "argv" (list "/bin/sleep")) "args" (dict "policy" "exact" "argv" (list "2147483647"))) -}}
-{{- $name := include "c8s.shapeWorkloadName" (dict "digest" .digest "image" $ref "containers" $containers) -}}
-{{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if .Values.nriImagePolicy.enabled -}}
+{{- /* `c8s uninstall` sweeps in the installer's image, so its entry also
+       pins the sweep script and the pause that holds its pod
+       (cmd/c8s/uninstall.go). */ -}}
 {{- $img := .Values.nriImagePolicy.image -}}
 {{- $digest := required "nriImagePolicy.image.digest is required (the installer is admitted argv-pinned; a tag cannot be pinned)" $img.digest -}}
 {{- $ref := printf "%s@%s" $img.repository $digest -}}
@@ -760,18 +747,13 @@ null
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" (dict "policy" "exact" "argv" (list "/bin/sleep")) "args" (dict "policy" "exact" "argv" (list "2147483647"))) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $ref "containers" $containers) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
-{{- end -}}
 {{ $entries | toJson }}
 {{- end -}}
 
 {{/* Values-only to avoid boot-config recursion; see ../helpers/allowlist/README.md#argv-pinned-entries. */}}
 {{- define "c8s.argvPinnedDigests" -}}
 {{- $digests := list -}}
-{{- if .Values.nriImagePolicy.enabled -}}
 {{- with .Values.nriImagePolicy.image.digest -}}{{- $digests = append $digests . -}}{{- end -}}
-{{- else if not .Values.node.baked -}}
-{{- with .Values.nriImagePolicy.containerdPrep.image.digest -}}{{- $digests = append $digests . -}}{{- end -}}
-{{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
 

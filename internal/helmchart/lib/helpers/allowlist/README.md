@@ -88,9 +88,9 @@ the same names.
 ## Component shapes
 
 `c8s.componentPods` renders the pod spec of every component workload its
-`templates` field names (the cloud chart: operator, attestation-api,
-armtls-mesh, volumed and its teardown hook, router; the worker chart: router)
-through the same named templates the workloads use, and
+`templates` field names (the cloud chart: operator, attestation-api, volumed
+and its teardown hook, router; the worker chart: router) through the same
+named templates the workloads use, and
 `c8s.podShapes` turns each container whose image is a component digest into an
 allowlist container:
 

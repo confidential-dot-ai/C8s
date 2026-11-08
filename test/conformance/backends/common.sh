@@ -243,8 +243,8 @@ image_ref() {
     esac
 }
 
-# The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
-# which the node image bakes as the equal value (images/node-guest/worker/
+# The plugin's pull interval: the chart's allowlist.pull.interval, which the
+# node image bakes as the equal value (images/node-guest/worker/
 # image-policy.yaml.in, allowlist.pull.interval). The steps poll
 # applied_version for the served version, with a deadline in these; where the
 # backend cannot reach the plugin they wait this out instead.

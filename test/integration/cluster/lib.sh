@@ -44,11 +44,9 @@ cds_host() {
 }
 cds_url() { echo "https://$(cds_address)"; }
 
-# The mock attestation-api's Deployment (manifests/mock-attestation.yaml) and
-# the node address every component dials it at.
-MOCK_ATTESTATION_NS=kube-system
-MOCK_ATTESTATION_NAME=mock-attestation
-mock_attestation_url() { echo "http://$NODE_IP:8400"; }
+# The CDS's mock attestation-api, which shares the CDS container's address and
+# answers this host.
+cds_mock_attestation_url() { echo "http://$(cds_host):8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.

@@ -12,8 +12,7 @@ selectors and empty terms retain Kubernetes' no-match behavior. The input is
 never mutated, so repeated callers see the same constraints.
 
 `c8s.nriHostDaemonAffinity` takes the chart root and combines the installer's
-Linux requirement and `nriImagePolicy.nodeAffinity.excludeLabels` with that
-exclusion. Both the installer and its uninstall hook use it. The attestation
+Linux requirement with that exclusion. Both the installer and its uninstall hook use it. The attestation
 API, volumed, and volumed teardown PodSpec helpers use `c8s.hostDaemonAffinity`
 directly. The exclusion applies even when this release's provider is disabled;
 another release can own a virtual node in the same cluster.

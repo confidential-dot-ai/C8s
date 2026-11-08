@@ -9,7 +9,7 @@
 ) -}}
 - name: c8s-cert
   image: {{ include "c8s.image" $root }}
-  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   restartPolicy: Always
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   {{- /* This container holds the credentials role, so the node hands it the
@@ -28,18 +28,12 @@
     - --ca-path={{ include "c8s.caFile" $root }}
     # Retry CDS in-process during a roll instead of exiting into kubelet
     # CrashLoopBackOff; still fails closed once the timeout elapses.
-    - --initial-retry-timeout={{ $root.Values.certProvisioning.initialRetryTimeout }}
+    - --initial-retry-timeout=2m
     - --renew-interval={{ .renewInterval }}
     - --continue-on-initial-error
     {{- range .extraArgs }}
     - {{ . }}
     {{- end }}
-  {{- with .hostIPEnv }}
-  # Expands $(HOST_IP) in --attestation-api-url to the node IP so this
-  # pod-netns sidecar reaches the node-baked host attestation-api.
-  env:
-    {{- . | nindent 4 }}
-  {{- end }}
   volumeMounts:
     - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
@@ -61,7 +55,7 @@
 # "certWaitContainer"), which the measured base pins for the credentials role.
 - name: c8s-cert-wait
   image: {{ include "c8s.image" $root }}
-  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   command:
     - /c8s
     - probe-file
@@ -79,8 +73,8 @@
 allowPrivilegeEscalation: false
 readOnlyRootFilesystem: true
 runAsNonRoot: true
-runAsUser: {{ include "c8s.int" .runAsUser }}
-runAsGroup: {{ include "c8s.int" .runAsGroup }}
+runAsUser: {{ .runAsUser }}
+runAsGroup: {{ .runAsGroup }}
 capabilities:
   drop:
     - ALL

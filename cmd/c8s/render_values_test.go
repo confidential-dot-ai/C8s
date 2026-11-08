@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -106,29 +105,28 @@ func TestValueArgsToTreeCoercesSetTypes(t *testing.T) {
 	// --set typing mirrors helm strvals: bool/int are coerced, the rest stay
 	// strings. --set-string never coerces.
 	got, err := valueArgsToTree([]string{
-		"--set", "attestationApi.teeDevices.sevGuest=true",
-		"--set", "attestationApi.teeDevices.tpm=false",
+		"--set", "volumed.enabled=true",
+		"--set", "router.routePublication.enabled=false",
 		"--set", "webhook.getCert.runAsUser=65532",
-		"--set-string", "attestationApi.cvmMode=aks",
+		"--set-string", "nriImagePolicy.platform=tdx",
 		"--set-string", "image.tag=main",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tee := got["attestationApi"].(map[string]any)["teeDevices"].(map[string]any)
-	if tee["sevGuest"] != true {
-		t.Errorf("sevGuest: got %#v, want bool true", tee["sevGuest"])
+	if got["volumed"].(map[string]any)["enabled"] != true {
+		t.Errorf("volumed.enabled: want bool true")
 	}
-	if tee["tpm"] != false {
-		t.Errorf("tpm: got %#v, want bool false", tee["tpm"])
+	if got["router"].(map[string]any)["routePublication"].(map[string]any)["enabled"] != false {
+		t.Errorf("routePublication.enabled: want bool false")
 	}
 	if got["webhook"].(map[string]any)["getCert"].(map[string]any)["runAsUser"] != int64(65532) {
 		t.Errorf("runAsUser: want int64 65532")
 	}
-	// --set-string keeps "aks"/"main" as strings (cvmMode and tag are never
+	// --set-string keeps "tdx"/"main" as strings (platform and tag are never
 	// coerced even though they look plain).
-	if got["attestationApi"].(map[string]any)["cvmMode"] != "aks" {
-		t.Errorf("cvmMode: want string \"aks\"")
+	if got["nriImagePolicy"].(map[string]any)["platform"] != "tdx" {
+		t.Errorf("platform: want string \"tdx\"")
 	}
 	if got["image"].(map[string]any)["tag"] != "main" {
 		t.Errorf("tag: want string \"main\"")
@@ -185,28 +183,16 @@ func TestValueArgsToTreeRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
-// setCvmModeForTest pins the required --cvm-mode global for a buildValueArgs
-// test and restores the prior value, so a mode leaked from another test cannot
-// change the emitted args.
-func setCvmModeForTest(t *testing.T, mode string) {
-	t.Helper()
-	prev, prevPlat := installCvmMode, installHardwarePlatform
-	installCvmMode = mode
-	// --hardware-platform has no default anymore; state it like a caller must.
-	installHardwarePlatform = "sev-snp"
-	t.Cleanup(func() { installCvmMode, installHardwarePlatform = prev, prevPlat })
-}
-
 // On the no-digest path a numeric or zero-padded image tag (a date or build-id
 // tag) must survive as a string: buildValueArgs emits .tag via --set-string, so
 // coerce never int-coerces it (0640 -> 640 would pin the wrong image).
 func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
-	setCvmModeForTest(t, "bare-metal")
+	resetCLIState(t)
 	prev := installResolveDigests
 	installResolveDigests = false // tag is the sole image ref only when digests are off
 	defer func() { installResolveDigests = prev }()
 
-	args, err := buildValueArgs(context.Background(), "",
+	args, err := buildValueArgs(context.Background(), "", nil,
 		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
 		"0640", appendResolvedDigestArgs)
 	if err != nil {
@@ -225,12 +211,12 @@ func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
 // too is redundant. The injected resolver mirrors appendResolvedDigestArgs
 // (repository + digest) and keeps crane off PATH.
 func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
-	setCvmModeForTest(t, "bare-metal")
+	resetCLIState(t)
 
 	prevFlag := installResolveDigests
 	defer func() { installResolveDigests = prevFlag }()
 	installResolveDigests = true
-	stubResolver := func(_ context.Context, _ string, args []string, _ string, comps []c8sComponent) ([]string, error) {
+	stubResolver := func(_ context.Context, _ string, _ []string, args []string, _ string, comps []c8sComponent) ([]string, error) {
 		for _, c := range comps {
 			args = append(args, "--set-string", c.valuesPath+".repository="+c.repository,
 				"--set-string", c.valuesPath+".digest=sha256:abc")
@@ -238,7 +224,7 @@ func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
 		return args, nil
 	}
 
-	got, err := buildValueArgs(context.Background(), "",
+	got, err := buildValueArgs(context.Background(), "", nil,
 		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
 		"main", stubResolver)
 	if err != nil {
@@ -262,7 +248,7 @@ func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
 func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 	path, err := writeComputedValues([]string{
 		"--set-string", "image.repository=ghcr.io/x/c8s-operator",
-		"--set", "attestationApi.teeDevices.tpm=true",
+		"--set", "volumed.enabled=true",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -280,8 +266,8 @@ func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 	if got["image"].(map[string]any)["repository"] != "ghcr.io/x/c8s-operator" {
 		t.Errorf("repository not in computed values: %#v", got["image"])
 	}
-	if got["attestationApi"].(map[string]any)["teeDevices"].(map[string]any)["tpm"] != true {
-		t.Errorf("tpm should be bool true: %#v", got["attestationApi"])
+	if got["volumed"].(map[string]any)["enabled"] != true {
+		t.Errorf("volumed.enabled should be bool true: %#v", got["volumed"])
 	}
 }
 
@@ -303,30 +289,15 @@ var coerceSafeValueArg = regexp.MustCompile(`^([A-Za-z0-9./]|\\\.)+(\[[0-9]+\])?
 // non-value flag would silently break BOTH install and render-values (the
 // shared path hides the divergence) with every existing test still green.
 func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
-	prev := struct {
-		resolveDigests                            bool
-		secret, cvm, plat, upstream, operatorKeys string
-		workloadRefs                              []string
-		cdsAddress, cdsPin                        string
-	}{installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), installCDSAddress, installCDSPin}
-	defer func() {
-		installResolveDigests = prev.resolveDigests
-		installImagePullSecret, installCvmMode = prev.secret, prev.cvm
-		installHardwarePlatform = prev.plat
-		installUpstream = prev.upstream
-		installOperatorKeys = prev.operatorKeys
-		installWorkloadRefs = prev.workloadRefs
-		installCDSAddress, installCDSPin = prev.cdsAddress, prev.cdsPin
-	}()
+	resetCLIState(t)
 	// Drive every value-producing toggle. --resolve-digests=false keeps crane
 	// off PATH (the digest-arg shape is covered separately via buildDigestArgs
 	// below).
 	installResolveDigests = false
-	installImagePullSecret, installCvmMode = "regcred", "bare-metal"
-	installHardwarePlatform = "sev-snp"
+	installImagePullSecret, installVolumes = "regcred", true
 	installOperatorKeys = writeTestOperatorKeys(t)
 
-	args, err := buildValueArgs(context.Background(), "", nil, "main", appendResolvedDigestArgs)
+	args, err := buildValueArgs(context.Background(), "", nil, nil, "main", appendResolvedDigestArgs)
 	if err != nil {
 		t.Fatalf("buildValueArgs: %v", err)
 	}
@@ -389,29 +360,6 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		t.Errorf("cds.measurementsConfig = %q, want the pin document's content", pin)
 	}
 
-	// Third pass: AKS opts both webhooks out of its admissions enforcer, under
-	// an annotation key whose dot the arg escapes.
-	aksArgs, err := appendCvmModeInstallArgs(nil, "aks", "sev-snp")
-	if err != nil {
-		t.Fatalf("appendCvmModeInstallArgs: %v", err)
-	}
-	if len(aksArgs)%2 != 0 {
-		t.Fatalf("appendCvmModeInstallArgs returned %d args, want flag/value pairs", len(aksArgs))
-	}
-	for i := 0; i < len(aksArgs); i += 2 {
-		if kv := aksArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
-			t.Errorf("AKS arg %q is outside the grammar", kv)
-		}
-	}
-	aksTree, err := valueArgsToTree(aksArgs)
-	if err != nil {
-		t.Fatalf("AKS args failed to parse: %v", err)
-	}
-	webhook, _ := aksTree["controlPlane"].(map[string]any)["webhook"].(map[string]any)
-	annotations, _ := webhook["annotations"].(map[string]any)
-	if annotations["admissions.enforcer/disabled"] != "true" {
-		t.Errorf("controlPlane.webhook.annotations = %#v, want admissions.enforcer/disabled=true", annotations)
-	}
 }
 
 // render-values has no --upstream or --workload-ref: values carry neither
@@ -421,7 +369,7 @@ func TestRenderValuesRefusesRoutingFlags(t *testing.T) {
 		{"--upstream", "infer"},
 		{"--workload-ref", "infer=vllm/deployment/x:8000"},
 	} {
-		err := runC8s(t, append([]string{"render-values", "--cvm-mode=bare-metal"}, args...)...)
+		err := runC8s(t, append([]string{"render-values"}, args...)...)
 		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
 			t.Errorf("render-values %v = %v, want unknown flag", args, err)
 		}

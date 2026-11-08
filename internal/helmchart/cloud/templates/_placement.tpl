@@ -28,9 +28,6 @@
 
 {{/* Installer and uninstaller share the same host-node eligibility. */}}
 {{- define "c8s.nriHostDaemonAffinity" -}}
-{{- $expressions := list (dict "key" "kubernetes.io/os" "operator" "In" "values" (list "linux")) -}}
-{{- range .Values.nriImagePolicy.nodeAffinity.excludeLabels -}}
-  {{- $expressions = append $expressions (dict "key" .key "operator" "NotIn" "values" .values) -}}
-{{- end -}}
-{{- include "c8s.hostDaemonAffinity" (dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list (dict "matchExpressions" $expressions))))) -}}
+{{- $linux := dict "key" "kubernetes.io/os" "operator" "In" "values" (list "linux") -}}
+{{- include "c8s.hostDaemonAffinity" (dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list (dict "matchExpressions" (list $linux)))))) -}}
 {{- end -}}

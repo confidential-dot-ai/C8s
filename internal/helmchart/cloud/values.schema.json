@@ -1,15 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "$comment": "The root key set is closed, and the four subtrees operators hand-write are sealed, so an unknown or misspelled key is a render-time error instead of a silently dropped value. Every key of those subtrees in values.yaml must appear here. Leaf types stay unconstrained except where a wrong value is otherwise accepted silently (see the enums and ranges below). Maps whose keys belong to the consumer (label maps, digest maps, resources) are left open.",
+  "$comment": "The root key set is closed, and the subtrees operators hand-write are sealed, so an unknown or misspelled key is a render-time error instead of a silently dropped value. Every key of those subtrees in values.yaml must appear here. Leaf types stay unconstrained except where a wrong value is otherwise accepted silently (see the enums and patterns below). The platform keys have no defaults: templates/validations.yaml fails a render that leaves them unset. Maps whose keys belong to the consumer (label maps, digest maps) are left open.",
   "type": "object",
+  "required": ["attestationApi", "nriImagePolicy", "router"],
   "properties": {
-    "node": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "baked": { "type": "boolean" }
-      }
-    },
     "cds": {
       "type": [
         "object",
@@ -31,7 +25,7 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "platform": {},
+        "platform": { "enum": ["snp", "tdx"] },
         "mesh": {
           "type": "object",
           "additionalProperties": false,
@@ -50,43 +44,6 @@
             "workloads": {}
           }
         },
-        "containerd": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "configDir": {},
-            "namespace": {},
-            "restartCommand": {},
-            "socket": {}
-          }
-        },
-        "containerdPrep": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "image": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "digest": {},
-                "pullPolicy": {},
-                "repository": {},
-                "tag": {}
-              }
-            }
-          }
-        },
-        "enabled": {},
-        "healthSocketName": {},
         "hostPaths": {
           "type": [
             "object",
@@ -94,13 +51,11 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "cacheDir": {},
             "configDir": {},
             "pluginDir": {
               "type": "string",
               "pattern": "^/[A-Za-z0-9._/-]+$"
-            },
-            "runtimeDir": {}
+            }
           }
         },
         "image": {
@@ -111,28 +66,10 @@
           "additionalProperties": false,
           "properties": {
             "digest": {},
-            "pullPolicy": {},
             "repository": {},
             "tag": {}
           }
         },
-        "imagePullSecrets": {},
-        "logLevel": {},
-        "nodeAffinity": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "excludeLabels": {}
-          }
-        },
-        "pluginFilename": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._-]+$"
-        },
-        "pluginName": {},
         "policy": {
           "type": [
             "object",
@@ -140,10 +77,7 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "denyMissingAnnotation": {},
-            "enforceExisting": {},
             "exemptNamespaces": {},
-            "labelRules": {},
             "mode": {
               "enum": [
                 "fail-closed",
@@ -151,32 +85,6 @@
                 null
               ]
             }
-          }
-        },
-        "priorityClassName": {},
-        "refresh": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "interval": {}
-          }
-        },
-        "requestTimeout": {
-          "type": "string",
-          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
-        },
-        "resources": {},
-        "sandboxDigests": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "advertiseHost": {}
           }
         }
       }
@@ -188,16 +96,6 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "allowlist": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "resources": {}
-          }
-        },
         "attest": {
           "type": [
             "object",
@@ -205,37 +103,10 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "attestationApiURL": {},
-            "generation": {},
-            "platform": {},
-            "resources": {}
-          }
-        },
-        "certProvisioning": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "caWatchInterval": {},
-            "renewInterval": {},
-            "verbose": {}
-          }
-        },
-        "imagePullSecrets": {},
-        "nginx": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "imagePullPolicy": {},
-            "replicas": {},
-            "resources": {},
-            "tunnelBodySpace": {}
-          }
+            "generation": { "enum": ["", "genoa", "milan", "turin"] },
+            "platform": { "enum": ["az-snp", "az-tdx", "snp", "tdx"] }
+          },
+          "required": ["generation"]
         },
         "routePublication": {
           "type": [
@@ -254,12 +125,13 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "maxRequestBodyBytes": {},
-            "pollInterval": {},
-            "tunnelBudget": {}
+            "pollInterval": { "type": "string", "pattern": "^0*[1-9][0-9]*(ms|s|m|h)$" }
           }
         },
-        "san": {}
+        "san": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-zA-Z0-9.*-]+$" }
+        }
       }
     },
     "volumed": {
@@ -270,17 +142,6 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {},
-        "hostPaths": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "cgroupRoot": {},
-            "kubeletRoot": {}
-          }
-        },
         "image": {
           "type": [
             "object",
@@ -289,18 +150,10 @@
           "additionalProperties": false,
           "properties": {
             "digest": {},
-            "pullPolicy": {},
             "repository": {},
             "tag": {}
           }
-        },
-        "imagePullSecrets": {},
-        "maxMounts": {},
-        "nodeSelector": {},
-        "priorityClassName": {},
-        "reapInterval": {},
-        "resources": {},
-        "tolerations": {}
+        }
       }
     },
     "c8s-lib": {},
@@ -333,6 +186,7 @@
     "image": {},
     "operator": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "podCVMProvider": {
           "type": "object",
@@ -346,11 +200,19 @@
     },
     "imagePullSecrets": {},
     "imagePullSecret": {},
-    "certProvisioning": {},
-    "serviceAccount": {},
-    "attestationApi": {},
-    "armtlsMesh": {},
-    "podSecurityContext": {}
+    "attestationApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^/dev/[a-z0-9-]+$" }
+        },
+        "image": {}
+      }
+    },
+    "armtlsMesh": {}
   },
   "additionalProperties": false
 }

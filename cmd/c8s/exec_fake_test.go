@@ -132,8 +132,8 @@ func helmRenderOnly(t *testing.T, args ...string) []byte {
 func resetCLIState(t *testing.T) {
 	t.Helper()
 	saved := struct {
-		installNamespace, installRelease, installCvmMode                          string
-		installHardwarePlatform, installImagePullSecret, installImageTag          string
+		installNamespace, installRelease, installPlatform                         string
+		installImagePullSecret, installImageTag                                   string
 		installOperatorKeys, installUpstream                                      string
 		uninstallNamespace, uninstallRelease                                      string
 		installCDSAddress, installCDSPin, installSeedOut                          string
@@ -145,8 +145,8 @@ func resetCLIState(t *testing.T) {
 		installRoutesMaxAge                                                       time.Duration
 		installCDS                                                                *cdsPin
 	}{
-		installNamespace, installRelease, installCvmMode,
-		installHardwarePlatform, installImagePullSecret, installImageTag,
+		installNamespace, installRelease, installPlatform,
+		installImagePullSecret, installImageTag,
 		installOperatorKeys, installUpstream,
 		uninstallNamespace, uninstallRelease,
 		installCDSAddress, installCDSPin, installSeedOut,
@@ -159,8 +159,8 @@ func resetCLIState(t *testing.T) {
 		installCDS,
 	}
 	t.Cleanup(func() {
-		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
-		installHardwarePlatform, installImagePullSecret, installImageTag = saved.installHardwarePlatform, saved.installImagePullSecret, saved.installImageTag
+		installNamespace, installRelease, installPlatform = saved.installNamespace, saved.installRelease, saved.installPlatform
+		installImagePullSecret, installImageTag = saved.installImagePullSecret, saved.installImageTag
 		installOperatorKeys, installUpstream = saved.installOperatorKeys, saved.installUpstream
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
 		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
@@ -175,7 +175,7 @@ func resetCLIState(t *testing.T) {
 
 	installNamespace, installRelease = "c8s-system", "c8s"
 	installValues, installWait = nil, true
-	installCvmMode, installHardwarePlatform = "", "sev-snp"
+	installPlatform = ""
 	installImagePullSecret, installImageTag = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false

@@ -1,25 +1,12 @@
 {{- define "c8s.volumedTeardownPodSpec" -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
-{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 automountServiceAccountToken: false
-{{- with .Values.volumed.priorityClassName }}
-priorityClassName: {{ . }}
-{{- end }}
-{{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 0 }}
-nodeSelector:
-  kubernetes.io/os: linux
-  {{- with .Values.volumed.nodeSelector }}
-{{ toYaml . | indent 2 }}
-  {{- end }}
-tolerations:
-  {{- toYaml .Values.volumed.tolerations | nindent 2 }}
-affinity:
-  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
+{{ include "c8s.volumedNodePlacement" . }}
 initContainers:
   - name: teardown
     image: {{ include "volumed.image" . }}
-    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    imagePullPolicy: IfNotPresent
     securityContext:
       privileged: true
       # The image is nonroot (USER 65532) and privileged grants no
@@ -38,16 +25,16 @@ initContainers:
       # Bidirectional: the mounts live in the host namespace, so the
       # unmount has to propagate back out of this pod.
       - name: kubelet-root
-        mountPath: {{ $kubeletRoot }}
+        mountPath: /var/lib/kubelet
         mountPropagation: Bidirectional
       - name: dev
         mountPath: /dev
     resources:
-      {{- toYaml .Values.volumed.resources | nindent 6 }}
+      {{- include "c8s.volumedResources" . | nindent 6 }}
 containers:
   - name: pause
     image: {{ include "volumed.image" . }}
-    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    imagePullPolicy: IfNotPresent
     command: ["/bin/sh", "-c", "sleep infinity"]
     resources:
       requests:
@@ -59,7 +46,7 @@ containers:
 volumes:
   - name: kubelet-root
     hostPath:
-      path: {{ $kubeletRoot }}
+      path: /var/lib/kubelet
       type: Directory
   - name: dev
     hostPath:
@@ -68,7 +55,6 @@ volumes:
 {{- end -}}
 
 {{- if .Values.volumed.enabled }}
-{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 {{- /*
   Pre-delete DaemonSet that reaps the device-mapper stack volumed opened on
   each node (files/scripts/volumed-teardown.sh). It runs before the release is

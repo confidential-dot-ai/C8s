@@ -1,29 +1,16 @@
 {{- define "c8s.volumedPodSpec" -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
-{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 # SO_PEERCRED reports a peer's PID in the reader's PID namespace, so a
 # caller in another pod resolves to 0 without this.
 hostPID: true
 # It reaches no API server: everything it acts on is node-local.
 automountServiceAccountToken: false
-{{- with .Values.volumed.priorityClassName }}
-priorityClassName: {{ . }}
-{{- end }}
-{{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 0 }}
-nodeSelector:
-  kubernetes.io/os: linux
-  {{- with .Values.volumed.nodeSelector }}
-{{ toYaml . | indent 2 }}
-  {{- end }}
-tolerations:
-  {{- toYaml .Values.volumed.tolerations | nindent 2 }}
-affinity:
-  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
+{{ include "c8s.volumedNodePlacement" . }}
 containers:
   - name: volumed
     image: {{ include "volumed.image" . }}
-    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    imagePullPolicy: IfNotPresent
     securityContext:
       privileged: true
       # The image is nonroot (USER 65532) and privileged grants no
@@ -33,20 +20,22 @@ containers:
     command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "volumed.image") }}
     args:
       - --socket-dir
-      - {{ .Values.nriImagePolicy.hostPaths.runtimeDir | quote }}
+      - {{ include "nri-image-policy.runtimeDir" . | quote }}
       - --kubelet-root
-      - {{ $kubeletRoot | quote }}
+      - "/var/lib/kubelet"
       - --cgroup-root
-      - {{ .Values.volumed.hostPaths.cgroupRoot | quote }}
+      - "/sys/fs/cgroup"
       - --reap-interval
-      - {{ .Values.volumed.reapInterval | quote }}
+      - "15s"
+      # Each volume holds two device-mapper devices and a mount, and every
+      # confidential pod on the node can reach the socket.
       - --max-mounts
-      - {{ include "c8s.positiveInt" (dict "value" .Values.volumed.maxMounts "label" "volumed.maxMounts") | quote }}
+      - "64"
     volumeMounts:
       # Bidirectional: the mount is made here and has to reach the
       # workload's pod directory on the node.
       - name: kubelet-root
-        mountPath: {{ $kubeletRoot }}
+        mountPath: /var/lib/kubelet
         mountPropagation: Bidirectional
       - name: dev
         mountPath: /dev
@@ -56,19 +45,19 @@ containers:
         mountPath: /sys
         readOnly: true
       - name: cgroup
-        mountPath: {{ .Values.volumed.hostPaths.cgroupRoot }}
+        mountPath: /sys/fs/cgroup
         readOnly: true
       # The daemon's socket must live in the inventory's socket directory:
       # that is the one directory nri-image-policy NRI-mounts into cw-pod
       # sidecars.
       - name: inventory-socket-dir
-        mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+        mountPath: {{ include "nri-image-policy.runtimeDir" . }}
     resources:
-      {{- toYaml .Values.volumed.resources | nindent 6 }}
+      {{- include "c8s.volumedResources" . | nindent 6 }}
 volumes:
   - name: kubelet-root
     hostPath:
-      path: {{ $kubeletRoot }}
+      path: /var/lib/kubelet
       type: Directory
   - name: dev
     hostPath:
@@ -80,16 +69,40 @@ volumes:
       type: Directory
   - name: cgroup
     hostPath:
-      path: {{ .Values.volumed.hostPaths.cgroupRoot }}
+      path: /sys/fs/cgroup
       type: Directory
   - name: inventory-socket-dir
     hostPath:
-      path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+      path: {{ include "nri-image-policy.runtimeDir" . }}
       type: DirectoryOrCreate
 {{- end -}}
 
+{{/* The pod spec volumed and its teardown hook share beside their
+     containers: every linux node, whatever its taints. */}}
+{{- define "c8s.volumedNodePlacement" -}}
+priorityClassName: system-node-critical
+{{- include "c8s.imagePullSecrets" . }}
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - operator: "Exists"
+    effect: "NoExecute"
+  - operator: "Exists"
+    effect: "NoSchedule"
+affinity:
+  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
+{{- end -}}
+
+{{- define "c8s.volumedResources" -}}
+requests:
+  cpu: 10m
+  memory: 32Mi
+limits:
+  cpu: 200m
+  memory: 128Mi
+{{- end -}}
+
 {{- if .Values.volumed.enabled }}
-{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 {{- /*
   Node agent that opens encrypted volumes for the pods on it (docs/volumes.md).
 

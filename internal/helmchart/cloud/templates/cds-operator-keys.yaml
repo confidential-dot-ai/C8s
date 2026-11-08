@@ -1,10 +1,9 @@
 {{- /*
 The keys the route manifest is signed under, in the router's own namespace,
 which a projected volume cannot leave. Public key material — not a secret, and
-checked for content in validations.yaml. A baked node's router reads the same
-keys from its measured launch staging instead.
+checked for content in validations.yaml.
 */ -}}
-{{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys }}
+{{- if .Values.cds.operatorKeys }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

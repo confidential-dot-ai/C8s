@@ -146,7 +146,6 @@ func TestWorkerValuesSchemaCoversValuesYAML(t *testing.T) {
 	t.Parallel()
 	assertChartSchemaCovers(t, workerChart, []string{
 		"armtlsMesh",
-		"certProvisioning",
 		"controlPlane",
 		"image",
 		"router",

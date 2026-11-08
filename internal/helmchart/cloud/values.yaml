@@ -1,15 +1,6 @@
-## Render Kubernetes core services into the measured node image at build time.
-## Signed launch policies are staged on each node at /run/c8s-node; the host
-## owns attestation and NRI. Ordinary Helm installs leave this off.
-##
-## A baked router takes its public hostnames and front-door mode from the
-## launch file at /run/c8s-node/router/ instead of the chart. Its routes come from the route manifest, as off a baked node. nginx
-## includes router/tls.conf, which names the ACME leaf when the launch file
-## lists hostnames and the mesh leaf otherwise. nginx reads nginx.conf and the
-## TLS snippets from the image at /usr/lib/c8s/router-nginx, which installs
-## c8s-lib's files/router-nginx, so changing them takes an image rebuild.
-node:
-  baked: false
+## A stock file values-<platform>.yaml sets the keys that depend on the
+## cluster's confidential VMs: attestationApi.devices, nriImagePolicy.platform
+## and router.attest.
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -20,58 +11,28 @@ image:
   repository: ghcr.io/confidential-dot-ai/c8s-operator
   tag: ""
   digest: ""
-  pullPolicy: IfNotPresent
 
-## Operator Deployment. The operator is intentionally singleton because the
-## webhook path mints pod-local serving PKI and patches one shared
-## MutatingWebhookConfiguration caBundle.
+## Operator Deployment.
 operator:
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 1000m
-      memory: 512Mi
-  podAnnotations: {}
-  extraArgs: []
   podCVMProvider:
     enabled: false
     # Trusted config.json plus the key, policy and measurement files it names.
     # Create this Secret in the release namespace before enabling the provider.
     existingSecret: ""
 
-## Chart-wide image pull secrets, used by every component unless that component
-## sets its own .imagePullSecrets. One entry here covers all C8s images.
+## Chart-wide image pull secrets, used by every component. One entry here
+## covers all C8s images.
 imagePullSecrets: []
 
 ## Name of a pre-existing registry-credential Secret
 ## (kubernetes.io/dockerconfigjson) in the release namespace, appended to
-## every component's imagePullSecrets — both the chart-wide list above and any
-## component-local override — so all pods pull from an authenticated registry
-## (e.g. a private mirror of the C8s images) from first start, with no
-## manually wired Secret references and no pod restart. Unlike
-## the imagePullSecrets list, a component-local override does not shed it.
+## every component's imagePullSecrets, so all pods pull from an authenticated
+## registry (e.g. a private mirror of the C8s images) from first start, with no
+## manually wired Secret references and no pod restart.
 ## The chart never creates or adopts the Secret itself: create it with
 ## kubectl/external-secrets and pass `c8s install --image-pull-secret <name>`,
 ## which fails fast when the Secret is missing.
 imagePullSecret: ""
-
-## Chart-wide get-cert behavior for the injected mesh-cert init containers.
-certProvisioning:
-  ## How long an init get-cert container retries CDS in-process before failing.
-  ## During a full-stack roll CDS and the mesh are briefly unavailable; retrying
-  ## here keeps a transient outage from crashing the init container into
-  ## kubelet's minutes-long CrashLoopBackOff. Set comfortably above CDS's
-  ## startup-to-serving time. It still fails closed once elapsed: the pod does
-  ## not start without a real mesh cert.
-  initialRetryTimeout: "2m"
-
-## Common ServiceAccount settings for the chart-managed top-level C8s
-## workloads: operator, attestation-api, and CDS. Leave empty to inherit
-## the chart-wide imagePullSecrets above; set to override for these workloads.
-serviceAccount:
-  imagePullSecrets: []
 
 ## The c8s-control-plane chart: the CRD, the operator's ClusterRole and the
 ## admission webhooks that inject and check the pods of confidential workloads.
@@ -90,10 +51,8 @@ controlPlane:
 ## only — it is never rendered into a Kubernetes Secret or volume.
 cds:
   ## Its endpoint, as <host>:<port>, the host a DNS name or an IPv4 address.
-  ## Required unless node.baked, whose nodes take the endpoint and the pin
-  ## from their measured launch file. An injected credential client's packet
-  ## rules admit that port outside this cluster, and its clients resolve the
-  ## host themselves.
+  ## Required. An injected credential client's packet rules admit that port
+  ## outside this cluster, and its clients resolve the host themselves.
   address: ""
   ## The CDS pin: the refvalues document naming the launch file and image the
   ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin
@@ -108,66 +67,17 @@ cds:
   operatorKeys: ""
 
 ## DaemonSet running the attestation-api image from github.com/confidential-dot-ai/attestation-rs.
+## Evidence generation is node-local only: the API binds pod loopback and the
+## attest-proxy sidecar serves it on a hostPath Unix socket in
+## /run/nri-image-policy (0660, root:65532).
 attestationApi:
-  ## Render the host-side attestation-api DaemonSet.
-  enabled: true
   image:
     repository: ghcr.io/confidential-dot-ai/attestation-api
     tag: ""
     digest: ""
-    pullPolicy: IfNotPresent
-  port: 8400
-  ## Evidence generation is node-local only: the API binds pod loopback and
-  ## the attest-proxy sidecar serves it on a hostPath Unix socket in
-  ## nriImagePolicy.hostPaths.runtimeDir (0660, root:65532).
-  proxy:
-    ## Port the proxy serves GET /healthz on for the kubelet's probes. The
-    ## body is "ok" or an error — never evidence — but it is reachable from
-    ## other pods, so keep it off the ports other components use.
-    healthPort: 8401
-    resources:
-      requests:
-        cpu: 10m
-        memory: 16Mi
-      limits:
-        cpu: 100m
-        memory: 64Mi
-  ## Per-device hostPath mounts. hostPath.type=CharDevice fails the pod if
-  ## the device node doesn't exist on the host, so disable for nodes that
-  ## lack the corresponding hardware.
-  ##
-  ## Default is the native /dev/sev-guest ioctl, which covers bare-metal SNP
-  ## and GKE SNP. Azure (AKS) attests through the vTPM at /dev/tpm0 instead, so
-  ## an AKS install flips to tpm (the `c8s install --cvm-mode aks` path sets
-  ## this automatically). tdxGuest is opt-in for TDX hosts via -f.
-  teeDevices:
-    sevGuest: true
-    tdxGuest: false
-    tpm: false
-  ## CVM platform shape — selects (via the install CLI) the TEE device:
-  ##
-  ## bare-metal (default): generalized node-as-CVM — our own nodes (self-managed
-  ##   TDX/SNP) are themselves confidential VMs exposing a native TEE device
-  ##   (/dev/sev-guest, or ConfigFS TSM with --hardware-platform tdx); pods run
-  ##   as ordinary processes attested via the node's own quote. Cloud-agnostic.
-  ## gke: GKE managed confidential VM — also native /dev/sev-guest.
-  ## aks: Azure confidential VM — SEV-SNP via the vTPM at /dev/tpm0.
-  ##
-  ## All modes render privileged: true. A hostPath device mount does not add a
-  ## device-cgroup rule, so open() on the TEE device is EPERM from an unprivileged
-  ## container regardless of SYS_RAWIO. TODO: drop privileged by routing SNP attest
-  ## through the TSM configfs report interface (/sys/kernel/config/tsm/report).
-  ##
-  ## The install CLI requires --cvm-mode explicitly (no default there); this
-  ## chart default serves GitOps/HelmRelease consumers that set values directly.
-  cvmMode: bare-metal
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
+  ## devices: the TEE device nodes the API reads evidence from, each a
+  ## CharDevice hostPath, so a node that lacks one fails the pod. The stock
+  ## file sets them.
 
 ## The per-pod mesh endpoint the admission webhook injects into every pod it
 ## covers. Its ports, identity and packet rules are the node's measured policy,
@@ -179,14 +89,12 @@ armtlsMesh:
     #    (HelmRelease values or cluster overlay) must set tag or digest.
     tag: ""
     digest: ""
-    pullPolicy: IfNotPresent
 
 nriImagePolicy:
-  ## The TEE family this cluster's nodes run on, which the plugin presents
-  ## armTLS evidence of to the CDS it pulls from: the two ends of one
-  ## mutually-attested connection. Empty disables TLS — UNSAFE outside tests.
-  ## `c8s install --hardware-platform` sets it.
-  platform: snp
+  ## platform: the TEE family this cluster's nodes run on, snp or tdx, which
+  ## the plugin presents armTLS evidence of to the CDS it pulls from: the two
+  ## ends of one mutually-attested connection. The stock file sets it.
+
   ## The mesh policy of an installed (unmeasured) node: the pods of this
   ## release's namespace and kube-system host no member pods, and the pod
   ## ruleset admits this resolver on the DNS port.
@@ -198,13 +106,6 @@ nriImagePolicy:
     ## captured into the mesh rather than leaving the pod in the clear.
     clusterRanges: []
 
-  ## Host-side NRI image admission: the installer DaemonSet. Its enabled state is
-  ## bound to the cvmMode shape, not free: it MUST be true on gke/aks, where host NRI is the only allowlist gate
-  ## (require_host_image_policy). On cvmMode=bare-metal the measured image
-  ## carries the plugin, its containerd registration and its config, and
-  ## `c8s install --cvm-mode=bare-metal` sets this to false. The
-  ## bootstrapAllowlist below still feeds the seed CDS serves.
-  enabled: true
   image:
     repository: ghcr.io/confidential-dot-ai/nri-image-policy
     # -- Image tag. Required: the chart does not pin a default; the consumer
@@ -214,28 +115,6 @@ nriImagePolicy:
     #    DaemonSet executes (install-host-plugin.sh, patch-containerd.sh).
     tag: ""
     digest: ""
-    pullPolicy: IfNotPresent
-
-  # The image `c8s uninstall` runs its host sweep in on a release whose
-  # nriImagePolicy.image carries no digest or tag — an install with the host
-  # installer off (`--cvm-mode=bare-metal`). Digest-pinned: the sweep runs it
-  # privileged on every node.
-  containerdPrep:
-    image:
-      repository: busybox
-      tag: ""
-      # Resolve busybox:1.38.0 to bump this digest.
-      digest: "sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
-      pullPolicy: IfNotPresent
-
-  imagePullSecrets: []
-
-  # Plugin name. Must match the name the binary registers with at the NRI
-  # socket and the entry written to containerd's default_validator.required_plugins.
-  pluginName: nri-image-policy
-  # Plugin filename inside hostPaths.pluginDir. The "10-" prefix sets sort order
-  # relative to other NRI plugins.
-  pluginFilename: 10-nri-image-policy
 
   policy:
     # Secure by default: match the plugin binary's own default and reject images
@@ -246,78 +125,18 @@ nriImagePolicy:
     # Don't ship `audit` to production: a permissive default that only docs tell
     # you to harden leaks.
     mode: fail-closed  # fail-closed | audit
-    enforceExisting: true
-    denyMissingAnnotation: true
-    # exemptNamespaces: on the hosted lanes (gke/aks), admit each listed
-    # namespace's provider platform pods — which are not on the C8s allowlist —
-    # by the image digests captured running in it, frozen at first admission and
-    # scoped to that namespace. `c8s install --cvm-mode=gke|aks` sets
-    # [kube-system] unless a -f file writes this key. Empty (the chart default)
-    # keeps digest-only admission; leave it empty on cvmMode=bare-metal, whose baked
-    # floor already carries the system digests. See
+    # exemptNamespaces: admit each listed namespace's provider platform pods
+    # — which are not on the C8s allowlist — by the image digests captured
+    # running in it, frozen at first admission and scoped to that namespace.
+    # Empty keeps digest-only admission. See
     # docs/getcert-workload-binding.md, Corner 8.
-    exemptNamespaces: []
-    # labelRules: Kubernetes-style label selectors evaluated against pod
-    # labels at container creation time. With the host-process model there
-    # is one plugin per node, so these rules apply globally on each node;
-    # multi-tenant isolation needs node-level (not pod-label) partitioning
-    # plus per-node values. Leaving empty disables label-based filtering.
-    labelRules: []
-
-  # Logging
-  logLevel: info
+    exemptNamespaces:
+      - kube-system
 
   # Host paths the installer DaemonSet writes to.
   hostPaths:
     pluginDir: /opt/nri/plugins
     configDir: /etc/nri/conf.d
-    cacheDir: /var/lib/nri-image-policy
-    runtimeDir: /run/nri-image-policy
-
-  ## The CDS-facing sandbox-digests endpoint (docs/armtls.md, "Sandbox
-  ## identity"). Its port is a compiled constant, not a value: it is privileged
-  ## so that binding it requires the node's network namespace, which is what
-  ## distinguishes this inventory from a workload sharing the node measurement.
-  ## CDS must be able to reach every node on it.
-  ##
-  ## The advertised host defaults to the --node-ip of a separate kubelet
-  ## process, else the default-route interface's address. The plugin follows a
-  ## changed address in node-ip and in the tokens it signs, and components
-  ## dialing node-ip restart onto it. Set it on nodes whose kubelet registers
-  ## an address neither finds: CDS checks tokens against the Node's
-  ## InternalIP. An IP here is also the node-ip that components dial the
-  ## attestation-api on.
-  sandboxDigests:
-    advertiseHost: ""
-
-  # Containerd configuration the installer targets. Set these only for a host
-  # whose containerd is not laid out as upstream's.
-  containerd:
-    # Empty is /etc/containerd.
-    configDir: ""
-    # Empty is /run/containerd/containerd.sock.
-    socket: ""
-    namespace: k8s.io
-    # Empty is "systemctl restart containerd".
-    restartCommand: ""
-
-  refresh:
-    # How often the worker plugin pulls the current allowlist from CDS. A
-    # written entry keeps its previous admission verdict at container start —
-    # an added entry refused, a narrowed one still admitted — for up to one
-    # interval after CDS commits the write. A measured image's plugin runs the
-    # equal value measured into it, which an override cannot reach.
-    interval: 5s
-
-  # containerd's NRI plugin_request_timeout: how long containerd waits on one
-  # plugin callback. A callback that overruns it makes NRI drop the plugin,
-  # which then exits and is not respawned until containerd restarts; the
-  # installer pod goes NotReady when that happens. Raise it on nodes where the
-  # plugin resolves image tags against a busy containerd. A Go duration
-  # ("2s", "500ms"). Changing it restarts containerd on each node as the
-  # installer rolls out. On a measured image the drop-in it carries sets it,
-  # which an override cannot reach.
-  requestTimeout: 2s
 
   # --- Bootstrap allowlist ---
   # The entries the cluster needs before an operator writes anything, rendered
@@ -362,39 +181,6 @@ nriImagePolicy:
     #         command: {policy: exact, argv: ["/bin/vllm"]}
     #         args: {policy: any}
 
-  # Node affinity — exclude edge nodes by default
-  nodeAffinity:
-    excludeLabels: []
-
-  # Resources for the install-DaemonSet's init container, which copies files
-  # and patches containerd; its long-running plugin-ready container sets its
-  # own. Not the host plugin process, which runs outside K8s and has no
-  # resource limits.
-  # The install init enters all host namespaces (nsenter -t 1) and spawns a
-  # transient systemd unit (systemd-run) to restart containerd; that init peak
-  # OOM-kills under a 64Mi limit on confidential nodes, so the limit is
-  # generous. The request tracks the idle footprint the pod holds for its whole
-  # life after init, not that one-time peak.
-  resources:
-    requests:
-      cpu: 50m
-      memory: 32Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
-
-  # Priority class for the install-DaemonSet pod.
-  priorityClassName: system-node-critical
-
-  # Health probe socket on the host. The host plugin listens on this unix
-  # domain socket inside hostPaths.runtimeDir; the install-DaemonSet probes
-  # it after install to verify the plugin came up. Unix socket avoids
-  # hostNetwork and the port-conflict surface that comes with it.
-  #
-  # The plugin source must support binding to a unix socket via the
-  # plugin.health_addr config field (rendered as "unix://<path>").
-  healthSocketName: health.sock
-
 ## Node agent that opens encrypted volumes for the pods on a node
 ## (docs/volumes.md). Off by default: it runs privileged with hostPID and a
 ## writable bind of the kubelet directory, and nothing needs it until a
@@ -411,39 +197,6 @@ volumed:
     repository: ghcr.io/confidential-dot-ai/volumed
     tag: ""
     digest: ""
-    pullPolicy: IfNotPresent
-
-  ## Host paths the daemon works through. The socket lives in the inventory's
-  ## socket directory (nriImagePolicy.hostPaths.runtimeDir), which
-  ## nri-image-policy NRI-mounts into the cw pod's fetcher sidecars.
-  hostPaths:
-    ## Kubelet's root dir; override only when the kubelet runs a custom --root-dir.
-    kubeletRoot: /var/lib/kubelet
-    cgroupRoot: /sys/fs/cgroup
-
-  ## Volumes open on one node at once. Each costs two device-mapper devices and
-  ## a mount, and every confidential pod on the node can reach the socket.
-  maxMounts: 64
-
-  ## How often teardown checks which pods have gone.
-  reapInterval: 15s
-
-  imagePullSecrets: []
-  priorityClassName: system-node-critical
-  nodeSelector: {}
-  tolerations:
-    - operator: "Exists"
-      effect: "NoExecute"
-    - operator: "Exists"
-      effect: "NoSchedule"
-
-  resources:
-    requests:
-      cpu: 10m
-      memory: 32Mi
-    limits:
-      cpu: 200m
-      memory: 128Mi
 
 router:
   # -- Public hostnames for the front door, as a list. Empty defaults to the
@@ -464,22 +217,10 @@ router:
   # name. See
   # docs/operator.md, "Route manifest".
   routing:
-    # -- Largest application request body nginx accepts, in bytes; a larger
-    # one gets 413. nginx streams the body to the routing listener rather
-    # than holding it. A baked node ignores this value and takes the signed
-    # launch file's router.maxRequestBodyBytes (default 1048576) instead.
-    maxRequestBodyBytes: 1048576
     # -- How often cds-attest polls CDS for the route manifest, as a positive
     # whole number of ms, s, m or h, such as 30s. Keep it under half the
     # manifest's maxAgeSeconds.
     pollInterval: 30s
-    # -- Bytes the tunnelled requests in flight in each router replica may
-    # buffer, as a quantity such as 64Gi. Each reserves three copies of its
-    # record and four of the largest response, 32 MiB; one client address
-    # holds at most a quarter, and further requests get 503 tunnel_busy.
-    # Empty uses 75% of the cds-attest memory limit (router.attest.resources),
-    # or 32Gi without one.
-    tunnelBudget: ""
 
   # -- Route publication. When enabled, cds-attest serves the applied signed
   # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,
@@ -487,45 +228,9 @@ router:
   # operator keys and checks that the attest-pq or attest-lb evidence binds its
   # route digest (`c8s verify --operator-keys`). Off by default, and the path
   # answers 404: the manifest names hosts, backend addresses and workload
-  # names. `c8s node-image render` turns it on for baked nodes. See
-  # docs/routes-evidence.md.
+  # names. See docs/routes-evidence.md.
   routePublication:
     enabled: false
-
-  # -- Publish CDS's complete /allowlist API through the router front door.
-  # The built-in route uses an in-pod loopback proxy that verifies the
-  # chart-managed CDS Service's armTLS evidence; nginx forwards the original
-  # method, URI, body, and Authorization header unchanged. Reads remain
-  # unauthenticated at CDS.
-  # Writes still require the short-lived, body-bound operator token minted by
-  # `c8s allowlist --operator-key`; the private key never enters the cluster.
-  # No route manifest path under /allowlist is selected.
-  allowlist:
-    # -- Container resources for the allowlist proxy.
-    resources: {}
-
-  imagePullSecrets: []
-
-  certProvisioning:
-    # -- Enable verbose (debug) logging for the chart-rendered c8s-cert sidecar.
-    verbose: false
-    # -- How often the c8s-cert sidecar renews the TLS certificate. Must be
-    #    shorter than the cert TTL issued by CDS.
-    renewInterval: "1h"
-    # -- How often the c8s-cert sidecar polls CDS for changes that make its
-    #    leaf stale, renewing when it finds one:
-    #    - the mesh CA served at the discovery endpoints no longer matches the
-    #      CA CDS holds (a CDS restart regenerates it in-memory): renews
-    #      immediately;
-    #    - when the router requests workload claims (node.baked), the
-    #      allowlist policy CDS serves no
-    #      longer matches the snapshot stamped in the leaf, which strict
-    #      clients reject, and against which the router checks each workload
-    #      backend's entry (502 `backend_digest_mismatch` while it differs): renews
-    #      after up to half an interval of jitter.
-    #    Without it both last until the next scheduled renewal. "0" disables
-    #    the watch; otherwise the minimum is 1s.
-    caWatchInterval: "1m"
 
   # -- Attestation + over-encryption endpoints (the c8s-verify protocol),
   # served by the in-pod `c8s cds-attest` container, which also carries
@@ -540,45 +245,7 @@ router:
   # does not weaken the server. Trust is established on the CLIENT, which must
   # pin expected launch measurements (`c8s verify --measurements`,
   # c8s-verify-js config) — an unpinned verifier accepting any TEE is a client
-  # misconfiguration, not a server exposure. `platform`/`generation` below default
-  # to AMD; `c8s install` overrides them from --hardware-platform (tdx blanks the
-  # AMD-only generation), so both TEEs advertise correctly out of the box.
-  attest:
-    # -- TEE platform and AMD processor generation advertised to the browser
-    # WASM verifier.
-    platform: snp
-    generation: genoa
-    # -- Attestation-api URL the sidecar binds each session's key exchange
-    # against. Empty defaults to this chart's attestation-api. The allowlist
-    # pins the sidecar's argv, so write the node address escaped: the kubelet
-    # passes $$(NAME) through as $(NAME) and the sidecar expands it. Under a
-    # fail-closed nriImagePolicy (or the node image's baked one, with
-    # nriImagePolicy.enabled=false) on cvmMode=bare-metal, write $$(NODE_IP),
-    # which the sidecar reads from the node-ip file the image policy plugin
-    # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
-    # fails the render there. An unescaped reference fails the render.
-    # Wherever the chart mounts the attestation-api socket (attestationApi.enabled
-    # or node.baked), the sidecar also reads the node's measured-policy journal
-    # under nriImagePolicy.hostPaths.runtimeDir.
-    attestationApiURL: ""
-    # -- Container resource requests/limits for the sidecar.
-    resources: {}
-
-  nginx:
-    # -- Pull policy for the nginx image, which c8s-lib's files/components.yaml
-    #    pins.
-    imagePullPolicy: IfNotPresent
-    # -- Number of nginx replicas.
-    replicas: 1
-    resources: {}
-    # -- Memory for the tunnel request bodies nginx holds until cds-attest
-    # reads them, up to 8 MiB per upload in progress, charged to nginx's
-    # memory: a memory limit in resources must exceed it. An upload that does
-    # not fit fails with 500.
-    tunnelBodySpace: 8Gi
-
-## Common pod-level security knobs.
-podSecurityContext:
-  fsGroup: 65532
-  runAsNonRoot: true
-  runAsUser: 65532
+  # misconfiguration, not a server exposure.
+  #
+  # attest: the TEE platform and AMD processor generation advertised to the
+  # browser WASM verifier. The stock file sets them.

@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # List or rewrite the chart's third-party image digests.
 #
-#   chart-image-pins.sh list [FILE...]
-#   chart-image-pins.sh resolve [FILE...]
-#   chart-image-pins.sh check [FILE...]
+#   chart-image-pins.sh list [FILE]
+#   chart-image-pins.sh resolve [FILE]
+#   chart-image-pins.sh check [FILE]
 #   chart-image-pins.sh set REPOSITORY:TAG sha256:HEX [FILE]
 #
-# The default FILEs are every chart file holding a pin: c8s-lib's
-# components.yaml (the router's nginx) and the cloud chart's values.yaml (the
-# containerd-prep busybox). set without a FILE rewrites the one pinning
-# REPOSITORY:TAG.
+# The default FILE is the chart file holding the pins: c8s-lib's
+# components.yaml (the router's nginx).
 #
 # Every non-empty image digest in a FILE is a third-party image the chart
 # seeds into the allowlist floor (the attestation-api copy, pinnedDigest,
@@ -18,6 +16,9 @@
 #
 #     # Resolve REPOSITORY:TAG to bump this digest.
 #     digest: "sha256:..."
+#
+# A file holding no third-party pin lists nothing and resolve and check over
+# it do nothing.
 #
 # list prints one "REPOSITORY TAG DIGEST" line per image, in file order, and
 # fails on a digest without that line, a line not followed by its digest, or
@@ -42,20 +43,7 @@ die() {
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-default_files=(
-  "$script_dir/../../internal/helmchart/cloud/values.yaml"
-  "$script_dir/../../internal/helmchart/lib/files/components.yaml"
-)
-
-# files is the FILEs a verb reads: its arguments, or every chart file holding
-# a pin.
-select_files() {
-  if [[ $# -gt 0 ]]; then
-    files=("$@")
-  else
-    files=("${default_files[@]}")
-  fi
-}
+pins_file="$script_dir/../../internal/helmchart/lib/files/components.yaml"
 
 list_pins() {
   local values=$1
@@ -111,6 +99,7 @@ list_pins() {
 resolve_pins() {
   local values=$1 rows bad=0 repo tag digest current
   rows=$(list_pins "$values") || return 1
+  [[ -n "$rows" ]] || return 0
   while read -r repo tag digest; do
     if ! crane digest "$repo@$digest" >/dev/null; then
       echo "chart-image-pins: $repo@$digest is not in the registry" >&2
@@ -133,6 +122,7 @@ resolve_pins() {
 check_pins() {
   local values=$1 rows bad=0 repo tag digest blocks want cfg verdict
   rows=$(list_pins "$values") || return 1
+  [[ -n "$rows" ]] || return 0
   while read -r repo tag digest; do
     blocks=$(yq -o=json -I0 "[.. | select(type == \"!!map\" and has(\"image\") and (.image | type == \"!!map\") and .image.digest == \"$digest\")] | map({\"entrypoint\": .entrypoint, \"imageEnv\": .imageEnv})" "$values")
     [[ "$(jq length <<<"$blocks")" -eq 1 ]] || die "$values has $(jq length <<<"$blocks") blocks pinning $digest, not one"
@@ -164,41 +154,15 @@ check_pins() {
   return "$bad"
 }
 
-# pin_file prints the default file pinning ref, which must be exactly one.
-pin_file() {
-  local ref=$1 repo=${1%%:*} tag=${1#*:} found="" values
-  for values in "${default_files[@]}"; do
-    if list_pins "$values" | awk -v repo="$repo" -v tag="$tag" '$1 == repo && $2 == tag' | grep -q .; then
-      [[ -z "$found" ]] || die "$ref is pinned in both $found and $values"
-      found=$values
-    fi
-  done
-  [[ -n "$found" ]] || die "no chart file pins $ref; a version bump edits the tag on its Resolve line first"
-  echo "$found"
-}
-
 case "${1:-}" in
   list)
-    select_files "${@:2}"
-    for values in "${files[@]}"; do
-      list_pins "$values"
-    done
+    list_pins "${2:-$pins_file}"
     ;;
   resolve)
-    select_files "${@:2}"
-    bad=0
-    for values in "${files[@]}"; do
-      resolve_pins "$values" || bad=1
-    done
-    exit "$bad"
+    resolve_pins "${2:-$pins_file}"
     ;;
   check)
-    select_files "${@:2}"
-    bad=0
-    for values in "${files[@]}"; do
-      check_pins "$values" || bad=1
-    done
-    exit "$bad"
+    check_pins "${2:-$pins_file}"
     ;;
   set)
     [[ $# -ge 3 && $# -le 4 ]] || die "usage: set REPOSITORY:TAG sha256:HEX [FILE]"
@@ -206,7 +170,7 @@ case "${1:-}" in
     [[ "$ref" =~ ^[a-z0-9./_-]+:[A-Za-z0-9._-]+$ ]] || die "$ref is not REPOSITORY:TAG"
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$digest is not an OCI digest (sha256:<64 lowercase hex>)"
     repo=${ref%%:*} tag=${ref#*:}
-    values=${4:-$(pin_file "$ref")}
+    values=${4:-$pins_file}
     rows=$(list_pins "$values")
     matches=$(awk -v repo="$repo" -v tag="$tag" '$1 == repo && $2 == tag' <<<"$rows" | wc -l)
     [[ "$matches" -eq 1 ]] || die "$values pins $ref $matches times, not once; a version bump edits the tag on the Resolve line first"
@@ -217,6 +181,6 @@ case "${1:-}" in
       die "the digest under $ref in $values was not rewritten to $digest"
     ;;
   *)
-    die "usage: list [FILE...] | resolve [FILE...] | check [FILE...] | set REPOSITORY:TAG sha256:HEX [FILE]"
+    die "usage: list [FILE] | resolve [FILE] | check [FILE] | set REPOSITORY:TAG sha256:HEX [FILE]"
     ;;
 esac

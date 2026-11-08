@@ -87,7 +87,7 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 // allowlist policies of a node, the admitted image digests of a pod CVM. Its
 // one writer per boot is nri-image-policy, which keeps it in the plugin's
 // runtime directory (workload_claims.socket_dir, the chart's
-// nriImagePolicy.hostPaths.runtimeDir).
+// nri-image-policy.runtimeDir).
 // NodeJournal is its path on the node and in pods that mount that directory at
 // its host path; workloadclaims.MeasuredPoliciesJournal is its path in the
 // sidecars the plugin mounts the directory into.

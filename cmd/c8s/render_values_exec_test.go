@@ -3,11 +3,15 @@
 package main
 
 import (
-	"reflect"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 )
 
 func TestRenderValuesEmitsComputedBundle(t *testing.T) {
@@ -16,7 +20,7 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = runC8s(t, "render-values", "--cvm-mode=bare-metal", "--resolve-digests=false")
+		err = runC8s(t, "render-values", "--resolve-digests=false")
 	})
 	if err != nil {
 		t.Fatalf("render-values: %v", err)
@@ -29,11 +33,10 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(out), &tree); err != nil {
 		t.Fatalf("output is not a values.yaml: %v\n%s", err, out)
 	}
-	if got := treeAt(t, tree, "attestationApi", "cvmMode"); got != "bare-metal" {
-		t.Errorf("attestationApi.cvmMode = %#v, want bare-metal", got)
-	}
-	if got := treeAt(t, tree, "attestationApi", "teeDevices", "sevGuest"); got != true {
-		t.Errorf("teeDevices.sevGuest = %#v, want true", got)
+	// The bundle is the computed values alone: the platform's own file is the
+	// chart's, passed to helm beside it.
+	if _, ok := valueAtPath(tree, "attestationApi.devices"); ok {
+		t.Errorf("render-values emitted a platform's devices:\n%s", out)
 	}
 	// No cluster, no digests: every chart component pins its tag instead, at
 	// the unstamped-build fallback tag.
@@ -47,59 +50,50 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 	}
 }
 
-func TestRenderValuesRequiresCvmMode(t *testing.T) {
-	f := newFakeBin(t)
-	f.tool(t, "helm", helmShowValuesBody)
-	out := captureStdout(t, func() {
-		if err := runC8s(t, "render-values", "--resolve-digests=false"); err == nil {
-			t.Error("want error without --cvm-mode")
-		}
-	})
-	if out != "" {
-		t.Errorf("failed render must emit no bundle, got:\n%s", out)
-	}
-}
-
 func TestRenderValuesRequiresHelm(t *testing.T) {
 	newFakeBin(t)
-	err := runC8s(t, "render-values", "--cvm-mode=bare-metal", "--resolve-digests=false")
+	err := runC8s(t, "render-values", "--resolve-digests=false")
 	if err == nil || !strings.Contains(err.Error(), "helm CLI not found") {
 		t.Fatalf("want a helm-not-found error, got %v", err)
 	}
 }
 
-// A GitOps consumer must get the same hosted-lane admission default an install
-// renders: the bundle is the whole policy a HelmRelease applies, and a
-// digest-only one denies the provider's own platform pods.
-func TestRenderValuesHostedLaneExemptNamespaces(t *testing.T) {
-	for _, tc := range []struct {
-		cvmMode string
-		want    any
-	}{
-		{"aks", []any{"kube-system"}},
-		{"gke", []any{"kube-system"}},
-		// node's baked floor already carries the system digests.
-		{"bare-metal", nil},
-	} {
-		t.Run(tc.cvmMode, func(t *testing.T) {
-			f := newFakeBin(t)
-			f.tool(t, "helm", helmShowValuesBody)
-			var err error
-			out := captureStdout(t, func() {
-				err = runC8s(t, "render-values", "--cvm-mode="+tc.cvmMode, "--resolve-digests=false")
+// The bundle render-values writes renders the embedded chart beside every
+// stock platform file, with and without --volumes.
+func TestRenderValuesBundlesRenderEveryPlatform(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Fatal("helm CLI not found")
+	}
+	dir, err := helmchart.ExtractTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	pin := cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
+	chartPath := filepath.Join(dir, helmchart.ChartRoot)
+	for _, platform := range cloudPlatforms {
+		for _, volumes := range []string{"--volumes=false", "--volumes=true"} {
+			t.Run(platform+volumes, func(t *testing.T) {
+				resetCLIState(t)
+				var err error
+				out := captureStdout(t, func() {
+					err = runC8s(t, "render-values", volumes, "--resolve-digests=false",
+						flagArg(flagCDSAddress), "10.9.9.9:8443", flagArg(flagCDSPin), pin)
+				})
+				if err != nil {
+					t.Fatalf("render-values: %v", err)
+				}
+				bundle := filepath.Join(t.TempDir(), "values.yaml")
+				if err := os.WriteFile(bundle, []byte(out), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				helmRenderOnly(t, "template", "c8s", chartPath,
+					"--namespace", "c8s-system", "--kube-version", "1.30.0",
+					"-f", filepath.Join(chartPath, "values-"+platform+".yaml"), "-f", bundle,
+					"--set-string", "nriImagePolicy.image.digest=sha256:"+strings.Repeat("4", 64),
+					"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
+					"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16")
 			})
-			if err != nil {
-				t.Fatalf("render-values: %v", err)
-			}
-			var tree map[string]any
-			if err := yaml.Unmarshal([]byte(out), &tree); err != nil {
-				t.Fatalf("output is not a values.yaml: %v\n%s", err, out)
-			}
-			policy, _ := treeAt(t, tree, "nriImagePolicy").(map[string]any)["policy"].(map[string]any)
-			got := policy["exemptNamespaces"]
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("nriImagePolicy.policy.exemptNamespaces = %#v, want %#v", got, tc.want)
-			}
-		})
+		}
 	}
 }

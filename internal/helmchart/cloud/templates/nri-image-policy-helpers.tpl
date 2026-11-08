@@ -1,20 +1,11 @@
-{{/*
-Expand the name of the chart.
-*/}}
 {{- define "nri-image-policy.name" -}}
 nri-image-policy
 {{- end }}
 
-{{/*
-Create a default fully qualified app name.
-*/}}
 {{- define "nri-image-policy.fullname" -}}
 {{- printf "%s-%s" .Release.Name (include "nri-image-policy.name" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{/*
-Common labels
-*/}}
 {{- define "nri-image-policy.labels" -}}
 helm.sh/chart: {{ include "nri-image-policy.name" . }}-0.3.0
 {{ include "nri-image-policy.selectorLabels" . }}
@@ -23,27 +14,34 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: c8s
 {{- end }}
 
-{{/*
-Selector labels
-*/}}
 {{- define "nri-image-policy.selectorLabels" -}}
 app: {{ include "nri-image-policy.fullname" . }}
 app.kubernetes.io/name: {{ include "nri-image-policy.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{/*
-Install image reference.
-*/}}
 {{- define "nri-image-policy.image" -}}
 {{ include "c8s-common.image" .Values.nriImagePolicy.image }}
 {{- end }}
 
-{{/*
-Host paths derived from values.
-*/}}
+{{/* The plugin's host directories: runtimeDir holds the sockets of the
+     inventory, the attestation-api and volumed, which other components
+     mount; cacheDir its exempt-namespace snapshot. */}}
+{{- define "nri-image-policy.runtimeDir" -}}/run/nri-image-policy{{- end -}}
+{{- define "nri-image-policy.cacheDir" -}}/var/lib/nri-image-policy{{- end -}}
+
+{{/* The name the binary registers at the NRI socket and containerd's
+     default_validator requires. */}}
+{{- define "nri-image-policy.pluginName" -}}nri-image-policy{{- end -}}
+
+{{/* Upstream containerd's layout. */}}
+{{- define "nri-image-policy.containerdConfigDir" -}}/etc/containerd{{- end -}}
+{{- define "nri-image-policy.containerdSocket" -}}/run/containerd/containerd.sock{{- end -}}
+{{- define "nri-image-policy.restartCommand" -}}systemctl restart containerd{{- end -}}
+
+{{/* The "10-" prefix orders the plugin among the node's NRI plugins. */}}
 {{- define "nri-image-policy.hostPluginPath" -}}
-{{ printf "%s/%s" .Values.nriImagePolicy.hostPaths.pluginDir .Values.nriImagePolicy.pluginFilename }}
+{{ printf "%s/10-nri-image-policy" .Values.nriImagePolicy.hostPaths.pluginDir }}
 {{- end }}
 
 {{- define "nri-image-policy.hostConfigPath" -}}
@@ -51,7 +49,7 @@ Host paths derived from values.
 {{- end }}
 
 {{- define "nri-image-policy.hostHealthSocket" -}}
-{{ printf "%s/%s" .Values.nriImagePolicy.hostPaths.runtimeDir .Values.nriImagePolicy.healthSocketName }}
+{{ printf "%s/health.sock" (include "nri-image-policy.runtimeDir" .) }}
 {{- end }}
 
 {{/*
@@ -85,6 +83,15 @@ shape that is not /bin/sh -c as its sweep pause, in CLIs already released too.
 exec /usr/local/bin/c8s nri-image-policy plugin-ready --plugin-path={{ include "nri-image-policy.hostPluginPath" . | squote }} --addr=:{{ include "nri-image-policy.pluginReadyPort" . }}
 {{- end }}
 
+{{- define "nri-image-policy.resources" -}}
+requests:
+  cpu: 50m
+  memory: 32Mi
+limits:
+  cpu: 200m
+  memory: 256Mi
+{{- end }}
+
 {{/*
 Shared hostPath mounts and volumes used by installer DaemonSets and the
 uninstall hook.
@@ -97,9 +104,9 @@ uninstall hook.
 - name: host-containerd-config
   mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
 - name: host-cache-dir
-  mountPath: /host{{ .Values.nriImagePolicy.hostPaths.cacheDir }}
+  mountPath: /host{{ include "nri-image-policy.cacheDir" . }}
 - name: host-runtime-dir
-  mountPath: /host{{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+  mountPath: /host{{ include "nri-image-policy.runtimeDir" . }}
 - name: cds-policy
   mountPath: {{ include "nri-image-policy.cdsPolicyMount" . }}
   readOnly: true
@@ -120,11 +127,11 @@ uninstall hook.
     type: Directory
 - name: host-cache-dir
   hostPath:
-    path: {{ .Values.nriImagePolicy.hostPaths.cacheDir }}
+    path: {{ include "nri-image-policy.cacheDir" . }}
     type: DirectoryOrCreate
 - name: host-runtime-dir
   hostPath:
-    path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+    path: {{ include "nri-image-policy.runtimeDir" . }}
     type: DirectoryOrCreate
 - name: cds-policy
   projected:
@@ -132,36 +139,3 @@ uninstall hook.
       - configMap:
           name: {{ include "c8s.fullname" . }}-measurements
 {{- end }}
-
-{{/*
-Host containerd config directory bind-mounted into the installer.
-*/}}
-{{- define "nri-image-policy.containerdConfigDir" -}}
-{{- if .Values.nriImagePolicy.containerd.configDir -}}
-{{ .Values.nriImagePolicy.containerd.configDir }}
-{{- else -}}
-/etc/containerd
-{{- end -}}
-{{- end -}}
-
-{{/*
-Host service restart that makes containerd re-read its config.
-*/}}
-{{- define "nri-image-policy.restartCommand" -}}
-{{- if .Values.nriImagePolicy.containerd.restartCommand -}}
-{{ .Values.nriImagePolicy.containerd.restartCommand }}
-{{- else -}}
-systemctl restart containerd
-{{- end -}}
-{{- end -}}
-
-{{/*
-Host containerd socket the plugin connects to.
-*/}}
-{{- define "nri-image-policy.containerdSocket" -}}
-{{- if .Values.nriImagePolicy.containerd.socket -}}
-{{ .Values.nriImagePolicy.containerd.socket }}
-{{- else -}}
-/run/containerd/containerd.sock
-{{- end -}}
-{{- end -}}

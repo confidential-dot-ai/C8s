@@ -23,8 +23,7 @@ import (
 func hostReleaseValuesFile(t *testing.T) string {
 	t.Helper()
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled":        true,
-		"containerdPrep": map[string]any{"image": map[string]any{"repository": "busybox", "digest": testDigest}},
+		"image": map[string]any{"repository": "ghcr.io/confidential-dot-ai/nri-image-policy", "digest": testDigest},
 	}}
 	data, err := json.Marshal(tree)
 	if err != nil {
@@ -283,9 +282,9 @@ func TestUninstallHostSweepOnlyUsesChartDefaults(t *testing.T) {
 	mustNotContainPrefix(t, calls, "kubectl get configmap")
 	mustContainLine(t, calls, "kubectl rollout status daemonset/c8s-host-sweep -n c8s-system --timeout=5m")
 	ds := appliedDaemonSet(t, s.applied)
-	// With the release gone the baked plugin still enforces the release-pinned
-	// nri-image-policy digest, so the sweep runs the nri image at this CLI's
-	// version tag ("main" for this dev build) rather than the busybox default.
+	// With the release gone the installed plugin still enforces the
+	// release-pinned nri-image-policy digest, so the sweep runs the nri image
+	// at this CLI's version tag ("main" for this dev build).
 	if want := "ghcr.io/confidential-dot-ai/nri-image-policy:main"; ds.Spec.Template.Spec.InitContainers[0].Image != want {
 		t.Errorf("sweep image = %q, want %q", ds.Spec.Template.Spec.InitContainers[0].Image, want)
 	}
@@ -480,8 +479,7 @@ func hostReleaseValuesNRIFile(t *testing.T, imageRef string) string {
 	t.Helper()
 	repo, digest, _ := strings.Cut(imageRef, "@")
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled": true,
-		"image":   map[string]any{"repository": repo, "digest": digest},
+		"image": map[string]any{"repository": repo, "digest": digest},
 	}}
 	data, err := json.Marshal(tree)
 	if err != nil {

@@ -1,0 +1,27 @@
+## The kind lane's release values over the cloud chart's values.yaml; run.sh
+## adds the store-scan floor and the loaded nri-image-policy digest.
+attestationApi:
+  ## The mock serves synthetic SNP reports and reads no device.
+  devices: []
+  image:
+    repository: ghcr.io/confidential-dot-ai/mock-attestation
+nriImagePolicy:
+  mesh:
+    ## kind's cluster DNS and its pod and Service ranges.
+    clusterRanges:
+      - 10.244.0.0/16
+      - 10.96.0.0/16
+    resolver: 10.96.0.10
+  platform: snp
+  policy:
+    ## The sweep pod shares the installer's namespace and digest, so an
+    ## exempt namespace would re-admit it despite the argv pin and hide a
+    ## regression.
+    exemptNamespaces: []
+router:
+  attest:
+    generation: genoa
+    platform: snp
+  routing:
+    ## A route manifest write applies within one poll.
+    pollInterval: 2s

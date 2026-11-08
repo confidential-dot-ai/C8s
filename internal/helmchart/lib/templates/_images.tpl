@@ -20,19 +20,17 @@
 {{- end -}}
 {{- end -}}
 
+{{/* The chart-wide pull secrets, with imagePullSecret appended. Takes the
+     root context. */}}
 {{- define "c8s.imagePullSecrets" -}}
-{{- $secrets := .local | default .root.Values.imagePullSecrets | default list -}}
-{{- with .root.Values.imagePullSecret -}}
+{{- $secrets := .Values.imagePullSecrets -}}
+{{- with .Values.imagePullSecret -}}
 {{- $secrets = uniq (append $secrets (dict "name" .)) -}}
 {{- end -}}
 {{- with $secrets }}
 imagePullSecrets:
 {{ toYaml . }}
 {{- end -}}
-{{- end -}}
-
-{{- define "c8s.serviceAccountImagePullSecrets" -}}
-{{- include "c8s.imagePullSecrets" (dict "root" . "local" .Values.serviceAccount.imagePullSecrets) -}}
 {{- end -}}
 
 {{- define "volumed.image" -}}

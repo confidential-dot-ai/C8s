@@ -1,36 +1,54 @@
 {{- define "router.podSpec" -}}
-{{- $frontDoor := include "router.frontDoor" . | fromYaml -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
-{{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
+{{- include "c8s.imagePullSecrets" . | nindent 0 }}
 {{- /* Every container of this pod holds a platform role the measured base
        grants it, and runs as that role's reserved identity: c8s.meshUID for
        the endpoint, c8s.credentialsUID for get-cert, the probe-file gate and
        the allowlist proxy, c8s.routerUID for nginx, c8s.upstreamUID for
-       cds-attest, c8s.acmeUID for acme — the one identity of this pod the
-       node lets out of the cluster in the clear. The volume group (c8s.certFsGroup) is what
-       lets a role read what another role wrote. */}}
+       cds-attest. The volume group (c8s.certFsGroup) is what lets a role
+       read what another role wrote. */}}
 initContainers:
   {{- /* The endpoint leads: the enforcer gates the rest of the pod on its
          start, and every other container's traffic is captured into it. */}}
   {{- include "c8s.meshEndpointContainer" . | nindent 2 }}
-  {{- include "router.getCertContainers" (dict "root" . "getCert" (required "the front door declares its get-cert" $frontDoor.getCert)) | nindent 2 }}
+  {{- include "c8s.getCertContainers" (dict
+    "root" .
+    "attestationApiURL" (include "router.attestationApiURL" .)
+    "extraArgs" (include "router.getCertArgs" . | fromJsonArray)
+    "extraMounts" (include "router.getCertMounts" .)
+    "renewInterval" "1h"
+    "san" (include "router.san" .)
+  ) | nindent 2 }}
 containers:
   {{- include "c8s.routerContainers" (dict
     "root" .
-    "allowlistProxyMounts" (include "router.allowlistProxyMounts" .)
-    "allowlistResources" .Values.router.allowlist.resources
+    "allowlistProxyMounts" (include "router.inventoryMount" .)
     "attestationApiMounts" (include "c8s.attestationApiSocketMount" .)
-    "attestationApiURL" (include "router.credentialsVerifierURL" .)
-    "cdsAttestArgs" (required "the front door declares cds-attest's argv" $frontDoor.cdsAttestArgs)
-    "cdsAttestMounts" (required "the front door declares cds-attest's mounts" $frontDoor.cdsAttestMounts)
+    "attestationApiURL" (include "router.attestationApiURL" .)
+    "cdsAttestArgs" (include "router.cdsAttestArgs" . | fromJsonArray)
+    "cdsAttestMounts" (include "router.cdsAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
-    "hostIPEnv" (include "c8s.attestationApiHostIPEnv" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
   ) | nindent 2 }}
 volumes:
-  {{- toYaml (required "the front door declares its volumes" $frontDoor.volumes) | nindent 2 }}
+  - name: c8s-certs
+    emptyDir:
+      medium: Memory
+      sizeLimit: 1Mi
+  - name: measurements-config
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
+  {{- if .Values.cds.operatorKeys }}
+  - name: operator-keys
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-operator-keys
+  {{- end }}
   - name: discovery
     emptyDir:
       medium: Memory
@@ -43,41 +61,32 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
-  {{- $spool := include "router.quantityBytes" .Values.router.nginx.tunnelBodySpace }}
-  {{- $limit := include "router.quantityBytes" (dig "limits" "memory" "" (default dict .Values.router.nginx.resources)) }}
-  {{- if and $spool $limit (le ($limit | int64) ($spool | int64)) }}
-  {{- fail (printf "router.nginx.resources.limits.memory (%v) must exceed router.nginx.tunnelBodySpace (%v): the tunnel body tmpfs is charged to nginx's memory" .Values.router.nginx.resources.limits.memory .Values.router.nginx.tunnelBodySpace) }}
-  {{- end }}
   - name: nginx-tunnel-body
     emptyDir:
       medium: Memory
-      sizeLimit: {{ required "router.nginx.tunnelBodySpace is required" .Values.router.nginx.tunnelBodySpace }}
+      sizeLimit: 8Gi
   - name: nginx-config
-    {{- toYaml (required "the front door declares its config volume" $frontDoor.configVolume) | nindent 4 }}
-  {{- if eq (include "router.mountInventorySocket" .) "true" }}
-  # get-cert redeems a sandbox token over the node inventory's Unix socket
-  # (see router.getCertContainers). Read-only: the sidecar only connects.
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "router.fullname" . }}-nginx
+  # Read-only: get-cert and the allowlist proxy only connect.
   - name: workload-claims
     hostPath:
-      path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+      path: {{ include "nri-image-policy.runtimeDir" . }}
       type: Directory
-  {{- end }}
-  {{- /* Shares the admission inventory's socket directory — see c8s.attestationApiSocket. */}}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
 securityContext:
   runAsNonRoot: true
-  fsGroup: {{ include "c8s.certFsGroup" .Values.podSecurityContext.fsGroup }}
-  {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) }}
+  fsGroup: {{ include "c8s.certFsGroup" "" }}
   # workloadclaims.InventorySocketGID: the inventory and attest-proxy
   # chgrp their sockets to this group so the non-root get-cert sidecar
   # can connect.
   supplementalGroups: [65532]
-  {{- end }}
   seccompProfile:
     type: RuntimeDefault
 {{- end -}}
 
-{{- $frontDoor := include "router.frontDoor" . | fromYaml }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -86,7 +95,7 @@ metadata:
   labels:
     {{- include "router.labels" . | nindent 4 }}
 spec:
-  replicas: {{ required "the front door declares its replicas" $frontDoor.replicas }}
+  replicas: 1
   strategy:
     {{- /* Two pods on a node would collide on the host port; on a single-node
     cluster a surge pod could never schedule, deadlocking the roll. */}}
@@ -101,8 +110,9 @@ spec:
       annotations:
         {{- /* A ConfigMap edit alone leaves the pod template unchanged. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        {{- with $frontDoor.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
+        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
+        {{- with .Values.cds.operatorKeys }}
+        checksum/operator-keys: {{ . | sha256sum }}
         {{- end }}
     spec:
 {{- include "router.podSpec" . | nindent 6 }}

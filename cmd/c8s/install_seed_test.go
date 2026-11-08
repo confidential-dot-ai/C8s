@@ -83,13 +83,10 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 	for i, c := range components {
 		set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuesPath, i+1))
 	}
-	set, err = appendCvmModeInstallArgs(set, "bare-metal", "sev-snp")
-	if err != nil {
-		t.Fatal(err)
-	}
+	valuesFiles := orderedValuesFiles(chart, "aks-snp", nil)
 	set = append(set, chartCDSArgs(t)...)
 	set = append(set, adoptArgs...)
-	values, err := effectiveValues(ctx, chart, set)
+	values, err := effectiveValues(ctx, chart, valuesFiles, set)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +94,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered := renderedSeed(t, chart, set)
+	rendered := renderedSeed(t, chart, append([]string{"-f", valuesFiles[0]}, set...))
 	checkSeedModel(t, model, rendered)
 	if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
 		t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)

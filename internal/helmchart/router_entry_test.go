@@ -39,7 +39,7 @@ func TestChartRouterNginxImageIsNotAValue(t *testing.T) {
 		if err == nil {
 			t.Fatalf("--set-string %s rendered; the schema must refuse it\n%s", pin, out)
 		}
-		if !strings.Contains(out, "schema") || !strings.Contains(out, "image") {
+		if !strings.Contains(out, "schema") || !strings.Contains(out, "nginx") {
 			t.Fatalf("--set-string %s was refused without naming the schema and the key:\n%s", pin, out)
 		}
 	}
@@ -286,12 +286,6 @@ func TestChartRouterEntryPresence(t *testing.T) {
 	}{
 		{name: "c8s image by tag", want: false},
 		{name: "c8s image by digest", args: digestArgs, want: true},
-		{
-			// The argv carries $(HOST_IP) literally; the binary expands it.
-			name: "attestation api by host IP",
-			args: append(slices.Clone(digestArgs), "--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.policy.mode=audit"),
-			want: true,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -342,42 +336,10 @@ func expectedWorkloadArg(c corev1.Container) string {
 	return ""
 }
 
-// cds-attest reads the measured-policy journal from the runtime directory it
-// mounts beside the attestation-api socket.
-func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
-	const dir = "/run/custom-nri"
-	for _, tc := range []struct {
-		name     string
-		args     []string
-		wantFlag bool
-	}{
-		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
-		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-			flag := "--measured-policies-file=" + dir + "/measured-policies"
-			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
-				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
-			}
-			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
-				return m.MountPath == dir && m.ReadOnly
-			})
-			if tc.wantFlag && !mounted {
-				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
-			}
-		})
-	}
-}
-
 // The chart's default runtime directory is where the node's binaries look for
 // the journal, so the two never drift apart.
 func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "attestationApi.enabled=true")
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

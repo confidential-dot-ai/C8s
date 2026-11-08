@@ -159,7 +159,7 @@ private_keys() {
 attest_direct() {
     local bin="$C8S_ROOT/build/c8s"
     [ -x "$bin" ] || make -C "$C8S_ROOT" build-c8s >&2 || return 1
-    "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "$(mock_attestation_url)" \
+    "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "$(cds_mock_attestation_url)" \
         --image-policy-file "$WORKDIR/cds/cds-pin.json" --san "requester.$NS.svc" 2>/dev/null
 }
 
@@ -170,7 +170,7 @@ attest_direct() {
 # verifier on this host can act as a relying party.
 evidence() {
     jq -n --arg rd "$3" '{report_data: $rd}' |
-        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(mock_attestation_url)/attest"
+        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(cds_mock_attestation_url)/attest"
 }
 evidence_signed() { echo no; }
 relying_party() { return "$UNSUPPORTED"; }
@@ -216,9 +216,9 @@ base_declares() {
     if node_exec grep -rqF "$2" /etc/nri/conf.d; then echo yes; else echo no; fi
 }
 
-# The chart's nriImagePolicy.hostPaths.pluginDir/pluginFilename, which
-# containerd launches at its own start (plugin_path), and its runtimeDir/
-# healthSocketName, both on the node.
+# The chart's plugin under nriImagePolicy.hostPaths.pluginDir, which
+# containerd launches at its own start (plugin_path), and its health socket,
+# both on the node.
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 

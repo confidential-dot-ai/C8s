@@ -1,0 +1,19 @@
+## Azure confidential VMs on Intel TDX: evidence is the vTPM's HCL report,
+## which wraps the TD quote.
+attestationApi:
+  devices:
+    - /dev/tpm0
+    - /dev/tpmrm0
+controlPlane:
+  webhook:
+    ## AKS's admissions enforcer rewrites a webhook's namespaceSelector, which
+    ## makes every helm upgrade conflict.
+    annotations:
+      admissions.enforcer/disabled: "true"
+nriImagePolicy:
+  platform: tdx
+router:
+  attest:
+    platform: az-tdx
+    ## The browser verifier takes the processor generation for SNP alone.
+    generation: ""
