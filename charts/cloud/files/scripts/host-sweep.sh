@@ -1,5 +1,6 @@
 # shellcheck shell=sh
-# C8s host sweep — run by `c8s uninstall` as a privileged init container on
+# C8s host sweep — run after the shared nri-containerd-config.sh by
+# `c8s uninstall` as a privileged init container on
 # every linux node (a short-lived kubectl-applied DaemonSet; see
 # cmd/c8s/uninstall.go). These bytes are an interface: the chart pins them
 # into the served allowlist (c8s.argvPinnedEntries) and the CLI replays the
@@ -56,20 +57,21 @@ sweep_failed=0
 # the registration gone, no interruption can leave the fail-closed NRI
 # validator requiring a plugin whose binary is already deleted.
 
-# The NRI image-policy's containerd registration: the sentinel-delimited
-#    block in config.toml. Mirrors the chart's files/scripts/uninstall.sh.
-MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
-MARK_END='# END c8s-nri-image-policy (managed)'
+# The config the host wrote, back as it wrote it: the sentinel-delimited
+#    block gone and the host's own NRI tables in force. Mirrors the chart's
+#    files/scripts/uninstall.sh.
+#    A config the installer staged but never moved into place goes too.
 main_config="${CONTAINERD_DIR}/config.toml"
-if [ -f "$main_config" ] && grep -qF "$MARK_BEGIN" "$main_config"; then
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    $0==b { skip=1; next }
-    $0==e { skip=0; next }
-    !skip { print }
-  ' "$main_config" > "$main_config.tmp"
-  mv -f "$main_config.tmp" "$main_config"
-  echo "containerd config block removed from $main_config"
-  config_changed=1
+rm -f "$main_config$CANDIDATE_SUFFIX"
+if [ -f "$main_config" ]; then
+  host_containerd_config "$main_config" > "$main_config.tmp"
+  if cmp -s "$main_config.tmp" "$main_config"; then
+    rm -f "$main_config.tmp"
+  else
+    mv -f "$main_config.tmp" "$main_config"
+    echo "containerd config restored: $main_config"
+    config_changed=1
+  fi
 fi
 
 # A containerd config template an earlier install managed: sentinel-marked,

@@ -61,7 +61,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-{{ .Files.Get "files/scripts/uninstall.sh" | replace "$" "$$" | indent 14 }}
+{{ include "nri-image-policy.uninstallHookScript" . | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
           resources:

@@ -33,6 +33,159 @@ write_file() {
   return 0
 }
 
+CONTAINERD_DIR=/host{{ include "nri-image-policy.containerdConfigDir" $root }}
+RESTART_COMMAND={{ include "nri-image-policy.restartCommand" $root | quote }}
+{{ $root.Files.Get "files/scripts/nri-containerd-config.sh" }}
+
+# containerd renders the active config to config.toml. Its absence means this
+# node's containerd is not laid out as upstream's: a file holding only the
+# managed block below would drop whatever the host configured elsewhere.
+main_config="$CONTAINERD_DIR/config.toml"
+# The same file as the host's own containerd names it, for the host commands.
+main_config_host_path={{ printf "%s/config.toml" (include "nri-image-policy.containerdConfigDir" $root) | squote }}
+[ -f "$main_config" ] || { echo "ERROR: $main_config not found; this node's containerd is not laid out as upstream's" >&2; exit 1; }
+new_containerd_config="$main_config$CANDIDATE_SUFFIX"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+refuse() {
+  rm -f "$new_containerd_config"
+  echo "ERROR: $*; nothing on this node was changed and containerd was not restarted" >&2
+  exit 1
+}
+
+render_nri_toml() {
+  cat <<EOF
+[plugins."io.containerd.nri.v1.nri"]
+  disable = false
+  plugin_path = "{{ $root.Values.nriImagePolicy.hostPaths.pluginDir }}"
+  plugin_config_path = "{{ $root.Values.nriImagePolicy.hostPaths.configDir }}"
+  plugin_registration_timeout = "10s"
+  plugin_request_timeout = "2s"
+  socket_path = "/var/run/nri/nri.sock"
+[plugins."io.containerd.nri.v1.nri".default_validator]
+  enable = true
+  required_plugins = ["{{ include "nri-image-policy.pluginName" $root }}"]
+EOF
+}
+
+# The top-level version key; containerd reads a config without one as
+# version 1, whose plugins have other names.
+containerd_config_version() {
+  awk '
+    /^[ \t]*\[/ { exit }
+    /^[ \t]*version[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t]*(#.*)?$/, ""); print; exit }
+  ' "$main_config"
+}
+
+# The managed block is the same table in config versions 2 and 3.
+check_containerd_config_version() {
+  version=$(containerd_config_version)
+  case "$version" in
+    2|3) ;;
+    *) refuse "$main_config declares containerd config version ${version:-1}; this installer edits versions 2 and 3" ;;
+  esac
+}
+
+# Prints $1 with every line of its NRI tables behind HOST_TABLE_MARK. TOML
+# quotes a table's key in three ways, so the match is on the bare key.
+disable_nri_tables() {
+  awk -v mark="$HOST_TABLE_MARK" -v nri="plugins.io.containerd.nri.v1.nri" '
+    /^[ \t]*\[/ {
+      key = $0
+      sub(/^[ \t]*\[/, "", key)
+      sub(/\].*$/, "", key)
+      gsub(/["'"'"']/, "", key)
+      in_nri_table = key == nri || index(key, nri ".") == 1
+    }
+    in_nri_table { print mark $0; next }
+    { print }
+  ' "$1"
+}
+
+# The host's config with its NRI tables disabled, then the managed block: TOML
+# allows a table once, and a second run renders the same bytes.
+render_containerd_config() {
+  host_containerd_config "$main_config" > "$scratch/host-config.toml"
+  disable_nri_tables "$scratch/host-config.toml"
+  echo "$MARK_BEGIN"
+  render_nri_toml
+  echo "$MARK_END"
+}
+
+# Lines of $1 that set NRI outside a table of its own (dotted keys, inline
+# tables), which disabling the NRI tables leaves in force.
+nri_settings_outside_a_table() {
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    $0 == b { in_block = 1; next }
+    $0 == e { in_block = 0; next }
+    !in_block && /^[ \t]*[^# \t]/ && index($0, "io.containerd.nri.v1.nri") { print }
+  ' "$1"
+}
+
+# The paths the boot config names its inputs by, which the plugin opens at
+# start.
+boot_cds_address={{ include "nri-image-policy.hostCDSAddressPath" $root | squote }}
+boot_cds_pin={{ include "nri-image-policy.hostCDSPinPath" $root | squote }}
+boot_syslog={{ include "nri-image-policy.syslogSocket" $root | squote }}
+
+# Stages what the boot config names in this pod's root, at the paths it names
+# them: the CDS address and pin, and the host's syslog socket.
+stage_boot_config_inputs() {
+  install -D -m 0644 {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds-address "$boot_cds_address"
+  install -D -m 0644 {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds.json "$boot_cds_pin"
+  host_syslog=$(nsenter -t 1 -m -- readlink -e {{ include "nri-image-policy.syslogSocket" $root | squote }}) ||
+    refuse "the host has no syslog socket at {{ include "nri-image-policy.syslogSocket" $root }}, which the plugin logs to"
+  ln -sfn "/proc/1/root$host_syslog" "$boot_syslog"
+}
+
+check_boot_config() {
+  /usr/local/bin/nri-image-policy check-config --config="$1" ||
+    refuse "the plugin refuses the boot config it would start with"
+}
+
+# Leaves the containerd config this node needs beside the current one when the
+# two differ, and sets containerd_config_staged to 1 when it did.
+stage_containerd_config() {
+  containerd_config_staged=0
+  at_most_one_managed_block "$main_config" ||
+    refuse "$main_config holds the c8s-nri-image-policy BEGIN/END markers unpaired or twice; leave one managed block or none"
+  check_containerd_config_version
+  render_containerd_config > "$new_containerd_config"
+  if cmp -s "$new_containerd_config" "$main_config"; then
+    rm -f "$new_containerd_config"
+    return
+  fi
+  foreign=$(nri_settings_outside_a_table "$new_containerd_config")
+  [ -z "$foreign" ] || refuse "$main_config configures NRI outside a table of its own: $foreign"
+  containerd_config_staged=1
+}
+
+# The config containerd runs with once it loads $1, named $2 on the host and
+# its imports merged, must require the plugin before any container starts. Its
+# dump can hold registry credentials, so no message quotes it.
+check_effective_containerd_config() {
+  dump=$(nsenter -t 1 -m -- containerd --config "$2" config dump 2> "$scratch/dump-errors") ||
+    refuse "the host's containerd cannot load $1: $(cat "$scratch/dump-errors")"
+  printf '%s\n' "$dump" | /usr/local/bin/nri-image-policy check-containerd-config \
+    --plugin-dir={{ $root.Values.nriImagePolicy.hostPaths.pluginDir | squote }} \
+    --required-plugin={{ include "nri-image-policy.pluginName" $root | squote }} ||
+    refuse "the host's containerd would start containers without the plugin under $1"
+}
+
+boot_config="$scratch/image-policy.yaml"
+cat > "$boot_config" <<'IMAGE_POLICY_EOF'
+{{ .bootConfig }}
+IMAGE_POLICY_EOF
+stage_boot_config_inputs
+check_boot_config "$boot_config"
+stage_containerd_config
+if [ "$containerd_config_staged" = "1" ]; then
+  check_effective_containerd_config "$new_containerd_config" "$main_config_host_path$CANDIDATE_SUFFIX"
+else
+  check_effective_containerd_config "$main_config" "$main_config_host_path"
+fi
+
 mkdir -p "/host{{ include "nri-image-policy.cacheDir" $root }}"
 mkdir -p "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # The workload-claims broker socket lives here; the non-root get-cert sidecar
@@ -60,9 +213,7 @@ if install_file \
 fi
 
 config_changed=0
-if write_file "/host{{ include "nri-image-policy.hostConfigPath" $root }}" 0644 <<'IMAGE_POLICY_EOF'
-{{ .bootConfig }}
-IMAGE_POLICY_EOF
+if write_file "/host{{ include "nri-image-policy.hostConfigPath" $root }}" 0644 < "$boot_config"
 then
   config_changed=1
   echo "boot config updated"
@@ -81,55 +232,13 @@ if install_file /usr/local/bin/nri-image-policy "/host{{ include "nri-image-poli
   echo "plugin binary updated"
 fi
 
-CONTAINERD_DIR=/host{{ include "nri-image-policy.containerdConfigDir" $root }}
-MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
-MARK_END='# END c8s-nri-image-policy (managed)'
-
-# containerd renders the active config to config.toml. Its absence means this
-# node's containerd is not laid out as upstream's: a file holding only the
-# managed block below would drop whatever the host configured elsewhere.
-main_config="$CONTAINERD_DIR/config.toml"
-[ -f "$main_config" ] || { echo "ERROR: $main_config not found; this node's containerd is not laid out as upstream's" >&2; exit 1; }
-
-render_nri_toml() {
-  cat <<EOF
-[plugins."io.containerd.nri.v1.nri"]
-  disable = false
-  plugin_path = "{{ $root.Values.nriImagePolicy.hostPaths.pluginDir }}"
-  plugin_config_path = "{{ $root.Values.nriImagePolicy.hostPaths.configDir }}"
-  plugin_registration_timeout = "10s"
-  plugin_request_timeout = "2s"
-  socket_path = "/var/run/nri/nri.sock"
-[plugins."io.containerd.nri.v1.nri".default_validator]
-  enable = true
-  required_plugins = ["{{ include "nri-image-policy.pluginName" $root }}"]
-EOF
-}
-
-read_managed_block() {
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    $0==b { in_block=1 }
-    in_block { print }
-    $0==e { in_block=0 }
-  ' "$1" 2>/dev/null || true
-}
-
-containerd_changed=0
-desired=$(printf '%s\n%s\n%s' "$MARK_BEGIN" "$(render_nri_toml)" "$MARK_END")
-if [ "$(read_managed_block "$main_config")" != "$desired" ]; then
-  containerd_changed=1
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    $0==b { skip=1; next }
-    $0==e { skip=0; next }
-    !skip { print }
-  ' "$main_config" > "$main_config.tmp"
-  printf '\n%s\n' "$desired" >> "$main_config.tmp"
-  mv -f "$main_config.tmp" "$main_config"
+if [ "$containerd_config_staged" = "1" ]; then
+  replace_durably "$new_containerd_config" "$main_config"
   echo "containerd config patched: $main_config"
 fi
 
 restart_needed=0
-if [ "$containerd_changed" = "1" ] ||
+if [ "$containerd_config_staged" = "1" ] ||
   [ "$binary_changed" = "1" ] ||
   [ "$config_changed" = "1" ] ||
   [ "$cds_changed" = "1" ]; then
@@ -143,11 +252,11 @@ The installer's restart and readiness tail. NRI does not respawn pre-registered 
 config or containerd-registration change reaches the plugin only through a
 containerd restart. Shims survive it.
 
-Caller dict: .root. The script must set restart_needed to 0 or 1 first.
+Caller dict: .root. The script must include nri-containerd-config.sh, set
+RESTART_COMMAND, and set restart_needed to 0 or 1 first.
 */}}
 {{- define "nri-image-policy.restartAndWait" -}}
 {{- $root := .root -}}
-RESTART_COMMAND={{ include "nri-image-policy.restartCommand" $root | quote }}
 
 # A plugin that already died stays dead until containerd restarts, and this
 # pod's plugin-ready container would then hold the rollout forever. Restart
@@ -181,20 +290,7 @@ fi
 restarted_containerd=0
 if [ "$restart_needed" = "1" ]; then
   restarted_containerd=1
-  echo "restarting containerd (detached via systemd-run): $RESTART_COMMAND"
-  # The restart tears down this pod's own containerd shim. Running it in this
-  # pod's process tree (nsenter ... sh -c) means it is killed together with the
-  # pod mid-restart — and on a sole control-plane node that interrupts the
-  # cluster bootstrap and wedges it (etcd/apiserver static manifests never
-  # rewritten, API server stays down). Hand the restart to host PID 1 via
-  # systemd-run so it runs as a transient unit and completes regardless of
-  # this pod's fate. The
-  # RESTART_COMMAND is `systemctl restart ...`, so systemd — and thus
-  # systemd-run — is always present on the host.
-  # shellcheck disable=SC2086
-  nsenter -t 1 -m -u -i -n -p -- \
-    systemd-run --collect --description="c8s nri-image-policy containerd restart" \
-    sh -c "$RESTART_COMMAND"
+  restart_containerd
 fi
 
 # The plugin goes ready once its initial CDS pull settles: 4 backoff sleeps
@@ -221,7 +317,8 @@ until health=$(curl --unix-socket "$health_socket" --silent --fail --max-time 2 
     last=$(curl --unix-socket "$health_socket" --silent --max-time 2 \
       --write-out ' [http %{http_code}]' http://localhost/healthz 2>&1) || rc=$?
     echo "ERROR: plugin not healthy after ${budget}s; last /healthz: ${last:-<no response>} (curl exit $rc)" >&2
-    echo "       the plugin runs under containerd, so its log is the journal of the unit restarted by: $RESTART_COMMAND" >&2
+    echo "       the plugin's journal (journalctl -t nri-image-policy) ends:" >&2
+    nsenter -t 1 -m -- journalctl -t nri-image-policy -n 50 --no-pager >&2 || true
     exit 1
   fi
   sleep 1
@@ -289,6 +386,7 @@ policy:
     []
 logging:
   level: "info"
+  syslog: {{ include "nri-image-policy.syslogSocket" $root | quote }}
 {{/* The mesh policy of an install: the same shape the node image measures
      (images/node-guest/worker/image-policy.yaml.in), rendered from chart values
      because nothing here is measured. The enforcer accepts it only on this

@@ -729,7 +729,7 @@ null
 {{- define "c8s.argvPinnedEntries" -}}
 {{- $entries := dict -}}
 {{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
-{{- $sweep := printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/host-sweep.sh") "") -}}
+{{- $sweep := printf "%s\n" (regexReplaceAll "\n+$" (include "nri-image-policy.hostSweepScript" .) "") -}}
 {{- /* `c8s uninstall` sweeps in the installer's image, so its entry also
        pins the sweep script and the pause that holds its pod
        (cmd/c8s/uninstall.go). */ -}}
@@ -740,7 +740,7 @@ null
 {{- /* Platform setup scripts require host mounts; their executable and script argv stay pinned. */ -}}
 {{- $containers := list -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" $script ""))))) -}}
-{{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/uninstall.sh") ""))))) -}}
+{{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" (include "nri-image-policy.uninstallHookScript" .) ""))))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list "sleep infinity"))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list (include "nri-image-policy.pluginReadyScript" .)))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list $sweep))) -}}

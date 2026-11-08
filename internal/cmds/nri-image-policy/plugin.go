@@ -2,6 +2,8 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -921,7 +923,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 				}
 			}
 		}
-		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
+		attrs := []any{"digest", digest, "image", check.ImageRef, "argv_sha256", argvDigest(check.Argv), "reason", reason}
 		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
 			attrs = append(attrs, "node_root_unavailable", missing)
 		}
@@ -948,6 +950,13 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		Image:     check.ImageRef,
 	})
 	return verdictAllow, ""
+}
+
+// argvDigest identifies an argv in the node's journal without its values,
+// which can carry credentials.
+func argvDigest(argv []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(argv, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // checkContainer runs the label rules and the image allowlist over a
