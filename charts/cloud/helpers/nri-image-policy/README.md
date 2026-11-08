@@ -16,6 +16,9 @@ installs the binary, writes the policy configuration, registers the plugin as
 a pre-registered NRI plugin and restarts containerd;
 `nri-image-policy.restartAndWait` is the restart and readiness tail;
 `nri-image-policy.bootConfig` the configuration the plugin reads at start.
+`nri-image-policy.meshExemptNamespaces` is that configuration's mesh exempt
+list: the platform namespaces plus `policy.exemptNamespaces`, because the
+plugin refuses a policy-exempt namespace the mesh gate does not exempt too.
 Script bodies are allowlisted argv
 ([Allowlist](../../../lib/helpers/allowlist/README.md#argv-pinned-entries)), so
 a changed script changes the entry.

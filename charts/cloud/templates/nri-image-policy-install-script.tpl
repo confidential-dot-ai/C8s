@@ -301,9 +301,7 @@ logging:
 {{- end }}
 mesh:
   exempt_namespaces:
-    - {{ $root.Release.Namespace | quote }}
-    - "kube-system"
-    - "local-path-storage"
+{{- include "nri-image-policy.meshExemptNamespaces" $root | nindent 4 }}
   resolver: {{ $root.Values.nriImagePolicy.mesh.resolver | quote }}
 {{/* This cluster's pod and Service ranges. The acme role of the router's
      namespace is the one identity whose sockets leave the cluster in the

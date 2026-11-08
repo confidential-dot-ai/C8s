@@ -340,17 +340,29 @@ func completeConfig(data []byte) (*config, error) {
 	return cfg, nil
 }
 
-// CheckWorkerConfig loads data as the plugin loads its configuration file,
-// refusing any key the plugin does not read, and requires worker: true, so a
-// misspelt key is an error rather than a server's rules, and policy
-// measurement.
-func CheckWorkerConfig(data []byte) error {
+// CheckBootConfig loads data the way the plugin loads its configuration file
+// at start, refusing any key the plugin does not read, so a misspelt key is an
+// error rather than a server's rules.
+func CheckBootConfig(data []byte) error {
+	_, err := checkedConfig(data)
+	return err
+}
+
+// checkedConfig is the configuration the plugin would run with, or the error
+// it would exit with.
+func checkedConfig(data []byte) (*config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&config{}); err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	cfg, err := completeConfig(data)
+	return completeConfig(data)
+}
+
+// CheckWorkerConfig loads data the way the plugin does and requires a worker's
+// posture: worker: true, and policy measurement.
+func CheckWorkerConfig(data []byte) error {
+	cfg, err := checkedConfig(data)
 	if err != nil {
 		return err
 	}

@@ -80,7 +80,7 @@ volumes:
 {{/* The pod spec volumed and its teardown hook share beside their
      containers: the confidential nodes, whatever their taints. */}}
 {{- define "c8s.volumedNodePlacement" -}}
-priorityClassName: system-node-critical
+priorityClassName: {{ include "c8s.criticalPriorityClass" . }}
 {{- include "c8s.imagePullSecrets" . }}
 nodeSelector:
   {{- include "c8s.confidentialNodeLabels" . | nindent 2 }}

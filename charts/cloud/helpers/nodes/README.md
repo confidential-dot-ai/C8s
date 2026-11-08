@@ -11,3 +11,7 @@ router. The stock values file `values-<platform>.yaml` sets the labels.
 
 A label places a pod; it grants nothing. Evidence still comes from the node's
 TEE devices, so an agent on a plain node carrying the label fails to attest.
+
+`c8s.criticalPriorityClass` is the priority class of the node agents and of the
+hooks that remove them. `templates/critical-pods-quota.yaml` renders the
+release namespace's ResourceQuota from the same helper.
