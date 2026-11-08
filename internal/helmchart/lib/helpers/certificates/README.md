@@ -28,11 +28,10 @@ The helper takes a dict with these fields:
 | `root` | Chart root for image and endpoint helpers |
 | `attestationApiURL` | The attestation-api the sidecar verifies CDS through |
 | `san` | Certificate workload identity or Service DNS name |
-| `sanFile` | Optional verified SAN file; replaces `san` for baked node images |
+| `sanFile` | Optional verified SAN file; replaces `san` on a worker |
 | `renewInterval` | Go duration, such as `6h` or `30m` |
 | `extraArgs` | Optional list of additional get-cert arguments |
 | `extraMounts` | Optional rendered volumeMount YAML |
-| `hostIPEnv` | Optional rendered env YAML the sidecar expands the node's address from |
 
 `c8s.getCertSecurityContext` uses the supplied UID/GID, drops all capabilities,
 requires a read-only root filesystem, and selects the RuntimeDefault seccomp

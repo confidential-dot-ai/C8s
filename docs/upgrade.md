@@ -29,19 +29,19 @@ not the ones its pods need — the same flags and `-f` file:
 
 ```sh
 CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
-c8s render-values --cvm-mode=<CVM_MODE> --hardware-platform=<HW_PLATFORM> \
-  --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
+c8s render-values --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
   --operator-keys c8s-operator-pub.pem > computed.yaml
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
-helm template c8s ./c8s --namespace c8s-system -f values.yaml -f computed.yaml \
+helm template c8s ./c8s --namespace c8s-system --kube-version 1.31.0 \
+  -f ./c8s/values-<PLATFORM>.yaml -f values.yaml -f computed.yaml \
   --show-only templates/allowlist-seed.yaml |
   yq '.data["allowlist-seed.json"]' > seed.json
 c8s allowlist lint seed.json
 ```
 
-The lint prints `ok: no findings`. `<CVM_MODE>` (`bare-metal`, `gke`, `aks`),
-`<HW_PLATFORM>` (`sev-snp`, `tdx`) and `<X.Y.Z>`, the version without its
-leading `v`, are as you install.
+The lint prints `ok: no findings`. `<PLATFORM>` (`aks-snp`, `aks-tdx`,
+`gke-snp`) is the chart stock file this cluster installs with, and `<X.Y.Z>`
+the version without its leading `v`.
 
 ## 2. Note what each node's admission plugin enforces
 

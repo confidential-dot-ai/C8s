@@ -27,10 +27,6 @@ component without an entrypoint fails the render. `c8s.componentShapes` turns
 each such image into its allowlist containers; see
 [Component shapes](#component-shapes). Argv-pinned components are seeded
 through `c8s.argvPinnedEntries`.
-With `node.baked=true`, the same derivation covers the operator/get-cert,
-CDS, mesh and nginx images rendered into the measured guest. The host stages
-this seed merged with signed workload entries for CDS; the image also admits
-the core images in its NRI bootstrap floor.
 
 `c8s.openArgsEntries` extracts workload digests whose args, environment and
 mount policies are unconstrained and whose command is `any` or `exact`, as
@@ -177,7 +173,7 @@ one that names them.
 seed and the base admit every rendered component container exactly as
 rendered, with the environment it launches with, and refuse it with one
 argument or mount more, one mount fewer, `LD_PRELOAD` set or `PATH` moved, for
-default, gke, bare-metal and baked renders.
+each platform's render.
 
 The optional Pod CVM provider uses the same derivation. Its operator config flag
 and read-only Secret mount at `/mnt/c8s-data/pod-cvm` are included in the exact
@@ -191,8 +187,7 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | `nriImagePolicy.enabled` | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
-| Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
+| NRI installer | always | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image

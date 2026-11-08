@@ -4,8 +4,9 @@ What a C8s deployment promises: for each promise, what it covers, what enforces
 it, and how to check it. The parts and their layout are in
 [overview.md](overview.md), the terms in [glossary.md](glossary.md), and the
 promises adversary by adversary in [security-model.md](security-model.md). What
-enforces a promise can differ by CVM mode, the deployment shape
-`c8s install --cvm-mode` picks; where it does, the section says so.
+enforces a promise can differ by CVM mode, the node shape
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)); where it does,
+the section says so.
 
 ## Data stays in the TEE
 
