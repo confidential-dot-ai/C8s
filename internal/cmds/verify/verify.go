@@ -229,7 +229,7 @@ responder chose).`,
 	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, armtls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
-	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
+	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch, AMD KDS collateral fetch, and each policy-history fetch, with four times it for the whole history check; --trust-operator and --fetch-allowlists need it positive)")
 	f.StringVar(&cfg.fromFile, "from-file", "", "verify evidence from a saved PEM certificate or attestation-response JSON instead of dialing")
 	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "with --mode attest-lb --from-file: PEM serving leaf observed on the connection that fetched the receipt")
 	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "with --mode attest-lb --from-file: unpadded base64url nonce sent to fetch the receipt")
@@ -258,10 +258,10 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or an --image-policy-file image pinning an approver_key; excludes --trust-operator")
-	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or an --image-policy-file image pinning an approver_key, and --trust-operator-keys")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key; excludes --trust-operator")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key, and --trust-operator-keys")
 	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
-	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey or an --image-policy-file image pinning an approver_key")
+	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer); refused in --mode attest-pq and attest-lb")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
@@ -779,7 +779,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
 	}
 
-	trustKeys, err := checkHistoryFlags(cfg, refValues.Images)
+	trustKeys, err := checkHistoryFlags(cfg, refValues)
 	if err != nil {
 		return nil, err
 	}
@@ -1646,7 +1646,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			return oc
 		}
 		response := remote.VerifyResponse{Result: *result}
-		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
+		if err := enforceEachImage(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
 			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
 			return oc
 		}
@@ -1656,7 +1656,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		// completeness of an unrelated entry in the same policy.
 		for _, entry := range plan.refValues.Images {
 			if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), ev.measured) == nil {
+				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), replayedBy(entry, result, ev.measured)) == nil {
 				fullImagePinned = true
 				break
 			}
@@ -1740,23 +1740,69 @@ func checkMeasuredList(measured []string) error {
 // anchored reports whether img pins a launch anchor.
 func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
 
+// replayedBy returns the part of the unauthenticated measured list img
+// replays: none for an unanchored image or a register still at its seed, so
+// the list cannot fail those.
+func replayedBy(img remote.ImagePin, result *teetypes.VerificationResult, measured []string) []string {
+	if !anchored(img) {
+		return nil
+	}
+	// Evidence without RTMR[3] (SNP, or a report missing it) replays nothing
+	// either; the anchor check then fails closed on its own.
+	seed := runtimemeasure.Seed(img.Anchor)
+	if got, err := result.Claims.RTMR(3); err != nil || bytes.Equal(got, seed[:]) {
+		return nil
+	}
+	return measured
+}
+
+// enforceEachImage is armtls.EnforceImages with each image judged against
+// the measured list it replays. An image's anchor and list are checked only
+// once its launch measurement, registers and launch file match, so a list
+// error cannot mask why another image was not booted; the error reported is
+// the last of an image whose launch measurement matched, as EnforceImages
+// does.
+func enforceEachImage(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) error {
+	var lastErr error
+	for _, img := range images {
+		bare := img
+		bare.Anchor = nil
+		err := armtls.EnforceImages(response, []remote.ImagePin{bare}, platform, nil)
+		if errors.Is(err, remote.ErrMeasurementNotAllowed) {
+			if lastErr == nil {
+				lastErr = err
+			}
+			continue
+		}
+		if err == nil && anchored(img) {
+			err = armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayedBy(img, &response.Result, measured))
+		}
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
 // replayedHistory returns the prefix of measured that RTMR[3] proves on top of
 // the seed of an anchored image the evidence matches on its own, and whether
 // such an image bound RTMR[3]. Another image's anchor proves nothing about a
 // guest that booted an unanchored one.
 func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) ([]string, bool) {
 	for _, img := range images {
-		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, measured) != nil {
+		replayed := replayedBy(img, &response.Result, measured)
+		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayed) != nil {
 			continue
 		}
-		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, measured)
+		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, replayed)
 		if err != nil {
 			continue
 		}
 		if k == 0 {
 			return nil, true
 		}
-		return slices.Clone(measured[:k]), true
+		return slices.Clone(replayed[:k]), true
 	}
 	return nil, false
 }
@@ -1858,6 +1904,11 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
 		replay := pins.anchor != nil && len(measured) > 0
+		// A register still at the seed replays nothing, so the unauthenticated
+		// list cannot fail it.
+		if got, err := result.Claims.RTMR(3); err == nil && bytes.Equal(got, want) {
+			replay = false
+		}
 		if replay {
 			if err := checkMeasuredList(measured); err != nil {
 				oc.Error = err.Error()

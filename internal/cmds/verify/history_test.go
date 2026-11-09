@@ -13,12 +13,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +123,7 @@ func TestHistoryFlags(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cfg.imageManifest = writeTestManifest(t)
+			tc.cfg.timeout = 15 * time.Second
 			_, err := buildPolicy(tc.cfg)
 			if (tc.wantErr == "" && err != nil) || (tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr))) {
 				t.Errorf("buildPolicy = %v, want error containing %q", err, tc.wantErr)
@@ -129,16 +132,61 @@ func TestHistoryFlags(t *testing.T) {
 	}
 }
 
-// An --image-policy-file with no approver_key replays nothing, so the history
-// flags are a usage error rather than a policy_history_absent on every run.
+// Without a positive --timeout the history fetches would have no deadline.
+func TestHistoryFetchNeedsTimeout(t *testing.T) {
+	pubPath, _, pubPEM := operatorKeypair(t)
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const wantErr = "need a positive --timeout"
+	for _, tc := range []struct {
+		name    string
+		cfg     config
+		wantErr bool
+	}{
+		{"trust, zero", config{trustOperator: true, trustOperatorKeys: keysPath}, true},
+		{"trust, negative", config{trustOperator: true, trustOperatorKeys: keysPath, timeout: -time.Second}, true},
+		{"fetch, zero", config{fetchAllowlists: t.TempDir()}, true},
+		{"fetch, positive", config{fetchAllowlists: t.TempDir(), timeout: time.Second}, false},
+		{"pin, zero", config{pinPolicies: []string{testPolicyP}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.imageManifest = writeTestManifest(t)
+			tc.cfg.operatorPubkey = pubPath
+			_, err := buildPolicy(tc.cfg)
+			if got := err != nil && strings.Contains(err.Error(), wantErr); got != tc.wantErr || (!tc.wantErr && err != nil) {
+				t.Errorf("buildPolicy(timeout %v) = %v, want error containing %q: %v", tc.cfg.timeout, err, wantErr, tc.wantErr)
+			}
+		})
+	}
+}
+
+// An --image-policy-file with no approver_key, or one for SNP, which has no
+// RTMR[3], replays nothing, so the history flags are a usage error rather than
+// a policy_history_absent on every run.
 func TestHistoryFlagsNeedAnchoredImage(t *testing.T) {
-	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
-		Family: teetypes.FamilyTDX,
-		Images: []remote.ImagePin{{Name: "node", Digest: make([]byte, 48)}},
-	})
-	_, err := buildPolicy(config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}})
-	if err == nil || !strings.Contains(err.Error(), "pinning an approver_key") {
-		t.Errorf("buildPolicy(unanchored image policy, --pin-policy) = %v, want an approver_key usage error", err)
+	pubPEM := approverKey(t)
+	for _, tc := range []struct {
+		name    string
+		family  teetypes.Family
+		anchor  []byte
+		wantErr bool
+	}{
+		{"TDX, unanchored", teetypes.FamilyTDX, nil, true},
+		{"SNP, anchored", teetypes.FamilySNP, pubPEM, true},
+		{"TDX, anchored", teetypes.FamilyTDX, pubPEM, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+				Family: tc.family,
+				Images: []remote.ImagePin{{Name: "node", Digest: make([]byte, 48), Anchor: tc.anchor}},
+			})
+			_, err := buildPolicy(config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}})
+			if got := err != nil && strings.Contains(err.Error(), "pinning an approver_key"); got != tc.wantErr || (!tc.wantErr && err != nil) {
+				t.Errorf("buildPolicy(--pin-policy) = %v, want an approver_key usage error: %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -425,6 +473,36 @@ func TestTrustOperatorTwoEntries(t *testing.T) {
 	}
 }
 
+// The history check fetches a policy and its signature over one connection.
+func TestTrustOperatorReusesConnection(t *testing.T) {
+	v := loadSignatureVector(t)
+	sum := sha256.Sum256(v.Policy)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	srv := httptest.NewUnstartedServer(objectServer(digest, v.Policy, v.Token))
+	var conns atomic.Int32
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
+	plan, _ := historyPlan(t, cfg)
+	oc := Outcome{Partial: true, MeasuredPolicies: []string{digest}}
+	checkPolicyHistory(context.Background(), &oc, cfg, &evidence{fresh: true}, plan.trustKeys)
+	if !oc.Partial || oc.Error != "" {
+		t.Fatalf("checkPolicyHistory = partial %v, error %q; want partial without error", oc.Partial, oc.Error)
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("checkPolicyHistory opened %d connections, want 1", got)
+	}
+}
+
 func TestFetchPolicyLimits(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /big", func(w http.ResponseWriter, _ *http.Request) { w.Write(make([]byte, maxPolicyBytes+1)) })
@@ -436,7 +514,7 @@ func TestFetchPolicyLimits(t *testing.T) {
 		{"/redirect", "status 302"},
 		{"/missing", errNotFound.Error()},
 	} {
-		if _, err := fetchPolicy(context.Background(), srv.URL+tc.path, "", 5*time.Second); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+		if _, err := fetchPolicy(context.Background(), policyClient("", 5*time.Second), srv.URL+tc.path); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 			t.Errorf("fetchPolicy(%s) = %v, want error containing %q", tc.path, err, tc.wantErr)
 		}
 	}
@@ -533,6 +611,56 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 				if noted := notesUnproven(oc, "signed"); noted != tc.wantPartial {
 					t.Errorf("checkPolicyHistory(partial %v) NotProven = %v; want the leaf's issuing policy named: %v", partial, oc.NotProven, tc.wantPartial)
 				}
+			}
+		})
+	}
+}
+
+// Only an anchored --image-policy-file image whose RTMR[3] moved past its
+// seed replays the measured list, so only it fails a verdict over an over-cap
+// list.
+func TestOverCapListNeedsAnchoredImage(t *testing.T) {
+	reg := hexBytes(t)
+	pubPEM := approverKey(t)
+	seed := runtimemeasure.Seed(pubPEM)
+	over := make([]string, armtls.MaxRuntimeExtensions+1)
+	for i := range over {
+		over[i] = testPolicyP
+	}
+	booted := remote.ImagePin{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}}
+	anchoredNode := booted
+	anchoredNode.Anchor = pubPEM
+	other := remote.ImagePin{Name: "other", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(strings.Repeat("5e", 48)), 2: reg(testRTMR2)}, Anchor: pubPEM}
+	otherLaunch := other
+	otherLaunch.Digest = reg(strings.Repeat("ab", 48))
+	staleBooted := booted
+	staleBooted.Registers = map[int][]byte{1: reg(strings.Repeat("6f", 48)), 2: reg(testRTMR2)}
+	overCap := fmt.Sprintf("%d runtime extensions, at most %d", len(over), armtls.MaxRuntimeExtensions)
+	for _, tc := range []struct {
+		name   string
+		images []remote.ImagePin
+		claims map[string]any
+		want   string
+	}{
+		{"unanchored", []remote.ImagePin{booted}, matchingRTMRs(), ""},
+		{"anchored", []remote.ImagePin{anchoredNode}, matchingRTMRs(), overCap},
+		{"anchored, at seed", []remote.ImagePin{anchoredNode}, rtmr3Claims(seed), ""},
+		{"anchored, no RTMR[3]", []remote.ImagePin{anchoredNode}, map[string]any{"rtmr_1": testRTMR1, "rtmr_2": testRTMR2}, "rtmr"},
+		{"mixed, booted unanchored", []remote.ImagePin{other, booted}, matchingRTMRs(), ""},
+		{"mixed, booted unanchored fails its registers", []remote.ImagePin{staleBooted, otherLaunch}, matchingRTMRs(), "--image-policy-file: node: "},
+		{"no image matches", []remote.ImagePin{otherLaunch}, matchingRTMRs(), "no pinned image has this launch measurement"},
+		{"anchored, same launch, registers differ", []remote.ImagePin{other}, matchingRTMRs(), "--image-policy-file: other: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: tc.images})
+			cfg := config{measurementsConfig: policy}
+			ev := &evidence{platform: "tdx", measured: over}
+			oc := newOutcome(cfg, ev, tdxResult(testMRTD, tc.claims), nil, mustPlan(t, cfg))
+			if oc.Verified != (tc.want == "") || !strings.Contains(oc.Error, tc.want) {
+				t.Errorf("newOutcome = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.want)
+			}
+			if len(oc.MeasuredPolicies) != 0 {
+				t.Errorf("MeasuredPolicies = %v, want none", oc.MeasuredPolicies)
 			}
 		})
 	}
@@ -677,7 +805,7 @@ func TestOperatorPkeyReplayErrors(t *testing.T) {
 	for i := range over {
 		over[i] = testPolicyP
 	}
-	claims := rtmr3Claims(seed)
+	claims := rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, []string{testPolicyP}))
 	noRTMR3 := map[string]any{"rtmr_1": claims["rtmr_1"], "rtmr_2": claims["rtmr_2"]}
 	for _, tc := range []struct {
 		name     string
@@ -688,10 +816,17 @@ func TestOperatorPkeyReplayErrors(t *testing.T) {
 		{"over cap", over, claims, fmt.Sprintf("lists %d measured policies, at most %d", len(over), armtls.MaxRuntimeExtensions)},
 		{"non-canonical entry", []string{testPolicyP, "sha256:ABC"}, claims, `measured policy 1 ("sha256:ABC") is not a canonical sha256 digest`},
 		{"absent register", []string{testPolicyP}, noRTMR3, "register claim absent or malformed"},
+		{"over cap, bare seed", over, rtmr3Claims(seed), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: tc.measured}
 			oc := newOutcome(config{}, ev, tdxResult(testMRTD, tc.claims), nil, plan)
+			if tc.want == "" {
+				if !oc.Verified || len(oc.MeasuredPolicies) != 0 {
+					t.Errorf("newOutcome = verified %v, error %q, MeasuredPolicies %v; want verified with no history", oc.Verified, oc.Error, oc.MeasuredPolicies)
+				}
+				return
+			}
 			if oc.Verified || !strings.Contains(oc.Error, tc.want) || strings.Contains(oc.Error, "no prefix of the") {
 				t.Errorf("newOutcome = verified %v, error %q; want a failure containing %q only", oc.Verified, oc.Error, tc.want)
 			}
