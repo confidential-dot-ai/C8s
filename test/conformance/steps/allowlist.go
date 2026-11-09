@@ -45,10 +45,15 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^a workload entry admitting image "([^"]*)" under any argv is added to the served allowlist$`, entryAdded)
 }
 
-// lastMutation is when this process last changed the served allowlist. It
-// outlives the scenario because one scenario's restore is what the next
-// scenario's applied sentence has to wait out.
-var lastMutation time.Time
+// lastMutation is this process's last change to the served allowlist: when it
+// happened and the version the CDS served the operator after it, which is the
+// version nodes are served the node delay later. It outlives the scenario
+// because one scenario's restore is what the next scenario's applied sentence
+// has to wait out.
+var lastMutation struct {
+	at      time.Time
+	version string
+}
 
 // writtenName is the entry's allowlist workload name at CDS: the scenario's
 // name, or the base an entry was given instead of it, suffixed so that two
@@ -437,18 +442,33 @@ func (w *world) rewriteEntry(name string) error {
 
 // putEntry writes body under name through the backend's signed path.
 func (w *world) putEntry(name string, body []byte) error {
-	err := withBodyFile(body, func(path string) error {
+	if err := withBodyFile(body, func(path string) error {
 		_, err := w.be.call("allowlist_put", name, path)
 		return err
-	})
-	lastMutation = time.Now()
-	return err
+	}); err != nil {
+		return err
+	}
+	return w.noteMutation()
 }
 
 func (w *world) deleteEntry(name string) error {
-	_, err := w.be.call("allowlist_delete", name)
-	lastMutation = time.Now()
-	return err
+	if _, err := w.be.call("allowlist_delete", name); err != nil {
+		return err
+	}
+	return w.noteMutation()
+}
+
+// noteMutation records a change to the served allowlist and the version the
+// CDS serves the operator after it, so a wait for nodes to be served that
+// write compares against it rather than against a later read.
+func (w *world) noteMutation() error {
+	lastMutation.at = time.Now()
+	r, err := w.read("", asOperator)
+	if err != nil {
+		return err
+	}
+	lastMutation.version = r.version
+	return nil
 }
 
 // entriesRemoved deletes every served entry that declares image's digest,
@@ -562,56 +582,122 @@ func (w *world) sync() error {
 }
 
 // awaitApplied waits for the plugin to hold what the CDS serves now, and
-// records the version it holds. It polls the version the plugin reports until
-// it reaches the served one, failing when the pull loop has not followed
-// within three pull intervals of the last write or delete. Where nothing can
-// be observed, the wait is the clock: two pull intervals, so a pull that
-// started just before the write has been followed by one that saw it. That is
-// the case where the pull is blocked, where the backend cannot ask the CDS or
-// the plugin, and where the served version is below the applied one: the
-// plugin ignores that pull by design, so nothing says it happened.
+// records the version it holds. A write takes effect on nodes the CDS's node
+// delay after it is written (workloads specification J9), so it waits for the
+// CDS to serve nodes the version the last write left, then polls the version
+// the plugin reports until it reaches it, failing when the pull loop has not
+// followed within the node delay and three pull intervals of that write.
+// Where nothing can be observed, the wait is the clock: the node delay and
+// two pull intervals, so a pull that started just before the write took
+// effect has been followed by one that saw it. That is the case where the
+// pull is blocked, where the backend cannot ask the CDS or the plugin, and
+// where the served version is below the applied one: the plugin ignores that
+// pull by design, so nothing says it happened.
 func (w *world) awaitApplied() error {
-	s, err := w.be.call("pull_interval")
+	interval, delay, err := w.pullTiming()
 	if err != nil {
 		return err
 	}
-	interval, err := time.ParseDuration(s)
-	if err != nil {
-		return fmt.Errorf("pull interval %q: %w", s, err)
-	}
-	observed, err := w.observeApplied(interval)
+	observed, err := w.observeApplied(interval, delay)
 	if err != nil || observed {
 		return err
 	}
-	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
+	time.Sleep(time.Until(appliedBy(interval, delay, 2)))
 	return nil
 }
 
+// pollsPerInterval is how often, within one pull interval, a wait below asks
+// again.
+const pollsPerInterval = 5
+
+// appliedBy is when a write made at lastMutation has reached a reader that
+// pulls every interval: the CDS withholds it from nodes for delay, and
+// intervals pulls carry it from there.
+func appliedBy(interval, delay time.Duration, intervals int) time.Time {
+	return lastMutation.at.Add(delay + time.Duration(intervals)*interval)
+}
+
+// pollBudget is how long to poll for that, at least one interval: a scenario
+// may ask before it has written anything, and a plugin that is restarting
+// answers nothing for a moment, which is "not yet", not a broken harness.
+func pollBudget(interval, delay time.Duration, intervals int) time.Duration {
+	if budget := time.Until(appliedBy(interval, delay, intervals)); budget > interval {
+		return budget
+	}
+	return interval
+}
+
+// pullTiming is how often the plugin pulls and how long after it is written
+// a write takes effect on nodes.
+func (w *world) pullTiming() (interval, delay time.Duration, err error) {
+	s, err := w.be.call("pull_interval")
+	if err != nil {
+		return 0, 0, err
+	}
+	if interval, err = time.ParseDuration(s); err != nil {
+		return 0, 0, fmt.Errorf("pull interval %q: %w", s, err)
+	}
+	if s, err = w.be.call("allowlist_node_delay"); err != nil {
+		return 0, 0, err
+	}
+	if delay, err = time.ParseDuration(s); err != nil {
+		return 0, 0, fmt.Errorf("allowlist node delay %q: %w", s, err)
+	}
+	return interval, delay, nil
+}
+
+// awaitInEffect waits until the CDS serves nodes the version the last write
+// left it serving the operator, and returns the version nodes are served.
+// Not observable where the backend cannot read what the CDS serves.
+func (w *world) awaitInEffect() (version int, observable bool, err error) {
+	interval, delay, err := w.pullTiming()
+	if err != nil {
+		return 0, false, err
+	}
+	var want int
+	if lastMutation.version != "" {
+		if want, err = strconv.Atoi(lastMutation.version); err != nil {
+			return 0, false, fmt.Errorf("version written %q: %w", lastMutation.version, err)
+		}
+	}
+	served := 0
+	inEffect, err := pollEvery(interval/pollsPerInterval, pollBudget(interval, delay, 1), func() (bool, error) {
+		r, err := w.read("", asNode)
+		if err != nil {
+			return false, err
+		}
+		if served, err = strconv.Atoi(r.version); err != nil {
+			return false, fmt.Errorf("version served to nodes %q: %w", r.version, err)
+		}
+		return served >= want, nil
+	})
+	if errors.Is(err, godog.ErrSkip) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !inEffect {
+		return 0, false, fmt.Errorf("the CDS serves nodes allowlist version %d, not the written %d, %s after the write with a node delay of %s", served, want, time.Since(lastMutation.at).Round(time.Millisecond), delay)
+	}
+	return served, true, nil
+}
+
 // observeApplied polls the plugin's applied version until it is at or past
-// the served one, records it, and says whether it saw the served version
-// itself; false where either version cannot be asked for or the plugin is
-// ahead of the CDS.
-func (w *world) observeApplied(interval time.Duration) (bool, error) {
+// the one the CDS serves nodes, records it, and says whether it saw that
+// version itself; false where either version cannot be asked for or the
+// plugin is ahead of the CDS.
+func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
 	if w.cdsBlocked {
 		return false, nil
 	}
-	served, err := w.servedVersion()
-	if errors.Is(err, godog.ErrSkip) {
-		return false, nil
-	}
-	if err != nil {
+	served, observable, err := w.awaitInEffect()
+	if err != nil || !observable {
 		return false, err
-	}
-	// At least one interval from now: a scenario may ask before it has
-	// written anything, and a plugin that is restarting answers nothing for
-	// a moment, which is "not yet", not a broken harness.
-	deadline := lastMutation.Add(3 * interval)
-	if floor := time.Now().Add(interval); deadline.Before(floor) {
-		deadline = floor
 	}
 	var answer string
 	var applied int
-	caughtUp, err := pollEvery(interval/5, time.Until(deadline), func() (bool, error) {
+	caughtUp, err := pollEvery(interval/pollsPerInterval, pollBudget(interval, delay, 3), func() (bool, error) {
 		var err error
 		if answer, err = w.be.call("applied_version"); err != nil {
 			return false, err
@@ -627,7 +713,7 @@ func (w *world) observeApplied(interval time.Duration) (bool, error) {
 		return false, err
 	}
 	if !caughtUp {
-		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %d, %s after the write with a pull every %s", answer, served, time.Since(lastMutation).Round(time.Millisecond), interval)
+		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves nodes %d, %s after the write with a node delay of %s and a pull every %s", answer, served, time.Since(lastMutation.at).Round(time.Millisecond), delay, interval)
 	}
 	w.appliedVersion = answer
 	return applied == served, nil

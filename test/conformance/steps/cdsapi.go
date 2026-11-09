@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -196,7 +195,9 @@ func (w *world) sendVia(fn string, wr write, auth string) error {
 	}
 	w.api.lastStatus = a.status
 	if w.api.lastStatus == http.StatusNoContent && wr.entry != "" {
-		lastMutation = time.Now()
+		if err := w.noteMutation(); err != nil {
+			return err
+		}
 		if !wr.removes {
 			w.written[wr.entry] = true
 		}
@@ -434,7 +435,7 @@ func cdsRefusesInvalid(ctx context.Context) error {
 // readsVersion records the version and the tag of the document served now.
 func readsVersion(ctx context.Context) error {
 	w := getWorld(ctx)
-	r, err := w.read("")
+	r, err := w.read("", asOperator)
 	if err != nil {
 		return err
 	}
@@ -445,13 +446,23 @@ func readsVersion(ctx context.Context) error {
 	return nil
 }
 
-// read reads the allowlist, naming tag in If-None-Match when given.
-func (w *world) read(tag string) (*reading, error) {
-	var args []string
-	if tag != "" {
-		args = append(args, tag)
+// allowlistRequester is whose view of the allowlist a read asks the CDS for:
+// nodes are served a write the node delay after it is written, the operator
+// at once.
+type allowlistRequester string
+
+const (
+	asOperator allowlistRequester = "operator"
+	asNode     allowlistRequester = "node"
+)
+
+// read reads the allowlist as who asks, naming tag in If-None-Match when
+// given.
+func (w *world) read(tag string, as allowlistRequester) (*reading, error) {
+	if tag == "" {
+		tag = "-" // the backend's "no If-None-Match"
 	}
-	out, err := w.be.call("allowlist_get", args...)
+	out, err := w.be.call("allowlist_get", tag, string(as))
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +477,7 @@ func (w *world) read(tag string) (*reading, error) {
 // get reads the allowlist as the relying party's last read, naming tag in
 // If-None-Match when given.
 func (w *world) get(tag string) error {
-	r, err := w.read(tag)
+	r, err := w.read(tag, asOperator)
 	if err != nil {
 		return err
 	}
