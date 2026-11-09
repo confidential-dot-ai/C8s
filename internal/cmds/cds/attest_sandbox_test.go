@@ -317,6 +317,9 @@ func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
 		{"embedded slash", "a/b"},
 		{"embedded space", "sandbox id"},
 		{"over 128 chars", strings.Repeat("a", 129)},
+		// Well formed, but the prefix belongs to Pod CVM issuance: a node must
+		// not obtain a leaf that reads as a Pod CVM's.
+		{"Pod CVM prefix", workloadclaims.PodInstancePrefix + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := newStubAttestationApi(t, testLaunchDigest)
