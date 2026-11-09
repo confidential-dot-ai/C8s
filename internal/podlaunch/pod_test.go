@@ -202,6 +202,7 @@ func TestValidateProviderPod(t *testing.T) {
 		providerPodWith(t, func(c *corev1.Container) {
 			c.Env = []corev1.EnvVar{{Name: "B", Value: "b"}, fieldRefEnv("spec.nodeName")}
 		}),
+		providerPodWith(t, func(c *corev1.Container) { c.Env = []corev1.EnvVar{fieldRefEnv("metadata.name")} }),
 	} {
 		if err := ValidateProviderPod(pod); err != nil {
 			t.Fatalf("ValidateProviderPod: %v", err)
@@ -227,6 +228,15 @@ func TestValidateProviderPod(t *testing.T) {
 			return testProviderPod(t, `,"imagePullSecrets":[{"name":"registry"}]`)
 		}, "imagePullSecrets"},
 		{"runtime class", func(t *testing.T) *corev1.Pod { return testProviderPod(t, `,"runtimeClassName":"kata"`) }, "runtimeClassName"},
+		{"workload shape", func(t *testing.T) *corev1.Pod { return testProviderPod(t, `,"hostPID":true`) }, "host namespaces"},
+		{"readiness gates", func(t *testing.T) *corev1.Pod {
+			return testProviderPod(t, `,"readinessGates":[{"conditionType":"x"}]`)
+		}, "readinessGates"},
+		{"kubelet annotation FieldRef", func(t *testing.T) *corev1.Pod {
+			return providerPodWith(t, func(c *corev1.Container) {
+				c.Env = []corev1.EnvVar{fieldRefEnv("metadata.annotations['kubernetes.io/config.hash']")}
+			})
+		}, "through FieldRef"},
 		{"pod resources", func(t *testing.T) *corev1.Pod {
 			pod := testProviderPod(t, "")
 			pod.Spec.Resources = &corev1.ResourceRequirements{}
@@ -283,7 +293,11 @@ func TestPodSpecValidate(t *testing.T) {
 		change func(p *PodSpec)
 		want   string
 	}{
+		{"no uid", func(p *PodSpec) { p.UID = "" }, "pod.uid"},
+		{"bad namespace", func(p *PodSpec) { p.Namespace = "Tenant_1" }, "pod.namespace"},
 		{"bad name", func(p *PodSpec) { p.Name = "App" }, "pod.name must be an RFC1123 subdomain"},
+		{"workload shape", func(p *PodSpec) { p.Manifest = testPodManifest(`,"hostNetwork":true`) }, "host namespaces"},
+		{"bad mesh peer", func(p *PodSpec) { p.MeshPeers = []string{"not-an-address"} }, "pod.meshPeers"},
 		{"not a manifest", func(p *PodSpec) { p.Manifest = "- a list" }, "pod.manifest"},
 		{"no containers", func(p *PodSpec) {
 			p.Manifest = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"` + testPodUID + `"},"spec":{}}`

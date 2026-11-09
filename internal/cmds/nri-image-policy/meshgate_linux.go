@@ -5,14 +5,23 @@ package nriimagepolicy
 import (
 	"fmt"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+var guestNetworkNamespace = "/proc/1/ns/net"
+
 // installPodRuleset puts the ruleset trusted policy defines for a pod of that
 // Kubernetes namespace into the network namespace the enforcer proved.
 func installPodRuleset(netns podNamespace, policy meshPolicy, namespace string) error {
-	return ruleset.Install(netns.path, policy.podRuleset(namespace, nil))
+	if err := ruleset.Install(netns.path, policy.podRuleset(namespace, nil)); err != nil {
+		return err
+	}
+	if policy.Pod != nil {
+		return ruleset.InstallGuest(guestNetworkNamespace, policy.guestRuleset())
+	}
+	return nil
 }
 
 // verifyPodRuleset requires the live ruleset of that same namespace to be the
@@ -23,7 +32,13 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string, e
 	if err := requireSameNamespace(netns); err != nil {
 		return err
 	}
-	return ruleset.Verify(netns.path, policy.podRuleset(namespace, exits))
+	if err := ruleset.Verify(netns.path, policy.podRuleset(namespace, exits)); err != nil {
+		return err
+	}
+	if policy.Pod != nil {
+		return ruleset.VerifyGuest(guestNetworkNamespace, policy.guestRuleset())
+	}
+	return nil
 }
 
 // extendPodRuleset adds a pod's granted exits to the ruleset it was protected
@@ -62,7 +77,7 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 // listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
-	return ruleset.Policy{
+	policy := ruleset.Policy{
 		Resolver:      p.Resolver,
 		Capture:       ruleset.CapturePorts(p.Capture),
 		MeshUID:       endpoint.UID,
@@ -71,6 +86,22 @@ func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Pol
 		Server:        p.servedPorts(kubeNamespace),
 		Roles:         p.dialingRoles(),
 	}
+	if p.Pod != nil {
+		policy.Pod = &ruleset.PodPolicy{Peers: p.podPeers()}
+	}
+	return policy
+}
+
+func (p meshPolicy) podPeers() []ruleset.Destination {
+	peers := make([]ruleset.Destination, 0, len(p.Pod.Peers))
+	for _, peer := range p.Pod.Peers {
+		peers = append(peers, ruleset.Destination{Addr: peer.Addr(), Port: peer.Port()})
+	}
+	return peers
+}
+
+func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
+	return ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, IngressPorts: p.Pod.IngressPorts}
 }
 
 // servedPorts is the server role the ruleset of a pod of the router's

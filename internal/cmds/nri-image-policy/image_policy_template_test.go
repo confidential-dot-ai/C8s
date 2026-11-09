@@ -39,6 +39,13 @@ const (
 
 func renderWorkerImagePolicy(t *testing.T) string {
 	t.Helper()
+	return workerMarker + strings.Replace(renderImagePolicyTemplate(t), "mesh:\n", "mesh:\n"+stagedMeshKeys, 1)
+}
+
+// renderImagePolicyTemplate substitutes the template's image placeholders
+// only: the floor a pod CVM bakes, which no worker staging completes.
+func renderImagePolicyTemplate(t *testing.T) string {
+	t.Helper()
 	body, err := os.ReadFile(filepath.Clean(workerImagePolicyTemplate))
 	if err != nil {
 		t.Fatalf("read the worker floor template: %v", err)
@@ -58,7 +65,7 @@ func renderWorkerImagePolicy(t *testing.T) string {
 	if ph := regexp.MustCompile(`@[A-Z_]+@`).FindString(out); ph != "" {
 		t.Fatalf("unsubstituted placeholder %s left in rendered template", ph)
 	}
-	return workerMarker + strings.Replace(out, "mesh:\n", "mesh:\n"+stagedMeshKeys, 1)
+	return out
 }
 
 // A baked node takes its front-door mode from the launch file, so the base
