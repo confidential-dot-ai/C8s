@@ -1,11 +1,8 @@
 {{/*
-One pull-mode installer DaemonSet on every eligible host node. Each plugin
-polls the CDS the cluster trusts (cds.address), so operator `c8s allowlist add` writes reach
-admission.
-The name keeps the historical `-worker` suffix to preserve DaemonSet identity
-across upgrade; there is no longer a `-cds` counterpart.
+One pull-mode installer DaemonSet on every eligible host node. Each plugin polls
+the CDS the cluster trusts (cds.address), so operator `c8s allowlist add` writes
+reach admission. The `-worker` suffix keeps the DaemonSet's identity across upgrades.
 */}}
-{{- if .Values.nriImagePolicy.enabled }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -34,10 +31,8 @@ spec:
         sidecar.istio.io/inject: "false"
     spec:
       hostPID: true
-      {{- with .Values.nriImagePolicy.priorityClassName }}
-      priorityClassName: {{ . }}
-      {{- end }}
-      {{- include "c8s.imagePullSecrets" (dict "root" . "local" .Values.nriImagePolicy.imagePullSecrets) | nindent 6 }}
+      priorityClassName: system-node-critical
+      {{- include "c8s.imagePullSecrets" . | nindent 6 }}
       tolerations:
         - operator: "Exists"
           effect: "NoExecute"
@@ -51,7 +46,7 @@ spec:
         # so every $ is escaped against the kubelet's expansion.
         - name: install
           image: {{ include "nri-image-policy.image" . }}
-          imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
+          imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
           command: ["/bin/sh", "-c"]
@@ -60,8 +55,10 @@ spec:
 {{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
+          # The install enters the host namespaces and has systemd restart
+          # containerd, a peak above 64Mi; the request is the idle footprint.
           resources:
-            {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
+            {{- include "nri-image-policy.resources" . | nindent 12 }}
       containers:
         # Holds the pod, and its readiness follows the host plugin: the plugin
         # exits when its NRI connection drops and NRI does not respawn it, so a
@@ -74,7 +71,7 @@ spec:
         # containerd restarts.
         - name: plugin-ready
           image: {{ include "nri-image-policy.image" . }}
-          imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c"]
           args:
             - {{ include "nri-image-policy.pluginReadyScript" . | replace "$" "$$" | quote }}
@@ -100,4 +97,3 @@ spec:
               memory: 64Mi
       volumes:
         {{- include "nri-image-policy.hostVolumes" . | nindent 8 }}
-{{- end }}

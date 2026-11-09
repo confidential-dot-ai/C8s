@@ -37,8 +37,8 @@ func validateOperatorKeysFile(path string) error {
 // renderValuesCmd emits the resolved Helm values an install would apply, as a
 // values.yaml, without touching a cluster. It runs the same value computation
 // as `c8s install` — resolve each component image tag to its registry digest
-// (via crane) and map --cvm-mode to the TEE devices — but writes the values to
-// stdout instead of running helm upgrade --install.
+// (via crane) — but writes the values to stdout instead of running
+// helm upgrade --install.
 //
 // This is the GitOps seam: a Flux HelmRelease (or any chart consumer) can
 // valuesFrom a bundle produced here instead of recomputing digests and device
@@ -46,18 +46,17 @@ func validateOperatorKeysFile(path string) error {
 // pull-secret preflight and no namespace apply.
 //
 // What it does NOT emit: the per-cluster overrides a consumer layers on top
-// (router SAN/LB IP/CORS, nodeSelectors) and anything the chart
-// renders off these values internally (e.g. the AKS webhook annotation off
-// attestationApi.cvmMode). The output is the install-computed base, not a full
-// per-cluster values file.
+// (router SAN/LB IP/CORS, nodeSelectors) and the chart's values-<platform>.yaml,
+// which the consumer passes to helm itself. The output is the install-computed
+// base, not a full per-cluster values file.
 var renderValuesCmd = &cobra.Command{
 	Use:   "render-values",
 	Short: "Print the resolved Helm values an install would apply (no cluster needed)",
 	Long: `Computes the install-time Helm values that need a registry or the chart
-to resolve — resolved image digests and --cvm-mode TEE devices — and writes
-them to stdout as a values.yaml, without contacting a cluster. Per-cluster
-tuning a consumer already owns (router, nodeSelectors, …) is not emitted;
-layer it in the consuming HelmRelease values.
+to resolve — resolved image digests — and writes them to stdout as a
+values.yaml, without contacting a cluster. The chart's values-<platform>.yaml
+and the per-cluster tuning a consumer already owns (router, nodeSelectors, …)
+are layered in by the consuming HelmRelease.
 
 Use it to feed a GitOps consumer: a Flux HelmRelease can valuesFrom the bundle
 this produces rather than recomputing digests and device mappings. No preflight
@@ -65,8 +64,7 @@ checks run and no namespace is applied. --operator-keys embeds the key file's
 PEM content as cds.operatorKeys
 (the chart value is the content itself, never a file path). The chart refuses
 to render without the CDS this cluster trusts (--cds-address and --cds-pin),
-unless the consuming values set cds.address and cds.measurementsConfig, or
-node.baked=true.
+unless the consuming values set cds.address and cds.measurementsConfig.
 
 "No cluster" does not mean no network: by default each component tag is resolved
 to its registry digest via crane, which needs the registry reachable and local
@@ -76,9 +74,6 @@ the consuming -f.
 
 Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateCvmMode(installCvmMode); err != nil {
-			return err
-		}
 		if _, err := exec.LookPath("helm"); err != nil {
 			return fmt.Errorf("helm CLI not found on PATH: %w", err)
 		}
@@ -95,7 +90,7 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 			return fmt.Errorf("read chart components: %w", err)
 		}
 
-		setArgs, err := buildValueArgs(cmd.Context(), chartPath, components, resolveImageTag(), appendResolvedDigestArgs)
+		setArgs, err := buildValueArgs(cmd.Context(), chartPath, nil, components, resolveImageTag(), appendResolvedDigestArgs)
 		if err != nil {
 			return err
 		}
@@ -122,7 +117,7 @@ Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 // chartPath lets the resolver read the chart's default values (to skip
 // components the effective config disables); setArgs carries the overrides
 // assembled so far, which drive that disable.
-type digestResolver func(ctx context.Context, chartPath string, setArgs []string, imageTag string, components []c8sComponent) ([]string, error)
+type digestResolver func(ctx context.Context, chartPath string, valuesFiles, setArgs []string, imageTag string, components []c8sComponent) ([]string, error)
 
 // buildValueArgs assembles the helm --set/--set-string value args shared by
 // install and render-values. resolveDigests is injected (see digestResolver).
@@ -132,6 +127,7 @@ type digestResolver func(ctx context.Context, chartPath string, setArgs []string
 func buildValueArgs(
 	ctx context.Context,
 	chartPath string,
+	valuesFiles []string,
 	components []c8sComponent,
 	imageTag string,
 	resolveDigests digestResolver,
@@ -148,18 +144,6 @@ func buildValueArgs(
 		for _, c := range components {
 			setArgs = append(setArgs, "--set-string", c.valuesPath+".tag="+imageTag)
 		}
-	}
-	// --cvm-mode is required and validated in RunE, so always emit the mode's
-	// teeDevices/attestation-api values (and the --hardware-platform propagation).
-	setArgs, err := appendCvmModeInstallArgs(setArgs, installCvmMode, installHardwarePlatform)
-	if err != nil {
-		return nil, err
-	}
-	// installValues is empty for render-values, which registers no -f flag, so
-	// the hosted-lane default always applies there.
-	setArgs, err = appendExemptNamespacesInstallArgs(setArgs, installCvmMode, installValues)
-	if err != nil {
-		return nil, err
 	}
 	cdsArgs, err := cdsInstallArgs(installCDSAddress, installCDSPin)
 	if err != nil {
@@ -182,7 +166,7 @@ func buildValueArgs(
 	}
 	if installResolveDigests {
 		var err error
-		setArgs, err = resolveDigests(ctx, chartPath, setArgs, imageTag, components)
+		setArgs, err = resolveDigests(ctx, chartPath, valuesFiles, setArgs, imageTag, components)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +227,7 @@ func valueArgsToTree(setArgs []string) (map[string]any, error) {
 
 // coerce mirrors helm's --set vs --set-string typing: --set-string keeps the
 // raw string; --set coerces bool/int the way helm's strvals does, so
-// `teeDevices.tpm=true` becomes a real bool.
+// `volumed.enabled=true` becomes a real bool.
 func coerce(raw string, typed bool) any {
 	if !typed {
 		return raw
@@ -376,8 +360,6 @@ func init() {
 	// so the two stay in lockstep; it drops the cluster-only flags (namespace,
 	// release, wait, values files).
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
-	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
-	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, quotes through ConfigFS TSM at /sys/kernel/config). Under --cvm-mode=aks it picks the Azure vTPM evidence shape: sev-snp selects az-snp, tdx selects az-tdx")
 	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address. Emits cds.address")
 	renderValuesCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json). Emits cds.measurementsConfig as the file's content")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane) and pin it")

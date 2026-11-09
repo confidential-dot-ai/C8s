@@ -33,9 +33,7 @@ spec:
             - {{ .Release.Namespace }}
             - {{ include "c8s.routerMeshNamespace" . }}
             - kube-system
-            {{- if not .Values.node.baked }}
             - local-path-storage
-            {{- end }}
   validations:
     - expression: >-
         !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
@@ -367,9 +365,7 @@ spec:
             - {{ .Release.Namespace }}
             - {{ include "c8s.routerMeshNamespace" . }}
             - kube-system
-            {{- if not .Values.node.baked }}
             - local-path-storage
-            {{- end }}
   validations:
     - expression: >-
         !has(object.spec.hostNetwork) || object.spec.hostNetwork == false

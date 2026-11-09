@@ -57,8 +57,8 @@ var volumePodJSONPath = `{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.
 
 // hostUninstallConfig is the slice of the release's computed values the host
 // sweep needs. It is read from `helm get values --all` BEFORE the release is
-// deleted — afterwards the -f/--set overrides from install time (custom
-// containerd layout and nriImagePolicy.hostPaths) are unrecoverable.
+// deleted — afterwards the -f/--set overrides from install time
+// (nriImagePolicy.hostPaths) are unrecoverable.
 type hostUninstallConfig struct {
 	ContainerdConfigDir string
 	RestartCommand      string
@@ -70,9 +70,8 @@ type hostUninstallConfig struct {
 	// installed by an older chart (the pin is rendered at install time).
 	SweepArgv []string
 	PauseArgv []string
-	// NRI image-policy host paths (nriImagePolicy.*): where the chart's
-	// installer DaemonSet wrote the plugin, or where the node image baked it.
-	// The sweep distinguishes the two via a baked-only marker on the host.
+	// NRI image-policy host paths: where the chart's installer DaemonSet
+	// wrote the plugin.
 	NriPluginDir       string
 	NriPluginFilename  string
 	NriConfigDir       string
@@ -97,19 +96,15 @@ is bounded by the pod's termination grace period (and the runtime restart it
 triggers can kill the pod mid-cleanup), the pre-delete hooks only fire on a
 release healthy enough to run them, and none of them knows about the
 c8s-side artifacts. The sweep runs on every uninstall because the host state below is not confined to the release's own
-shape: a previous install on the same host may have had a different shape
-(node vs managed), and leftovers brick or degrade the next cluster. After the
+shape: a previous install on the same host may have had a different shape,
+and leftovers brick or degrade the next cluster. After the
 release is gone the sweep runs a short-lived privileged DaemonSet on every
-linux node — with the release's NRI plugin image where the fail-closed
-plugin is live (the sweep image must already be on the allowlist; the sweep
-is what removes the plugin), else the chart's digest-pinned busybox
-(nriImagePolicy.containerdPrep.image) — and removes, idempotently:
+linux node — with the release's NRI plugin image, which the fail-closed
+plugin already admits (the sweep is what removes the plugin) — and removes,
+idempotently:
 
   - the NRI image-policy host plugin: its containerd registration, the plugin
-    binary, its config/cache/runtime dirs — skipped entirely on c8s node
-    images, where the whole stack is baked into the measured image (detected
-    via nri-node-ip.service) and is the image's to keep, not the release's to
-    delete
+    binary, its config/cache/runtime dirs
   - the armtls-mesh netfilter state: the ARMTLS-MESH chains and their
     base-chain jumps in iptables and ip6tables, and the ARMTLS-MESH-* ipsets
     (the mesh's own preStop deliberately keeps the fail-closed guard, so this
@@ -298,7 +293,7 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 		return hostUninstallConfig{}, fmt.Errorf("parse chart values: %w", err)
 	}
 
-	// With the release gone the baked plugin still enforces the
+	// With the release gone the installed plugin still enforces the
 	// release-pinned nri-image-policy digest; sweeping with the CLI's own
 	// version tag resolves to that same digest on a same-version install.
 	if nri, ok := nestedMap(tree, "nriImagePolicy"); ok {
@@ -316,34 +311,34 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 
 // hostConfigFromValues extracts the sweep config from a decoded values tree
 // (helm get values --all, or helm show values for the chart-defaults path).
-// An unpinned sweep image is an error: the rest of the config falls back to
-// the layout the chart defaults, which is where the install wrote.
+// An unpinned sweep image is an error; the host layout is the chart's, which
+// is where the install wrote.
 func hostConfigFromValues(tree map[string]any) (hostUninstallConfig, error) {
 	sweepImage, err := sweepImageRef(tree)
 	if err != nil {
 		return hostUninstallConfig{}, err
 	}
 	cfg := hostUninstallConfig{
-		ContainerdConfigDir: valueOrDefault(tree, "nriImagePolicy.containerd.configDir", hostContainerdConfigDir),
-		RestartCommand:      valueOrDefault(tree, "nriImagePolicy.containerd.restartCommand", hostRestartCommand),
+		ContainerdConfigDir: hostContainerdConfigDir,
+		RestartCommand:      hostRestartCommand,
 		SweepImage:          sweepImage,
 		SweepArgv:           []string{"/bin/sh", "-c", hostSweepScript},
-		PauseArgv:           []string{"/bin/sleep", "2147483647"}, // busybox sleep has no "infinity"
+		PauseArgv:           []string{"/bin/sleep", "2147483647"},
 	}
 	cfg = nriConfigFromValues(tree, cfg)
 	cfg.ImagePullSecretRef = imagePullSecretNames(tree)
 	return cfg, nil
 }
 
-// nriConfigFromValues fills the NRI image-policy host paths, defaulting to
-// the chart's values.yaml constants when a key is absent (an old or foreign
-// release). The containerd directory is resolved by hostConfigFromValues.
+// nriConfigFromValues fills the NRI image-policy host paths: the two the
+// stock values files set per platform, read from the release, and the rest the
+// chart renders as constants.
 func nriConfigFromValues(tree map[string]any, cfg hostUninstallConfig) hostUninstallConfig {
-	cfg.NriPluginDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.pluginDir", "/opt/nri/plugins")
-	cfg.NriPluginFilename = stringOrDefault(tree, "nriImagePolicy.pluginFilename", "10-nri-image-policy")
-	cfg.NriConfigDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.configDir", "/etc/nri/conf.d")
-	cfg.NriRuntimeDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.runtimeDir", "/run/nri-image-policy")
-	cfg.NriCacheDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.cacheDir", "/var/lib/nri-image-policy")
+	cfg.NriPluginDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.pluginDir", hostNriPluginDir)
+	cfg.NriPluginFilename = hostNriPluginFilename
+	cfg.NriConfigDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.configDir", hostNriConfigDir)
+	cfg.NriRuntimeDir = hostNriRuntimeDir
+	cfg.NriCacheDir = hostNriCacheDir
 	return cfg
 }
 
@@ -379,23 +374,18 @@ func imagePullSecretNames(tree map[string]any) []string {
 	return names
 }
 
-// The host containerd layout and restart the sweep cleans against where the
-// release set neither, as the chart's helpers default them
-// (nri-image-policy.containerdConfigDir, nri-image-policy.restartCommand).
-// The sweep only restarts when it removed a still-registered NRI config block.
+// The host paths and restart the sweep cleans, each the constant the chart's
+// own helpers render (templates/nri-image-policy-helpers.tpl). The sweep only
+// restarts when it removed a still-registered NRI config block.
 const (
 	hostContainerdConfigDir = "/etc/containerd"
+	hostNriCacheDir         = "/var/lib/nri-image-policy"
+	hostNriConfigDir        = "/etc/nri/conf.d"
+	hostNriPluginDir        = "/opt/nri/plugins"
+	hostNriPluginFilename   = "10-nri-image-policy"
+	hostNriRuntimeDir       = "/run/nri-image-policy"
 	hostRestartCommand      = "systemctl restart containerd"
 )
-
-// valueOrDefault is stringOrDefault for a value the chart carries as an empty
-// string, which means the same as absent: take the fallback.
-func valueOrDefault(tree map[string]any, path, fallback string) string {
-	if v := stringOrDefault(tree, path, ""); v != "" {
-		return v
-	}
-	return fallback
-}
 
 // resolveSweepArgvs replays the sweep and pause argv the release's allowlist
 // seed pins for the sweep image's digest: c8s.argvPinnedEntries pins them on
@@ -513,25 +503,19 @@ func seedConfigMapName(release string) string {
 	return name + "-allowlist-seed"
 }
 
-// sweepImageRef picks the image the sweep DaemonSet runs. On shapes where
-// the fail-closed NRI plugin is live on the host, the sweep pod's image must
-// already be on the allowlist — the sweep is what removes the plugin, so it
-// cannot ask for admission afterwards. The one image guaranteed admitted
-// there is the plugin's own (the installer DaemonSet ran it), so a release
-// that resolved nriImagePolicy.image sweeps with it (debian-based: sh,
-// coreutils, and util-linux's nsenter are all present). Everywhere else the
-// digest-pinned containerd-prep busybox is enough: no host NRI to consult,
-// or the baked node image whose floor already admits it. Digest wins over
-// tag, mirroring the chart helper; neither set on either image is an error,
-// never a silently-floating default.
+// sweepImageRef picks the image the sweep DaemonSet runs. The fail-closed
+// NRI plugin is live on the host, so the sweep pod's image must already be on
+// the allowlist — the sweep is what removes the plugin, so it cannot ask for
+// admission afterwards. The one image guaranteed admitted there is the
+// plugin's own (the installer DaemonSet ran it; debian-based: sh, coreutils,
+// and util-linux's nsenter are all present). Digest wins over tag, mirroring
+// the chart helper; neither set is an error, never a silently-floating
+// default.
 func sweepImageRef(tree map[string]any) (string, error) {
 	if ref, ok := imageRefAt(tree, "nriImagePolicy.image"); ok {
 		return ref, nil
 	}
-	if ref, ok := imageRefAt(tree, "nriImagePolicy.containerdPrep.image"); ok {
-		return ref, nil
-	}
-	return "", fmt.Errorf("neither nriImagePolicy.image nor nriImagePolicy.containerdPrep.image resolves to a pinned reference (digest or tag)")
+	return "", fmt.Errorf("nriImagePolicy.image resolves to no pinned reference (digest or tag)")
 }
 
 // imageRefAt renders values image block <path> (repository + digest|tag) as
@@ -680,7 +664,7 @@ func waitPodsGone(ctx context.Context, namespace, selector string) error {
 
 // hostSweepDaemonSet renders the sweep DaemonSet: every linux node (the
 // NRI installer and mesh DaemonSets land on all of them, and a node can carry a
-// previous shape's leftovers), tolerating all taints, with host-sweep.sh as
+// previous install's leftovers), tolerating all taints, with host-sweep.sh as
 // an init container and a pause container whose readiness lets `kubectl
 // rollout status` double as "every node finished sweeping".
 func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *appsv1.DaemonSet {
@@ -788,7 +772,7 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet")
 	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults when the release values are unavailable")
 	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")

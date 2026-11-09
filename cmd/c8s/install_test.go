@@ -60,7 +60,6 @@ func TestCDSPinPreflight(t *testing.T) {
 		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
 		{name: "cds.operatorKeys names no CDS", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
 		{name: "router disabled still needs a CDS", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
-		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := cdsPreflight(tc.address, tc.pin, tc.values)
@@ -164,18 +163,33 @@ func TestBuildInstallHelmArgsOrdering(t *testing.T) {
 
 }
 
-// --cvm-mode is required: empty or unknown must error.
-func TestValidateCvmModeRequiresKnownValue(t *testing.T) {
-	if err := validateCvmMode(""); err == nil {
-		t.Fatal("empty --cvm-mode: want error, got nil")
-	}
-	if err := validateCvmMode("bogus"); err == nil {
-		t.Fatal("unknown --cvm-mode: want error, got nil")
-	}
-	for _, mode := range allowedCvmModes {
-		if err := validateCvmMode(mode); err != nil {
-			t.Errorf("mode %q: unexpected error: %v", mode, err)
+// --platform is one of the stock values files, or empty for -f to set the
+// platform keys.
+func TestValidatePlatform(t *testing.T) {
+	for _, platform := range append([]string{""}, cloudPlatforms...) {
+		if err := validatePlatform(platform); err != nil {
+			t.Errorf("validatePlatform(%q) = %v, want nil", platform, err)
 		}
+	}
+	if err := validatePlatform("aks"); err == nil {
+		t.Error("validatePlatform(aks) = nil, want error")
+	}
+}
+
+// Every --platform names a stock file the embedded chart carries, and the
+// operator's own -f files come after it, as helm's precedence needs.
+func TestCloudPlatformsHaveStockFiles(t *testing.T) {
+	for _, platform := range cloudPlatforms {
+		files := orderedValuesFiles(helmchart.ChartRoot, platform, []string{"own.yaml"})
+		if _, err := helmchart.ChartFS.ReadFile(files[0]); err != nil {
+			t.Errorf("--platform %s: %v", platform, err)
+		}
+		if want := []string{filepath.Join(helmchart.ChartRoot, "values-"+platform+".yaml"), "own.yaml"}; !reflect.DeepEqual(files, want) {
+			t.Errorf("--platform %s selects %v, want %v", platform, files, want)
+		}
+	}
+	if files := orderedValuesFiles(helmchart.ChartRoot, "", []string{"own.yaml"}); !reflect.DeepEqual(files, []string{"own.yaml"}) {
+		t.Errorf("no --platform selects %v, want the -f files alone", files)
 	}
 }
 
@@ -1051,124 +1065,6 @@ func TestHostPortConflict(t *testing.T) {
 	}
 }
 
-func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
-	// Two orthogonal axes:
-	//  --cvm-mode: bare-metal (node-as-CVM) / gke (managed) / aks (vTPM)
-	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (ConfigFS TSM)
-	// node+gke all take either hardware-platform; aks always emits the vTPM
-	// device and rides the Azure vTPM HCL report for both SNP (az-snp) and TDX
-	// (az-tdx).
-	build := func(mode, platform, sevGuest, tdxGuest, tpm string) []string {
-		out := []string{
-			"upgrade",
-			"--set-string", "attestationApi.cvmMode=" + mode,
-			"--set", "attestationApi.teeDevices.sevGuest=" + sevGuest,
-			"--set", "attestationApi.teeDevices.tdxGuest=" + tdxGuest,
-			"--set", "attestationApi.teeDevices.tpm=" + tpm,
-		}
-		// Any TDX shape — native (ConfigFS TSM) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to CDS, which names its armTLS platform, or
-		// CDS parses the TDX quote as an SNP report.
-		if platform == "tdx" {
-			out = append(out, "--set-string", "nriImagePolicy.platform=tdx")
-		}
-		// AKS's admissions enforcer leaves both webhook configurations alone.
-		if mode == "aks" {
-			out = append(out, "--set-string", `controlPlane.webhook.annotations.admissions\.enforcer/disabled=true`)
-		}
-		// The attest sidecar's platform names the evidence shape the sidecar
-		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
-		// vTPM HCL report — bare snp/tdx would probe guest devices AKS nodes
-		// do not expose), bare tdx on native TDX. sev-snp outside aks keeps
-		// the chart default (snp). Every override blanks the AMD-only
-		// generation.
-		switch {
-		case mode == "aks" && platform == "tdx":
-			out = append(out,
-				"--set-string", "router.attest.platform=az-tdx",
-				"--set-string", "router.attest.generation=",
-			)
-		case mode == "aks":
-			out = append(out,
-				"--set-string", "router.attest.platform=az-snp",
-				"--set-string", "router.attest.generation=",
-			)
-		case platform == "tdx":
-			out = append(out,
-				"--set-string", "router.attest.platform=tdx",
-				"--set-string", "router.attest.generation=",
-			)
-		}
-		// bare-metal: the measured image carries attestation-api and
-		// nri-image-policy, so the chart renders neither.
-		if mode == "bare-metal" {
-			out = append(out,
-				"--set", "attestationApi.enabled=false",
-				"--set", "nriImagePolicy.enabled=false",
-			)
-		}
-		return out
-	}
-	cases := map[string]struct {
-		cvmMode          string
-		hardwarePlatform string
-		want             []string
-	}{
-		"gke + sev-snp":        {"gke", "sev-snp", build("gke", "sev-snp", "true", "false", "false")},
-		"bare-metal + sev-snp": {"bare-metal", "sev-snp", build("bare-metal", "sev-snp", "true", "false", "false")},
-		"gke + tdx":            {"gke", "tdx", build("gke", "tdx", "false", "true", "false")},
-		"bare-metal + tdx":     {"bare-metal", "tdx", build("bare-metal", "tdx", "false", "true", "false")},
-		"aks + sev-snp":        {"aks", "sev-snp", build("aks", "sev-snp", "false", "false", "true")},
-		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX armTLS platform.
-		"aks + tdx (az-tdx)": {"aks", "tdx", build("aks", "tdx", "false", "false", "true")},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := appendCvmModeInstallArgs([]string{"upgrade"}, tc.cvmMode, tc.hardwarePlatform)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			assertArgsEqual(t, got, tc.want)
-		})
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsUnknownMode(t *testing.T) {
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", ""); err == nil || !strings.Contains(err.Error(), "--hardware-platform is required") {
-		t.Fatalf("empty --hardware-platform: err = %v, want required error", err)
-	}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "azure", "sev-snp"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted an unknown --cvm-mode, want error")
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsUnknownHardwarePlatform(t *testing.T) {
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "sgx"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted an unknown --hardware-platform, want error")
-	}
-}
-
-func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
-	// aks + tdx is the Azure-vTPM TDX (az-tdx) shape: the node's vTPM HCL report
-	// wraps a TD quote, so it needs the vTPM device (tpm=true, no guest device)
-	// and the TDX armTLS platform on CDS/mesh — not a refusal.
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "aks", "tdx")
-	if err != nil {
-		t.Fatalf("appendCvmModeInstallArgs(aks, tdx): unexpected error %v", err)
-	}
-	joined := strings.Join(got, " ")
-	for _, want := range []string{
-		"attestationApi.cvmMode=aks",
-		"attestationApi.teeDevices.tpm=true",
-		"attestationApi.teeDevices.tdxGuest=false",
-		"nriImagePolicy.platform=tdx",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("aks+tdx args missing %q; got %v", want, got)
-		}
-	}
-}
-
 // testComponents mirrors the chart's component table for the resolver tests,
 // which exercise buildDigestArgs without reading a real chart. The chart-read
 // path (chartComponents) is covered separately by TestChartComponentsFromEmbeddedChart.
@@ -1244,8 +1140,8 @@ func TestBuildDigestArgsResolvesEachComponentOnce(t *testing.T) {
 }
 
 // A component whose enabledPath resolves to false never renders, so its tag
-// must not be resolved (that image may be unpublished at the install tag — e.g.
-// attestationApi under --cvm-mode=bare-metal) and it must contribute no --set args.
+// must not be resolved (that image may be unpublished at the install tag) and
+// it must contribute no --set args.
 // Enabled components still resolve and pin.
 func TestBuildDigestArgsSkipsDisabledComponent(t *testing.T) {
 	resolved := map[string]bool{}
@@ -1478,8 +1374,7 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// Default (no -f): volumed reads as disabled.
-	installValues = nil
-	tree, err := effectiveValues(context.Background(), chartPath, nil)
+	tree, err := effectiveValues(context.Background(), chartPath, nil, nil)
 	if err != nil {
 		t.Fatalf("effectiveValues (defaults): %v", err)
 	}
@@ -1488,9 +1383,7 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// With the -f file: volumed reads as enabled.
-	installValues = []string{vf}
-	defer func() { installValues = nil }()
-	tree, err = effectiveValues(context.Background(), chartPath, nil)
+	tree, err = effectiveValues(context.Background(), chartPath, []string{vf}, nil)
 	if err != nil {
 		t.Fatalf("effectiveValues (-f): %v", err)
 	}
@@ -1658,89 +1551,6 @@ func writeValuesFile(t *testing.T, body string) string {
 // A -f file that writes nriImagePolicy.policy.exemptNamespaces owns it, empty
 // list included: the computed values are helm's last -f, so a lane default
 // injected over it would silently replace a deliberate choice.
-func TestValuesFilesSetExemptNamespaces(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body string
-		want bool
-	}{
-		{"list set", "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n", true},
-		{"empty list is a choice", "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n", true},
-		{"null is a choice", "nriImagePolicy:\n  policy:\n    exemptNamespaces:\n", true},
-		{"sibling policy key only", "nriImagePolicy:\n  policy:\n    mode: audit\n", false},
-		{"wrong nesting level", "nriImagePolicy:\n  exemptNamespaces: [kube-system]\n", false},
-		{"unrelated value only", "router:\n  enabled: false\n", false},
-		{"empty file", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := valuesFilesSetExemptNamespaces([]string{writeValuesFile(t, tc.body)})
-			if err != nil {
-				t.Fatalf("valuesFilesSetExemptNamespaces: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("valuesFilesSetExemptNamespaces(%q) = %v, want %v", tc.body, got, tc.want)
-			}
-		})
-	}
-
-	t.Run("no files means default", func(t *testing.T) {
-		got, err := valuesFilesSetExemptNamespaces(nil)
-		if err != nil || got {
-			t.Errorf("valuesFilesSetExemptNamespaces(nil) = (%v, %v), want (false, nil)", got, err)
-		}
-	})
-
-	t.Run("one of several files sets it", func(t *testing.T) {
-		a := writeValuesFile(t, "router:\n  enabled: false\n")
-		b := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [kube-system]\n")
-		got, err := valuesFilesSetExemptNamespaces([]string{a, b})
-		if err != nil || !got {
-			t.Errorf("valuesFilesSetExemptNamespaces(two files) = (%v, %v), want (true, nil)", got, err)
-		}
-	})
-}
-
-func TestAppendExemptNamespacesInstallArgs(t *testing.T) {
-	want := []string{"--set-string", "nriImagePolicy.policy.exemptNamespaces[0]=kube-system"}
-	for _, mode := range hostedCvmModes {
-		got, err := appendExemptNamespacesInstallArgs(nil, mode, nil)
-		if err != nil {
-			t.Fatalf("--cvm-mode=%s: %v", mode, err)
-		}
-		assertArgsEqual(t, got, want)
-	}
-
-	// node bakes the system digests into its own floor, so the chart's empty
-	// default stands.
-	got, err := appendExemptNamespacesInstallArgs(nil, "bare-metal", nil)
-	if err != nil || got != nil {
-		t.Errorf("--cvm-mode=bare-metal = (%v, %v), want (nil, nil)", got, err)
-	}
-
-	t.Run("a -f file that sets it wins", func(t *testing.T) {
-		f := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n")
-		got, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{f})
-		if err != nil || got != nil {
-			t.Errorf("with an exemptNamespaces -f = (%v, %v), want (nil, nil)", got, err)
-		}
-	})
-
-	t.Run("an unrelated -f file does not suppress the default", func(t *testing.T) {
-		f := writeValuesFile(t, "router:\n  enabled: false\n")
-		got, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{f})
-		if err != nil {
-			t.Fatalf("appendExemptNamespacesInstallArgs: %v", err)
-		}
-		assertArgsEqual(t, got, want)
-	})
-
-	t.Run("an unreadable -f file is an error, not a silent default", func(t *testing.T) {
-		if _, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{"/nonexistent/values.yaml"}); err == nil {
-			t.Error("want an error for an unreadable values file")
-		}
-	})
-}
-
 func TestImageDigest(t *testing.T) {
 	const digest = "sha256:ab12000000000000000000000000000000000000000000000000000000000000"
 	for _, tc := range []struct {

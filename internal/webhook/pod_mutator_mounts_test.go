@@ -35,6 +35,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		t.Skip("helm CLI not found")
 	}
 	cmd := exec.Command("helm", "template", "c8s", "../helmchart/cloud",
+		"-f", "../helmchart/cloud/values-gke-snp.yaml",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--show-only", "templates/allowlist-seed.yaml",
@@ -44,7 +45,6 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.digest="+chartMeshDigest,
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)

@@ -1,4 +1,6 @@
-{{/* The router pod's nginx files and the containers that serve them. */}}
+{{/* The router pod's nginx files and the containers that serve them. Each
+     chart defines router.podSpec and router.configDir, the directory its
+     nginx reads the files from. */}}
 
 {{/* The router's names and labels. */}}
 {{- define "router.fullname" -}}
@@ -96,23 +98,20 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   root
   allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies CDS through, as YAML
-  allowlistResources    the proxy's container resources
   attestationApiMounts  cds-attest's mounts of the attestation-api it attests through, as YAML
   attestationApiURL     the attestation-api URL a credentials-role container of this pod dials
   certificateMounts     nginx's mounts of the certificates it serves beside the mesh leaf
   cdsAttestArgs         cds-attest's argv after the entrypoint
   cdsAttestMounts       the mounts cdsAttestArgs names beside the mesh leaf and attestation-api
   config                the directory nginx reads the files from
-  hostIPEnv             the env a sidecar expands the node's address from, as YAML
   ports                 nginx's ports: name, containerPort, publicPort
   settingsMounts        nginx's mounts of the settings its files include
 */}}
 {{- define "c8s.routerContainers" -}}
 {{- $root := .root -}}
-{{- $v := $root.Values.router -}}
 - name: nginx
   image: {{ include "c8s-common.image" (include "c8s.routerNginxPin" $root | fromJson).image }}
-  imagePullPolicy: {{ $v.nginx.imagePullPolicy }}
+  imagePullPolicy: IfNotPresent
   {{- /* serve.sh stops nginx, its child, when the served certificate is
          withdrawn. The allowlist pins this argv and admits no argument
          beside it. */}}
@@ -164,22 +163,14 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
       mountPath: /tmp
     - name: nginx-tunnel-body
       mountPath: {{ include "router.tunnelBodyDir" $root }}
-  {{- with $v.nginx.resources }}
-  resources:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 {{- /* It carries every application request nginx's location / sends it
        (route policy A7). */}}
 - name: cds-attest
   image: {{ include "c8s.image" $root }}
-  imagePullPolicy: {{ default "IfNotPresent" $root.Values.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     {{- toYaml .cdsAttestArgs | nindent 4 }}
-  {{- with .hostIPEnv }}
-  env:
-    {{- . | nindent 4 }}
-  {{- end }}
   volumeMounts:
     - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
@@ -199,22 +190,14 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     capabilities:
       drop:
         - ALL
-  {{- with $v.attest.resources }}
-  resources:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 {{- /* It verifies CDS's armTLS evidence before proxying /allowlist, the
        second trust hop behind nginx. */}}
 - name: allowlist-proxy
   image: {{ include "c8s.image" $root }}
-  imagePullPolicy: {{ default "IfNotPresent" $root.Values.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     {{- include "router.allowlistProxyArgs" (dict "root" $root "attestationApiURL" .attestationApiURL) | fromJsonArray | toYaml | nindent 4 }}
-  {{- with .hostIPEnv }}
-  env:
-    {{- . | nindent 4 }}
-  {{- end }}
   {{- with .allowlistProxyMounts }}
   volumeMounts:
     {{- . | nindent 4 }}
@@ -229,10 +212,6 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     capabilities:
       drop:
         - ALL
-  {{- with .allowlistResources }}
-  resources:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 {{- end -}}
 
 {{/* The proxy holds the credentials role, so the node hands it the one CDS

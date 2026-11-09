@@ -33,27 +33,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// helmFailMessage extracts the user-visible message from a `helm template`
-// failure so tests can parse a typed value out of it instead of grepping
-// the whole stderr blob.
-var helmFailRE = regexp.MustCompile(`execution error at \([^)]+\): (.+?)\n`)
-
-func helmFailMessage(t *testing.T, out string) string {
-	t.Helper()
-	m := helmFailRE.FindStringSubmatch(out)
-	if len(m) < 2 {
-		t.Fatalf("no helm fail message in output:\n%s", out)
-	}
-	return m[1]
-}
-
-func assertHelmFailMessage(t *testing.T, out, want string) {
-	t.Helper()
-	if got := helmFailMessage(t, out); got != want {
-		t.Fatalf("helm fail message = %q, want %q\n%s", got, want, out)
-	}
-}
-
 // containerArgs returns the args of the named container, main or init, after
 // kubelet expansion. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
@@ -69,10 +48,7 @@ func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 
 func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	t.Parallel()
-	// gke keeps the host-side attestation-api enabled, reachable only via the
-	// on-node Unix socket (node disables it and points components at the baked
-	// host attestation-api via HOST_IP; that path is covered separately).
-	out, err := helmTemplate(t, "--set", "attestationApi.cvmMode=gke")
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -561,24 +537,33 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 	}
 }
 
-// The AKS admissions-enforcer opt-out `c8s install --cvm-mode aks` sets lands
-// on both webhook configurations of the installed release.
+// The AKS stock files opt both webhook configurations out of AKS's admissions
+// enforcer, which rewrites their namespaceSelector; the GKE file leaves them
+// unannotated.
 func TestChartWebhookAnnotationsReachBothConfigurations(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set-string", `controlPlane.webhook.annotations.admissions\.enforcer/disabled=true`)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var mutating admissionregv1.MutatingWebhookConfiguration
-	var validating admissionregv1.ValidatingWebhookConfiguration
-	if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &mutating) ||
-		!findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &validating) {
-		t.Fatalf("missing admission webhooks\n%s", out)
-	}
-	for _, annotations := range []map[string]string{mutating.Annotations, validating.Annotations} {
-		if annotations["admissions.enforcer/disabled"] != "true" {
-			t.Errorf("annotations = %v, want admissions.enforcer/disabled=true", annotations)
-		}
+	for platform, want := range map[string]string{
+		"aks-snp": "true",
+		"aks-tdx": "true",
+		"gke-snp": "",
+	} {
+		t.Run(platform, func(t *testing.T) {
+			out, err := helmTemplatePlatform(t, platform)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			var mutating admissionregv1.MutatingWebhookConfiguration
+			var validating admissionregv1.ValidatingWebhookConfiguration
+			if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &mutating) ||
+				!findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &validating) {
+				t.Fatalf("missing admission webhooks\n%s", out)
+			}
+			for _, annotations := range []map[string]string{mutating.Annotations, validating.Annotations} {
+				if annotations["admissions.enforcer/disabled"] != want {
+					t.Errorf("annotations = %v, want admissions.enforcer/disabled=%q", annotations, want)
+				}
+			}
+		})
 	}
 }
 
@@ -796,21 +781,6 @@ func TestChartAttestationApiSocketWiresNRI(t *testing.T) {
 	}
 }
 
-// The require_host_image_policy guard exempts cvmMode=bare-metal: the measured
-// image carries its own fail-closed nri-image-policy, so nri off there is not
-// an unenforced cluster. The served seed under this shape is covered by
-// TestChartServesAllowlistSeedInBareMetalMode.
-func TestChartAllowsImagePolicyOffInBareMetalMode(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=bare-metal",
-		"--set", "nriImagePolicy.enabled=false",
-	)
-	if err != nil {
-		t.Fatalf("helm template rejected cvmMode=bare-metal with nri off, want success (the node image bakes the plugin)\n%s", out)
-	}
-}
-
 // parseValidationErrorKind extracts kind=<id> from helm's stderr when the
 // chart's `fail` message starts with `VALIDATION_ERROR kind=<id>:`. Returns
 // empty string if the marker is absent.
@@ -931,187 +901,25 @@ func findKey(node any, key string) string {
 	return ""
 }
 
-// A -f values file decodes ints as float64; helm renders float64 >= 1e6 as
-// scientific notation (7000000 -> 7e+06), which is invalid in a numeric
-// securityContext field and a type error in CEL. c8s.int must keep these plain
-// integers. This drives the bug's actual path (a -f file, value >= 1e6), which
-// --set does not reproduce.
-func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte("router:\n  routing:\n    maxRequestBodyBytes: 67108864\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out, err := helmTemplate(t, "-f", vals)
-	if err != nil {
-		t.Fatalf("helm template -f: %v\n%s", err, out)
-	}
-	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 67108864;\n" {
-		t.Errorf("request-body.conf = %q, want the plain integer", got)
-	}
-}
-
-// c8s.int must fail the render on a non-integer rather than silently coercing to
-// 0 (sprig int64's fail-open behavior — 0 is root). Guards against a malformed
-// hand-written -f.
-func TestChartIntValueRejectsNonInteger(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte("router:\n  routing:\n    maxRequestBodyBytes: notanumber\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out, err := helmTemplate(t, "-f", vals)
-	if err == nil {
-		t.Fatalf("expected render to fail on a non-integer body size, got success:\n%s", out)
-	}
-	if !strings.Contains(out, "expected an integer") {
-		t.Errorf("want 'expected an integer' error, got: %s", out)
-	}
-}
-
-// TestChartAttestationApiPrivileged proves every cvmMode renders privileged:
+// TestChartAttestationApiPrivileged proves every platform renders privileged:
 // true. A hostPath device mount does not add a device-cgroup rule, so open() on
 // the TEE device (/dev/sev-guest, /dev/tpm0) is EPERM from an unprivileged
-// container regardless of SYS_RAWIO (cgroup v2 eBPF device controller); aks
-// additionally gates the vTPM below the capability layer. TODO: revert to
-// least-privilege once SNP attest goes through the TSM configfs report
-// interface.
+// container regardless of SYS_RAWIO (cgroup v2 eBPF device controller). TODO:
+// revert to least-privilege once SNP attest goes through the TSM configfs
+// report interface.
 func TestChartAttestationApiPrivileged(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		mode string
-		// node is the chart default, so render it via the no-arg path to
-		// also guard that a plain install is privileged.
-		useDefault bool
-		// aks renders the privilege axis only — it must NOT also carry the
-		// least-privilege capabilities map (the modes are either/or, not merged).
-		noCapabilities bool
-	}{
-		{mode: "bare-metal", useDefault: true},
-		{mode: "gke"},
-		{mode: "aks", noCapabilities: true},
-	} {
-		t.Run(tc.mode, func(t *testing.T) {
-			var args []string
-			if !tc.useDefault {
-				args = []string{"--set", "attestationApi.cvmMode=" + tc.mode}
-			}
-			out, err := helmTemplate(t, args...)
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			out, err := helmTemplatePlatform(t, platform)
 			if err != nil {
-				t.Fatalf("helm template (cvmMode=%s): %v\n%s", tc.mode, err, out)
+				t.Fatalf("helm template (%s): %v\n%s", platform, err, out)
 			}
-			c := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
-			sc := c.SecurityContext
+			sc := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api").SecurityContext
 			if sc == nil || sc.Privileged == nil || !*sc.Privileged {
-				t.Errorf("%s must be privileged for device access; got %+v", tc.mode, sc)
-			}
-			if tc.noCapabilities && sc != nil && sc.Capabilities != nil {
-				t.Errorf("%s must not carry the least-privilege capabilities map; got %+v", tc.mode, sc.Capabilities)
+				t.Errorf("%s must be privileged for device access; got %+v", platform, sc)
 			}
 		})
-	}
-}
-
-// TestChartAttestationApiInvalidCvmMode proves an unrecognized cvmMode fails
-// the render loudly rather than silently falling through to least-privilege
-// (which would fail closed at runtime on an AKS CVM).
-func TestChartAttestationApiInvalidCvmMode(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []string{"bogus", "baremetal", "pod"} {
-		t.Run(mode, func(t *testing.T) {
-			out, err := helmTemplate(t, "--set-string", "attestationApi.cvmMode="+mode)
-			if err == nil {
-				t.Fatalf("expected render to fail on invalid cvmMode; got success\n%s", out)
-			}
-			assertHelmFailMessage(t, out, fmt.Sprintf(`attestationApi.cvmMode must be one of bare-metal, gke, aks (got %q)`, mode))
-		})
-	}
-}
-
-// hasHostIPEnv reports whether the container carries a HOST_IP env var sourced
-// from the status.hostIP downward-API field — the substitution source for the
-// $(HOST_IP) placeholder in the bare-metal-mode attestation-api URL.
-func hasHostIPEnv(c corev1.Container) bool {
-	for _, e := range c.Env {
-		if e.Name == "HOST_IP" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
-			e.ValueFrom.FieldRef.FieldPath == "status.hostIP" {
-			return true
-		}
-	}
-	return false
-}
-
-// TestChartBareMetalModeAttestationApiURLUsesHostIP proves cvmMode=bare-metal points the
-// pod-netns components (cds, router's cert sidecar, armtls-mesh) at the
-// node-baked host attestation-api via the $(HOST_IP) downward-API env var, since
-// there is no in-cluster Service and pods cannot reach host loopback. The pod
-// spec escapes it as $$(HOST_IP): the kubelet hands the binary the literal
-// $(HOST_IP), which it expands from its HOST_IP variable, so the argv the
-// allowlist pins is the same on every node. The operator forwards the literal
-// into the tenant get-cert sidecars it injects, where the kubelet expands it
-// against the tenant pod's own node; the operator container deliberately omits
-// HOST_IP.
-// The router's credentials-role containers take the node's own socket instead
-// (router.credentialsVerifierURL).
-// KNOWN-GAP (ATTEST-ORACLE, bare-metal mode): the http://$(HOST_IP):8400 wiring
-// this test pins reaches the node image's baked attestation-api, which still
-// binds 0.0.0.0:8400 with no auth — the oracle shape this branch removes
-// everywhere the chart controls. Closing bare-metal mode needs the
-// confidential-os-builder companion (loopback bind + baked attest-proxy
-// systemd unit + image-policy socket URL), tracked cross-repo; when it
-// lands, the chart's bare-metal-mode branch and this test flip to the socket shape
-// together.
-func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
-	t.Parallel()
-	const hostIPURL = "--attestation-api-url=http://$$(HOST_IP):8400"
-	const nodeVerifierURL = "--attestation-api-url=unix://" + workloadclaims.AttestationAPISocket
-	// The node image bakes attestation-api, so the chart component is off and
-	// consumers dial the baked host service via $(HOST_IP). Only under an
-	// audit policy: a policy that may refuse names it as $(NODE_IP) instead
-	// (TestChartBareMetalReadsNodeIPFile).
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=bare-metal",
-		"--set", "attestationApi.enabled=false",
-		"--set", "nriImagePolicy.policy.mode=audit",
-	)
-	if err != nil {
-		t.Fatalf("helm template (cvmMode=bare-metal): %v\n%s", err, out)
-	}
-
-	// No chart-managed evidence source renders in this shape at all.
-	if renderedManifestHasNamedKind(t, out, "Service", "c8s-attestation-api") ||
-		renderedManifestHasNamedKind(t, out, "DaemonSet", "c8s-attestation-api") {
-		t.Fatalf("cvmMode=bare-metal install shape renders no attestation-api Service or DaemonSet\n%s", out)
-	}
-
-	// router c8s-cert sidecar (via c8s.getCertContainers): a credentials-role
-	// container reading the node's CDS pins, so its verifier is the node's own
-	// attestation-api in the inventory socket directory it mounts.
-	cert := routerGetCertContainer(t, out, "c8s-cert")
-	assertContainerArgs(t, cert, nodeVerifierURL)
-
-	// router cds-attest sidecar (rendered under router.attest.enabled).
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, hostIPURL)
-	if !hasHostIPEnv(attest) {
-		t.Errorf("router cds-attest missing HOST_IP downward-API env; have %+v", attest.Env)
-	}
-
-	// router allowlist proxy: the other credentials-role container, on the
-	// same node socket for its armTLS hop to CDS.
-	allowlistProxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
-	assertContainerArgs(t, allowlistProxy, nodeVerifierURL)
-
-	// operator: forwards the string verbatim; the placeholder must NOT be
-	// expanded here, so the container must NOT define HOST_IP.
-	if !slices.Contains(renderedOperatorArgs(t, out), hostIPURL) {
-		t.Errorf("operator missing verbatim %q\n%v", hostIPURL, renderedOperatorArgs(t, out))
-	}
-	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
-	if hasHostIPEnv(op) {
-		t.Errorf("operator MUST NOT define HOST_IP (it forwards $(HOST_IP) verbatim to tenant sidecars); env %+v", op.Env)
 	}
 }
 
@@ -1161,29 +969,29 @@ func TestChartOperatorHasPodNameEnv(t *testing.T) {
 	t.Fatalf("operator missing POD_NAME from metadata.name; env %+v", op.Env)
 }
 
-// TestChartNonBareMetalModeUsesAttestationSocket proves the bare-metal-mode wiring does
-// not leak into the other cvmModes: gke/aks dial the on-node Unix socket
-// and render no HOST_IP env anywhere. The consumers that must carry both the
-// socket URL and the socket-directory mount are asserted per shape.
-func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
+// TestChartUsesTheAttestationSocket proves every platform dials the on-node
+// Unix socket and renders no HOST_IP env anywhere. The consumers that must
+// carry both the socket URL and the socket-directory mount are asserted per
+// platform.
+func TestChartUsesTheAttestationSocket(t *testing.T) {
 	t.Parallel()
 	const socketURL = "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock"
-	for _, mode := range []string{"gke", "aks"} {
+	for _, mode := range cloudPlatforms {
 		t.Run(mode, func(t *testing.T) {
-			out, err := helmTemplate(t, "--set-string", "attestationApi.cvmMode="+mode)
+			out, err := helmTemplatePlatform(t, mode)
 			if err != nil {
-				t.Fatalf("helm template (cvmMode=%s): %v\n%s", mode, err, out)
+				t.Fatalf("helm template (%s): %v\n%s", mode, err, out)
 			}
-			// The acceptance criteria are per-mode: no routable path to
+			// The acceptance criteria are per-platform: no routable path to
 			// evidence generation, and the default-deny NetworkPolicy on the
 			// DaemonSet.
 			if renderedManifestHasNamedKind(t, out, "Service", "c8s-attestation-api") {
-				t.Fatalf("cvmMode=%s renders no attestation-api Service (evidence generation is node-local only)\n%s", mode, out)
+				t.Fatalf("%s renders no attestation-api Service (evidence generation is node-local only)\n%s", mode, out)
 			}
 			assertNoLegacyAttestationStrings(t, out)
 			var np networkingv1.NetworkPolicy
 			if !findDoc(t, out, "NetworkPolicy", "c8s-attestation-api", &np) || len(np.Spec.Ingress) != 0 {
-				t.Fatalf("cvmMode=%s renders the attestation-api default-deny NetworkPolicy; got %+v", mode, np.Spec.Ingress)
+				t.Fatalf("%s renders the attestation-api default-deny NetworkPolicy; got %+v", mode, np.Spec.Ingress)
 			}
 			// Every consumer of the socket URL must also mount the socket
 			// directory (read-only), at the host path so the URL is verbatim.
@@ -1217,7 +1025,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 				for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
 					for _, e := range c.Env {
 						if e.Name == "HOST_IP" {
-							t.Errorf("cvmMode=%s must not render any HOST_IP env; %s %s container %s carries it", mode, w.kind, w.name, c.Name)
+							t.Errorf("%s must not render any HOST_IP env; %s %s container %s carries it", mode, w.kind, w.name, c.Name)
 						}
 					}
 				}
@@ -1228,10 +1036,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 
 func TestChartRendersManagedClusterKnobs(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "serviceAccount.imagePullSecrets[0].name=ghcr-secret",
-		"--set", "attestationApi.cvmMode=aks",
-	)
+	out, err := helmTemplate(t, "--set", "imagePullSecrets[0].name=ghcr-secret")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -1242,10 +1047,10 @@ func TestChartRendersManagedClusterKnobs(t *testing.T) {
 	if !hasPullSecret(sa.ImagePullSecrets, "ghcr-secret") {
 		t.Fatalf("operator ServiceAccount missing chart-wide pull secret ghcr-secret: %v", sa.ImagePullSecrets)
 	}
-	// aks → privileged attestation-api with a read-only root filesystem.
+	// A privileged attestation-api with a read-only root filesystem.
 	sc := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api").SecurityContext
 	if sc == nil || sc.Privileged == nil || !*sc.Privileged {
-		t.Fatalf("attestation-api must be privileged under aks; got %+v", sc)
+		t.Fatalf("attestation-api must be privileged; got %+v", sc)
 	}
 	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Fatalf("attestation-api must set readOnlyRootFilesystem: true; got %+v", sc)
@@ -1253,12 +1058,11 @@ func TestChartRendersManagedClusterKnobs(t *testing.T) {
 }
 
 // TestChartGlobalImagePullSecrets proves the chart-wide imagePullSecrets feeds
-// every component, and a per-component value overrides it for that component.
+// every component.
 func TestChartGlobalImagePullSecrets(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t,
 		"--set", "imagePullSecrets[0].name=ghcr-pull",
-		"--set", "router.imagePullSecrets[0].name=lb-special",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -1268,10 +1072,9 @@ func TestChartGlobalImagePullSecrets(t *testing.T) {
 	if !hasPullSecret(installer.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
 		t.Errorf("nri-image-policy installer missing global pull secret: %v", installer.Spec.Template.Spec.ImagePullSecrets)
 	}
-	// router's own value overrides the global.
 	lb := renderedDeployment(t, out, "c8s-router")
-	if hasPullSecret(lb.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") || !hasPullSecret(lb.Spec.Template.Spec.ImagePullSecrets, "lb-special") {
-		t.Errorf("router should use its override, not the global: %v", lb.Spec.Template.Spec.ImagePullSecrets)
+	if !hasPullSecret(lb.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
+		t.Errorf("router missing global pull secret: %v", lb.Spec.Template.Spec.ImagePullSecrets)
 	}
 }
 
@@ -1769,20 +1572,9 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
 		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
 	}
-	if out, err := helmTemplate(t, "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
-		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
-	}
-	if out, err := helmTemplate(t, "--set", "router.nginx.resources.limits.memory=9Gi"); err != nil {
-		t.Fatalf("helm template with an nginx memory limit above tunnelBodySpace: %v\n%s", err, out)
-	}
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
 	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--tunnel-budget")
-	budgetOut, err := helmTemplate(t, "--set-string", "router.routing.tunnelBudget=64Gi")
-	if err != nil {
-		t.Fatalf("helm template (tunnelBudget=64Gi): %v\n%s", err, budgetOut)
-	}
-	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
 
 	// The sidecar's own establish-rate defaults stand.
 	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--establish-")
@@ -1834,8 +1626,8 @@ func TestChartRouterCDSPins(t *testing.T) {
 	}
 }
 
-// TestChartRouterOperatorKeySource pins the router's operator-key source off a
-// baked node: cds.operatorKeys when set, else CDS itself.
+// TestChartRouterOperatorKeySource pins the router's operator-key source:
+// cds.operatorKeys when set, else CDS itself.
 func TestChartRouterOperatorKeySource(t *testing.T) {
 	t.Parallel()
 	keys := []string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
@@ -1864,9 +1656,8 @@ func TestChartRouterOperatorKeySource(t *testing.T) {
 	}
 }
 
-// TestChartRefusesUnpinnedCDS renders each way a release names its CDS — the
-// address and pin of a VM outside the cluster, a baked node's measured launch
-// config — and the inputs that name none.
+// TestChartRefusesUnpinnedCDS renders each way a release names its CDS, the
+// address and pin of a VM outside the cluster, and the inputs that name none.
 func TestChartRefusesUnpinnedCDS(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1878,7 +1669,6 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 			name: "a CDS named by a DNS name",
 			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)},
 		},
-		{name: "node.baked", args: cloudBakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, repoChart, tc.args...)
@@ -1910,28 +1700,6 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "router.certProvisioning.renewInterval=30m",
-		"--set-string", "router.certProvisioning.caWatchInterval=2m",
-		"--set", "router.certProvisioning.verbose=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cert := routerGetCertContainer(t, out, "c8s-cert")
-	assertContainerArgs(t, cert, "--verbose", "--renew-interval=30m", "--ca-watch-interval=2m")
-
-	claimsOut, err := helmTemplate(t, "--set-string", "router.certProvisioning.caWatchInterval=3m")
-	if err != nil {
-		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
-	}
-	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
-	assertContainerArgs(t, claimsCert, "--ca-watch-interval=3m")
-	assertContainerNoArgPrefix(t, "c8s-cert", claimsCert.Args, "--no-workload-claims")
 }
 
 func TestRouterCORSAllowsSessionHeaderByDefault(t *testing.T) {
@@ -2371,47 +2139,16 @@ func assertSamePorts(t *testing.T, site string, got, declared []int32) {
 	}
 }
 
-// TestRouterRejectsInvalidValues pins the router render guards; helmTemplateRouter
-// prefixes each --set path with router.
+// TestRouterRejectsInvalidValues pins the router's schema guards;
+// helmTemplateRouter prefixes each --set path with router.
 func TestRouterRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "routing-maxRequestBodyBytes-zero",
-			args: []string{"--set", "routing.maxRequestBodyBytes=0"},
-			want: "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: 0",
-		},
-		{
-			name: "routing-maxRequestBodyBytes-injection",
-			args: []string{"--set-string", "routing.maxRequestBodyBytes=1m; return 200"},
-			want: `expected an integer, got "1m; return 200"`,
-		},
-		{
-			name: "routing-pollInterval-not-a-duration",
-			args: []string{"--set-string", "routing.pollInterval=soon"},
-			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: soon",
-		},
-		{
-			name: "routing-pollInterval-zero",
-			args: []string{"--set-string", "routing.pollInterval=0s"},
-			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0s",
-		},
-		{
-			name: "routing-tunnelBudget-not-a-quantity",
-			args: []string{"--set-string", "routing.tunnelBudget=lots"},
-			want: "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: lots",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplateRouter(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want %q\n%s", tt.want, out)
+	for _, value := range []string{"soon", "0s", "30"} {
+		t.Run(value, func(t *testing.T) {
+			out, err := helmTemplateRouter(t, "--set-string", "routing.pollInterval="+value)
+			if err == nil || !strings.Contains(out, "router.routing.pollInterval") {
+				t.Fatalf("helm template with pollInterval %q = %v, want the schema refusal\n%s", value, err, out)
 			}
-			assertHelmFailMessage(t, out, tt.want)
 		})
 	}
 }
@@ -2451,29 +2188,6 @@ func TestRouterDiscoveryReportsCDSModeWithoutPublicTLSSecret(t *testing.T) {
 	}
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
 		"--discovery-public-tls-mode=cds")
-}
-
-func TestRouterRollsOnNginxConfigChange(t *testing.T) {
-	t.Parallel()
-	defaultOut, err := helmTemplateRouter(t)
-	if err != nil {
-		t.Fatalf("helm template default config: %v\n%s", err, defaultOut)
-	}
-	defaultChecksum := renderedDeployment(t, defaultOut, "c8s-router").Spec.Template.Annotations["checksum/nginx-config"]
-	if defaultChecksum == "" {
-		t.Fatalf("default checksum/nginx-config is empty\n%s", defaultOut)
-	}
-
-	changedOut, err := helmTemplateRouter(t,
-		"--set", "routing.maxRequestBodyBytes=2097152",
-	)
-	if err != nil {
-		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
-	}
-	changedChecksum := renderedDeployment(t, changedOut, "c8s-router").Spec.Template.Annotations["checksum/nginx-config"]
-	if changedChecksum == defaultChecksum {
-		t.Fatalf("checksum/nginx-config did not change after changing routing.maxRequestBodyBytes: %s", defaultChecksum)
-	}
 }
 
 func TestChartOperatorRBACIsScoped(t *testing.T) {
@@ -2577,29 +2291,6 @@ func TestChartWebhookAddsCABundleRBAC(t *testing.T) {
 	}
 }
 
-func TestChartRollsAttestationApiOnConfigChange(t *testing.T) {
-	t.Parallel()
-	defaultOut, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template default config: %v\n%s", err, defaultOut)
-	}
-	defaultChecksum := renderedDaemonSet(t, defaultOut, "c8s-attestation-api").Spec.Template.Annotations["checksum/config"]
-	if defaultChecksum == "" {
-		t.Fatalf("default checksum/config is empty\n%s", defaultOut)
-	}
-
-	changedOut, err := helmTemplate(t,
-		"--set", "attestationApi.port=8500",
-	)
-	if err != nil {
-		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
-	}
-	changedChecksum := renderedDaemonSet(t, changedOut, "c8s-attestation-api").Spec.Template.Annotations["checksum/config"]
-	if changedChecksum == defaultChecksum {
-		t.Fatalf("checksum/config did not change after changing the port: %s", defaultChecksum)
-	}
-}
-
 // On node-CVM the operator gets the host-dir mount source, from which the
 // webhook derives the get-cert workload-claims injection.
 func TestChartWorkloadClaimsOperatorFlags(t *testing.T) {
@@ -2632,8 +2323,8 @@ func TestChartNoRuntimeClassOnRouter(t *testing.T) {
 	}
 }
 
-// The installer binds the containerd config directory, socket and restart the
-// chart defaults, and a release that moved them is bound where it says.
+// The installer binds upstream containerd's config directory, socket and
+// restart.
 func TestChartNriImagePolicyBindsContainerdLayout(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -2648,17 +2339,6 @@ func TestChartNriImagePolicyBindsContainerdLayout(t *testing.T) {
 			wantDir:     "/etc/containerd",
 			wantSocket:  "/run/containerd/containerd.sock",
 			wantRestart: "systemctl restart containerd",
-		},
-		{
-			name: "a containerd configured elsewhere",
-			args: []string{
-				"--set-string", "nriImagePolicy.containerd.configDir=/etc/k0s/containerd.d",
-				"--set-string", "nriImagePolicy.containerd.socket=/run/k0s/containerd.sock",
-				"--set-string", "nriImagePolicy.containerd.restartCommand=systemctl restart k0sworker",
-			},
-			wantDir:     "/etc/k0s/containerd.d",
-			wantSocket:  "/run/k0s/containerd.sock",
-			wantRestart: "systemctl restart k0sworker",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2809,7 +2489,7 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
-		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address") || strings.HasPrefix(arg, "node.baked")
+		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address")
 	})
 	if !pinned {
 		args = append(baseCDSPolicy(t), args...)
@@ -2821,6 +2501,28 @@ func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, erro
 // tests that drive the chart's cds_pins_required refusal and the pin sources
 // that satisfy it.
 func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string, error) {
+	t.Helper()
+	return renderCloudChart(t, chartDir, append(slices.Clone(basePlatformArgs), args...)...)
+}
+
+// helmTemplatePlatform renders the repository layout with a stock values file
+// in place of basePlatformArgs. Takes the platform, such as aks-snp.
+func helmTemplatePlatform(t *testing.T, platform string, args ...string) (string, error) {
+	t.Helper()
+	stock := []string{"-f", filepath.Join(repoChart, "values-"+platform+".yaml")}
+	return renderCloudChart(t, repoChart, slices.Concat(stock, baseCDSPolicy(t), args)...)
+}
+
+// cloudPlatforms name the cloud chart's stock values files.
+var cloudPlatforms = []string{
+	"aks-snp",
+	"aks-tdx",
+	"gke-snp",
+}
+
+// renderCloudChart is helm template of the chart at chartDir with the
+// harness's image tags and mesh values ahead of args.
+func renderCloudChart(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
@@ -2854,6 +2556,15 @@ func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string
 	cmd := exec.Command("helm", append(base, args...)...)
 	out, err := helmOutput(cmd)
 	return string(out), err
+}
+
+// basePlatformArgs set the platform keys a stock file sets, for a node that
+// attests through /dev/sev-guest.
+var basePlatformArgs = []string{
+	"--set-string", "attestationApi.devices[0]=/dev/sev-guest",
+	"--set-string", "nriImagePolicy.platform=snp",
+	"--set-string", "router.attest.generation=genoa",
+	"--set-string", "router.attest.platform=snp",
 }
 
 // assertRouterRoutingLocation checks location / proxies to the routing
@@ -2904,15 +2615,9 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 		t.Errorf("request-body.conf = %q, want the default body limit", got)
 	}
 
-	out, err = helmTemplate(t,
-		"--set-string", "router.routing.pollInterval=5s",
-		"--set", "router.routing.maxRequestBodyBytes=67108864",
-	)
+	out, err = helmTemplate(t, "--set-string", "router.routing.pollInterval=5s")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 67108864;\n" {
-		t.Errorf("request-body.conf = %q, want router.routing.maxRequestBodyBytes", got)
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--routes-poll-interval=5s")
 }
@@ -3430,10 +3135,12 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
 	}
-	base := []string{
+	base := append([]string{
 		"template", "c8s", repoChart,
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+	}, basePlatformArgs...)
+	base = append(base,
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
@@ -3444,10 +3151,10 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		// (the seed admits it argv-pinned). Output is scoped to the router
 		// templates below, so its manifests do not appear here.
 		"--set", "nriImagePolicy.image.tag=dev",
-		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
+		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
-	}
+	)
 	base = append(base, baseCDSPolicy(t)...)
 	cmd := exec.Command("helm", append(base, prefixRouterSetArgs(args)...)...)
 	out, err := helmOutput(cmd)
@@ -3917,53 +3624,6 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	}
 }
 
-// TestChartServesAllowlistSeedInBareMetalMode guards the node-as-CVM seed path: even
-// with chart nriImagePolicy disabled, the baked plugin pulls the live allowlist
-// from CDS. If the seed is not served, CDS starts empty and every un-baked
-// component (operator, armtls-mesh, router's nginx) is denied until an operator
-// hand-runs `c8s allowlist add`. The seed ConfigMap must render, be mounted,
-// and carry the deployed digests.
-func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
-	t.Parallel()
-	const (
-		opD = "sha256:00000000000000000000000000000000000000000000000000000000000000c1"
-		rmD = "sha256:00000000000000000000000000000000000000000000000000000000000000c2"
-	)
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=bare-metal",
-		"--set", "attestationApi.enabled=false",
-		"--set", "nriImagePolicy.enabled=false",
-		"--set-string", "image.digest="+opD,
-		"--set-string", "armtlsMesh.image.digest="+rmD,
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
-	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
-	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-	if err != nil {
-		t.Fatalf("bare-metal-mode seed JSON does not parse (CDS would start empty): %v\n%s", err, cm.Data["allowlist-seed.json"])
-	}
-	// The un-baked components denied in the un-seeded case: operator, armtls-mesh,
-	// and router's nginx (default digest from values.yaml).
-	if got := seedLabel(seed, opD); got != "ghcr.io/confidential-dot-ai/c8s-operator@"+opD {
-		t.Errorf("bare-metal-mode seed missing operator entry; got %q\nseed: %v", got, seed.Workloads)
-	}
-	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/armtls-mesh@"+rmD {
-		t.Errorf("bare-metal-mode seed missing armtls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
-	}
-	nginxD := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
-	if _, ok := seedEntry(seed, nginxD); !ok {
-		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
-	}
-	// The CDS this cluster serves it to runs outside the cluster, so no entry
-	// of the seed admits CDS itself.
-	if _, ok := seedEntry(seed, "sha256:0000000000000000000000000000000000000000000000000000000000000001"); ok {
-		t.Errorf("seed admits the CDS image; an external CDS is no workload of this cluster\nseed: %v", seed.Workloads)
-	}
-}
-
 // installerBootConfig is a typed view of the image-policy.yaml the installer
 // writes. It mirrors the fields of the plugin's own config
 // (internal/cmds/nri-image-policy/config.go, which is unexported) needed by the
@@ -4052,12 +3712,13 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 	}
 }
 
-// By default the rendered worker boot config admits by the digest base alone:
-// policy.exempt_namespaces is empty, and so is the snapshot path that comes
-// with it. The mesh policy's own exempt list is a different key, so this reads
-// the decoded values. The opt-in render is covered below.
+// With exemptNamespaces cleared the rendered worker boot config admits by the
+// digest base alone: policy.exempt_namespaces is empty, and so is the
+// snapshot path that comes with it. The mesh policy's own exempt list is a
+// different key, so this reads the decoded values. The exempting render is
+// covered below.
 func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
-	out, err := helmTemplate(t)
+	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.policy.exemptNamespaces=[]")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4198,38 +3859,6 @@ func TestChartImagePullSecretReachesEveryPodSpecWithoutCreatingASecret(t *testin
 		}
 		t.Errorf("%s %q can't reach the pull secret: pod spec lists %v, serviceAccount %q",
 			w.kind, w.name, pullSecretNames(w.spec.ImagePullSecrets), w.spec.ServiceAccountName)
-	}
-}
-
-// A component-local imagePullSecrets override replaces the chart-wide list but
-// must NOT shed the install-time Secret — otherwise adding a credential for an
-// extra registry would silently break pulling the component's own image.
-func TestChartImagePullSecretAppendsToComponentLocalOverride(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "imagePullSecret=ghcr-secret",
-		"--set", "router.imagePullSecrets[0].name=extra")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var names []string
-	iterateManifests(t, out, func(doc []byte) bool {
-		var obj struct {
-			docMeta
-			Spec struct {
-				Template corev1.PodTemplateSpec `json:"template"`
-			} `json:"spec"`
-		}
-		if err := sigsyaml.Unmarshal(doc, &obj); err != nil || obj.Kind != "Deployment" || obj.Metadata.Name != "c8s-router" {
-			return false
-		}
-		names = pullSecretNames(obj.Spec.Template.Spec.ImagePullSecrets)
-		return true
-	})
-	for _, want := range []string{"extra", "ghcr-secret"} {
-		if !slices.Contains(names, want) {
-			t.Errorf("router imagePullSecrets = %v, missing %q", names, want)
-		}
 	}
 }
 
@@ -4404,16 +4033,13 @@ func TestChartVolumedDaemonSetShape(t *testing.T) {
 // The daemon's socket has to land in the inventory's socket directory — the
 // one nri-image-policy NRI-mounts into cw-pod sidecars, which the operator
 // names via --workload-claims-host-dir. A daemon serving anywhere else is a
-// daemon no confidential pod can reach. And a moved directory must not
-// resurface in the VAP: the pod spec carries no hostPath anymore, so a
-// carve-out would only reopen tenant access to the node filesystem.
+// daemon no confidential pod can reach. And the directory must not surface in
+// the VAP: the pod spec carries no hostPath, so a carve-out would only reopen
+// tenant access to the node filesystem.
 func TestChartVolumedSocketDirTracksTheInventoryDir(t *testing.T) {
 	t.Parallel()
-	const runtimeDir = "/run/c8s-inventory-elsewhere"
-	out, err := helmTemplate(t,
-		"--set", "volumed.enabled=true",
-		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+runtimeDir,
-	)
+	const runtimeDir = "/run/nri-image-policy"
+	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4442,7 +4068,7 @@ func TestChartVolumedSocketDirTracksTheInventoryDir(t *testing.T) {
 }
 
 // volumed resolves pod volume directories beneath the kubelet root, so the
-// rendered arg, mount, and hostPath must agree, and an explicit value must win.
+// rendered arg, mount, and hostPath must agree.
 func TestChartVolumedKubeletRoot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -4451,9 +4077,6 @@ func TestChartVolumedKubeletRoot(t *testing.T) {
 		want string
 	}{
 		{"default", nil, "/var/lib/kubelet"},
-		{"explicit wins", []string{
-			"--set-string", "volumed.hostPaths.kubeletRoot=/custom/kubelet",
-		}, "/custom/kubelet"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"--set", "volumed.enabled=true"}, tc.args...)
@@ -4505,21 +4128,6 @@ func TestChartVolumedKubeletRoot(t *testing.T) {
 				t.Errorf("hook kubelet-root hostPath = %q, want %q", hv.HostPath.Path, tc.want)
 			}
 		})
-	}
-}
-
-// An empty kubeletRoot would render an empty hostPath the apiserver rejects
-// long after helm reports success; the chart refuses to render it instead.
-func TestChartVolumedKubeletRootMustNotBeEmpty(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "volumed.enabled=true",
-		"--set-string", "volumed.hostPaths.kubeletRoot=")
-	if err == nil {
-		t.Fatal("rendered with an empty volumed.hostPaths.kubeletRoot")
-	}
-	if !strings.Contains(out, "volumed.hostPaths.kubeletRoot is required") {
-		t.Errorf("render error does not name the value: %s", out)
 	}
 }
 
@@ -4761,10 +4369,7 @@ func TestChartVolumedTeardownHook(t *testing.T) {
 // that does not track volumed's leaves those nodes' mappings behind.
 func TestChartVolumedTeardownHookTracksVolumedPlacement(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "volumed.enabled=true",
-		"--set-string", "volumed.nodeSelector.storage=nvme",
-	)
+	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4928,10 +4533,8 @@ func digestOf(image string) string {
 	return digest
 }
 
-// The measured image bakes the pull interval too, and nothing in the chart
-// reaches that config. So the interval a measured node's gate runs on is the
-// baked one, and a drift surfaces only as a policy change that bites later
-// than the chart says.
+// The measured image bakes its own pull interval. A drift from the chart's
+// surfaces only as a policy change that bites later than the chart says.
 func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 	t.Parallel()
 	const bakedPath = "../../images/node-guest/worker/image-policy.yaml.in"
@@ -4948,17 +4551,16 @@ func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 		t.Fatalf("baked pull interval %q: %v", m[1], err)
 	}
 
-	var values struct {
-		NRIImagePolicy struct {
-			Refresh struct {
-				Interval time.Duration `yaml:"interval"`
-			} `yaml:"refresh"`
-		} `yaml:"nriImagePolicy"`
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	readChartFile(t, filepath.Join(repoChart, "values.yaml"), &values)
-
-	if got := values.NRIImagePolicy.Refresh.Interval; got != want {
-		t.Errorf("baked NRI pull interval is %s but nriImagePolicy.refresh.interval is %s — a tightened entry reaches a node-CVM's gate on the baked value (%s)",
+	got, err := time.ParseDuration(renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.Interval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("baked NRI pull interval is %s but the chart's is %s — a tightened entry reaches a worker's gate on the baked value (%s)",
 			want, got, bakedPath)
 	}
 }
@@ -4984,19 +4586,72 @@ func TestChartValuesSchemaRejectsUnknownRootKeys(t *testing.T) {
 	}
 }
 
-// A relative plugin path, a unitless duration, or a mistyped policy mode were
-// all accepted silently: nothing in the chart checked any of the three, and
-// the last one only surfaced when the plugin refused its config on the node.
+// A render that names no confidential VMs would deploy an attestation-api
+// with no TEE device and a router advertising no evidence platform, so the
+// chart refuses it and names the flag that sets them.
+func TestChartRefusesARenderWithoutThePlatformKeys(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"attestationApi.devices",
+		"nriImagePolicy.platform",
+		"router.attest.platform",
+	} {
+		t.Run(key, func(t *testing.T) {
+			args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey(key))
+			out, err := renderCloudChart(t, repoChart, args...)
+			if err == nil {
+				t.Fatalf("helm template rendered without %s\n%s", key, out)
+			}
+			for _, want := range []string{"platform_values", key, "--platform"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the refusal of an unset %s does not name %q:\n%s", key, want, out)
+				}
+			}
+		})
+	}
+}
+
+// A mock attestation API reads no TEE device, so a present empty device list
+// is an answer and renders; an absent key stays unset
+// (TestChartRefusesARenderWithoutThePlatformKeys).
+func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
+	t.Parallel()
+	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		[]string{"--set-json", "attestationApi.devices=[]"})
+	out, err := renderCloudChart(t, repoChart, args...)
+	if err != nil {
+		t.Fatalf("helm template refused an empty attestationApi.devices: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "type: CharDevice") {
+		t.Errorf("an empty attestationApi.devices still mounted a device:\n%s", out)
+	}
+}
+
+// withoutPlatformKey is basePlatformArgs less the pair setting key.
+func withoutPlatformKey(key string) []string {
+	var args []string
+	for i := 0; i < len(basePlatformArgs); i += 2 {
+		if !strings.HasPrefix(basePlatformArgs[i+1], key+"=") && !strings.HasPrefix(basePlatformArgs[i+1], key+"[") {
+			args = append(args, basePlatformArgs[i], basePlatformArgs[i+1])
+		}
+	}
+	return args
+}
+
+// A relative plugin path, a mistyped policy mode or platform, or a device
+// outside /dev would be accepted silently and surface only on the node.
 func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, set string }{
 		{"plugin directory outside an absolute path", "nriImagePolicy.hostPaths.pluginDir=opt/nri"},
-		{"request timeout without a unit", "nriImagePolicy.requestTimeout=2"},
 		{"unknown policy mode", "nriImagePolicy.policy.mode=failclosed"},
+		{"unknown TEE family", "nriImagePolicy.platform=sev"},
+		{"unknown evidence platform", "router.attest.platform=gcp-snp"},
+		{"a device outside /dev", "attestationApi.devices[0]=/etc/shadow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if out, err := helmTemplate(t, "--set", tc.set); err == nil {
-				t.Fatalf("helm template accepted --set %s\n%s", tc.set, out)
+			if out, err := helmTemplate(t, "--set-string", tc.set); err == nil {
+				t.Fatalf("helm template accepted --set-string %s\n%s", tc.set, out)
 			}
 		})
 	}
@@ -5088,34 +4743,6 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 	// The cloud runs no acme sidecar, so nginx's :80 server stays unpublished.
 	if published := assertRouterFrontDoorPorts(t, out, renderedRouterNginxConf(t, out)); !slices.Equal(published, []int32{8443}) {
 		t.Errorf("the cloud router publishes %v, want only the HTTPS port 8443", published)
-	}
-}
-
-func TestChartRejectsImagePolicyOffOnManagedNodes(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=gke",
-		"--set", "nriImagePolicy.enabled=false",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded with nriImagePolicy disabled on a managed-node cluster, want failure\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "require_host_image_policy" {
-		t.Fatalf("validation error kind = %q, want require_host_image_policy\n%s", kind, out)
-	}
-}
-
-func TestChartRejectsAttestationApiOffOnManagedNodes(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "attestationApi.cvmMode=gke",
-		"--set", "attestationApi.enabled=false",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded with attestationApi disabled on a managed-node cluster, want failure\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "require_attestation_api" {
-		t.Fatalf("validation error kind = %q, want require_attestation_api\n%s", kind, out)
 	}
 }
 
@@ -5375,51 +5002,5 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unbaked render contains %q", unwanted)
 		}
-	}
-}
-
-// cloudBakedArgs is the cloud chart's node.baked shape.
-var cloudBakedArgs = []string{
-	"--set", "node.baked=true",
-	"--set-json", "controlPlane.webhook.extraExcluded=[]",
-	"--set", "attestationApi.cvmMode=bare-metal",
-	"--set", "attestationApi.enabled=false",
-	"--set", "nriImagePolicy.enabled=false",
-	"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
-	"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
-}
-
-// On a baked node the mesh's exempt namespaces are measured into the image, so
-// the render refuses a release whose injection scope could diverge from them.
-func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
-	if out, err := helmTemplate(t, cloudBakedArgs...); err != nil {
-		t.Fatalf("the baked default must render: %v\n%s", err, out)
-	}
-
-	for _, tc := range []struct {
-		name string
-		args []string
-		kind string
-	}{
-		{
-			name: "another release namespace",
-			args: []string{"--namespace", "tenant-platform"},
-			kind: "kind=baked_release_namespace",
-		},
-		{
-			name: "an exclusion only the webhooks know",
-			args: []string{"--set", "controlPlane.webhook.extraExcluded={tenant-a}"},
-			kind: "kind=baked_webhook_exclusions",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, slices.Concat(cloudBakedArgs, tc.args)...)
-			if err == nil {
-				t.Fatalf("the render accepted %s: %s", tc.name, out)
-			}
-			if !strings.Contains(out, tc.kind) {
-				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
-			}
-		})
 	}
 }

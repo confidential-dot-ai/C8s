@@ -1,4 +1,3 @@
-{{- if .Values.nriImagePolicy.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -25,10 +24,8 @@ spec:
         sidecar.istio.io/inject: "false"
     spec:
       hostPID: true
-      {{- with .Values.nriImagePolicy.priorityClassName }}
-      priorityClassName: {{ . }}
-      {{- end }}
-      {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.nriImagePolicy.imagePullSecrets) | nindent 6 }}
+      priorityClassName: system-node-critical
+      {{- include "c8s.imagePullSecrets" . | nindent 6 }}
       tolerations:
         - operator: "Exists"
           effect: "NoExecute"
@@ -39,7 +36,7 @@ spec:
       initContainers:
         - name: uninstall
           image: {{ include "nri-image-policy.image" . }}
-          imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
+          imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
           env:
@@ -54,7 +51,7 @@ spec:
             - name: HOST_CONTAINERD_DIR
               value: {{ include "nri-image-policy.containerdConfigDir" . | quote }}
             - name: HOST_CACHE_DIR
-              value: {{ .Values.nriImagePolicy.hostPaths.cacheDir | quote }}
+              value: {{ include "nri-image-policy.cacheDir" . | quote }}
             - name: HOST_HEALTH_SOCKET
               value: {{ include "nri-image-policy.hostHealthSocket" . | quote }}
             - name: RESTART_COMMAND
@@ -66,11 +63,11 @@ spec:
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
           resources:
-            {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
+            {{- include "nri-image-policy.resources" . | nindent 12 }}
       containers:
         - name: pause
           image: {{ include "nri-image-policy.image" . }}
-          imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c", "sleep infinity"]
           resources:
             requests:
@@ -81,4 +78,3 @@ spec:
               memory: 32Mi
       volumes:
         {{- include "nri-image-policy.hostVolumes" . | nindent 8 }}
-{{- end }}

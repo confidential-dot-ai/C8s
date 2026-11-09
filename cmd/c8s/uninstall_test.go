@@ -4,16 +4,12 @@ package main
 
 import (
 	"context"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 )
 
 func TestBuildHelmUninstallArgs(t *testing.T) {
@@ -57,10 +53,9 @@ func chartValuesTree(t *testing.T, doc string) map[string]any {
 func TestHostConfigFromValuesUsesNRIPaths(t *testing.T) {
 	tree := chartValuesTree(t, `
 nriImagePolicy:
-  containerdPrep:
-    image:
-      repository: busybox
-      tag: "1.37"
+  image:
+    repository: ghcr.io/confidential-dot-ai/nri-image-policy
+    tag: "1.37"
   hostPaths:
     pluginDir: /custom/nri/plugins
 `)
@@ -98,27 +93,22 @@ func TestSweepImageRefRequiresPin(t *testing.T) {
 	// privileged image with the host root mounted.
 	tree := chartValuesTree(t, `
 nriImagePolicy:
-  containerdPrep:
-    image:
-      repository: busybox
-      tag: ""
-      digest: ""
+  image:
+    repository: ghcr.io/confidential-dot-ai/nri-image-policy
+    tag: ""
+    digest: ""
 `)
 	if _, err := sweepImageRef(tree); err == nil {
-		t.Fatal("unpinned containerdPrep image: want error, got nil")
+		t.Fatal("unpinned nriImagePolicy image: want error, got nil")
 	}
 }
 
 // On a host running the fail-closed NRI plugin the sweep pod's image must
 // already be admitted; the plugin's own image is the one image guaranteed
 // on the allowlist (the installer ran it).
-func TestSweepImageRefPrefersNriImageOnNriReleases(t *testing.T) {
+func TestSweepImageRefIsTheNriImage(t *testing.T) {
 	tree := chartValuesTree(t, `
 nriImagePolicy:
-  containerdPrep:
-    image:
-      repository: busybox
-      digest: "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
   image:
     repository: ghcr.io/confidential-dot-ai/nri-image-policy
     digest: "sha256:aaa"
@@ -129,24 +119,6 @@ nriImagePolicy:
 	}
 	if ref != "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:aaa" {
 		t.Errorf("sweepImageRef = %q, want the NRI plugin image", ref)
-	}
-	// Unpinned NRI image (a release that never resolved it) falls back to
-	// the containerd-prep busybox.
-	tree = chartValuesTree(t, `
-nriImagePolicy:
-  containerdPrep:
-    image:
-      repository: busybox
-      digest: "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
-  image:
-    repository: ghcr.io/confidential-dot-ai/nri-image-policy
-`)
-	ref, err = sweepImageRef(tree)
-	if err != nil {
-		t.Fatalf("sweepImageRef: %v", err)
-	}
-	if ref != "busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028" {
-		t.Errorf("sweepImageRef = %q, want the busybox fallback", ref)
 	}
 }
 
@@ -228,28 +200,15 @@ func TestHostConfigFromEmbeddedChartValues(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
 	}
-	dir, err := helmchart.ExtractTemp()
+	cfg, err := chartDefaultHostConfig(context.Background())
 	if err != nil {
-		t.Fatalf("extract the chart: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	out, err := exec.CommandContext(context.Background(), "helm", "show", "values",
-		filepath.Join(dir, helmchart.ChartRoot)).Output()
-	if err != nil {
-		t.Fatalf("helm show values: %v", err)
-	}
-	cfg, err := hostConfigFromValues(chartValuesTree(t, string(out)))
-	if err != nil {
-		t.Fatalf("hostConfigFromValues on embedded chart defaults: %v", err)
+		t.Fatalf("chartDefaultHostConfig: %v", err)
 	}
 	if cfg.ContainerdConfigDir != "/etc/containerd" {
 		t.Errorf("ContainerdConfigDir = %q, want the chart default", cfg.ContainerdConfigDir)
 	}
-	// The chart digest-pins the containerd-prep image; the sweep must inherit
-	// the pin, never a floating tag.
-	if !strings.Contains(cfg.SweepImage, "@sha256:") {
-		t.Errorf("SweepImage = %q, want a digest-pinned reference", cfg.SweepImage)
+	if want := "ghcr.io/confidential-dot-ai/nri-image-policy:" + resolveImageTag(); cfg.SweepImage != want {
+		t.Errorf("SweepImage = %q, want %q", cfg.SweepImage, want)
 	}
 }
 
@@ -345,36 +304,31 @@ func TestHostSweepDaemonSetShape(t *testing.T) {
 	}
 }
 
-// A release that moved the host containerd config or its restart is swept the
-// way it wrote, not the way the chart defaults.
+// The sweep cleans the containerd layout and the plugin paths the chart
+// renders as constants; the release only names the pull secrets, the sweep
+// image and the two host paths a stock values file sets.
 func TestHostConfigFromValues(t *testing.T) {
 	tree := chartValuesTree(t, `
 nriImagePolicy:
-  containerd:
-    configDir: /etc/k0s/containerd.d
-    restartCommand: systemctl restart k0sworker
-  containerdPrep:
-    image:
-      repository: busybox
-      tag: ""
-      digest: "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+  image:
+    repository: ghcr.io/confidential-dot-ai/nri-image-policy
+    digest: "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
 `)
 	cfg, err := hostConfigFromValues(tree)
 	if err != nil {
 		t.Fatalf("hostConfigFromValues: %v", err)
 	}
 	want := hostUninstallConfig{
-		ContainerdConfigDir: "/etc/k0s/containerd.d",
-		RestartCommand:      "systemctl restart k0sworker",
-		SweepImage:          "busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028",
+		ContainerdConfigDir: "/etc/containerd",
+		RestartCommand:      "systemctl restart containerd",
+		SweepImage:          "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028",
 		SweepArgv:           []string{"/bin/sh", "-c", hostSweepScript},
 		PauseArgv:           []string{"/bin/sleep", "2147483647"},
-		// The host paths fall back to the chart defaults when absent.
-		NriPluginDir:      "/opt/nri/plugins",
-		NriPluginFilename: "10-nri-image-policy",
-		NriConfigDir:      "/etc/nri/conf.d",
-		NriRuntimeDir:     "/run/nri-image-policy",
-		NriCacheDir:       "/var/lib/nri-image-policy",
+		NriPluginDir:        "/opt/nri/plugins",
+		NriPluginFilename:   "10-nri-image-policy",
+		NriConfigDir:        "/etc/nri/conf.d",
+		NriRuntimeDir:       "/run/nri-image-policy",
+		NriCacheDir:         "/var/lib/nri-image-policy",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("config = %+v, want %+v", cfg, want)

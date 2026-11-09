@@ -240,7 +240,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // and by the plugin's base where one renders, under exactly the argv, mount
 // table and environment it is rendered with: one argument more, one mount
 // fewer or one more, a loader variable or a redirected PATH is refused. On
-// default, bare-metal and worker renders alike, no component entry leaves env
+// default, AKS and worker renders alike, no component entry leaves env
 // open, nor args or mounts except the injected sidecar shapes, whose args are
 // per pod and whose mount tables leave out the inventory socket.
 func TestChartComponentShapesAreExact(t *testing.T) {
@@ -256,12 +256,8 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 		args   []string
 		base   bool
 	}{
-		{"default", helmTemplate, append(slices.Clone(derived), "--set", "volumed.enabled=true", "--set", "attestationApi.enabled=true"), true},
-		{"gke", helmTemplate, append(slices.Clone(derived), "--set", "attestationApi.cvmMode=gke", "--set", "attestationApi.enabled=true", "--set", "volumed.enabled=true"), true},
-		{"bare-metal", helmTemplate, append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.enabled=false", "--set", "volumed.enabled=true"), false},
-		{"escaped operator args", helmTemplate, append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
+		{"default", helmTemplate, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
+		{"aks-snp", helmTemplateAKSSNP, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
 		{"pod CVM provider", helmTemplate, append(slices.Clone(derived), "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=pod-launch-config"), true},
 		{"worker", helmTemplateWorker, workerRenderArgs, false},
 	} {
@@ -339,6 +335,12 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			}
 		})
 	}
+}
+
+// helmTemplateAKSSNP renders the cloud chart with values-aks-snp.yaml.
+func helmTemplateAKSSNP(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return helmTemplatePlatform(t, "aks-snp", args...)
 }
 
 // The worker router reads its nginx configuration and its entrypoint from the

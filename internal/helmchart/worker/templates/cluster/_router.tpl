@@ -99,7 +99,7 @@ volumes:
       type: Directory
 securityContext:
   runAsNonRoot: true
-  fsGroup: {{ include "c8s.certFsGroup" (include "worker.inventorySocketGID" .) }}
+  fsGroup: {{ include "c8s.certFsGroup" "" }}
   supplementalGroups: [{{ include "worker.inventorySocketGID" . }}]
   seccompProfile:
     type: RuntimeDefault
@@ -195,7 +195,7 @@ securityContext:
 {{- define "router.acmeContainer" -}}
 - name: acme
   image: {{ include "c8s.image" . }}
-  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   restartPolicy: Always
   command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
   args: {{ include "router.acmeArgs" . }}

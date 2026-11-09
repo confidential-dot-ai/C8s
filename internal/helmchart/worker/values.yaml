@@ -7,23 +7,11 @@
 ## The operator/get-cert image; the render sets its digest.
 image:
   repository: ghcr.io/confidential-dot-ai/c8s-operator
-  pullPolicy: IfNotPresent
 
 ## The mesh endpoint every covered pod runs; the render sets its digest.
 armtlsMesh:
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
-    pullPolicy: IfNotPresent
-
-## How long get-cert retries CDS for its first certificate.
-certProvisioning:
-  initialRetryTimeout: 2m
-
-router:
-  nginx:
-    ## Pull policy for the nginx image c8s-lib's files/components.yaml pins; a
-    ## worker bakes none of its images.
-    imagePullPolicy: IfNotPresent
 
 ## clusterDNS: the kube-dns Service's IPv4 address, which `c8s worker
 ## control-plane render` takes from the worker document.

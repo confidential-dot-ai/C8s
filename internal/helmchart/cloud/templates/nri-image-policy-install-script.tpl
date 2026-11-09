@@ -33,13 +33,13 @@ write_file() {
   return 0
 }
 
-mkdir -p "/host{{ $root.Values.nriImagePolicy.hostPaths.cacheDir }}"
-mkdir -p "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}"
+mkdir -p "/host{{ include "nri-image-policy.cacheDir" $root }}"
+mkdir -p "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # The workload-claims broker socket lives here; the non-root get-cert sidecar
 # must traverse the dir (o+x) to connect. Pin it explicitly so a strict root
 # umask can't drop o+x (get-cert is fail-closed — no traversal, no cert). Not
 # world-writable, so an untrusted pod can't swap the socket.
-chmod 0711 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}"
+chmod 0711 "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 
 # The CDS this cluster trusts. It lands beside the boot config, which outlives
 # a reboot: containerd starts the plugin before this DaemonSet runs again.
@@ -71,7 +71,7 @@ then
   # snapshot: drop the stale file so the plugin freezes a fresh one from what is
   # running now. A plain restart or reboot leaves the config unchanged and keeps
   # the frozen snapshot — the plugin reloads it rather than re-learning.
-  rm -f "/host{{ $root.Values.nriImagePolicy.hostPaths.cacheDir }}/exempt-snapshot.json"
+  rm -f "/host{{ include "nri-image-policy.cacheDir" $root }}/exempt-snapshot.json"
 {{- end }}
 fi
 
@@ -89,7 +89,7 @@ MARK_END='# END c8s-nri-image-policy (managed)'
 # node's containerd is not laid out as upstream's: a file holding only the
 # managed block below would drop whatever the host configured elsewhere.
 main_config="$CONTAINERD_DIR/config.toml"
-[ -f "$main_config" ] || { echo "ERROR: $main_config not found; point nriImagePolicy.containerd.configDir at this node's containerd config directory" >&2; exit 1; }
+[ -f "$main_config" ] || { echo "ERROR: $main_config not found; this node's containerd is not laid out as upstream's" >&2; exit 1; }
 
 render_nri_toml() {
   cat <<EOF
@@ -98,11 +98,11 @@ render_nri_toml() {
   plugin_path = "{{ $root.Values.nriImagePolicy.hostPaths.pluginDir }}"
   plugin_config_path = "{{ $root.Values.nriImagePolicy.hostPaths.configDir }}"
   plugin_registration_timeout = "10s"
-  plugin_request_timeout = {{ $root.Values.nriImagePolicy.requestTimeout | quote }}
+  plugin_request_timeout = "2s"
   socket_path = "/var/run/nri/nri.sock"
 [plugins."io.containerd.nri.v1.nri".default_validator]
   enable = true
-  required_plugins = ["{{ $root.Values.nriImagePolicy.pluginName }}"]
+  required_plugins = ["{{ include "nri-image-policy.pluginName" $root }}"]
 EOF
 }
 
@@ -139,8 +139,7 @@ fi
 {{- end }}
 
 {{/*
-Restart + readiness tail, shared by the installer and the node-as-CVM pins
-script. NRI does not respawn pre-registered plugins on exit, so a binary,
+The installer's restart and readiness tail. NRI does not respawn pre-registered plugins on exit, so a binary,
 config or containerd-registration change reaches the plugin only through a
 containerd restart. Shims survive it.
 
@@ -165,7 +164,7 @@ if [ "$restart_needed" = "0" ] && ! /usr/local/bin/c8s nri-image-policy plugin-r
       --max-time 2 --output /dev/null http://localhost/healthz; then
     echo "WARNING: plugin health socket answers but no plugin process was found under containerd; not restarting" >&2
   else
-    stamp="/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/dead-plugin-restart"
+    stamp="/host{{ include "nri-image-policy.runtimeDir" $root }}/dead-plugin-restart"
     now=$(date +%s)
     last=$(cat "$stamp" 2>/dev/null || true)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -242,17 +241,17 @@ platform: {{ $root.Values.nriImagePolicy.platform | quote }}
 plugin:
   health_addr: {{ printf "unix://%s" (include "nri-image-policy.hostHealthSocket" $root) | quote }}
 workload_claims:
-  socket_dir: {{ $root.Values.nriImagePolicy.hostPaths.runtimeDir | quote }}
+  socket_dir: {{ include "nri-image-policy.runtimeDir" $root | quote }}
   # The plugin is launched by containerd on the host, so its /proc is the
   # host's — a caller PID from SO_PEERCRED resolves directly.
   proc_root: "/proc"
-  advertise_host: {{ $root.Values.nriImagePolicy.sandboxDigests.advertiseHost | quote }}
+  advertise_host: ""
   # Components read node-ip as their attestation-api host, so the plugin
   # writes it from the host's view; this pod's environment is not pinned.
   publish_node_ip: true
 allowlist:
   pull:
-    interval: {{ $root.Values.nriImagePolicy.refresh.interval | quote }}
+    interval: "5s"
     timeout: "30s"
     # Node-local socket served by the DaemonSet's attest-proxy sidecar.
     attestation_api_url: {{ printf "unix://%s" (include "c8s.attestationApiSocket" $root) | quote }}
@@ -262,40 +261,34 @@ allowlist:
     # Paths, so no argument of a component names the CDS it is served by.
     cds_address_file: {{ include "nri-image-policy.hostCDSAddressPath" $root | quote }}
     cds_measurements_config: {{ include "nri-image-policy.hostCDSPinPath" $root | quote }}
-    measure_policies: false
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" (dict "root" $root "templates" (include "c8s.componentPodTemplates" $root)) | fromJson -}}
     {{- dict "schema" "c8s.allowlist/v1" "workloads" $base | toJson | nindent 4 }}
 containerd:
   socket: {{ include "nri-image-policy.containerdSocket" $root | quote }}
-  namespace: {{ $root.Values.nriImagePolicy.containerd.namespace | quote }}
+  namespace: "k8s.io"
 policy:
   mode: {{ $root.Values.nriImagePolicy.policy.mode | quote }}
-  enforce_existing: {{ $root.Values.nriImagePolicy.policy.enforceExisting }}
-  deny_missing_annotation: {{ $root.Values.nriImagePolicy.policy.denyMissingAnnotation }}
+  enforce_existing: true
+  deny_missing_annotation: true
   {{/* Off on every lane this template serves. The sandbox policy defends a node
        TCB against the cluster admin, which needs a measured base allowlist to exempt;
        the base above is rendered from chart values, so the same admin chooses
-       it. cvmMode=node runs the node image's baked config instead, where the
-       base is measured — see images/node-guest/worker/image-policy.yaml.in. */}}
+       it. A worker image runs its measured config instead, whose base is
+       measured — see images/node-guest/worker/image-policy.yaml.in. */}}
   sandbox: "off"
 {{- if $root.Values.nriImagePolicy.policy.exemptNamespaces }}
   exempt_namespaces:
 {{- range $root.Values.nriImagePolicy.policy.exemptNamespaces }}
     - {{ . | quote }}
 {{- end }}
-  exempt_snapshot_path: {{ printf "%s/exempt-snapshot.json" $root.Values.nriImagePolicy.hostPaths.cacheDir | quote }}
+  exempt_snapshot_path: {{ printf "%s/exempt-snapshot.json" (include "nri-image-policy.cacheDir" $root) | quote }}
 {{- end }}
   label_rules:
-{{- if $root.Values.nriImagePolicy.policy.labelRules }}
-{{- toYaml $root.Values.nriImagePolicy.policy.labelRules | nindent 4 }}
-{{- else }}
     []
-{{- end }}
 logging:
-  level: {{ $root.Values.nriImagePolicy.logLevel | quote }}
-{{- if not $root.Values.node.baked }}
+  level: "info"
 {{/* The mesh policy of an install: the same shape the node image measures
      (images/node-guest/worker/image-policy.yaml.in), rendered from chart values
      because nothing here is measured. The enforcer accepts it only on this
@@ -310,11 +303,8 @@ mesh:
   exempt_namespaces:
     - {{ $root.Release.Namespace | quote }}
     - "kube-system"
-    {{- if not $root.Values.node.baked }}
     - "local-path-storage"
-    {{- end }}
   resolver: {{ $root.Values.nriImagePolicy.mesh.resolver | quote }}
-{{- if $root.Values.nriImagePolicy.mesh.clusterRanges }}
 {{/* This cluster's pod and Service ranges. The acme role of the router's
      namespace is the one identity whose sockets leave the cluster in the
      clear, and its exception excludes these ranges: a dial to a member rides
@@ -323,21 +313,13 @@ mesh:
 {{- range $root.Values.nriImagePolicy.mesh.clusterRanges }}
     - {{ . | quote }}
 {{- end }}
-{{- end }}
   capture:
     outbound: {{ include "c8s.meshOutboundPort" $root }}
     inbound: {{ include "c8s.meshInboundPort" $root }}
     health: {{ include "c8s.meshHealthPort" $root }}
-{{- if not (include "c8s.attestationApiSocketPresent" $root) }}
-{{/* Where no node-local socket serves the attestation-api, the injected
-     credential clients verify CDS evidence over this port on their node's own
-     address (c8s.attestationApiURL), so their ruleset admits it. */}}
-  credential_attestation_port: {{ $root.Values.attestationApi.port }}
-{{- end }}
   roles:
     - name: mesh
       uid: {{ include "c8s.meshUID" $root }}
 {{/* The credential role is bound by the plugin, to this node's own address and
      the CDS node port above: only the node knows its address. */}}
-{{- end }}
 {{- end }}

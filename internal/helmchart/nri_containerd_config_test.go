@@ -67,43 +67,22 @@ func renderedNriToml(t *testing.T, script string) string {
 }
 
 // plugin_request_timeout is how long containerd waits on one callback before
-// NRI drops the plugin, so it is the operator's lever against a callback that
-// overruns on a busy node (#683). The schema keeps it a duration: it lands
-// unescaped in a shell heredoc and in containerd's TOML.
+// NRI drops the plugin (#683).
 func TestChartNriInstallerRequestTimeout(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"default", nil, "2s"},
-		{"override", []string{"--set-string", "nriImagePolicy.requestTimeout=1m30s"}, "1m30s"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-			cfg := map[string]any{}
-			if err := toml.Unmarshal([]byte(renderedNriToml(t, containerArgs(t, &worker, "install")[0])), &cfg); err != nil {
-				t.Fatalf("render_nri_toml output is not TOML: %v", err)
-			}
-			plugins, _ := cfg["plugins"].(map[string]any)
-			nri, _ := plugins[nriPlugin].(map[string]any)
-			if got := nri["plugin_request_timeout"]; got != tc.want {
-				t.Errorf("plugin_request_timeout = %v, want %q", got, tc.want)
-			}
-		})
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-
-	for _, bad := range []string{"2", "2 s", `2s"; reboot; "`, "-1s"} {
-		t.Run("rejects "+bad, func(t *testing.T) {
-			if out, err := helmTemplate(t, "--set-string", "nriImagePolicy.requestTimeout="+bad); err == nil {
-				t.Fatalf("helm template accepted requestTimeout %q\n%s", bad, out)
-			}
-		})
+	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	cfg := map[string]any{}
+	if err := toml.Unmarshal([]byte(renderedNriToml(t, containerArgs(t, &worker, "install")[0])), &cfg); err != nil {
+		t.Fatalf("render_nri_toml output is not TOML: %v", err)
+	}
+	plugins, _ := cfg["plugins"].(map[string]any)
+	nri, _ := plugins[nriPlugin].(map[string]any)
+	if got := nri["plugin_request_timeout"]; got != "2s" {
+		t.Errorf("plugin_request_timeout = %v, want 2s", got)
 	}
 }
 

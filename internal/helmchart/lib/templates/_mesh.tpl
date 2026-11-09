@@ -14,7 +14,7 @@ of the pod on this container's start. Caller nindents into initContainers.
 {{- define "c8s.meshEndpointContainer" -}}
 - name: c8s-mesh
   image: {{ include "c8s-common.image" .Values.armtlsMesh.image }}
-  imagePullPolicy: {{ default "IfNotPresent" .Values.armtlsMesh.image.pullPolicy }}
+  imagePullPolicy: IfNotPresent
   restartPolicy: Always
   {{- /* The injected container runs the image's entrypoint; a chart-rendered
          one names it, so the manifest the node image bakes shows the whole

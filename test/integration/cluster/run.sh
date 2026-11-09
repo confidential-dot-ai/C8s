@@ -10,12 +10,12 @@
 # operator-signed allowlist loop into admission decisions, the armTLS mesh
 # wrapping traffic, workload adoption, and uninstall.
 #
-# The TEE is replaced at exactly one point: evidence generation. A
-# mock-attestation deployment (test/mock-attestation) serves synthetic SNP
-# reports — launch digest all-zero — on the node IP :8400, the address
-# cvmMode=bare-metal consumers dial for the node-baked api. Every stack component
-# that delegates verification to the attestation-api (get-cert, CDS, the
-# mesh, the NRI plugin) works unchanged. In-process hardware verification
+# The TEE is replaced at exactly one point: evidence generation. The chart's
+# attestation-api DaemonSet runs the mock (test/mock-attestation), which
+# serves synthetic SNP reports — launch digest all-zero — behind the chart's
+# own attest-proxy socket. Every stack component that delegates verification
+# to the attestation-api (get-cert, CDS, the mesh, the NRI plugin) works
+# unchanged. In-process hardware verification
 # (`c8s verify`, the `c8s allowlist` CLI) cannot pass synthetic evidence, so
 # allowlist writes here are signed with the production pkg/operatorauth
 # signer (./optoken) and sent over plain curl; CDS still verifies the
@@ -132,14 +132,7 @@ grep -Fq "$HELPER_IMAGE" "$WORKDIR/floor.tsv" \
     || fail "kind local-path helper image $HELPER_IMAGE missing from the floor scan"
 NRI_STORE_DIGEST="$(awk -F'\t' '$2 ~ /nri-image-policy:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
 [ -n "$NRI_STORE_DIGEST" ] || fail "the loaded nri-image-policy digest is missing from the floor scan"
-# Client-side render: the chart's kubeVersion floor is checked against the
-# live server version, not helm's compiled-in default.
-KUBE_VERSION="$(kubectl version -o json \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])')"
-# nriImagePolicy.exemptNamespaces must stay empty in this lane: the sweep pod
-# shares the installer's namespace and digest, so an exempt downgrade would
-# re-admit it despite the argv pin and hide a regression.
-python3 - "$WORKDIR/floor.tsv" "$WORKDIR/values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" <<'PYEOF'
+python3 - "$WORKDIR/floor.tsv" "$WORKDIR/floor-values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" <<'PYEOF'
 import re, sys, yaml
 floor = {}
 for line in open(sys.argv[1]):
@@ -147,9 +140,8 @@ for line in open(sys.argv[1]):
     floor.setdefault(digest, ref)
 # Kept out of the floor on purpose: the admission test's unseen digest (the
 # curl ref), and the nri-image-policy digest — production admits that image
-# only under the chart's argv-pinned entry, never by digest. The pinned entry
-# is injected from the chart render below; leaving an any-argv row here would
-# union-admit any argv and void the uninstall regression.
+# only under the chart's argv-pinned entry, never by digest; an any-argv row
+# here would union-admit any argv and void the uninstall regression.
 floor = {d: r for d, r in floor.items() if r != sys.argv[3] and d != sys.argv[4]}
 
 def entry_name(digest, ref):
@@ -168,17 +160,11 @@ workloads = {
 }
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump({
-        "operator": {"extraArgs": [
-            "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-        ]},
         "nriImagePolicy": {
-            # The release installs no plugin: the lane applies the full
-            # installer out-of-band below, under its own render.
-            "enabled": False,
+            # The installer is admitted argv-pinned by the loaded image's digest.
+            "image": {"digest": sys.argv[4]},
             "bootstrapAllowlist": {"workloads": workloads},
         },
-        # A route manifest write applies within one poll.
-        "router": {"routing": {"pollInterval": "2s"}},
     }, f)
 print(f"floor: {len(workloads)} any-argv entries")
 PYEOF
@@ -199,107 +185,49 @@ for subnet in sys.stdin.read().split():
         break' > "$WORKDIR/kind-subnet"
 KIND_SUBNET=$(cat "$WORKDIR/kind-subnet")
 [ -n "$KIND_SUBNET" ] || fail "the $KIND_NETWORK network has no IPv4 subnet"
-# The renders below name a CDS before one exists: the chart requires an
-# address and a schema-2 pin, and no document they produce carries either —
-# both reach a node as mounted files, never as arguments. The measurement is
-# the mock's, as the real pin written below also carries.
-DOCUMENTATION_RANGE_CDS_ADDRESS=192.0.2.1:8443
-printf '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"%s","launch_file":"the CDS configuration is written below"}]}' \
-    "$MOCK_MEASUREMENT" > "$WORKDIR/placeholder-pin.json"
-
-log "Rendering the NRI installer and its argv-pinned seed entry"
-# chart_render <helm template arguments>: this release as the install renders
-# it, for the documents the lane must apply before the install exists to
-# apply them. The caller names the CDS: the first render runs before one
-# exists.
-chart_render() {
-    helm template c8s internal/helmchart/cloud -n "$NS" \
-        --kube-version "$KUBE_VERSION" \
-        --set-string image.tag="$IMAGE_TAG" \
-        --set-string attestationApi.cvmMode=bare-metal \
-        --set attestationApi.enabled=false \
-        --set nriImagePolicy.enabled=true \
-        --set-string nriImagePolicy.image.tag="$IMAGE_TAG" \
-        --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
-        --set-file cds.operatorKeys="$WORKDIR/operator-pub.pem" \
-        --set volumed.enabled=false \
-        --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
-        --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
-        --set-string "nriImagePolicy.mesh.clusterRanges[0]=10.244.0.0/16" \
-        --set-string "nriImagePolicy.mesh.clusterRanges[1]=10.96.0.0/16" \
-        -f "$WORKDIR/values.yaml" "$@"
-}
-
-# c8s_install <install flags>: the release shape every render and the install
-# itself share, so the entries the CDS is configured with are the ones the
-# install applies.
+# c8s_install <install flags>: the release shape the seed render and every
+# install share, so the entries the CDS is configured with are the ones the
+# install applies. The overlay mocks the attestation-api and names kind's
+# cluster DNS and pod and Service ranges.
 c8s_install() {
     ./build/c8s install \
         --namespace "$NS" \
-        --cvm-mode=bare-metal \
-        --hardware-platform=sev-snp \
         --resolve-digests=false \
         --image-tag="$IMAGE_TAG" \
         --operator-keys "$WORKDIR/operator-pub.pem" \
-        -f "$WORKDIR/values.yaml" \
+        -f "$SCRIPT_DIR/values.yaml" \
+        -f "$WORKDIR/floor-values.yaml" \
         "$@"
 }
 
-# One render feeds both the out-of-band installer DaemonSet and the pinned
-# seed entry injected into the floor: two renders could drift their flags,
-# and the plugin's enforce-existing check would kill the install init
-# container over an argv mismatch. The mesh resolver is kind's cluster DNS,
-# the one address a member pod's ruleset admits on the resolver port, and the
-# cluster ranges are kind's defaults, which keep the router's egress exception
-# off every in-cluster destination. The router is on in this render: the mesh
-# policy it carries is what grants the role of the pods in the router's
-# namespace, which the install below creates. The base it carries pins each of
-# that pod's containers to its own mount set, so every value the install below
-# adds to those mounts — the operator keys cds-attest reads — belongs here too.
-chart_render --set-string cds.address="$DOCUMENTATION_RANGE_CDS_ADDRESS" \
-    --set-file cds.measurementsConfig="$WORKDIR/placeholder-pin.json" \
-    > "$WORKDIR/nri-render.yaml" \
-    || fail "could not render the NRI installer chart documents"
-python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
-import json, sys, yaml
-render_path, values_path, ds_path = sys.argv[1:4]
-docs = [d for d in yaml.safe_load_all(open(render_path)) if d]
-seed_cm = next(d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"].endswith("-allowlist-seed"))
-seed = json.loads(seed_cm["data"]["allowlist-seed.json"])
-pinned = {k: v for k, v in seed["workloads"].items() if k.startswith("nri-image-policy-")}
-assert len(pinned) == 1, f"want exactly one pinned nri-image-policy entry, got {sorted(pinned)}"
-values = yaml.safe_load(open(values_path))
-values["nriImagePolicy"]["bootstrapAllowlist"]["workloads"].update(pinned)
-with open(values_path, "w") as f:
-    yaml.safe_dump(values, f)
-installer = next(d for d in docs if d.get("kind") == "DaemonSet" and d["metadata"]["name"].endswith("-worker"))
-with open(ds_path, "w") as f:
-    yaml.safe_dump(installer, f)
-print(f"pinned seed entry {next(iter(pinned))} injected into the floor values")
-PYEOF
-
-# Digest-alias the loaded C8s images: the NRI installer renders its pod image
-# as repo@<store digest>; the alias makes containerd resolve that reference
-# to the loaded image without a registry pull.
+# Name every tagged store image repo@<store digest>, as a registry pull does.
+# The NRI installer's pod image is that reference, resolved without a pull.
+# kind's preloaded images carry no such name, so the kubelet reports their
+# image ID, a digest the plugin never matches and the install's image-policy
+# preflight cannot find in the floor; a restarted kubelet reports the name.
 while IFS=$'\t' read -r digest ref; do
     case "$ref" in
-        ghcr.io/confidential-dot-ai/*:*) node_exec ctr -n k8s.io images tag "$ref" "${ref%:*}@$digest" >/dev/null ;;
+        *@*) ;;
+        *) node_exec ctr -n k8s.io images tag --force "$ref" "${ref%:*}@$digest" >/dev/null ;;
     esac
 done < "$WORKDIR/floor.tsv"
-
-log "Deploying the mock attestation-api"
-kubectl apply -f test/integration/cluster/manifests/mock-attestation.yaml
-kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=120s
-
-# The node image's nri-node-ip.service publishes the node address before any
-# component starts; kind has no such unit. Bare-metal components under a
-# fail-closed policy with no attestation-api socket mount this file (type
-# File) and read $(NODE_IP) from it, so without it they never leave
-# ContainerCreating. Same path, content and mode the plugin writes.
-node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
-    && printf '%s\n' '$NODE_IP' > /run/nri-image-policy/node-ip \
-    && chmod 0644 /run/nri-image-policy/node-ip" \
-    || fail "could not publish the node-ip file"
+node_exec systemctl restart kubelet
+# kubelet_reports_store_digests: every container the cluster runs reports a
+# digest of the floor scan.
+kubelet_reports_store_digests() {
+    kubectl get pods -A -o json 2>/dev/null | python3 -c '
+import json, sys
+store = {line.split("\t", 1)[0] for line in open(sys.argv[1])}
+pods = json.load(sys.stdin)["items"]
+ids = [s.get("imageID", "") for p in pods
+       for s in p["status"].get("initContainerStatuses", []) + p["status"].get("containerStatuses", [])]
+sys.exit(not all(i.rsplit("@", 1)[-1] in store for i in ids if i))' "$WORKDIR/floor.tsv"
+}
+for _ in $(seq 1 60); do
+    kubelet_reports_store_digests && break
+    sleep 2
+done
+kubelet_reports_store_digests || fail "the kubelet still reports a container image by a digest the store scan does not name"
 
 # --- The CDS this cluster trusts ---
 
@@ -342,43 +270,16 @@ CDS_INSTALL_FLAGS=(--cds-address "$CDS_ADDRESS" --cds-pin "$WORKDIR/cds/cds-pin.
 cds_wait
 pass "CDS serves the cluster its own launch binds it to"
 
-# --- NRI image-policy plugin ---
+# --- Install ---
 
-log "Installing the NRI image-policy plugin"
-# Under --cvm-mode=bare-metal the install renders no installer: a measured
-# node carries the plugin, and this kind node carries none. The harness
-# renders the installer from the chart source (above) and applies it
-# out-of-band — same installer, same containerd patch, same plugin.
-#
-# Before the install, as a baked node has it: a member pod's credential
-# clients read the CDS endpoint the enforcer mounts and name no other, so the
-# router's own get-cert reaches no CDS on a node that carries no plugin yet.
-# The installer is namespaced, and the install's privileged namespace is the
-# same object applied twice.
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl label namespace "$NS" --overwrite \
-    pod-security.kubernetes.io/enforce=privileged \
-    pod-security.kubernetes.io/warn=privileged \
-    pod-security.kubernetes.io/audit=privileged
-# The installer copies the CDS address and pin to the node from the chart's
-# own ConfigMap, applied here under the release the install below adopts it
-# into. The router's copy of it lands with that install, which creates the
-# namespace it belongs to, so only the release namespace's copy applies here.
-# The filter reads the whole render: exiting early SIGPIPEs helm under pipefail.
-chart_render --set-string cds.address="$CDS_ADDRESS" \
-    --set-file cds.measurementsConfig="$WORKDIR/cds/cds-pin.json" \
-    --show-only templates/measurements-config.yaml \
-    | python3 -c 'import sys, yaml; yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["metadata"]["namespace"] == sys.argv[1]], sys.stdout)' "$NS" \
-    | kubectl apply -f - || fail "could not apply the measurements ConfigMap"
-kubectl -n "$NS" annotate configmap c8s-measurements --overwrite \
-    meta.helm.sh/release-name=c8s "meta.helm.sh/release-namespace=$NS"
-kubectl apply -f "$WORKDIR/nri-installer.yaml"
+log "c8s install"
+# Without --wait: the installer restarts containerd, and the components wait
+# on the plugin it registers.
+c8s_install "${CDS_INSTALL_FLAGS[@]}" --wait=false || fail "c8s install failed"
+
 # The installer patches the node's containerd config and restarts it, and the
-# plugin comes up with the restarted runtime, which is the datapath the install
-# below needs. Its own install container is admitted argv-pinned, an entry only
-# the seed CDS serves carries, so the container the restart interrupted is
-# denied until the install lands: the DaemonSet goes Ready after it, not here.
-for _ in $(seq 1 180); do
+# plugin comes up with the restarted runtime.
+for _ in $(seq 1 300); do
     node_exec test -S /run/nri-image-policy/health.sock && break
     sleep 1
 done
@@ -388,15 +289,30 @@ node_exec test -S /run/nri-image-policy/workload-claims.sock \
     || fail "admission inventory socket missing on the node"
 pass "NRI plugin registered with containerd and serves the admission inventory"
 
-log "c8s install"
-c8s_install "${CDS_INSTALL_FLAGS[@]}" --wait || fail "c8s install failed"
+for _ in $(seq 1 60); do
+    node_exec test -s /run/nri-image-policy/node-ip && break
+    sleep 1
+done
+[ "$(node_exec cat /run/nri-image-policy/node-ip)" = "$NODE_IP" ] \
+    || fail "the NRI plugin did not publish the node address in /run/nri-image-policy/node-ip"
+pass "NRI plugin publishes the node address"
 
-# CDS now serves the installer's pinned entry. A fresh pod retries the denied
-# install container at once, rather than on kubelet's crash backoff.
+# The restart interrupted the installer's own install container, admitted only
+# argv-pinned by the seed CDS serves. A fresh pod retries it at once, rather
+# than on kubelet's crash backoff.
 kubectl -n "$NS" delete pod -l app.kubernetes.io/component=nri-installer-worker
 kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
     || fail "NRI plugin did not become healthy"
 pass "NRI installer DaemonSet Ready on the served allowlist"
+
+kubectl -n "$NS" rollout status ds/c8s-attestation-api --timeout=300s \
+    || fail "the attestation-api DaemonSet (mock) did not become Ready"
+pass "attestation-api DaemonSet Ready on the mock image"
+
+# The router's sandbox predates the plugin, so the mesh gate refuses it for its
+# life. Its namespace is the only gated one with pods yet.
+ROLLED_AT="$(node_exec date +%s)"
+kubectl -n "$ROUTER_NS" delete pod --all
 
 kind get kubeconfig --name "$CLUSTER" > "$WORKDIR/kubeconfig"
 cat > "$WORKDIR/env" <<EOF
@@ -414,12 +330,15 @@ fi
 # --- Tests ---
 
 log "Control plane"
-kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=180s \
+kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=300s \
     || fail "c8s-operator not Available"
 # The router serves ports of its own, so it runs in the namespace the mesh
 # policy names.
-kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=180s \
-    || fail "c8s-router not Available"
+if ! kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=300s; then
+    refusal="$(node_exec journalctl -u containerd --no-pager --since "@$ROLLED_AT" | grep -m1 "of pod $ROUTER_NS/.* is refused for its life" || true)"
+    [ -z "$refusal" ] || fail "the mesh gate refused a router pod started after the plugin registered: $refusal"
+    fail "c8s-router not Available"
+fi
 pass "operator, CDS and router all Ready after c8s install"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
@@ -864,15 +783,13 @@ assert any(s[0] == ("/bin/sh", "-c") and len(s[1]) == 1 and "c8s host sweep" in 
     f"no host-sweep script pin: {shapes}"
 print(f"served allowlist: {len(containers)} argv-pinned shapes for the nri image, sweep shapes pinned")
 PYEOF
-# The uninstall's sweep image resolution relies on the release carrying
-# tag=it and no digest for the nri image; a chart-default digest would flip
-# the sweep to an upstream image this lane never loaded.
+# The uninstall sweeps in the release's nri image by digest: the loaded one,
+# which the served pin above names.
 helm -n "$NS" get values c8s --all -o json | python3 -c '
 import json, sys
 img = json.load(sys.stdin)["nriImagePolicy"]["image"]
-assert img.get("tag") == "it" and not img.get("digest"), \
-    f"nriImagePolicy.image = {img}; want tag=it and no digest"
-'
+assert img.get("digest") == sys.argv[1], f"nriImagePolicy.image = {img}; want digest {sys.argv[1]}"
+' "$NRI_STORE_DIGEST"
 pass "served allowlist pins the host sweep argv (no any-argv hole for the nri digest)"
 
 log "Uninstall"

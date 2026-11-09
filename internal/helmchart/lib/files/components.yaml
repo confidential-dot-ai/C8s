@@ -32,7 +32,6 @@ components:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: attestationApi.image
-    enabledPath: attestationApi.enabled
     entrypoint: ["/attestation-api"]
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -50,7 +49,6 @@ components:
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   - valuePath: nriImagePolicy.image
-    enabledPath: nriImagePolicy.enabled
     ## Seeded argv-pinned by the chart (the installer runs pinned shell
     ## scripts), never as an any-argv entry. Exempt from derivation.
     argvPinned: true

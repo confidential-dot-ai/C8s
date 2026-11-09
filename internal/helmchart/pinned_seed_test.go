@@ -130,13 +130,12 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 	denyArgvs(t, seed, baseNRIDigest, []string{"sleep", "infinity"}) // argv[0] must be /bin/sh
 }
 
-// The install script embeds the component entries' argv, where an operator
-// argument escaped as $$(NAME) is pinned as $(NAME). The kubelet expands the
-// installer's own args too, so they must reach the runtime as the seed pins
-// them.
+// The install script's shell carries $ throughout, escaped against the
+// kubelet's expansion of the installer's args, so they must reach the runtime
+// as the seed pins them.
 func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	t.Parallel()
-	args := []string{"--set-json", `operator.extraArgs=["$$(KUBERNETES_SERVICE_HOST)"]`}
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -149,31 +148,6 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	for _, c := range allContainers(&worker) {
 		admitPlatformContainer(t, seed, baseNRIDigest, c)
 	}
-}
-
-// Where no release pinned the installer image, `c8s uninstall` sweeps in the
-// chart's busybox. The served seed is then the only document admitting that
-// pod, under the sweep script and its pause and nothing else.
-func TestChartPinnedSeedAdmitsTheSweepImage(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.enabled=false",
-		"--set-string", "attestationApi.cvmMode=bare-metal",
-		"--set", "attestationApi.enabled=false",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	seed := renderedSeed(t, out)
-	digest := chartImageDigest(t, filepath.Join(repoChart, "values.yaml"), "nriImagePolicy", "containerdPrep", "image", "digest")
-	script, err := os.ReadFile(filepath.Join(repoChart, "files", "scripts", "host-sweep.sh"))
-	if err != nil {
-		t.Fatalf("read host-sweep.sh: %v", err)
-	}
-	admitArgvs(t, seed, digest, []string{"/bin/sh", "-c", strings.TrimRight(string(script), "\n") + "\n"})
-	admitArgvs(t, seed, digest, []string{"/bin/sleep", "2147483647"})
-	denyArgvs(t, seed, digest, []string{"/bin/sh", "-c", "rm -rf /"})
-	denyArgvs(t, seed, digest, []string{"/bin/sleep", "infinity"})
 }
 
 // base is digest-only admission — carrying an argv-pinned image there
@@ -200,9 +174,9 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 }
 
 // An any-argv entry for a pinned digest voids the pin (admission is the union
-// across entries): with deriveComponents on, the derive loop must never emit
-// one for the installer or busybox images — the argvPinned skip is the only
-// thing between the pin and a silent any-argv shadow.
+// across entries): the derive loop must never emit one for the installer image
+// — the argvPinned skip is the only thing between the pin and a silent
+// any-argv shadow.
 func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -210,12 +184,10 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, filepath.Join(repoChart, "values.yaml"), "nriImagePolicy", "containerdPrep", "image", "digest")} {
-		for name, w := range seed.Workloads {
-			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
-				if c.Digest.String() == digest && c.AnyArgv() {
-					t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, digest[:19])
-				}
+	for name, w := range seed.Workloads {
+		for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
+			if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
+				t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
 			}
 		}
 	}
@@ -403,10 +375,7 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 // for each.
 func componentRender(t *testing.T) string {
 	t.Helper()
-	args := []string{
-		"--set", "volumed.enabled=true",
-		"--set", "attestationApi.enabled=true",
-	}
+	args := []string{"--set", "volumed.enabled=true"}
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}

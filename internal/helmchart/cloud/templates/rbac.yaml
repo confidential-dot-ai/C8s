@@ -5,7 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-{{ include "c8s.serviceAccountImagePullSecrets" . }}
+{{ include "c8s.imagePullSecrets" . }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

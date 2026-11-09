@@ -25,13 +25,6 @@
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
             },
-            "pullPolicy": {
-              "enum": [
-                "Always",
-                "IfNotPresent",
-                "Never"
-              ]
-            },
             "repository": {
               "type": "string",
               "minLength": 1
@@ -41,15 +34,6 @@
       }
     },
     "c8s-lib": {},
-    "certProvisioning": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "initialRetryTimeout": {
-          "type": "string"
-        }
-      }
-    },
     "clusterDNS": {
       "type": "string",
       "format": "ipv4"
@@ -96,13 +80,6 @@
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "pullPolicy": {
-          "enum": [
-            "Always",
-            "IfNotPresent",
-            "Never"
-          ]
-        },
         "repository": {
           "type": "string",
           "minLength": 1
@@ -146,19 +123,6 @@
               "enum": [
                 "snp",
                 "tdx"
-              ]
-            }
-          }
-        },
-        "nginx": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "imagePullPolicy": {
-              "enum": [
-                "Always",
-                "IfNotPresent",
-                "Never"
               ]
             }
           }

@@ -1,0 +1,16 @@
+## Unverified on a GKE node: the NRI host paths are the ones c8s-fleet uses on
+## Container-Optimized OS.
+## GKE confidential VMs on AMD SEV-SNP: evidence is the native SNP report.
+attestationApi:
+  devices:
+    - /dev/sev-guest
+nriImagePolicy:
+  hostPaths:
+    configDir: /etc/nri/conf.d
+    pluginDir: /home/kubernetes/bin/nri
+  platform: snp
+router:
+  attest:
+    platform: snp
+    # GKE's SEV-SNP machine family (N2D) runs on AMD Milan.
+    generation: milan

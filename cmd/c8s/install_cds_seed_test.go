@@ -52,7 +52,7 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	if err := os.WriteFile(values, []byte("router:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "-f", values, flagArg(flagSeedOut), out); err != nil {
+	if err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force", "-f", values, flagArg(flagSeedOut), out); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	// The seed is rendered from the values the release carries, the
@@ -77,7 +77,7 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	mustNotContainPrefix(t, calls, "kubectl apply")
 
 	// The render precedes the CDS it is configured into, so it names none.
-	err = runC8s(t, "install", "--cvm-mode=bare-metal", "--force", flagArg(flagSeedOut), out,
+	err = runC8s(t, "install", "--platform=aks-snp", "--force", flagArg(flagSeedOut), out,
 		flagArg(flagCDSAddress), "10.9.9.9:8443",
 		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"))
 	if err == nil || !strings.Contains(err.Error(), "runs before") {
@@ -92,7 +92,7 @@ func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
 
 	// The stubbed node assigns pod addresses from 10.42.0.0/24.
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force",
+	err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
 		flagArg(flagCDSAddress), "10.9.9.9:8443",
 		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.42.0.0/16"))
 	if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {

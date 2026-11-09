@@ -24,36 +24,20 @@ func TestChartComponentsCarryNoPolicyFlags(t *testing.T) {
 	}
 }
 
-// The ConfigMap the node reads its CDS from carries the endpoint only where
-// the installer that copies it to a node renders: a plugin from a measured
-// image takes the endpoint from its own launch staging.
-func TestChartHandsTheNodeItsCDSAddressOnlyWhereOneCopiesIt(t *testing.T) {
+// The ConfigMap the installer copies to each node carries the CDS endpoint
+// beside its pin.
+func TestChartHandsTheNodeItsCDSAddress(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name    string
-		args    []string
-		address bool
-	}{
-		{name: "the chart installs the plugin", address: true},
-		{name: "the measured image carries the plugin", args: []string{
-			"--set-string", "attestationApi.cvmMode=bare-metal",
-			"--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.enabled=false",
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			data := renderedConfigMap(t, out, "c8s-measurements").Data
-			if data["cds.json"] == "" {
-				t.Fatal("the CDS pin reaches no node")
-			}
-			if got, ok := data["cds-address"]; ok != tc.address || (ok && got != baseCDSAddress) {
-				t.Fatalf("cds-address = %q (present %v), want present=%v", got, ok, tc.address)
-			}
-		})
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	data := renderedConfigMap(t, out, "c8s-measurements").Data
+	if data["cds.json"] == "" {
+		t.Fatal("the CDS pin reaches no node")
+	}
+	if got := data["cds-address"]; got != baseCDSAddress {
+		t.Fatalf("cds-address = %q, want %q", got, baseCDSAddress)
 	}
 }
 

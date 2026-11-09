@@ -11,25 +11,24 @@ person's keys authorize policy. For a workload, see
 [workloads.md](workloads.md).
 
 Kubernetes credentials come from the cluster's own control plane, which on
-bare-metal runs outside every TEE and issues the kubeconfig `c8s install` and
-`kubectl` use
+bare-metal runs outside every TEE and issues the kubeconfig `kubectl` uses
 ([launch-configuration.md](launch-configuration.md#a-workers-control-plane));
 a measured node releases none.
 
 ## What an install deploys
 
 `c8s install` renders the chart embedded in the CLI and runs
-`helm upgrade --install`. Two flags have no default and describe the hardware:
-`--cvm-mode` (`bare-metal`, `gke`, `aks`) and `--hardware-platform` (`sev-snp`,
-`tdx`). All three CVM modes are node-as-CVM: the node is itself the confidential
-VM, its pods processes inside it ([overview.md](overview.md)); dotted names
-here, such as `router.san`, are chart values.
+`helm upgrade --install`. `--platform` names the cluster's confidential VMs,
+`aks-snp`, `aks-tdx` or `gke-snp` (unverified on a GKE node), and selects the
+chart's `values-<platform>.yaml`. Each is node-as-CVM: the node is itself the
+confidential VM, its pods processes inside it ([overview.md](overview.md));
+dotted names here, such as `router.san`, are chart values.
 
 | Resource | Role |
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
 | `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
-| `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the measured node image carries both, so the chart renders neither |
+| `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
 | `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); the CRD backs `kubectl get cwl` |
@@ -43,8 +42,9 @@ the pinned CDS serves. CDS takes its own write keys from
 `c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
 policy that would deny the platform's own pods. A measured node image boots the
 chart its own build rendered, configured from the worker document it launches
-with ([launch-configuration.md](launch-configuration.md)); `c8s install`
-refuses a cluster labelled `confidential.ai/baked=true`.
+with ([launch-configuration.md](launch-configuration.md)). `c8s install`
+refuses nodes running RKE2's or k3s's own containerd, which the installer
+cannot register the plugin with.
 
 Images in a registry that needs authentication need a
 `kubernetes.io/dockerconfigjson` Secret in the release namespace, named with
@@ -54,8 +54,7 @@ registry login instead.
 
 `c8s uninstall` deletes the release, then sweeps host state the chart cannot:
 the admission plugin's containerd registration, the `ARMTLS-MESH` chains and
-ipsets, and idle `c8s volume attach` backstores. Baked components stay. Each is
-one set per node, shared by every release, so uninstalling one takes them from
+ipsets, and idle `c8s volume attach` backstores. Each is one set per node, shared by every release, so uninstalling one takes them from
 another.
 
 ## The `c8s operator` controller
@@ -83,8 +82,8 @@ node's and CDS's decision
 Every pod created in a namespace the injector's selector admits is injected, so
 the excluded set is the whole opt-out: the release namespace, `c8s-router`,
 `kube-system`, `kube-public`, `kube-node-lease`, and
-`controlPlane.webhook.extraExcluded`, which an installed cluster
-(`node.baked=false`) defaults to `local-path-storage`.
+`controlPlane.webhook.extraExcluded`, which the chart defaults to
+`local-path-storage`.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 
@@ -500,19 +499,22 @@ NetworkPolicy.
 
 ## Rendering the chart
 
-Rendering shows what a release contains. This example disables the host
-image-policy installer, so only image tags are needed; the full shape wants
-image digests, the DNS resolver and the cluster CIDRs.
+Rendering shows what a release contains. This example renders an AKS SNP
+release by image tags. The installer's image needs a digest, here a
+placeholder, and the mesh policy the cluster's DNS resolver and CIDRs.
 
 ```sh
 helm template c8s internal/helmchart/cloud \
   --namespace c8s-system \
+  -f internal/helmchart/cloud/values-aks-snp.yaml \
   --set cds.address=10.0.0.9:8443 \
   --set-file cds.measurementsConfig=cds-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set armtlsMesh.image.tag=main \
-  --set nriImagePolicy.enabled=false
+  --set nriImagePolicy.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+  --set nriImagePolicy.mesh.resolver=10.96.0.10 \
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 ```
 
 The address is this cluster's CDS and `cds-pin.json` the document
