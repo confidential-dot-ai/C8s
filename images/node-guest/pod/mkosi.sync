@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# mkosi sync hook for the pod profile, which runs after the worker profile's.
+# Stages into mkosi.local/mkosi.extra:
+#
+#   1. the bridge, host-local and loopback CNI plugins the pod network
+#      template names, from the CNI plugins release the worker sync verified
+#      into the package cache;
+#   2. the platform the pod's launch staging and status service attest on.
+set -euo pipefail
+
+STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
+CACHE_DIR="$SRCDIR/mkosi.pkgcache/c8s"
+SYNC_INPUTS="$SRCDIR/mkosi.local/.confos-sync-inputs"
+fail() { echo "pod sync: FATAL $*" >&2; exit 1; }
+
+PLATFORM=$(cat "$SYNC_INPUTS/platform" 2>/dev/null || true)
+[ "$PLATFORM" = tdx ] || fail "the pod profile is TDX-only, got platform '$PLATFORM'"
+
+shopt -s nullglob
+archives=("$CACHE_DIR"/cni-plugins-linux-amd64-*.tgz)
+[ "${#archives[@]}" -eq 1 ] || fail "want the one CNI plugins release the worker sync cached, found ${#archives[@]}"
+mkdir -p "$STAGE_DIR/opt/cni/bin"
+tar -xzf "${archives[0]}" -C "$STAGE_DIR/opt/cni/bin" ./bridge ./host-local ./loopback
+
+for unit in pod-stage podcvm-status; do
+    mkdir -p "$STAGE_DIR/etc/systemd/system/$unit.service.d"
+    printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
+        > "$STAGE_DIR/etc/systemd/system/$unit.service.d/10-platform.conf"
+done
+echo "pod sync: staged the pod CNI plugins and the $PLATFORM platform drop-ins"
