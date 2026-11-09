@@ -333,11 +333,11 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 }
 
 // A sandbox that started before this enforcer connected holds no pod ruleset:
-// recovery refuses it, stops nothing, and names the pod to delete.
+// recovery refuses it, stops nothing, and deletes the pod.
 func TestRecoveryRefusesAPrePluginSandboxInTheNamespace(t *testing.T) {
 	pod := sandboxPod(t, "default", "pod")
-	pod.Uid = "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b"
-	p, logs, killed := prePluginPlugin()
+	pod.Uid = refusedPodUID
+	p, logs, killed, deleted := prePluginPlugin()
 
 	ctrs := []*api.Container{runningCtr(pod, "app", pushDigestA)}
 	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, ctrs); err != nil {
@@ -349,7 +349,7 @@ func TestRecoveryRefusesAPrePluginSandboxInTheNamespace(t *testing.T) {
 	if len(*killed) != 0 {
 		t.Errorf("recovery stopped %v", *killed)
 	}
-	assertPodWithoutIdentity(t, logs, pod)
+	assertPodRemoved(t, logs, deleted, pod)
 }
 
 // A container's network namespace is matched to the sandbox's by kernel
