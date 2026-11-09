@@ -30,6 +30,7 @@ coverage.txt
 # Mock binaries from `go build .` in the test/mock-* modules.
 /test/mock-attestation/mock-attestation
 /test/mock-cds/mock-cds
+/test/mock-cloud/mock-cloud
 
 # Secrets
 *.pem
