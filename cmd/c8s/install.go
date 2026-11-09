@@ -458,7 +458,7 @@ func deniedSummary(denied []string) string {
 	return fmt.Sprintf("%d platform images", len(denied))
 }
 
-// platformImageLines returns one "namespace/pod  repository@digest" line per
+// platformImageLines returns one "namespace/pod  <image>" line per
 // (namespace, digest) accept keeps, sorted. A DaemonSet runs the same image on
 // every node, so entries are deduplicated and named by the first pod carrying
 // them. A pod the kubelet has finished with is skipped: it has no container the
@@ -477,7 +477,7 @@ func platformImageLines(pods []corev1.Pod, accept func(namespace, digest string)
 			}
 			if key := p.Namespace + "\x00" + digest; !seen[key] {
 				seen[key] = true
-				lines = append(lines, fmt.Sprintf("%s/%s  %s@%s", p.Namespace, p.Name, imageRepository(st.Image, st.ImageID), digest))
+				lines = append(lines, fmt.Sprintf("%s/%s  %s", p.Namespace, p.Name, imageReference(st.Image, st.ImageID, digest)))
 			}
 		}
 	}
@@ -560,7 +560,7 @@ func podContainerStatuses(p corev1.Pod) []corev1.ContainerStatus {
 func imageDigest(refs ...string) string {
 	for _, ref := range refs {
 		ref = strings.TrimPrefix(ref, "docker-pullable://")
-		if strings.HasPrefix(ref, "sha256:") {
+		if isBareDigest(ref) {
 			return ref
 		}
 		named, err := reference.ParseDockerRef(ref)
@@ -574,18 +574,31 @@ func imageDigest(refs ...string) string {
 	return ""
 }
 
-// imageRepository normalizes the first parseable reference to the bare
-// repository the digest is reported against — the same form
-// workloadImageAllowlistEntry writes as an entry's image label.
-func imageRepository(refs ...string) string {
-	for _, ref := range refs {
-		named, err := reference.ParseDockerRef(strings.TrimPrefix(ref, "docker-pullable://"))
+// imageReference names an image at digest: the bare repository the first
+// reference that names one reports it against — the same form
+// workloadImageAllowlistEntry writes as an entry's image label — or the digest
+// alone where neither reference names a repository.
+func imageReference(
+	image string,
+	imageID string,
+	digest string,
+) string {
+	for _, ref := range []string{image, imageID} {
+		ref = strings.TrimPrefix(ref, "docker-pullable://")
+		if isBareDigest(ref) {
+			continue
+		}
+		named, err := reference.ParseDockerRef(ref)
 		if err != nil {
 			continue
 		}
-		return reference.TrimNamed(named).String()
+		return reference.TrimNamed(named).String() + "@" + digest
 	}
-	return ""
+	return digest
+}
+
+func isBareDigest(ref string) bool {
+	return strings.HasPrefix(ref, "sha256:")
 }
 
 // admissibleDigests collects the image digests the rendered allowlist admits:
