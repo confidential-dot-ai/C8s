@@ -34,6 +34,12 @@ Steps 1 and 5 take their replacements:
 | `--cvm-mode gke --hardware-platform sev-snp` | `--platform gke-snp` |
 | `--image-tag`, `--resolve-digests` | nothing |
 | `--cvm-mode bare-metal` | nothing |
+| nothing | `--pod-cidr <cidr>`, step 5 |
+
+An AKS cluster on Azure CNI Overlay, the AKS default, publishes no
+`spec.podCIDR` on its nodes; install refuses such a cluster unless step 5's
+command names each of its pod ranges with `--pod-cidr`
+([operator.md](operator.md#what-an-install-deploys)).
 
 The `--platform` value is step 1's `<PLATFORM>`. A release CLI pins each
 component to the digest the `c8s-cloud` chart of its own version stamps, so no

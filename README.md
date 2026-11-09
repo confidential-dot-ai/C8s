@@ -247,6 +247,7 @@ listening on port 8443. `--workload-ref` uses
 c8s install --platform=aks-snp --namespace c8s-system -f values.yaml \
   --operator-keys operator.pub \
   --cds-address <ip:port of your CDS> --cds-pin cds-pin.json \
+  --pod-cidr 10.244.0.0/16 \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
@@ -256,6 +257,13 @@ c8s install --platform=aks-snp --namespace c8s-system -f values.yaml \
 set `confidentialNodeSelector`, `attestationApi.devices`,
 `nriImagePolicy.platform` and `router.attest.platform` themselves, or the
 chart refuses to render.
+
+`--pod-cidr` is a range this cluster assigns pod addresses from, the pod range
+of the values file above; pass it once per range. An AKS cluster on Azure CNI
+Overlay, the AKS default, publishes no `spec.podCIDR` on its nodes, and install
+refuses without it. Read the range with
+`az aks show -g <group> -n <cluster> --query networkProfile.podCidr`
+([operator docs](docs/operator.md#what-an-install-deploys)).
 
 `--workload-ref` adopts the workload, patches its pod template with
 `confidential.ai/cw: vllm`, and resolves its images into the bootstrap allowlist.
