@@ -3,9 +3,10 @@
 C8s releases as one unit.
 
 A `vX.Y.Z` tag versions the `c8s` CLI, the component images, the Helm chart, and
-the measured node images — the guest images a node boots — together, all built
-from one commit. Releases are automatic: maintainers do not calculate or push
-release tags. Terms are defined in [glossary.md](glossary.md).
+the measured guest images — the worker image a node boots and the CDS image a
+cluster's clients pin — together, all built from one commit. Releases are
+automatic: maintainers do not calculate or push release tags. Terms are defined
+in [glossary.md](glossary.md).
 
 ## Version rules
 
@@ -31,15 +32,15 @@ gate.
 |---|---|
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
-| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` |
+| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
 | GitHub release | `release-statement.json`, `release-statement.sigstore.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
-adds no moving guest-image alias: it only creates the exact
-`vX.Y.Z-<tee>[-kubevirt]` tags. The floating
-`guests/worker:{tdx,sev-snp}[-kubevirt]` tags track `main` builds, so pin the
-exact release whose measurement you accept.
+adds no moving guest-image alias: it only creates the exact tags above, where
+the CDS tags name no TEE because one CDS image serves both. The floating
+`guests/worker:{tdx,sev-snp}[-kubevirt]` and `guests/cds:main[-kubevirt]` tags
+track `main` builds, so pin the exact release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
 staging tag and promoted by digest; an exact release tag that already exists
@@ -118,10 +119,10 @@ A push to the protected `beta` branch runs the same pipeline and releases
 `vX.Y.Z-beta.N`, where `vX.Y.Z` is the stable version the same commits would
 get on `main` and `N` counts the betas of that base. A beta publishes exact
 image and chart tags, guest-image aliases
-`guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]`, and a GitHub prerelease
-with its own statement. It never moves `latest`, an `X.Y` alias, a stable tag,
-or a floating guest-image tag, and beta tags never change the stable baseline on
-`main`.
+`guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]` and
+`guests/cds:vX.Y.Z-beta.N[-kubevirt]`, and a GitHub prerelease with its own
+statement. It never moves `latest`, an `X.Y` alias, a stable tag, or a floating
+guest-image tag, and beta tags never change the stable baseline on `main`.
 
 A beta is signed under its own identity, so a verifier pinning the `main`
 identity does not accept one: verify it as above with
@@ -153,7 +154,7 @@ Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
 Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
 and chart publication and the signed statement; re-run the
-**c8s-image** workflow to repair node-image aliases. Missing aliases are
+**c8s-image** workflow to repair guest-image aliases. Missing aliases are
 created and matching ones verified by digest; neither workflow moves a Git tag,
 overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`
 backward.
