@@ -137,7 +137,7 @@ jobs:
       - name: Publish or verify exact release aliases
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          IMAGE: ghcr.io/confidential-dot-ai/node-guest-base
+          IMAGE: ghcr.io/confidential-dot-ai/guests/worker
           RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
         run: |
           set -euo pipefail
@@ -149,31 +149,29 @@ jobs:
           fi
           short="${HEAD_SHA:0:7}"
           repo_tags="$(oras repo tags "$IMAGE")"
-          aliases="$RUNNER_TEMP/node-release-aliases"
+          aliases="$RUNNER_TEMP/worker-release-aliases"
           : > "$aliases"
 
-          for platform in tdx snp; do
-            for format in '' -cdi; do
-              base_tag="worker-$platform$format"
-              source_tag="$base_tag-$short"
-              release_alias="$base_tag-$RELEASE_TAG"
-              source_digest="$(oras resolve "$IMAGE:$source_tag")"
-              if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                echo "::error::$IMAGE:$source_tag did not resolve to an OCI digest"
+          # c8s-image.yml publishes one tag per suffix: <ref>-<suffix>.
+          for suffix in tdx tdx-kubevirt sev-snp sev-snp-kubevirt; do
+            source_tag="sha-$short-$suffix"
+            release_alias="$RELEASE_TAG-$suffix"
+            source_digest="$(oras resolve "$IMAGE:$source_tag")"
+            if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::$IMAGE:$source_tag did not resolve to an OCI digest"
+              exit 1
+            fi
+
+            exists=false
+            if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
+              exists=true
+              destination_digest="$(oras resolve "$IMAGE:$release_alias")"
+              if [ "$destination_digest" != "$source_digest" ]; then
+                echo "::error::$IMAGE:$release_alias already names $destination_digest, expected $source_digest"
                 exit 1
               fi
-
-              exists=false
-              if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
-                exists=true
-                destination_digest="$(oras resolve "$IMAGE:$release_alias")"
-                if [ "$destination_digest" != "$source_digest" ]; then
-                  echo "::error::$IMAGE:$release_alias already names $destination_digest, expected $source_digest"
-                  exit 1
-                fi
-              fi
-              printf '%s\t%s\t%s\n' "$release_alias" "$source_digest" "$exists" >> "$aliases"
-            done
+            fi
+            printf '%s\t%s\t%s\n' "$release_alias" "$source_digest" "$exists" >> "$aliases"
           done
 
           while IFS=$'\t' read -r release_alias source_digest exists; do
@@ -185,5 +183,5 @@ jobs:
 
           {
             echo "### $RELEASE_TAG worker image aliases"
-            cut -f1 "$aliases" | sed 's/^/- `ghcr.io\/confidential-dot-ai\/node-guest-base:/' | sed 's/$/`/'
+            cut -f1 "$aliases" | sed "s|^|- \`$IMAGE:|; s|\$|\`|"
           } >> "$GITHUB_STEP_SUMMARY"

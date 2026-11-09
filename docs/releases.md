@@ -31,14 +31,15 @@ gate.
 |---|---|
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
-| Node images | `ghcr.io/confidential-dot-ai/node-guest-base:worker-{tdx,snp}[-cdi]-vX.Y.Z` |
+| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` |
 | GitHub release | `release-statement.json`, `release-statement.sigstore.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
-adds no moving node-image alias: it only creates the exact `-vX.Y.Z` tags. The
-floating `worker-{tdx,snp}[-cdi]` tags track `main` builds, so pin the exact
-release whose measurement you accept.
+adds no moving guest-image alias: it only creates the exact
+`vX.Y.Z-<tee>[-kubevirt]` tags. The floating
+`guests/worker:{tdx,sev-snp}[-kubevirt]` tags track `main` builds, so pin the
+exact release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
 staging tag and promoted by digest; an exact release tag that already exists
@@ -116,10 +117,11 @@ true
 A push to the protected `beta` branch runs the same pipeline and releases
 `vX.Y.Z-beta.N`, where `vX.Y.Z` is the stable version the same commits would
 get on `main` and `N` counts the betas of that base. A beta publishes exact
-image and chart tags, node-image aliases `worker-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`,
-and a GitHub prerelease with its own statement. It never moves
-`latest`, an `X.Y` alias, a stable tag, or a floating node-image tag, and beta
-tags never change the stable baseline on `main`.
+image and chart tags, guest-image aliases
+`guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]`, and a GitHub prerelease
+with its own statement. It never moves `latest`, an `X.Y` alias, a stable tag,
+or a floating guest-image tag, and beta tags never change the stable baseline on
+`main`.
 
 A beta is signed under its own identity, so a verifier pinning the `main`
 identity does not accept one: verify it as above with

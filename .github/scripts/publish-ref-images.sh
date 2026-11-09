@@ -42,7 +42,9 @@ registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
 # The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
 components=(c8s-operator nri-image-policy cds armtls-mesh)
-image_repo=node-guest-base
+image_repo=guests/worker
+# One oras artifact and one KubeVirt image per TEE, per commit.
+ref_tags_expected=4
 docker_workflow=docker.yml
 image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
@@ -139,6 +141,19 @@ registry_token() {
     | jq -r '.token // empty'
 }
 
+# ref_tags <repository> <prefix>: the repository's tags that start with prefix.
+# The listing is checked on its own, so an unreadable package is not a missing
+# tag.
+ref_tags() {
+  local repository=$1 prefix=$2 token listing
+  token=$(registry_token "$repository")
+  [ -n "$token" ] || die "no registry token for $registry_namespace/$repository"
+  listing=$(curl -fsS -H "Authorization: Bearer $token" \
+    "https://$registry_host/v2/$registry_namespace/$repository/tags/list") \
+    || die "cannot list $registry_namespace/$repository"
+  jq -r --arg prefix "$prefix" '.tags[]? | select(startswith($prefix))' <<< "$listing" | sort
+}
+
 # tag_exists <repository> <tag>: HEAD on the manifest, any media type.
 tag_exists() {
   local repository=$1 tag=$2 token code
@@ -221,17 +236,21 @@ else
   dispatch_and_wait "$image_workflow" "${image_args[@]}"
 fi
 
-# c8s-image.yml names the tags it pushes; resolve each one before printing it,
-# so a tag this script spells differently is an error rather than a bad hint.
+# The commit's tags as the registry lists them, so a tag spelled differently
+# than c8s-image.yml pushes it is a count error rather than a bad hint.
 echo "images for $short (profile and components from the same commit):"
-for platform in tdx snp; do
-  for tag in "worker-$platform-$short" "worker-$platform-cdi-$short"; do
-    if [ "$dry_run" = true ]; then
-      echo "  would publish $registry_host/$registry_namespace/$image_repo:$tag"
-      continue
-    fi
-    tag_exists "$image_repo" "$tag" \
-      || die "$image_workflow succeeded but $image_repo:$tag is not published"
+tag_prefix="sha-$short-"
+if [ "$dry_run" = true ]; then
+  echo "  would publish $ref_tags_expected $registry_host/$registry_namespace/$image_repo:$tag_prefix* tags"
+else
+  listing=$(ref_tags "$image_repo" "$tag_prefix")
+  published=()
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && published+=("$tag")
+  done <<< "$listing"
+  [ "${#published[@]}" -eq "$ref_tags_expected" ] \
+    || die "$image_workflow succeeded but $image_repo has ${#published[@]} :$tag_prefix* tags, expected $ref_tags_expected: ${published[*]:-none}"
+  for tag in "${published[@]}"; do
     echo "  $registry_host/$registry_namespace/$image_repo:$tag"
   done
-done
+fi
