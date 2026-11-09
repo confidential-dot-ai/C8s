@@ -1416,13 +1416,23 @@ func TestDeniedPlatformImagesSkipsTerminalPods(t *testing.T) {
 
 // The repository is reported for pasting into the floor, so a status that
 // carries the reference only on imageID must still name one.
-func TestImageRepositoryFallsBackToImageID(t *testing.T) {
+func TestImageReferenceFallsBackToImageID(t *testing.T) {
 	const digest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
-	if got, want := imageRepository("", "docker-pullable://calico/node@"+digest), "docker.io/calico/node"; got != want {
-		t.Errorf("imageRepository = %q, want %q", got, want)
+	if got, want := imageReference("", "docker-pullable://calico/node@"+digest, digest), "docker.io/calico/node@"+digest; got != want {
+		t.Errorf("imageReference = %q, want %q", got, want)
 	}
-	if got := imageRepository("", ""); got != "" {
-		t.Errorf("imageRepository with nothing parseable = %q, want empty", got)
+	if got := imageReference("", "", digest); got != digest {
+		t.Errorf("imageReference with nothing parseable = %q, want %q", got, digest)
+	}
+}
+
+func TestPlatformImageLinesNameABareDigestAlone(t *testing.T) {
+	const digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+	pods := []corev1.Pod{daemonSetPod("kube-system", "fluentbit-a", digest, digest)}
+	got := platformImageLines(pods, func(_, _ string) bool { return true })
+	want := []string{"kube-system/fluentbit-a  " + digest}
+	if !slices.Equal(got, want) {
+		t.Errorf("platformImageLines = %#v, want %#v", got, want)
 	}
 }
 
