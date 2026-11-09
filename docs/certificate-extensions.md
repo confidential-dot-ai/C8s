@@ -41,7 +41,7 @@ C8s assigns them under its own Private Enterprise Number:
 | `…1.1` | Self-issued certificates, and leaves whose CSR carried one | The peer's TEE evidence, bound to this certificate's public key | Every verifier that authenticates a peer by this evidence, through its own attestation-api — the node-local service that checks hardware evidence — and `c8s verify`. A verifier that admitted the peer on a mesh CA chain ignores it |
 | `…1.2` | Every leaf CDS signs | SHA-256 of the evidence bytes that authorized the issuance | Nothing reads it; it records which issuance signed this leaf |
 | `…1.4` | A leaf whose request proved a sandbox | The pod sandbox ID the container runtime gave the pod this leaf was issued to | CDS, when it serves secrets and volume keys to that pod; the pod's own injected sidecars, get-cert and the mesh endpoint (`c8s-mesh`), reading their own leaf; `c8s verify --sandbox-id` |
-| `…1.5` | A leaf whose attested container set matched exactly one allowlist entry | The matched entry name, and the allowlist snapshot the match was decided under | The router, before it writes a request to a workload backend; `c8s verify --workload` and `--allowlist` |
+| `…1.5` | A leaf whose attested container set matched exactly one allowlist entry, a Pod CVM's included ([armtls.md](armtls.md#pod-cvm-issuance)) | The matched entry name, and the allowlist snapshot the match was decided under | The router, before it writes a request to a workload backend; `c8s verify --workload` and `--allowlist` |
 
 A leaf is signed by the mesh CA, so `…1.2`, `…1.4` and `…1.5` are statements by
 CDS: they are worth nothing on a certificate whose chain the reader has not
