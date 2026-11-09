@@ -19,7 +19,7 @@ a measured node releases none.
 
 `c8s install` renders the chart embedded in the CLI and runs
 `helm upgrade --install`. `--platform` names the cluster's confidential VMs,
-`aks-snp`, `aks-tdx` or `gke-snp` (unverified on a GKE node), and selects the
+`aks-snp`, `aks-tdx` or `gke-snp`, and selects the
 chart's `values-<platform>.yaml`. Each is node-as-CVM: the node is itself the
 confidential VM, its pods processes inside it ([overview.md](overview.md));
 dotted names here, such as `router.san`, are chart values. A release build
