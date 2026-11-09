@@ -30,6 +30,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "nri-image-policy.runtimeDir" -}}/run/nri-image-policy{{- end -}}
 {{- define "nri-image-policy.cacheDir" -}}/var/lib/nri-image-policy{{- end -}}
 
+{{/* The inventory socket, which the plugin serves (workloadclaims.SocketName). */}}
+{{- define "nri-image-policy.workloadClaimsSocket" -}}
+{{ printf "%s/workload-claims.sock" (include "nri-image-policy.runtimeDir" .) }}
+{{- end -}}
+
 {{/* The namespaces of the pods a node runs for the platform, which are up
      before any enforcer is. */}}
 {{- define "nri-image-policy.platformNamespaces" -}}

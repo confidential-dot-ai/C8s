@@ -88,6 +88,12 @@
   readOnly: true
 {{- end -}}
 
+{{/* The kubelet creates no sandbox while a hostPath of type Socket is missing. */}}
+{{- define "router.pluginReadyGate" -}}
+- name: plugin-ready-gate
+  mountPath: /run/c8s/plugin-ready-gate
+{{- end -}}
+
 {{/* The attestation-api socket at the inventory path get-cert and the
      allowlist proxy compile; cds-attest takes the node's own path, beside the
      measured-policy journal it reads. */}}

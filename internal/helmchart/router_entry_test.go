@@ -408,3 +408,44 @@ func TestChartRouterEntryDeclaresItsHostPorts(t *testing.T) {
 		})
 	}
 }
+
+// The router's sandbox waits on the inventory socket, which exists only once
+// the node's plugin serves: the kubelet holds a pod whose hostPath of type
+// Socket is missing.
+func TestChartRouterWaitsForTheInventorySocket(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	socket := "/run/nri-image-policy/" + workloadclaims.SocketName
+	volume := podVolumeOnHostPath(pod, socket)
+	if volume == nil || volume.HostPath.Type == nil || *volume.HostPath.Type != corev1.HostPathSocket {
+		t.Fatalf("the router pod has no hostPath of type Socket at %s: %+v", socket, pod.Volumes)
+	}
+	if !podMountsVolume(pod, volume.Name) {
+		t.Fatalf("no router container mounts volume %s, so the kubelet does not check it", volume.Name)
+	}
+}
+
+// podVolumeOnHostPath is the pod's volume backed by the host path, or nil.
+func podVolumeOnHostPath(pod corev1.PodSpec, path string) *corev1.Volume {
+	for i, v := range pod.Volumes {
+		if v.HostPath != nil && v.HostPath.Path == path {
+			return &pod.Volumes[i]
+		}
+	}
+	return nil
+}
+
+func podMountsVolume(pod corev1.PodSpec, name string) bool {
+	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
+		for _, m := range c.VolumeMounts {
+			if m.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}

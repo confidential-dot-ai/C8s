@@ -1812,13 +1812,25 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 	} {
 		assertContainerHasArg(t, "allowlist-proxy", proxy.Args, want)
 	}
-	// No TLS or operator key material: the only mount is the read-only
-	// inventory socket directory holding the node's attestation-api.
-	for _, m := range proxy.VolumeMounts {
-		if m.Name != "workload-claims" || !m.ReadOnly {
-			t.Fatalf("allowlist-proxy must not receive TLS or operator private keys: mounts=%v", proxy.VolumeMounts)
-		}
+	// No TLS or operator key material: the inventory socket directory holding
+	// the node's attestation-api, and the sandbox's plugin-ready gate.
+	wantMounts := []string{
+		"plugin-ready-gate",
+		"workload-claims",
 	}
+	if names := sortedMountNames(proxy); !slices.Equal(names, wantMounts) {
+		t.Fatalf("allowlist-proxy must not receive TLS or operator private keys: mounts=%v", proxy.VolumeMounts)
+	}
+}
+
+// sortedMountNames is the volumes a container mounts, by name.
+func sortedMountNames(c corev1.Container) []string {
+	names := make([]string, 0, len(c.VolumeMounts))
+	for _, m := range c.VolumeMounts {
+		names = append(names, m.Name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Both lanes rate-limit /allowlist per client and in aggregate below CDS's

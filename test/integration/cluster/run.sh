@@ -313,6 +313,8 @@ pass "CDS serves the cluster its own launch binds it to"
 # --- Install ---
 
 log "c8s install"
+# The refusal check below reads the plugin's journal from here on.
+INSTALL_SINCE="$(node_exec date +%s)"
 # Without --wait: the installer restarts containerd, and the components wait
 # on the plugin it registers.
 c8s_install "${CDS_INSTALL_FLAGS[@]}" --wait=false || fail "c8s install failed"
@@ -349,11 +351,6 @@ kubectl -n "$NS" rollout status ds/c8s-attestation-api --timeout=300s \
     || fail "the attestation-api DaemonSet (mock) did not become Ready"
 pass "attestation-api DaemonSet Ready on the mock image"
 
-# The router's sandbox predates the plugin, so the mesh gate refuses it for its
-# life. Its namespace is the only gated one with pods yet.
-ROLLED_AT="$(node_exec date +%s)"
-kubectl -n "$ROUTER_NS" delete pod --all
-
 kind get kubeconfig --name "$CLUSTER" > "$WORKDIR/kubeconfig"
 cat > "$WORKDIR/env" <<EOF
 export KUBECONFIG=$WORKDIR/kubeconfig
@@ -373,13 +370,13 @@ log "Control plane"
 kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=300s \
     || fail "c8s-operator not Available"
 # The router serves ports of its own, so it runs in the namespace the mesh
-# policy names.
-if ! kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=300s; then
-    refusal="$(node_exec journalctl -u containerd --no-pager --since "@$ROLLED_AT" | grep -m1 "of pod $ROUTER_NS/.* is refused for its life" || true)"
-    [ -z "$refusal" ] || fail "the mesh gate refused a router pod started after the plugin registered: $refusal"
-    fail "c8s-router not Available"
-fi
-pass "operator, CDS and router all Ready after c8s install"
+# policy names. Its sandbox waits on the plugin's inventory socket.
+kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=300s \
+    || fail "c8s-router not Available"
+refusal="$(node_exec journalctl -t nri-image-policy --no-pager --since "@$INSTALL_SINCE" \
+    | grep "delete the pod to give it one" | grep "\"namespace\":\"$ROUTER_NS\"" || true)"
+[ -z "$refusal" ] || fail "the plugin refused a router pod for its life: $refusal"
+pass "operator, CDS and router all Ready after c8s install, the router started after the plugin"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
 kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null || fail "pod-injector webhook config missing"
