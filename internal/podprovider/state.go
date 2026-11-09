@@ -39,6 +39,8 @@ type record struct {
 	Pod       []byte   `json:"pod"`
 	Entries   string   `json:"entries"`
 	MeshPeers []string `json:"meshPeers"`
+	// ClientDocument is the pod's client document, frozen with it.
+	ClientDocument []byte `json:"clientDocument,omitempty"`
 	// Assignment and ServingKey are written together before the assignment
 	// is first sent, and never changed afterwards.
 	Assignment                 []byte            `json:"assignment,omitempty"`
@@ -79,7 +81,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if !apierrors.IsNotFound(err) {
 		return nil, nil, err
 	}
-	req, frozen, err := r.cfg.launch(pod)
+	req, frozen, clientDocument, err := r.cfg.launch(pod)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pod cannot be launched: %w", err)
 	}
@@ -94,7 +96,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if peers == nil {
 		peers = []string{}
 	}
-	rec = &record{Version: recordVersion, UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, Pod: frozen, Entries: r.cfg.workloads, MeshPeers: peers, instanceIntent: r.cfg.intent(key, req, r.now())}
+	rec = &record{Version: recordVersion, UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, Pod: frozen, Entries: r.cfg.workloads, MeshPeers: peers, ClientDocument: clientDocument, instanceIntent: r.cfg.intent(key, req, r.now())}
 	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
 	deadline := rec.CreatedAt.Add(time.Duration(rec.VerificationTimeoutSeconds) * time.Second)
 	rec.VerificationDeadline = &deadline

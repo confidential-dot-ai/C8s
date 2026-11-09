@@ -223,6 +223,54 @@ Downward API metadata used by the workload are immutable. Unrelated metadata,
 status and finalizer updates remain available, including when new provider
 admission is disabled. Replace a Pod to change its workload.
 
+## Client document
+
+A client can attach a document to a Pod CVM and then check, from the Pod's
+certificate, that the Pod was assigned exactly that document. C8s never
+parses the document. Keep it small and stable: for example, the client's
+public key, a random agent ID of at least 128 bits, and the client's
+signature over both. It must hold no secrets: the control plane can read it.
+
+Set `metadata.annotations["confidential.ai/client-document"]` to the standard
+base64 of the document, at most 16 KiB decoded. The webhook refuses an
+annotation that does not decode or is too large, refuses any change to it
+after creation, and refuses a FieldRef to it.
+
+1. The provider removes the annotation from the frozen Pod and signs the
+   document into the assignment as its own `clientDocument` member. The
+   assignment signature (domain `c8s-pod-assign/v2`) covers its SHA-256, so
+   a changed document fails the guest's signature check. A guest accepts one
+   assignment per boot, so a second document is refused.
+2. The guest binds the document read-only into every container of the Pod at
+   `/run/c8s/client-document`.
+3. The guest puts `H = SHA-256(document)` into its Pod claims as
+   `client_document_digest`. The quote that authorizes each certificate
+   binds the claims, so CDS issues nothing for claims with another digest.
+4. CDS stamps H on the Pod's leaf as the client document digest extension
+   ([certificate-extensions.md](certificate-extensions.md)).
+
+A Pod without the annotation has an empty document: no file, no claim and no
+extension.
+
+The agent label of a Pod is the lowercase, unpadded base32 of the first 16
+bytes of H (26 characters). `armtls.AgentLabel` computes it.
+
+To check a Pod's certificate against a document:
+
+```sh
+c8s verify --kind workload --mesh-ca mesh-ca.pem \
+  --client-document document.bin <POD_ENDPOINT>
+```
+
+The verdict prints the digest and the agent label, and fails unless the leaf
+chains to the mesh CA and names the SHA-256 of `document.bin`.
+
+A Pod CVM leaf carries no hardware evidence: CDS issued it after verifying
+the Pod's attestation. So the verdict rests on the chain to the mesh CA, which
+you pinned after verifying CDS, and on the stamps (`--workload`,
+`--client-document`, `--sandbox-id`). Pins on hardware evidence, such as
+`--measurements` or `--image-manifest`, fail against it.
+
 ## Status and connectivity
 
 Cloud's `running` state does not make a Pod ready. The provider fetches fresh,

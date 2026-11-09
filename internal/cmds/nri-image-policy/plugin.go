@@ -326,6 +326,12 @@ type plugin struct {
 	// (cdsaddress.go).
 	cdsAddress string
 
+	// clientDocument is the guest-side path of a Pod CVM's client document,
+	// bound read-only into every container of the Pod, or "" when the
+	// assignment carried none. prepareClientDocument sets it before any
+	// container can be created.
+	clientDocument string
+
 	// cdiSpecDirs are the CDI spec directories the sandbox policy expands a
 	// container's trusted CDI devices from (cdi.go).
 	cdiSpecDirs []string
@@ -665,10 +671,11 @@ func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest st
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
-// nodeMounts grants no node-service exception to a measured Pod workload.
+// nodeMounts grants no node-service exception to a measured Pod workload;
+// its one guest bind is the client document.
 func (p *plugin) nodeMounts() nodeMounts {
 	if p.cfg.podRole() {
-		return nodeMounts{}
+		return nodeMounts{clientDocument: p.clientDocument}
 	}
 	return nodeMounts{
 		socketDir:  p.cfg.WorkloadClaims.SocketDir,
@@ -1809,7 +1816,10 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	if p.cfg.podRole() {
-		return nil, nil
+		if p.clientDocument == "" {
+			return nil, nil
+		}
+		return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
 	}
 	if fetchesRouteManifest(pod, ctr) {
 		if err := p.refusedUntilFirstDecree(); err != nil {

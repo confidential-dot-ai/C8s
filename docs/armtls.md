@@ -187,7 +187,9 @@ admission, completed containers included: its image digest, effective argv,
 environment commitment, mounts with their named volumes, the platform role the
 guest's measured base binds to it, and `spec_digest`, a domain-separated
 SHA-256 over the argv, environment commitment and mounts that CDS recomputes.
-`pkg/workloadclaims` owns their encoding. The report data is:
+When the Pod has a client document, the claims also carry its SHA-256 as
+`client_document_digest`. `pkg/workloadclaims` owns their encoding. The report
+data is:
 
 ```text
 SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))

@@ -5,6 +5,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -88,6 +90,8 @@ func TestPodClaimsRejectAmbiguousAndIncompleteHistory(t *testing.T) {
 		{"unobserved measurement", func(p *PodClaims) {
 			p.RuntimeExtensions = append(p.RuntimeExtensions, "sha256:"+strings.Repeat("c", 64))
 		}},
+		{"short client document digest", func(p *PodClaims) { p.ClientDocumentDigest = strings.Repeat("d", 62) }},
+		{"uppercase client document digest", func(p *PodClaims) { p.ClientDocumentDigest = strings.Repeat("D", 64) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := testPodClaims(t)
@@ -133,6 +137,7 @@ func TestPodReportDataSeparatesProfilesAndEveryClaim(t *testing.T) {
 	}
 	for _, change := range []func(*PodClaims){
 		func(p *PodClaims) { p.Containers[0].Mounts[0].Volume = "other" }, func(p *PodClaims) { p.Containers[0].Role = "mesh" },
+		func(p *PodClaims) { p.ClientDocumentDigest = strings.Repeat("d", 64) },
 	} {
 		changed := testPodClaims(t)
 		change(&changed)
@@ -196,5 +201,34 @@ func TestPodClaimsSpecDigest(t *testing.T) {
 	forged := bytes.Replace(raw, []byte(base), []byte("sha256:"+strings.Repeat("0", 64)), 1)
 	if _, err := DecodePodClaims(forged); err == nil {
 		t.Fatal("spec_digest disagreeing with the observation accepted")
+	}
+}
+
+// The client document digest is carried only when the assignment had a
+// document, and a document of one more byte is a different digest in the
+// same claims.
+func TestPodClaimsCarryTheClientDocumentDigest(t *testing.T) {
+	p := testPodClaims(t)
+	raw, err := p.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("client_document_digest")) {
+		t.Fatalf("claims without a client document name one: %s", raw)
+	}
+	a, b := sha256.Sum256([]byte("client document")), sha256.Sum256([]byte("client document."))
+	p.ClientDocumentDigest = hex.EncodeToString(a[:])
+	withA, err := p.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodePodClaims(withA)
+	if err != nil || decoded.ClientDocumentDigest != p.ClientDocumentDigest {
+		t.Fatalf("decoded %+v %v", decoded, err)
+	}
+	p.ClientDocumentDigest = hex.EncodeToString(b[:])
+	withB, _ := p.Canonical()
+	if bytes.Equal(withA, withB) {
+		t.Fatal("a tampered document left the claims unchanged")
 	}
 }

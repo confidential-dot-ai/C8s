@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
@@ -178,6 +179,69 @@ func TestPodAttestRejectsExplicitNullNodeLog(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(raw)))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+}
+
+// The leaf names the client document the claims carry, and only that one: a
+// requester that swaps the digest after the guest quoted its claims fails the
+// report-data binding, so CDS issues nothing.
+func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
+	document := sha256.Sum256([]byte("client document"))
+	p := podTestClaims(t, wlDigestA)
+	p.ClientDocumentDigest = hex.EncodeToString(document[:])
+	h, stub := podTestHandler(t, p)
+	req := podRequest(t, h, p)
+	w := postPodRequest(t, h, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d %s", w.Code, w.Body.String())
+	}
+	if got, ok := armtls.ClientDocumentDigest(leafFromAttestResponse(t, w)); !ok || !bytes.Equal(got, document[:]) {
+		t.Fatalf("leaf client document digest = %x %v", got, ok)
+	}
+
+	// The guest quoted the claims with the true digest; the request carries
+	// another. The verifier answers as the hardware does: the report data
+	// CDS expects is not the one in the quote.
+	quoted := podRequest(t, h, p)
+	tampered := p
+	other := sha256.Sum256([]byte("another client document"))
+	tampered.ClientDocumentDigest = hex.EncodeToString(other[:])
+	forged := quoted
+	forged.PodClaims, _ = tampered.Canonical()
+	csr, err := attestation.ParseAndVerifyCSR(quoted.CSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, _ := base64.StdEncoding.DecodeString(quoted.Challenge)
+	inQuote, err := workloadclaims.PodReportData(csr.PublicKey, nonce, quoted.PodClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := workloadclaims.PodReportData(csr.PublicKey, nonce, forged.PodClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(inQuote, expected) {
+		t.Fatal("the client document digest is not bound into the report data")
+	}
+	v := podTestVerdict(t, p)
+	v.ReportDataMatch = teetypes.Ptr(false)
+	stub.SetVerdict(v)
+	if w := postPodRequest(t, h, forged); w.Code == http.StatusOK {
+		t.Fatal("CDS issued for a client document digest the quote does not bind")
+	}
+}
+
+// A Pod without a client document gets no client document digest.
+func TestPodAttestStampsNoClientDocumentWithoutOne(t *testing.T) {
+	p := podTestClaims(t, wlDigestA)
+	h, _ := podTestHandler(t, p)
+	w := postPodRequest(t, h, podRequest(t, h, p))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d %s", w.Code, w.Body.String())
+	}
+	if _, ok := armtls.ClientDocumentDigest(leafFromAttestResponse(t, w)); ok {
+		t.Fatal("leaf names a client document the Pod never had")
+	}
 }
 
 // The leaf names a workload only when the pod's whole observation set matches

@@ -5,16 +5,18 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // AssignedPod is a generic pod document together with the pod assigned to the
-// boot it describes: the pod, its allowlist entries and its mesh peers. The
-// document itself never carries them.
+// boot it describes: the pod, its allowlist entries, its mesh peers and its
+// client document. The document itself never carries them.
 type AssignedPod struct {
 	Document
-	Pod     PodSpec
-	Entries string
+	Pod            PodSpec
+	Entries        string
+	ClientDocument []byte
 }
 
 // Assign derives the validated workload configuration of a generic boot from
@@ -22,7 +24,7 @@ type AssignedPod struct {
 // guest state. The renderer must additionally refuse collisions with the
 // endpoint declaration in its measured floor before the assignment is
 // committed.
-func Assign(doc *Document, manifest, entries, meshPeers []byte) (*AssignedPod, error) {
+func Assign(doc *Document, manifest, entries, meshPeers, clientDocument []byte) (*AssignedPod, error) {
 	if doc == nil || doc.Role != Pod {
 		return nil, errors.New("assignment requires a Pod document")
 	}
@@ -32,6 +34,9 @@ func Assign(doc *Document, manifest, entries, meshPeers []byte) (*AssignedPod, e
 	}
 	if len(manifest) > MaxDocumentSize || len(entries) > MaxDocumentSize || len(meshPeers) > MaxDocumentSize {
 		return nil, errors.New("assignment payload exceeds document limit")
+	}
+	if len(clientDocument) > podassign.MaxClientDocument {
+		return nil, errors.New("assignment client document exceeds its limit")
 	}
 	pod, err := ParsePodManifest(manifest)
 	if err != nil {
@@ -49,6 +54,7 @@ func Assign(doc *Document, manifest, entries, meshPeers []byte) (*AssignedPod, e
 	}
 	assigned.Pod = PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: peers}
 	assigned.Entries = string(entries)
+	assigned.ClientDocument = clientDocument
 	if err := assigned.Pod.validate(); err != nil {
 		return nil, err
 	}

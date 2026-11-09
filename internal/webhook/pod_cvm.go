@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // AnnotationPodCVM opts a Pod into guest-owned execution and mesh injection.
@@ -142,6 +143,10 @@ func validatePodCVMRequest(req admission.Request, old, pod *corev1.Pod, cfg Conf
 func validatePodCVMUpdate(old, pod *corev1.Pod) error {
 	if err := rejectIdentityChange(old, pod); err != nil {
 		return err
+	}
+	// The provider freezes the client document when it first records the Pod.
+	if old.Annotations[workloadclaims.AnnotationClientDocument] != pod.Annotations[workloadclaims.AnnotationClientDocument] {
+		return fmt.Errorf("the %s annotation is fixed when the Pod is created", workloadclaims.AnnotationClientDocument)
 	}
 	if old.Spec.NodeName == "" {
 		return nil

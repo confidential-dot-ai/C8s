@@ -20,7 +20,7 @@ import (
 
 func TestCloudWireContractAndFailureRedaction(t *testing.T) {
 	cfg := fixtureConfig(t)
-	req, _, err := cfg.launch(fixturePod())
+	req, _, _, err := cfg.launch(fixturePod())
 	if err != nil {
 		t.Fatal(err)
 	}

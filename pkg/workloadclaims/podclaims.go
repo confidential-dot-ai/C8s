@@ -22,6 +22,14 @@ import (
 const (
 	PodClaimsVersion  = 1
 	MaxPodClaimsBytes = 1 << 20
+
+	// AnnotationClientDocument carries a Pod CVM's client document, base64:
+	// opaque bytes the client chose, which the provider signs into the
+	// assignment and CDS names on the pod's leaf by their SHA-256.
+	AnnotationClientDocument = "confidential.ai/client-document"
+	// ClientDocumentPath is where every container of a Pod CVM reads its
+	// client document, read-only. It is absent when the document is empty.
+	ClientDocumentPath = "/run/c8s/client-document"
 )
 
 // PodClaims is a guest-owned admission snapshot, authenticated by fresh TDX
@@ -31,15 +39,18 @@ const (
 // each carries its ContainerSpecDigest on the wire as spec_digest.
 // AssignedPodUID is the signed assignment; RuntimePodUID is kubelet's actual
 // static-Pod UID. Neither is substituted for the guest-generated BootID.
+// ClientDocumentDigest is the lowercase hex SHA-256 of the client document
+// the signed assignment carried, empty when it carried none.
 type PodClaims struct {
-	Version           int                `json:"version"`
-	BootID            string             `json:"boot_id"`
-	AssignedPodUID    string             `json:"assigned_pod_uid"`
-	RuntimePodUID     string             `json:"runtime_pod_uid"`
-	SandboxID         string             `json:"sandbox_id"`
-	Revision          uint64             `json:"revision"`
-	RuntimeExtensions []string           `json:"runtime_extensions"`
-	Containers        []SandboxContainer `json:"containers"`
+	Version              int                `json:"version"`
+	BootID               string             `json:"boot_id"`
+	AssignedPodUID       string             `json:"assigned_pod_uid"`
+	RuntimePodUID        string             `json:"runtime_pod_uid"`
+	SandboxID            string             `json:"sandbox_id"`
+	ClientDocumentDigest string             `json:"client_document_digest,omitempty"`
+	Revision             uint64             `json:"revision"`
+	RuntimeExtensions    []string           `json:"runtime_extensions"`
+	Containers           []SandboxContainer `json:"containers"`
 }
 
 // The Pod-only adapter preserves named source volumes, which the legacy node
@@ -56,25 +67,27 @@ type podMountWire struct {
 	Volume string `json:"volume,omitempty"`
 }
 type podClaimsWire struct {
-	Version           int                `json:"version"`
-	BootID            string             `json:"boot_id"`
-	AssignedPodUID    string             `json:"assigned_pod_uid"`
-	RuntimePodUID     string             `json:"runtime_pod_uid"`
-	SandboxID         string             `json:"sandbox_id"`
-	Revision          uint64             `json:"revision"`
-	RuntimeExtensions []string           `json:"runtime_extensions"`
-	Containers        []podContainerWire `json:"containers"`
+	Version              int                `json:"version"`
+	BootID               string             `json:"boot_id"`
+	AssignedPodUID       string             `json:"assigned_pod_uid"`
+	RuntimePodUID        string             `json:"runtime_pod_uid"`
+	SandboxID            string             `json:"sandbox_id"`
+	ClientDocumentDigest string             `json:"client_document_digest,omitempty"`
+	Revision             uint64             `json:"revision"`
+	RuntimeExtensions    []string           `json:"runtime_extensions"`
+	Containers           []podContainerWire `json:"containers"`
 }
 
 func podWire(p PodClaims) podClaimsWire {
 	w := podClaimsWire{
-		Version:           p.Version,
-		BootID:            p.BootID,
-		AssignedPodUID:    p.AssignedPodUID,
-		RuntimePodUID:     p.RuntimePodUID,
-		SandboxID:         p.SandboxID,
-		Revision:          p.Revision,
-		RuntimeExtensions: p.RuntimeExtensions,
+		Version:              p.Version,
+		BootID:               p.BootID,
+		AssignedPodUID:       p.AssignedPodUID,
+		RuntimePodUID:        p.RuntimePodUID,
+		SandboxID:            p.SandboxID,
+		ClientDocumentDigest: p.ClientDocumentDigest,
+		Revision:             p.Revision,
+		RuntimeExtensions:    p.RuntimeExtensions,
 	}
 	for _, c := range p.Containers {
 		mounts := make([]podMountWire, len(c.Mounts))
@@ -119,7 +132,7 @@ func ContainerSpecDigest(c SandboxContainer) string {
 }
 
 func (w podClaimsWire) claims() PodClaims {
-	p := PodClaims{Version: w.Version, BootID: w.BootID, AssignedPodUID: w.AssignedPodUID, RuntimePodUID: w.RuntimePodUID, SandboxID: w.SandboxID, Revision: w.Revision, RuntimeExtensions: w.RuntimeExtensions}
+	p := PodClaims{Version: w.Version, BootID: w.BootID, AssignedPodUID: w.AssignedPodUID, RuntimePodUID: w.RuntimePodUID, SandboxID: w.SandboxID, ClientDocumentDigest: w.ClientDocumentDigest, Revision: w.Revision, RuntimeExtensions: w.RuntimeExtensions}
 	for _, c := range w.Containers {
 		var mounts []allowlist.ObservedMount
 		if c.Mounts != nil {
@@ -135,12 +148,16 @@ func (w podClaimsWire) claims() PodClaims {
 	return p
 }
 
+// PodInstancePrefix starts every Pod CVM instance ID, the sandbox ID a Pod
+// CVM leaf names.
+const PodInstancePrefix = "pcvm-"
+
 // InstanceID names one guest boot and runtime sandbox. Its framing is JSON,
 // so different UID/sandbox boundaries cannot produce the same hash input.
 func (p PodClaims) InstanceID() string {
 	b, _ := json.Marshal([]string{p.BootID, p.RuntimePodUID, p.SandboxID})
 	h := sha256.Sum256(b)
-	return "pcvm-" + hex.EncodeToString(h[:])
+	return PodInstancePrefix + hex.EncodeToString(h[:])
 }
 
 // Canonical returns the sole Pod claims wire encoding: encoding/json's compact
@@ -205,6 +222,12 @@ func (p PodClaims) validate() error {
 	for _, id := range []string{p.AssignedPodUID, p.RuntimePodUID, p.SandboxID} {
 		if armtls.ValidateSandboxID(id) != nil {
 			return fmt.Errorf("invalid Pod claims identity")
+		}
+	}
+	if p.ClientDocumentDigest != "" {
+		h, err := hex.DecodeString(p.ClientDocumentDigest)
+		if err != nil || len(h) != sha256.Size || hex.EncodeToString(h) != p.ClientDocumentDigest {
+			return fmt.Errorf("invalid Pod claims client document digest")
 		}
 	}
 	if len(p.RuntimeExtensions) == 0 || len(p.RuntimeExtensions) > armtls.MaxRuntimeExtensions || len(p.Containers) == 0 {

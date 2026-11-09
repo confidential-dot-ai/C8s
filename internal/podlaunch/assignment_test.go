@@ -1,6 +1,7 @@
 package podlaunch
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +9,10 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const emptyPodEntries = `{"schema":"c8s.allowlist/v1","workloads":{}}`
@@ -22,7 +27,7 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	unchanged := func() bool { after, err := yaml.Marshal(doc); return err == nil && reflect.DeepEqual(before, after) }
-	assigned, err := Assign(&doc, []byte(testPodManifest("")), []byte(testPodWorkloads), []byte(`["192.0.2.1:15006"]`))
+	assigned, err := Assign(&doc, []byte(testPodManifest("")), []byte(testPodWorkloads), []byte(`["192.0.2.1:15006"]`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +69,7 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Assign(&doc, []byte(tc.manifest), []byte(tc.entries), []byte(tc.peers))
+			_, err := Assign(&doc, []byte(tc.manifest), []byte(tc.entries), []byte(tc.peers), nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
@@ -73,11 +78,11 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 			}
 		})
 	}
-	if _, err := Assign(nil, nil, nil, nil); err == nil {
+	if _, err := Assign(nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("nil document accepted")
 	}
 	doc.Role = "agent"
-	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]")); err == nil {
+	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]"), nil); err == nil {
 		t.Fatal("non-Pod role assigned")
 	}
 }
@@ -117,5 +122,35 @@ func TestPodBundleIsGeneric(t *testing.T) {
 			}
 			stageBundleNode(t, dir, podDir)
 		})
+	}
+}
+
+// The signed client document is opaque and bounded; a pod's annotation must be
+// standard base64 of such a document.
+func TestClientDocumentIsOpaqueAndBounded(t *testing.T) {
+	doc, _, _ := testPodDocument(t, "tdx")
+	document := []byte("\x00not json, not yaml")
+	assigned, err := Assign(&doc, []byte(testPodManifest("")), []byte(testPodWorkloads), []byte("[]"), document)
+	if err != nil || string(assigned.ClientDocument) != string(document) {
+		t.Fatalf("assigned %q: %v", assigned.ClientDocument, err)
+	}
+	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(testPodWorkloads), []byte("[]"), make([]byte, podassign.MaxClientDocument+1)); err == nil {
+		t.Fatal("oversized client document assigned")
+	}
+	pod := &corev1.Pod{}
+	if got, err := ClientDocument(pod); err != nil || got != nil {
+		t.Fatalf("a pod without the annotation has document %q: %v", got, err)
+	}
+	for value, ok := range map[string]bool{
+		base64.StdEncoding.EncodeToString(document):                                    true,
+		base64.StdEncoding.EncodeToString(make([]byte, podassign.MaxClientDocument)):   true,
+		base64.StdEncoding.EncodeToString(make([]byte, podassign.MaxClientDocument+1)): false,
+		base64.RawStdEncoding.EncodeToString(document):                                 false,
+		"not base64!": false,
+	} {
+		pod.Annotations = map[string]string{workloadclaims.AnnotationClientDocument: value}
+		if _, err := ClientDocument(pod); (err == nil) != ok {
+			t.Fatalf("annotation %.20q: %v", value, err)
+		}
 	}
 }

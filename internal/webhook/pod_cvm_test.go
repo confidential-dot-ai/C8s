@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -148,6 +149,14 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		{"host secret request", func(p *corev1.Pod) { p.Annotations[AnnotationSecrets] = "TOKEN=/workload/token" }, "host-side injection"},
 		{"platform container", func(p *corev1.Pod) { p.Spec.Containers[0].Name = workloadclaims.MeshContainerName }, "reserved"},
 		{"foreign namespace", func(p *corev1.Pod) { p.Namespace = "other" }, "namespace"},
+		{"client document not base64", func(p *corev1.Pod) { p.Annotations[workloadclaims.AnnotationClientDocument] = "not base64!" }, "standard base64"},
+		{"oversized client document", func(p *corev1.Pod) {
+			p.Annotations[workloadclaims.AnnotationClientDocument] = base64.StdEncoding.EncodeToString(make([]byte, 16<<10+1))
+		}, "exceeds"},
+		{"client document in the environment", func(p *corev1.Pod) {
+			p.Annotations[workloadclaims.AnnotationClientDocument] = "e30="
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "DOC", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.annotations['" + workloadclaims.AnnotationClientDocument + "']"}}}}
+		}, "FieldRef"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podCVMWorkload()
@@ -222,6 +231,27 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 	updated.Status.Phase = corev1.PodRunning
 	for _, subresource := range []string{"", "status"} {
 		assertPodCVMResponse(t, meshConfig(), podCVMRequest(t, old, updated, subresource), true, "")
+	}
+}
+
+// A Pod CVM carries its client document from creation; no update, before or
+// after scheduling, adds, changes or removes it.
+func TestPodCVMClientDocumentIsFixedAtCreation(t *testing.T) {
+	old := podCVMWorkload()
+	old.Annotations[workloadclaims.AnnotationClientDocument] = base64.StdEncoding.EncodeToString([]byte("client document"))
+	if err := routePodCVM(old, true); err != nil {
+		t.Fatal(err)
+	}
+	assertPodCVMResponse(t, podCVMConfig(), podCVMRequest(t, nil, old, ""), true, "")
+	for name, value := range map[string]*string{"changed": new(base64.StdEncoding.EncodeToString([]byte("another document"))), "removed": nil} {
+		t.Run(name, func(t *testing.T) {
+			updated := old.DeepCopy()
+			delete(updated.Annotations, workloadclaims.AnnotationClientDocument)
+			if value != nil {
+				updated.Annotations[workloadclaims.AnnotationClientDocument] = *value
+			}
+			assertPodCVMResponse(t, podCVMConfig(), podCVMRequest(t, old, updated, ""), false, "fixed when the Pod is created")
+		})
 	}
 }
 

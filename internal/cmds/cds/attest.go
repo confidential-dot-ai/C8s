@@ -334,12 +334,19 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
 		return
 	}
+	// The Pod claims carry the client document digest, and the quote binds
+	// the claims (PodReportData), so the leaf can state it.
+	var clientDocument []byte
+	if pod != nil && pod.ClientDocumentDigest != "" {
+		clientDocument, _ = hex.DecodeString(pod.ClientDocumentDigest)
+	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
-		CSR:             csr,
-		TTL:             ttl,
-		Evidence:        evidenceJSON,
-		SandboxID:       sandbox.SandboxID,
-		MatchedWorkload: matched,
+		CSR:                  csr,
+		TTL:                  ttl,
+		Evidence:             evidenceJSON,
+		SandboxID:            sandbox.SandboxID,
+		MatchedWorkload:      matched,
+		ClientDocumentDigest: clientDocument,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
 		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
@@ -383,6 +390,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			"workload", matched.Name,
 			"allowlist_version", matched.AllowlistVersion,
 			"allowlist_digest", hex.EncodeToString(matched.AllowlistDigest))
+	}
+	if clientDocument != nil {
+		issued = append(issued, "client_document_digest", pod.ClientDocumentDigest)
 	}
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")

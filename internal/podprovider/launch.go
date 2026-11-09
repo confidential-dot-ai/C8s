@@ -15,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func identityKey(provider, uid string) string {
@@ -22,38 +23,42 @@ func identityKey(provider, uid string) string {
 	return "podcvm-" + hex.EncodeToString(sum[:20])
 }
 
-// launch freezes the pod and builds the create request for its generic
+// launch freezes the pod and its client document and builds the create request for its generic
 // instance: the signed generic document and the pod's own ingress rules. The
 // frozen pod, the entries and the peers are checked here as the guest will
 // check the assignment, so a pod the guest would refuse is refused before any
 // record exists.
-func (c *Config) launch(pod *corev1.Pod) (createRequest, []byte, error) {
+func (c *Config) launch(pod *corev1.Pod) (createRequest, []byte, []byte, error) {
 	var req createRequest
 	if err := podlaunch.ValidateProviderPod(pod); err != nil {
-		return req, nil, err
+		return req, nil, nil, err
 	}
 	if err := c.fits(pod); err != nil {
-		return req, nil, err
+		return req, nil, nil, err
+	}
+	clientDocument, err := podlaunch.ClientDocument(pod)
+	if err != nil {
+		return req, nil, nil, err
 	}
 	guest := guestPod(pod)
 	manifest, err := json.Marshal(guest)
 	if err != nil {
-		return req, nil, err
+		return req, nil, nil, err
 	}
 	peers, err := json.Marshal(c.peers())
 	if err != nil {
-		return req, nil, err
+		return req, nil, nil, err
 	}
 	doc := c.document(identityKey(c.ProviderID, string(pod.UID)))
-	if _, err := podlaunch.Assign(&doc, manifest, []byte(c.workloads), peers); err != nil {
-		return req, nil, err
+	if _, err := podlaunch.Assign(&doc, manifest, []byte(c.workloads), peers, clientDocument); err != nil {
+		return req, nil, nil, err
 	}
 	ports, err := podmesh.IngressPorts(guest)
 	if err != nil {
-		return req, nil, err
+		return req, nil, nil, err
 	}
 	req, err = c.signedRequest(doc, ports)
-	return req, manifest, err
+	return req, manifest, clientDocument, err
 }
 
 // peers is the operator-configured peer list, never nil: the assignment
@@ -111,6 +116,8 @@ func guestPod(pod *corev1.Pod) *corev1.Pod {
 	p.ObjectMeta = metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Labels: maps.Clone(pod.Labels), Annotations: maps.Clone(pod.Annotations)}
 	delete(p.Annotations, Annotation)
 	delete(p.Annotations, endpointsAnnotation)
+	// The client document travels as its own signed assignment member.
+	delete(p.Annotations, workloadclaims.AnnotationClientDocument)
 	for k := range p.Annotations {
 		if strings.HasPrefix(k, "kubernetes.io/config.") {
 			delete(p.Annotations, k)

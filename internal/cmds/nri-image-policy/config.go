@@ -2,6 +2,9 @@ package nriimagepolicy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -55,6 +59,36 @@ type podConfig struct {
 	Namespace string            `yaml:"namespace"`
 	Name      string            `yaml:"name"`
 	Images    map[string]string `yaml:"images"`
+	// ClientDocument is the signed assignment's client document, empty when
+	// it carried none. Its digest goes into the Pod claims and every
+	// container reads it at workloadclaims.ClientDocumentPath.
+	ClientDocument clientDocument `yaml:"client_document,omitempty"`
+}
+
+// clientDocument is opaque bytes, standard base64 in the configuration.
+type clientDocument []byte
+
+func (d *clientDocument) UnmarshalYAML(node *yaml.Node) error {
+	var value string
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(decoded) > podassign.MaxClientDocument {
+		return errors.New("pod.client_document must be standard base64 of a bounded client document")
+	}
+	*d = decoded
+	return nil
+}
+
+// digest is the client document's lowercase hex SHA-256, empty for an empty
+// document.
+func (d clientDocument) digest() string {
+	if len(d) == 0 {
+		return ""
+	}
+	h := sha256.Sum256(d)
+	return hex.EncodeToString(h[:])
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]

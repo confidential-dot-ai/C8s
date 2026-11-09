@@ -274,3 +274,42 @@ func heldUID(t *testing.T, rec *httptest.ResponseRecorder) string {
 	}
 	return body.UID
 }
+
+// The signed client document reaches the guest renderer unchanged and
+// survives a restart; a document altered after signing is refused, and a
+// second assignment with another document cannot replace the first.
+func TestAssignmentCarriesTheSignedClientDocument(t *testing.T) {
+	s, key, peer, store := assignmentFixture(t)
+	var rendered [][]byte
+	render := s.render
+	s.render = func(d *podlaunch.AssignedPod) (nodeservices.PodRuntime, error) {
+		rendered = append(rendered, bytes.Clone(d.ClientDocument))
+		return render(d)
+	}
+	withDocument := func(uid, document string) podassign.Request {
+		req := issuedAssignment(t, s, key, peer, uid)
+		req.ClientDocument = []byte(document)
+		signed, err := podassign.Sign(key, peer, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
+	}
+	tampered := withDocument("pod-a", "client document")
+	tampered.ClientDocument[0] ^= 1
+	if rec := postAssignment(s, peer, encodeAssignment(t, tampered)); rec.Code != http.StatusUnauthorized || len(rendered) != 0 {
+		t.Fatalf("altered client document: code=%d rendered=%d", rec.Code, len(rendered))
+	}
+	if rec := postAssignment(s, peer, encodeAssignment(t, withDocument("pod-a", "client document"))); rec.Code != http.StatusOK {
+		t.Fatalf("assignment: %d %s", rec.Code, rec.Body)
+	}
+	if rec := postAssignment(s, peer, encodeAssignment(t, withDocument("pod-a", "another document"))); rec.Code != http.StatusConflict {
+		t.Fatalf("second assignment: %d", rec.Code)
+	}
+	if _, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered) != 2 || string(rendered[0]) != "client document" || string(rendered[1]) != "client document" {
+		t.Fatalf("rendered client documents %q", rendered)
+	}
+}
