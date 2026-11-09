@@ -6,10 +6,13 @@ import (
 	"context"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestBuildHelmUninstallArgs(t *testing.T) {
@@ -224,6 +227,81 @@ func TestSweepImageTag(t *testing.T) {
 	}
 }
 
+// What a sweep came to, per node, is what the uninstall reports: the node
+// whose image policy refused the sweep carries the refusal and needs the
+// plugin removed on the node itself; the node that swept is not named.
+func TestUnfinishedSweepReport(t *testing.T) {
+	cfg := hostUninstallConfig{
+		ContainerdConfigDir: "/etc/containerd",
+		RestartCommand:      hostRestartCommand,
+		NriPluginDir:        "/opt/nri/plugins",
+		NriPluginFilename:   "10-nri-image-policy",
+	}
+	waiting := func(reason, message string) corev1.ContainerState {
+		return corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason, Message: message}}
+	}
+	exited := func(code int32) corev1.ContainerState {
+		return corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: code, Reason: "Error"}}
+	}
+	for _, tc := range []struct {
+		name        string
+		pods        []corev1.Pod
+		lines       []string
+		nodeRemoval bool
+	}{
+		{
+			name:        "no pod anywhere",
+			lines:       []string{"  the sweep DaemonSet has no pod on any node"},
+			nodeRemoval: true,
+		},
+		{
+			name:  "the sweep ran and failed",
+			pods:  []corev1.Pod{sweepStatePod("sweep-c", "node-c", exited(1))},
+			lines: []string{"  node-c: the sweep exited 1 (Error)"},
+		},
+		{
+			name: "refused, not yet sandboxed, swept",
+			pods: []corev1.Pod{
+				sweepStatePod("sweep-a", "node-a", corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}),
+				sweepStatePod("sweep-b", "node-b", waiting("CreateContainerError", "image policy denied")),
+				sweepStatePod("sweep-d", "node-d", waiting("PodInitializing", "")),
+			},
+			lines: []string{
+				"  node-b: the kubelet has not started the sweep: CreateContainerError: image policy denied",
+				"  node-d: the kubelet has not started the sweep: PodInitializing",
+			},
+			nodeRemoval: true,
+		},
+		{
+			name:        "a pod the scheduler placed nowhere",
+			pods:        []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "sweep-e"}, Status: corev1.PodStatus{Phase: corev1.PodPending}}},
+			lines:       []string{"  pod sweep-e: the kubelet reports no sweep container (the pod is Pending)"},
+			nodeRemoval: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.lines
+			if tc.nodeRemoval {
+				want = append(slices.Clone(tc.lines), nodeRemovalSteps(cfg))
+			}
+			if got := unfinishedSweepReport(tc.pods, cfg); !reflect.DeepEqual(got, want) {
+				t.Errorf("report =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+func sweepStatePod(name, node string, state corev1.ContainerState) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       corev1.PodSpec{NodeName: node},
+		Status: corev1.PodStatus{
+			Phase:                 corev1.PodPending,
+			InitContainerStatuses: []corev1.ContainerStatus{{Name: sweepContainerName, State: state}},
+		},
+	}
+}
+
 func TestHostSweepDaemonSetShape(t *testing.T) {
 	cfg := hostUninstallConfig{
 		ContainerdConfigDir: "/etc/containerd",
@@ -263,6 +341,9 @@ func TestHostSweepDaemonSetShape(t *testing.T) {
 	}
 	if !pod.HostPID {
 		t.Error("hostPID = false, want true")
+	}
+	if !pod.HostNetwork {
+		t.Error("hostNetwork = false, want true")
 	}
 
 	if len(pod.InitContainers) != 1 {

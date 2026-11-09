@@ -3,7 +3,6 @@
 package helmchart
 
 import (
-	"strings"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -29,16 +28,39 @@ func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
 	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sleep", "2147483648"})
 }
 
+// A node whose plugin restarted before the sweep ran has no served allowlist,
+// so the boot base is what must admit the sweep.
+func TestChartBootConfigAdmitsTheHostSweepArgv(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	base := &cfg.Allowlist.Base
+
+	admitArgvs(t, base, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript()})
+	admitArgvs(t, base, baseNRIDigest, []string{"/bin/sleep", "2147483647"})
+	denyArgvs(t, base, baseNRIDigest, []string{"/bin/sh", "-c", HostSweepScript() + "\nrm -rf /"})
+	denyArgvs(t, base, baseNRIDigest, installerArgv(t, out))
+}
+
+func installerArgv(t *testing.T, manifest string) []string {
+	t.Helper()
+	worker := renderedDaemonSet(t, manifest, "c8s-nri-image-policy-worker")
+	install, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "install")
+	if !ok {
+		t.Fatal("the installer DaemonSet has no install init container")
+	}
+	return effectiveArgv(install)
+}
+
 // c8s uninstall replays the pinned sweep argvs out of the release's seed
-// (resolveSweepArgvs), identifying the shapes by content: the script carries
-// the script's own "c8s host sweep" banner; the pause is the entry's one
-// shape not running /bin/sh -c. Each rule must match exactly one pinned
-// container — a second match makes the replay ambiguous and fails it closed.
+// (resolveSweepArgvs): the script is the IsHostSweepScript shape, the pause
+// the entry's one shape not running /bin/sh -c. Two matches for either rule
+// make the replay ambiguous and fail it closed.
 func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
 	t.Parallel()
-	if !strings.Contains(HostSweepScript(), "c8s host sweep") {
-		t.Fatal("HostSweepScript lost its \"c8s host sweep\" banner — resolveSweepArgvs selects the script shape by it")
-	}
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -63,7 +85,7 @@ func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
 		if len(argv) == 0 {
 			continue
 		}
-		if strings.Contains(argv[len(argv)-1], "c8s host sweep") {
+		if IsHostSweepScript(argv) {
 			scriptHits++
 		}
 		if argv[0] != "/bin/sh" || len(argv) == 1 || argv[1] != "-c" {

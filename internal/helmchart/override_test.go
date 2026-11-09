@@ -82,7 +82,7 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 	entry := seed.Workloads[pinned[0]]
 	narrowed := 0
 	for i, c := range entry.Containers {
-		if c.Args.Policy == pkgallowlist.PolicyExact && len(c.Args.Argv) == 1 && strings.Contains(c.Args.Argv[0], "c8s host sweep") {
+		if c.Args.Policy == pkgallowlist.PolicyExact && len(c.Args.Argv) == 1 && IsHostSweepScript(c.Args.Argv) {
 			entry.Containers[i].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny}
 			narrowed++
 		}
@@ -108,7 +108,7 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 		t.Fatalf("seed entries for the installer digest = %v, want only the override %s", got, override)
 	}
 	for _, c := range seed.Workloads[override].Containers {
-		if len(c.Args.Argv) == 1 && strings.Contains(c.Args.Argv[0], "c8s host sweep") && c.Mounts.Policy != pkgallowlist.PolicyDeny {
+		if len(c.Args.Argv) == 1 && IsHostSweepScript(c.Args.Argv) && c.Mounts.Policy != pkgallowlist.PolicyDeny {
 			t.Errorf("host-sweep mounts = %s, want the override's deny", c.Mounts.Policy)
 		}
 	}

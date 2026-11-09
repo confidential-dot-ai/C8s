@@ -3544,17 +3544,10 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 	}
 
 	// The same derived base must reach the worker plugin's base,
-	// decoded as typed config (not substring-matched). The nri digest is
-	// excluded: base is digest-only admission, and the installer is
-	// argv-pinned by the seed.
+	// decoded as typed config (not substring-matched). The nri digest
+	// reaches it under the host sweep's argv pin alone.
 	worker := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
 	for digest, ref := range want {
-		if digest == nriD {
-			if _, ok := baseImages(worker.Allowlist.Base)[digest]; ok {
-				t.Errorf("worker base carries the nri digest — the argv pin would be bypassed\nfloor: %v", baseImages(worker.Allowlist.Base))
-			}
-			continue
-		}
 		if got := baseImages(worker.Allowlist.Base)[digest]; got != ref {
 			t.Errorf("worker base[%s] = %q, want %q\nfloor: %v", digest, got, ref, baseImages(worker.Allowlist.Base))
 		}

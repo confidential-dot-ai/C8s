@@ -37,7 +37,9 @@ component digest, verbatim. `c8s.baseWorkloads` renders the host plugin's boot
 base, excluding `c8s.argvPinnedDigests`: each `c8s.componentShapes` image with
 its containers, each `c8s.openArgsEntries` digest under the command it pins or
 under any (`c8s.openArgsContainer`), and each `c8s.pinnedComponentEntries`
-container. The component shapes keep their own entry, named as in the seed;
+container, plus `c8s.hostSweepWorkloads`: the host sweep's own entry, which a
+node with no served allowlist admits the sweep from. The component shapes keep
+their own entry, named as in the seed;
 the operator's containers for a digest share one named
 `c8s.digestWorkloadName`, so each entry's per-variable evidence budget counts
 only its own containers. Workloads that pin
@@ -184,7 +186,7 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | always | Install script, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+| NRI installer | always | Install script, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep containers (`c8s.hostSweepContainers`): the sweep script and its `/bin/sleep 2147483647` pause |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image
@@ -207,8 +209,13 @@ new entry name for additive seeding.
 calling `argvPinnedEntries` there would recurse through the install script's
 boot config. Keep the inclusion conditions of both helpers aligned.
 
+`c8s.hostSweepContainers` is rendered into the boot base too
+(`c8s.hostSweepWorkloads`): the sweep is the one launch a node with no served
+allowlist must still admit.
+
 [pinned_seed_test.go](../../../../internal/helmchart/pinned_seed_test.go) checks rendered invocations and mounts,
-rejection of different argv, and exclusion from the boot config's local base.
+rejection of different argv, and what of the image the boot config's local base
+admits.
 The operator-facing bootstrap behavior is described in
 [Allowlist and capabilities](../../../../docs/allowlist-and-capabilities.md#bootstrap).
 

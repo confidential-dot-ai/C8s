@@ -481,7 +481,9 @@
      across entries, so keeping the operator's containers apart from the
      chart's admits the same launches and leaves each entry's per-variable
      evidence budget to its own containers. The boot config excludes
-     argv-pinned images, which are admitted by the served seed. Takes root and
+     argv-pinned images, which the served seed admits, except the host
+     sweep's containers (c8s.hostSweepContainers): a node with no served
+     allowlist admits the sweep from the base alone. Takes root and
      templates, the chart's component pod templates. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $root := .root -}}
@@ -525,6 +527,9 @@
 {{- end -}}
 {{- end -}}
 {{- range $name, $entry := (include "c8s.roleFloorWorkloads" (dict "root" $root "templates" .templates) | fromJson) -}}
+{{- $_ := set $workloads $name $entry -}}
+{{- end -}}
+{{- range $name, $entry := (include "c8s.hostSweepWorkloads" $root | fromJson) -}}
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{ $workloads | toJson }}
@@ -725,14 +730,37 @@ null
 {{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) ($matched | toJson | sha256sum | trunc 8) -}}
 {{- end -}}
 
+{{/* The two containers of the `c8s uninstall` host-sweep pod: the sweep
+     script under /bin/sh -c and the pause that holds the pod. Values and
+     files only, so the boot base includes it without recursing through the
+     install script. */}}
+{{- define "c8s.hostSweepContainers" -}}
+{{- $img := .Values.nriImagePolicy.image -}}
+{{- $digest := required "nriImagePolicy.image.digest is required (the host sweep is admitted argv-pinned; a tag cannot be pinned)" $img.digest -}}
+{{- $ref := printf "%s@%s" $img.repository $digest -}}
+{{- $script := printf "%s\n" (regexReplaceAll "\n+$" (include "nri-image-policy.hostSweepScript" .) "") -}}
+{{- $containers := list -}}
+{{- /* The sweep reaches the host through mounts exact rules cannot express. */ -}}
+{{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" (dict "policy" "exact" "argv" (list "/bin/sh" "-c")) "args" (dict "policy" "exact" "argv" (list $script))) -}}
+{{- $containers = append $containers (dict "digest" $digest "image" $ref "command" (dict "policy" "exact" "argv" (list "/bin/sleep")) "args" (dict "policy" "exact" "argv" (list "2147483647"))) -}}
+{{ $containers | toJson }}
+{{- end -}}
+
+{{/* The boot base's host-sweep entry, as a workloads dict of one. */}}
+{{- define "c8s.hostSweepWorkloads" -}}
+{{- $containers := include "c8s.hostSweepContainers" . | fromJsonArray -}}
+{{- $first := first $containers -}}
+{{- $ref := get $first "image" -}}
+{{- $name := include "c8s.shapeWorkloadName" (dict "digest" (get $first "digest") "image" $ref "containers" $containers) -}}
+{{ dict $name (dict "label" $ref "initContainers" list "containers" $containers) | toJson }}
+{{- end -}}
+
 {{/* See ../helpers/allowlist/README.md#argv-pinned-entries for the seed contract. */}}
 {{- define "c8s.argvPinnedEntries" -}}
 {{- $entries := dict -}}
 {{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
-{{- $sweep := printf "%s\n" (regexReplaceAll "\n+$" (include "nri-image-policy.hostSweepScript" .) "") -}}
 {{- /* `c8s uninstall` sweeps in the installer's image, so its entry also
-       pins the sweep script and the pause that holds its pod
-       (cmd/c8s/uninstall.go). */ -}}
+       carries the host-sweep containers. */ -}}
 {{- $img := .Values.nriImagePolicy.image -}}
 {{- $digest := required "nriImagePolicy.image.digest is required (the installer is admitted argv-pinned; a tag cannot be pinned)" $img.digest -}}
 {{- $ref := printf "%s@%s" $img.repository $digest -}}
@@ -741,8 +769,7 @@ null
 {{- $containers := list -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" $script ""))))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list (include "nri-image-policy.pluginReadyScript" .)))) -}}
-{{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list $sweep))) -}}
-{{- $containers = append $containers (dict "digest" $digest "image" $ref "command" (dict "policy" "exact" "argv" (list "/bin/sleep")) "args" (dict "policy" "exact" "argv" (list "2147483647"))) -}}
+{{- $containers = concat $containers (include "c8s.hostSweepContainers" . | fromJsonArray) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $ref "containers" $containers) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
 {{ $entries | toJson }}

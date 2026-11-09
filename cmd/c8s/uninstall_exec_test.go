@@ -15,6 +15,8 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -42,9 +44,9 @@ type uninstallStubs struct {
 }
 
 // newUninstallStubs wires stub helm/kubectl for `c8s uninstall` runs.
-// valuesFile == "" makes `helm get values` answer release-not-found. Every
-// node query answers one Ready node, and every other kubectl query not
-// overridden by extra answers empty (no pods), which is the healthy
+// valuesFile == "" makes `helm get values` answer release-not-found. The node
+// query answers one node, the sweep-pod query no pod, and every other kubectl
+// query not overridden by extra answers empty (no pods), which is the healthy
 // post-drain cluster.
 func newUninstallStubs(t *testing.T, valuesFile, kubectlExtra string, helmUninstallFails bool) *uninstallStubs {
 	t.Helper()
@@ -65,7 +67,8 @@ uninstall) `+fail+` ;;
 esac`)
 	f.tool(t, "kubectl", `case "$*" in
 `+kubectlExtra+`"apply -f -") /bin/cat >> '`+s.applied+`' ;;
-"get nodes -l "*) /usr/bin/printf 'node-a\tTrue\n' ;;
+"get nodes -l "*) /usr/bin/printf 'node/node-a\n' ;;
+"get pods -n c8s-system -l "*"component=host-sweep -o json") /bin/echo '{"items":[]}' ;;
 esac`)
 	return s
 }
@@ -709,25 +712,71 @@ func TestUninstallSweepReplayNamesAMissingLIOStep(t *testing.T) {
 	}
 }
 
-// A sweep pod cannot start on a NotReady node, so the uninstall stops before
-// helm waits on one, and names the node-level recovery.
-func TestUninstallStopsAtNotReadySweepNodes(t *testing.T) {
-	s := newUninstallStubs(t, hostReleaseValuesFile(t), `"get nodes -l `+linuxNodeSelector()+` -o jsonpath"*) /usr/bin/printf 'node-a\tTrue\nnode-b\tUnknown\nnode-c\tFalse\nnode-d\t\n' ;;
-`, false)
-	err := runC8s(t, "uninstall")
-	if err == nil || !strings.Contains(err.Error(), "nodes node-b (Ready=Unknown), node-c (Ready=False), node-d (no Ready condition) do not report themselves Ready") || !strings.Contains(err.Error(), "delete /opt/nri/plugins/10-nri-image-policy, and run 'systemctl restart containerd'") {
-		t.Fatalf("want a refusal naming the nodes that are not Ready and the recovery, got %v", err)
-	}
-	mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
-}
-
 // A selector no node matches stops the uninstall rather than check no node.
 func TestUninstallRefusesSweepNodesItCannotName(t *testing.T) {
-	s := newUninstallStubs(t, hostReleaseValuesFile(t), `"get nodes -l `+linuxNodeSelector()+` -o jsonpath"*) ;;
+	s := newUninstallStubs(t, hostReleaseValuesFile(t), `"get nodes -l `+linuxNodeSelector()+` -o name") ;;
 `, false)
 	err := runC8s(t, "uninstall")
 	if err == nil || !strings.Contains(err.Error(), "no node matches "+linuxNodeSelector()) {
 		t.Fatalf("want a refusal naming the selector, got %v", err)
 	}
 	mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
+}
+
+func sweepPod(name, node string, state corev1.ContainerState) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "c8s-system"},
+		Spec:       corev1.PodSpec{NodeName: node},
+		Status: corev1.PodStatus{
+			Phase:                 corev1.PodPending,
+			InitContainerStatuses: []corev1.ContainerStatus{{Name: sweepContainerName, State: state}},
+		},
+	}
+}
+
+func sweepPodsStub(t *testing.T, pods ...corev1.Pod) string {
+	t.Helper()
+	data, err := json.Marshal(corev1.PodList{Items: pods})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sweep-pods.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return `"get pods -n c8s-system -l ` + hostSweepSelector("c8s") + ` -o json") /bin/cat '` + path + `' ;;
+`
+}
+
+const rolloutFailureStub = `"rollout status daemonset/c8s-host-sweep -n c8s-system --timeout=5m") exit 1 ;;
+`
+
+// Node Ready says nothing about whether a node can run the sweep, so the
+// uninstall reads each node's sweep container instead.
+func TestUninstallNamesWhatEachNodesSweepCameTo(t *testing.T) {
+	pods := sweepPodsStub(t,
+		sweepPod("c8s-host-sweep-aaaa", "node-a", corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{ExitCode: 0},
+		}),
+		sweepPod("c8s-host-sweep-bbbb", "node-b", corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerError", Message: "image policy denied"},
+		}),
+	)
+	newUninstallStubs(t, hostReleaseValuesFile(t), rolloutFailureStub+pods, false)
+	err := runC8s(t, "uninstall")
+	if err == nil {
+		t.Fatal("want the sweep-incomplete error, got nil")
+	}
+	for _, want := range []string{
+		"node-b: the kubelet has not started the sweep: CreateContainerError: image policy denied",
+		"delete /opt/nri/plugins/10-nri-image-policy, and run 'systemctl restart containerd'",
+		"logs ds/c8s-host-sweep -c sweep",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not carry %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "node-a") {
+		t.Errorf("the error names node-a, whose sweep finished:\n%v", err)
+	}
 }
