@@ -23,7 +23,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -239,10 +238,10 @@ type policyConfig struct {
 	// enforce; see sandbox.go and docs/allowlist-and-capabilities.md.
 	Sandbox sandboxMode `yaml:"sandbox"`
 
-	// Admitted by ExemptDigests, see docs/getcert-workload-binding.md — Corner 8.
+	// Admitted by ExemptRepositories, see docs/getcert-workload-binding.md — Corner 8.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
-	// The image digests each exempt namespace admits. Required with ExemptNamespaces.
-	ExemptDigests map[string][]string `yaml:"exempt_digests"`
+	// The image repository prefixes each exempt namespace admits. Required with ExemptNamespaces.
+	ExemptRepositories ExemptRepositories `yaml:"exempt_repositories"`
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
@@ -608,7 +607,7 @@ func (c *config) Validate() error {
 			return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
 		}
 	}
-	if err := c.validateExemptDigests(); err != nil {
+	if err := c.validateExemptRepositories(); err != nil {
 		return err
 	}
 	if err := c.validateMesh(); err != nil {
@@ -623,23 +622,19 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
-func (c *config) validateExemptDigests() error {
+func (c *config) validateExemptRepositories() error {
 	for _, namespace := range c.Policy.ExemptNamespaces {
-		digests := c.Policy.ExemptDigests[namespace]
-		if len(digests) == 0 {
-			return fmt.Errorf("policy.exempt_namespaces %q requires policy.exempt_digests[%q]: `c8s install` reads the images each exempt namespace runs and renders them there", namespace, namespace)
+		prefixes := c.Policy.ExemptRepositories[namespace]
+		if len(prefixes) == 0 {
+			return fmt.Errorf("policy.exempt_namespaces %q requires policy.exempt_repositories[%q]: the namespace admits the provider's add-on repositories, which the chart's platform values name", namespace, namespace)
 		}
-		for _, digest := range digests {
-			if !types.IsCanonicalDigest(digest) {
-				return fmt.Errorf("policy.exempt_digests[%q] holds %q: admission compares the content store's own form, sha256:<64 lowercase hex>", namespace, digest)
+		for _, prefix := range prefixes {
+			if err := validRepositoryPrefix(prefix); err != nil {
+				return fmt.Errorf("policy.exempt_repositories[%q] holds %q: %w", namespace, prefix, err)
 			}
 		}
 	}
 	return nil
-}
-
-func (p *policyConfig) exemptsDigest(namespace, digest string) bool {
-	return slices.Contains(p.ExemptDigests[namespace], digest)
 }
 
 func (c *config) validatePod() error {

@@ -3670,9 +3670,9 @@ type installerBootConfig struct {
 		} `yaml:"push"`
 	} `yaml:"allowlist"`
 	Policy struct {
-		Mode             string              `yaml:"mode"`
-		ExemptNamespaces []string            `yaml:"exempt_namespaces"`
-		ExemptDigests    map[string][]string `yaml:"exempt_digests"`
+		Mode               string              `yaml:"mode"`
+		ExemptNamespaces   []string            `yaml:"exempt_namespaces"`
+		ExemptRepositories map[string][]string `yaml:"exempt_repositories"`
 	} `yaml:"policy"`
 	Containerd struct {
 		Socket string `yaml:"socket"`
@@ -3759,22 +3759,23 @@ func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-	if len(cfg.Policy.ExemptNamespaces) != 0 || len(cfg.Policy.ExemptDigests) != 0 {
+	if len(cfg.Policy.ExemptNamespaces) != 0 || len(cfg.Policy.ExemptRepositories) != 0 {
 		t.Errorf("worker boot config exempts %v from image admission, admitting %v",
-			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptDigests)
+			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptRepositories)
 	}
 }
 
 // Setting nriImagePolicy.policy.exemptNamespaces renders the exempt_namespaces
-// list, and exemptDigests the per-namespace digest set admission reads there —
-// the set `c8s install` computes. Decoding through yaml.v3 also proves the
-// block does not collide with the rest of the boot config.
+// list, and exemptRepositories the per-namespace repository prefixes admission
+// reads there. Decoding through yaml.v3 also proves the block does not collide
+// with the rest of the boot config.
 func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	t.Parallel()
-	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	const prefix = "mcr.microsoft.com/oss/kubernetes/"
 	out, err := helmTemplate(t,
 		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gatekeeper-system}",
-		"--set-string", "nriImagePolicy.policy.exemptDigests.kube-system[0]="+digest,
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.kube-system[0]="+prefix,
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.gatekeeper-system[0]="+prefix,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -3783,14 +3784,93 @@ func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	if got := cfg.Policy.ExemptNamespaces; !slices.Equal(got, []string{"kube-system", "gatekeeper-system"}) {
 		t.Errorf("exempt_namespaces = %v, want [kube-system gatekeeper-system]", got)
 	}
-	if got := cfg.Policy.ExemptDigests; !slices.Equal(got["kube-system"], []string{digest}) {
-		t.Errorf("exempt_digests = %v, want kube-system: [%s]", got, digest)
+	if got := cfg.Policy.ExemptRepositories; !slices.Equal(got["kube-system"], []string{prefix}) {
+		t.Errorf("exempt_repositories = %v, want kube-system: [%s]", got, prefix)
 	}
 }
 
-// exemptDigestArgs render a digest set for the chart's exempt namespace.
-var exemptDigestArgs = []string{
-	"--set-string", "nriImagePolicy.policy.exemptDigests.kube-system[0]=sha256:1111111111111111111111111111111111111111111111111111111111111111",
+// A stock platform file names the provider's add-on repositories, which the
+// render requires of every namespace it exempts.
+func TestChartRefusesAnExemptNamespaceWithoutRepositories(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplatePlatform(t, "aks-snp",
+		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}",
+	)
+	if err == nil {
+		t.Fatalf("chart rendered an exemption that admits no image\n%s", out)
+	}
+	if !strings.Contains(out, "exemptRepositories.gmp-system is unset") {
+		t.Errorf("render failed without naming the namespace without repositories: %s", out)
+	}
+}
+
+// GKE serves its add-ons from the Artifact Registry release mirror, whose host
+// carries the cluster's region.
+const gkeReleaseMirror = "us-central1-artifactregistry.gcr.io/gke-release/gke-release/"
+
+// A platform file's exemption must admit the add-on images its provider runs in
+// kube-system on a fresh cluster: AKS 1.36.4, GKE 1.37.1-gke.1552000.
+func TestPlatformExemptionAdmitsTheProviderAddOns(t *testing.T) {
+	t.Parallel()
+	aksAddOns := []string{
+		"mcr.microsoft.com/oss/v2/kubernetes/kube-proxy:v1.36.4",
+		"mcr.microsoft.com/oss/v2/kubernetes-csi/azuredisk-csi:v1.33.3",
+		"mcr.microsoft.com/containernetworking/v2/azure-cns:v1.6.26",
+		"mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2:v0.1.16-22",
+		"mcr.microsoft.com/azurelinux/distroless/base:3.0",
+	}
+	addOns := map[string][]string{
+		"aks-snp": aksAddOns,
+		"aks-tdx": aksAddOns,
+		"gke-snp": {
+			gkeReleaseMirror + "kube-proxy:v1.37.1-gke.1552000",
+			gkeReleaseMirror + "gke-metrics-collector:1.2.3",
+			gkeReleaseMirror + "node_token_broker/init:v1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+		},
+	}
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			images := addOns[platform]
+			if len(images) == 0 {
+				t.Fatalf("no %s add-on images recorded, so its exemption is unproven", platform)
+			}
+			out, err := helmTemplatePlatform(t, platform)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+			exempt := nriimagepolicy.ExemptRepositories(cfg.Policy.ExemptRepositories)
+			for _, image := range images {
+				if !exempt.Admits("kube-system", image) {
+					t.Errorf("%s denies %s in kube-system, which the provider runs there", platform, image)
+				}
+			}
+		})
+	}
+}
+
+// GKE runs its managed Prometheus and kube-state-metrics in namespaces of its
+// own, which the gke-snp exemption admits on the release mirror.
+func TestGKEExemptsItsManagedNamespacesOnTheReleaseMirror(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplatePlatform(t, "gke-snp")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	exempt := nriimagepolicy.ExemptRepositories(cfg.Policy.ExemptRepositories)
+	for namespace, image := range map[string]string{
+		"gmp-system":      gkeReleaseMirror + "prometheus:v2.53.4",
+		"gke-managed-cim": gkeReleaseMirror + "kube-state-metrics:v2.10.1",
+	} {
+		if !slices.Contains(cfg.Policy.ExemptNamespaces, namespace) {
+			t.Errorf("exempt_namespaces = %v, want %s exempt", cfg.Policy.ExemptNamespaces, namespace)
+		}
+		if !exempt.Admits(namespace, image) {
+			t.Errorf("gke-snp denies %s in %s", image, namespace)
+		}
+	}
 }
 
 // Every boot config this chart can render must load in the plugin that reads
@@ -3802,7 +3882,7 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 	for _, platform := range cloudPlatforms {
 		t.Run(platform, func(t *testing.T) {
 			t.Parallel()
-			out, err := helmTemplatePlatform(t, platform, exemptDigestArgs...)
+			out, err := helmTemplatePlatform(t, platform)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -3813,24 +3893,11 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 		})
 	}
 
-	// A render without the digest set is refused before a node is touched.
-	t.Run("an exemption without the digests it admits", func(t *testing.T) {
-		t.Parallel()
-		out, err := helmTemplatePlatform(t, "gke-snp")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		body := bootConfigAsStagedOnANode(t, bootConfigYAML(t, out, "c8s-nri-image-policy-worker"))
-		err = nriimagepolicy.CheckBootConfig(body)
-		if err == nil || !strings.Contains(err.Error(), "requires policy.exempt_digests") {
-			t.Errorf("CheckBootConfig = %v, want a refusal naming policy.exempt_digests", err)
-		}
-	})
-
 	t.Run("exempting the router namespace", func(t *testing.T) {
 		t.Parallel()
 		out, err := helmTemplatePlatform(t, "gke-snp",
 			"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,"+workloadclaims.RouterNamespace+"}",
+			"--set-string", "nriImagePolicy.policy.exemptRepositories."+workloadclaims.RouterNamespace+"[0]=gke.gcr.io/",
 		)
 		if err == nil {
 			t.Fatalf("chart rendered a config the plugin refuses at start\n%s", out)
@@ -5084,7 +5151,11 @@ func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
 // plugin refuses.
 func TestChartBootConfigMeshExemptsEveryImagePolicyExemptNamespace(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}")
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}",
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.kube-system[0]=gke.gcr.io/",
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.gmp-system[0]=gke.gcr.io/",
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

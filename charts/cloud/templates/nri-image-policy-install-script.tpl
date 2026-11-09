@@ -372,11 +372,11 @@ policy:
 {{- range $root.Values.nriImagePolicy.policy.exemptNamespaces }}
     - {{ . | quote }}
 {{- end }}
-{{- with $root.Values.nriImagePolicy.policy.exemptDigests }}
-  exempt_digests:
-{{- range $namespace, $digests := . }}
+{{- with $root.Values.nriImagePolicy.policy.exemptRepositories }}
+  exempt_repositories:
+{{- range $namespace, $repositories := . }}
     {{ $namespace | quote }}:
-{{- range $digests }}
+{{- range $repositories }}
       - {{ . | quote }}
 {{- end }}
 {{- end }}

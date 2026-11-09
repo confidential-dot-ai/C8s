@@ -124,7 +124,7 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 	// worker; the pod plugin's configuration is a pod's alone.
 	delete(floor, "worker")
 	policy["exempt_namespaces"] = []string{}
-	delete(policy, "exempt_digests")
+	delete(policy, "exempt_repositories")
 	policy["sandbox"] = "enforce"
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the

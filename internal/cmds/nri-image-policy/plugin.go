@@ -964,7 +964,7 @@ func argvDigest(argv []string) string {
 // store) admits; label rules can only deny.
 //
 // A denial in an exempt namespace is downgraded to skip only when that
-// namespace's exempt set holds the container's resolved digest.
+// namespace's exempt set names the container's image repository.
 func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string) (imageVerdict, string) {
 	return p.checkContainerPhase(ctx, cfg, pod, ctr, imageRef, launchFinal)
 }
@@ -1023,20 +1023,19 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *a
 			Mounts:    mounts,
 		}, phase)
 	}
-	return p.exemptNamespace(ctx, cfg, pod, ctr, imageRef, verdict, reason)
+	return p.exemptNamespace(cfg, pod, ctr, imageRef, verdict, reason)
 }
 
-// Runs last and only downgrades, keyed on the resolved digest.
-func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, verdict imageVerdict, reason string) (imageVerdict, string) {
+// Runs last and only downgrades, keyed on the image's repository.
+func (p *plugin) exemptNamespace(cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, verdict imageVerdict, reason string) (imageVerdict, string) {
 	namespace, podName, ctrName := pod.GetNamespace(), pod.GetName(), ctr.GetName()
 	if verdict != verdictDeny || !slices.Contains(cfg.Policy.ExemptNamespaces, namespace) {
 		return verdict, reason
 	}
 
-	digest := p.resolveDigest(ctx, imageRef)
-	if cfg.Policy.exemptsDigest(namespace, digest) {
-		p.logger.Info("exempt namespace: admitting a container whose digest the namespace's exempt set holds",
-			"namespace", namespace, "pod", podName, "container", ctrName, "digest", digest, "denial", reason)
+	if cfg.Policy.ExemptRepositories.Admits(namespace, imageRef) {
+		p.logger.Info("exempt namespace: admitting a container whose image repository the namespace's exempt set names",
+			"namespace", namespace, "pod", podName, "container", ctrName, "image", imageRef, "denial", reason)
 		p.audit.Log(audit.Event{
 			Action:    "allow",
 			Reason:    "namespace_exempt",
@@ -1051,7 +1050,7 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 	// Outside the set: denied, never killed (checkExisting), audited as drift.
 	p.audit.Log(audit.Event{
 		Action:    "deny",
-		Reason:    "exempt_digest_miss",
+		Reason:    "exempt_repository_miss",
 		Namespace: namespace,
 		Pod:       podName,
 		Container: ctrName,
@@ -1429,9 +1428,9 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 			}
 		}
 		// Never killed: stopping a platform container (kube-proxy, CoreDNS) can
-		// cut the node. A digest outside the set is denied at the next create.
+		// cut the node. An unnamed repository is denied at the next create.
 		if cfg.isExemptNamespace(pod.GetNamespace()) {
-			p.logger.Warn("exempt namespace: leaving a running container whose digest the namespace's exempt set does not hold",
+			p.logger.Warn("exempt namespace: leaving a running container whose image repository the namespace's exempt set does not name",
 				"namespace", pod.GetNamespace(), "container", ctr.GetName())
 			continue
 		}

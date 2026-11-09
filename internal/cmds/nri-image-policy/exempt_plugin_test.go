@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -12,8 +13,8 @@ import (
 )
 
 // exemptPlugin builds a fail-closed plugin (base allowlist admits pushDigestA)
-// whose listed namespaces admit digests. An attempted kill panics by name.
-func exemptPlugin(t *testing.T, digests map[string][]string, namespaces ...string) *plugin {
+// whose listed namespaces admit repositories. An attempted kill panics by name.
+func exemptPlugin(t *testing.T, repositories ExemptRepositories, namespaces ...string) *plugin {
 	t.Helper()
 	cfg := &config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base-image"})},
@@ -22,7 +23,7 @@ func exemptPlugin(t *testing.T, digests map[string][]string, namespaces ...strin
 			EnforceExisting:       true,
 			DenyMissingAnnotation: true,
 			ExemptNamespaces:      namespaces,
-			ExemptDigests:         digests,
+			ExemptRepositories:    repositories,
 		},
 	}
 	p := &plugin{
@@ -37,21 +38,22 @@ func exemptPlugin(t *testing.T, digests map[string][]string, namespaces ...strin
 	return p
 }
 
-// A non-base image an exempt namespace's digest set holds is admitted there.
-func TestExempt_ConfiguredDigestAdmits(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestB}}, "kube-system")
+// A non-base image an exempt namespace's repository set names is admitted
+// there, at any digest: the provider rotates its add-on images.
+func TestExempt_ConfiguredRepositoryAdmits(t *testing.T) {
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}}, "kube-system")
 	p.SetReady()
 
 	pod := makePod("kube-system", "coredns")
-	ctr := makeCtrWithImage(pod.Id, "coredns", "registry/repo@"+pushDigestB)
+	ctr := makeCtrWithImage(pod.Id, "coredns", "mcr.microsoft.com/oss/kubernetes/coredns@"+pushDigestB)
 	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err != nil {
-		t.Fatalf("a configured kube-system digest must be admitted: %v", err)
+		t.Fatalf("a configured kube-system repository must be admitted: %v", err)
 	}
 }
 
 // A non-base image outside the set is denied in the exempt namespace.
-func TestExempt_UnconfiguredDigestDeniedInExemptNamespace(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestC}}, "kube-system")
+func TestExempt_UnconfiguredRepositoryDeniedInExemptNamespace(t *testing.T) {
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}}, "kube-system")
 	p.SetReady()
 
 	pod := makePod("kube-system", "pod")
@@ -61,24 +63,44 @@ func TestExempt_UnconfiguredDigestDeniedInExemptNamespace(t *testing.T) {
 	}
 }
 
-// The set is namespace-scoped: a digest kube-system admits does not admit the
-// same image in a tenant namespace.
-func TestExempt_ConfiguredDigestNotAdmittedInTenantNamespace(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestB}}, "kube-system")
+// A tag the node resolves to no digest is admitted under its prefix: that is
+// what a provider image pre-loaded in the node image reports.
+func TestExempt_UnresolvableTagAdmitsUnderItsPrefix(t *testing.T) {
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}}, "kube-system")
 	p.SetReady()
+	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
+		return "", errors.New("no such image in the content store")
+	}}
 
-	pod := makePod("default", "tenant")
-	ctr := makeCtrWithImage(pod.Id, "c", "registry/repo@"+pushDigestB)
-	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err == nil {
-		t.Fatal("a digest kube-system admits must not admit in a tenant namespace")
+	pod := makePod("kube-system", "kube-proxy")
+	ctr := makeCtrWithImage(pod.Id, "kube-proxy", "mcr.microsoft.com/oss/kubernetes/kube-proxy:v1.31.0")
+	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err != nil {
+		t.Fatalf("an unresolvable tag under an exempt prefix must be admitted: %v", err)
+	}
+
+	beside := makeCtrWithImage(pod.Id, "csi", "mcr.microsoft.com/oss/kubernetes-csi/azuredisk:v1.33.0")
+	if _, _, err := createAndStart(p, context.Background(), pod, beside); err == nil {
+		t.Fatal("a repository beside the prefix's path must be denied")
 	}
 }
 
-// A running container in an exempt namespace whose digest the set does not hold
-// is denied at create but never killed: stopping a platform container can cut
-// the node.
+// The set is namespace-scoped: a repository kube-system admits does not admit
+// the same image in a tenant namespace.
+func TestExempt_ConfiguredRepositoryNotAdmittedInTenantNamespace(t *testing.T) {
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}}, "kube-system")
+	p.SetReady()
+
+	pod := makePod("default", "tenant")
+	ctr := makeCtrWithImage(pod.Id, "c", "mcr.microsoft.com/oss/kubernetes/coredns@"+pushDigestB)
+	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err == nil {
+		t.Fatal("a repository kube-system admits must not admit in a tenant namespace")
+	}
+}
+
+// A running container in an exempt namespace the set does not name is denied at
+// create but never killed: stopping a platform container can cut the node.
 func TestExempt_CheckExistingDoesNotKillExemptNamespace(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestA}}, "kube-system")
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}}, "kube-system")
 	p.SetReady()
 
 	pod := makePod("kube-system", "pod")
@@ -93,20 +115,20 @@ func TestExempt_CheckExistingDoesNotKillExemptNamespace(t *testing.T) {
 // A reboot gates every container on the plugin, so Synchronize sees an empty
 // node and the config alone says what the namespace admits.
 func TestExempt_RebootAdmitsFromConfig(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestB}}, "kube-system")
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"mcr.microsoft.com/containernetworking/"}}, "kube-system")
 	p.SetReady()
 	if _, err := p.Synchronize(context.Background(), nil, nil); err != nil {
 		t.Fatalf("Synchronize: %v", err)
 	}
 
 	pod := makePod("kube-system", "azure-cns")
-	initCtr := makeCtrWithImage(pod.Id, "init-cns", "registry/repo@"+pushDigestB)
+	initCtr := makeCtrWithImage(pod.Id, "init-cns", "mcr.microsoft.com/containernetworking/azure-ipam@"+pushDigestB)
 	if _, _, err := createAndStart(p, context.Background(), pod, initCtr); err != nil {
-		t.Fatalf("an exempt digest must still admit after a reboot: %v", err)
+		t.Fatalf("an exempt repository must still admit after a reboot: %v", err)
 	}
 	drifted := makeCtrWithImage(pod.Id, "drift", "registry/repo@"+pushDigestC)
 	if _, _, err := createAndStart(p, context.Background(), pod, drifted); err == nil {
-		t.Fatal("a digest outside the set must be denied after a reboot")
+		t.Fatal("a repository outside the set must be denied after a reboot")
 	}
 }
 

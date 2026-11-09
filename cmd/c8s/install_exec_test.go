@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,17 +75,20 @@ func providerPlatformPod() corev1.Pod {
 		OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "kube-proxy"}},
 		Spec: corev1.PodSpec{
 			NodeName:   "node-a",
-			Containers: []corev1.Container{{Name: "kube-proxy", Image: "registry.k8s.io/kube-proxy:v1.31.0"}},
+			Containers: []corev1.Container{{Name: "kube-proxy", Image: kubeProxyImage}},
 		},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
 			Name:    "kube-proxy",
-			Image:   "registry.k8s.io/kube-proxy:v1.31.0",
-			ImageID: "registry.k8s.io/kube-proxy@" + kubeProxyDigest,
+			Image:   kubeProxyImage,
+			ImageID: "mcr.microsoft.com/oss/kubernetes/kube-proxy@" + kubeProxyDigest,
 		}}},
 	}
 }
 
-const kubeProxyDigest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+const (
+	kubeProxyImage  = "mcr.microsoft.com/oss/kubernetes/kube-proxy:v1.31.0"
+	kubeProxyDigest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+)
 
 func hostPortPod(ns, name, node string, port int32) corev1.Pod {
 	return corev1.Pod{
@@ -631,12 +633,10 @@ func TestInstallHappyPath(t *testing.T) {
 			t.Errorf("%v.repository = %#v, want the bundled chart's", image, got)
 		}
 	}
-	if got := stringsAtPath(tree, exemptDigestsPath+".kube-system"); !slices.Equal(got, []string{kubeProxyDigest}) {
-		t.Errorf("computed %s.kube-system = %v, want [%s]", exemptDigestsPath, got, kubeProxyDigest)
-	}
-	policy, _ := nestedMap(tree, "nriImagePolicy", "policy")
-	if keys := slices.Sorted(maps.Keys(policy)); !slices.Equal(keys, []string{"exemptDigests"}) {
-		t.Errorf("computed nriImagePolicy.policy keys = %v, want the exempt digests alone", keys)
+	// Nothing an install reads from the cluster reaches the policy the nodes
+	// boot on, so the entry a release's seed names is the one it needs served.
+	if policy, ok := nestedMap(tree, "nriImagePolicy", "policy"); ok {
+		t.Errorf("computed nriImagePolicy.policy = %v, want no computed policy", policy)
 	}
 	if boolAtPath(tree, "volumed.enabled") {
 		t.Error("computed values carry the release chart's volumed.enabled")
@@ -695,7 +695,7 @@ func TestInstallRefusesContainerdWithoutTheContainerUser(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `*containerRuntimeVersion*) /usr/bin/printf 'node-a\tcontainerd://2.2.7\n' ;;
 `))
-	err := runInstall(t, "--platform=gke-snp", "--wait=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
 	want := "containerd " + containerdNRIUserVersion.String() + " or later"
 	if err == nil || !strings.Contains(err.Error(), "node-a (containerd://2.2.7)") || !strings.Contains(err.Error(), want) {
 		t.Fatalf("want the container-user refusal naming the node and the version, got %v", err)
@@ -710,7 +710,7 @@ func TestInstallRefusesABundledContainerdNode(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
 `))
-	err := runInstall(t, "--platform=gke-snp", "--wait=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
 	if err == nil || !strings.Contains(err.Error(), "node-a") || !strings.Contains(err.Error(), "upstream containerd") {
 		t.Fatalf("want the bundled-containerd refusal naming the node, got %v", err)
 	}
@@ -1083,21 +1083,22 @@ func TestInstallAuditPolicySkipsPlatformPodCheck(t *testing.T) {
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
 
-// The operator reviews the set before any node admits it.
+// The operator reviews the exemption before any node admits on it.
 func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 	var s *installStubs
 	var err error
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied))
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	for _, want := range []string{
-		"kube-system/etcd-node-a",
-		"docker.io/rancher/hardened-etcd@" + etcdDigest,
+		"mcr.microsoft.com/oss/kubernetes/",
+		"kube-system/kube-proxy-node-a",
+		"mcr.microsoft.com/oss/kubernetes/kube-proxy@" + kubeProxyDigest,
 		"nriImagePolicy.bootstrapAllowlist.workloads",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -1105,58 +1106,55 @@ func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 		}
 	}
 	// It has to land before the plugin is installed, or reviewing it is moot.
-	if i, h := strings.Index(stdout, "kube-system/etcd-node-a"), lineIndex(s.f.calls(t), "helm upgrade "); i < 0 || h < 0 {
+	if i, h := strings.Index(stdout, "kube-system/kube-proxy-node-a"), lineIndex(s.f.calls(t), "helm upgrade "); i < 0 || h < 0 {
 		t.Fatalf("missing report (%d) or helm upgrade (%d)", i, h)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
 
-// --force does not pass an exemption whose digests the install cannot read.
-func TestInstallRefusesAnExemptContainerWithoutARegistryDigest(t *testing.T) {
+// A provider image pre-loaded in the node image reports a bare image ID, which
+// no digest set can hold, and installs without --force.
+func TestInstallAdmitsAPreloadedProviderImage(t *testing.T) {
 	const nodeLocal = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
-	local := daemonSetPod("kube-system", "fluentbit-a", nodeLocal, nodeLocal)
-	local.Spec.NodeName = "node-a"
+	preloaded := daemonSetPod("kube-system", "coredns-abc", "mcr.microsoft.com/oss/kubernetes/coredns:v1.11.3", nodeLocal)
+	preloaded.Spec.NodeName = "node-a"
 
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, local))
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
-	if err == nil || !strings.Contains(err.Error(), "kube-system/fluentbit-a") {
-		t.Fatalf("want the refusal naming the container, got %v", err)
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, preloaded))
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+// An add-on no prefix covers is refused by name, with the value that admits it.
+func TestInstallRefusesAProviderImageUnderNoPrefix(t *testing.T) {
+	const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	uncovered := daemonSetPod("kube-system", "fluentbit-a", "example.test/fluentbit:v1", "example.test/fluentbit@"+digest)
+	uncovered.Spec.NodeName = "node-a"
+
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, uncovered))
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
+	if err == nil || !strings.Contains(err.Error(), "kube-system/fluentbit-a") || !strings.Contains(err.Error(), exemptRepositoriesPath) {
+		t.Fatalf("want the refusal naming the container and %s, got %v", exemptRepositoriesPath, err)
 	}
 	calls := s.f.calls(t)
 	mustNotContainPrefix(t, calls, "helm upgrade")
 	mustNotContainPrefix(t, calls, "kubectl apply")
 }
 
-// The plugin refuses such a config, so the install refuses before the cluster.
-func TestInstallRefusesAnExemptionOfANamespaceWithoutPods(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied))
-	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [kube-system, gmp-system]\n")
-
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "-f", values)
-	if err == nil || !strings.Contains(err.Error(), "gmp-system") {
-		t.Fatalf("want the refusal naming the namespace nothing runs in, got %v", err)
-	}
-	calls := s.f.calls(t)
-	mustNotContainPrefix(t, calls, "helm upgrade")
-	mustNotContainPrefix(t, calls, "kubectl apply")
-}
-
-func TestInstallExemptsTheConfidentialNodesImagesAlone(t *testing.T) {
+// A pod of a node this install does not touch is not this policy's to admit.
+func TestInstallJudgesTheConfidentialNodesPodsAlone(t *testing.T) {
 	const elsewhereDigest = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
-	elsewhere := daemonSetPod("kube-system", "kube-proxy-node-z",
-		"registry.k8s.io/kube-proxy:v1.31.0", "registry.k8s.io/kube-proxy@"+elsewhereDigest)
+	elsewhere := daemonSetPod("kube-system", "fluentbit-node-z",
+		"example.test/fluentbit:v1", "example.test/fluentbit@"+elsewhereDigest)
 	elsewhere.Spec.NodeName = "node-z"
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, elsewhere))
-	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	tree := readYAMLTree(t, s.computed)
-	if got := stringsAtPath(tree, exemptDigestsPath+".kube-system"); !slices.Equal(got, []string{kubeProxyDigest}) {
-		t.Errorf("computed %s.kube-system = %v, want the confidential node's image alone", exemptDigestsPath, got)
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false"); err != nil {
+		t.Fatalf("a denied pod on another node is not a refusal: %v", err)
 	}
 }
 
