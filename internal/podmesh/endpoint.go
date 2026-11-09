@@ -76,9 +76,22 @@ func ValidateWorkloadPod(pod *corev1.Pod) error {
 				return fmt.Errorf("container %q may not mount the private credential volume", c.Name)
 			}
 		}
+		// The guest starts no process in a running container, so an exec probe
+		// or hook can never run there.
 		for _, probe := range []*corev1.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
 			if probe != nil && probe.HTTPGet != nil && probe.HTTPGet.Host != "" {
 				return fmt.Errorf("container %q probe must target its own Pod through the mesh endpoint", c.Name)
+			}
+			if probe != nil && probe.Exec != nil {
+				return fmt.Errorf("container %q: an exec probe cannot run in a pod CVM; use an HTTP probe", c.Name)
+			}
+		}
+		if c.Lifecycle != nil {
+			if hook := c.Lifecycle.PostStart; hook != nil && hook.Exec != nil {
+				return fmt.Errorf("container %q: exec lifecycle hook postStart cannot run in a pod CVM", c.Name)
+			}
+			if hook := c.Lifecycle.PreStop; hook != nil && hook.Exec != nil {
+				return fmt.Errorf("container %q: exec lifecycle hook preStop cannot run in a pod CVM", c.Name)
 			}
 		}
 		for _, p := range c.Ports {

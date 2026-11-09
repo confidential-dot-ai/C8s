@@ -139,6 +139,12 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 	if _, err := ClientDocument(pod); err != nil {
 		return err
 	}
+	// Admission applies the same rule, but a pod can reach the provider
+	// without it: Services select on the label, so it must name the workload
+	// the annotation does.
+	if label, present := pod.Labels[workloadclaims.AnnotationWorkloadID]; present && pod.Annotations[workloadclaims.AnnotationWorkloadID] != label {
+		return fmt.Errorf("pod label %s=%q must match the %s annotation", workloadclaims.AnnotationWorkloadID, label, workloadclaims.AnnotationWorkloadID)
+	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
 		if len(c.Resources.Claims) != 0 {
 			return fmt.Errorf("container %q: pod CVM does not resolve resource claims", c.Name)

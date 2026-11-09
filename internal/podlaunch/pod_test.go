@@ -13,6 +13,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
@@ -263,6 +265,23 @@ func TestValidateProviderPod(t *testing.T) {
 				c.Env = []corev1.EnvVar{{Name: "A", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{Key: "k"}}}}
 			})
 		}, "Secret or ConfigMap"},
+		{"exec probe", func(t *testing.T) *corev1.Pod {
+			return providerPodWith(t, func(c *corev1.Container) {
+				c.ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+			})
+		}, "exec probe"},
+		{"workload label differs from the annotation", func(t *testing.T) *corev1.Pod {
+			pod := testProviderPod(t, "")
+			pod.Annotations = map[string]string{workloadclaims.AnnotationWorkloadID: "agent"}
+			pod.Labels = map[string]string{workloadclaims.AnnotationWorkloadID: "other"}
+			return pod
+		}, "must match"},
+		{"workload label without the annotation", func(t *testing.T) *corev1.Pod {
+			pod := testProviderPod(t, "")
+			delete(pod.Annotations, workloadclaims.AnnotationWorkloadID)
+			pod.Labels = map[string]string{workloadclaims.AnnotationWorkloadID: "agent"}
+			return pod
+		}, "must match"},
 		{"unparsable image", func(t *testing.T) *corev1.Pod {
 			return providerPodWith(t, func(c *corev1.Container) { c.Image = "Busybox@@" })
 		}, `container "app" image "Busybox@@"`},

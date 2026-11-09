@@ -31,6 +31,15 @@ func TestWorkloadPodRefusesPlatformShapes(t *testing.T) {
 		{"credential mount", func(p *corev1.Pod) {
 			p.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "data"}, {Name: CertVolumeName}}
 		}, "may not mount the private credential volume"},
+		{"exec probe", func(p *corev1.Pod) {
+			p.Spec.Containers[0].LivenessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+		}, "exec probe"},
+		{"exec postStart hook", func(p *corev1.Pod) {
+			p.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{PostStart: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+		}, "exec lifecycle hook postStart"},
+		{"exec preStop hook", func(p *corev1.Pod) {
+			p.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+		}, "exec lifecycle hook preStop"},
 		{"rendered probe path", func(p *corev1.Pod) {
 			p.Spec.Containers[0].ReadinessProbe.HTTPGet.Path = workloadclaims.MeshProbePrefix + "8080/health"
 		}, "reserved for generated probes"},
