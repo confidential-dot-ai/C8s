@@ -10,6 +10,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -155,6 +157,27 @@ func (r *Replica) State() *cdschain.State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state
+}
+
+// Policy returns the allowlist of a policy entry in the chain whose digest
+// ("sha256:<hex>" of its canonical bytes) is digest, so any replica answers
+// for an allowlist a leaf was stamped under before it started.
+func (r *Replica) Policy(digest string) ([]byte, bool) {
+	r.mu.Lock()
+	chain := slices.Clone(r.chain)
+	r.mu.Unlock()
+	for _, e := range chain {
+		var p cdschain.Policy
+		b, err := e.Decode()
+		if err != nil || b.Type != cdschain.TypePolicy || cdschain.DecodeStrict(b.Payload, &p) != nil {
+			continue
+		}
+		sum := sha256.Sum256(p.Allowlist)
+		if "sha256:"+hex.EncodeToString(sum[:]) == digest {
+			return p.Allowlist, true
+		}
+	}
+	return nil, false
 }
 
 // Identity is the chain identity this replica answers a client pinning pin

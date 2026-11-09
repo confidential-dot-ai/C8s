@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -80,7 +81,8 @@ func (s *Store) Served() (body []byte, version string, err error) {
 
 // InEffect returns the allowlist in effect on nodes at now: a write takes
 // effect the node delay after it is written, unless another write replaced it
-// first, and the first allowlist takes effect at once.
+// first, and the first allowlist takes effect at once. ErrNotYetInEffect: the
+// one in effect lies below the node floor (FloorNodesAtHead).
 func (s *Store) InEffect(now time.Time) (body []byte, version string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,6 +104,34 @@ func (s *Store) SetNodeDelay(d time.Duration) {
 	s.nodeDelay = d
 }
 
+// ErrNotYetInEffect is InEffect's answer while the allowlist in effect on
+// nodes is one this store may not hand them; a node asks again later.
+var ErrNotYetInEffect = errors.New("no allowlist this CDS may hand nodes is in effect yet")
+
+// HoldNodes refuses nodes every allowlist (ErrNotYetInEffect) until
+// FloorNodesAtHead: for a CDS replica that has not yet served its chain's
+// allowlist, whose history holds only what it started with.
+func (s *Store) HoldNodes() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeFloor = math.MaxInt64
+}
+
+// FloorNodesAtHead refuses nodes every allowlist written before the one the
+// store serves now. A replica calls it once it serves its chain's allowlist:
+// an older document in its history is one it started with, never one nodes
+// ran under the chain, so nodes wait out the delay for the chain's instead.
+func (s *Store) FloorNodesAtHead() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var head int64
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(position), 0) FROM journal_event").Scan(&head); err != nil {
+		return fmt.Errorf("read the allowlist history: %w", err)
+	}
+	s.nodeFloor = head
+	return nil
+}
+
 // inEffect walks the history from the newest entry to the first that was not
 // replaced within the node delay. Callers must hold s.mu.
 func (s *Store) inEffect(now time.Time) (version, digest string, err error) {
@@ -117,6 +147,9 @@ func (s *Store) inEffect(now time.Time) (version, digest string, err error) {
 			return "", "", err
 		}
 		if position == 1 || replacedMS-publishedMS >= s.nodeDelay.Milliseconds() {
+			if position < s.nodeFloor {
+				return "", "", ErrNotYetInEffect
+			}
 			return version, digest, nil
 		}
 		replacedMS = publishedMS

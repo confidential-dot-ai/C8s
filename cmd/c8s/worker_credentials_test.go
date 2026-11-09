@@ -19,12 +19,15 @@ import (
 	"time"
 
 	certificatesv1 "k8s.io/api/certificates/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 )
 
 // signingClientset is a clientset whose signer issues a certificate, with
@@ -225,4 +228,62 @@ func TestControllerCredentialsApproveOnlyTheirOwnRequest(t *testing.T) {
 	if len(deletes) == 0 {
 		t.Fatal("the request was left behind")
 	}
+}
+
+// The store credential is the store account's non-expiring token Secret, in a
+// file only its owner reads, in the form the replicas' store accepts. A Secret
+// that is not that account's token is refused.
+func TestStoreKubeconfigIsACredentialTheStoreTakes(t *testing.T) {
+	secret := func(account string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: cdsStoreTokenSecret, Namespace: cdsStoreNamespace, Annotations: map[string]string{corev1.ServiceAccountNameKey: account}},
+			Type:       corev1.SecretTypeServiceAccountToken,
+			Data:       map[string][]byte{corev1.ServiceAccountTokenKey: []byte("store-token")},
+		}
+	}
+	cluster := &clientcmdapi.Cluster{Server: "https://192.0.2.1:6443", CertificateAuthorityData: testCAPEM(t)}
+	cfg := workerCredentialsConfig{outputDir: t.TempDir(), duration: 48 * time.Hour}
+	if err := issueStoreKubeconfig(context.Background(), fake.NewClientset(secret("someone-else")), cluster, cfg, io.Discard); err == nil {
+		t.Fatal("took the token of another account")
+	}
+	if err := issueStoreKubeconfig(context.Background(), fake.NewClientset(secret(cdsStoreAccount)), cluster, cfg, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.outputDir, "c8s-cds-store.kubeconfig")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cdsha.OpenKube(data, "acme"); err != nil {
+		t.Fatalf("the store refuses the credential: %v", err)
+	}
+	config, err := clientcmd.Load(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := config.Contexts[config.CurrentContext]
+	if current.Namespace != cdsStoreNamespace || config.AuthInfos[current.AuthInfo].Token != "store-token" {
+		t.Fatalf("context %+v, want the store namespace and the account's token", current)
+	}
+}
+
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "cluster-ca"}, NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

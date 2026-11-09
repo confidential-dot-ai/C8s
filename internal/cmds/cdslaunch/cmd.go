@@ -31,6 +31,7 @@ type options struct {
 	vcpus           []int
 	kmsURL          string
 	kmsTLSKey       string
+	haEndpoints     []string
 }
 
 func NewCmd() *cobra.Command {
@@ -87,6 +88,7 @@ per --vcpus count the VM may boot with.`,
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
+	f.StringArrayVar(&opts.haEndpoints, "ha-endpoint", nil, "<host>:<port> one replica of a stateless CDS serves on (1, 3 or 5); repeatable, in slot order")
 	cmdsutil.RequireFlags(cmd,
 		"out",
 		"cluster-id",
