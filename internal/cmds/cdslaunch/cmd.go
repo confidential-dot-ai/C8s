@@ -29,6 +29,8 @@ type options struct {
 	manifest        string
 	platform        string
 	vcpus           []int
+	kmsURL          string
+	kmsTLSKey       string
 	// ha is the replica set the cluster's CDS runs as, empty for a cluster
 	// whose CDS is a singleton.
 	ha cdsconfig.HA
@@ -88,6 +90,8 @@ fix the cluster for its life.`,
 	f.StringArrayVar(&opts.leafDNSNames, "leaf-dns-name", nil, "literal DNS SAN a leaf may carry; repeatable")
 	f.StringArrayVar(&opts.leafDNSPatterns, "leaf-dns-pattern", nil,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
+	f.StringVar(&opts.kmsURL, "kms-url", "", "optional https URL of the key management service CDS brokers pod secret release to (docs/pod-secrets.md); needs --pod-image-policy-file")
+	f.StringVar(&opts.kmsTLSKey, "kms-tls-key-sha256", "", "lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the KMS's TLS certificate; required with --kms-url")
 	cdsconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")

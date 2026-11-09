@@ -31,6 +31,8 @@ type Inputs struct {
 	LeafDNSPatterns []string
 	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
 	HA HA
+	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
+	KMS *KMS
 	// ManifestPath, Family and VCPUs select the CDS guest image the VM boots
 	// and the launch digests its pin carries.
 	ManifestPath string
@@ -58,6 +60,7 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,
 		HA:              in.HA,
+		KMS:             in.KMS,
 	})
 	if err != nil {
 		return nil, nil, err

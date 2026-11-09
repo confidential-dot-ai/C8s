@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
 // dependencies bundles everything the cds router needs.
@@ -35,6 +36,7 @@ type dependencies struct {
 	SecretsChallenges attestation.Challenges
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	PodSecrets        *PodSecretHandler        // nil leaves pod secret release unrouted (no KMS configured)
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -100,6 +102,11 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
+	}
+
+	// A pod CVM asks with its mesh leaf, so it is charged by the pod that leaf names.
+	if deps.PodSecrets != nil {
+		r.Method(http.MethodPost, secretbroker.PodRoute, deps.perSandbox(deps.PodSecrets))
 	}
 
 	for route, handler := range deps.ClusterRoutes {

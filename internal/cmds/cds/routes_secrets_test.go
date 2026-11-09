@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
 func secretsRouter(t *testing.T, enabled bool) http.Handler {
@@ -249,5 +250,36 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	// The co-tenant on the same address still gets through.
 	if code := send(victim); code == http.StatusTooManyRequests {
 		t.Fatal("one pod exhausted a co-tenant's bucket: the limiter is keyed on the address")
+	}
+}
+
+func TestRouter_PodSecretRouteServedOnlyWithAKMS(t *testing.T) {
+	limiter, err := issuer.NewIPRateLimiter(rate.Limit(1000), 1000, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		handler *PodSecretHandler
+		want    int
+	}{
+		{"no KMS", nil, http.StatusNotFound},
+		{"KMS", &PodSecretHandler{}, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRouter(dependencies{
+				AttestHandler:    AttestHandler{Challenges: attestation.NewLocalChallenges(time.Minute)},
+				ReadyFn:          func() bool { return true },
+				MeshCA:           testMeshCA(t),
+				NodeImages:       certifying(),
+				RateLimiter:      limiter,
+				ChallengeLimiter: newTestRateLimiter(t),
+				MaxRequestSize:   65536,
+				PodSecrets:       tc.handler,
+			})
+			if code := get(t, r, http.MethodPost, secretbroker.PodRoute); code != tc.want {
+				t.Fatalf("POST %s = %d, want %d", secretbroker.PodRoute, code, tc.want)
+			}
+		})
 	}
 }

@@ -1691,6 +1691,9 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 		var err error
 		credentialSource, err = p.podCredentialSource(pod, ctr, role, mounts)
 		if err == nil {
+			err = p.podSecretReader(pod, ctr, role, mounts)
+		}
+		if err == nil {
 			err = p.mesh.admit(pod, ctr, gatedContainer{role: role, mountsPinned: p.bindsRoleMounts(launch, role), digest: launch.Digest, argv: launch.Argv})
 		}
 		if err != nil {

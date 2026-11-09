@@ -6,6 +6,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -177,7 +178,13 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	if err := plugin.prepareClientDocument(); err != nil {
 		return fmt.Errorf("prepare the Pod's client document: %w", err)
 	}
-	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
+	var podSecretsClient *http.Client
+	if cfg.PullEnabled() && cfg.podRole() {
+		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+			return fmt.Errorf("create Pod secrets client: %w", err)
+		}
+	}
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient, podSecretsClient); err != nil {
 		return fmt.Errorf("prepare Pod credential broker: %w", err)
 	}
 	defer plugin.closePodBroker()
@@ -388,6 +395,12 @@ func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slo
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
+	return cdsHTTPClientWithLeaf(cfg, pins, clusterDNS, nil)
+}
+
+// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
+// set, as its TLS client certificate.
+func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
 	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
 	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
 		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
@@ -395,6 +408,9 @@ func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS n
 			return nil, err
 		}
 		built.DialContext = dial
+		if clientCert != nil {
+			built.TLSClientConfig.GetClientCertificate = clientCert
+		}
 		return built, nil
 	})
 	if err != nil {

@@ -43,6 +43,8 @@ type Config struct {
 	DNSSANPatterns []*regexp.Regexp
 	// HA is the replica set this CDS belongs to; nil runs the singleton.
 	HA *HA
+	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
+	KMS *KMS
 }
 
 // wire mirrors the document. Workloads and Nodes keep the JSON wire schemas
@@ -59,6 +61,7 @@ type wire struct {
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
 	HA                 *haWire  `yaml:"ha,omitempty"`
+	KMS                *kmsWire `yaml:"kms,omitempty"`
 }
 
 // Parse validates a CDS configuration document. It authenticates nothing:
@@ -113,6 +116,13 @@ func (w wire) parse() (*Config, error) {
 	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
 		return nil, err
 	}
+	kms, err := w.KMS.parse()
+	if err != nil {
+		return nil, err
+	}
+	if kms != nil && len(podImages) == 0 {
+		return nil, errors.New("kms: pod secret release needs a podImagePolicy")
+	}
 	cfg := &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
@@ -122,6 +132,7 @@ func (w wire) parse() (*Config, error) {
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
 		HA:             ha,
+		KMS:            kms,
 	}
 	if err := cfg.ValidatePodAuthorities(); err != nil {
 		return nil, fmt.Errorf("podImagePolicy: %w", err)

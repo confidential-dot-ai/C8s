@@ -383,7 +383,9 @@ The CDS workload policy must also list every measured digest, including the
 mesh endpoint. A mesh-only bootstrap snapshot can get an unnamed membership
 certificate; a workload name requires a unique match of the complete retained
 history, including exited init containers. This profile does not authorize
-secret release ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
+secret release from the CDS store ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
+To serve Pod CVM secrets from your own KMS, pass `--kms-url` and
+`--kms-tls-key-sha256` as well ([pod-secrets.md](pod-secrets.md)).
 
 The assignment's `meshPeers` list each known destination's exact IPv4 address
 and TCP port; an empty list permits no outbound peer. A signed peer tuple always
