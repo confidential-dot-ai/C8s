@@ -36,6 +36,11 @@ CDS_ATTESTATION_CONTAINER="${C8S_IT_CDS_ATTESTATION:-c8s-it-cds-attestation}"
 CDS_CONTAINER="${C8S_IT_CDS:-c8s-it-cds}"
 # The port CDS serves on, which the address its clients dial carries.
 CDS_PORT=8443
+# Short enough that the conformance suite's ~140 waits for a write to take
+# effect on nodes fit its timeout. CDS requires --router-cert-ttl positive and
+# shorter than --allowlist-node-delay (internal/cmds/cds/run.go).
+ROUTER_CERT_TTL=12s
+ALLOWLIST_NODE_DELAY=13s
 cds_address() { cat "$WORKDIR/cds-address"; }
 cds_host() {
     local address
@@ -150,6 +155,8 @@ cds_serve() {
         --allowlist-db=/tmp/allowlist.db \
         --allowlist-persistent=false \
         --san-validation=true \
+        --router-cert-ttl="$ROUTER_CERT_TTL" \
+        --allowlist-node-delay="$ALLOWLIST_NODE_DELAY" \
         --port="$CDS_PORT" \
         --log-level=debug \
         "$@" >/dev/null \

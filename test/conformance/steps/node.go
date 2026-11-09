@@ -53,12 +53,19 @@ func pluginStops(ctx context.Context, node string) error {
 }
 
 // pluginStarts starts the plugin and waits until it is ready, so the next
-// sentence observes a plugin that has run its startup check.
+// sentence observes a plugin that has run its startup check. Where the CDS is
+// reachable it first waits for the last write to take effect on nodes, so
+// the plugin's first pull is served it.
 func pluginStarts(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.node(node)
 	if err != nil {
 		return err
+	}
+	if !w.cdsBlocked {
+		if _, _, err := w.awaitInEffect(); err != nil {
+			return err
+		}
 	}
 	if _, err := w.be.call("plugin_start", k8sNode); err != nil {
 		return err
@@ -153,7 +160,10 @@ func cdsRestarted(ctx context.Context) error {
 // means starting the plugin again.
 func (w *world) noteCDSRestart() {
 	w.cdsRestarted = true
-	lastMutation = time.Now()
+	// The restart replaced the document wholesale, so no write of this
+	// process's is waiting to take effect on nodes.
+	lastMutation.at = time.Now()
+	lastMutation.version = ""
 }
 
 func versionBelowApplied(ctx context.Context, node string) error {

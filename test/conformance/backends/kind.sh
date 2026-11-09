@@ -92,6 +92,13 @@ cds_arg() {
         jq -r --arg p "--$1=" '.[] | select(startswith($p)) | ltrimstr($p)' | tail -1
 }
 
+allowlist_node_delay() {
+    local delay
+    delay="$(cds_arg allowlist-node-delay)" || return
+    [ -n "$delay" ] || { echo "backend: the harness CDS runs without --allowlist-node-delay (lib.sh, cds_serve)" >&2; return 1; }
+    echo "$delay"
+}
+
 # The CDS runs from the configuration its launch binds it to, so only a
 # parameter outside that file can be changed here: the harness replaces the
 # container with one that carries it (lib.sh, cds_serve), and default brings

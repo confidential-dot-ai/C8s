@@ -105,10 +105,14 @@ names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
 when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
-undone after the scenario. The steps then poll the allowlist version the
-plugin reports on its health endpoint until it is the served one, within three
-pull intervals of the write; where the backend cannot reach the plugin, or the
-plugin is meant to ignore what is served, they wait two intervals out instead.
+undone after the scenario. A write takes effect on nodes the CDS's node delay
+after it is written, so the steps then wait for the CDS to serve nodes the
+version the write left, and poll the allowlist version the plugin reports on
+its health endpoint until it reaches it, within the node delay and three pull
+intervals of the write; where the backend cannot reach the plugin, or the
+plugin is meant to ignore what is served, they wait the node delay and two
+intervals out instead. A step that starts a plugin first waits for the write
+to take effect on nodes.
 
 A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
