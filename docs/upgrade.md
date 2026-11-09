@@ -22,6 +22,27 @@ which is why the steps are ordered this way
   CDS's evidence itself, inside its 15s `--timeout`.
 - A root shell on each node for steps 2 and 4. A measured node image has none.
 
+## Flags that changed
+
+An install from before v0.99.0 names flags this release's CLI does not take.
+Steps 1 and 5 take their replacements:
+
+| Installed with | Now |
+|---|---|
+| `--cvm-mode aks --hardware-platform sev-snp` | `--platform aks-snp` |
+| `--cvm-mode aks --hardware-platform tdx` | `--platform aks-tdx` |
+| `--cvm-mode gke --hardware-platform sev-snp` | `--platform gke-snp` |
+| `--image-tag`, `--resolve-digests` | nothing |
+| `--cvm-mode bare-metal` | nothing |
+
+The `--platform` value is step 1's `<PLATFORM>`. A release CLI pins each
+component to the digest the `c8s-cloud` chart of its own version stamps, so no
+flag names an image; a build that is not a release renders the chart `--chart`
+names ([releases.md](releases.md)). The cloud chart deploys the node services
+itself, so `c8s install` installs on AKS and GKE confidential VMs alone: a
+cluster of workers carries those services in its measured image
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
+
 ## 1. Render the new release's CDS seed
 
 Render from the values the upgrade will apply, or the entries you publish are
@@ -57,7 +78,9 @@ curl --unix-socket /run/nri-image-policy/health.sock http://localhost/healthz
 Run it on every node and keep the highest number; `not ready` and `0` both mean
 no CDS document has been applied there yet, so count that node as 0. Without a
 node shell, `kubectl -n c8s-system logs -l app=c8s-nri-image-policy -c install
---tail=1` ends with the same body, from the installer's last run on each node.
+--tail=2` prints that body and the `[http 200]` line after it, from the
+installer's last run on each node; the plugin keeps pulling, so that number
+can be below the version the node enforces now.
 
 ## 3. Publish the CDS seed
 
@@ -67,8 +90,8 @@ c8s allowlist apply seed.json --url "$CDS" --image-policy-file cds-pin.json \
 ```
 
 Every entry gets a diff line — `+ <name> (new)`, `~ <name>`, or
-`= <name> (unchanged)` — and then an `applied <name>` line, each write replacing
-the whole live entry of that name. A lint error prints on stderr and nothing is
+`= <name> (unchanged)` — and then an `applied <name>` line; one write replaces
+the whole live entry of every name. A lint error prints on stderr and nothing is
 written.
 
 ## 4. Check CDS's version, and raise it if a node is ahead
@@ -83,8 +106,9 @@ version 48: 9 workload(s)
 
 A table of the entries follows. A node applies a pulled document only when its
 version is above the one it applied already, so this number must beat every
-number from step 2. The counter rises once per entry written, so one `apply` of
-the seed raises it by the number of entries in the file.
+number from step 2. The counter rises by one per write, whatever the number of
+entries, so the `apply` in step 3 raises it by one; an `apply` that changes
+nothing raises it too.
 
 A version at or below a node's means CDS restarted since that node last pulled,
 so its counter started from the seed again. Repeat step 3 until `list` passes
