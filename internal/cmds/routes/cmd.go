@@ -60,7 +60,8 @@ revision carries, since the write re-authorizes them all.
 To sign writes, pass the operator key with --operator-key (or
 C8S_OPERATOR_KEY), as for 'c8s allowlist'. --operator-keys names the operator
 public keys you trust. 'show' verifies against them when given; 'add' and
-'rm' require them, since they re-sign the stored routes.
+'rm' require them once CDS stores a manifest, since they re-sign the stored
+routes.
 
 Point --url at CDS itself, with no path, because the router does not relay
 /routes. A port-forward to the CDS Service works; pin the CDS launch digest

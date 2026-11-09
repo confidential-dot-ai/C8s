@@ -64,14 +64,14 @@ func newAddCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add or replace one route and store the next revision",
-		Long: `Fetch the stored manifest, verify it against --operator-keys (required), add a
-route for --host, and store the next revision. notBefore becomes now, or keeps
-the stored value when it is later. A route with the same --path and --match is
-replaced. When CDS stores no route manifest, add refuses unless --new is
-passed, and then writes a new one with --max-age; otherwise it keeps the
-stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last manifest
-instead: once routers apply manifests, a new one outranks the routes they hold
-and drops all but this one.
+		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
+CDS stores one), add a route for --host, and store the next revision. notBefore
+becomes now, or keeps the stored value when it is later. A route with the same
+--path and --match is replaced. When CDS stores no route manifest, add refuses
+unless --new is passed, and then writes a new one with --max-age; otherwise it
+keeps the stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last
+manifest instead: once routers apply manifests, a new one outranks the routes
+they hold and drops all but this one.
 --dry-run also fetches the stored manifest from CDS.
 
 Name the backend in one of two ways:
@@ -176,9 +176,9 @@ func newAddPatternCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add-pattern",
 		Short: "Add or replace one pattern rule and store the next revision",
-		Long: `Fetch the stored manifest, verify it against --operator-keys (required), add a
-pattern rule for --host-suffix, and store the next revision, as 'add' does. A
-pattern with the same --host-suffix is replaced.
+		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
+CDS stores one), add a pattern rule for --host-suffix, and store the next
+revision, as 'add' does. A pattern with the same --host-suffix is replaced.
 
 A pattern sends every request for <label>.<host-suffix> to the agent with that
 label: the router finds a pod CVM that publishes a client document whose
@@ -262,11 +262,6 @@ func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 // NextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
 // none; otherwise it refuses.
 func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration, revision uint64, change func(*pkgroutes.Manifest) (string, error)) error {
-	// Without verification, the operator would sign whatever routes the
-	// control plane planted in CDS.
-	if o.operatorKeys == "" {
-		return errors.New("add and rm re-sign the stored routes; pass --operator-keys to verify them first")
-	}
 	var signer operatorauth.Authorizer
 	if dryRun {
 		if err := o.RequirePinnedEndpoint(); err != nil {
@@ -284,7 +279,10 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	if err != nil {
 		return err
 	}
-	env, m, _, err := o.fetch(ctx(cmd), c)
+	env, m, verifiedAgainstOperatorKeys, err := o.fetch(ctx(cmd), c)
+	if storesManifest := err == nil; storesManifest && !verifiedAgainstOperatorKeys {
+		return fmt.Errorf("%s re-signs the stored routes; pass --operator-keys to verify them first", cmd.CommandPath())
+	}
 	var ifMatch string
 	switch {
 	case errors.Is(err, routesclient.ErrNotFound) && newMaxAge > 0:

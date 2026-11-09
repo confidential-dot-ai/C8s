@@ -226,7 +226,8 @@ c8s routes add --host api.example.com --path / --workload <ENTRY> \
 
 `<PORT>` is the port the workload itself listens on, not a C8s port. `--new`
 starts the first manifest of a cluster; without it `add` refuses an empty store.
-`--operator-keys` is required because the write re-signs every stored route.
+`--operator-keys` is required once CDS stores a manifest, because the write
+re-signs every stored route.
 `--workload` is the entry name the backend's certificate must carry, so the
 router handshakes with the pod's mesh endpoint and answers 502 rather than reach
 it in the clear. That entry must also be the same in the allowlist the
