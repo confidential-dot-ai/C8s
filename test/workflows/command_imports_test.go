@@ -49,6 +49,7 @@ var commandImportRules = importRules{
 		"internal/cmds/cds imports internal/cmds/verify",
 	},
 	knownDebt: []string{
+		"internal/cdschain imports internal/cmds/cmdsutil",
 		"internal/cdsconfig imports internal/cmds/cmdsutil",
 		"internal/controller imports internal/cmds/cmdsutil",
 		"internal/podlaunch imports github.com/spf13/cobra",
