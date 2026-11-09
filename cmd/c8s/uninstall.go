@@ -679,9 +679,9 @@ func waitPodsGone(ctx context.Context, namespace, selector string) error {
 	}
 }
 
-// hostSweepDaemonSet renders the sweep DaemonSet: every linux node (the
-// NRI installer and mesh DaemonSets land on all of them, and a node can carry a
-// previous install's leftovers), tolerating all taints, with host-sweep.sh as
+// hostSweepDaemonSet renders the sweep DaemonSet: every linux node (a node can
+// carry the leftovers of an earlier install's shapes, or have lost the label
+// that marks it confidential), tolerating all taints, with host-sweep.sh as
 // an init container and a pause container whose readiness lets `kubectl
 // rollout status` double as "every node finished sweeping".
 func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *appsv1.DaemonSet {

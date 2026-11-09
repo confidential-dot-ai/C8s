@@ -4,6 +4,9 @@ attestationApi:
   devices:
     - /dev/tpm0
     - /dev/tpmrm0
+## AKS marks a confidential node pool with this label.
+confidentialNodeSelector:
+  kubernetes.azure.com/security-type: ConfidentialVM
 controlPlane:
   webhook:
     ## AKS's admissions enforcer rewrites a webhook's namespaceSelector, which

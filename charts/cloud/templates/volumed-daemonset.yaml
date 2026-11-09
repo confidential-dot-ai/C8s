@@ -78,12 +78,12 @@ volumes:
 {{- end -}}
 
 {{/* The pod spec volumed and its teardown hook share beside their
-     containers: every linux node, whatever its taints. */}}
+     containers: the confidential nodes, whatever their taints. */}}
 {{- define "c8s.volumedNodePlacement" -}}
 priorityClassName: system-node-critical
 {{- include "c8s.imagePullSecrets" . }}
 nodeSelector:
-  kubernetes.io/os: linux
+  {{- include "c8s.confidentialNodeLabels" . | nindent 2 }}
 tolerations:
   - operator: "Exists"
     effect: "NoExecute"

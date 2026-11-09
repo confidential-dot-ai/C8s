@@ -83,6 +83,9 @@ NODE="$(kind get nodes --name "$CLUSTER" | head -1)"
 [ -n "$NODE" ] || fail "kind reported no node"
 NODE_IP="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
 [ -n "$NODE_IP" ] || fail "could not resolve the node IP"
+# The node stands in for a confidential one; values.yaml selects this label.
+kubectl label node "$NODE" c8s.test/confidential=true >/dev/null \
+    || fail "could not label the node confidential"
 
 log "Loading images into the cluster"
 # One at a time: the podman provider crosses images loaded in a single call.

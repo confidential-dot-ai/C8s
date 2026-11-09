@@ -1,6 +1,6 @@
 ## A stock file values-<platform>.yaml sets the keys that depend on the
-## cluster's confidential VMs: attestationApi.devices, nriImagePolicy.platform
-## and router.attest.
+## cluster's confidential VMs: confidentialNodeSelector,
+## attestationApi.devices, nriImagePolicy.platform and router.attest.
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -33,6 +33,10 @@ imagePullSecrets: []
 ## kubectl/external-secrets and pass `c8s install --image-pull-secret <name>`,
 ## which fails fast when the Secret is missing.
 imagePullSecret: ""
+
+## confidentialNodeSelector: the labels this platform puts on a confidential
+## node. Required, and the stock file sets it: every node agent and the router
+## run on the nodes carrying them (docs/operator.md).
 
 ## The c8s-control-plane chart: the CRD, the operator's ClusterRole and the
 ## admission webhooks that inject and check the pods of confidential workloads.

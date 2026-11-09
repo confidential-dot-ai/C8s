@@ -4,6 +4,9 @@
 attestationApi:
   devices:
     - /dev/sev-guest
+## GKE marks a Confidential GKE Node with the instance type it booted as.
+confidentialNodeSelector:
+  cloud.google.com/gke-confidential-nodes-instance-type: SEV_SNP
 nriImagePolicy:
   hostPaths:
     configDir: /etc/nri/conf.d

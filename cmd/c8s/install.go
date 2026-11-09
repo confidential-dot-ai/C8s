@@ -246,23 +246,58 @@ func cdsValues(valuesFiles []string) (map[string]any, error) {
 	return values, nil
 }
 
-// preflightRouterHostPort fails fast when router's host port is already bound on
-// every node, so the router pod would sit Pending and `--wait` would time out
-// with an opaque scheduler error. The classic collision is the cluster's own
-// ingress controller on host 443.
-func preflightRouterHostPort(ctx context.Context) error {
-	nodesOut, err := exec.CommandContext(ctx, "kubectl", "get", "nodes",
+// confidentialNodeSelectorPath is the cloud value naming the labels this
+// platform puts on a confidential node.
+const confidentialNodeSelectorPath = "confidentialNodeSelector"
+
+// confidentialNodeSelector is the chart's confidential-node labels in kubectl
+// -l form, so install reasons about the nodes the chart places C8s on. The
+// schema requires the labels, so an empty selector never reaches a render.
+func confidentialNodeSelector(effectiveValues map[string]any) (string, error) {
+	labels, ok := nestedMap(effectiveValues, confidentialNodeSelectorPath)
+	if !ok {
+		return "", fmt.Errorf("%s is not a map of node labels", confidentialNodeSelectorPath)
+	}
+	terms := make([]string, 0, len(labels))
+	for key, value := range labels {
+		text, isText := value.(string)
+		if !isText {
+			return "", fmt.Errorf("%s.%s must be a label value, got %v", confidentialNodeSelectorPath, key, value)
+		}
+		terms = append(terms, key+"="+text)
+	}
+	slices.Sort(terms)
+	return strings.Join(terms, ","), nil
+}
+
+// confidentialNodes lists the nodes carrying the confidential-node labels, and
+// refuses a cluster where none does: the node agents' DaemonSets would want no
+// pod, which reads as ready, and the router would sit Pending until `--wait`
+// times out.
+func confidentialNodes(ctx context.Context, selector string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector,
 		"-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`).Output()
 	if err != nil {
-		return fmt.Errorf("kubectl get nodes: %w", err)
+		return nil, fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
 	}
 	var nodes []string
-	for n := range strings.SplitSeq(strings.TrimSpace(string(nodesOut)), "\n") {
+	for n := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if n = strings.TrimSpace(n); n != "" {
 			nodes = append(nodes, n)
 		}
 	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no node carries %s, the labels that mark this cluster's confidential VMs, so every C8s node agent and the router would have nowhere to run: create a confidential node pool carrying them, or set %s to the labels this cluster's confidential nodes carry",
+			selector, confidentialNodeSelectorPath)
+	}
+	return nodes, nil
+}
 
+// preflightRouterHostPort fails fast when router's host port is already bound on
+// every confidential node, so the router pod would sit Pending and `--wait`
+// would time out with an opaque scheduler error. The classic collision is the
+// cluster's own ingress controller on host 443.
+func preflightRouterHostPort(ctx context.Context, nodes []string) error {
 	podsJSON, err := exec.CommandContext(ctx, "kubectl", "get", "pods",
 		"--all-namespaces", "-o", "json").Output()
 	if err != nil {
@@ -276,7 +311,7 @@ func preflightRouterHostPort(ctx context.Context) error {
 	// Ignore the router's namespace: C8s's own router pod lives there, so a
 	// re-install (Recreate) does not flag itself.
 	if blocked, holders := hostPortConflict(list.Items, nodes, helmchart.RouterHostPort, workloadclaims.RouterNamespace); blocked {
-		return fmt.Errorf("router wants host port %d but it is already bound on every node by: %s. "+
+		return fmt.Errorf("router wants host port %d but it is already bound on every confidential node by: %s. "+
 			"router would stay Pending and --wait would time out; free the port on at least one node",
 			helmchart.RouterHostPort, strings.Join(holders, ", "))
 	}
@@ -358,11 +393,22 @@ const deniedImagesListed = 20
 // every install including -f ones — whoever wrote the policy, a cluster whose
 // own pods it denies is broken the same way. Cluster access is read-only.
 //
+// The pods it judges are the confidential nodes' own: the plugin enforces the
+// policy there alone.
+//
 // It also reports to w what an exempt namespace will admit (see
 // reportExemptedImages).
 //
 // --force installs anyway, and returns the same list as a warning.
-func preflightImagePolicy(ctx context.Context, w io.Writer, values map[string]any, components []c8sComponent, releaseNamespace string, force bool) (warn string, err error) {
+func preflightImagePolicy(
+	ctx context.Context,
+	w io.Writer,
+	values map[string]any,
+	components []c8sComponent,
+	releaseNamespace string,
+	nodes []string,
+	force bool,
+) (warn string, err error) {
 	// A mode the chart cannot read is the render guard's to reject, not this
 	// preflight's; either way nothing is denied here.
 	if mode, err := stringAtPath(values, "nriImagePolicy.policy.mode"); err != nil || mode != policyModeFailClosed {
@@ -378,11 +424,12 @@ func preflightImagePolicy(ctx context.Context, w io.Writer, values map[string]an
 	if err := json.Unmarshal(podsJSON, &list); err != nil {
 		return "", fmt.Errorf("parse pod list: %w", err)
 	}
+	pods := podsOnNodes(list.Items, nodes)
 
 	exempt := stringsAtPath(values, exemptNamespacesPath)
-	reportExemptedImages(w, exempt, exemptedPlatformImages(list.Items, exempt))
+	reportExemptedImages(w, exempt, exemptedPlatformImages(pods, exempt))
 
-	denied := deniedPlatformImages(list.Items, releaseNamespace, exempt, admissibleDigests(values, components))
+	denied := deniedPlatformImages(pods, releaseNamespace, exempt, admissibleDigests(values, components))
 	if len(denied) == 0 {
 		return "", nil
 	}
@@ -391,6 +438,16 @@ func preflightImagePolicy(ctx context.Context, w io.Writer, values map[string]an
 	}
 	return "", fmt.Errorf("fail-closed image admission would deny %s the cluster runs, and registering the plugin restarts containerd — the denied containers would not come back:\n  %s\nAdmit their namespaces with -f setting nriImagePolicy.policy.exemptNamespaces, admit their digests with nriImagePolicy.bootstrapAllowlist.workloads entries under any command and args, or re-run with --force to install anyway",
 		deniedSummary(denied), strings.Join(denied, "\n  "))
+}
+
+func podsOnNodes(pods []corev1.Pod, nodes []string) []corev1.Pod {
+	var on []corev1.Pod
+	for _, p := range pods {
+		if slices.Contains(nodes, p.Spec.NodeName) {
+			on = append(on, p)
+		}
+	}
+	return on
 }
 
 // deniedSummary names the size of the denied set for a one-line message.
@@ -599,17 +656,17 @@ func stringsAtPath(tree map[string]any, path string) []string {
 }
 
 // preflightUpstreamContainerd refuses an install whose host image-policy
-// installer would reach a node that is not laid out as upstream containerd:
-// the installer writes /etc/containerd/config.toml and restarts containerd,
-// which such a node neither reads nor runs, leaving its pods admitted by
-// nothing. The build-metadata suffix the bundled kubelet stamps onto
-// status.nodeInfo.kubeletVersion is the only signal kubectl can see without
-// going on-host.
-func preflightUpstreamContainerd(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes",
+// installer would reach a confidential node that is not laid out as upstream
+// containerd: the installer writes /etc/containerd/config.toml and restarts
+// containerd, which such a node neither reads nor runs, leaving its pods
+// admitted by nothing. The build-metadata suffix the bundled kubelet stamps
+// onto status.nodeInfo.kubeletVersion is the only signal kubectl can see
+// without going on-host.
+func preflightUpstreamContainerd(ctx context.Context, selector string) error {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector,
 		"-o", `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}`).Output()
 	if err != nil {
-		return fmt.Errorf("kubectl get nodes: %w", withStderr(err))
+		return fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
 	}
 	bundled := bundledKubeletNodes(strings.Split(strings.TrimSpace(string(out)), "\n"))
 	if len(bundled) == 0 {
@@ -922,12 +979,6 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		}
 		helmArgs := buildInstallHelmArgs(chart.path, computedValues, valuesFiles, installWait)
 
-		// Fail fast when router's host port is already taken cluster-wide (e.g.
-		// an existing ingress owns 443), which would otherwise wedge `--wait`.
-		if err := preflightRouterHostPort(cmd.Context()); err != nil {
-			return err
-		}
-
 		if installImagePullSecret != "" {
 			if err := preflightImagePullSecret(cmd.Context(), installNamespace, installImagePullSecret); err != nil {
 				return err
@@ -940,6 +991,25 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		if err != nil {
 			return err
 		}
+		// The nodes this release runs on: the chart places every node agent
+		// and the router on the confidential ones, and the checks below read
+		// those nodes alone.
+		nodeSelector, err := confidentialNodeSelector(values)
+		if err != nil {
+			return err
+		}
+		nodes, err := confidentialNodes(cmd.Context(), nodeSelector)
+		if err != nil {
+			return err
+		}
+
+		// Fail fast when router's host port is already taken on every
+		// confidential node (e.g. an existing ingress owns 443), which would
+		// otherwise wedge `--wait`.
+		if err := preflightRouterHostPort(cmd.Context(), nodes); err != nil {
+			return err
+		}
+
 		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
 			return err
 		}
@@ -966,13 +1036,13 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		// cluster's own platform pods: registering the plugin restarts
 		// containerd, and a denied control-plane static pod takes the API
 		// server with it. Read-only, so it runs with -f too.
-		if warn, err := preflightImagePolicy(cmd.Context(), os.Stdout, values, chart.components, installNamespace, installForce); err != nil {
+		if warn, err := preflightImagePolicy(cmd.Context(), os.Stdout, values, chart.components, installNamespace, nodes, installForce); err != nil {
 			return err
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
 		}
 
-		if err := preflightUpstreamContainerd(cmd.Context()); err != nil {
+		if err := preflightUpstreamContainerd(cmd.Context(), nodeSelector); err != nil {
 			return err
 		}
 
