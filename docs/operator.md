@@ -77,7 +77,13 @@ yet.
 A measured node image boots the chart its own build rendered, configured from
 the worker document it launches with ([launch-configuration.md](launch-configuration.md)). `c8s install`
 refuses nodes running RKE2's or k3s's own containerd, which the installer
-cannot register the plugin with.
+cannot register the plugin with. It also refuses nodes reporting a containerd
+below 2.3, the first release that passes a container's user to NRI plugins:
+without it the admission plugin reads every container as uid 0, which holds no
+mesh role, and refuses the router and every confidential pod. GKE ships
+containerd 2.3 from 1.37.1-gke.1552000 on. Both checks read what the nodes
+report while install runs, so a node joining a cluster later shows up as
+refused pods instead.
 
 Images in a registry that needs authentication need a
 `kubernetes.io/dockerconfigjson` Secret in the release namespace, named with

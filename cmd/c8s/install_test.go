@@ -962,6 +962,30 @@ func TestBundledKubeletNodes(t *testing.T) {
 	}
 }
 
+// Nodes are named with the runtime they report, since that is what the
+// operator has to raise. The comparison reads the version numbers alone, so a
+// build suffix is not a verdict, and a node reporting no runtime version is
+// skipped.
+func TestNodesWithoutNRIUser(t *testing.T) {
+	got := nodesWithoutNRIUser([]string{
+		"node-a\tcontainerd://2.2.7",
+		"node-b\tcontainerd://2.3.3+azure",
+		"node-c\tcontainerd://1.7.33",
+		"node-d\tcontainerd://2.4.1",
+		"node-e\tcri-o://1.33.0",
+		"node-f\tcontainerd://2.3.0",
+		"node-g\t",
+		"",
+	})
+	want := []string{"node-a (containerd://2.2.7)", "node-c (containerd://1.7.33)", "node-e (cri-o://1.33.0)"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nodesWithoutNRIUser = %v, want %v", got, want)
+	}
+	if got := nodesWithoutNRIUser(nil); got != nil {
+		t.Errorf("nodesWithoutNRIUser(nil) = %v, want none", got)
+	}
+}
+
 func TestHostPortConflict(t *testing.T) {
 	pod := func(ns, name, node string, port int32) corev1.Pod {
 		return corev1.Pod{

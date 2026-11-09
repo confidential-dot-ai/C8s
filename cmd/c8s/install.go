@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	k8sversion "k8s.io/apimachinery/pkg/util/version"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
@@ -695,6 +696,58 @@ func bundledKubeletNodes(lines []string) []string {
 	return nodes
 }
 
+// containerdNRIUserVersion is the first containerd that gives NRI plugins a
+// container's user (containerd 2.3, containerd/containerd#12769). The
+// admission plugin holds a container to the uid its mesh role reserves, so
+// below this version it reads every container as uid 0 and refuses it.
+var containerdNRIUserVersion = k8sversion.MustParseGeneric("2.3")
+
+// preflightContainerdVersion refuses an install whose confidential nodes
+// report a container runtime that gives the admission plugin no container
+// user, which it needs to admit any container it gates.
+func preflightContainerdVersion(ctx context.Context, selector string) error {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector,
+		"-o", `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}`).Output()
+	if err != nil {
+		return fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
+	}
+	without := nodesWithoutNRIUser(strings.Split(strings.TrimSpace(string(out)), "\n"))
+	if len(without) == 0 {
+		return nil
+	}
+	return fmt.Errorf("these nodes report no containerd %s or later, the first that gives NRI plugins a container's user: %s. Without that user the admission plugin reads every container as uid 0, and refuses the router and every confidential pod", containerdNRIUserVersion, strings.Join(without, ", "))
+}
+
+// nodesWithoutNRIUser returns "name (runtime)" for each
+// "name\tcontainerRuntimeVersion" line whose runtime gives NRI plugins no
+// container user. A line carrying no version is skipped: a node whose kubelet
+// has reported no runtime yet is not a finding.
+func nodesWithoutNRIUser(lines []string) []string {
+	var nodes []string
+	for _, l := range lines {
+		name, runtimeVersion, _ := strings.Cut(l, "\t")
+		if name == "" || runtimeVersion == "" {
+			continue
+		}
+		if !runsContainerdWithNRIUser(runtimeVersion) {
+			nodes = append(nodes, fmt.Sprintf("%s (%s)", name, runtimeVersion))
+		}
+	}
+	return nodes
+}
+
+// runsContainerdWithNRIUser holds for the runtime versions a node reports when
+// it runs containerd from containerdNRIUserVersion on. Another runtime, or a
+// version that does not parse, does not.
+func runsContainerdWithNRIUser(runtimeVersion string) bool {
+	number, isContainerd := strings.CutPrefix(runtimeVersion, "containerd://")
+	if !isContainerd {
+		return false
+	}
+	parsed, err := k8sversion.ParseGeneric(number)
+	return err == nil && parsed.AtLeast(containerdNRIUserVersion)
+}
+
 // nestedMap walks map keys and returns the map[string]any at the path.
 func nestedMap(tree map[string]any, keys ...string) (map[string]any, bool) {
 	cur := tree
@@ -1043,6 +1096,10 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		}
 
 		if err := preflightUpstreamContainerd(cmd.Context(), nodeSelector); err != nil {
+			return err
+		}
+
+		if err := preflightContainerdVersion(cmd.Context(), nodeSelector); err != nil {
 			return err
 		}
 
