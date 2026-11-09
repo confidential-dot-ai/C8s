@@ -142,6 +142,8 @@ func renderPodManifest(spec *podlaunch.PodSpec, image string) ([]byte, map[strin
 	if err != nil {
 		return nil, nil, err
 	}
+	// No webhook mutates a pod CVM's pod; the guest meets the privilege floor.
+	podmesh.ApplyPrivilegeFloor(pod)
 	if err := podmesh.InjectEndpoint(pod, image); err != nil {
 		return nil, nil, fmt.Errorf("pod mesh endpoint: %w", err)
 	}

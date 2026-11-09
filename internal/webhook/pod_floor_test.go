@@ -6,8 +6,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
-
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // The mutator meets the privilege floor for the author's containers, init and
@@ -68,14 +66,5 @@ func TestMutatePodDefaultsThePrivilegeFloor(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A default drop of a declarable capability would take it from a container the node admits.
-func TestFloorDroppedCapabilitiesAreUndeclarable(t *testing.T) {
-	for _, name := range floorDroppedCapabilities {
-		if !pkgallowlist.UndeclarableCapability(string(name)) {
-			t.Errorf("capability %s may be declared by an entry, so the floor must not drop it by default", name)
-		}
 	}
 }

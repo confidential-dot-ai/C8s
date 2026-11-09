@@ -666,7 +666,10 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 	if err := rejectUnforwardableProbes(pod); err != nil {
 		return err
 	}
-	if err := rejectPrivilegesAboveFloor(pod); err != nil {
+	if err := podmesh.RefusePrivilegesAboveFloor(pod); err != nil {
+		return err
+	}
+	if err := rejectRootContainers(pod); err != nil {
 		return err
 	}
 	return rejectSharedNamespaces(pod)
@@ -845,9 +848,7 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	pod.Spec.EnableServiceLinks = new(false)
 	pod.Spec.AutomountServiceAccountToken = new(false)
 
-	for _, c := range authorContainers(pod) {
-		c.SecurityContext = withPrivilegeFloor(c.SecurityContext)
-	}
+	podmesh.ApplyPrivilegeFloor(pod)
 
 	probes := rewriteWorkloadProbes(pod)
 	// The pod's own endpoint leads: it runs before any credential exists.

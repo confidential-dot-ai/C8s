@@ -71,6 +71,9 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 	if _, err := podmesh.IngressPorts(pod); err != nil {
 		return fmt.Errorf("pod.manifest: %w", err)
 	}
+	if err := podmesh.RefusePrivilegesAboveFloor(pod); err != nil {
+		return fmt.Errorf("pod.manifest: %w", err)
+	}
 	s := pod.Spec
 	if s.HostNetwork || s.HostPID || s.HostIPC {
 		return fmt.Errorf("pod.manifest must not use host namespaces")
@@ -97,9 +100,6 @@ func ValidatePodSpec(pod *corev1.Pod) error {
 			if port.HostPort != 0 || port.HostIP != "" {
 				return fmt.Errorf("pod.manifest container %q must not use a hostPort or hostIP", c.Name)
 			}
-		}
-		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
-			return fmt.Errorf("pod.manifest container %q must not be privileged", c.Name)
 		}
 		// No cluster API answers the pod CVM's kubelet, so a Secret or
 		// ConfigMap reference would never resolve.
