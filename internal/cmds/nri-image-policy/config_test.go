@@ -244,6 +244,67 @@ policy:
 	}
 }
 
+// bootConfigDocument is an installer's configuration document, with the
+// namespaces image admission exempts and the ones the mesh gate exempts.
+func bootConfigDocument(exempt, meshExempt string) string {
+	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
+  pull:
+    url: https://127.0.0.1:30808
+    attestation_api_url: http://localhost:30840
+policy:
+  mode: fail-closed
+  exempt_namespaces: %s
+  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
+mesh:
+  exempt_namespaces: %s
+  resolver: "10.43.0.10"
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`, exempt, meshExempt)
+}
+
+// CheckBootConfig is how a caller validates a config document before a node is
+// made to require the plugin that reads it: the same keys and the same
+// refusals the plugin applies at start.
+func TestCheckBootConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, want string
+	}{
+		{
+			"an exemption the mesh exempts too",
+			bootConfigDocument("[kube-system]", "[kube-system, local-path-storage]"),
+			"",
+		},
+		{
+			"an exemption the mesh does not",
+			bootConfigDocument("[kube-system]", "[local-path-storage]"),
+			"must also be in mesh.exempt_namespaces",
+		},
+		{
+			"the router namespace",
+			bootConfigDocument("[kube-system]", "[kube-system, c8s-router]"),
+			"whose pods serve the router's ports",
+		},
+		{
+			"a misspelt key",
+			strings.Replace(bootConfigDocument("[kube-system]", "[kube-system]"), "\n  mode: fail-closed\n", "\n  modes: fail-closed\n", 1),
+			"field modes not found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckBootConfig([]byte(tc.config))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("CheckBootConfig = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("CheckBootConfig = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // exempt_namespaces without a snapshot path is refused: the captured set must
 // have somewhere to persist, or it would silently recapture (and on a reboot
 // freeze empty) every restart.

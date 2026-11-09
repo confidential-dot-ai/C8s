@@ -29,6 +29,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -3680,20 +3681,28 @@ var bootConfigHeredocRE = regexp.MustCompile(`(?s)<<'IMAGE_POLICY_EOF'\n(.*?)\nI
 // detection plus typed field access, not mirroring the plugin's full schema.)
 func bootConfigFromInstaller(t *testing.T, manifest, dsName string) installerBootConfig {
 	t.Helper()
+	body := bootConfigYAML(t, manifest, dsName)
+	var cfg installerBootConfig
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatalf("plugin would reject its boot config for %s (yaml.v3): %v\n%s", dsName, err, body)
+	}
+	if err := cfg.Allowlist.Base.Normalize(); err != nil {
+		t.Fatalf("boot config base allowlist for %s does not validate the way the plugin's loader would: %v\n%s", dsName, err, body)
+	}
+	return cfg
+}
+
+// bootConfigYAML is the image-policy.yaml body an installer DaemonSet's
+// install script writes to the node.
+func bootConfigYAML(t *testing.T, manifest, dsName string) []byte {
+	t.Helper()
 	ds := renderedDaemonSet(t, manifest, dsName)
 	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
 	m := bootConfigHeredocRE.FindStringSubmatch(script)
 	if m == nil {
 		t.Fatalf("install script for %s has no IMAGE_POLICY_EOF heredoc\n%s", dsName, script)
 	}
-	var cfg installerBootConfig
-	if err := yaml.Unmarshal([]byte(m[1]), &cfg); err != nil {
-		t.Fatalf("plugin would reject its boot config for %s (yaml.v3): %v\n%s", dsName, err, m[1])
-	}
-	if err := cfg.Allowlist.Base.Normalize(); err != nil {
-		t.Fatalf("boot config base allowlist for %s does not validate the way the plugin's loader would: %v\n%s", dsName, err, m[1])
-	}
-	return cfg
+	return []byte(m[1])
 }
 
 // TestChartBootConfigParsesAsPluginYAML decodes each archetype's boot config
@@ -3759,6 +3768,188 @@ func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
 	if !strings.Contains(script, "rm -f") || !strings.Contains(script, "exempt-snapshot.json") {
 		t.Error("install script must delete the exempt snapshot on a boot config change so it re-captures")
+	}
+}
+
+// Every boot config this chart can render must load in the plugin that reads
+// it: the plugin refuses a policy-exempt namespace the mesh gate does not
+// exempt too, so an exemption the installer advises must survive its own
+// validation rather than exit the plugin 41 ms after containerd starts it.
+func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
+	t.Parallel()
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			out, err := helmTemplatePlatform(t, platform)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			body := bootConfigAsStagedOnANode(t, bootConfigYAML(t, out, "c8s-nri-image-policy-worker"))
+			if err := nriimagepolicy.CheckBootConfig(body); err != nil {
+				t.Errorf("plugin refuses the %s boot config: %v\n%s", platform, err, body)
+			}
+		})
+	}
+
+	t.Run("exempting the router namespace", func(t *testing.T) {
+		t.Parallel()
+		out, err := helmTemplatePlatform(t, "gke-snp",
+			"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,"+workloadclaims.RouterNamespace+"}",
+		)
+		if err == nil {
+			t.Fatalf("chart rendered a config the plugin refuses at start\n%s", out)
+		}
+		if !strings.Contains(out, "whose pods serve the router's ports") {
+			t.Errorf("render failed without naming the router's pods: %s", out)
+		}
+	})
+}
+
+// nodeCDSAddressFile is where the installer stages this cluster's CDS address
+// beside the boot config.
+const nodeCDSAddressFile = "/etc/nri/conf.d/cds-address"
+
+// bootConfigAsStagedOnANode points the boot config at a CDS address file
+// holding what the installer mounts from the measurements ConfigMap, which is
+// the one input the plugin reads from the node rather than the config.
+func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cds-address")
+	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
+		t.Fatalf("stage the CDS address file: %v", err)
+	}
+	staged := strings.Replace(string(body), nodeCDSAddressFile, path, 1)
+	if staged == string(body) {
+		t.Fatalf("boot config names no %s\n%s", nodeCDSAddressFile, body)
+	}
+	return []byte(staged)
+}
+
+// criticalPriorityPod is a rendered pod template that asks for the critical
+// priority class, with the namespace it is created in.
+type criticalPriorityPod struct {
+	object    string
+	namespace string
+}
+
+// criticalPriorityClass is the one critical class the chart renders
+// (c8s.criticalPriorityClass).
+const criticalPriorityClass = "system-node-critical"
+
+// criticalPriorityPods lists the release's pod templates that ask for the
+// critical priority class.
+func criticalPriorityPods(t *testing.T, helmOut string) []criticalPriorityPod {
+	t.Helper()
+	var pods []criticalPriorityPod
+	iterateManifests(t, helmOut, func(doc []byte) (stop bool) {
+		var obj struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+			Spec struct {
+				Template corev1.PodTemplateSpec `json:"template"`
+			} `json:"spec"`
+		}
+		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
+			t.Fatalf("decode manifest: %v\n%s", err, doc)
+		}
+		if obj.Spec.Template.Spec.PriorityClassName != criticalPriorityClass {
+			return false
+		}
+		pods = append(pods, criticalPriorityPod{
+			object:    obj.Kind + "/" + obj.Metadata.Name,
+			namespace: obj.Metadata.Namespace,
+		})
+		return false
+	})
+	return pods
+}
+
+// capsPods reports whether q limits the number of pods.
+func capsPods(q corev1.ResourceQuota) bool {
+	_, capped := q.Spec.Hard[corev1.ResourcePods]
+	return capped
+}
+
+// scopesToPriorityClass reports whether q counts the pods of class and no
+// others.
+func scopesToPriorityClass(q corev1.ResourceQuota, class string) bool {
+	if q.Spec.ScopeSelector == nil {
+		return false
+	}
+	for _, expr := range q.Spec.ScopeSelector.MatchExpressions {
+		if expr.ScopeName == corev1.ResourceQuotaScopePriorityClass &&
+			expr.Operator == corev1.ScopeSelectorOpIn &&
+			slices.Contains(expr.Values, class) {
+			return true
+		}
+	}
+	return false
+}
+
+// renderedResourceQuotas decodes every ResourceQuota in a render.
+func renderedResourceQuotas(t *testing.T, helmOut string) []corev1.ResourceQuota {
+	t.Helper()
+	var quotas []corev1.ResourceQuota
+	iterateManifests(t, helmOut, func(doc []byte) (stop bool) {
+		var meta docMeta
+		if err := sigsyaml.Unmarshal(doc, &meta); err != nil {
+			t.Fatalf("decode manifest: %v\n%s", err, doc)
+		}
+		if meta.Kind != "ResourceQuota" {
+			return false
+		}
+		var q corev1.ResourceQuota
+		if err := sigsyaml.Unmarshal(doc, &q); err != nil {
+			t.Fatalf("decode ResourceQuota %s: %v\n%s", meta.Metadata.Name, err, doc)
+		}
+		quotas = append(quotas, q)
+		return false
+	})
+	return quotas
+}
+
+// GKE rejects a critical-priority pod in a namespace whose quotas do not cover
+// its PriorityClass, so every critical pod the chart renders needs a quota of
+// that scope in the release namespace — or its DaemonSet stays at zero and the
+// node is left without the agent that gates its images.
+func TestChartCriticalPriorityPodsAreCoveredByAQuota(t *testing.T) {
+	t.Parallel()
+	wantPods := []string{
+		"DaemonSet/c8s-nri-image-policy-uninstall",
+		"DaemonSet/c8s-nri-image-policy-worker",
+		"DaemonSet/c8s-volumed",
+		"DaemonSet/c8s-volumed-teardown",
+	}
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			out, err := helmTemplatePlatform(t, platform, "--set", "volumed.enabled=true")
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			pods := criticalPriorityPods(t, out)
+			var objects []string
+			for _, pod := range pods {
+				objects = append(objects, pod.object)
+				if pod.namespace != "c8s-system" {
+					t.Errorf("%s is created in %s, which the release namespace's quota does not cover", pod.object, pod.namespace)
+				}
+			}
+			slices.Sort(objects)
+			if !slices.Equal(objects, wantPods) {
+				t.Errorf("critical-priority pod templates = %v, want %v", objects, wantPods)
+			}
+			quotas := renderedResourceQuotas(t, out)
+			covered := slices.ContainsFunc(quotas, func(q corev1.ResourceQuota) bool {
+				return q.Namespace == "c8s-system" && capsPods(q) && scopesToPriorityClass(q, criticalPriorityClass)
+			})
+			if !covered {
+				t.Errorf("no rendered ResourceQuota admits %s in c8s-system", criticalPriorityClass)
+			}
+		})
 	}
 }
 
@@ -4968,6 +5159,32 @@ func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
 	// rendered policy carries: the acme egress exception excludes them.
 	if !slices.Equal(cfg.Mesh.ClusterRanges, []string{"10.42.0.0/16"}) {
 		t.Errorf("mesh.cluster_ranges = %v, want the configured cluster ranges", cfg.Mesh.ClusterRanges)
+	}
+}
+
+// The mesh gate's exempt list is derived from the image policy's rather than
+// set a second time, so exempting a namespace cannot produce a config the
+// plugin refuses.
+func TestChartBootConfigMeshExemptsEveryImagePolicyExemptNamespace(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
+	if cfg.Mesh == nil {
+		t.Fatal("no mesh policy rendered")
+	}
+	want := []string{
+		"c8s-system",
+		"gmp-system",
+		"kube-system",
+		"local-path-storage",
+	}
+	got := slices.Clone(cfg.Mesh.ExemptNamespaces)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("mesh.exempt_namespaces = %v, want %v", cfg.Mesh.ExemptNamespaces, want)
 	}
 }
 

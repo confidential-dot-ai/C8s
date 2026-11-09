@@ -24,7 +24,7 @@ spec:
         sidecar.istio.io/inject: "false"
     spec:
       hostPID: true
-      priorityClassName: system-node-critical
+      priorityClassName: {{ include "c8s.criticalPriorityClass" . }}
       {{- include "c8s.imagePullSecrets" . | nindent 6 }}
       tolerations:
         - operator: "Exists"

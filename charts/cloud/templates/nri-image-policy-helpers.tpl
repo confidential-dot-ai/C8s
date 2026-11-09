@@ -30,6 +30,30 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "nri-image-policy.runtimeDir" -}}/run/nri-image-policy{{- end -}}
 {{- define "nri-image-policy.cacheDir" -}}/var/lib/nri-image-policy{{- end -}}
 
+{{/* The namespaces of the pods a node runs for the platform, which are up
+     before any enforcer is. */}}
+{{- define "nri-image-policy.platformNamespaces" -}}
+{{- list .Release.Namespace "kube-system" "local-path-storage" | toJson -}}
+{{- end -}}
+
+{{/* The mesh gate's exempt namespaces, as a YAML list: the platform
+     namespaces plus every namespace image admission exempts, which the plugin
+     requires to be a superset of policy.exempt_namespaces. */}}
+{{- define "nri-image-policy.meshExemptNamespaces" -}}
+{{- $root := . -}}
+{{- $platform := include "nri-image-policy.platformNamespaces" $root | fromJsonArray -}}
+{{- $exempt := concat $platform ($root.Values.nriImagePolicy.policy.exemptNamespaces | default list) | uniq -}}
+{{- $router := include "c8s.routerMeshNamespace" $root -}}
+{{- if has $router $exempt -}}
+{{- fail (printf "the mesh gate cannot exempt %s, whose pods serve the router's ports and are members: the plugin refuses such a config at start" $router) -}}
+{{- end -}}
+{{- $entries := list -}}
+{{- range $ns := $exempt -}}
+{{- $entries = append $entries (printf "- %s" ($ns | quote)) -}}
+{{- end -}}
+{{- join "\n" $entries -}}
+{{- end -}}
+
 {{/* The name the binary registers at the NRI socket and containerd's
      default_validator requires. */}}
 {{- define "nri-image-policy.pluginName" -}}nri-image-policy{{- end -}}
