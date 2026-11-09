@@ -45,8 +45,8 @@ type Policy struct {
 	MeshUID uint32
 	Roles   []Role
 	// ClusterRanges are this cluster's pod and Service ranges: a role's
-	// outside port stops at them, the server role's egress exception
-	// excludes them, and its upstream identity reaches them uncaptured.
+	// outside port stops at them, and the server role's egress exception
+	// excludes them.
 	ClusterRanges []netip.Prefix
 	// Exits are the destinations every socket of the pod but root's reaches
 	// over TCP uncaptured. Each is a way out of the pod for whatever the
@@ -69,25 +69,21 @@ type PodPolicy struct {
 }
 
 // ServerRole is the platform role a pod serves external traffic for: the ports
-// it answers on itself, the one port one identity of that pod may reach
-// outside the cluster, and the identity that reaches the cluster itself. An
-// inbound accept cannot name a socket UID, so the listeners belong to the
-// ruleset of that pod and to no other.
+// it answers on itself, the one identity of that pod whose sockets leave it on
+// egress ports, and the identity that dials backends itself. An inbound
+// accept cannot name a socket UID, so the listeners belong to the ruleset of
+// that pod and to no other.
 type ServerRole struct {
 	Listeners []uint16
 	Egress    ServerEgress
 	// Upstream is the identity of the pod's route authority: it holds the
-	// signed route manifest and dials the member each route names as a mesh
-	// client, so its connections to ClusterRanges are left to it rather than
-	// captured, and it is the one identity here that reaches Services.
+	// signed route manifest and dials each backend a route names, a member
+	// pod or a pod CVM's published endpoint as a mesh client and an address
+	// backend over TLS to the route's anchors. Like the mesh endpoint, it
+	// authenticates every peer itself, so its TCP is left to it rather than
+	// captured, wherever it goes: a pod CVM's endpoint lies outside
+	// ClusterRanges, on whatever port its cloud published.
 	Upstream uint32
-	// Services are the destinations the upstream identity reaches in the
-	// clear, each one address and port: the verifier that weighs the
-	// evidence of the CDS it fetches the signed route manifest from.
-	Services []Destination
-	// OutsidePort is the port that identity reaches on any address outside
-	// the cluster: where that CDS serves. 0 names none.
-	OutsidePort uint16
 }
 
 // ServerEgress is the one identity of a server-role pod whose sockets leave
@@ -184,9 +180,6 @@ func (p Policy) validate() error {
 // reachesOutside reports whether any identity of this pod is permitted a port
 // beyond the cluster.
 func (p Policy) reachesOutside() bool {
-	if p.Server.OutsidePort != 0 {
-		return true
-	}
 	return slices.ContainsFunc(p.Roles, func(role Role) bool { return role.OutsidePort != 0 })
 }
 
@@ -228,18 +221,10 @@ func (p Policy) validateServer() error {
 		return nil
 	}
 	if s.Upstream == 0 {
-		return fmt.Errorf("%w: server role has no upstream identity, so its uncaptured cluster rules would match root", ErrPolicy)
+		return fmt.Errorf("%w: server role has no upstream identity, so its uncaptured rules would match root", ErrPolicy)
 	}
 	if len(s.Egress.Ports) > 0 && len(p.ClusterRanges) == 0 {
 		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.Egress.UID)
-	}
-	for _, dst := range s.Services {
-		if err := validRemoteAddress(dst.Addr); err != nil {
-			return err
-		}
-		if dst.Port == 0 {
-			return fmt.Errorf("%w: upstream identity %d service %s has no port", ErrPolicy, s.Upstream, dst.Addr)
-		}
 	}
 	return nil
 }

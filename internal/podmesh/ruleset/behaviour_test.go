@@ -168,8 +168,7 @@ func serverBehaviourPolicy() Policy {
 			UID:   serverEgressUID,
 			Ports: []uint16{serverEgressPort},
 		},
-		Upstream:    serverUpstreamUID,
-		OutsidePort: servicePort,
+		Upstream: serverUpstreamUID,
 	}
 	return policy
 }
@@ -177,10 +176,11 @@ func serverBehaviourPolicy() Policy {
 // What the ruleset does to the traffic of a pod that serves a platform role's
 // own ports: an external client reaches the port that role answers on, the
 // pod's egress identity reaches the egress port outside the cluster in the
-// clear, its upstream identity reaches a member of the cluster itself, and
-// everything else — the same port inside the cluster, that identity's other
-// connections, the role that forwards application traffic, and every other
-// identity in the pod — still rides the mesh.
+// clear, its upstream identity reaches a member of the cluster and any
+// address outside it itself, and everything else — the same port inside the
+// cluster, the egress identity's other connections, the role nginx relays
+// application traffic as, and every other identity in the pod — still rides
+// the mesh.
 func TestTheServerRoleCarriesOnlyItsOwnPortsInTheNamespace(t *testing.T) {
 	podNetNS(t, func(netnsPath string) error {
 		peer, err := startPeerNamespace()
@@ -243,10 +243,10 @@ func TestTheServerRoleCarriesOnlyItsOwnPortsInTheNamespace(t *testing.T) {
 			{"the egress identity reaches its port outside the cluster", serverEgressUID, address(unapproved, serverEgressPort), 41100, admitted},
 			{"the same port inside the cluster is captured", serverEgressUID, address(service, serverEgressPort), 41101, captured},
 			{"the egress identity's other connections are captured", serverEgressUID, address(unapproved, 8080), 41102, captured},
-			{"the role that forwards application traffic reaches no egress port", serverUID, address(unapproved, serverEgressPort), 41103, captured},
+			{"the role nginx relays as reaches no egress port", serverUID, address(unapproved, serverEgressPort), 41103, captured},
 			{"another identity reaches no egress port", workloadUID, address(unapproved, serverEgressPort), 41104, captured},
 			{"the upstream identity reaches a member of the cluster itself", serverUpstreamUID, address(service, plaintextPort), 41105, admitted},
-			{"the upstream identity is captured outside the cluster", serverUpstreamUID, address(unapproved, plaintextPort), 41106, captured},
+			{"the upstream identity reaches any address outside the cluster itself", serverUpstreamUID, address(unapproved, servicePort), 41106, admitted},
 			{"another identity reaches no member uncaptured", serverUID, address(service, plaintextPort), 41107, captured},
 		} {
 			if err := sendAs(test.uid, "tcp", test.destination, test.sourcePort); err != nil {

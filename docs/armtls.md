@@ -142,8 +142,10 @@ uncaptured:
 - **Resolver queries**: to the single address trusted policy names, on port 53.
 - **Probes**: the ones the mesh endpoint forwards to the pod's own address on
   port 15021.
-- **Platform-role sockets**: the credential clients that reach CDS, and the
-  endpoint itself.
+- **Platform-role sockets**: the credential clients that reach CDS, the
+  endpoint itself, and, in the router's pod, the route authority
+  (`cds-attest`), which authenticates each backend itself
+  ([operator.md](operator.md#pattern-rules)).
 - **Declared egress**: what the pod's workload entry declares, once the pod
   matches that entry ([allowlist-entries.md](allowlist-entries.md)).
 
@@ -162,7 +164,9 @@ chain path read: the router's route authority, which holds the cluster's
 operator-signed route manifest, requires a route's backend to be the workload
 that manifest names, stamped under the allowlist digest on the router's own
 leaf, or by name alone while that leaf carries no stamp
-([operator.md](operator.md#route-manifest)).
+([operator.md](operator.md#route-manifest)), and for a pattern rule also
+carrying the agent's client document digest
+([operator.md](operator.md#pattern-rules)).
 
 ### No session resumption
 
