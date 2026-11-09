@@ -21,6 +21,10 @@ rules:
   - apiGroups: [""]
     resources: [nodes, nodes/status]
     verbs: [get, list, watch, create, update, patch]
+  # The provider records Pod Events through the events.k8s.io API.
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

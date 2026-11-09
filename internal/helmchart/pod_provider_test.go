@@ -73,16 +73,17 @@ func TestPodProviderMountAndPermissionsAreOptIn(t *testing.T) {
 			if findDoc(t, out, "ClusterRole", "c8s-operator-pod-cvm", &providerRole) != enabled {
 				t.Fatalf("provider ClusterRole present=%t", !enabled)
 			}
-			nodes, podStatus := false, false
+			nodes, podStatus, events := false, false, false
 			for _, rule := range append(operatorRole.Rules, providerRole.Rules...) {
 				if slices.Contains(rule.Resources, "secrets") {
 					t.Fatal("provider has cluster-wide Secret access")
 				}
 				nodes = nodes || slices.Contains(rule.Resources, "nodes")
 				podStatus = podStatus || slices.Contains(rule.Resources, "pods/status")
+				events = events || slices.Contains(rule.APIGroups, "events.k8s.io") && slices.Contains(rule.Resources, "events") && slices.Contains(rule.Verbs, "create")
 			}
-			if nodes != enabled || podStatus != enabled {
-				t.Fatalf("provider RBAC nodes=%t podStatus=%t", nodes, podStatus)
+			if nodes != enabled || podStatus != enabled || events != enabled {
+				t.Fatalf("provider RBAC nodes=%t podStatus=%t events=%t", nodes, podStatus, events)
 			}
 			var binding rbacv1.RoleBinding
 			if enabled && (!findDoc(t, out, "RoleBinding", "c8s-operator-pod-cvm", &binding) || len(binding.Subjects) != 1 || binding.Subjects[0].Kind != "ServiceAccount" || binding.Subjects[0].Name != "c8s-operator") {
