@@ -108,8 +108,9 @@ API server — below the layer the adversary controls.
 
 ## CVM modes and hardware platforms
 
-`c8s install` requires two orthogonal choices. `--cvm-mode` is the deployment
-shape; all three are node-as-CVM, and this table is the one place they differ.
+C8s runs in three node-as-CVM shapes, and this table is the one place they
+differ. A cluster of workers boots the C8s measured node image;
+`c8s install --platform` deploys the chart on GKE or AKS confidential VMs.
 
 | | `bare-metal` | `gke` | `aks` |
 |---|---|---|---|
@@ -137,11 +138,21 @@ namespaces off there is the chart's `<release>-deny-host-namespaces` cluster
 policy —
 [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
 
-`--hardware-platform` is the CPU TEE: `sev-snp` or `tdx`. Under `aks` it selects
-which vTPM report shape to ask for rather than a guest device. On TDX, pinning
-the launch measurement alone covers the firmware; pinning the guest needs the
-image manifest published with the node image — [verify.md](verify.md),
-[measurements.md](measurements.md).
+The CPU TEE is `sev-snp` or `tdx`. A cluster of workers takes it as
+`c8s node-image render --hardware-platform`; the chart lanes take the mode and
+the TEE as one `c8s install --platform`:
+
+| `--platform` | CVM mode | CPU TEE | Report |
+|---|---|---|---|
+| `aks-snp` | `aks` | `sev-snp` | vTPM report wrapping an SNP report (`az-snp`) |
+| `aks-tdx` | `aks` | `tdx` | vTPM report wrapping a TD quote (`az-tdx`) |
+| `gke-snp` | `gke` | `sev-snp` | the SNP report (`snp`) |
+
+GKE confidential VMs are SEV-SNP only, so `gke-tdx` is not a platform. Under
+`aks` the TEE selects which vTPM report shape the node asks for rather than a
+guest device. On TDX, pinning the launch measurement alone covers the firmware;
+pinning the guest needs the image manifest published with the node image —
+[verify.md](verify.md), [measurements.md](measurements.md).
 
 How the node image is built is `../images/node-guest/README.md`.
 

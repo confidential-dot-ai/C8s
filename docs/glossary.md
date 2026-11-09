@@ -10,12 +10,14 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | `attestation-api` | The node-local service that produces and verifies this node's hardware evidence. | [overview.md](overview.md) |
 | baked node | A node booted from the measured C8s node image, which carries its services and policy. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
 | CVM | Confidential VM: CPU-encrypted memory whose launch state the hardware measures. | [overview.md](overview.md) |
-| CVM mode (`--cvm-mode`) | The deployment shape: `bare-metal`, `gke`, or `aks`. All three are node-as-CVM. | [overview.md](overview.md) |
+| cluster of workers | A cluster whose nodes all boot the measured C8s node image, installed from its launch file rather than by `c8s install`. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
+| CVM mode | The node shape: `bare-metal` (the measured node image), `gke`, or `aks`. All three are node-as-CVM. | [overview.md](overview.md) |
 | evidence | A hardware-signed attestation report plus the material a verifier needs to check it. | [overview.md](overview.md) |
-| hardware platform (`--hardware-platform`) | The CPU TEE: `sev-snp` or `tdx`. Chosen independently of the CVM mode. | [overview.md](overview.md) |
+| hardware platform (`--hardware-platform`) | The CPU TEE: `sev-snp` or `tdx`, named by `c8s node-image render` and `c8s worker control-plane render`. | [overview.md](overview.md) |
 | launch measurement | Digest of what the CVM booted: the SEV-SNP measurement or the TDX MRTD. | [measurements.md](measurements.md) |
 | node image | The measured guest image a node boots: firmware, kernel, and dm-verity root. | [overview.md](overview.md) |
 | node-as-CVM | The node is the confidential VM; its pods are processes inside it. | [overview.md](overview.md) |
+| platform (`--platform`) | The CVM mode and CPU TEE pair `c8s install` deploys on: `aks-snp`, `aks-tdx` or `gke-snp`. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
 | SEV-SNP | AMD Secure Encrypted Virtualization with Secure Nested Paging, one of the two platforms. | [overview.md](overview.md) |
 | TDX | Intel Trust Domain Extensions, the other platform; measures firmware (MRTD) and registers (RTMR). | [overview.md](overview.md) |
 | TEE | Trusted Execution Environment: the hardware boundary C8s puts the workload inside. | [overview.md](overview.md) |

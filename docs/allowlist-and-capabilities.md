@@ -197,9 +197,9 @@ The chart renders this policy off on every lane it installs
 measured base and a chart-rendered base is the cluster admin's to choose. What
 remains there is control-plane admission the operator owns: the chart's
 `<release>-deny-host-namespaces` policy, refusing host namespaces, host ports,
-and `hostPath` volumes to pods outside the release, router, and `kube-system`
-namespaces, and `local-path-storage` on an installed cluster
-(`node.baked=false`) ([operator.md](operator.md)).
+and `hostPath` volumes to pods outside the release, router, `kube-system` and
+`local-path-storage` namespaces, the set every cloud install exempts
+([operator.md](operator.md)).
 
 Some containers must hold host privilege: the worker's static pods. They are
 the node's trusted computing base, and the exemption belongs to whoever
@@ -295,8 +295,9 @@ since its file is the whole document: run it again to see the new diff.
 
 ## Refresh and anti-rollback
 
-Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
-default) and refreshes when the document changes: CDS tags it with its digest,
+Every node polls `GET /allowlist` every 5s, the `allowlist.pull.interval` the
+chart and the measured node image both fix, and refreshes when the document
+changes: CDS tags it with its digest,
 `"sha256:<hex>"`, and sends its version in `X-C8s-Allowlist-Version`, and the
 response carries `Cache-Control: no-store`. The document swaps wholesale, gated
 by that monotone version: a consumer applies a pull only if its version is not
@@ -321,10 +322,10 @@ policy instead — stale, never open. The high-water mark is process-local, so
 rollback is rejected only within a plugin's lifetime.
 
 Applying is not only about what starts next. Under `nriImagePolicy.policy.mode:
-fail-closed` with `nriImagePolicy.policy.enforceExisting`, the chart's defaults,
-a node also rechecks its running containers — at startup and after each document
-it applies — and kills those the document no longer admits, outside the exempt
-namespaces. Those are namespaces a boot config lists as holding platform pods
+fail-closed`, the chart's default, every node also rechecks its running
+containers — at startup and after each document it applies — and kills those
+the document no longer admits, outside the exempt namespaces. Enforcing the
+running set is not a switch: every C8s lane does it. Those are namespaces a boot config lists as holding platform pods
 the allowlist does not describe, admitted against a digest set the plugin froze
 on its first connect (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
@@ -357,7 +358,7 @@ shapes its seed replaces, leaving an operator entry under any other name
 untouched, so an operator edit survives until the CDS VM restarts and a
 deleted entry returns then for as long as the configuration carries it.
 
-A worker cluster runs no chart install, so it has no `--allowlist-seed-out` to
+A cluster of workers runs no chart install, so it has no `--allowlist-seed-out` to
 take the seed from. `c8s node-image render` writes the same document instead,
 given the digests the worker image's own release published:
 

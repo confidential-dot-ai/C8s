@@ -7,8 +7,8 @@ it, and so does armTLS, the mutual TLS C8s components authenticate each other
 with, inside the cluster ([verify.md](verify.md), [armtls.md](armtls.md)).
 
 Every C8s node is a confidential VM (CVM) and its pods are processes inside it,
-so every value here belongs to the node. `--hardware-platform` decides which
-set applies and `--cvm-mode` where the evidence comes from
+so every value here belongs to the node. The CPU TEE decides which set applies
+and the CVM mode where the evidence comes from
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)). `‖` below is
 byte concatenation.
 
@@ -90,11 +90,11 @@ accounted for, the policies are not ([verify.md](verify.md)).
   (`/sys/kernel/config/tsm/report`), which gets a quote through the host's
   Quote Generation Service.
 - **`aks`**: the Azure vTPM at `/dev/tpm0`, whose report wraps an SEV-SNP
-  report (`az-snp`) or a TD quote (`az-tdx`); `--hardware-platform` selects
-  which shape the node asks for. The freshness binding is the vTPM quote nonce,
-  compared with the 48 bytes C8s sends rather than the padded hardware field,
-  and `--init-data` pins vTPM PCR[8] rather than `HOST_DATA`. C8s pins no other
-  PCR.
+  report (`az-snp`) or a TD quote (`az-tdx`), the shape `--platform` names
+  ([overview.md](overview.md#cvm-modes-and-hardware-platforms)). The freshness
+  binding is the vTPM quote nonce, compared with the 48 bytes C8s sends rather
+  than the padded hardware field, and `--init-data` pins vTPM PCR[8] rather
+  than `HOST_DATA`. C8s pins no other PCR.
 
 The launch binding is `bare-metal` only: only the measured node image commits
 its launch file, and on the managed lanes the cloud's own stack owns the field

@@ -69,7 +69,9 @@ that satisfy its admission, image, and network policies.
   ([`cmd/armtls-mesh/README.md`](cmd/armtls-mesh/README.md)).
 
 - **Node-as-CVM.** Run the whole node as one confidential virtual machine
-  (CVM). Supported modes are `bare-metal`, `gke`, and `aks`. See
+  (CVM). `c8s install` deploys on the platforms `aks-snp`, `aks-tdx` and
+  `gke-snp`; a cluster of workers boots the measured node image
+  ([`images/node-guest/README.md`](images/node-guest/README.md)). See
   [Architecture](#architecture).
 
 - **Measured boot end to end.** Node images boot via the IGVM guest-image
@@ -118,8 +120,8 @@ that satisfy its admission, image, and network policies.
   post-quantum over-encrypted channel let end users verify the cluster with
   no special client, via [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js).
 
-- **One-command install.** `c8s install --cvm-mode=<shape>` brings all of this
-  to an existing cluster running upstream containerd (including AKS
+- **One-command install.** `c8s install --platform=<platform>` brings all of
+  this to an existing cluster running upstream containerd (including AKS
   confidential node pools, where both SEV-SNP and Intel TDX attest through the
   Azure vTPM).
 
@@ -212,17 +214,17 @@ listening on port 8443. `--workload-ref` uses
 
 ```sh
 # Install and adopt the workload; follow install's route-manifest instructions
-c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
+c8s install --platform=aks-snp --namespace c8s-system \
   --operator-keys operator.pub \
   --cds-address <ip:port of your CDS> --cds-pin cds-pin.json \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 
-`--cvm-mode` is required and has no default — `bare-metal`, `gke`, and `aks` are the
-node-as-CVM shapes. `--hardware-platform` is required the
-same way: `sev-snp` or `tdx`. An unstated shape would silently mismatch the
-cluster it lands on, so the install refuses to guess.
+`--platform` names the cluster's confidential VMs: `aks-snp`, `aks-tdx` or
+`gke-snp`, which is unverified on a GKE node. Without it the `-f` files must
+set `attestationApi.devices`, `nriImagePolicy.platform` and
+`router.attest.platform` themselves, or the chart refuses to render.
 
 `--workload-ref` adopts the workload, patches its pod template with
 `confidential.ai/cw: vllm`, and resolves its images into the bootstrap allowlist.
@@ -390,10 +392,11 @@ c8s allowlist upload allowlist.json \
   --operator-key operator.key
 ```
 
-For a bare-metal install, pass `--cvm-mode bare-metal` to `allowlist upload`;
-its required component set uses the measured host attestation service. GKE, AKS,
-and uploads without a mode require the attestation-api image. `--require`
-overrides the required set.
+`allowlist upload` takes its own `--cvm-mode`, which `c8s install` no longer
+has: pass `--cvm-mode bare-metal` for a cluster of workers, whose required
+component set uses the measured host attestation service. GKE, AKS, and uploads
+without a mode require the attestation-api image. `--require` overrides the
+required set.
 
 `--measurements` identifies the trusted build of the endpoint you connected
 to. Here `<router-launch-digest>` is the launch digest of the confidential node

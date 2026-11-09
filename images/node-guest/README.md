@@ -158,9 +158,7 @@ channel, therefore uses the same router code.
 The launch measurement commits to the baked floor, the static pod templates
 and the bootstrap code. It does not attest the current contents of Kubernetes
 API objects. The NRI floor pins platform image digests, not every possible
-argument or mount for those images. `c8s install` refuses the
-`confidential.ai/baked=true` namespace so an ordinary chart install cannot
-replace this deployment accidentally.
+argument or mount for those images.
 
 Core version upgrades rebuild the image and relaunch with updated measurement
 pins. Restarting a Pod uses the same baked image. CDS has an ephemeral
@@ -423,11 +421,9 @@ ways) and fails when either names another build, so the host and the guests
 verify with the same attestation-api release. pin-watch resolves the digest of
 a new attestation-rs release and writes the manifest and the chart together.
 
-The chart's two third-party images are digest-pinned and seeded into the
-allowlist floor: the router's nginx in
-`internal/helmchart/lib/files/components.yaml`, the containerd-prep busybox in
-`internal/helmchart/cloud/values.yaml`. The
-line above each digest names the tag it was resolved from
+The chart's third-party image, the router's nginx, is digest-pinned in
+`internal/helmchart/lib/files/components.yaml` and seeded into the allowlist
+floor. The line above each digest names the tag it was resolved from
 (`# Resolve REPOSITORY:TAG to bump this digest.`), which
 `.github/scripts/chart-image-pins.sh list` reads and `set` rewrites.
 pin-hygiene fails a digest without that line or one the registry no longer
