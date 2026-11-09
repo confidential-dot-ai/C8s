@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	kubeyaml "sigs.k8s.io/yaml"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -84,14 +83,14 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 	if err != nil {
 		return PodRuntime{}, err
 	}
+	// The worker floor this profile inherits journals served policies into
+	// RTMR[3]; a pod's register journals its started images instead, and a
+	// boot has one writer.
 	if value, exists := pull["measure_policies"]; exists {
-		enabled, ok := value.(bool)
-		if !ok {
+		if _, ok := value.(bool); !ok {
 			return PodRuntime{}, fmt.Errorf("baked allowlist.pull.measure_policies must be a boolean")
 		}
-		if enabled {
-			return PodRuntime{}, nriimagepolicy.ErrPodRoleMeasurePolicies
-		}
+		pull["measure_policies"] = false
 	}
 	// A Pod boot has no node namespaces, in-Pod credential clients or
 	// platform services: its guest broker reaches CDS outside the Pod
