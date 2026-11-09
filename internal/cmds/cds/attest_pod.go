@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -57,22 +58,27 @@ func enforcePodImages(resp remote.VerifyResponse, pins []remote.ImagePin, platfo
 	return fmt.Errorf("pod image, launch key or complete runtime journal not allowed")
 }
 
-// authorizePodMembership admits a pod CVM's complete image journal against one
+// resolvePodWorkload admits a pod CVM's complete image journal against one
 // atomic policy snapshot: every measured digest must be in the current
-// workload policy. The claims carry digests only, so a pod CVM gets the
-// membership leaf and never a matched-workload stamp.
-func (h AttestHandler) authorizePodMembership(pod workloadclaims.PodClaims) error {
+// workload policy. When the pod's whole observation set (images, argv,
+// environment and mounts, as the quote-bound claims carry them) matches
+// exactly one entry of that snapshot, the leaf names it; otherwise the pod
+// gets the unnamed membership leaf.
+func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaims.PodClaims) (*armtls.MatchedWorkload, error) {
 	if h.AllowlistStore == nil {
-		return fmt.Errorf("pod issuance requires an allowlist")
+		return nil, fmt.Errorf("pod issuance requires an allowlist")
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	membership := make(map[string]struct{}, len(pod.RuntimeExtensions))
 	for _, d := range pod.RuntimeExtensions {
 		if !snapshot.Contains(d) {
-			return fmt.Errorf("pod image membership not authorized")
+			return nil, fmt.Errorf("pod image membership not authorized")
 		}
+		membership[d] = struct{}{}
 	}
-	return nil
+	resp := workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers}
+	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}), nil
 }

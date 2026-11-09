@@ -178,9 +178,11 @@ inventory callback. The guest authenticates CDS against the CDS pins its signed
 launch document carries, then sends an empty-subject CSR, a fresh
 challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
 bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
-revision, the complete ordered image measurement list and the image digest of
-every retained admission, completed containers included. The claims carry image
-digests only, no argument, environment, mount or role observation;
+revision, the complete ordered image measurement list and every retained
+admission, completed containers included: its image digest, effective argv,
+environment commitment, mounts with their named volumes, the platform role the
+guest's measured base binds to it, and `spec_digest`, a domain-separated
+SHA-256 over the argv, environment commitment and mounts that CDS recomputes.
 `pkg/workloadclaims` owns their encoding. The report data is:
 
 ```text
@@ -189,10 +191,16 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 
 CDS verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
-policy. The leaf is the unnamed membership leaf: a pod CVM never carries the
-matched-workload stamp, since its claims name no arguments, environment or
-mounts to match an entry against. Neither a status quote nor a node inventory
-token substitutes for this profile.
+policy. When the Pod's whole observation set, without the platform's mesh
+endpoint, matches exactly one allowlist entry of the same policy snapshot,
+the leaf carries the matched-workload stamp, as a node workload's does, under
+the named-leaf lifetime cap. Otherwise it is the unnamed membership leaf: no
+match, more than one match, or an image no single entry lists. Neither a
+status quote nor a node inventory token substitutes for this profile.
+
+This is a proposed change to the Pod CVM profile, whose leaves were always
+unnamed and whose claims carried image digests only. Naming a Pod lets a
+relying party pin which workload a Pod CVM runs, like any other workload.
 
 Measured Pod launch keys remain separate from node and operator authority. In
 an HA cluster, that boundary also applies to signed node-image replacements.

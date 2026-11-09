@@ -276,12 +276,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// actually running (once), load one atomic policy snapshot, gate issuance
 	// on membership, and resolve the matched-workload stamp from the same two
 	// answers. The requester never gets a say in either.
-	// A pod CVM's claims carry image digests only: it gets the membership
-	// leaf, never a matched-workload stamp.
 	var matched *armtls.MatchedWorkload
 	var router bool
 	if pod != nil {
-		err = h.authorizePodMembership(*pod)
+		matched, err = h.resolvePodWorkload(ctx, *pod)
 	} else {
 		matched, router, err = h.resolveSandboxWorkload(ctx, sandbox)
 	}
