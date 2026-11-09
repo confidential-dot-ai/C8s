@@ -262,6 +262,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false",
 			"--set", "nriImagePolicy.enabled=false", "--set", "volumed.enabled=true"), false},
 		{"escaped operator args", helmTemplate, append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
+		{"pod CVM provider", helmTemplate, append(slices.Clone(derived), "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=pod-launch-config"), true},
 		{"worker", helmTemplateWorker, workerRenderArgs, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

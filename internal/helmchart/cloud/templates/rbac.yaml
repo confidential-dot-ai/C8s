@@ -21,3 +21,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "c8s.operatorName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.operator.podCVMProvider.enabled }}
+---
+{{ include "c8s.podCVMProviderGrants" (dict "root" . "subject" (dict "kind" "ServiceAccount" "name" (include "c8s.operatorName" .) "namespace" .Release.Namespace)) }}
+{{- end }}

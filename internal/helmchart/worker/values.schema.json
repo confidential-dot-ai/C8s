@@ -109,6 +109,21 @@
         }
       }
     },
+    "operator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "podCVMProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "router": {
       "type": "object",
       "additionalProperties": false,

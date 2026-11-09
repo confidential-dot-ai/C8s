@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -48,7 +49,7 @@ func renderTestWorkerCluster(t *testing.T, platform string) map[string]unstructu
 	cfg := workerRenderConfig()
 	cfg.platform = platform
 	doc := &worker.Document{Kubernetes: worker.Kubernetes{ClusterDNS: "10.53.0.10"}}
-	cluster, err := renderWorkerCluster(context.Background(), cfg, "127.0.0.1", doc)
+	cluster, err := renderWorkerCluster(context.Background(), cfg, "127.0.0.1", false, doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +123,34 @@ func TestWorkerClusterHoldsTheWorkerChartsClusterObjects(t *testing.T) {
 		}
 		if len(pod.NodeSelector) > 0 {
 			t.Fatalf("router nodeSelector = %v, which no worker carries", pod.NodeSelector)
+		}
+	}
+}
+
+// --pod-cvm-provider adds the provider's grants, bound to the operator's user.
+func TestWorkerClusterGrantsThePodCVMProvider(t *testing.T) {
+	doc := &worker.Document{Kubernetes: worker.Kubernetes{ClusterDNS: "10.53.0.10"}}
+	cluster, err := renderWorkerCluster(context.Background(), workerRenderConfig(), "127.0.0.1", true, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := renderedObjects(t, cluster)
+	for _, key := range workerClusterPodCVMProviderObjects {
+		if _, ok := objects[key]; !ok {
+			t.Fatalf("no %s", key)
+		}
+	}
+	operator := map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "User", "name": operatorUser}
+	for _, key := range []string{"ClusterRoleBinding//c8s-operator-pod-cvm", "RoleBinding/c8s-system/c8s-operator-pod-cvm"} {
+		subjects, _, _ := unstructured.NestedSlice(objects[key].Object, "subjects")
+		if len(subjects) != 1 || !maps.Equal(subjects[0].(map[string]any), operator) {
+			t.Fatalf("%s subjects = %v, want the user %s alone", key, subjects, operatorUser)
+		}
+	}
+	rules, _, _ := unstructured.NestedSlice(objects["ClusterRole//c8s-operator-pod-cvm"].Object, "rules")
+	for _, want := range []string{"pods/status", "nodes"} {
+		if !strings.Contains(fmt.Sprint(rules), want) {
+			t.Fatalf("provider ClusterRole lacks %s: %v", want, rules)
 		}
 	}
 }
