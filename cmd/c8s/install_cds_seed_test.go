@@ -3,7 +3,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,35 +18,95 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// A component entry this release renders and the named CDS does not serve is a
-// component no node would admit, so the install refuses before it applies
-// anything.
+// A component entry the CDS does not serve is a component no node would admit.
 func TestCheckSeedServed(t *testing.T) {
 	seed, err := pkgallowlist.ParseJSON([]byte(testSeedDocument("app")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	served, err := cdsPinConfig(cdsPinDocument(t, []string{"app"}, "192.0.2.0/24"))
+	serves := func(document string) *pkgallowlist.Allowlist {
+		t.Helper()
+		al, err := pkgallowlist.ParseServedJSON([]byte(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return al
+	}
+	withExtraField := func(field string) string {
+		return strings.Replace(testSeedDocument("app"), `"app":{`, `"app":{`+field+",", 1)
+	}
+	narrowed := strings.Replace(testSeedDocument("app"), `"command":{"policy":"any"}`, `"command":{"policy":"exact","argv":["/app"]}`, 1)
+	otherImage := strings.ReplaceAll(testSeedDocument("app"), testSeedDigest, strings.Repeat("22", 32))
+	granted := withExtraField(`"secrets":{"policy":"allow","read":["/app/token"]}`)
+	beside := withExtraField(`"initContainers":[{"digest":"sha256:` + strings.Repeat("33", 32) + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]`)
+	asInit := `{"schema":"c8s.allowlist/v1","workloads":{"app":{"initContainers":` + testSeedContainers + `,"containers":[]}}}`
+
+	const notTheImages = `entry "app" that does not declare this component's images`
+	tests := []struct {
+		name    string
+		served  *pkgallowlist.Allowlist
+		wantErr string
+	}{
+		{name: "the entry this release renders", served: serves(testSeedDocument("app"))},
+		{name: "beside the entries of another release", served: serves(testSeedDocument("app", "older"))},
+		{name: "the operator granted it a secret", served: serves(granted)},
+		{name: "the operator pinned its command", served: serves(narrowed)},
+		{name: "another component only", served: serves(testSeedDocument("older")), wantErr: `serves no entry "app"`},
+		{name: "another image under the name", served: serves(otherImage), wantErr: notTheImages},
+		{name: "an image beside the component's", served: serves(beside), wantErr: notTheImages},
+		{name: "the component's image in another role", served: serves(asInit), wantErr: notTheImages},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkSeedServed(seed, tc.served)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkSeedServed = %v, want it accepted", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("checkSeedServed = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), "c8s allowlist apply") {
+				t.Fatalf("checkSeedServed = %v, want the publish advice", err)
+			}
+		})
+	}
+}
+
+// An unattested endpoint serves this install nothing, however good the allowlist it answers with.
+func TestServedAllowlistRefusesAnUnattestedEndpoint(t *testing.T) {
+	resetCLIState(t)
+	installCDS = &cdsPin{path: cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")}
+	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, testSeedDocument(installSeedEntryName))
+	}))
+	t.Cleanup(cds.Close)
+	if al, err := servedAllowlist(context.Background(), cds.URL); err == nil {
+		t.Fatalf("servedAllowlist read %v from an unattested endpoint", al.Workloads)
+	}
+}
+
+// An unreachable CDS warns and installs, naming the publish command.
+func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
+	var s *installStubs
+	var err error
+	stderr := captureStderr(t, func() {
+		s = newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("install: %v\nstderr:\n%s", err, stderr)
 	}
-	if err := checkSeedServed(seed, served); err != nil {
-		t.Fatalf("checkSeedServed with the same entry = %v", err)
+	if !strings.Contains(stderr, "cannot read the allowlist https://"+installCDSAddressUnreachable+" serves") ||
+		!strings.Contains(stderr, "c8s allowlist apply") {
+		t.Fatalf("stderr = %q, want the warning naming the CDS and the publish command", stderr)
 	}
-	other, err := cdsPinConfig(cdsPinDocument(t, []string{"other"}, "192.0.2.0/24"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := checkSeedServed(seed, other); err == nil {
-		t.Fatal("an unserved component entry was accepted")
-	}
-	// The same name under another policy is a different component shape.
-	widened, err := pkgallowlist.ParseJSON([]byte(strings.Replace(testSeedDocument("app"), `"command":{"policy":"any"}`, `"command":{"policy":"exact","argv":["/app"]}`, 1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := checkSeedServed(widened, served); err == nil {
-		t.Fatal("an entry of another shape was accepted under the same name")
+	if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
+		t.Fatalf("no helm upgrade logged:\n%s", strings.Join(s.f.calls(t), "\n"))
 	}
 }
 
@@ -82,7 +146,7 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 
 	// The render precedes the CDS it is configured into, so it names none.
 	err = runC8s(t, "install", "--platform=aks-snp", "--force", flagArg(flagSeedOut), out,
-		flagArg(flagCDSAddress), "10.9.9.9:8443",
+		flagArg(flagCDSAddress), installCDSAddressUnreachable,
 		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"))
 	if err == nil || !strings.Contains(err.Error(), "runs before") {
 		t.Fatalf("install = %v, want the refusal to name a CDS while writing its seed", err)
@@ -97,7 +161,7 @@ func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 
 	// The stubbed node assigns pod addresses from 10.42.0.0/24.
 	err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
-		flagArg(flagCDSAddress), "10.9.9.9:8443",
+		flagArg(flagCDSAddress), installCDSAddressUnreachable,
 		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.42.0.0/16"))
 	if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {
 		t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)
@@ -165,7 +229,7 @@ func TestInstallPodCIDRWhereNodesPublishNone(t *testing.T) {
 		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.244.0.5")))
 		err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
 			flagArg(flagPodCIDR), "10.244.0.0/16",
-			flagArg(flagCDSAddress), "10.9.9.9:8443",
+			flagArg(flagCDSAddress), installCDSAddressUnreachable,
 			flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.244.1.0/24"))
 		if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {
 			t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)

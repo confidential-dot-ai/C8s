@@ -1079,8 +1079,10 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
 			return err
 		}
-		if err := checkNamedCDS(cmd.Context(), render, installCDS); err != nil {
+		if warn, err := checkNamedCDS(cmd.Context(), render, installCDS, values); err != nil {
 			return err
+		} else if warn != "" {
+			fmt.Fprintln(os.Stderr, "warning: "+warn)
 		}
 		var routes upstreamRoutes
 		var cdsURL string

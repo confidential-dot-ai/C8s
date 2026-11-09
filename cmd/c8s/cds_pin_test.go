@@ -16,15 +16,22 @@ import (
 	"testing"
 )
 
+// testSeedContainers is the one container a component entry declares.
+const testSeedContainers = `[{"digest":"sha256:` + testSeedDigest + `","image":"registry/app@sha256:` + testSeedDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]`
+
 // testSeedEntry is one component entry, in the form both the chart's seed and
 // a CDS configuration's workloads carry it.
-const testSeedEntry = `{"label":"registry/app@sha256:` + testSeedDigest + `","containers":[{"digest":"sha256:` + testSeedDigest + `","image":"registry/app@sha256:` + testSeedDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`
+const testSeedEntry = `{"label":"registry/app@sha256:` + testSeedDigest + `","containers":` + testSeedContainers + `}`
 
 const testSeedDigest = "1111111111111111111111111111111111111111111111111111111111111111"
 
-// testSeedDocument is the seed a stubbed helm render answers with.
-func testSeedDocument(name string) string {
-	return `{"schema":"c8s.allowlist/v1","workloads":{"` + name + `":` + testSeedEntry + `}}`
+// testSeedDocument is an allowlist document carrying one component entry per name.
+func testSeedDocument(names ...string) string {
+	entries := make([]string, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, `"`+name+`":`+testSeedEntry)
+	}
+	return `{"schema":"c8s.allowlist/v1","workloads":{` + strings.Join(entries, ",") + `}}`
 }
 
 // cdsPinDocument is the pin document `c8s cds config new` produces: the CDS
@@ -165,9 +172,11 @@ func TestCDSInstallArgs(t *testing.T) {
 	}
 }
 
-// installSeedEntryName is the one entry the stubbed helm render seeds, and the
-// one a stubbed CDS configuration serves.
+// installSeedEntryName is the one entry the stubbed helm render seeds.
 const installSeedEntryName = "app"
+
+// installCDSAddressUnreachable is a CDS address nothing listens on, so a read of it is refused at once.
+const installCDSAddressUnreachable = "127.0.0.1:1"
 
 // installSeedConfigMap is the seed ConfigMap a stubbed `helm template` answers
 // with, as the chart renders it.

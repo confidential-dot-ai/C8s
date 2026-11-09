@@ -122,7 +122,7 @@ func installCDSURL(values map[string]any) (string, error) {
 	raw, _ := valueAtPath(values, "cds.address")
 	address, ok := raw.(string)
 	if !ok || address == "" {
-		return "", fmt.Errorf("cds.address names no CDS, so the route manifest has nowhere to go")
+		return "", fmt.Errorf("cds.address names no CDS, so nothing says where this install reaches it")
 	}
 	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
 		return "", fmt.Errorf("cds.address %w", err)
