@@ -52,8 +52,9 @@ policy keeps host namespaces away from tenant pods
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
 - **Admission plugin** (`nri-image-policy`): checks every container at
-  creation, adjustment validation, and start, and the runtime starts nothing
-  while it is disconnected.
+  creation, adjustment validation, and start, and the runtime starts no
+  container while it is disconnected: on the measured node image from boot, on
+  `gke` and `aks` once the installer has run on that boot.
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
@@ -64,6 +65,15 @@ All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
 by the digests those pods ran at the plugin's first connect, and
 `nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
+
+On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
+plugin registered gets no identity, certificate or secret until it is deleted,
+even for its containers that start later. A denied image may run until the
+plugin is ready and stops it. That window opens on a reboot, on a fresh node,
+and for as long as the plugin is down on a running node. On COS each boot
+repeats the `kube-system` digest capture, from what ran in that window. The
+measured node image has no boot window: its CNI needs the plugin before any pod
+sandbox gets a network.
 
 ## Identity comes from hardware evidence
 

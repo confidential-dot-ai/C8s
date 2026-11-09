@@ -436,6 +436,101 @@ func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	}
 }
 
+// The one line an operator acts on: the pod has no identity until it is
+// deleted.
+const podWithoutIdentityMessage = "a pod running before this enforcer connected gets no identity; delete the pod to give it one"
+
+// loggedRecords captures what the plugin logs, so a test reads a line's
+// attributes by key.
+type loggedRecords struct {
+	records []slog.Record
+}
+
+func (l *loggedRecords) Enabled(context.Context, slog.Level) bool { return true }
+func (l *loggedRecords) WithAttrs([]slog.Attr) slog.Handler       { return l }
+func (l *loggedRecords) WithGroup(string) slog.Handler            { return l }
+
+func (l *loggedRecords) Handle(_ context.Context, record slog.Record) error {
+	l.records = append(l.records, record)
+	return nil
+}
+
+// attrs reports the attributes of the last record carrying message, and
+// whether one was logged at all.
+func (l *loggedRecords) attrs(message string) (map[string]string, bool) {
+	attrs, logged := map[string]string{}, false
+	for _, record := range l.records {
+		if record.Message != message {
+			continue
+		}
+		logged = true
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.String()
+			return true
+		})
+	}
+	return attrs, logged
+}
+
+// prePluginPlugin is a ready enforcer whose containerd records every kill, for
+// the sandboxes that were running before it connected.
+func prePluginPlugin() (*plugin, *loggedRecords, *[]string) {
+	p, _ := newCachedPlugin(&config{Policy: enforcing},
+		anyAllowlist(map[string]string{pushDigestA: "image-a"}))
+	logs := &loggedRecords{}
+	p.logger = slog.New(logs)
+	killed := &[]string{}
+	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		*killed = append(*killed, id)
+		return nil
+	}}
+	p.SetReady()
+	return p, logs, killed
+}
+
+// assertPodWithoutIdentity fails unless the plugin named this pod as one an
+// operator must delete.
+func assertPodWithoutIdentity(t *testing.T, logs *loggedRecords, pod *api.PodSandbox) {
+	t.Helper()
+	attrs, logged := logs.attrs(podWithoutIdentityMessage)
+	if !logged {
+		t.Fatalf("the plugin named no pod to delete: %+v", logs.records)
+	}
+	for key, want := range map[string]string{
+		"namespace": pod.GetNamespace(),
+		"pod":       pod.GetName(),
+		"pod_uid":   pod.GetUid(),
+	} {
+		if attrs[key] != want {
+			t.Errorf("%s=%q, want %q", key, attrs[key], want)
+		}
+	}
+}
+
+// The kubelet replacing the sandbox of a pod recovery refused gives that pod
+// no identity: its UID is refused for this enforcer's life.
+func TestProtectRefusesANewSandboxOfARefusedPod(t *testing.T) {
+	refused := meshPod("default", "pod", testNetNS)
+	refused.Uid = "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b"
+	p, logs, _ := prePluginPlugin()
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{refused}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+
+	replacement := meshPod("default", "pod", testNetNS)
+	replacement.Uid = refused.Uid
+	replacement.Id = refused.GetId() + "-replacement"
+	if err := p.RunPodSandbox(context.Background(), replacement); err != nil {
+		t.Fatalf("RunPodSandbox: %v", err)
+	}
+
+	state := p.mesh.pods[replacement.GetId()]
+	if state == nil || !errors.Is(state.refusal, errRecoveryRefusedPod) {
+		t.Fatalf("the replacement sandbox is protected: %+v", state)
+	}
+	assertPodWithoutIdentity(t, logs, replacement)
+}
+
 // A recovered sandbox's containers pass the per-container create checks and
 // are recorded; only a running mesh endpoint counts as started.
 func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {

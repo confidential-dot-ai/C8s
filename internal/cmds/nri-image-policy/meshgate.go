@@ -30,6 +30,11 @@ var errSandboxOffRecord = errors.New("this enforcer installed no packet protecti
 // warn the operator about a pod that is in fact under the gate.
 var errSandboxAlreadyOnRecord = errors.New("sandbox is on record already")
 
+// errRecoveryRefusedPod is the gate's answer for a sandbox of a pod whose
+// recovery this process refused: the pod gets no identity while this enforcer
+// runs, whatever sandbox the kubelet gives it.
+var errRecoveryRefusedPod = errors.New("recovery refused an earlier sandbox of this pod")
+
 // meshGate holds this node's protection state, under the mesh policy its
 // measured configuration carries.
 type meshGate struct {
@@ -37,6 +42,9 @@ type meshGate struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	pods   map[string]*protectedPod
+	// refusedPods are the UIDs of the pods whose recovery this process
+	// refused; only a recovery refusal enters, so no denial can lock a pod out.
+	refusedPods map[string]struct{}
 	// recoveryRan is set once recovery has run: until then a sandbox off the
 	// record may simply be one recovery has not reached yet.
 	recoveryRan bool
@@ -124,9 +132,10 @@ type gatedContainer struct {
 
 func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 	return &meshGate{
-		policy: policy,
-		logger: logger,
-		pods:   map[string]*protectedPod{},
+		policy:      policy,
+		logger:      logger,
+		pods:        map[string]*protectedPod{},
+		refusedPods: map[string]struct{}{},
 		nodeAddress: func() (netip.Addr, error) {
 			return netip.Addr{}, errors.New("this node's own address is unknown")
 		},
@@ -156,6 +165,13 @@ func (g *meshGate) protect(pod *api.PodSandbox) error {
 	defer g.mu.Unlock()
 	if _, onRecord := g.pods[pod.GetId()]; onRecord {
 		return fmt.Errorf("sandbox %s is on record already, so its protection stands as installed", pod.GetId())
+	}
+	if _, refused := g.refusedPods[pod.GetUid()]; refused {
+		g.pods[pod.GetId()] = &protectedPod{
+			refusal:       errRecoveryRefusedPod,
+			kubeNamespace: pod.GetNamespace(),
+		}
+		return fmt.Errorf("protect pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), errRecoveryRefusedPod)
 	}
 	netns, err := installProtection(pod, g.rulesetPolicy())
 	g.pods[pod.GetId()] = &protectedPod{
@@ -230,6 +246,7 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, ex
 			refusal:       fmt.Errorf("the sandbox was running before this enforcer connected, and %w", err),
 			kubeNamespace: pod.GetNamespace(),
 		}
+		g.refusedPods[pod.GetUid()] = struct{}{}
 		return fmt.Errorf("recover pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.pods[pod.GetId()] = state

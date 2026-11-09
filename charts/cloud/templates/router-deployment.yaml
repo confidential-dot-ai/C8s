@@ -33,6 +33,7 @@ containers:
     "cdsAttestMounts" (include "router.cdsAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
+    "sandboxGateMounts" (include "router.pluginReadyGate" .)
   ) | nindent 2 }}
 volumes:
   - name: c8s-certs
@@ -77,6 +78,10 @@ volumes:
     hostPath:
       path: {{ include "nri-image-policy.runtimeDir" . }}
       type: Directory
+  - name: plugin-ready-gate
+    hostPath:
+      path: {{ include "nri-image-policy.workloadClaimsSocket" . }}
+      type: Socket
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
 securityContext:
   runAsNonRoot: true

@@ -16,5 +16,9 @@ empty. `router.validateSan` holds the hostname rule both go through.
 c8s-lib's, with the request-body and TLS settings this lane fixes.
 `router.publicPorts` publishes nginx's HTTPS port on the node's port 443.
 
+`router.pluginReadyGate` mounts the node's inventory socket, which the plugin
+serves: the kubelet creates the router's sandbox only once that socket exists,
+so the router never starts on a node whose enforcer is absent.
+
 The remaining helpers build the pod's cds-attest and get-cert argv and mounts,
 which pin this lane's front-door mode `cds`.

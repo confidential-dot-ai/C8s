@@ -194,8 +194,8 @@ mkdir -p "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # world-writable, so an untrusted pod can't swap the socket.
 chmod 0711 "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 
-# The CDS this cluster trusts. It lands beside the boot config, which outlives
-# a reboot: containerd starts the plugin before this DaemonSet runs again.
+# The CDS this cluster trusts, beside the boot config. The NRI required_plugins
+# this script writes hold from the moment it has run on this boot.
 cds_changed=0
 if install_file \
   {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds-address \

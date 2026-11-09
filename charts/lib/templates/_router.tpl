@@ -105,6 +105,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   cdsAttestMounts       the mounts cdsAttestArgs names beside the mesh leaf and attestation-api
   config                the directory nginx reads the files from
   ports                 nginx's ports: name, containerPort, publicPort
+  sandboxGateMounts     the mounts the pod's sandbox waits on, as YAML
   settingsMounts        nginx's mounts of the settings its files include
 */}}
 {{- define "c8s.routerContainers" -}}
@@ -198,10 +199,11 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     {{- include "router.allowlistProxyArgs" (dict "root" $root "attestationApiURL" .attestationApiURL) | fromJsonArray | toYaml | nindent 4 }}
-  {{- with .allowlistProxyMounts }}
   volumeMounts:
+    {{- .allowlistProxyMounts | nindent 4 }}
+    {{- with .sandboxGateMounts }}
     {{- . | nindent 4 }}
-  {{- end }}
+    {{- end }}
   securityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true

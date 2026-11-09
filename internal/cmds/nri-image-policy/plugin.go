@@ -536,7 +536,7 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 		p.inventory.recordSandbox(pod.GetId())
 	}
 	if err := p.mesh.protect(pod); err != nil {
-		p.logger.Error("cannot protect a pod; every container of it will be refused", "error", err)
+		p.reportUnprotected(pod, err)
 		if p.cfg.podRole() {
 			return p.denyContainer(pod.GetId(), err)
 		}
@@ -1405,9 +1405,33 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			// Already on record means protect() took the pod first; it is
 			// protected, so this is not a failure to recover.
 		default:
-			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
+			p.logPodWithoutIdentity(pod, err)
 		}
 	}
+}
+
+// reportUnprotected names a pod whose sandbox the gate refused: a pod whose
+// recovery this process refused gets no identity until it is deleted, any
+// other failure refuses this sandbox's containers.
+func (p *plugin) reportUnprotected(pod *api.PodSandbox, refusal error) {
+	if errors.Is(refusal, errRecoveryRefusedPod) {
+		p.logPodWithoutIdentity(pod, refusal)
+		return
+	}
+	p.logger.Error("cannot protect a pod; every container of it will be refused",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"error", refusal)
+}
+
+// logPodWithoutIdentity names the pod an operator deletes to let it get an
+// identity.
+func (p *plugin) logPodWithoutIdentity(pod *api.PodSandbox, refusal error) {
+	p.logger.Warn("a pod running before this enforcer connected gets no identity; delete the pod to give it one",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"pod_uid", pod.GetUid(),
+		"error", refusal)
 }
 
 // recoveredExits reads back the exit grant a running sandbox holds. An
