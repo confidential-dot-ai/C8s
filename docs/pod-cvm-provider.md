@@ -211,7 +211,7 @@ digest-pinned images, memory `emptyDir` volumes, bounded privileges and supporte
 HTTP probes. The provider also rejects cluster-dependent Secret/ConfigMap
 environment references, `envFrom`, image pull Secrets, nondefault service
 accounts, resource claims, RuntimeClasses and custom readiness gates. A
-`confidential.ai/cw` label must equal the annotation of that name. Use
+`confidential.ai/cw` label must match the annotation. Use
 per-container resource requests and limits. Whole-map annotation FieldRefs and
 provider/kubelet annotation FieldRefs are unsupported.
 

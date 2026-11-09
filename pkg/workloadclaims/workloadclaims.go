@@ -34,6 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -167,6 +169,15 @@ const (
 // It is the allowlist workload name the pod's entries are looked up under, so
 // its grammar is the allowlist's (pkg/workloadname).
 const AnnotationWorkloadID = "confidential.ai/cw"
+
+// ValidateWorkloadLabel refuses a workload label that differs from the
+// annotation: Services select on the label.
+func ValidateWorkloadLabel(pod *corev1.Pod) error {
+	if label, ok := pod.Labels[AnnotationWorkloadID]; ok && label != pod.Annotations[AnnotationWorkloadID] {
+		return fmt.Errorf("pod label %s=%q must match the %s annotation", AnnotationWorkloadID, label, AnnotationWorkloadID)
+	}
+	return nil
+}
 
 // IsMeshPort reports whether port is one the mesh endpoint binds: a capture
 // port or the health port. None of them answers an application.

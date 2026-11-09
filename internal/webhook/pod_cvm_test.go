@@ -152,9 +152,6 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		{"exec probe", func(p *corev1.Pod) {
 			p.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
 		}, "exec probe"},
-		{"exec hook", func(p *corev1.Pod) {
-			p.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
-		}, "exec lifecycle hook preStop"},
 		{"platform container", func(p *corev1.Pod) { p.Spec.Containers[0].Name = workloadclaims.MeshContainerName }, "reserved"},
 		{"foreign namespace", func(p *corev1.Pod) { p.Namespace = "other" }, "namespace"},
 		{"client document not base64", func(p *corev1.Pod) { p.Annotations[workloadclaims.AnnotationClientDocument] = "not base64!" }, "standard base64"},

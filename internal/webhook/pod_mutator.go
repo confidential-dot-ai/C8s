@@ -825,13 +825,8 @@ func workloadSAN(cwID, namespace string) string {
 // It runs on every operation the validator sees, so a post-create label
 // mutation is judged by the same rule as the CREATE.
 func validateWorkloadLabel(pod *corev1.Pod) error {
-	label, ok := pod.Labels[LabelWorkload]
-	if !ok {
-		return nil
-	}
-	if pod.Annotations[AnnotationWorkload] != label {
-		return fmt.Errorf("%w: pod label %s=%q must match the %s annotation (the webhook stamps this label during injection)",
-			errInvalidInjectionAnnotation, LabelWorkload, label, AnnotationWorkload)
+	if err := workloadclaims.ValidateWorkloadLabel(pod); err != nil {
+		return fmt.Errorf("%w: %w (the webhook stamps this label during injection)", errInvalidInjectionAnnotation, err)
 	}
 	return nil
 }
