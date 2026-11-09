@@ -1,5 +1,4 @@
-## Unverified on a GKE node: the NRI host paths are the ones c8s-fleet uses on
-## Container-Optimized OS.
+## The NRI host paths are the ones c8s-fleet uses on Container-Optimized OS.
 ## GKE confidential VMs on AMD SEV-SNP: evidence is the native SNP report.
 attestationApi:
   devices:
