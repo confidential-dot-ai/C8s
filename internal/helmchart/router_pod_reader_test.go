@@ -1,9 +1,12 @@
 package helmchart
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 // The router reads pods under its own ServiceAccount, so the chart renders
@@ -32,4 +35,20 @@ func TestRouterServiceAccountRendered(t *testing.T) {
 		return
 	}
 	t.Fatal("chart rendered no router Deployment")
+}
+
+func TestRouterPodReaderOnlyRuleIsPodsListWatch(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("render: %v\n%s", err, out)
+	}
+	var role rbacv1.ClusterRole
+	if !findDoc(t, out, "ClusterRole", "c8s-router", &role) {
+		t.Fatal("chart renders no ClusterRole c8s-router")
+	}
+	want := []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list", "watch"}}}
+	if !reflect.DeepEqual(role.Rules, want) {
+		t.Errorf("c8s-router ClusterRole rules = %+v, want %+v", role.Rules, want)
+	}
 }
