@@ -484,7 +484,9 @@ case "$LABELS" in
     *confidential.ai/cw=vllm*) : ;;
     *) fail "webhook did not stamp the cw label (labels: $LABELS)" ;;
 esac
-pass "webhook injected c8s-cert + c8s-cert-wait and stamped confidential.ai/cw=vllm"
+SELECTOR="$(kubectl -n demo get pod "$POD" -o jsonpath='{.spec.nodeSelector.c8s\.test/confidential}' 2>/dev/null || true)"
+[ "$SELECTOR" = "true" ] || fail "webhook did not select the confidential node (c8s.test/confidential: $SELECTOR)"
+pass "webhook injected c8s-cert + c8s-cert-wait, stamped confidential.ai/cw=vllm and selected the confidential node"
 
 kubectl -n demo get pod "$POD" -o json | python3 -c '
 import json, sys

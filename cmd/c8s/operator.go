@@ -23,25 +23,26 @@ carries its traffic, and the namespaces outside that are the webhook
 configurations' own.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return controller.Run(cmd.Context(), controller.Options{
-			MetricsAddr:             metricsAddr,
-			HealthAddr:              healthAddr,
-			LeaderElection:          leaderElection,
-			LeaderElectionID:        "c8s-operator.confidential.ai",
-			LeaderElectionNS:        leaderElectionNS,
-			DisableStatusMirror:     !statusMirrorEnabled,
-			GetCertImage:            getCertImage,
-			MeshImage:               meshImage,
-			AttestationApiURL:       attestationApiURL,
-			ExcludeNamespaces:       excludeNamespaces,
-			WebhookConfigName:       webhookConfigName,
-			WebhookServiceName:      webhookServiceName,
-			WebhookServiceNamespace: webhookServiceNamespace,
-			WebhookHost:             webhookHost,
-			Kubeconfig:              kubeconfig,
-			CertFSGroup:             certFSGroup,
-			CertRenewInterval:       certRenewInterval,
-			WorkloadClaimsHostDir:   workloadClaimsHostDir,
-			PodCVMProviderConfig:    podCVMProviderConfig,
+			MetricsAddr:              metricsAddr,
+			HealthAddr:               healthAddr,
+			LeaderElection:           leaderElection,
+			LeaderElectionID:         "c8s-operator.confidential.ai",
+			LeaderElectionNS:         leaderElectionNS,
+			DisableStatusMirror:      !statusMirrorEnabled,
+			GetCertImage:             getCertImage,
+			MeshImage:                meshImage,
+			AttestationApiURL:        attestationApiURL,
+			ExcludeNamespaces:        excludeNamespaces,
+			ConfidentialNodeSelector: confidentialNodeLabels,
+			WebhookConfigName:        webhookConfigName,
+			WebhookServiceName:       webhookServiceName,
+			WebhookServiceNamespace:  webhookServiceNamespace,
+			WebhookHost:              webhookHost,
+			Kubeconfig:               kubeconfig,
+			CertFSGroup:              certFSGroup,
+			CertRenewInterval:        certRenewInterval,
+			WorkloadClaimsHostDir:    workloadClaimsHostDir,
+			PodCVMProviderConfig:     podCVMProviderConfig,
 		})
 	},
 }
@@ -61,6 +62,7 @@ var (
 	webhookHost             string
 	kubeconfig              string
 	excludeNamespaces       []string
+	confidentialNodeLabels  map[string]string
 	certFSGroup             int64
 	certRenewInterval       time.Duration
 
@@ -78,6 +80,7 @@ func init() {
 	operatorCmd.Flags().StringVar(&meshImage, "mesh-image", "", "armtls-mesh image the webhook injects as the pod mesh endpoint; required with --get-cert-image, which it is one shape with")
 	operatorCmd.Flags().StringVar(&attestationApiURL, "attestation-api-url", "", "attestation-api endpoint (empty = the --workload-claims-host-dir socket if set, else no verification)")
 	operatorCmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespaces", nil, "extra namespaces the startup reinject sweep skips (mirrors controlPlane.webhook.extraExcluded)")
+	operatorCmd.Flags().StringToStringVar(&confidentialNodeLabels, "confidential-node-selector", nil, "label=value a confidential node of this platform carries, repeated per label (mirrors confidentialNodeSelector); the webhook selects them on every injected pod (empty = the pod's own placement)")
 	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "c8s-pod-injector", "MutatingWebhookConfiguration to patch caBundle; the pod validator's configuration is named beside it (empty = skip; default is the name c8s worker control-plane render emits)")
 	operatorCmd.Flags().StringVar(&webhookServiceName, "webhook-service-name", "", "webhook Service name (defaults to c8s)")
 	operatorCmd.Flags().StringVar(&webhookServiceNamespace, "webhook-service-namespace", "", "webhook Service namespace (defaults to --leader-election-namespace)")

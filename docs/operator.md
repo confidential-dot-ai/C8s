@@ -69,10 +69,11 @@ them a mixed cluster schedules the agents onto plain nodes, where they find no
 TEE device and the install never becomes ready. Install refuses a cluster where
 no node carries the labels, and checks host ports, images and the container
 runtime on the labelled nodes alone. A node outside them runs no C8s node
-agent; a confidential pod scheduled there waits for a certificate it never
-gets, because the request reaches neither the admission inventory nor the
-attestation API. Nothing steers confidential workloads onto the labelled nodes
-yet.
+agent, so the injector adds the same labels to the `nodeSelector` of every pod
+it injects, beside the placement the pod declares itself. A pod that selects one
+of those labels under another value is refused. The labelled nodes must admit
+injected pods: a taint one does not tolerate, or a node affinity of its own
+excluding those nodes, leaves it `Pending`.
 
 A measured node image boots the chart its own build rendered, configured from
 the worker document it launches with ([launch-configuration.md](launch-configuration.md)). `c8s install`
