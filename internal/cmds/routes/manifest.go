@@ -16,6 +16,13 @@ type manifestJSON struct {
 	NotBefore     string              `json:"notBefore"`
 	MaxAgeSeconds int64               `json:"maxAgeSeconds"`
 	Hosts         map[string]hostJSON `json:"hosts"`
+	Patterns      []patternJSON       `json:"patterns,omitempty"`
+}
+
+type patternJSON struct {
+	HostSuffix string `json:"hostSuffix"`
+	Workload   string `json:"workload"`
+	Port       uint16 `json:"port"`
 }
 
 type hostJSON struct {
@@ -55,6 +62,9 @@ func Encode(m *pkgroutes.Manifest) ([]byte, error) {
 		}
 		doc.Hosts[name] = hostJSON{Routes: rs}
 	}
+	for _, p := range m.Patterns {
+		doc.Patterns = append(doc.Patterns, patternJSON{HostSuffix: p.HostSuffix, Workload: p.Workload, Port: p.Port})
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -79,6 +89,28 @@ func AddRoute(m *pkgroutes.Manifest, host string, r pkgroutes.Route) string {
 	}
 	m.Hosts[host] = h
 	return fmt.Sprintf("%s %s route %s %s", verb, r.Match, host, r.Path)
+}
+
+// addPattern adds p, replacing a pattern with the same host suffix, and
+// reports what it did.
+func addPattern(m *pkgroutes.Manifest, p pkgroutes.Pattern) string {
+	m.Patterns = slices.Clone(m.Patterns)
+	if i := slices.IndexFunc(m.Patterns, func(x pkgroutes.Pattern) bool { return x.HostSuffix == p.HostSuffix }); i >= 0 {
+		m.Patterns[i] = p
+		return fmt.Sprintf("replaced pattern *.%s", p.HostSuffix)
+	}
+	m.Patterns = append(m.Patterns, p)
+	return fmt.Sprintf("added pattern *.%s", p.HostSuffix)
+}
+
+// removePattern removes the pattern with hostSuffix.
+func removePattern(m *pkgroutes.Manifest, hostSuffix string) (string, error) {
+	i := slices.IndexFunc(m.Patterns, func(x pkgroutes.Pattern) bool { return x.HostSuffix == hostSuffix })
+	if i < 0 {
+		return "", fmt.Errorf("no pattern with host suffix %q in the stored manifest", hostSuffix)
+	}
+	m.Patterns = slices.Delete(slices.Clone(m.Patterns), i, i+1)
+	return fmt.Sprintf("removed pattern *.%s", hostSuffix), nil
 }
 
 // removeRoute removes the route of host at path, matching match when set,

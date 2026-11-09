@@ -77,6 +77,8 @@ with --measurements.`,
 		newPutCmd(o),
 		newAddCmd(o),
 		newRmCmd(o),
+		newAddPatternCmd(o),
+		newRmPatternCmd(o),
 	)
 	return cmd
 }

@@ -123,7 +123,11 @@ type ProxyConfig struct {
 	// (Acquire); one client may hold a quarter of it, or at least one
 	// full-size request. Zero means DefaultTunnelBudget.
 	TunnelBudget int64
-	Logger       *slog.Logger
+	// Agents resolves the agent a pattern route names to the address
+	// discovery reports for it. nil resolves none: a pattern route then
+	// answers 404.
+	Agents *AgentIndex
+	Logger *slog.Logger
 }
 
 // Proxy routes application requests by the applied manifest. It serves the
@@ -133,6 +137,7 @@ type Proxy struct {
 	state      *State
 	transports *Transports
 	bindings   ConnectionBindings
+	agents     *AgentIndex
 	timeout    time.Duration
 	log        *slog.Logger
 
@@ -157,6 +162,7 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		state:      cfg.State,
 		transports: cfg.Transports,
 		bindings:   cfg.Bindings,
+		agents:     cfg.Agents,
 		timeout:    cfg.Timeout,
 		log:        logger,
 		budget:     budget,
@@ -274,7 +280,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	route, target, ok := applied.Table.Select(r)
+	route, target, ok := p.selectRoute(applied, r)
 	if !ok {
 		http.NotFound(w, r) // M5
 		return
@@ -306,6 +312,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status, body := p.backendFailure(err, r.Host, target.RawPath, route.Backend.Address)
 		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
+}
+
+// selectRoute is Table.Select, with the agent a pattern route names resolved
+// to the address discovery reports for it. An agent discovery does not know
+// gets no route.
+func (p *Proxy) selectRoute(applied *Applied, r *http.Request) (routes.Route, *url.URL, bool) {
+	route, target, ok := applied.Table.Select(r)
+	if !ok || route.Backend.AgentLabel == "" {
+		return route, target, ok
+	}
+	addr, ok := p.agents.Lookup(route.Backend.AgentLabel, route.Backend.AgentPort)
+	if !ok {
+		return routes.Route{}, nil, false
+	}
+	route.Backend.Address = addr
+	return route, target, true
 }
 
 // transport returns route's backend transport. A bound request gets none from
@@ -480,7 +502,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}).WithContext(ctx)
 	// in carries the sealed Host and request target only, so the outer
 	// request's host never reaches Select (M1).
-	route, target, ok := applied.Table.Select(in)
+	route, target, ok := p.selectRoute(applied, in)
 	if !ok {
 		return textResponse(http.StatusNotFound, "404 page not found"), nil
 	}

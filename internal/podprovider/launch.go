@@ -97,7 +97,7 @@ func (c *Config) signedRequest(doc podlaunch.Document, ports []uint16) (createRe
 	}
 	rules := []ingress{{Name: "pod-status", Port: 8443}}
 	for _, p := range ports {
-		rules = append(rules, ingress{Name: fmt.Sprintf("app-%d", p), Port: int(p)})
+		rules = append(rules, ingress{Name: fmt.Sprintf("%s%d", workloadclaims.PodCVMAppEndpointPrefix, p), Port: int(p)})
 	}
 	name := doc.Node.Name
 	return createRequest{

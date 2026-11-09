@@ -2,6 +2,7 @@
 {{- $frontDoor := include "router.frontDoor" . | fromYaml -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
+serviceAccountName: {{ include "router.fullname" . }}
 {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
 {{- /* Every container of this pod holds a platform role the measured base
        grants it, and runs as that role's reserved identity: c8s.meshUID for
