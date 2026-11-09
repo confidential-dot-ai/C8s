@@ -106,33 +106,24 @@ func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
 
 // servedPorts is the server role the ruleset of a pod of the router's
 // namespace carries, and an empty role for a pod of any other namespace. The
-// acme role holds the egress ports and the router role never does, so a
-// request the router forwards outside the cluster is captured wherever its
-// name resolves. Inside it, the upstream role reaches a member itself, as the
-// mesh client of the workload its route names.
-//
-// The upstream role reaches the CDS port the credential role is bound to,
-// outside the cluster, and the verifier that weighs that CDS's evidence where
-// policy names a port for it: the front door answers from the signed route
-// manifest it fetches there, over armTLS it cannot verify without that
-// verifier, and the node is what names both.
+// acme role holds the egress ports and nginx's role never does, so a request
+// nginx relays is captured wherever its name resolves. The upstream role
+// dials every backend itself and authenticates each peer: a member pod or a
+// pod CVM's endpoint as the mesh client of the workload and agent its route
+// names, its CDS over armTLS, and the verifier that weighs that CDS's
+// evidence only at an address cds-attest admits (checkNodeVerifier).
 func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	if kubeNamespace != routerNamespace {
 		return ruleset.ServerRole{}
 	}
-	server := ruleset.ServerRole{
+	return ruleset.ServerRole{
 		Listeners: routerListeners,
 		Egress: ruleset.ServerEgress{
 			UID:   workloadclaims.AcmeUID,
 			Ports: acmeEgressPorts,
 		},
-		Upstream:    workloadclaims.UpstreamUID,
-		OutsidePort: p.credentialPort(),
+		Upstream: workloadclaims.UpstreamUID,
 	}
-	if verifier, named := p.credentialVerifier(); named && server.OutsidePort != 0 {
-		server.Services = append(server.Services, verifier)
-	}
-	return server
 }
 
 // credentialVerifier is the attestation-api that weighs a CDS's evidence for
@@ -145,18 +136,6 @@ func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
 		Addr: p.nodeAddr,
 		Port: p.CredentialAttestationPort,
 	}, true
-}
-
-// credentialPort is the port this node's CDS serves on, which the credential
-// role is bound to (bindCredentialRole). A policy that binds no such role
-// leaves the upstream role without it, as it leaves the credential clients
-// without it.
-func (p meshPolicy) credentialPort() uint16 {
-	role, bound := p.role(CredentialRole)
-	if !bound {
-		return 0
-	}
-	return role.Port
 }
 
 // dialingRoles are the roles the ruleset permits by port: every bound role
