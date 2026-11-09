@@ -235,6 +235,8 @@ jobs:
           cache-from: type=registry,ref=${{ matrix.image }}:main
           cache-to: type=inline
 
+      - uses: ./.github/actions/setup-grype
+
       - name: Scan Docker image
         id: container-scan
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2

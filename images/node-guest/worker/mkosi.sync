@@ -85,12 +85,19 @@ esac
 FLOOR_TEMPLATE="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
 [ -f "$FLOOR_TEMPLATE" ] || fail "no floor template at $FLOOR_TEMPLATE"
 
-# fetch <url> <dest> <sha256>: download once into the package cache.
+# fetch <url> <dest> <sha256>: download once into the package cache. GitHub
+# release assets come from the c8s mirror first (see
+# .github/scripts/fetch-release.sh); the sha256 check is what makes that safe.
 fetch() {
     if [ -f "$2" ] && echo "$3  $2" | sha256sum -c --status; then
         return
     fi
-    curl -fL --retry 3 --retry-delay 5 --output "$2" "$1"
+    local path=${1#https://github.com/}
+    case "$1" in https://github.com/*/releases/download/*)
+        curl -fsSL --retry 3 --connect-timeout 20 --output "$2" \
+            "https://confosaptmirrorae526a.blob.core.windows.net/gh-releases/${path/releases\/download\//}" ;;
+    *) false ;;
+    esac || curl -fL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 --output "$2" "$1"
     echo "$3  $2" | sha256sum -c --status || fail "sha256 mismatch for ${2##*/}"
 }
 

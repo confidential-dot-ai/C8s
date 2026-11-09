@@ -135,10 +135,7 @@ jobs:
           set -euo pipefail
 
           archive="$RUNNER_TEMP/git-cliff-$GIT_CLIFF_VERSION-x86_64-unknown-linux-musl.tar.gz"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "$archive" \
-            "https://github.com/orhun/git-cliff/releases/download/v$GIT_CLIFF_VERSION/$(basename "$archive")"
+          .github/scripts/fetch-release.sh orhun/git-cliff "v$GIT_CLIFF_VERSION" "$(basename "$archive")" "$archive"
           printf '%s  %s\n' "$GIT_CLIFF_SHA256" "$archive" | sha256sum --check --status
           tar -xzf "$archive" -C "$RUNNER_TEMP"
 
@@ -246,6 +243,8 @@ jobs:
 
           digest="$(oras resolve "$IMAGE:release-$TARGET_SHA")"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+      - uses: ./.github/actions/setup-grype
 
       - name: Scan release image
         id: container-scan
@@ -623,10 +622,14 @@ jobs:
           set -euo pipefail
 
           binary="$RUNNER_TEMP/cosign"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "$binary" \
-            "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
+          # The c8s mirror first, as in .github/scripts/fetch-release.sh, which
+          # this job cannot use: it does not check out the repository.
+          asset="sigstore/cosign/v$COSIGN_VERSION/cosign-linux-amd64"
+          curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --retry 3 \
+            --output "$binary" "https://confosaptmirrorae526a.blob.core.windows.net/gh-releases/$asset" ||
+            curl --fail --location --proto '=https' --tlsv1.2 --max-time 120 \
+              --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 \
+              --output "$binary" "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
           printf '%s  %s\n' "$COSIGN_SHA256" "$binary" | sha256sum --check --status
           chmod +x "$binary"
           "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
