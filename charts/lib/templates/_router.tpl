@@ -79,6 +79,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "router.cdsCertPath" -}}/.well-known/cds-cert.pem{{- end -}}
 {{- define "router.meshCAPath" -}}/.well-known/mesh-ca.pem{{- end -}}
 
+{{- define "router.terminationGracePeriodSeconds" -}}10{{- end -}}
+
 {{/* The paths nginx serves itself, for cds-attest --reserved-paths: no
      manifest route under them is selected (route policy M6). */}}
 {{- define "router.reservedPaths" -}}

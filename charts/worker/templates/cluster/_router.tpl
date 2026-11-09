@@ -20,6 +20,7 @@
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
+terminationGracePeriodSeconds: {{ include "router.terminationGracePeriodSeconds" . }}
 {{- /* Every container holds a platform role the measured base grants it and
        runs as that role's reserved identity (c8s-lib's _identities.tpl). */}}
 initContainers:

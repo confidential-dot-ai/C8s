@@ -2956,6 +2956,23 @@ func TestChartCertDependentPodStrategies(t *testing.T) {
 	if router.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Errorf("c8s-router strategy = %q, want Recreate (host-port binding forbids two concurrent pods on a node)", router.Spec.Strategy.Type)
 	}
+	assertRouterGracePeriodBelowDefault(t, router.Spec.Template.Spec)
+}
+
+// Both charts' router pods name a grace period below the Kubernetes default.
+func assertRouterGracePeriodBelowDefault(
+	t *testing.T,
+	pod corev1.PodSpec,
+) {
+	t.Helper()
+	grace := pod.TerminationGracePeriodSeconds
+	if grace == nil {
+		t.Errorf("the router pod names no termination grace period, so it takes the default %ds", corev1.DefaultTerminationGracePeriodSeconds)
+		return
+	}
+	if *grace >= corev1.DefaultTerminationGracePeriodSeconds {
+		t.Errorf("router termination grace period = %ds, want below the default %ds", *grace, corev1.DefaultTerminationGracePeriodSeconds)
+	}
 }
 
 // TestChartRouterHostPort pins nginx's TLS listener to the node's host port,

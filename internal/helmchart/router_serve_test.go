@@ -193,7 +193,7 @@ func TestRouterServeRecoversAfterCredentialWithdrawal(t *testing.T) {
 func TestWorkerRouterServeWatchesTheACMECertificate(t *testing.T) {
 	script := libRouterNginxFiles(t)["serve.sh"]
 	for _, line := range []string{
-		`if [ "$(cat /run/c8s-node/router/front-door-mode)" = acme ]; then`,
+		`mode_file=/run/c8s-node/router/front-door-mode`,
 		`watched="$watched /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"`,
 	} {
 		if !strings.Contains(script, line) {
@@ -203,8 +203,8 @@ func TestWorkerRouterServeWatchesTheACMECertificate(t *testing.T) {
 }
 
 // The cloud ConfigMap names no front-door mode, so the script serves as in cds
-// mode: it watches the mesh leaf alone, starts nginx once with no ACME files,
-// and says the mode file is missing once, at start.
+// mode: it watches the mesh leaf alone and starts nginx once with no ACME
+// files.
 func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
 	run := startServeScript(t, cloudServeScript, func(dir string) {
 		for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
@@ -218,8 +218,8 @@ func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
 	if starts := tickCount(run.starts); starts != 1 {
 		t.Fatalf("nginx started %d times, want once", starts)
 	}
-	if log := scriptLog(t, run.log); strings.Count(log, "\n") > 1 || (log != "" && !strings.Contains(log, "front-door-mode")) {
-		t.Fatalf("the entrypoint logged more than the missing mode file once:\n%s", log)
+	if log := scriptLog(t, run.log); log != "" {
+		t.Fatalf("the entrypoint logged on the cds path:\n%s", log)
 	}
 	run.withdrawAndRestore(t, filepath.Join(run.tlsDir, "tls.crt"))
 }

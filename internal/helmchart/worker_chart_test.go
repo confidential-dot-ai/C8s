@@ -210,6 +210,7 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 		if deployment.Namespace != namespace || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 			t.Errorf("%s must be a singleton of %s with Recreate strategy", name, namespace)
 		}
+		assertRouterGracePeriodBelowDefault(t, deployment.Spec.Template.Spec)
 		// The pod runs on any worker, and no worker carries a node role label.
 		if selector := deployment.Spec.Template.Spec.NodeSelector; len(selector) > 0 {
 			t.Errorf("%s selects nodes by %v", name, selector)

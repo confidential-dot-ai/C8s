@@ -102,6 +102,11 @@ runs `helm upgrade --install` and, with `--wait` on by default, returns once the
 release is ready; confirm the router namespace too, with
 `kubectl -n c8s-router wait --for=condition=Ready pod --all --timeout=5m`.
 
+An upgrade that changes the router pod rolls it, and the front door is down from
+the moment the old pod stops serving until the new one serves — up to 10 seconds
+for the old pod to go, since one router pod holds the public port of its node,
+plus a few seconds for the new pod to start.
+
 Install refuses when the resolved policy would deny a platform pod the cluster
 already runs, before touching anything; `--force` overrides. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
