@@ -2,7 +2,6 @@ package nodeservices
 
 import (
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -338,11 +336,17 @@ func TestRenderPodRuntimeFailsClosed(t *testing.T) {
 	}
 }
 
-// A floor that also measures served policies into the register is refused.
-func TestRenderPodRuntimeRejectsCompetingPolicyMeasurements(t *testing.T) {
+// The worker floor measures served policies into the register; a pod's
+// runtime turns that off so its images are the register's only writer.
+func TestRenderPodRuntimeTurnsOffInheritedPolicyMeasurement(t *testing.T) {
 	root := preparePodRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    measure_policies: true", 1)))
-	if _, err := RenderPodRuntime(root, assignedPod(t, podManifest)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
-		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
+	runtime, err := RenderPodRuntime(root, assignedPod(t, podManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull := renderedPolicy(t, runtime)["allowlist"].(map[string]any)["pull"].(map[string]any)
+	if pull["measure_policies"] != false {
+		t.Fatalf("measure_policies = %v, want false", pull["measure_policies"])
 	}
 }
