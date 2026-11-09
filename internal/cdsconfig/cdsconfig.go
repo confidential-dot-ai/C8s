@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -32,6 +33,8 @@ type Config struct {
 	// Nodes pins the node launch identities CDS admits and serves. A replica
 	// set's may be empty, and its Genesis then names the first set.
 	Nodes refvalues.ReferenceValues
+	// PodImages authorize quote-bound Pod mesh issuance only, never node callbacks.
+	PodImages []remote.ImagePin
 	// NodeCIDRs bounds the addresses CDS may call a sandbox inventory on.
 	NodeCIDRs workloadclaims.CIDRHosts
 	// DNSSANPatterns are the rules a leaf's DNS SANs are matched against,
@@ -51,6 +54,7 @@ type wire struct {
 	OperatorPublicKeys string   `yaml:"operatorPublicKeys"`
 	Workloads          string   `yaml:"workloads"`
 	Nodes              string   `yaml:"nodes,omitempty"`
+	PodImagePolicy     string   `yaml:"podImagePolicy,omitempty"`
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
@@ -86,6 +90,14 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	var podImages []remote.ImagePin
+	if w.PodImagePolicy != "" {
+		pods, err := workloadclaims.ParsePodImagePolicy([]byte(w.PodImagePolicy))
+		if err != nil {
+			return nil, fmt.Errorf("podImagePolicy: %w", err)
+		}
+		podImages = pods.Images
+	}
 	subnets, err := parseNodeCIDRs(w.NodeCIDRs)
 	if err != nil {
 		return nil, err
@@ -101,15 +113,20 @@ func (w wire) parse() (*Config, error) {
 	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
 		return nil, err
 	}
-	return &Config{
+	cfg := &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
 		Workloads:      workloads,
 		Nodes:          nodes,
+		PodImages:      podImages,
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
 		HA:             ha,
-	}, nil
+	}
+	if err := cfg.ValidatePodAuthorities(); err != nil {
+		return nil, fmt.Errorf("podImagePolicy: %w", err)
+	}
+	return cfg, nil
 }
 
 // parseNodes reads the node pins a launch file names, which may be none.
