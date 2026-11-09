@@ -7,9 +7,7 @@ nri-image-policy
 {{- end }}
 
 {{- define "nri-image-policy.labels" -}}
-helm.sh/chart: {{ include "nri-image-policy.name" . }}-0.3.0
 {{ include "nri-image-policy.selectorLabels" . }}
-app.kubernetes.io/version: ""
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: c8s
 {{- end }}
