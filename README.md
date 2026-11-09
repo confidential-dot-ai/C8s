@@ -184,11 +184,16 @@ guides is at
 ### Install
 
 ```sh
-# Build and install the c8s CLI
-git clone https://github.com/confidential-dot-ai/c8s
+# Build and install the c8s CLI of a release
+git clone --branch <RELEASE_TAG> https://github.com/confidential-dot-ai/c8s
 cd c8s
 make install
 ```
+
+`c8s install` pins the component images to the digests of the `c8s-cloud`
+chart released at its own version, so build it from a release tag. A build of
+any other commit needs `--chart` and image values
+(`c8s install --help`).
 
 For an existing CDS, reuse the operator keypair matching its measured
 configuration and its `cds-pin.json`. For a new CDS, generate the keypair first:
@@ -230,9 +235,6 @@ set `attestationApi.devices`, `nriImagePolicy.platform` and
 `confidential.ai/cw: vllm`, and resolves its images into the bootstrap allowlist.
 The adopted workload needs no separate annotation step (see
 [existing workload adoption](docs/operator.md#existing-workload-adoption)).
-If you would rather not trust install-time digest resolution, pass
-`--resolve-digests=false` and allowlist the digests yourself — see
-[Managing the image allowlist](#managing-the-image-allowlist).
 
 ### Opt workloads in
 
@@ -449,10 +451,9 @@ A swapped key set fails this closed. The check protects the verifier that runs
 it, so run it continuously (CI), not only at bootstrap.
 
 Operator-key changes require updating CDS's measured configuration and the
-client pins that bind it. For GitOps consumers,
-`c8s render-values --operator-keys operator.pub` embeds the router's trusted
-key bundle as PEM content (the chart value takes content, never a file path);
-the chart wiring is described in [docs/operator.md](docs/operator.md).
+client pins that bind it. For GitOps consumers, `cds.operatorKeys` takes the
+router's trusted key bundle as PEM content, never a file path; the chart wiring
+is described in [docs/operator.md](docs/operator.md).
 
 ## Manage the route manifest
 

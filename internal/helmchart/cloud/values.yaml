@@ -4,8 +4,8 @@
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
-## `tag` and `digest` are consumer-supplied — the chart fails to render if
-## neither is set. TEE measurements depend on the exact binary running,
+## A release stamps `digest`; otherwise set `tag` or `digest`, or the chart
+## fails to render. TEE measurements depend on the exact binary running,
 ## so floating tags break attestation semantics; prefer `digest`.
 image:
   repository: ghcr.io/confidential-dot-ai/c8s-operator
@@ -85,8 +85,7 @@ attestationApi:
 armtlsMesh:
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
-    # -- Image tag. Required: the chart does not pin a default; the consumer
-    #    (HelmRelease values or cluster overlay) must set tag or digest.
+    # -- A release stamps digest; otherwise set tag or digest.
     tag: ""
     digest: ""
 
@@ -108,8 +107,7 @@ nriImagePolicy:
 
   image:
     repository: ghcr.io/confidential-dot-ai/nri-image-policy
-    # -- Image tag. Required: the chart does not pin a default; the consumer
-    #    (HelmRelease values or cluster overlay) must set tag or digest. The
+    # -- A release stamps digest; otherwise set tag or digest. The
     #    image must contain both the host plugin binary at
     #    /usr/local/bin/nri-image-policy and the install scripts the
     #    DaemonSet executes (install-host-plugin.sh, patch-containerd.sh).
@@ -189,10 +187,9 @@ volumed:
   enabled: false
 
   ## Container image. Its own debian-slim image (cmd/volumed/Dockerfile) carries
-  ## cryptsetup/veritysetup, which the distroless operator image cannot. `tag`
-  ## and `digest` are consumer-supplied (like every component image); `c8s
-  ## install` resolves and pins the digest, which also derives it into the NRI
-  ## floor so the daemon's own image is admitted.
+  ## cryptsetup/veritysetup, which the distroless operator image cannot. A
+  ## release stamps `digest`, which also derives it into the NRI floor so the
+  ## daemon's own image is admitted.
   image:
     repository: ghcr.io/confidential-dot-ai/volumed
     tag: ""

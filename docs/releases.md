@@ -30,7 +30,7 @@ gate.
 | Artifact | Where |
 |---|---|
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
-| Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s`, version `X.Y.Z`, packaged byte-reproducibly from the release commit |
+| Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
 | Node images | `ghcr.io/confidential-dot-ai/node-guest-base:worker-{tdx,snp}[-cdi]-vX.Y.Z` |
 | GitHub release | `release-statement.json`, `release-statement.sigstore.json` |
 
@@ -42,9 +42,12 @@ release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
 staging tag and promoted by digest; an exact release tag that already exists
-must resolve to that same digest. The CLI ships inside the `c8s-operator`
-image, and a released binary prints its tag with `c8s --version`. The release
-workflow stamps that tag; a plain `go build` of the same commit prints `dev`.
+must resolve to that same digest. The chart's `values.yaml` names each
+component by the digest its image build pushed. The CLI ships inside the
+`c8s-operator` image, and a released binary prints its tag with
+`c8s --version`. The release workflow stamps that tag; a plain `go build` of
+the same commit prints `dev`. A released `c8s install` reads the image digests
+from the chart of its own version; any other build needs `--chart`.
 
 ## Verify a release
 
@@ -52,8 +55,11 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
+
+`chart` names the published chart by its manifest digest, which a Flux
+`OCIRepository` can pin.
 
 and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
 signed keyless through GitHub Actions OIDC, so there is no release key. A

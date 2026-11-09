@@ -207,8 +207,21 @@ func TestHostConfigFromEmbeddedChartValues(t *testing.T) {
 	if cfg.ContainerdConfigDir != "/etc/containerd" {
 		t.Errorf("ContainerdConfigDir = %q, want the chart default", cfg.ContainerdConfigDir)
 	}
-	if want := "ghcr.io/confidential-dot-ai/nri-image-policy:" + resolveImageTag(); cfg.SweepImage != want {
+	if want := "ghcr.io/confidential-dot-ai/nri-image-policy:main"; cfg.SweepImage != want {
 		t.Errorf("SweepImage = %q, want %q", cfg.SweepImage, want)
+	}
+}
+
+func TestSweepImageTag(t *testing.T) {
+	for cliVersion, want := range map[string]string{
+		"dev":               "main",
+		"v0.1.0":            "v0.1.0",
+		"v0.1.0-5-gabc1234": "main",
+		"v0.92.0-beta.2":    "main",
+	} {
+		if got := sweepImageTag(cliVersion); got != want {
+			t.Errorf("sweepImageTag(%q) = %q, want %q", cliVersion, got, want)
+		}
 	}
 }
 

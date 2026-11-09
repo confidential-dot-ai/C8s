@@ -10,7 +10,7 @@
 {{- fail "VALIDATION_ERROR kind=cds_pins_required: cds.measurementsConfig is empty, so nothing pins the guest identity of this cluster's CDS and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --cds-pin <cds-pin.json>` (written by `c8s cds config new`)." -}}
 {{- end -}}
 {{- if not (hasPrefix "{" (trim $document)) -}}
-{{- fail "VALIDATION_ERROR kind=cds_pin_content: cds.measurementsConfig must be the JSON content of the CDS pin, not a file path — use `c8s install --cds-pin <file>`, `c8s render-values --cds-pin <file>`, or helm --set-file cds.measurementsConfig=<file>" -}}
+{{- fail "VALIDATION_ERROR kind=cds_pin_content: cds.measurementsConfig must be the JSON content of the CDS pin, not a file path — use `c8s install --cds-pin <file>` or helm --set-file cds.measurementsConfig=<file>" -}}
 {{- end -}}
 {{- $schema := dig "schema_version" "" (mustFromJson $document) -}}
 {{- if ne $schema "2" -}}

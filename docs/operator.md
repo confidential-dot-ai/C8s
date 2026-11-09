@@ -22,7 +22,10 @@ a measured node releases none.
 `aks-snp`, `aks-tdx` or `gke-snp` (unverified on a GKE node), and selects the
 chart's `values-<platform>.yaml`. Each is node-as-CVM: the node is itself the
 confidential VM, its pods processes inside it ([overview.md](overview.md));
-dotted names here, such as `router.san`, are chart values.
+dotted names here, such as `router.san`, are chart values. A release build
+takes the component image digests from the published `c8s-cloud` chart of its
+own version; any other build renders a chart directory it is given with
+`--chart` ([releases.md](releases.md)).
 
 | Resource | Role |
 |---|---|
@@ -474,7 +477,7 @@ every `router.san` name to that workload's Service and port. With
 install stores it on CDS; without one it goes to `--routes-out`, and the router
 answers 503 until stored.
 
-With `--resolve-digests` (the default) install also writes one workload entry
+Install also writes one workload entry
 per adopted workload, named `<ENTRY>`, declaring every container of its pod
 template with exact mounts. CDS stamps that name on the pod's leaf, which is
 what the router requires of a workload backend, with the same entry as in the

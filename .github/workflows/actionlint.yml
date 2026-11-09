@@ -33,6 +33,18 @@ jobs:
       - name: Test the chart's third-party image pins
         run: bash .github/scripts/tests/test-chart-image-pins.sh
 
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.14.4
+
+      - name: Lint and render the cloud chart
+        env:
+          CHART_DIR: internal/helmchart/cloud
+        run: .github/scripts/chart-verify.sh
+
+      - name: Test the release chart's digest stamp
+        run: bash .github/scripts/tests/test-chart-stamp.sh
+
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
 
@@ -84,6 +96,8 @@ jobs:
             .github/scripts/tests/test-chart-attestation-api-digest.sh \
             .github/scripts/chart-image-pins.sh \
             .github/scripts/tests/test-chart-image-pins.sh \
+            .github/scripts/chart-stamp.sh \
+            .github/scripts/tests/test-chart-stamp.sh \
             .github/scripts/tests/test-repro-gate-changes.sh \
             .github/scripts/pin-watch-pr.sh \
             .github/scripts/tests/test-pin-watch-pr.sh \

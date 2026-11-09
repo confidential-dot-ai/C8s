@@ -5,12 +5,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -19,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/crane"
+	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -399,94 +397,21 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	})
 }
 
-func TestAppendResolvedDigestArgsExec(t *testing.T) {
-	comps := []c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}}
-	const values = "cds:\n  image:\n    repository: ghcr.io/x/cds\n"
-	const components = "components:\n  - valuePath: cds.image\n"
-
-	t.Run("crane off PATH is an actionable error", func(t *testing.T) {
-		newFakeBin(t)
-		_, err := appendResolvedDigestArgs(context.Background(), t.TempDir(), nil, nil, "main", comps)
-		if err == nil || !strings.Contains(err.Error(), "crane") {
-			t.Fatalf("want a crane-not-found error, got %v", err)
-		}
-	})
-
-	t.Run("pins repository and digest per component", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "crane", fakeCrane(testDigest))
-		got, err := appendResolvedDigestArgs(context.Background(), writeChartWithComponents(t, values, components), nil, nil, "main", comps)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		assertArgsEqual(t, got, []string{
-			"--set-string", "cds.image.repository=ghcr.io/x/cds",
-			"--set-string", "cds.image.digest=" + testDigest,
-		})
-		mustContainLine(t, f.calls(t), "crane digest ghcr.io/x/cds:main")
-	})
-
-	t.Run("checks the router's nginx image at its rendered digest", func(t *testing.T) {
-		const nginxDigest = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
-		for name, tc := range map[string]struct {
-			nginxEnv string
-			wantErr  bool
-		}{
-			"image matches imageEnv": {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.30.5"`},
-			"image env differs":      {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`, wantErr: true},
-		} {
-			t.Run(name, func(t *testing.T) {
-				resetCLIState(t)
-				f := newFakeBin(t)
-				f.tool(t, "helm", helmShowValuesBody)
-				f.tool(t, "crane", `case "$1" in
-config) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],"Env":[`+tc.nginxEnv+`]}}' ;;
-*) echo `+testDigest+` ;;
-esac`)
-				chart := writeChartWithComponents(t,
-					values,
-					components+fmt.Sprintf("routerNginx:\n  image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: %q}\n  entrypoint: [/docker-entrypoint.sh, nginx]\n  imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n", nginxDigest),
-				)
-				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, nil, "main", comps)
-				if (err != nil) != tc.wantErr {
-					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
-				}
-				if !slices.Contains(f.calls(t), "crane config docker.io/nginxinc/nginx-unprivileged@"+nginxDigest) {
-					t.Fatal("nginx image config not read")
-				}
-			})
-		}
-	})
-
-	t.Run("helm failure surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", "exit 1")
-		f.tool(t, "crane", fakeCrane(testDigest))
-		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, nil, "main", comps); err == nil {
-			t.Fatal("want error when helm fails")
-		}
-	})
-
-	t.Run("resolve failure aborts", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "crane", "exit 1")
-		if _, err := appendResolvedDigestArgs(context.Background(), writeChartWithComponents(t, values, components), nil, nil, "main", comps); err == nil {
-			t.Fatal("want error when crane fails")
-		}
-	})
-}
-
-// installStubs wires stub helm/kubectl/crane for full `c8s install` runs
-// against the real embedded chart. The helm stub answers `show values` with
-// the chart's values.yaml and snapshots the computed values file an upgrade
-// receives; kubectl apply payloads are captured for typed inspection.
+// installStubs wires stub helm/kubectl/crane for full `c8s install` runs of
+// a release CLI against the real embedded chart. The helm stub answers `show
+// values` with the chart's values.yaml, `pull` with the release chart, and
+// snapshots the computed values file an upgrade receives; kubectl apply
+// payloads are captured for typed inspection.
 type installStubs struct {
 	f        *fakeBin
 	computed string
 	applied  string
+	release  string
 }
+
+// testReleaseVersion is the CLI version installStubs releases, testDigest
+// every image digest of its chart.
+const testReleaseVersion = "v9.9.9"
 
 func newInstallStubs(t *testing.T, kubectlBody string, helmUpgradeFails bool) *installStubs {
 	t.Helper()
@@ -495,13 +420,16 @@ func newInstallStubs(t *testing.T, kubectlBody string, helmUpgradeFails bool) *i
 		f:        f,
 		computed: filepath.Join(f.dir, "computed.yaml"),
 		applied:  filepath.Join(f.dir, "applied.json"),
+		release:  writeReleaseChart(t, testDigest),
 	}
 	fail := ""
 	if helmUpgradeFails {
 		fail = "exit 1"
 	}
+	setCLIVersion(t, testReleaseVersion)
 	f.tool(t, "helm", `case "$1" in
 show) /bin/cat "$3/values.yaml" ;;
+pull) `+helmPullBody(s.release)+` ;;
 template) /bin/echo '`+installSeedConfigMap+`' ;;
 upgrade)
   prev=; last=
@@ -516,6 +444,51 @@ esac`)
 	f.tool(t, "kubectl", kubectlBody)
 	f.tool(t, "crane", fakeCrane(testDigest))
 	return s
+}
+
+// setCLIVersion sets the build version for the test.
+func setCLIVersion(t *testing.T, v string) {
+	t.Helper()
+	prev := version.Version
+	version.Version = v
+	t.Cleanup(func() { version.Version = prev })
+}
+
+// helmPullBody is a helm stub arm that copies chart to --untardir as c8s-cloud.
+func helmPullBody(chart string) string {
+	return `dir=; prev=
+  for a in "$@"; do
+    if [ "$prev" = "--untardir" ]; then dir="$a"; fi
+    prev="$a"
+  done
+  /bin/mkdir -p "$dir"
+  /bin/cp -r '` + chart + `' "$dir/c8s-cloud"`
+}
+
+// writeReleaseChart writes the c8s-cloud chart a release stamps: digest on
+// every bundled component repository, beside values install never reads.
+func writeReleaseChart(t *testing.T, digest string) string {
+	t.Helper()
+	dir := t.TempDir()
+	values := strings.Join([]string{
+		"armtlsMesh: {image: " + releaseImage("armtls-mesh", digest) + "}",
+		"attestationApi: {image: " + releaseImage("attestation-api", digest) + "}",
+		"image: " + releaseImage("c8s-operator", digest),
+		"nriImagePolicy: {image: " + releaseImage("nri-image-policy", digest) + ", policy: {mode: audit}}",
+		"volumed: {enabled: true, image: " + releaseImage("volumed", digest) + "}",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("name: c8s-cloud\nversion: 9.9.9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "values.yaml"), []byte(values+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// releaseImage is a stamped image object of the C8s repository name.
+func releaseImage(name, digest string) string {
+	return "{repository: ghcr.io/confidential-dot-ai/" + name + ", digest: " + digest + "}"
 }
 
 // clusterKubectl is a healthy single-node cluster: one vanilla linux node that
@@ -586,21 +559,32 @@ func TestInstallHappyPath(t *testing.T) {
 		}
 	}
 
-	// An unstamped build resolves digests at the fallback tag. The
-	// attestation-api is released apart from C8s, so its pinned digest stands.
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
-	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
-	// The CDS runs outside the cluster, so the install deploys no CDS image.
-	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds")
-	// volumed stays off without --volumes.
-	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/volumed")
+	// A release CLI pins its images from the release chart of its own version.
+	mustContainLine(t, calls, "helm pull "+releaseChartRepository+" --version 9.9.9 --untar --untardir "+filepath.Join(filepath.Dir(args[3]), releaseChartDir))
+	mustNotContainPrefix(t, calls, "crane ")
 
-	// The computed values helm received, decoded and pinned.
+	// The computed values helm received carry the release digest of every
+	// component under its repository, and nothing else of the release chart.
 	tree := readYAMLTree(t, s.computed)
-	if got := treeAt(t, tree, "image", "digest"); got != testDigest {
-		t.Errorf("image.digest = %#v, want %s", got, testDigest)
+	for _, image := range [][]string{
+		{"armtlsMesh", "image"},
+		{"attestationApi", "image"},
+		{"image"},
+		{"nriImagePolicy", "image"},
+		{"volumed", "image"},
+	} {
+		if got := treeAt(t, tree, append(image, "digest")...); got != testDigest {
+			t.Errorf("%v.digest = %#v, want %s", image, got, testDigest)
+		}
+		if got, _ := treeAt(t, tree, append(image, "repository")...).(string); !strings.HasPrefix(got, "ghcr.io/confidential-dot-ai/") {
+			t.Errorf("%v.repository = %#v, want the bundled chart's", image, got)
+		}
+	}
+	if _, ok := nestedMap(tree, "nriImagePolicy", "policy"); ok {
+		t.Errorf("computed values carry the release chart's nriImagePolicy.policy: %v", tree["nriImagePolicy"])
+	}
+	if boolAtPath(tree, "volumed.enabled") {
+		t.Error("computed values carry the release chart's volumed.enabled")
 	}
 
 	// The namespace applied before helm must admit privileged pods.
@@ -617,28 +601,15 @@ func TestInstallHappyPath(t *testing.T) {
 	}
 }
 
-func TestInstallImageTagOverridesResolveRef(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--image-tag=v9.9.9"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	calls := s.f.calls(t)
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:v9.9.9")
-	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
-}
-
-// --volumes must reach helm as volumed.enabled, and must do so before digest
-// resolution: the daemon's own image is pinned only for a component the
-// effective values enable, and that pin is what derives it into the NRI floor
-// that would otherwise deny it.
+// --volumes must reach helm as volumed.enabled, beside the daemon's own
+// pinned image, which derives it into the NRI floor that would otherwise deny
+// it.
 func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
 	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--volumes"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	mustContainLine(t, s.f.calls(t), "crane digest ghcr.io/confidential-dot-ai/volumed:main")
 
 	tree := readYAMLTree(t, s.computed)
 	if got := treeAt(t, tree, "volumed", "enabled"); got != true {
@@ -655,7 +626,7 @@ func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*metadata.name*) echo node-a ;;
 "get pods --all-namespaces -o json") /bin/cat '`+pods+`' ;;
 `))
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "443") || !strings.Contains(err.Error(), "kube-system/ingress-a") {
 		t.Fatalf("want the router host-port conflict, got %v", err)
 	}
@@ -669,7 +640,7 @@ func TestInstallRefusesABundledContainerdNode(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
 `))
-	err := runInstall(t, "--platform=gke-snp", "--wait=false", "--resolve-digests=false")
+	err := runInstall(t, "--platform=gke-snp", "--wait=false")
 	if err == nil || !strings.Contains(err.Error(), "node-a") || !strings.Contains(err.Error(), "upstream containerd") {
 		t.Fatalf("want the bundled-containerd refusal naming the node, got %v", err)
 	}
@@ -682,7 +653,7 @@ func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get deployment vllm -n ws -o json") /bin/cat '`+deploy+`' ;;
 `))
 	routesOut := filepath.Join(t.TempDir(), "routes.json")
-	err := runInstall(t, "--platform=aks-snp", "--force", "--resolve-digests=false",
+	err := runInstall(t, "--platform=aks-snp", "--force",
 		"--workload-ref", "infer=ws/deployment/vllm:8000", "--upstream", "infer", "--routes-out", routesOut)
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -739,7 +710,7 @@ func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 	} {
 		s := newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-		err := runC8s(t, append([]string{"install", "--platform=aks-snp", "--force", "--resolve-digests=false"}, tc.args...)...)
+		err := runC8s(t, append([]string{"install", "--platform=aks-snp", "--force"}, tc.args...)...)
 		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 			t.Errorf("install %v = %v, want an error containing %q", tc.args, err, tc.wantErr)
 		}
@@ -750,7 +721,7 @@ func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 func TestInstallHelmUpgradeFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", true)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "helm install failed") {
 		t.Fatalf("want the helm failure surfaced, got %v", err)
 	}
@@ -760,7 +731,7 @@ func TestInstallNamespaceApplyFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl("", `"apply -f -") exit 1 ;;
 `))
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "kubectl apply namespace") {
 		t.Fatalf("want the namespace apply failure, got %v", err)
 	}
@@ -791,11 +762,12 @@ func TestInstallRequiresCLIsOnPath(t *testing.T) {
 
 // helmValuesCapture re-stubs helm so an `upgrade` appends every -f file's
 // content (path header + payload) to captureFile, in argv order. It keeps the
-// installStubs `show values` answer.
+// installStubs `show values` and `pull` answers.
 func helmValuesCapture(t *testing.T, s *installStubs, captureFile string) {
 	t.Helper()
 	s.f.tool(t, "helm", `case "$1" in
 show) /bin/cat "$3/values.yaml" ;;
+pull) `+helmPullBody(s.release)+` ;;
 template) /bin/echo '`+installSeedConfigMap+`' ;;
 upgrade)
   prev=; last=
@@ -830,11 +802,6 @@ func TestInstallValuesFromStdin(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	calls := s.f.calls(t)
-
-	// The piped volumed.enabled=true is visible to the digest resolver, which
-	// reads effectiveValues — volumed is pinned only when enabled there.
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/volumed:main")
 
 	// Helm received the piped values as a real -f file, followed by the
 	// computed values file (which wins on shared keys).
@@ -970,7 +937,7 @@ func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 	// exemptNamespaces cleared: the shape a pre-#396 values file installs.
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
 
-	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--resolve-digests=false", "-f", values)
+	err := runInstall(t, "--platform=aks-snp", "--wait=false", "-f", values)
 	if err == nil {
 		t.Fatal("want a refusal when the rendered policy denies the control plane")
 	}
@@ -994,7 +961,7 @@ func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 func TestInstallHostedLaneDefaultAdmitsPlatformPods(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
-	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false"); err != nil {
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
@@ -1008,7 +975,7 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
 		values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
-		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false", "-f", values)
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "-f", values)
 	})
 	if err != nil {
 		t.Fatalf("--force must install anyway: %v", err)
@@ -1025,7 +992,7 @@ func TestInstallAuditPolicySkipsPlatformPodCheck(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    mode: audit\n    exemptNamespaces: []\n")
-	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--resolve-digests=false", "-f", values); err != nil {
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "-f", values); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
@@ -1039,7 +1006,7 @@ func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
-		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false")
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -1067,101 +1034,12 @@ func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 		s := newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
 		values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
-		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--resolve-digests=false", "-f", values)
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "-f", values)
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if strings.Contains(stdout, "admitted by captured digest") {
 		t.Errorf("an install exempting nothing reported an exemption:\n%s", stdout)
-	}
-}
-
-// An install refuses a component whose image does not start with the
-// entrypoint, or set the env, the chart seeds it under: the seed would deny it
-// on its own node.
-func TestInstallChecksComponentImages(t *testing.T) {
-	comp := c8sComponent{name: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
-	nginx := c8sComponent{name: "routerNginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
-	for name, tc := range map[string]struct {
-		component c8sComponent
-		config    string
-		wantErr   bool
-	}{
-		"matching image passes": {
-			component: comp,
-			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
-		},
-		"entrypoint and cmd together satisfy a longer pin": {
-			component: nginx,
-			config:    `{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["NGINX_VERSION=1.30.5","PATH=/usr/bin:/bin"]}}`,
-		},
-		"moved entrypoint aborts": {
-			component: comp,
-			config:    `{"config":{"Entrypoint":["/usr/bin/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
-			wantErr:   true,
-		},
-		"extra variable aborts": {
-			component: comp,
-			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin","LD_LIBRARY_PATH=/opt/lib"]}}`,
-			wantErr:   true,
-		},
-		"changed value aborts": {
-			component: comp,
-			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/opt/bin:/usr/bin:/bin"]}}`,
-			wantErr:   true,
-		},
-		"missing variable aborts": {
-			component: comp,
-			config:    `{"config":{"Entrypoint":["/c8s"]}}`,
-			wantErr:   true,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFakeBin(t)
-			f.tool(t, "crane", "echo '"+tc.config+"'")
-			err := checkComponentImage(context.Background(), tc.component, testDigest)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("checkComponentImage = %v, want error %v", err, tc.wantErr)
-			}
-			mustContainLine(t, f.calls(t), "crane config "+tc.component.repository+"@"+testDigest)
-		})
-	}
-	t.Run("no entrypoint, nothing to check", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", "exit 1")
-		if err := checkComponentImage(context.Background(), c8sComponent{name: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-// A component table entry without imageEnv fails up front rather than on an
-// env mismatch against an empty map.
-func TestComponentsFromFileRequiresImageEnvWithEntrypoint(t *testing.T) {
-	values := map[string]any{"image": map[string]any{"repository": "ghcr.io/x/op"}}
-	file := func(c componentDeclaration) componentsFile {
-		return componentsFile{Components: []componentDeclaration{c}}
-	}
-	if _, err := componentsFromFile(file(componentDeclaration{ValuePath: "image", Entrypoint: []string{"/c8s"}}), values); err == nil {
-		t.Fatal("want an error for an entrypoint without imageEnv")
-	}
-	if _, err := componentsFromFile(file(componentDeclaration{ValuePath: "image"}), values); err != nil {
-		t.Fatalf("argv-pinned component without imageEnv: %v", err)
-	}
-}
-
-// A null imageEnv value removes a default variable, as Helm deletes null keys.
-func TestRouterNginxComponentDropsNullImageEnv(t *testing.T) {
-	path := "/bin"
-	nginx, err := routerNginxComponent(componentsFile{RouterNginx: routerNginxDeclaration{
-		Entrypoint: []string{"/docker-entrypoint.sh", "nginx"},
-		ImageEnv:   map[string]*string{"PATH": &path, "NGINX_VERSION": nil},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := map[string]string{"PATH": "/bin"}; !maps.Equal(nginx.imageEnv, want) {
-		t.Fatalf("imageEnv = %v, want %v", nginx.imageEnv, want)
 	}
 }

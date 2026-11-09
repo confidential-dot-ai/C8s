@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint and render the C8s Helm chart for .github/workflows/chart.yml. Runs two
+# Lint and render the C8s cloud chart for actionlint.yml and semver-tag.yml. Runs two
 # checks in sequence (they always ran together, unconditionally):
 #   1. helm lint
 #   2. helm template                       (renders cleanly)

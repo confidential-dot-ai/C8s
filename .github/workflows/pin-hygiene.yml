@@ -14,6 +14,7 @@ on:
       - ".github/scripts/ghcr-digest.sh"
       - ".github/scripts/chart-attestation-api-digest.sh"
       - ".github/scripts/chart-image-pins.sh"
+      - ".github/scripts/image-config-verdict.jq"
       - "internal/helmchart/cloud/values.yaml"
       - "internal/helmchart/lib/files/components.yaml"
       - "images/node-guest/worker/mkosi.sync"
@@ -115,9 +116,9 @@ jobs:
               echo "- \`$repo:$tag\` was rebuilt: the chart pins \`${digest:0:19}…\`, the tag names \`${current:0:19}…\`" >>"$GITHUB_STEP_SUMMARY"
             done <<<"$resolved"
             # Each pinned image's config must match what the seeded entry pins
-            # beside its digest (the argv prefix and the exact env), as `c8s
-            # install --resolve-digests` requires for the router's nginx. A block
-            # without an entrypoint is argv-pinned and skipped.
+            # beside its digest (the argv prefix and the exact env), or the
+            # node denies it. A block without an entrypoint is argv-pinned and
+            # skipped.
             if ! bash .github/scripts/chart-image-pins.sh check "$values"; then
               echo "::error file=$values::a pinned image's config does not match the entrypoint/imageEnv seeded beside its digest (chart-image-pins.sh check, above)"; fail=1
             fi

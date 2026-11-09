@@ -100,6 +100,18 @@ node_exec ctr -n k8s.io images pull "docker.io/$CURL_IMAGE" >/dev/null \
     || fail "could not pull $CURL_IMAGE into the node (registry rate limit?)"
 node_exec ctr -n k8s.io images pull "docker.io/$WORKLOAD_IMAGE" >/dev/null \
     || fail "could not pull $WORKLOAD_IMAGE into the node (registry rate limit?)"
+# The adopted workload's image, as its manifest pins it. Also kept out of the
+# floor: the entry `c8s install --workload-ref` writes for that workload must
+# be the only one describing its pod, or CDS names neither and the leaf
+# carries no workload name.
+ADOPT_IMAGE="docker.io/$(python3 -c '
+import sys, yaml
+for doc in yaml.safe_load_all(sys.stdin):
+    if doc and doc["kind"] == "Deployment":
+        print(doc["spec"]["template"]["spec"]["containers"][0]["image"])' \
+    < "$SCRIPT_DIR/manifests/adopt-me.yaml")"
+node_exec ctr -n k8s.io images pull "$ADOPT_IMAGE" >/dev/null \
+    || fail "could not pull $ADOPT_IMAGE into the node (registry rate limit?)"
 # router's nginx is pulled at install time — after the floor scan — so its
 # chart-pinned digest is pulled by reference and seeded up front; otherwise
 # the plugin's enforce-existing check kills the front door's own container.
@@ -132,17 +144,18 @@ grep -Fq "$HELPER_IMAGE" "$WORKDIR/floor.tsv" \
     || fail "kind local-path helper image $HELPER_IMAGE missing from the floor scan"
 NRI_STORE_DIGEST="$(awk -F'\t' '$2 ~ /nri-image-policy:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
 [ -n "$NRI_STORE_DIGEST" ] || fail "the loaded nri-image-policy digest is missing from the floor scan"
-python3 - "$WORKDIR/floor.tsv" "$WORKDIR/floor-values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" <<'PYEOF'
+python3 - "$WORKDIR/floor.tsv" "$WORKDIR/floor-values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" "$ADOPT_IMAGE" <<'PYEOF'
 import re, sys, yaml
 floor = {}
 for line in open(sys.argv[1]):
     digest, ref = line.rstrip("\n").split("\t")
     floor.setdefault(digest, ref)
 # Kept out of the floor on purpose: the admission test's unseen digest (the
-# curl ref), and the nri-image-policy digest — production admits that image
+# curl ref), the nri-image-policy digest — production admits that image
 # only under the chart's argv-pinned entry, never by digest; an any-argv row
-# here would union-admit any argv and void the uninstall regression.
-floor = {d: r for d, r in floor.items() if r != sys.argv[3] and d != sys.argv[4]}
+# here would union-admit any argv and void the uninstall regression — and the
+# adopted workload's image, whose only entry is the one install writes for it.
+floor = {d: r for d, r in floor.items() if r not in (sys.argv[3], sys.argv[5]) and d != sys.argv[4]}
 
 def entry_name(digest, ref):
     # Mirrors pkg/allowlist DigestEntryName.
@@ -185,16 +198,27 @@ for subnet in sys.stdin.read().split():
         break' > "$WORKDIR/kind-subnet"
 KIND_SUBNET=$(cat "$WORKDIR/kind-subnet")
 [ -n "$KIND_SUBNET" ] || fail "the $KIND_NETWORK network has no IPv4 subnet"
+# Every component runs the image this lane built and loaded as $IMAGE_TAG.
+python3 - "$IMAGE_TAG" > "$WORKDIR/image-tags.yaml" <<'PYEOF'
+import sys, yaml
+values = {}
+for component in yaml.safe_load(open("internal/helmchart/lib/files/components.yaml"))["components"]:
+    node = values
+    for key in component["valuePath"].split("."):
+        node = node.setdefault(key, {})
+    node["tag"] = sys.argv[1]
+yaml.safe_dump(values, sys.stdout)
+PYEOF
 # c8s_install <install flags>: the release shape the seed render and every
 # install share, so the entries the CDS is configured with are the ones the
 # install applies. The overlay mocks the attestation-api and names kind's
 # cluster DNS and pod and Service ranges.
 c8s_install() {
     ./build/c8s install \
+        --chart internal/helmchart/cloud \
         --namespace "$NS" \
-        --resolve-digests=false \
-        --image-tag="$IMAGE_TAG" \
         --operator-keys "$WORKDIR/operator-pub.pem" \
+        -f "$WORKDIR/image-tags.yaml" \
         -f "$SCRIPT_DIR/values.yaml" \
         -f "$WORKDIR/floor-values.yaml" \
         "$@"
@@ -231,11 +255,24 @@ kubelet_reports_store_digests || fail "the kubelet still reports a container ima
 
 # --- The CDS this cluster trusts ---
 
+log "Running the workload this release adopts"
+# The adoption step below installs with --workload-ref, and install writes an
+# allowlist entry for the workload that ref names, read from its live pod
+# template. So the workload runs before any render names it, and every render
+# from here on carries its entry.
+kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
+kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
+    || fail "adoption fixture never became Available"
+# How the seed render and the adoption install below name that workload: one
+# ref, so both render the same entry for it. --wait is what install requires
+# of --workload-ref; the seed render installs nothing.
+ADOPT_FLAGS=(--workload-ref web=adopted/deployment/web:8080 --wait)
+
 log "Writing the CDS configuration and its pin"
 # The entries the CDS must serve are the ones this install renders:
 # --allowlist-seed-out writes them before any CDS exists, and the install
 # below refuses to proceed unless the configuration carries exactly them.
-c8s_install --allowlist-seed-out "$WORKDIR/allowlist-seed.json" \
+c8s_install --allowlist-seed-out "$WORKDIR/allowlist-seed.json" "${ADOPT_FLAGS[@]}" \
     || fail "could not render this release's allowlist seed"
 
 # The CDS VM's identity as the mock reports it: one launch digest, under the
@@ -671,20 +708,15 @@ kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-cu
 pass "router front door serves HTTPS verified against the CDS mesh CA"
 
 log "Workload adoption"
-kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
-kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
-    || fail "adoption fixture never became Available"
 # Without --operator-key, install writes the --upstream route as a new
 # manifest; the harness stores it with optoken below, since `c8s routes
 # put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
 # C8S_OPERATOR_KEY would make install sign and store it instead.
 printf 'router:\n  routePublication:\n    enabled: true\n' > "$WORKDIR/values-publish.yaml"
-C8S_OPERATOR_KEY='' c8s_install "${CDS_INSTALL_FLAGS[@]}" \
-    --workload-ref web=adopted/deployment/web:8080 \
+C8S_OPERATOR_KEY='' c8s_install "${CDS_INSTALL_FLAGS[@]}" "${ADOPT_FLAGS[@]}" \
     --upstream web \
     --routes-out "$WORKDIR/routes-install.json" \
     -f "$WORKDIR/values-publish.yaml" \
-    --wait \
     || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
@@ -719,20 +751,21 @@ done
 [ "$SUMMARY" = "1/1" ] || fail "status mirror never reported the adopted workload (got: $SUMMARY)"
 pass "status mirror reports the adopted workload (attestationSummary 1/1)"
 
-# Store the manifest the install wrote, naming the floor's entry for the
-# adopted nginx digest: no allowlist entry is named web here, so that is the
-# name the leaf must carry for the router to reach it.
-WEB_ENTRY="nginx-unprivileged-$(printf '%s' "${WORKLOAD_IMAGE#*@sha256:}" | cut -c1-12)"
-python3 - "$WORKDIR/routes-install.json" "$WEB_ENTRY" > "$WORKDIR/routes-web.json" <<'PY'
+# Store the manifest the install wrote, at the next revision: its backend
+# names the allowlist entry install wrote for the adopted workload, which is
+# the name CDS stamps on that pod's leaf and the router requires of a
+# workload backend.
+python3 - "$WORKDIR/routes-install.json" > "$WORKDIR/routes-web.json" <<'PY' || fail "the install's route manifest does not name the adopted workload"
 import json, sys
 m = json.load(open(sys.argv[1]))
 m["revision"] += 1
 for host in m["hosts"].values():
-    host["routes"][0]["backend"]["workload"] = sys.argv[2]
+    backend = host["routes"][0]["backend"]
+    assert backend["workload"] == "web", backend
 print(json.dumps(m))
 PY
 code="$(cds_write PUT /routes "$WORKDIR/routes-web.json")"
-[ "$code" = "204" ] || fail "route manifest naming $WEB_ENTRY: want HTTP 204, got $code"
+[ "$code" = "204" ] || fail "route manifest naming the adopted workload: want HTTP 204, got $code"
 
 # The front door routes its catch-all to the adopted workload, which the
 # routing sidecar reaches as a mesh client of that workload. The router polls

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -183,66 +182,6 @@ func TestValueArgsToTreeRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
-// On the no-digest path a numeric or zero-padded image tag (a date or build-id
-// tag) must survive as a string: buildValueArgs emits .tag via --set-string, so
-// coerce never int-coerces it (0640 -> 640 would pin the wrong image).
-func TestBuildValueArgsKeepsNumericImageTagAString(t *testing.T) {
-	resetCLIState(t)
-	prev := installResolveDigests
-	installResolveDigests = false // tag is the sole image ref only when digests are off
-	defer func() { installResolveDigests = prev }()
-
-	args, err := buildValueArgs(context.Background(), "", nil,
-		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
-		"0640", appendResolvedDigestArgs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	tree, err := valueArgsToTree(args)
-	if err != nil {
-		t.Fatalf("valueArgsToTree: %v", err)
-	}
-	if got := tree["cds"].(map[string]any)["image"].(map[string]any)["tag"]; got != "0640" {
-		t.Errorf("tag: got %#v, want string \"0640\" (must not int-coerce to 640)", got)
-	}
-}
-
-// When digests are resolved, the bundle must pin by digest only: emitting .tag
-// too is redundant. The injected resolver mirrors appendResolvedDigestArgs
-// (repository + digest) and keeps crane off PATH.
-func TestBuildValueArgsOmitsTagWhenDigestsResolved(t *testing.T) {
-	resetCLIState(t)
-
-	prevFlag := installResolveDigests
-	defer func() { installResolveDigests = prevFlag }()
-	installResolveDigests = true
-	stubResolver := func(_ context.Context, _ string, _ []string, args []string, _ string, comps []c8sComponent) ([]string, error) {
-		for _, c := range comps {
-			args = append(args, "--set-string", c.valuesPath+".repository="+c.repository,
-				"--set-string", c.valuesPath+".digest=sha256:abc")
-		}
-		return args, nil
-	}
-
-	got, err := buildValueArgs(context.Background(), "", nil,
-		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
-		"main", stubResolver)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	tree, err := valueArgsToTree(got)
-	if err != nil {
-		t.Fatalf("valueArgsToTree: %v", err)
-	}
-	img := tree["cds"].(map[string]any)["image"].(map[string]any)
-	if _, hasTag := img["tag"]; hasTag {
-		t.Errorf("digest path must not emit a tag, got image=%#v", img)
-	}
-	if img["digest"] != "sha256:abc" {
-		t.Errorf("digest: got %#v, want sha256:abc", img["digest"])
-	}
-}
-
 // writeComputedValues turns the --set pairs into a real values.yaml file that
 // helm can read back — install passes it as -f instead of inline --set flags.
 func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
@@ -281,33 +220,18 @@ func TestWriteComputedValuesProducesReadableFile(t *testing.T) {
 var coerceSafeValueArg = regexp.MustCompile(`^([A-Za-z0-9./]|\\\.)+(\[[0-9]+\])?=[^,]*$`)
 
 // TestBuildValueArgsStaysWithinParserGrammar is the lockstep guard between the
-// emitter (buildValueArgs / buildDigestArgs) and the parser (valueArgsToTree /
-// coerce). The parser handles only a subset of helm's --set grammar; this
-// drives the real builders with every value-producing toggle set and asserts
-// each emitted token stays inside that subset and round-trips cleanly. Without
-// it, a helper that emits e.g. `foo[0]=x`, an escaped dot, or a bare
-// non-value flag would silently break BOTH install and render-values (the
-// shared path hides the divergence) with every existing test still green.
+// emitter (buildValueArgs) and the parser (valueArgsToTree / coerce). The
+// parser handles only a subset of helm's --set grammar; this drives the
+// builder with every value-producing toggle set and asserts each emitted token
+// stays inside that subset and round-trips cleanly.
 func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	resetCLIState(t)
-	// Drive every value-producing toggle. --resolve-digests=false keeps crane
-	// off PATH (the digest-arg shape is covered separately via buildDigestArgs
-	// below).
-	installResolveDigests = false
 	installImagePullSecret, installVolumes = "regcred", true
 	installOperatorKeys = writeTestOperatorKeys(t)
 
-	args, err := buildValueArgs(context.Background(), "", nil, nil, "main", appendResolvedDigestArgs)
+	args, err := buildValueArgs(nil)
 	if err != nil {
 		t.Fatalf("buildValueArgs: %v", err)
-	}
-	// Add the digest helper's repository/digest tokens (stubbed resolver, no crane).
-	args, err = buildDigestArgs(args, "main",
-		[]c8sComponent{{valuesPath: "cds.image", repository: "ghcr.io/x/cds"}},
-		func(string) (string, error) { return "sha256:abc", nil },
-		func(string) (bool, error) { return true, nil })
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
 	}
 
 	for i := 0; i < len(args); i += 2 {
@@ -360,20 +284,6 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		t.Errorf("cds.measurementsConfig = %q, want the pin document's content", pin)
 	}
 
-}
-
-// render-values has no --upstream or --workload-ref: values carry neither
-// the route manifest nor the workload patch.
-func TestRenderValuesRefusesRoutingFlags(t *testing.T) {
-	for _, args := range [][]string{
-		{"--upstream", "infer"},
-		{"--workload-ref", "infer=vllm/deployment/x:8000"},
-	} {
-		err := runC8s(t, append([]string{"render-values"}, args...)...)
-		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
-			t.Errorf("render-values %v = %v, want unknown flag", args, err)
-		}
-	}
 }
 
 // writeTestOperatorKeys writes a real EC public-key PEM to a temp file (the
