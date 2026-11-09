@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -677,13 +676,10 @@ func TestSandboxRunsOnlyInTheFinalPhase(t *testing.T) {
 }
 
 // A sandbox denial is not downgraded in an exempt namespace, even when the
-// digest is in the frozen snapshot: the snapshot admits an image, not host
+// digest is in the namespace's exempt set: the set admits an image, not host
 // privilege.
 func TestSandboxDenialIsNotNamespaceExempt(t *testing.T) {
-	p := exemptPlugin(t, filepath.Join(t.TempDir(), "snap.json"), "kube-system")
-	snap := newExemptSnapshot([]string{"kube-system"})
-	snap.add("kube-system", pushDigestA)
-	p.exempt.Store(snap)
+	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestA}}, "kube-system")
 	p.cfg.Policy.Sandbox = SandboxEnforce
 
 	pod := sandboxedPod()

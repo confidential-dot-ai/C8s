@@ -216,8 +216,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
-// exempt_namespaces is parsed into the policy config alongside the snapshot
-// path the plugin persists its captured digest set to.
+// exempt_namespaces and its digest set reach the policy config.
 func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 	body := "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + `
   pull:
@@ -226,7 +225,9 @@ func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 policy:
   mode: fail-closed
   exempt_namespaces: [kube-system, local-path-storage]
-  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
+  exempt_digests:
+    kube-system: [` + pushDigestA + `]
+    local-path-storage: [` + pushDigestB + `]
 ` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -239,14 +240,21 @@ policy:
 	if got, want := cfg.Policy.ExemptNamespaces, []string{"kube-system", "local-path-storage"}; !slices.Equal(got, want) {
 		t.Errorf("ExemptNamespaces = %v, want %v", got, want)
 	}
-	if cfg.Policy.ExemptSnapshotPath == "" {
-		t.Error("ExemptSnapshotPath not parsed")
+	if !cfg.Policy.exemptsDigest("kube-system", pushDigestA) {
+		t.Errorf("exempt_digests = %v, want kube-system to admit %s", cfg.Policy.ExemptDigests, pushDigestA)
+	}
+	if cfg.Policy.exemptsDigest("kube-system", pushDigestB) {
+		t.Error("a digest of another namespace's set must not admit")
 	}
 }
 
-// bootConfigDocument is an installer's configuration document, with the
-// namespaces image admission exempts and the ones the mesh gate exempts.
+// bootConfigDocument is an installer's configuration document: the namespaces
+// image admission exempts, each admitting one digest, and the mesh gate's.
 func bootConfigDocument(exempt, meshExempt string) string {
+	digests := ""
+	for _, namespace := range strings.Split(strings.Trim(exempt, "[]"), ",") {
+		digests += fmt.Sprintf("    %s: [%s]\n", strings.TrimSpace(namespace), pushDigestA)
+	}
 	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
   pull:
     url: https://127.0.0.1:30808
@@ -254,15 +262,15 @@ func bootConfigDocument(exempt, meshExempt string) string {
 policy:
   mode: fail-closed
   exempt_namespaces: %s
-  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
-mesh:
+  exempt_digests:
+%smesh:
   exempt_namespaces: %s
   resolver: "10.43.0.10"
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
     - name: mesh
       uid: 1337
-`, exempt, meshExempt)
+`, exempt, digests, meshExempt)
 }
 
 // CheckBootConfig is how a caller validates a config document before a node is
@@ -305,15 +313,53 @@ func TestCheckBootConfig(t *testing.T) {
 	}
 }
 
-// exempt_namespaces without a snapshot path is refused: the captured set must
-// have somewhere to persist, or it would silently recapture (and on a reboot
-// freeze empty) every restart.
-func TestValidate_ExemptNamespacesRequireSnapshotPath(t *testing.T) {
-	cfg := validConfig()
-	cfg.Policy.ExemptNamespaces = []string{"kube-system"}
-	cfg.Policy.ExemptSnapshotPath = ""
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error when exempt_namespaces is set without exempt_snapshot_path")
+// A config that names an exempt namespace without digests, or holds one in a
+// form admission never compares against, is refused.
+func TestValidate_ExemptDigests(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		namespaces []string
+		digests    map[string][]string
+		want       string
+	}{
+		{
+			"a digest set per exempt namespace",
+			[]string{"kube-system"},
+			map[string][]string{"kube-system": {pushDigestA}},
+			"",
+		},
+		{
+			"exempt namespaces without digests",
+			[]string{"kube-system"},
+			nil,
+			"requires policy.exempt_digests",
+		},
+		{
+			"one of two exempt namespaces without digests",
+			[]string{"kube-system", "gmp-system"},
+			map[string][]string{"kube-system": {pushDigestA}},
+			`policy.exempt_namespaces "gmp-system" requires`,
+		},
+		{
+			"a digest that is not the content store's form",
+			[]string{"kube-system"},
+			map[string][]string{"kube-system": {"registry/repo@" + pushDigestA}},
+			"sha256:<64 lowercase hex>",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Policy.ExemptNamespaces = tc.namespaces
+			cfg.Policy.ExemptDigests = tc.digests
+			cfg.Mesh.ExemptNamespaces = tc.namespaces
+			err := cfg.Validate()
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Validate = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Validate = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
 	}
 }
 

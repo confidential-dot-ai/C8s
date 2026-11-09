@@ -95,7 +95,7 @@ func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
 	var err error
 	stderr := captureStderr(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+		s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
 // --allowlist-seed-out is the render an operator needs before the CDS exists.
 func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	out := s.f.dir + "/seed.json"
 	values := s.f.dir + "/values.yaml"
 	if err := os.WriteFile(values, []byte("router:\n  enabled: true\n"), 0o600); err != nil {
@@ -157,7 +157,7 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 // a subnet holding pod addresses would let a pod answer as that inventory.
 func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 
 	// The stubbed node assigns pod addresses from 10.42.0.0/24.
 	err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
@@ -242,7 +242,7 @@ func TestInstallPodCIDRWhereNodesPublishNone(t *testing.T) {
 // same blind spot: the operator declares the range the pods are in.
 func TestInstallRefusesAPodOutsideThePublishedRange(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get pods --all-namespaces -o json") /bin/cat '`+podListFile(t, podAt("ws", "app", "10.99.0.5"))+`' ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `"get pods --all-namespaces -o json") /bin/cat '`+podListFile(t, podAt("ws", "app", "10.99.0.5"))+`' ;;
 `))
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "pod ws/app answers at 10.99.0.5") {
@@ -261,7 +261,7 @@ func overlayKubectl(t *testing.T, applied string, pods ...corev1.Pod) string {
 			{Type: corev1.NodeInternalIP, Address: "192.0.2.10"},
 		}},
 	})
-	return clusterKubectl(applied, `"get nodes -o json") /bin/cat '`+nodes+`' ;;
+	return clusterKubectl(t, applied, `"get nodes -o json") /bin/cat '`+nodes+`' ;;
 "get pods --all-namespaces -o json") /bin/cat '`+podListFile(t, pods...)+`' ;;
 `)
 }

@@ -77,6 +77,13 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "exemptDigests": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
             "exemptNamespaces": {
               "type": [
                 "array",

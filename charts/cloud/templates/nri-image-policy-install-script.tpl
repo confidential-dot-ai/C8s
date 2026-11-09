@@ -186,7 +186,6 @@ else
   check_effective_containerd_config "$main_config" "$main_config_host_path"
 fi
 
-mkdir -p "/host{{ include "nri-image-policy.cacheDir" $root }}"
 mkdir -p "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # The workload-claims broker socket lives here; the non-root get-cert sidecar
 # must traverse the dir (o+x) to connect. Pin it explicitly so a strict root
@@ -217,13 +216,6 @@ if write_file "/host{{ include "nri-image-policy.hostConfigPath" $root }}" 0644 
 then
   config_changed=1
   echo "boot config updated"
-{{- if $root.Values.nriImagePolicy.policy.exemptNamespaces }}
-  # A rewritten boot config is the one event that re-captures the exempt-namespace
-  # snapshot: drop the stale file so the plugin freezes a fresh one from what is
-  # running now. A plain restart or reboot leaves the config unchanged and keeps
-  # the frozen snapshot — the plugin reloads it rather than re-learning.
-  rm -f "/host{{ include "nri-image-policy.cacheDir" $root }}/exempt-snapshot.json"
-{{- end }}
 fi
 
 binary_changed=0
@@ -380,7 +372,15 @@ policy:
 {{- range $root.Values.nriImagePolicy.policy.exemptNamespaces }}
     - {{ . | quote }}
 {{- end }}
-  exempt_snapshot_path: {{ printf "%s/exempt-snapshot.json" (include "nri-image-policy.cacheDir" $root) | quote }}
+{{- with $root.Values.nriImagePolicy.policy.exemptDigests }}
+  exempt_digests:
+{{- range $namespace, $digests := . }}
+    {{ $namespace | quote }}:
+{{- range $digests }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
   label_rules:
     []

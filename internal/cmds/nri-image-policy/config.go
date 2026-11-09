@@ -23,6 +23,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -238,13 +239,10 @@ type policyConfig struct {
 	// enforce; see sandbox.go and docs/allowlist-and-capabilities.md.
 	Sandbox sandboxMode `yaml:"sandbox"`
 
-	// ExemptNamespaces admits a namespace's containers by the digests captured
-	// running in it at first admission, not by a name the control plane picks.
-	// See exempt.go and docs/getcert-workload-binding.md — Corner 8.
+	// Admitted by ExemptDigests, see docs/getcert-workload-binding.md — Corner 8.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
-	// ExemptSnapshotPath persists the captured per-namespace digest set. Required
-	// when ExemptNamespaces is set; must sit on a filesystem that survives reboot.
-	ExemptSnapshotPath string `yaml:"exempt_snapshot_path"`
+	// The image digests each exempt namespace admits. Required with ExemptNamespaces.
+	ExemptDigests map[string][]string `yaml:"exempt_digests"`
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
@@ -610,8 +608,8 @@ func (c *config) Validate() error {
 			return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
 		}
 	}
-	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
-		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
+	if err := c.validateExemptDigests(); err != nil {
+		return err
 	}
 	if err := c.validateMesh(); err != nil {
 		return err
@@ -623,6 +621,25 @@ func (c *config) Validate() error {
 		return err
 	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+func (c *config) validateExemptDigests() error {
+	for _, namespace := range c.Policy.ExemptNamespaces {
+		digests := c.Policy.ExemptDigests[namespace]
+		if len(digests) == 0 {
+			return fmt.Errorf("policy.exempt_namespaces %q requires policy.exempt_digests[%q]: `c8s install` reads the images each exempt namespace runs and renders them there", namespace, namespace)
+		}
+		for _, digest := range digests {
+			if !types.IsCanonicalDigest(digest) {
+				return fmt.Errorf("policy.exempt_digests[%q] holds %q: admission compares the content store's own form, sha256:<64 lowercase hex>", namespace, digest)
+			}
+		}
+	}
+	return nil
+}
+
+func (p *policyConfig) exemptsDigest(namespace, digest string) bool {
+	return slices.Contains(p.ExemptDigests[namespace], digest)
 }
 
 func (c *config) validatePod() error {
