@@ -8,9 +8,8 @@ confidentialNodeSelector:
   cloud.google.com/gke-confidential-nodes-instance-type: SEV_SNP
 nriImagePolicy:
   hostPaths:
-    ## Container-Optimized OS serves /etc from tmpfs: the config lives in the
-    ## plugin directory, which the node keeps across a boot.
-    configDir: /home/kubernetes/bin/nri/conf.d
+    configDir: /etc/nri/conf.d
+    ## COS mounts / read-only; /home/kubernetes/bin is stateful and executable.
     pluginDir: /home/kubernetes/bin/nri
   platform: snp
 router:

@@ -137,8 +137,7 @@ nriImagePolicy:
     # exemptNamespaces by hand must list a set per namespace.
     exemptDigests: {}
 
-  # Host paths the installer DaemonSet writes to. A launched plugin reads
-  # conf.d beside its binary, else /etc/nri/conf.d.
+  # Host paths the installer DaemonSet writes to.
   hostPaths:
     pluginDir: /opt/nri/plugins
     configDir: /etc/nri/conf.d

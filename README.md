@@ -167,6 +167,12 @@ Install C8s onto an existing cluster. The walkthrough with provisioning
 guides is at
 [confidential.ai/docs/c8s](https://confidential.ai/docs/c8s/how-to/install).
 
+Installing onto a provider's stock node image (AKS, or GKE's
+Container-Optimized OS) is for test and evaluation: a node enforces once the
+installer has run on it, and on GKE every reboot reopens that window.
+Production runs the measured node image, on bare metal or as a custom VM image
+on GKE ([guarantees](docs/guarantees.md#only-allowlisted-code-runs)).
+
 ### Prerequisites
 
 - A Kubernetes cluster running upstream containerd 2.3 or later, with

@@ -844,25 +844,3 @@ func TestValidate_PullSourceRefusals(t *testing.T) {
 		})
 	}
 }
-
-// A node that keeps nothing under /etc holds the config beside the binary.
-func TestStartupConfigPath(t *testing.T) {
-	root := t.TempDir()
-	exe := filepath.Join(root, "nri", "10-nri-image-policy")
-	installed := InstalledConfigPath(exe)
-	if want := filepath.Join(root, "nri", "conf.d", "image-policy.yaml"); installed != want {
-		t.Errorf("InstalledConfigPath = %q, want %q", installed, want)
-	}
-	if got := startupConfigPath(exe); got != DefaultConfigPath {
-		t.Errorf("with no installed config: startupConfigPath = %q, want %q", got, DefaultConfigPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(installed, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := startupConfigPath(exe); got != installed {
-		t.Errorf("startupConfigPath = %q, want the installed %q", got, installed)
-	}
-}

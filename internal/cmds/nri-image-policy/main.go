@@ -99,12 +99,8 @@ func Run(args []string) error {
 			return runPluginRunning(args[1:])
 		}
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve the plugin's own path: %w", err)
-	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
-	configPath := fs.String("config", startupConfigPath(exe), "path to config file")
+	configPath := fs.String("config", DefaultConfigPath, "path to config file")
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")

@@ -303,23 +303,9 @@ const defaultPullTimeout = 30 * time.Second
 // only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
-// DefaultConfigPath is the policy the measured node image stages and its
-// runtime wrapper reads (internal/cmds/c8srunc).
+// DefaultConfigPath is the config the plugin opens with no -config argument,
+// and the measured policy its runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
-
-// InstalledConfigPath is the config an installer writes beside the plugin
-// binary at exe, where a plugin launched with no arguments reads it.
-func InstalledConfigPath(exe string) string {
-	return filepath.Join(filepath.Dir(exe), "conf.d", filepath.Base(DefaultConfigPath))
-}
-
-func startupConfigPath(exe string) string {
-	installed := InstalledConfigPath(exe)
-	if _, err := os.Stat(installed); err != nil {
-		return DefaultConfigPath
-	}
-	return installed
-}
 
 // loadConfig loads configuration from a YAML file, and completes the one
 // binding a launched node makes itself (cdsaddress.go).
