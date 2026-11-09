@@ -8,6 +8,7 @@ pod and keeps no copy: no store, no cache, no log line.
 
 This page defines the pod side, the CDS side and the CDS-to-KMS wire. Any KMS
 that implements the wire below can serve C8s pods.
+[`deploy/kms`](../deploy/kms) is a reference KMS.
 
 ```text
 pod CVM ──mTLS, pod leaf──▶ CDS ──TLS, pinned key──▶ KMS
