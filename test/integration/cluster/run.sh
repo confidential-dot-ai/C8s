@@ -323,8 +323,9 @@ cloud_start
 pod_cvm_secret
 # Every instance of the mock Cloud names a pod status endpoint in the
 # documentation range, where nothing answers. The node resets a connection to
-# it, so the provider's dial fails at once instead of holding its reconcile
-# for the dial's timeout.
+# it rather than leaving it to hang. The provider's attested request still
+# retries until its own timeout, so a reconcile of a pod with a running
+# instance takes tens of seconds here.
 node_exec iptables -I FORWARD -d 203.0.113.0/24 -p tcp -j REJECT --reject-with tcp-reset \
     || fail "could not make the node refuse the mock Cloud's endpoint range"
 
