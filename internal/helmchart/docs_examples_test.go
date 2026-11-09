@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
-const helmCommand = "helm template c8s internal/helmchart/cloud"
+const helmCommand = "helm template c8s charts/cloud"
 
 // helmExample matches a `helm template` command of the chart in a docs code
 // block, through its last continuation line. A backslash followed by trailing
@@ -22,11 +24,7 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
 	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc, err := os.ReadFile(filepath.Join(root, "docs", "operator.md"))
+	doc, err := os.ReadFile(testutil.RepoPath("docs", "operator.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +39,11 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseCDSPinDocument(t)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	chart := "helm template c8s " + filepath.Join(root, "internal", "helmchart", repoChart)
+	chart := "helm template c8s " + cloudChartDir
 	for _, example := range examples {
 		// The helm client's simulated cluster may predate the chart's kubeVersion.
 		script := "set -e\n" + strings.Replace(example, helmCommand, chart+" --kube-version 1.30.0", 1)
-		script = strings.ReplaceAll(script, " internal/helmchart/", " "+filepath.Join(root, "internal", "helmchart")+"/")
+		script = strings.ReplaceAll(script, " charts/cloud", " "+cloudChartDir)
 		cmd := exec.Command("sh", "-c", script)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {

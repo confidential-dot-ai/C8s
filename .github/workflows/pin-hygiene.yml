@@ -15,8 +15,8 @@ on:
       - ".github/scripts/chart-attestation-api-digest.sh"
       - ".github/scripts/chart-image-pins.sh"
       - ".github/scripts/image-config-verdict.jq"
-      - "internal/helmchart/cloud/values.yaml"
-      - "internal/helmchart/lib/files/components.yaml"
+      - "charts/cloud/values.yaml"
+      - "charts/lib/files/components.yaml"
       - "images/node-guest/worker/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
@@ -90,7 +90,7 @@ jobs:
               echo "::error file=.github/build-pins.json::could not resolve attestation-api:$image_tag"; fail=1
             fi
           done
-          pins=internal/helmchart/lib/files/components.yaml
+          pins=charts/lib/files/components.yaml
           if chart_digest=$(bash .github/scripts/chart-attestation-api-digest.sh get "$pins"); then
             if [ "$chart_digest" != "$ATTESTATION_API_DIGEST" ]; then
               echo "::error file=$pins::attestationApi pinnedDigest=$chart_digest but build-pins.json attestation_api_digest=$ATTESTATION_API_DIGEST; run .github/scripts/chart-attestation-api-digest.sh set"; fail=1
@@ -98,7 +98,7 @@ jobs:
           else
             echo "::error file=$pins::could not read the chart's pinnedDigest"; fail=1
           fi
-          for values in "$pins" internal/helmchart/cloud/values.yaml; do
+          for values in "$pins" charts/cloud/values.yaml; do
             # The chart's third-party images (every digest in $values whose
             # Resolve line names a tag) are digest-pinned into the
             # seeded allowlist; the Resolve line above each digest names the tag

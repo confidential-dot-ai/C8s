@@ -286,7 +286,7 @@ func chartDefaultHostConfig(ctx context.Context) (hostUninstallConfig, error) {
 	}
 	defer os.RemoveAll(dir)
 
-	out, err := exec.CommandContext(ctx, "helm", "show", "values", filepath.Join(dir, helmchart.ChartRoot)).Output()
+	out, err := exec.CommandContext(ctx, "helm", "show", "values", filepath.Join(dir, helmchart.CloudChartFSPath)).Output()
 	if err != nil {
 		return hostUninstallConfig{}, fmt.Errorf("helm show values: %w", err)
 	}

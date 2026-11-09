@@ -44,8 +44,8 @@ main() {
         image=true
         ;;
       images/node-guest/worker/mkosi.extra/* | \
-        internal/helmchart/worker/files/static-pods/* | \
-        internal/helmchart/lib/files/router-nginx/*)
+        charts/worker/files/static-pods/* | \
+        charts/lib/files/router-nginx/*)
         # Copied into the image whole; no exemption below may reach it.
         image=true
         ;;

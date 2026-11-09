@@ -70,7 +70,7 @@ func bundledChartWithReleaseDigests(ctx context.Context, chartVersion, work stri
 	if err := helmchart.Extract(work); err != nil {
 		return renderChart{}, fmt.Errorf("extract embedded chart: %w", err)
 	}
-	chartPath := filepath.Join(work, helmchart.ChartRoot)
+	chartPath := filepath.Join(work, helmchart.CloudChartFSPath)
 	components, err := chartComponents(ctx, chartPath)
 	if err != nil {
 		return renderChart{}, fmt.Errorf("read chart components: %w", err)

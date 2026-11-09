@@ -299,7 +299,7 @@ attestation and reports the operator keys it pins.
 | Component | Description | Docs |
 |---|---|---|
 | [`cmd/cds`](cmd/cds/) | Certificate Distribution Service - verifies TEE attestation evidence, signs workload CSRs with an in-process mesh CA, and serves the allowlist and secret-release APIs | [operator docs](docs/operator.md) |
-| [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm chart | [operator docs](docs/operator.md) |
+| [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm charts | [operator docs](docs/operator.md) |
 | [`cmd/get-cert`](cmd/get-cert/) | CLI tool and init-container for TEE-attested certificate provisioning | [README](cmd/get-cert/README.md) |
 | [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Transparent L4 proxy wrapping inter-node K8s traffic in armTLS | [README](cmd/armtls-mesh/README.md) |
 | [`cmd/nri-image-policy`](cmd/nri-image-policy/) | NRI plugin enforcing the image and argv allowlist on the host; also the node's admission inventory | [allowlist](docs/allowlist-and-capabilities.md) |
@@ -325,12 +325,14 @@ attestation and reports the operator keys it pins.
 
 ```text
 api/               CRD types
+charts/            Helm charts, embedded into the c8s binary: c8s-cloud,
+                   c8s-worker, c8s-control-plane and the c8s-lib library
 cmd/               Binaries: c8s, get-cert, armtls-mesh, nri-image-policy
                    (cmd/cds is only
                    the Dockerfile for the `c8s cds` subcommand,
                    internal/cmds/cds)
 internal/          Operator, webhook, attestation, mesh CA, secret store,
-                   embedded Helm chart
+                   chart extraction
 pkg/               Public Go libraries (see Libraries above)
 images/node-guest/ The node-image definition for node-as-CVM
 images/cds-guest/  The CDS-image definition for the CDS as its own CVM

@@ -16,8 +16,8 @@
 # as one GitHub-verified commit, one open PR at a time.
 #
 # A second step watches the chart's third-party image digests (every digest in
-# internal/helmchart/lib/files/components.yaml and
-# internal/helmchart/cloud/values.yaml whose Resolve line names a tag,
+# charts/lib/files/components.yaml and
+# charts/cloud/values.yaml whose Resolve line names a tag,
 # .github/scripts/chart-image-pins.sh) and opens its own PR when a tag
 # names a newer manifest than the pinned digest, as docker.io tags do when
 # their base is rebuilt. Each digest is seeded into the allowlist floor, so a
@@ -99,7 +99,7 @@ jobs:
           # The host DaemonSet's copy of the digest moves with the manifest (a
           # no-op when only confos moved). Both files are staged; the PR
           # carries whatever changed, and nothing else may have.
-          values=internal/helmchart/lib/files/components.yaml
+          values=charts/lib/files/components.yaml
           bash .github/scripts/chart-attestation-api-digest.sh set "$attest_digest" "$values"
           git add -- .github/build-pins.json "$values"
           bash .github/scripts/pin-watch-pr.sh \
@@ -116,7 +116,7 @@ jobs:
           # The previous step's PR lives on its branch; its staged files are
           # not this PR's.
           git reset -q --hard
-          pin_files=(internal/helmchart/lib/files/components.yaml internal/helmchart/cloud/values.yaml)
+          pin_files=(charts/lib/files/components.yaml charts/cloud/values.yaml)
           moved=() names=()
           for values in "${pin_files[@]}"; do
             resolved=$(bash .github/scripts/chart-image-pins.sh resolve "$values")

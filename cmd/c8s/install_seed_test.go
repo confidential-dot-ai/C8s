@@ -47,7 +47,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	chart := filepath.Join(dir, helmchart.ChartRoot)
+	chart := filepath.Join(dir, helmchart.CloudChartFSPath)
 	ctx := context.Background()
 	components, err := chartComponents(ctx, chart)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // imageTree is the worker profile's tree, as the image holds it.
@@ -19,7 +20,7 @@ const imageTree = "../../../images/node-guest/worker/mkosi.extra"
 
 // staticPodTree is the worker chart's static pod templates, which the image
 // holds at staticPodTemplates.
-const staticPodTree = "../../../internal/helmchart/worker/files/static-pods"
+var staticPodTree = testutil.RepoPath("charts", "worker", "files", "static-pods")
 
 // The worker image's static pods each build a floor entry, render with this
 // boot's values, and mount only files the image holds from under

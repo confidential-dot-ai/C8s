@@ -25,7 +25,7 @@ const routerConfigDir = "/mnt/c8s-data/nginx"
 // libRouterNginxFiles are c8s-lib's nginx files: the worker image's.
 func libRouterNginxFiles(t *testing.T) map[string]string {
 	t.Helper()
-	dir := filepath.Join("lib", "files", "router-nginx")
+	dir := filepath.Join(chartsDir, "lib", "files", "router-nginx")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

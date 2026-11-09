@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // lines are path's lines, without comments and blanks.
@@ -294,7 +295,7 @@ func TestThePinnedVersionsAreTheOnesTheTreeNames(t *testing.T) {
 	if got := sync["RUNC_VERSION"]; got != c8srunc.RuncVersion {
 		t.Errorf("the profile stages runc %s, and the wrapper parses the global options of %s", got, c8srunc.RuncVersion)
 	}
-	proxy, err := os.ReadFile("../../../internal/helmchart/worker/files/static-pods/kube-proxy.yaml")
+	proxy, err := os.ReadFile(testutil.RepoPath("charts", "worker", "files", "static-pods", "kube-proxy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

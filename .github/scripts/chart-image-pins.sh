@@ -43,7 +43,7 @@ die() {
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-pins_file="$script_dir/../../internal/helmchart/lib/files/components.yaml"
+pins_file="$script_dir/../../charts/lib/files/components.yaml"
 
 list_pins() {
   local values=$1

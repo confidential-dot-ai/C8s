@@ -4,6 +4,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 )
 
 // workerChart is the c8s-worker chart in the repository layout.
-const workerChart = "worker"
+var workerChart = filepath.Join(chartsDir, "worker")
 
 // workerStockFiles are the worker chart's stock files, one per CPU TEE.
 var workerStockFiles = []string{

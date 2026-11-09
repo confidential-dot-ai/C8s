@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -34,8 +35,8 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	cmd := exec.Command("helm", "template", "c8s", "../helmchart/cloud",
-		"-f", "../helmchart/cloud/values-gke-snp.yaml",
+	cmd := exec.Command("helm", "template", "c8s", testutil.RepoPath("charts", "cloud"),
+		"-f", testutil.RepoPath("charts", "cloud", "values-gke-snp.yaml"),
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--show-only", "templates/allowlist-seed.yaml",
@@ -73,7 +74,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 // table, named by its valuePath.
 func chartImageEnv(t *testing.T, valuePath string) map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile("../helmchart/lib/files/components.yaml")
+	raw, err := os.ReadFile(testutil.RepoPath("charts", "lib", "files", "components.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

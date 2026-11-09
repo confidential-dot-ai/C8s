@@ -24,7 +24,7 @@ import (
 )
 
 // componentsFile is c8s-lib's component table and image pins.
-const componentsFile = "lib/files/components.yaml"
+var componentsFile = filepath.Join(chartsDir, "lib", "files", "components.yaml")
 
 // chartImageDigest reads the digest file pins for one third-party image, so a
 // bump by pin-watch or through .github/scripts/chart-image-pins.sh set needs

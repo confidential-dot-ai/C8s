@@ -39,7 +39,7 @@ jobs:
 
       - name: Lint and render the cloud chart
         env:
-          CHART_DIR: internal/helmchart/cloud
+          CHART_DIR: charts/cloud
         run: .github/scripts/chart-verify.sh
 
       - name: Test the release chart's digest stamp

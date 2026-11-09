@@ -12,7 +12,7 @@ on:
       - "go.work.sum"
       - "Makefile"
       - ".golangci.yml"
-      - "internal/helmchart/**"
+      - "charts/**"
       # The integration harness (test/integration) and its mocks
       # (test/mock-*) gate PRs via the Integration job below.
       - "test/**"

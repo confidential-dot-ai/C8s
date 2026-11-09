@@ -58,7 +58,7 @@ expect_result true
 
 # mkosi.sync installs the worker chart's static pods.
 reset_case
-set_paths internal/helmchart/worker/files/static-pods/kube-proxy.yaml
+set_paths charts/worker/files/static-pods/kube-proxy.yaml
 expect_result true
 
 # Beside the image sources but never baked: tests, lint tools, docs.
@@ -90,15 +90,15 @@ expect_result true
 
 # mkosi.sync installs the router's nginx files as they are.
 reset_case
-set_paths internal/helmchart/lib/files/router-nginx/nginx.conf
+set_paths charts/lib/files/router-nginx/nginx.conf
 expect_result true
 
 # Go, chart, CI and test changes outside the image tree. The legs share one
 # c8s binary and core image build, so source changes cannot make them differ.
 reset_case
 set_paths cmd/c8s/main.go \
-  internal/helmchart/cloud/templates/router-deployment.yaml \
-  internal/helmchart/worker/templates/cluster/controlplane.yaml \
+  charts/cloud/templates/router-deployment.yaml \
+  charts/worker/templates/cluster/controlplane.yaml \
   test/workflows/workflow_test.go \
   .github/workflows/ci.yml \
   .github/scripts/fetch-release.sh \
