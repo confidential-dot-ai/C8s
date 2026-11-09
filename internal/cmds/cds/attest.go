@@ -471,8 +471,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if err := armtls.ValidateSandboxID(sandbox.SandboxID); err != nil {
 		return workloadclaims.VerifiedSandbox{}, err
 	}
-	// Only Pod CVM issuance derives an ID with this prefix, from verified
-	// guest claims. A node's token must not put one on a leaf.
+	// The prefix is reserved for Pod CVM issuance (PodInstancePrefix).
 	if strings.HasPrefix(sandbox.SandboxID, workloadclaims.PodInstancePrefix) {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox ID prefix %q is reserved for Pod CVM issuance", workloadclaims.PodInstancePrefix)
 	}
