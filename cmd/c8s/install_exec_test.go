@@ -538,7 +538,7 @@ esac`
 // held to the same shape as --cds-pin.
 func pipedCDS(t *testing.T) string {
 	t.Helper()
-	return "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: |\n    " +
+	return "cds:\n  address: " + installCDSAddressUnreachable + "\n  measurementsConfig: |\n    " +
 		string(cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
 }
 
@@ -547,7 +547,7 @@ func pipedCDS(t *testing.T) string {
 func runInstall(t *testing.T, args ...string) error {
 	t.Helper()
 	pin := cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
-	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), "10.9.9.9:8443", flagArg(flagCDSPin), pin}, args...)...)
+	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), installCDSAddressUnreachable, flagArg(flagCDSPin), pin}, args...)...)
 }
 
 func TestInstallHappyPath(t *testing.T) {

@@ -6,10 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -138,16 +139,45 @@ func clusterKubeVersion(ctx context.Context) (string, error) {
 	return version.ServerVersion.GitVersion, nil
 }
 
-// checkSeedServed refuses an install naming a CDS whose configuration does not
-// carry every entry this release renders: no node would admit those components.
-func checkSeedServed(seed *pkgallowlist.Allowlist, config *cdsconfig.Config) error {
-	for name, rendered := range seed.Workloads {
-		served, ok := config.Workloads.Workloads[name]
+// publishEntries names the command that makes CDS serve this release's entries.
+const publishEntries = "publish this release's entries with `c8s allowlist apply`, from the seed `c8s install --" + flagSeedOut + "` writes"
+
+// servedAllowlist reads the allowlist the named CDS serves now, over the attested channel the chart's pin binds it to.
+func servedAllowlist(ctx context.Context, url string) (*pkgallowlist.Allowlist, error) {
+	hc, err := installCDSConn(url).HTTPClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	served, _, err := allowlistclient.NewClientWithHTTP(url, hc).List(ctx)
+	return served, err
+}
+
+// declaredImages lists the images a container list declares, sorted and deduplicated.
+func declaredImages(containers []pkgallowlist.Container) []string {
+	images := make([]string, 0, len(containers))
+	for _, c := range containers {
+		images = append(images, c.Digest.String())
+	}
+	slices.Sort(images)
+	return slices.Compact(images)
+}
+
+// declaresSameImages reports whether both entries admit the same images in the same role.
+func declaresSameImages(rendered, served pkgallowlist.Workload) bool {
+	return slices.Equal(declaredImages(rendered.InitContainers), declaredImages(served.InitContainers)) &&
+		slices.Equal(declaredImages(rendered.Containers), declaredImages(served.Containers))
+}
+
+// checkSeedServed refuses an install whose components the served allowlist does not admit.
+func checkSeedServed(seed, served *pkgallowlist.Allowlist) error {
+	for _, name := range slices.Sorted(maps.Keys(seed.Workloads)) {
+		rendered := seed.Workloads[name]
+		entry, ok := served.Workloads[name]
 		if !ok {
-			return fmt.Errorf("the CDS this install names serves no entry %q, so no node would admit that component: re-run `c8s cds config new` with the seed `c8s install --%s` writes", name, flagSeedOut)
+			return fmt.Errorf("the CDS this install names serves no entry %q, so no node would admit that component: %s, then re-run install", name, publishEntries)
 		}
-		if !reflect.DeepEqual(rendered, served) {
-			return fmt.Errorf("the CDS this install names serves a different entry %q, so its nodes would admit another shape of that component: re-run `c8s cds config new` with the seed `c8s install --%s` writes", name, flagSeedOut)
+		if !declaresSameImages(rendered, entry) {
+			return fmt.Errorf("the CDS this install names serves an entry %q that does not declare this component's images, so no node would admit it as that component: %s, then re-run install", name, publishEntries)
 		}
 	}
 	return nil
@@ -283,19 +313,27 @@ func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config, declaredPod
 	return nil
 }
 
-// checkNamedCDS checks what the named CDS is configured to serve against what
-// this release needs served, and where its inventory calls may land. A
-// release naming no CDS has nothing to check.
-func checkNamedCDS(ctx context.Context, render seedRender, pin *cdsPin) error {
+// checkNamedCDS checks what the named CDS serves against what this release needs served, and where its inventory calls may land.
+func checkNamedCDS(ctx context.Context, render seedRender, pin *cdsPin, values map[string]any) (warn string, err error) {
 	if pin == nil {
-		return nil
+		return "", nil
 	}
 	seed, err := installSeed(ctx, render)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := checkSeedServed(seed, pin.config); err != nil {
-		return err
+	cdsURL, err := installCDSURL(values)
+	if err != nil {
+		return "", err
 	}
-	return checkNodeSubnets(ctx, pin.config, installPodCIDRs)
+	served, err := servedAllowlist(ctx, cdsURL)
+	if err != nil {
+		warn = fmt.Sprintf("cannot read the allowlist %s serves (%v), so nothing confirms this release's components are admitted: %s", cdsURL, err, publishEntries)
+	} else if err := checkSeedServed(seed, served); err != nil {
+		return "", err
+	}
+	if err := checkNodeSubnets(ctx, pin.config, installPodCIDRs); err != nil {
+		return "", err
+	}
+	return warn, nil
 }

@@ -131,6 +131,8 @@ the moment the old pod stops serving until the new one serves — up to 10 secon
 for the old pod to go, since one router pod holds the public port of its node,
 plus a few seconds for the new pod to start.
 
-Install refuses when the resolved policy would deny a platform pod the cluster
-already runs, before touching anything; `--force` overrides. The previous
+Install reads the allowlist CDS serves and refuses when an entry step 3
+publishes is not there; it warns and goes on where it cannot reach CDS. It also
+refuses when the resolved policy would deny a platform pod the cluster already
+runs, before touching anything; `--force` overrides that one. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
