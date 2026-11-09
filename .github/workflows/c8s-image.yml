@@ -174,18 +174,28 @@ jobs:
       fail-fast: false
       matrix:
         platform: [tdx, snp]
+    env:
+      GATE_CORE_IMAGES: ${{ inputs.gate_images_artifact != '' }}
     steps:
-      - name: Keep gate-only signing material out of published images
-        if: inputs.gate_signing_artifact != '' && inputs.gate != true
+      - name: Check the gate inputs
+        env:
+          GATE: ${{ inputs.gate }}
+          SIGNING_ARTIFACT: ${{ inputs.gate_signing_artifact }}
+          IMAGES_ARTIFACT: ${{ inputs.gate_images_artifact }}
         run: |
-          echo "::error::gate_signing_artifact requires gate=true"
-          exit 1
-
-      - name: Require local core images exactly for gate builds
-        if: (inputs.gate == true) != (inputs.gate_images_artifact != '')
-        run: |
-          echo "::error::gate builds require gate_images_artifact; published builds must omit it"
-          exit 1
+          set -euo pipefail
+          if [ -n "$SIGNING_ARTIFACT" ] && [ "$GATE" != true ]; then
+            echo "::error::gate_signing_artifact requires gate=true"
+            exit 1
+          fi
+          if [ -n "$IMAGES_ARTIFACT" ] && [ "$GATE" != true ]; then
+            echo "::error::gate_images_artifact requires gate=true"
+            exit 1
+          fi
+          if [ -n "$SIGNING_ARTIFACT" ] && [ -z "$IMAGES_ARTIFACT" ]; then
+            echo "::error::gate_signing_artifact requires gate_images_artifact"
+            exit 1
+          fi
 
       # Layout: ./c8s ./attestation-rs ./confidential-os-builder (sibling repos).
       - name: Checkout c8s
@@ -228,14 +238,14 @@ jobs:
             c8s/images/node-guest/module-signing.crt
 
       - name: Download gate core images
-        if: inputs.gate == true
+        if: env.GATE_CORE_IMAGES == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.gate_images_artifact }}
           path: gate-core-images
 
       - name: Unpack gate core images
-        if: inputs.gate == true
+        if: env.GATE_CORE_IMAGES == 'true'
         run: |
           mkdir -p gate-core-images/layouts
           tar -xf gate-core-images/gate-core-images.tar -C gate-core-images/layouts
@@ -246,14 +256,14 @@ jobs:
       # Both legs build the same commit with the same toolchain; -trimpath
       # removes the workspace path so the bytes do not depend on the runner.
       - name: Setup Go (gate)
-        if: inputs.gate == true
+        if: env.GATE_CORE_IMAGES == 'true'
         uses: ./c8s/.github/actions/setup-go-c8s
         with:
           go-version-file: c8s/go.mod
           cache-dependency-path: c8s/go.sum
 
       - name: Build c8s from the gated checkout
-        if: inputs.gate == true
+        if: env.GATE_CORE_IMAGES == 'true'
         working-directory: c8s
         env:
           GOFLAGS: -trimpath
@@ -524,8 +534,8 @@ jobs:
           LIBNVAT: /usr/lib/x86_64-linux-gnu/libnvat.so.1.2.0
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
-          C8S_BINARY: ${{ inputs.gate == true && format('{0}/c8s/build/c8s', github.workspace) || '' }}
-          C8S_IMAGES_DIR: ${{ inputs.gate == true && format('{0}/gate-core-images/layouts', github.workspace) || '' }}
+          C8S_BINARY: ${{ env.GATE_CORE_IMAGES == 'true' && format('{0}/c8s/build/c8s', github.workspace) || '' }}
+          C8S_IMAGES_DIR: ${{ env.GATE_CORE_IMAGES == 'true' && format('{0}/gate-core-images/layouts', github.workspace) || '' }}
           # Private half of the module signing certificate (org secret) — the
           # fetch script signs the NVIDIA modules with it and fails closed
           # without it. Signatures are deterministic (sign-file uses no
