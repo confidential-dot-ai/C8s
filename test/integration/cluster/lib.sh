@@ -135,9 +135,16 @@ cds_start() {
     cds_serve
 }
 
+# How long after a write the CDS gives it to nodes, and the router leaf
+# lifetime it must stay above. Both are cut from their defaults (30s and 20s)
+# so a run that writes the allowlist hundreds of times waits less; the leaf
+# still outlives two of get-cert's shortest renewal delays (5s).
+CDS_NODE_DELAY=12s
+CDS_ROUTER_CERT_TTL=10s
+
 # cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
-# address: the flags the chart renders today, plus any given here, which a
-# later flag of the same name overrides.
+# address: the flags the chart renders today and the two delays above, plus
+# any given here, which a later flag of the same name overrides.
 cds_serve() {
     docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
     docker run -d \
@@ -152,6 +159,8 @@ cds_serve() {
         --san-validation=true \
         --port="$CDS_PORT" \
         --log-level=debug \
+        --allowlist-node-delay="$CDS_NODE_DELAY" \
+        --router-cert-ttl="$CDS_ROUTER_CERT_TTL" \
         "$@" >/dev/null \
         || fail "could not start CDS"
 }

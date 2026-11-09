@@ -27,6 +27,8 @@
 #                                    allowlist_delete go through it.
 #   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
 #   pull_interval                    how often the plugin pulls, as a Go duration
+#   node_delay                       how long after a write the CDS gives it to
+#                                    nodes, as a Go duration
 #   plugin_ready <node>              wait until the node's admission plugin is registered and ready
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
@@ -177,7 +179,7 @@
 #                                    make the CDS unreachable for the router's
 #                                    allowlist relay, leaving every other
 #                                    client's reach alone, and undo it
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# node_name, image_ref, image_digest, pull_interval, node_delay, cds_pod_url, cert_paths,
 # pod_exec, exempt_namespace and api_service_name answer the same for a whole
 # run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
@@ -249,6 +251,10 @@ image_ref() {
 # applied_version for the served version, with a deadline in these; where the
 # backend cannot reach the plugin they wait this out instead.
 pull_interval() { echo 5s; }
+
+# The CDS's default (c8s cds --allowlist-node-delay). A node pulls the
+# allowlist in effect, which a write becomes only this long after it is made.
+node_delay() { echo 30s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.

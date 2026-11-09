@@ -31,6 +31,7 @@ var constant = map[string]bool{
 	"image_ref":        true,
 	"image_digest":     true,
 	"pull_interval":    true,
+	"node_delay":       true,
 	"cds_pod_url":      true,
 	"cert_paths":       true,
 	"pod_exec":         true,

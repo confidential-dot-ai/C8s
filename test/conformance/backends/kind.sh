@@ -35,6 +35,9 @@ teardown_backend() {
 
 scratch_encrypted() { echo no; }
 
+# The harness's CDS runs with a shorter delay than the default (lib.sh).
+node_delay() { echo "$CDS_NODE_DELAY"; }
+
 node_name() {
     case "$1" in
         one) echo "$NODE" ;;

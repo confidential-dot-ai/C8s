@@ -564,9 +564,11 @@ func (w *world) sync() error {
 // awaitApplied waits for the plugin to hold what the CDS serves now, and
 // records the version it holds. It polls the version the plugin reports until
 // it reaches the served one, failing when the pull loop has not followed
-// within three pull intervals of the last write or delete. Where nothing can
-// be observed, the wait is the clock: two pull intervals, so a pull that
-// started just before the write has been followed by one that saw it. That is
+// within the node delay and three pull intervals of the last write or delete:
+// the CDS gives a node a write only once the node delay has passed. Where
+// nothing can be observed, the wait is the clock: the node delay and two pull
+// intervals, so a pull that started just before the write took effect has
+// been followed by one that saw it. That is
 // the case where the pull is blocked, where the backend cannot ask the CDS or
 // the plugin, and where the served version is below the applied one: the
 // plugin ignores that pull by design, so nothing says it happened.
@@ -579,11 +581,19 @@ func (w *world) awaitApplied() error {
 	if err != nil {
 		return fmt.Errorf("pull interval %q: %w", s, err)
 	}
-	observed, err := w.observeApplied(interval)
+	s, err = w.be.call("node_delay")
+	if err != nil {
+		return err
+	}
+	delay, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("node delay %q: %w", s, err)
+	}
+	observed, err := w.observeApplied(interval, delay)
 	if err != nil || observed {
 		return err
 	}
-	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
+	time.Sleep(time.Until(lastMutation.Add(delay + 2*interval)))
 	return nil
 }
 
@@ -591,7 +601,7 @@ func (w *world) awaitApplied() error {
 // the served one, records it, and says whether it saw the served version
 // itself; false where either version cannot be asked for or the plugin is
 // ahead of the CDS.
-func (w *world) observeApplied(interval time.Duration) (bool, error) {
+func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
 	if w.cdsBlocked {
 		return false, nil
 	}
@@ -602,11 +612,12 @@ func (w *world) observeApplied(interval time.Duration) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// At least one interval from now: a scenario may ask before it has
-	// written anything, and a plugin that is restarting answers nothing for
-	// a moment, which is "not yet", not a broken harness.
-	deadline := lastMutation.Add(3 * interval)
-	if floor := time.Now().Add(interval); deadline.Before(floor) {
+	// At least the node delay and one interval from now: a scenario may ask
+	// before it has written anything, while a write another process made is
+	// still to take effect, and a plugin that is restarting answers nothing
+	// for a moment, which is "not yet", not a broken harness.
+	deadline := lastMutation.Add(delay + 3*interval)
+	if floor := time.Now().Add(delay + interval); deadline.Before(floor) {
 		deadline = floor
 	}
 	var answer string
@@ -627,7 +638,7 @@ func (w *world) observeApplied(interval time.Duration) (bool, error) {
 		return false, err
 	}
 	if !caughtUp {
-		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %d, %s after the write with a pull every %s", answer, served, time.Since(lastMutation).Round(time.Millisecond), interval)
+		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %d, %s after the write with a pull every %s and a node delay of %s", answer, served, time.Since(lastMutation).Round(time.Millisecond), interval, delay)
 	}
 	w.appliedVersion = answer
 	return applied == served, nil
