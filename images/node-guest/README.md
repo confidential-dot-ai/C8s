@@ -198,6 +198,9 @@ and changes what stages and starts them:
   the worker sync pins armtls-mesh by digest in the floor, the pod's endpoint
   container names that `repo@digest`, and containerd pulls it at pod start.
   The image bakes no endpoint bytes.
+- `scratch-enforce` keeps its crypt check but drops the 64G floor on an image
+  that bakes `/usr/lib/c8s/pod-image`, and accepts memory-backed state there:
+  a pod CVM runs one pod and is launched with a small scratch disk or none.
 - The pod network uses the bridge, host-local and loopback CNI plugins the
   pod sync bakes into `/opt/cni/bin` from the CNI release the worker sync
   verified.

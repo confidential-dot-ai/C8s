@@ -16,6 +16,7 @@ run_enforce() {
     SYS_BLOCK_ROOT="$WORK/sys/block" \
         PROVENANCE_FILE="$WORK/run/c8s/scratch-provenance.json" \
         BOOT_ID_FILE="$WORK/boot-id" \
+        POD_IMAGE_MARKER="$WORK/pod-image" \
         "$SCRIPT" 2>"$WORK/stderr"
 }
 set_dm() { # set_dm NAME... — one 80Gi dm-N per name; none = tmpfs fallback boot
@@ -91,5 +92,21 @@ set_dm scratch
 printf 'confai-scratch' > "$WORK/sys/block/vdb/device/serial"
 : > "$WORK/sys/block/vdb/serial"
 ok "fails closed" not run_enforce
+
+CASE="pod CVM, memory-backed state"
+set_dm
+touch "$WORK/pod-image"
+ok "passes" run_enforce
+
+CASE="pod CVM, small scratch disk"
+set_dm scratch
+printf '20971520' > "$WORK/sys/block/dm-0/size" # 10Gi
+ok "passes" run_enforce
+
+CASE="pod CVM, scratch is not crypt"
+set_dm scratch
+printf 'DM-LINEAR-test' > "$WORK/sys/block/dm-0/dm/uuid"
+ok "fails closed" not run_enforce
+rm -f "$WORK/pod-image"
 
 summarize "scratch-enforce"

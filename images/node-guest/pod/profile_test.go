@@ -125,3 +125,15 @@ func TestKubeletDialsTheWorkersContainerd(t *testing.T) {
 		t.Fatalf("kubelet reads static pods from %q, not where the assignment publishes them", kubelet.StaticPodPath)
 	}
 }
+
+// A pod CVM is launched with a small scratch disk or none: the worker's
+// scratch gate relaxes its size floor on the marker this profile bakes, or it
+// powers every pod CVM off.
+func TestScratchGateKnowsThePodImage(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(podExtra, "usr/lib/c8s/pod-image")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read(t, filepath.Join(workerExtra, "usr/local/bin/scratch-enforce.sh")), "POD_IMAGE_MARKER:-/usr/lib/c8s/pod-image}") {
+		t.Fatal("scratch-enforce.sh does not key the pod exemption on /usr/lib/c8s/pod-image")
+	}
+}
