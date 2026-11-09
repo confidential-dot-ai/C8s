@@ -1,0 +1,40 @@
+name: Set up grype
+description: >-
+  Put the grype release that anchore/scan-action installs into the runner
+  tool cache, where the scan step looks before downloading it. The binary is
+  kept in the actions cache and fetched with retries on a miss, because the
+  GitHub release download returns 504 under burst load. VERSION must match
+  the default in the pinned scan-action's GrypeVersion.js; if it does not,
+  scan-action downloads its own grype as before.
+
+runs:
+  using: composite
+  steps:
+    - id: dir
+      shell: bash
+      run: echo "dir=$RUNNER_TOOL_CACHE/grype/0.118.0" >>"$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.dir.outputs.dir }}
+        key: grype-bin-0.118.0-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Install grype (checksum-pinned)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        DIR: ${{ steps.dir.outputs.dir }}
+        VERSION: 0.118.0
+        # SHA256 from the release's checksums.txt (linux_amd64).
+        SHA256: 1d444c5e7360471815f7158f71935fcecc68a3c417d85c7344f770854300bba2
+      run: |
+        set -euo pipefail
+        archive="$RUNNER_TEMP/grype.tar.gz"
+        curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$archive" \
+          "https://github.com/anchore/grype/releases/download/v$VERSION/grype_${VERSION}_linux_amd64.tar.gz"
+        echo "$SHA256  $archive" | sha256sum -c -
+        # Tool cache layout: <tool>/<version>/<arch>/ plus <arch>.complete.
+        mkdir -p "$DIR/x64"
+        tar -xzf "$archive" -C "$DIR/x64" grype
+        touch "$DIR/x64.complete"

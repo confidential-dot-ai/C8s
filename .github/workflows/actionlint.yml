@@ -48,7 +48,7 @@ jobs:
           SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
-          curl -fsSL -o actionlint.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o actionlint.tar.gz \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "$SHA256  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint

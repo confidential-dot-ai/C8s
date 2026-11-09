@@ -50,12 +50,27 @@ jobs:
       - name: Check chart CRDs
         run: make check-crd-chart
 
+      # Installed here rather than by the action, whose release download (3
+      # tries, no cache) still fails on the 504s GitHub returns under burst load.
+      - name: Install golangci-lint (checksum-pinned)
+        env:
+          VERSION: 2.14.0
+          # SHA256 from the release's checksums.txt (linux-amd64).
+          SHA256: ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/golangci-lint.tar.gz"
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$archive" \
+            "https://github.com/golangci/golangci-lint/releases/download/v$VERSION/golangci-lint-$VERSION-linux-amd64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/golangci-lint"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/golangci-lint" --strip-components=1 "golangci-lint-$VERSION-linux-amd64/golangci-lint"
+          echo "$RUNNER_TEMP/golangci-lint" >>"$GITHUB_PATH"
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # A full major.minor.patch is resolved in-process; anything less is
-          # looked up over the network before the linter runs.
-          version: v2.14.0
+          install-mode: none
 
   test:
     name: Build & Test
