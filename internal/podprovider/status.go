@@ -55,9 +55,13 @@ func attestConfig(address, launchKey string, manifest []byte) (podstatus.AttestC
 // readGuest attests the instance with the record's frozen launch key and
 // manifest, then reads the pod status only from the serving key the
 // assignment was signed over: every guest launched from the same document
-// passes the attestation, the key tells this pod's guest from another.
+// passes the attestation, the key tells this pod's guest from another. A
+// record without that key has no guest to read from.
 func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
 	var projection podstatus.PodProjection
+	if len(rec.ServingKey) == 0 {
+		return projection, errNoServingKey
+	}
 	cfg, cleanup, err := attestConfig(address, rec.Request.Trust.LaunchKey, rec.Manifest)
 	if err != nil {
 		return projection, err
@@ -70,12 +74,10 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 		return projection, guestFailure(ctx, "guest status attestation unavailable", err)
 	}
 	defer client.CloseIdleConnections()
-	if len(rec.ServingKey) != 0 {
-		if client, err = pinServingKey(client, rec.ServingKey); err != nil {
-			return projection, err
-		}
-		defer client.CloseIdleConnections()
+	if client, err = pinServingKey(client, rec.ServingKey); err != nil {
+		return projection, err
 	}
+	defer client.CloseIdleConnections()
 	data, err := get(ctx, client, "https://"+address+podstatus.PodPath)
 	if err != nil {
 		return projection, guestFailure(ctx, "guest status unavailable", err)
@@ -84,6 +86,18 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 		return projection, errors.New("guest status projection is invalid")
 	}
 	return projection, nil
+}
+
+// errNoServingKey withholds a status read until an assignment saved the key.
+var errNoServingKey = errors.New("no serving key is saved for the Pod CVM")
+
+// guestStatus reads status only from the serving key saved with the
+// assignment, whichever reader is installed.
+func (r *Reconciler) guestStatus(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
+	if len(rec.ServingKey) == 0 {
+		return podstatus.PodProjection{}, errNoServingKey
+	}
+	return r.guest(ctx, rec, address)
 }
 
 // guestFailure logs the detail of a failed guest exchange and returns only

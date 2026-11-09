@@ -187,10 +187,14 @@ Pod the status reason is `AssignmentPending`.
 A lost assignment reply keeps the same VM and record. The provider replays the
 saved bytes to the same serving key and recovers through matching attested
 status. It never signs a second assignment for the record, and refuses a guest
-that presents another serving key, holds another Pod, or reports the Pod
-without a saved assignment (`UnexpectedAssignedGuest`). If recovery cannot
-establish valid Pod status within the frozen verification window, the Pod fails
-and the VM is terminated. Refusal to issue an assignment nonce, or refusal of an
+that presents another serving key or holds another Pod. Before it signs an
+assignment, and before every send or replay, it reads the Pod again and sends
+nothing for a Pod that is being deleted, was replaced or no longer matches its
+launch. Status is read only from the serving key saved with the assignment, so
+a record without a saved assignment reads none: a guest that already runs the
+Pod is not adopted on its status. If recovery cannot establish valid Pod
+status within the frozen verification window, the Pod fails and the VM is
+terminated. Refusal to issue an assignment nonce, or refusal of an
 assignment whose nonce the guest has since discarded, uses the same bounded
 failure path; it does not reset the deadline.
 

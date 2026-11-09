@@ -199,7 +199,7 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
 	}
-	projection, err := r.guest(callCtx, rec, address)
+	projection, err := r.guestStatus(callCtx, rec, address)
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
