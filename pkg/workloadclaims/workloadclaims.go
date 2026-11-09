@@ -171,7 +171,9 @@ const (
 const AnnotationWorkloadID = "confidential.ai/cw"
 
 // ValidateWorkloadLabel refuses a workload label that differs from the
-// annotation: Services select on the label.
+// annotation. The managed Services select on the label, so a pod that set it
+// out of band could otherwise join a workload's endpoints. Callers apply it on
+// every operation, so a later label change is judged as the create was.
 func ValidateWorkloadLabel(pod *corev1.Pod) error {
 	if label, ok := pod.Labels[AnnotationWorkloadID]; ok && label != pod.Annotations[AnnotationWorkloadID] {
 		return fmt.Errorf("pod label %s=%q must match the %s annotation", AnnotationWorkloadID, label, AnnotationWorkloadID)

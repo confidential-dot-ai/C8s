@@ -110,7 +110,7 @@ func validatePodCVMRequest(req admission.Request, old, pod *corev1.Pod, cfg Conf
 	if err := rejectNamespaceMismatch(pod, req.Namespace); err != nil {
 		return err
 	}
-	if err := validateWorkloadLabel(pod); err != nil {
+	if err := workloadclaims.ValidateWorkloadLabel(pod); err != nil {
 		return err
 	}
 	if hasInjectionDetailAnnotations(pod.Annotations) || pod.Annotations[AnnotationInjected] != "" {
