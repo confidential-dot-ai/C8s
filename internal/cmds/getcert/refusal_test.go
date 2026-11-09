@@ -44,6 +44,9 @@ func TestRefusedRetryInterval(t *testing.T) {
 			}
 		}
 	}
+	if got := refusedRetryInterval(config{}, 1); got < defaultInitialRetryInterval/2 || got > defaultInitialRetryInterval {
+		t.Fatalf("retry without an initial interval = %v, want within [%v, %v]", got, defaultInitialRetryInterval/2, defaultInitialRetryInterval)
+	}
 }
 
 // #1068: a pod whose leaf is unnamed, as one refused right after issuance
