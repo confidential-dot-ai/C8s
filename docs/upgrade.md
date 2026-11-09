@@ -131,6 +131,13 @@ the moment the old pod stops serving until the new one serves — up to 10 secon
 for the old pod to go, since one router pod holds the public port of its node,
 plus a few seconds for the new pod to start.
 
+Where the upgrade changes the node's admission plugin too, the front door can
+stay down for about 55 seconds. Helm applies the new router and the new plugin
+at once, so the first replacement pod can start on a node still running the
+previous plugin and carry the packet rules that plugin installed; the new plugin
+refuses that pod and deletes it, and the router's Deployment starts another one.
+The front door serves again once that pod is ready.
+
 Install reads the allowlist CDS serves and refuses when an entry step 3
 publishes is not there; it warns and goes on where it cannot reach CDS. It also
 refuses when the resolved policy would deny a platform pod the cluster already
