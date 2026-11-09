@@ -38,7 +38,7 @@ func openTestRoot(t *testing.T) *os.Root {
 }
 
 func TestPreparePodBrokerRefusals(t *testing.T) {
-	if err := (&plugin{cfg: &config{}}).preparePodBroker(t.Context(), nil); err != nil {
+	if err := (&plugin{cfg: &config{}}).preparePodBroker(t.Context(), nil, nil); err != nil {
 		t.Fatalf("node role: %v", err)
 	}
 	for _, tc := range []struct {
@@ -60,7 +60,7 @@ func TestPreparePodBrokerRefusals(t *testing.T) {
 			cfg := &config{Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: tc.pull}}
 			cfg.WorkloadClaims.SocketDir = filepath.Join(t.TempDir(), tc.state)
 			p := &plugin{cfg: cfg}
-			if err := p.preparePodBroker(t.Context(), tc.client); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := p.preparePodBroker(t.Context(), tc.client, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 			if p.podBroker != nil {
@@ -76,7 +76,7 @@ func TestPreparePodBrokerRequiresRAMBackedState(t *testing.T) {
 	cfg := &config{Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}}}
 	cfg.WorkloadClaims.SocketDir = t.TempDir()
 	p := &plugin{cfg: cfg}
-	err := p.preparePodBroker(t.Context(), http.DefaultClient)
+	err := p.preparePodBroker(t.Context(), http.DefaultClient, nil)
 	if err != nil {
 		if !strings.Contains(err.Error(), "RAM-backed") || p.podBroker != nil {
 			t.Fatalf("disk-backed state: %v, broker %v", err, p.podBroker)

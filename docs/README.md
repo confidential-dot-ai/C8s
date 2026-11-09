@@ -42,6 +42,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [certificate-extensions.md](certificate-extensions.md) | reference | Every X.509 extension C8s issues, and who checks it |
 | **Workload data** | | |
 | [secrets.md](secrets.md) | explanation | Secret release |
+| [pod-secrets.md](pod-secrets.md) | reference | Pod CVM secret release brokered to a KMS, and the CDS-to-KMS wire |
 | [volumes.md](volumes.md) | explanation | Encrypted volumes |
 | [workloads.md](workloads.md) | how-to | Onboard your own workload |
 | [DEMO.md](DEMO.md) | tutorial | Deploy the sample workload and inspect what was injected |

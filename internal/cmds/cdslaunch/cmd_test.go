@@ -337,3 +337,15 @@ func parseWritten(t *testing.T, out string) *cdsconfig.Config {
 	}
 	return cfg
 }
+
+func TestNewRefusesAKMSWithoutItsPinnedKey(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "cds")
+	args := append(inputs(t, out), "--kms-url", "https://kms.example.org/release")
+	err := run(t, args...)
+	if err == nil || !strings.Contains(err.Error(), "--kms-url/--kms-tls-key-sha256") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("the refused run still wrote its outputs")
+	}
+}

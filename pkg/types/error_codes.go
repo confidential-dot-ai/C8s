@@ -68,6 +68,12 @@ const (
 	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
 	// before the request. Attest again.
 	ErrorCodeBindingExpired = "binding_expired"
+	// ErrorCodeSecretRefused: CDS or the KMS it brokers to refused a pod
+	// secret release.
+	ErrorCodeSecretRefused = "secret_refused"
+	// ErrorCodeKMSUnavailable: the KMS a pod secret release is brokered to
+	// did not answer usefully. Retry.
+	ErrorCodeKMSUnavailable = "kms_unavailable"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

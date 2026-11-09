@@ -129,7 +129,7 @@ func podBrokerPlugins(t *testing.T, base string) func() *plugin {
 	return func() *plugin {
 		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPins}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
 		p.mesh = newMeshGate(meshPolicy{Pod: &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.1:15006")}}}, discardLogger())
-		if err := p.preparePodBroker(t.Context(), &http.Client{}); err != nil {
+		if err := p.preparePodBroker(t.Context(), &http.Client{}, nil); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(p.closePodBroker)

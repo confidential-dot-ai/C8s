@@ -29,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -227,6 +228,14 @@ func run(cfg config) error {
 		SecretsChallenges: secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
+	}
+	if kms := cfg.measured.KMS; kms != nil {
+		broker, err := newSecretBroker(mesh)
+		if err != nil {
+			return err
+		}
+		deps.PodSecrets = &PodSecretHandler{Broker: broker, KMS: newKMSClient(kms)}
+		slog.Info("serving "+secretbroker.PodRoute+"; pod secret release is brokered to the configured KMS", "kms_url", kms.URL)
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)

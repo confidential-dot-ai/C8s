@@ -19,6 +19,7 @@ C8s assigns them under its own Private Enterprise Number:
 1.3.6.1.4.1.66378.1.5  matched workload
 1.3.6.1.4.1.66378.1.8  reserved (an earlier build's assigned workload ID)
 1.3.6.1.4.1.66378.1.9  client document digest
+1.3.6.1.4.1.66378.1.10 CDS broker (an extended key usage, not an extension)
 ```
 
 `.6` and `.7` are used on CDS replica peer certificates.
@@ -150,6 +151,15 @@ as absence.
 
 The DNS label an agent is reached under is the lowercase, unpadded RFC 4648
 base32 of the digest's first 16 bytes, 26 characters (`armtls.AgentLabel`).
+
+## CDS broker certificate (`…1.10`)
+
+Not an extension: the sole extended key usage of the certificate the mesh CA
+issues each CDS replica's broker key. That key signs pod secret release
+statements to a KMS ([pod-secrets.md](pod-secrets.md)). Without server or
+client authentication usage, the certificate authenticates no TLS peer. Its
+subject is `CN=c8s CDS broker`, its lifetime one hour, and it carries none of
+the extensions above.
 
 ## Subject, key usage and lifetime
 
