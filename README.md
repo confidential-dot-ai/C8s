@@ -193,8 +193,32 @@ make install
 
 `c8s install` pins the component images to the digests of the `c8s-cloud`
 chart released at its own version, so build it from a release tag. A build of
-any other commit needs `--chart` and image values
-(`c8s install --help`).
+any other commit renders a chart directory and takes those digests from a
+values file
+([operator docs](docs/operator.md#install-a-build-that-is-not-a-release)).
+
+Every install takes a values file naming this cluster's own network, which no
+platform file sets:
+
+```yaml
+# values.yaml
+nriImagePolicy:
+  mesh:
+    resolver: 10.0.0.10
+    clusterRanges:
+      - 10.244.0.0/16  # pods
+      - 10.0.0.0/16    # Services
+```
+
+`resolver` is the cluster's DNS Service address; a confidential workload's pods
+resolve names through it and no other address. On AKS and GKE that Service is
+`kube-dns`: `kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'`.
+`clusterRanges` are every pod and Service range this cluster uses, the ones
+`c8s cds config new --pod-cidr` and `--service-cidr` name; a range left out is
+one the router dials in the clear instead of over the mesh. The chart refuses
+to render without both keys — including the render behind
+`c8s install --allowlist-seed-out`, which writes the component seed before the
+CDS exists ([bootstrap policy](docs/allowlist-and-capabilities.md#bootstrap)).
 
 For an existing CDS, reuse the operator keypair matching its measured
 configuration and its `cds-pin.json`. For a new CDS, generate the keypair first:
@@ -220,7 +244,7 @@ listening on port 8443. `--workload-ref` uses
 
 ```sh
 # Install and adopt the workload; follow install's route-manifest instructions
-c8s install --platform=aks-snp --namespace c8s-system \
+c8s install --platform=aks-snp --namespace c8s-system -f values.yaml \
   --operator-keys operator.pub \
   --cds-address <ip:port of your CDS> --cds-pin cds-pin.json \
   --workload-ref vllm=vllm/deployment/serving:8443 \
@@ -228,7 +252,7 @@ c8s install --platform=aks-snp --namespace c8s-system \
 ```
 
 `--platform` names the cluster's confidential VMs: `aks-snp`, `aks-tdx` or
-`gke-snp`. Without it the `-f` files must
+`gke-snp`. Without it the `-f` files must also
 set `confidentialNodeSelector`, `attestationApi.devices`,
 `nriImagePolicy.platform` and `router.attest.platform` themselves, or the
 chart refuses to render.

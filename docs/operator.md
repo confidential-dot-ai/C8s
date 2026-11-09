@@ -45,6 +45,21 @@ the pinned CDS serves. CDS takes its own write keys from
 `c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
 policy that would deny the platform's own pods.
 
+Two more inputs describe this cluster's own network, which no
+`values-<platform>.yaml` can set, so they go in a `-f` file.
+`nriImagePolicy.mesh.resolver` is the DNS Service address a confidential
+workload's pods resolve names through and no other address; on AKS and GKE
+read it with
+`kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'`.
+`nriImagePolicy.mesh.clusterRanges` is every pod and Service range this
+cluster uses: the router's packet rules send a dial into these ranges over the
+mesh and everything else out in the clear, so a pod in a range left out of them
+gets a plaintext connection. They are the ranges `c8s cds config new
+--pod-cidr` and `--service-cidr` name, the pod ones being what `--pod-cidr`
+below declares to this install as well. The chart refuses to render without
+both, `c8s install --allowlist-seed-out` included
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
+
 `--pod-cidr` is a range this cluster assigns pod addresses from, the one
 `c8s cds config new --pod-cidr` names; repeat it per range. CDS dials a node
 address for a sandbox's admission inventory, so install refuses a CDS whose
@@ -536,6 +551,47 @@ narrows which port answers, not who may connect: the router is public and the
 API server's address is not nameable. They are ingress-only — outward reach is
 the node's packet ruleset — and additive, so another port is your own
 NetworkPolicy.
+
+## Install a build that is not a release
+
+A build that is not a release renders a chart directory and takes the component
+image digests from a `-f` file, beside the mesh file every install takes:
+
+```sh
+c8s install --platform aks-snp --chart charts/cloud \
+  -f images.yaml -f values.yaml \
+  --cds-address 10.0.0.9:8443 --cds-pin cds-pin.json \
+  --operator-keys operator.pub
+```
+
+`images.yaml` names one digest per component the install deploys. With
+`--volumes`, `volumed.image.digest` too:
+
+```yaml
+image:
+  digest: sha256:<c8s-operator digest>
+attestationApi:
+  image:
+    digest: sha256:<attestation-api digest>
+armtlsMesh:
+  image:
+    digest: sha256:<armtls-mesh digest>
+nriImagePolicy:
+  image:
+    digest: sha256:<nri-image-policy digest>
+```
+
+Each is the digest the registry serves for that build's tag, and a `main` build
+publishes its 7-character commit SHA:
+`crane digest ghcr.io/confidential-dot-ai/c8s-operator:<SHA7>`. The
+attestation-api image releases on its own cadence: copy its digest from the
+chart's component table (`charts/lib/files/components.yaml`, `pinnedDigest`).
+
+The chart writes an allowlist entry for each component named by a digest. A
+component named by a tag has no entry, so the admission plugin denies its
+containers once it enforces. `nriImagePolicy.image` must be a digest whatever
+the rest are: its entry pins the installer's argv, and the render fails on a
+tag.
 
 ## Rendering the chart
 
