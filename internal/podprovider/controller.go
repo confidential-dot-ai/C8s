@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -38,6 +39,7 @@ type Reconciler struct {
 	assignment assignmentVerifier
 	now        func() time.Time
 	ownsNode   func(context.Context) error
+	recorder   events.EventRecorder
 	mu         sync.Mutex
 }
 
@@ -215,6 +217,9 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 		if err := r.save(ctx, rec, secret); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.publishVerified(ctx, pod, status); err != nil {
+			return ctrl.Result{}, err
+		}
 		return r.finish(ctx, pod, rec, secret)
 	}
 	if rec.VerificationDeadline != nil {
@@ -226,7 +231,7 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	if err := r.publishEndpoints(ctx, pod, apps); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: pollInterval}, r.publishStatus(ctx, pod, status)
+	return ctrl.Result{RequeueAfter: pollInterval}, r.publishVerified(ctx, pod, status)
 }
 
 func (r *Reconciler) unavailable(ctx context.Context, pod *corev1.Pod, reason string, cause error) (ctrl.Result, error) {
@@ -328,13 +333,65 @@ func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *co
 	return removeCloudInstance(ctx, r.cloud, &rec.instanceIntent, func() error { return r.save(ctx, rec, secret) })
 }
 
+// publishStatus publishes a status the provider decided. Only a provider
+// reason records an Event.
 func (r *Reconciler) publishStatus(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus) error {
+	return r.publish(ctx, pod, status, false)
+}
+
+// publishVerified publishes a status projected from fresh, verified guest
+// evidence; replacing a provider reason with it records PodCVMVerified.
+func (r *Reconciler) publishVerified(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus) error {
+	return r.publish(ctx, pod, status, true)
+}
+
+func (r *Reconciler) publish(ctx context.Context, pod *corev1.Pod, status corev1.PodStatus, verified bool) error {
 	if reflect.DeepEqual(pod.Status, status) {
 		return nil
 	}
 	before := pod.DeepCopy()
 	pod.Status = status
-	return r.client.Status().Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	if err := r.client.Status().Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
+	}
+	r.recordTransition(pod, before.Status.Reason, verified)
+	return nil
+}
+
+// progressReasons are the published reasons of a launch that is still
+// advancing. Every other reason reports a refusal, an outage or an ending.
+var progressReasons = map[string]bool{
+	"InstanceStarting":  true,
+	"EndpointsPending":  true,
+	"AllocationPending": true,
+	"AssignmentPending": true,
+}
+
+// recordTransition records one Event when the published status changes
+// reason, so polls of an unchanged state stay silent. An Event takes its
+// reason and message only from statusMessages, never from the published
+// status, so guest data cannot name or word one. A reason outside
+// statusMessages records PodCVMVerified only for verified guest status: a
+// provider status such as a deleted Pod's InstanceDestroyed never does.
+func (r *Reconciler) recordTransition(pod *corev1.Pod, previous string, verified bool) {
+	reason := pod.Status.Reason
+	if r.recorder == nil || reason == previous {
+		return
+	}
+	message, provider := statusMessages[reason]
+	switch {
+	case !provider:
+		if _, ok := statusMessages[previous]; !ok || !verified {
+			return
+		}
+		// Verified guest status replaced a waiting or outage reason, whatever
+		// phase the guest reports (often Pending while containers start).
+		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, "PodCVMVerified", "PublishStatus", "The Pod CVM reports verified status")
+	case progressReasons[reason] || pod.Status.Phase == corev1.PodSucceeded:
+		r.recorder.Eventf(pod, nil, corev1.EventTypeNormal, reason, "PublishStatus", "%s", message)
+	default:
+		r.recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "PublishStatus", "%s", message)
+	}
 }
 
 func (r *Reconciler) publishEndpoints(ctx context.Context, pod *corev1.Pod, apps []endpoint) error {

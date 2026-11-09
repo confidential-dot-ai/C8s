@@ -148,7 +148,7 @@ func TestWorkerClusterGrantsThePodCVMProvider(t *testing.T) {
 		}
 	}
 	rules, _, _ := unstructured.NestedSlice(objects["ClusterRole//c8s-operator-pod-cvm"].Object, "rules")
-	for _, want := range []string{"pods/status", "nodes"} {
+	for _, want := range []string{"pods/status", "nodes", "events.k8s.io"} {
 		if !strings.Contains(fmt.Sprint(rules), want) {
 			t.Fatalf("provider ClusterRole lacks %s: %v", want, rules)
 		}
