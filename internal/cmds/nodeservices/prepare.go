@@ -147,6 +147,9 @@ func bindCDSPull(a map[string]any, cds cmdsutil.CDS) (map[string]any, error) {
 	}
 	pull["url"] = cmdsutil.CDSURL(cds.Address)
 	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
+	if cds.Chain != "" {
+		pull["cds_chain"] = cds.Chain
+	}
 	return pull, nil
 }
 

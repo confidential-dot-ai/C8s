@@ -35,6 +35,29 @@ func NewVerifyingHTTPClient(pins Pins, attestationApiURL string) (*http.Client, 
 	return HTTPClient(tlsCfg), nil
 }
 
+// NewFollowingHTTPClient is NewVerifyingHTTPClient with pins read by pins on
+// every handshake, so the client follows pins that change while it runs.
+func NewFollowingHTTPClient(pins func() (Pins, error), attestationApiURL string) (*http.Client, error) {
+	if attestationApiURL == "" {
+		return nil, fmt.Errorf("armtls client config: attestation-api URL is required")
+	}
+	initial, err := pins()
+	if err != nil {
+		return nil, err
+	}
+	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
+		Policy: initial.VerifyPolicy(attestationApiURL),
+		Current: func() (*VerifyPolicy, error) {
+			p, err := pins()
+			return p.VerifyPolicy(attestationApiURL), err
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("armtls client config: %w", err)
+	}
+	return HTTPClient(tlsCfg), nil
+}
+
 // HTTPClient wraps tlsCfg in the standard armTLS client shape: 5s dial, 10s
 // response-header, 30s overall, MaxIdleConns=5, MaxConnsPerHost=2. Shared by
 // the delegated verifier above and the in-process one (internal/localverify)

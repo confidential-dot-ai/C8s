@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -55,17 +56,25 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 	if err != nil {
 		return nil, nil, err
 	}
+	current := cmdsutil.CDSPins(workloadclaims.CDSPinsPath, cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
+		Policy: pins.VerifyPolicy(cfg.AttestationApiURL),
+		// Read per handshake (the source ParsePins resolved), so a
+		// long-running sidecar follows a CDS upgrade.
+		Current: func() (*armtls.VerifyPolicy, error) {
+			p, err := current()
+			return p.VerifyPolicy(cfg.AttestationApiURL), err
+		},
 		CertProvider: provider,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("build CDS client: %w", err)
 	}
-	return &http.Client{
+	client, err := cmdsutil.NodeCDSChain(&http.Client{
 		Timeout:   cfg.RequestTimeout,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}, pub, nil
+	}, workloadclaims.CDSAddressPath)
+	return client, pub, err
 }
 
 // Do performs one store request: a fresh challenge, a sandbox token redeemed

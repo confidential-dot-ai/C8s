@@ -230,6 +230,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 	}{
 		{"schema", func(d *Document) { d.SchemaVersion = "c8s-worker/v2" }, "schemaVersion must be c8s-worker/v1"},
 		{"cds address without port", func(d *Document) { d.CDS.Address = "cds.acme.example" }, "must be <host>:<port>"},
+		{"cds chain not an entry pin", func(d *Document) { d.CDS.Chain = "genesis" }, "cds.chain"},
 		{"cds pin binding no configuration", func(d *Document) { d.CDS.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
 		{"cds pin entries disagreeing on node subnets", func(d *Document) {
 			d.CDS.Measurements = testCDSPin(t, cdsConfig(t, "192.168.0.0/16"), cdsConfig(t, "172.16.0.0/12"))

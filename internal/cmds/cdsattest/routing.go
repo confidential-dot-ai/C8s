@@ -60,7 +60,7 @@ type routingConfig struct {
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on (REQUIRED); the node's CDS pins replace it where the enforcer mounts them")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
@@ -106,6 +106,41 @@ func checkRoutingFlags(cfg config) error {
 	return nil
 }
 
+// nodePinsPath is where the enforcer mounts this node's CDS pins; tests
+// point it elsewhere.
+var nodePinsPath = workloadclaims.CDSPinsPath
+
+// routerCDSPins reads the router's CDS pins per handshake: the node's pins
+// when the enforcer mounts them, which it rewrites as the replica set accepts
+// other builds, else the --image-policy-file pin.
+func routerCDSPins(file string) func() (armtls.Pins, error) {
+	return func() (armtls.Pins, error) {
+		fromNode, err := cmdsutil.NodeProvidesCDSPins(nodePinsPath)
+		if err != nil {
+			return armtls.Pins{}, err
+		}
+		source := cmdsutil.ImagePolicySource{File: file}
+		if fromNode {
+			source = cmdsutil.ImagePolicySource{}
+		}
+		return cmdsutil.CDSPins(nodePinsPath, source)()
+	}
+}
+
+// routerCDSClient is the router's CDS client over verified, held to the
+// chain entry the node pins in its endpoint document at addressPath (C-ID).
+func routerCDSClient(base string, verified *http.Client, addressPath string) (*routing.CDSClient, error) {
+	held, err := cmdsutil.NodeCDSChain(verified, addressPath)
+	if err != nil {
+		return nil, fmt.Errorf("CDS armTLS client: %w", err)
+	}
+	cds, err := routing.NewCDSClient(base, held)
+	if err != nil {
+		return nil, fmt.Errorf("--cds-url: %w", err)
+	}
+	return cds, nil
+}
+
 // routingEngine is the manifest routing a cds-attest process runs: the poller,
 // the proxy the tunnel shares, and the routing listener.
 type routingEngine struct {
@@ -121,20 +156,13 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	values, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Values()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := cmdsutil.CDSLaunchFile(values); err != nil {
-		return nil, fmt.Errorf("--image-policy-file %w", err)
-	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(values.Policy()), cfg.attestationAPIURL) // A1
+	httpClient, err := armtls.NewFollowingHTTPClient(routerCDSPins(r.imagePolicyFile), cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
-	cds, err := routing.NewCDSClient(r.cdsURL, httpClient)
+	cds, err := routerCDSClient(r.cdsURL, httpClient, workloadclaims.CDSAddressPath)
 	if err != nil {
-		return nil, fmt.Errorf("--cds-url: %w", err)
+		return nil, err
 	}
 	keys, err := operatorKeySource(r, cds, logger)
 	if err != nil {

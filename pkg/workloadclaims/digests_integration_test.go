@@ -215,7 +215,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	_, err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
 		"sev-snp", attest, "http://127.0.0.1:1", testPins(), "")
 	if err != nil {

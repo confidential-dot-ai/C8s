@@ -204,23 +204,18 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := cdsPins(cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	// Pins are read per handshake: a renewing get-cert follows a CDS upgrade.
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) { return cdsPins(cfg) }, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
-	return client, nil
+	return cmdsutil.NodeCDSChain(client, workloadclaims.CDSAddressPath)
 }
 
+// cdsPins resolves the pins get-cert holds its CDS to.
 func cdsPins(cfg config) (armtls.Pins, error) {
-	return cmdsutil.ClientCDSPins(workloadclaims.CDSPinsPath,
-		cmdsutil.ImagePolicySource{
-			File: cfg.MeasurementsConfig,
-			JSON: cfg.MeasurementsConfigJSON,
-		})
+	return cmdsutil.CDSPins(workloadclaims.CDSPinsPath,
+		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})()
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
