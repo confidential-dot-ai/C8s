@@ -183,7 +183,7 @@ outright. Even
 then a token CDS accepts must verify under a key fetched from port 1019 inside
 the node bound, so the worst a swap achieves is denying the pod its sandbox ID.
 
-## Corner 8 — exempt namespaces admit on a captured digest, not the name
+## Corner 8 — exempt namespaces admit on a digest, not the name
 
 On the hosted lanes the provider owns the platform pods in `kube-system` —
 kube-proxy, CoreDNS, the CNI, CSI drivers — whose images are not on the C8s
@@ -192,12 +192,14 @@ a source of truth for the platform images a node runs that the allowlist cannot
 supply.
 
 `policy.exempt_namespaces` supplies it without keying admission on a namespace
-name, which is metadata the pod's creator chooses. The name is only a capture
-selector: when the plugin first connects to a containerd that already requires
-it, it resolves each listed namespace's running images to content-store digests
-and freezes that set per namespace. A container there is then admitted only if
-its resolved digest is in that frozen set; anything else is denied and audited
-`exempt_snapshot_miss`, so drift is alertable from the log, and never killed
+name, which is metadata the pod's creator chooses. The name selects a digest
+set: `policy.exempt_digests` holds, per listed namespace, the image digests that
+namespace admits, and `c8s install` renders it from the images the cluster
+reports running there — every container of every pod of that namespace on a
+confidential node, an exited init container included, since the next start of
+its pod runs it again. A container there is admitted only if its resolved digest
+is in its namespace's set; anything else is denied and audited
+`exempt_digest_miss`, so drift is alertable from the log, and never killed
 retroactively — stopping a running kube-proxy or CoreDNS can cut the node. The
 exemption only downgrades a denial — the label rules and the allowlist still run
 and still audit — and never a host-privilege refusal
@@ -208,11 +210,10 @@ enforcer connected, so the plugin requires every name in
 `policy.exempt_namespaces` to appear in `mesh.exempt_namespaces`, and the cloud
 chart renders the second list from the first.
 
-The captured set is persisted and is loaded, not recaptured, on a restart or
-reboot: on a reboot containerd gates every container on this plugin, so the
-plugin would see an empty node and freeze nothing. Only the installer rewriting
-the boot config recaptures, which is what changing the exempt list does. It
-claims nothing a measured node claims: the digests come from an unmeasured store
-on an unmeasured host, and anything planted in a listed namespace before that
-first connect is captured with the genuine set — which is why the measured node
-image leaves the list empty.
+The set reaches a node in the boot config the installer writes, so every start
+of the plugin reads the same one, a reboot included — when containerd gates
+every container on the plugin and an image the set omits has nothing to fall
+back on. One set covers the node pool. It claims nothing a measured node claims:
+the images come from a control plane outside the TCB, so the measured node image
+leaves the list empty. An install prints the set for review, and a provider
+image bump reaches the nodes through the next install.

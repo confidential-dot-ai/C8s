@@ -127,13 +127,15 @@ nriImagePolicy:
     # Don't ship `audit` to production: a permissive default that only docs tell
     # you to harden leaks.
     mode: fail-closed  # fail-closed | audit
-    # exemptNamespaces: admit each listed namespace's provider platform pods
-    # — which are not on the C8s allowlist — by the image digests captured
-    # running in it, frozen at first admission and scoped to that namespace.
-    # Empty keeps digest-only admission. See
-    # docs/getcert-workload-binding.md, Corner 8.
+    # exemptNamespaces: admit each listed namespace's provider platform pods —
+    # which are not on the C8s allowlist — by the digests exemptDigests holds
+    # for it. See docs/getcert-workload-binding.md, Corner 8.
     exemptNamespaces:
       - kube-system
+    # exemptDigests: the digests each exempt namespace admits. `c8s install`
+    # overrides this with the images running there; a chart install that sets
+    # exemptNamespaces by hand must list a set per namespace.
+    exemptDigests: {}
 
   # Host paths the installer DaemonSet writes to. A launched plugin reads
   # conf.d beside its binary, else /etc/nri/conf.d.

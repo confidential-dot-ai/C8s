@@ -326,8 +326,8 @@ fail-closed`, the chart's default, every node also rechecks its running
 containers — at startup and after each document it applies — and kills those
 the document no longer admits, outside the exempt namespaces. Enforcing the
 running set is not a switch: every C8s lane does it. Those are namespaces a boot config lists as holding platform pods
-the allowlist does not describe, admitted against a digest set the plugin froze
-on its first connect (Corner 8 of
+the allowlist does not describe, admitted against the digest set the same boot
+config carries for them (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
 narrowing an entry stops its containers on every node within
 `--allowlist-node-delay` plus one refresh interval.

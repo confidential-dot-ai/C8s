@@ -63,7 +63,7 @@ policy keeps host namespaces away from tenant pods
 
 All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
-by the digests those pods ran at the plugin's first connect, and
+by the digests the images running there carried when it read the cluster, and
 `nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
 
 On a `gke` or `aks` node, a pod whose sandbox the runtime created before the

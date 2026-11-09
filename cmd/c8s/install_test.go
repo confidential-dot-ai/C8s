@@ -1350,7 +1350,10 @@ func daemonSetPod(ns, name, image, imageID string) corev1.Pod {
 		Namespace:       ns,
 		Name:            name,
 		OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "ds"}},
-		Status:          corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Image: image, ImageID: imageID}}},
+		Spec:            corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: image}}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "main", Image: image, ImageID: imageID},
+		}},
 	}
 }
 
@@ -1452,44 +1455,105 @@ func TestImageReferenceFallsBackToImageID(t *testing.T) {
 	}
 }
 
-func TestPlatformImageLinesNameABareDigestAlone(t *testing.T) {
+func TestRunningImagesNameABareDigestAlone(t *testing.T) {
 	const digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
 	pods := []corev1.Pod{daemonSetPod("kube-system", "fluentbit-a", digest, digest)}
-	got := platformImageLines(pods, func(_, _ string) bool { return true })
+	got := imageLines(runningImages(pods, imageDigest, func(corev1.Pod, string) bool { return true }))
 	want := []string{"kube-system/fluentbit-a  " + digest}
 	if !slices.Equal(got, want) {
-		t.Errorf("platformImageLines = %#v, want %#v", got, want)
+		t.Errorf("runningImages = %#v, want %#v", got, want)
 	}
 }
 
-// The exemption admits by a digest set the plugin freezes per node under its
-// own cache dir, so the install is the one place an operator can review it.
-func TestExemptedPlatformImages(t *testing.T) {
+// Only a digest a repository names can be exempted.
+func TestUnexemptableContainers(t *testing.T) {
+	const digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+	pods := []corev1.Pod{
+		daemonSetPod("kube-system", "fluentbit-a", digest, digest),
+		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+digest),
+	}
+	got := unexemptableContainers(pods, []string{"kube-system"})
+	if len(got) != 1 || !strings.Contains(got[0], "kube-system/fluentbit-a") {
+		t.Errorf("unexemptableContainers = %#v, want the node-local-ID container alone", got)
+	}
+	if got := unexemptableContainers(pods, nil); len(got) != 0 {
+		t.Errorf("with no exempt namespace, got %#v, want none", got)
+	}
+}
+
+// A declared container the kubelet reports no image for still runs after the
+// restart.
+func TestUnexemptableContainersCoversAPodWithoutStatuses(t *testing.T) {
+	pending := corev1.Pod{
+		Namespace: "kube-system", Name: "azure-cns-b",
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "cns", Image: "azure-cns:v1.6"}}},
+	}
+	got := unexemptableContainers([]corev1.Pod{pending}, []string{"kube-system"})
+	if len(got) != 1 || !strings.Contains(got[0], "kube-system/azure-cns-b") {
+		t.Errorf("unexemptableContainers = %#v, want the container with no reported image", got)
+	}
+}
+
+func TestExemptableDigestSkipsTheNodeLocalImageID(t *testing.T) {
+	const (
+		local    = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		manifest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	if got := exemptableDigest(local, "azure-cns@"+manifest); got != manifest {
+		t.Errorf("exemptableDigest = %q, want the repository's digest %q", got, manifest)
+	}
+	status := corev1.ContainerStatus{Name: "cns", Image: "azure-cns@" + manifest, ImageID: local}
+	pods := []corev1.Pod{{
+		Namespace: "kube-system", Name: "azure-cns-a",
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{status}},
+	}}
+	digests := exemptDigests(exemptNamespaceImages(pods, []string{"kube-system"}))
+	if want := map[string][]string{"kube-system": {manifest}}; !maps.EqualFunc(digests, want, slices.Equal) {
+		t.Errorf("exempt digests = %#v, want %#v", digests, want)
+	}
+}
+
+// Every pod of the namespace, an exited init container included.
+func TestExemptNamespaceImages(t *testing.T) {
 	const (
 		etcd  = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		proxy = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		cns   = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+		dns   = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
 		gke   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 		vllm  = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
 	)
+	cnsPod := daemonSetPod("kube-system", "azure-cns-a", "azure-cns:v1.6", "azure-cns@"+cns)
+	// Exited before the plugin connected; the pod runs it again after a reboot.
+	cnsPod.Spec.InitContainers = []corev1.Container{{Name: "init-cns", Image: "azure-cns-init:v1.6"}}
+	cnsPod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "init-cns",
+		Image:   "azure-cns-init:v1.6",
+		ImageID: "azure-cns-init@" + proxy,
+		State:   corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+	}}
 	pods := []corev1.Pod{
 		mirrorPod("kube-system", "etcd-node-a", "rancher/hardened-etcd:v3.6.12", "rancher/hardened-etcd@"+etcd),
-		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
-		// Same DaemonSet on a second node: one line, not two.
-		daemonSetPod("kube-system", "kube-proxy-b", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
+		cnsPod,
+		// Same DaemonSet on a second node: one entry.
+		daemonSetPod("kube-system", "azure-cns-b", "azure-cns:v1.6", "azure-cns@"+cns),
+		deploymentPod("kube-system", "coredns-abc", "coredns:1.11", "coredns@"+dns),
 		// Outside the exempt set: not what this admits.
 		daemonSetPod("gke-system", "gke-agent-a", "gke/agent:v1", "gke/agent@"+gke),
 		deploymentPod("tenant", "infer-abc", "example.test/vllm:v1", "example.test/vllm@"+vllm),
 	}
-	got := exemptedPlatformImages(pods, []string{"kube-system"})
-	want := []string{
-		"kube-system/etcd-node-a  docker.io/rancher/hardened-etcd@" + etcd,
-		"kube-system/kube-proxy-a  docker.io/library/kube-proxy@" + proxy,
+	images := exemptNamespaceImages(pods, []string{"kube-system"})
+	got := exemptDigests(images)
+	want := map[string][]string{"kube-system": {etcd, proxy, cns, dns}}
+	slices.Sort(want["kube-system"])
+	if !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("exempt digests = %#v, want %#v", got, want)
 	}
-	if !slices.Equal(got, want) {
-		t.Errorf("exemptedPlatformImages = %#v, want %#v", got, want)
+	if lines := imageLines(images); !slices.Contains(lines, "kube-system/azure-cns-a  docker.io/library/azure-cns-init@"+proxy) {
+		t.Errorf("the report does not name the exited init container's image:\n%s", strings.Join(lines, "\n"))
 	}
 
-	if got := exemptedPlatformImages(pods, nil); len(got) != 0 {
+	if got := exemptNamespaceImages(pods, nil); len(got) != 0 {
 		t.Errorf("with no exempt namespace, got %#v, want none", got)
 	}
 }
@@ -1534,20 +1598,122 @@ func hintCommandArgs(t *testing.T, hint, prefix string) []string {
 	return nil
 }
 
+// Sorted per namespace, so a re-run renders the same config.
+func TestExemptDigests(t *testing.T) {
+	const (
+		first  = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		second = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		other  = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	)
+	images := []runningImage{
+		{namespace: "kube-system", pod: "b", reference: "r@" + second, digest: second},
+		{namespace: "kube-system", pod: "a", reference: "r@" + first, digest: first},
+		{namespace: "gmp-system", pod: "c", reference: "r@" + other, digest: other},
+	}
+	got := exemptDigests(images)
+	want := map[string][]string{"kube-system": {first, second}, "gmp-system": {other}}
+	if !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("exemptDigests = %#v, want %#v", got, want)
+	}
+
+	wantArgs := []string{
+		"--set-string", exemptDigestsPath + ".gmp-system[0]=" + other,
+		"--set-string", exemptDigestsPath + ".kube-system[0]=" + first,
+		"--set-string", exemptDigestsPath + ".kube-system[1]=" + second,
+	}
+	if gotArgs := exemptDigestValueArgs(got); !slices.Equal(gotArgs, wantArgs) {
+		t.Errorf("exemptDigestValueArgs = %#v, want %#v", gotArgs, wantArgs)
+	}
+	tree, err := valueArgsToTree(exemptDigestValueArgs(got))
+	if err != nil {
+		t.Fatalf("the value args must parse as computed values: %v", err)
+	}
+	if digests := stringsAtPath(tree, exemptDigestsPath+".kube-system"); !slices.Equal(digests, []string{first, second}) {
+		t.Errorf("computed %s.kube-system = %v, want %v", exemptDigestsPath, digests, []string{first, second})
+	}
+}
+
+func TestExemptDigestsPathIsAChartValue(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Fatal("helm CLI not found")
+	}
+	dir, err := helmchart.ExtractTemp()
+	if err != nil {
+		t.Fatalf("extract the chart: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	tree, err := chartValues(context.Background(), filepath.Join(dir, helmchart.CloudChartFSPath))
+	if err != nil {
+		t.Fatalf("read the chart's values: %v", err)
+	}
+	if _, ok := nestedMap(tree, strings.Split(exemptDigestsPath, ".")...); !ok {
+		t.Errorf("the chart's values define no %s, so an install's digest set reaches no node", exemptDigestsPath)
+	}
+}
+
+// It reports the set it returns, and refuses what the digests cannot carry.
+func TestPreflightExemptNamespaces(t *testing.T) {
+	const (
+		proxy = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+		agent = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+	)
+	exempting := func(namespaces ...string) map[string]any {
+		listed := make([]any, 0, len(namespaces))
+		for _, namespace := range namespaces {
+			listed = append(listed, namespace)
+		}
+		return map[string]any{"nriImagePolicy": map[string]any{"policy": map[string]any{"exemptNamespaces": listed}}}
+	}
+	running := []corev1.Pod{
+		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
+		daemonSetPod("gke-system", "gke-agent-a", "gke/agent:v1", "gke/agent@"+agent),
+	}
+
+	var buf bytes.Buffer
+	digests, err := preflightExemptNamespaces(&buf, exempting("kube-system"), running)
+	if err != nil {
+		t.Fatalf("preflightExemptNamespaces: %v", err)
+	}
+	if want := map[string][]string{"kube-system": {proxy}}; !maps.EqualFunc(digests, want, slices.Equal) {
+		t.Errorf("digests = %#v, want %#v", digests, want)
+	}
+	if !strings.Contains(buf.String(), proxy) {
+		t.Errorf("the digests written are not reported:\n%s", buf.String())
+	}
+
+	if _, err := preflightExemptNamespaces(io.Discard, exempting("kube-system", "gmp-system"), running); err == nil ||
+		!strings.Contains(err.Error(), "gmp-system") {
+		t.Errorf("preflightExemptNamespaces = %v, want a refusal naming the namespace nothing runs in", err)
+	}
+
+	pulling := append(slices.Clone(running), daemonSetPod("kube-system", "azure-cns-a", "azure-cns:v1.6", ""))
+	_, err = preflightExemptNamespaces(io.Discard, exempting("kube-system"), pulling)
+	if err == nil || !strings.Contains(err.Error(), "kube-system/azure-cns-a") {
+		t.Errorf("preflightExemptNamespaces = %v, want a refusal naming the container with no digest", err)
+	}
+}
+
 // The report is the audit surface: it must carry every digest (never a
 // truncated list) and name the alternative posture.
 func TestReportExemptedImages(t *testing.T) {
-	images := make([]string, 0, deniedImagesListed+5)
+	images := make([]runningImage, 0, deniedImagesListed+5)
 	for i := range cap(images) {
-		images = append(images, fmt.Sprintf("kube-system/pod-%02d  example.test/img%02d@sha256:%064d", i, i, i))
+		digest := fmt.Sprintf("sha256:%064d", i)
+		images = append(images, runningImage{
+			namespace: "kube-system",
+			pod:       fmt.Sprintf("pod-%02d", i),
+			reference: fmt.Sprintf("example.test/img%02d@%s", i, digest),
+			digest:    digest,
+		})
 	}
 	var buf bytes.Buffer
 	reportExemptedImages(&buf, []string{"kube-system"}, images)
 	out := buf.String()
 
 	for _, image := range images {
-		if !strings.Contains(out, image) {
-			t.Errorf("report omits %q — a truncated audit list is not one:\n%s", image, out)
+		if !strings.Contains(out, image.line()) {
+			t.Errorf("report omits %q — a truncated audit list is not one:\n%s", image.line(), out)
 		}
 	}
 	for _, want := range []string{"kube-system", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {

@@ -22,11 +22,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ include "c8s-common.image" .Values.nriImagePolicy.image }}
 {{- end }}
 
-{{/* The plugin's host directories: runtimeDir holds the sockets of the
-     inventory, the attestation-api and volumed, which other components
-     mount; cacheDir its exempt-namespace snapshot. */}}
+{{/* The plugin's host directory: it holds the sockets of the inventory, the
+     attestation-api and volumed, which other components mount. */}}
 {{- define "nri-image-policy.runtimeDir" -}}/run/nri-image-policy{{- end -}}
-{{- define "nri-image-policy.cacheDir" -}}/var/lib/nri-image-policy{{- end -}}
 
 {{/* The inventory socket, which the plugin serves (workloadclaims.SocketName). */}}
 {{- define "nri-image-policy.workloadClaimsSocket" -}}
@@ -139,8 +137,6 @@ limits:
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.configDir }}
 - name: host-containerd-config
   mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
-- name: host-cache-dir
-  mountPath: /host{{ include "nri-image-policy.cacheDir" . }}
 - name: host-runtime-dir
   mountPath: /host{{ include "nri-image-policy.runtimeDir" . }}
 - name: cds-policy
@@ -161,10 +157,6 @@ limits:
   hostPath:
     path: {{ include "nri-image-policy.containerdConfigDir" . }}
     type: Directory
-- name: host-cache-dir
-  hostPath:
-    path: {{ include "nri-image-policy.cacheDir" . }}
-    type: DirectoryOrCreate
 - name: host-runtime-dir
   hostPath:
     path: {{ include "nri-image-policy.runtimeDir" . }}

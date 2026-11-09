@@ -3670,9 +3670,9 @@ type installerBootConfig struct {
 		} `yaml:"push"`
 	} `yaml:"allowlist"`
 	Policy struct {
-		Mode               string   `yaml:"mode"`
-		ExemptNamespaces   []string `yaml:"exempt_namespaces"`
-		ExemptSnapshotPath string   `yaml:"exempt_snapshot_path"`
+		Mode             string              `yaml:"mode"`
+		ExemptNamespaces []string            `yaml:"exempt_namespaces"`
+		ExemptDigests    map[string][]string `yaml:"exempt_digests"`
 	} `yaml:"policy"`
 	Containerd struct {
 		Socket string `yaml:"socket"`
@@ -3750,30 +3750,31 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 }
 
 // With exemptNamespaces cleared the rendered worker boot config admits by the
-// digest base alone: policy.exempt_namespaces is empty, and so is the
-// snapshot path that comes with it. The mesh policy's own exempt list is a
-// different key, so this reads the decoded values. The exempting render is
-// covered below.
+// digest base alone: policy.exempt_namespaces is empty, and so is the digest
+// set that comes with it. The mesh policy's own exempt list is a different key,
+// so this reads the decoded values. The exempting render is covered below.
 func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
 	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.policy.exemptNamespaces=[]")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-	if len(cfg.Policy.ExemptNamespaces) != 0 || cfg.Policy.ExemptSnapshotPath != "" {
-		t.Errorf("worker boot config exempts %v from image admission, with snapshot %q",
-			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptSnapshotPath)
+	if len(cfg.Policy.ExemptNamespaces) != 0 || len(cfg.Policy.ExemptDigests) != 0 {
+		t.Errorf("worker boot config exempts %v from image admission, admitting %v",
+			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptDigests)
 	}
 }
 
 // Setting nriImagePolicy.policy.exemptNamespaces renders the exempt_namespaces
-// list, a snapshot path under the cache dir, and the install-time rm that
-// re-captures on a boot config rewrite. Decoding through yaml.v3 also proves
-// the block does not collide with the rest of the boot config.
+// list, and exemptDigests the per-namespace digest set admission reads there —
+// the set `c8s install` computes. Decoding through yaml.v3 also proves the
+// block does not collide with the rest of the boot config.
 func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	t.Parallel()
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	out, err := helmTemplate(t,
 		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gatekeeper-system}",
+		"--set-string", "nriImagePolicy.policy.exemptDigests.kube-system[0]="+digest,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -3782,15 +3783,14 @@ func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	if got := cfg.Policy.ExemptNamespaces; !slices.Equal(got, []string{"kube-system", "gatekeeper-system"}) {
 		t.Errorf("exempt_namespaces = %v, want [kube-system gatekeeper-system]", got)
 	}
-	if !strings.HasSuffix(cfg.Policy.ExemptSnapshotPath, "/exempt-snapshot.json") {
-		t.Errorf("exempt_snapshot_path = %q, want a .../exempt-snapshot.json path", cfg.Policy.ExemptSnapshotPath)
+	if got := cfg.Policy.ExemptDigests; !slices.Equal(got["kube-system"], []string{digest}) {
+		t.Errorf("exempt_digests = %v, want kube-system: [%s]", got, digest)
 	}
+}
 
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	if !strings.Contains(script, "rm -f") || !strings.Contains(script, "exempt-snapshot.json") {
-		t.Error("install script must delete the exempt snapshot on a boot config change so it re-captures")
-	}
+// exemptDigestArgs render a digest set for the chart's exempt namespace.
+var exemptDigestArgs = []string{
+	"--set-string", "nriImagePolicy.policy.exemptDigests.kube-system[0]=sha256:1111111111111111111111111111111111111111111111111111111111111111",
 }
 
 // Every boot config this chart can render must load in the plugin that reads
@@ -3802,7 +3802,7 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 	for _, platform := range cloudPlatforms {
 		t.Run(platform, func(t *testing.T) {
 			t.Parallel()
-			out, err := helmTemplatePlatform(t, platform)
+			out, err := helmTemplatePlatform(t, platform, exemptDigestArgs...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -3812,6 +3812,20 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 			}
 		})
 	}
+
+	// A render without the digest set is refused before a node is touched.
+	t.Run("an exemption without the digests it admits", func(t *testing.T) {
+		t.Parallel()
+		out, err := helmTemplatePlatform(t, "gke-snp")
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		body := bootConfigAsStagedOnANode(t, bootConfigYAML(t, out, "c8s-nri-image-policy-worker"))
+		err = nriimagepolicy.CheckBootConfig(body)
+		if err == nil || !strings.Contains(err.Error(), "requires policy.exempt_digests") {
+			t.Errorf("CheckBootConfig = %v, want a refusal naming policy.exempt_digests", err)
+		}
+	})
 
 	t.Run("exempting the router namespace", func(t *testing.T) {
 		t.Parallel()
