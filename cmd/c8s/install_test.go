@@ -1370,6 +1370,12 @@ func deploymentPod(ns, name, image, imageID string) corev1.Pod {
 	return p
 }
 
+func statefulSetPod(ns, name, image, imageID string) corev1.Pod {
+	p := daemonSetPod(ns, name, image, imageID)
+	p.OwnerReferences = []metav1.OwnerReference{{Kind: "StatefulSet", Name: "sts"}}
+	return p
+}
+
 func TestDeniedPlatformImages(t *testing.T) {
 	const (
 		etcd    = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -1427,6 +1433,63 @@ func TestDeniedPlatformImagesCoversInitContainers(t *testing.T) {
 	want := []string{"kube-system/cni-install-a  docker.io/library/install-cni@" + digest}
 	if !slices.Equal(got, want) {
 		t.Errorf("denied = %#v, want %#v", got, want)
+	}
+}
+
+// A denied container no platform pod runs — a provider add-on StatefulSet, a
+// tenant Deployment — is stopped by the containerd restart and refused after
+// it. The install reports those rather than refusing: the cluster survives
+// without them, and a tenant workload is denied by design.
+func TestDeniedWorkloadImages(t *testing.T) {
+	const (
+		metrics = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		vllm    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		proxy   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+		mesh    = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+		exempt  = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+		release = "c8s-system"
+	)
+	pods := []corev1.Pod{
+		statefulSetPod("gke-managed-cim", "kube-state-metrics-0", "gke.io/ksm:v2", "gke.io/ksm@"+metrics),
+		deploymentPod("tenant", "infer-abc", "example.test/vllm:v1", "example.test/vllm@"+vllm),
+		// A platform pod is the refusal's, not this list's.
+		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
+		// The release's own pods are torn up and replaced by this install.
+		deploymentPod(release, "c8s-router-abc", "ghcr.io/confidential-dot-ai/router:main", "ghcr.io/confidential-dot-ai/router@"+mesh),
+		// An exempt namespace admits its own images by digest.
+		deploymentPod("kube-system", "coredns-abc", "coredns:1.11", "coredns@"+exempt),
+	}
+	got := deniedWorkloadImages(pods, release, []string{"kube-system"}, nil)
+	want := []string{
+		"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@" + metrics,
+		"tenant/infer-abc  example.test/vllm@" + vllm,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("deniedWorkloadImages = %#v, want %#v", got, want)
+	}
+
+	admitted := map[string]bool{metrics: true, vllm: true}
+	if got := deniedWorkloadImages(pods, release, []string{"kube-system"}, admitted); len(got) != 0 {
+		t.Errorf("with both digests admitted, denied = %#v, want none", got)
+	}
+}
+
+// The report names what will be stopped and both ways to admit it, and prints
+// nothing when the policy denies nothing.
+func TestReportDeniedWorkloads(t *testing.T) {
+	var buf bytes.Buffer
+	reportDeniedWorkloads(&buf, []string{"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@sha256:" + strings.Repeat("1", 64)})
+	out := buf.String()
+	for _, want := range []string{"gke-managed-cim/kube-state-metrics-0", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report does not mention %q:\n%s", want, out)
+		}
+	}
+
+	buf.Reset()
+	reportDeniedWorkloads(&buf, nil)
+	if buf.Len() != 0 {
+		t.Errorf("nothing denied must print nothing, got:\n%s", buf.String())
 	}
 }
 

@@ -407,8 +407,12 @@ func confidentialNodePods(ctx context.Context, nodes []string) ([]corev1.Pod, er
 // every install including -f ones — whoever wrote the policy, a cluster whose
 // own pods it denies is broken the same way.
 //
+// It also reports to w the denied containers the cluster survives without (see
+// reportDeniedWorkloads).
+//
 // --force installs anyway, and returns the same list as a warning.
 func preflightImagePolicy(
+	w io.Writer,
 	values map[string]any,
 	components []c8sComponent,
 	releaseNamespace string,
@@ -422,7 +426,10 @@ func preflightImagePolicy(
 	}
 
 	exempt := stringsAtPath(values, exemptNamespacesPath)
-	denied := deniedPlatformImages(pods, releaseNamespace, exempt, admissibleDigests(values, components))
+	admitted := admissibleDigests(values, components)
+	reportDeniedWorkloads(w, deniedWorkloadImages(pods, releaseNamespace, exempt, admitted))
+
+	denied := deniedPlatformImages(pods, releaseNamespace, exempt, admitted)
 	if len(denied) == 0 {
 		return "", nil
 	}
@@ -531,16 +538,37 @@ func isTerminalPod(p corev1.Pod) bool {
 	return p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed
 }
 
+// deniedImage reports whether the rendered policy admits neither the pod's
+// namespace nor the image's digest.
+func deniedImage(
+	pod corev1.Pod,
+	digest string,
+	releaseNamespace string,
+	exempt []string,
+	admitted map[string]bool,
+) bool {
+	return pod.Namespace != releaseNamespace && !slices.Contains(exempt, pod.Namespace) && !admitted[digest]
+}
+
 func deniedPlatformImages(pods []corev1.Pod, releaseNamespace string, exempt []string, admitted map[string]bool) []string {
-	denied := imageLines(runningImages(pods, imageDigest, func(pod corev1.Pod, digest string) bool {
-		return platformPod(pod) && pod.Namespace != releaseNamespace &&
-			!slices.Contains(exempt, pod.Namespace) && !admitted[digest]
+	return cappedImageLines(runningImages(pods, imageDigest, func(pod corev1.Pod, digest string) bool {
+		return platformPod(pod) && deniedImage(pod, digest, releaseNamespace, exempt, admitted)
 	}))
-	if len(denied) > deniedImagesListed {
-		rest := len(denied) - deniedImagesListed
-		denied = append(denied[:deniedImagesListed:deniedImagesListed], fmt.Sprintf("… and %d more", rest))
+}
+
+func deniedWorkloadImages(pods []corev1.Pod, releaseNamespace string, exempt []string, admitted map[string]bool) []string {
+	return cappedImageLines(runningImages(pods, imageDigest, func(pod corev1.Pod, digest string) bool {
+		return !platformPod(pod) && deniedImage(pod, digest, releaseNamespace, exempt, admitted)
+	}))
+}
+
+func cappedImageLines(images []runningImage) []string {
+	lines := imageLines(images)
+	if len(lines) > deniedImagesListed {
+		rest := len(lines) - deniedImagesListed
+		lines = append(lines[:deniedImagesListed:deniedImagesListed], fmt.Sprintf("… and %d more", rest))
 	}
-	return denied
+	return lines
 }
 
 // The set reported to w is the set returned, which every node then admits on.
@@ -626,6 +654,20 @@ func exemptDigestValueArgs(digests map[string][]string) []string {
 		}
 	}
 	return args
+}
+
+func reportDeniedWorkloads(w io.Writer, images []string) {
+	if len(images) == 0 {
+		return
+	}
+	fmt.Fprint(w, "+ image policy: these running containers are not admitted, and no platform pod\n"+
+		"  runs them. Registering the plugin stops them, and admission refuses them after\n"+
+		"  that:\n")
+	for _, image := range images {
+		fmt.Fprintf(w, "    %s\n", image)
+	}
+	fmt.Fprintf(w, "  Admit their digests with nriImagePolicy.bootstrapAllowlist.workloads entries\n"+
+		"  under any command and args, or their namespaces with %s, via -f.\n", exemptNamespacesPath)
 }
 
 // Uncapped: the operator reviews the whole set.
@@ -1006,7 +1048,8 @@ A provider image bump is admitted by the next install.
 The install also refuses, before it touches the cluster, when the resolved
 policy would deny a platform pod the cluster is already running: registering the
 plugin restarts containerd, and a denied control-plane container does not come
-back. --force installs past that one.
+back. --force installs past that one. It prints every other denied container the
+restart stops, which the cluster survives without.
 
 A release build pins each component image to the digest the c8s-cloud chart of
 its own version carries for the same repository
@@ -1235,7 +1278,7 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		// cluster's own platform pods: registering the plugin restarts
 		// containerd, and a denied control-plane static pod takes the API
 		// server with it. Read-only, so it runs with -f too.
-		if warn, err := preflightImagePolicy(values, chart.components, installNamespace, pods, installForce); err != nil {
+		if warn, err := preflightImagePolicy(os.Stdout, values, chart.components, installNamespace, pods, installForce); err != nil {
 			return err
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
