@@ -21,7 +21,7 @@ Each chart renders `router.podSpec` around them and names the directory its
 nginx reads the files from.
 
 `router.podReader` is the router's ServiceAccount, in the router namespace,
-with a ClusterRole that gets, lists and watches pods. cds-attest resolves the
-agent a pattern route names from those pods; the dial still checks the agent's
-leaf, so what it reads only decides where a dial goes. Both charts render it
-and run the router pod under that ServiceAccount.
+with a ClusterRole that lists and watches pods. cds-attest resolves the agent a
+pattern route names from those pods; the dial still checks the agent's leaf, so
+what it reads only decides where a dial goes. Both charts render it and run the
+router pod under that ServiceAccount.
