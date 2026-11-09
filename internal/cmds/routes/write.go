@@ -43,7 +43,7 @@ them on CDS. Its revision must be greater than the stored one.`,
 			if err != nil {
 				return err
 			}
-			if err := put(ctx(cmd), c, manifest, signer, "", "raise the file's revision above the stored one ('c8s routes show')"); err != nil {
+			if err := put(ctx(cmd), &o.Options, c, manifest, signer, "", "raise the file's revision above the stored one ('c8s routes show')"); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "stored revision %d, digest %s\n", m.Revision, digestHex(manifest))
@@ -325,7 +325,7 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 		return err
 	}
 	printResign(cmd.ErrOrStderr(), stored, m)
-	if err := put(ctx(cmd), c, manifest, signer, ifMatch, "another write landed first; re-run the command to apply the change to the stored revision"); err != nil {
+	if err := put(ctx(cmd), &o.Options, c, manifest, signer, ifMatch, "another write landed first; re-run the command to apply the change to the stored revision"); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s; stored revision %d, digest %s\n", done, m.Revision, digestHex(manifest))

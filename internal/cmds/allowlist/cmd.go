@@ -124,7 +124,17 @@ func (o *options) client(ctx context.Context) (allowlistclient.Client, error) {
 }
 
 // signer builds the operator credential. Required only for write subcommands.
-func (o *options) signer() (*operatorauth.Signer, error) { return o.Signer() }
+func (o *options) signer() (allowlistclient.Authorizer, error) {
+	s, err := o.Signer()
+	return chainSigner{s, &o.Options}, err
+}
+
+// chainSigner is the operator's signer, which writes a CDS replica set's
+// allowlist as a chain entry (hacli.WritePolicy) instead.
+type chainSigner struct {
+	*operatorauth.Signer
+	opts *cdsconn.Options
+}
 
 // uploadImageLabels gathers every image label an allowlist carries — workload
 // labels and workload container images — the surface the upload component

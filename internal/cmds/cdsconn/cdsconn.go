@@ -18,6 +18,7 @@ package cdsconn
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"net/http"
@@ -235,6 +236,31 @@ func (o *Options) loadMeasurements() ([][]byte, error) {
 // exact method, path, and body of one write. It refuses an unpinned endpoint —
 // see RequirePinnedEndpoint.
 func (o *Options) Signer() (*operatorauth.Signer, error) {
+	key, err := o.operatorKey()
+	if err != nil {
+		return nil, err
+	}
+	signer, err := operatorauth.NewSigner(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.RequirePinnedEndpoint(); err != nil {
+		return nil, err
+	}
+	return signer, nil
+}
+
+// OperatorPrivateKey is the operator key itself, which signs CDS chain
+// entries; like Signer, it refuses an unpinned endpoint.
+func (o *Options) OperatorPrivateKey() (*ecdsa.PrivateKey, error) {
+	key, err := o.operatorKey()
+	if err != nil {
+		return nil, err
+	}
+	return key, o.RequirePinnedEndpoint()
+}
+
+func (o *Options) operatorKey() (*ecdsa.PrivateKey, error) {
 	keyPath := o.OperatorKey
 	if keyPath == "" {
 		keyPath = os.Getenv(EnvOperatorKey)
@@ -246,14 +272,7 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operator key: %w", err)
 	}
-	signer, err := operatorauth.NewSigner(key)
-	if err != nil {
-		return nil, err
-	}
-	if err := o.RequirePinnedEndpoint(); err != nil {
-		return nil, err
-	}
-	return signer, nil
+	return key, nil
 }
 
 // RequirePinnedEndpoint refuses to mint an operator token for an endpoint whose
