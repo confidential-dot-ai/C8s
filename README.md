@@ -169,8 +169,9 @@ guides is at
 
 ### Prerequisites
 
-- A Kubernetes cluster running upstream containerd, with platform-admin
-  permissions.
+- A Kubernetes cluster running upstream containerd 2.3 or later, with
+  platform-admin permissions. On GKE that is version 1.37.1-gke.1552000 or
+  later ([operator docs](docs/operator.md)).
 - SEV-SNP / TDX confidential VMs as nodes for node-as-CVM
   (see the [first-cluster tutorial](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster)).
   Node kernels must expose the selected TEE attestation interface and support

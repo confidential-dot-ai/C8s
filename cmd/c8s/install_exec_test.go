@@ -524,6 +524,7 @@ func releaseImage(name, digest string) string {
 func clusterKubectl(applied, extra string) string {
 	return `case "$*" in
 ` + extra + `"get nodes -l "*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
+"get nodes -l "*containerRuntimeVersion*) /usr/bin/printf 'node-a\tcontainerd://2.3.4\n' ;;
 "get nodes -l "*'{.metadata.name}{"\n"}'*) /usr/bin/printf 'node-a\n' ;;
 "get nodes -o json") echo '{"items":[{"metadata":{"name":"node-a"},"spec":{"podCIDR":"10.42.0.0/24"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
 "get pods --all-namespaces -o json") echo '{"items":[{"metadata":{"name":"app","namespace":"ws"},"status":{"podIPs":[{"ip":"10.42.0.5"}]}}]}' ;;
@@ -656,6 +657,21 @@ func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "443") || !strings.Contains(err.Error(), "kube-system/ingress-a") {
 		t.Fatalf("want the router host-port conflict, got %v", err)
+	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
+// A node whose containerd predates the NRI container user is refused before
+// helm runs: the admission plugin would read every container as uid 0 and
+// refuse the router and every confidential pod.
+func TestInstallRefusesContainerdWithoutTheContainerUser(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*containerRuntimeVersion*) /usr/bin/printf 'node-a\tcontainerd://2.2.7\n' ;;
+`))
+	err := runInstall(t, "--platform=gke-snp", "--wait=false")
+	want := "containerd " + containerdNRIUserVersion.String() + " or later"
+	if err == nil || !strings.Contains(err.Error(), "node-a (containerd://2.2.7)") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want the container-user refusal naming the node and the version, got %v", err)
 	}
 	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
 }
@@ -1119,6 +1135,7 @@ func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`,
 		`kubectl get nodes -o json`,
 		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}`,
+		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}`,
 	}
 	if !slices.Equal(reads, want) {
 		t.Errorf("install read nodes as:\n%s\nwant:\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
