@@ -3827,22 +3827,26 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 	})
 }
 
-// nodeCDSAddressFile is where the installer stages this cluster's CDS address
-// beside the boot config.
-const nodeCDSAddressFile = "/etc/nri/conf.d/cds-address"
-
 // bootConfigAsStagedOnANode points the boot config at a CDS address file
 // holding what the installer mounts from the measurements ConfigMap, which is
 // the one input the plugin reads from the node rather than the config.
 func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 	t.Helper()
+	var cfg installerBootConfig
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatalf("boot config does not parse: %v\n%s", err, body)
+	}
+	named := cfg.Allowlist.Pull.CDSAddressFile
+	if named == "" {
+		t.Fatalf("boot config names no CDS address file\n%s", body)
+	}
 	path := filepath.Join(t.TempDir(), "cds-address")
 	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
 		t.Fatalf("stage the CDS address file: %v", err)
 	}
-	staged := strings.Replace(string(body), nodeCDSAddressFile, path, 1)
+	staged := strings.Replace(string(body), named, path, 1)
 	if staged == string(body) {
-		t.Fatalf("boot config names no %s\n%s", nodeCDSAddressFile, body)
+		t.Fatalf("boot config does not name %s where the plugin reads it\n%s", named, body)
 	}
 	return []byte(staged)
 }

@@ -135,7 +135,8 @@ nriImagePolicy:
     exemptNamespaces:
       - kube-system
 
-  # Host paths the installer DaemonSet writes to.
+  # Host paths the installer DaemonSet writes to. A launched plugin reads
+  # conf.d beside its binary, else /etc/nri/conf.d.
   hostPaths:
     pluginDir: /opt/nri/plugins
     configDir: /etc/nri/conf.d

@@ -855,3 +855,35 @@ func TestLogNodeRootLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateSocketDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "run", "nri-image-policy")
+	// The umask the chmod has to beat.
+	restore := syscall.Umask(0o077)
+	err := createSocketDir(dir)
+	syscall.Umask(restore)
+	if err != nil {
+		t.Fatalf("createSocketDir: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o711 {
+		t.Errorf("mode = %o, want 711", info.Mode().Perm())
+	}
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := createSocketDir(dir); err != nil {
+		t.Fatalf("createSocketDir on an existing directory: %v", err)
+	}
+	if info, err = os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("mode of an existing directory = %o, want the 755 its owner set", info.Mode().Perm())
+	}
+}
