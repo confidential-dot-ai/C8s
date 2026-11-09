@@ -7,11 +7,11 @@ set -euo pipefail
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$test_dir/../../.." && pwd)
 script="$repo_dir/.github/scripts/chart-image-pins.sh"
-values="$repo_dir/internal/helmchart/c8s/values.yaml"
+pins="$repo_dir/charts/lib/files/components.yaml"
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 tests=0
-cp "$values" "$fixture/values.before"
+cp "$pins" "$fixture/pins.before"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 expect_failure() {
@@ -29,11 +29,9 @@ expect_failure_naming() {
 # Every non-empty digest in the production chart names its tag, and nothing
 # else is listed: the count of listed rows is the count of digest lines.
 rows=$(bash "$script" list)
-digest_lines=$(grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:' "$values")
+digest_lines=$(grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:' "$pins")
 [[ $(wc -l <<<"$rows") -eq "$digest_lines" ]] || fail "listed $(wc -l <<<"$rows") rows for $digest_lines digest lines"
-for repo in registry.k8s.io/kube-state-metrics/kube-state-metrics nginxinc/nginx-unprivileged busybox; do
-  grep -qE "^$repo [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "$repo is not listed with a tag and digest"
-done
+grep -qE "^nginxinc/nginx-unprivileged [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "nginx is not listed with a tag and digest"
 tests=$((tests + 1))
 
 # A fixture: two annotated images, an empty component digest, the
@@ -109,6 +107,9 @@ done
 cmp -s "$good" "$copy" || fail "a refused set changed the file"
 expect_failure bash "$script" set busybox:1.38.0
 expect_failure bash "$script" frobnicate
+# Without a FILE, set rewrites the chart's pins file, and refuses a reference
+# it does not pin.
+expect_failure_naming 'pins alpine:3.20 0 times' bash "$script" set alpine:3.20 "$new"
 tests=$((tests + 1))
 
 # resolve asks a fake crane, digest requests only, for each pinned digest and
@@ -171,7 +172,19 @@ METRICS_CONFIG='{"config":{"Entrypoint":["/metrics","serve"],"Env":["PATH=/usr/b
   expect_failure_naming '"TOKEN":"a=b"' bash "$script" check "$good"
 tests=$((tests + 1))
 
-# The production file is never written by this test.
-cmp -s "$values" "$fixture/values.before" || fail "the production values.yaml changed"
+# A file holding no third-party pin: every subcommand reads it as such, asks
+# the registry nothing, and set refuses a reference it does not pin.
+none="$fixture/none.yaml"
+sed -e '/# Resolve/d' -e 's/^\( *\)digest: .*$/\1digest: ""/' "$good" >"$none"
+: >"$CRANE_LOG"
+for subcommand in list resolve check; do
+  [[ -z "$(bash "$script" "$subcommand" "$none")" ]] || fail "$subcommand printed a row for a file with no pin"
+done
+[[ ! -s "$CRANE_LOG" ]] || fail "a file with no pin made crane calls: $(cat "$CRANE_LOG")"
+expect_failure_naming 'pins busybox:1.38.0 0 times' bash "$script" set busybox:1.38.0 "$new" "$none"
+tests=$((tests + 1))
+
+# The production files are never written by this test.
+cmp -s "$pins" "$fixture/pins.before" || fail "the production components.yaml changed"
 
 echo "chart-image-pins: $tests tests passed"

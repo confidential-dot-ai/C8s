@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// deadPluginFixture runs the baked policy-measurement script (which ends in the same
-// restartAndWait tail as the full installer) against stubs: the c8s binary,
-// nsenter and curl are replaced, and /host is a temp dir.
+// deadPluginFixture runs the installer's restart tail against stubs: the c8s
+// binary, nsenter and curl are replaced, /host is a temp dir, and the tail
+// takes the restart decision the steps above it would have reached.
 type deadPluginFixture struct {
 	script     string
 	root       string
@@ -22,18 +22,43 @@ type deadPluginFixture struct {
 	healthAnswers bool
 }
 
+// restartTailTemplate renders the installer's shared restart tail on its own,
+// after the host layout and helpers it relies on. Its decision input is
+// restart_needed, which its callers set before including it, so the fixture
+// takes that from the environment.
+const restartTailTemplate = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restart-tail
+  namespace: {{ .Release.Namespace }}
+data:
+  tail.sh: |
+    set -eu
+    CONTAINERD_DIR=/host{{ include "nri-image-policy.containerdConfigDir" . }}
+    RESTART_COMMAND={{ include "nri-image-policy.restartCommand" . | quote }}
+{{ .Files.Get "files/scripts/nri-containerd-config.sh" | indent 4 }}
+    restart_needed=$RESTART_NEEDED
+{{ include "nri-image-policy.restartAndWait" (dict "root" .) | indent 4 }}
+`
+
 func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 	t.Helper()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.baked=true")
+	dir := t.TempDir()
+	chart := extractedChart(t)
+	if err := os.WriteFile(filepath.Join(chart, "templates", "zz-restart-tail.yaml"), []byte(restartTailTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := helmTemplateIn(t, chart)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := containerArgs(t, &ds, "install")[0]
+	script := renderedConfigMap(t, out, "restart-tail").Data["tail.sh"]
+	if script == "" {
+		t.Fatal("the chart rendered no restart tail")
+	}
 
-	dir := t.TempDir()
 	f := &deadPluginFixture{
-		script: filepath.Join(dir, "measure-policies.sh"),
+		script: filepath.Join(dir, "restart-tail.sh"),
 		root:   filepath.Join(dir, "host"),
 		log:    filepath.Join(dir, "calls.log"),
 	}
@@ -52,7 +77,6 @@ func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 		}
 	}
 	stub("c8s", `case "$2" in
-set-measure-policies) echo "$MEASURE_RESULT" ;;
 plugin-ready) exit "$PLUGIN_CHECK_RC" ;;
 esac`)
 	stub("nsenter", "exit 0")
@@ -71,7 +95,11 @@ printf 'ok [http 200]'`)
 	return f
 }
 
-func (f *deadPluginFixture) run(t *testing.T, outcome string, checkRC int) (string, []string) {
+func (f *deadPluginFixture) run(
+	t *testing.T,
+	restartNeeded bool,
+	checkRC int,
+) (string, []string) {
 	t.Helper()
 	_ = os.Remove(f.log)
 	cmd := exec.Command("/bin/sh", f.script)
@@ -79,7 +107,15 @@ func (f *deadPluginFixture) run(t *testing.T, outcome string, checkRC int) (stri
 	if f.healthAnswers {
 		guardRC = 0
 	}
-	cmd.Env = append(os.Environ(), "MEASURE_RESULT="+outcome, fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC), fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC))
+	needed := 0
+	if restartNeeded {
+		needed = 1
+	}
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("RESTART_NEEDED=%d", needed),
+		fmt.Sprintf("PLUGIN_CHECK_RC=%d", checkRC),
+		fmt.Sprintf("HEALTH_GUARD_RC=%d", guardRC),
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("script failed: %v\n%s", err, out)
@@ -107,7 +143,7 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 	stamp := filepath.Join(f.runtimeDir, "dead-plugin-restart")
 
 	// Plugin alive, nothing changed: no restart.
-	_, calls := f.run(t, "unchanged", 0)
+	_, calls := f.run(t, false, 0)
 	if !calledWith(calls, "c8s nri-image-policy plugin-ready --check --plugin-path=/opt/nri/plugins/10-nri-image-policy") {
 		t.Errorf("script did not check for the plugin process; calls %q", calls)
 	}
@@ -115,17 +151,18 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 		t.Errorf("restarted containerd with the plugin alive; calls %q", calls)
 	}
 
-	// Pins changed: the restart is already due, the check is skipped.
-	_, calls = f.run(t, "updated", 1)
+	// Something the installer wrote changed: the restart is already due, so
+	// the check is skipped.
+	_, calls = f.run(t, true, 1)
 	if !calledWith(calls, "nsenter") || calledWith(calls, "c8s nri-image-policy plugin-ready") {
-		t.Errorf("switch update: calls %q, want a restart without the plugin check", calls)
+		t.Errorf("install change: calls %q, want a restart without the plugin check", calls)
 	}
 	if _, err := os.Stat(stamp); err == nil {
-		t.Error("a switch-update restart wrote the dead-plugin stamp")
+		t.Error("an install-change restart wrote the dead-plugin stamp")
 	}
 
 	// Plugin dead: restart once and stamp it.
-	out, calls := f.run(t, "unchanged", 1)
+	out, calls := f.run(t, false, 1)
 	if !calledWith(calls, "nsenter") {
 		t.Fatalf("dead plugin did not restart containerd; calls %q\n%s", calls, out)
 	}
@@ -134,7 +171,7 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 	}
 
 	// Dead again within the window: no second restart.
-	out, calls = f.run(t, "unchanged", 1)
+	out, calls = f.run(t, false, 1)
 	if calledWith(calls, "nsenter") {
 		t.Errorf("restarted containerd twice within the window; calls %q", calls)
 	}
@@ -147,7 +184,7 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 		if err := os.WriteFile(stamp, []byte(content+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, calls := f.run(t, "unchanged", 1); !calledWith(calls, "nsenter") {
+		if _, calls := f.run(t, false, 1); !calledWith(calls, "nsenter") {
 			t.Errorf("stamp %q: no restart; calls %q", content, calls)
 		}
 	}
@@ -155,11 +192,11 @@ func TestChartNriInstallerRestartsForDeadPlugin(t *testing.T) {
 
 // The process check can misread a process tree it was not written for. When
 // the plugin's own health socket still answers, the installer must not restart
-// the runtime (on RKE2, the whole rke2 unit) on the check's word alone.
+// the runtime on the check's word alone.
 func TestChartNriInstallerTrustsHealthSocketOverProcessCheck(t *testing.T) {
 	f := newDeadPluginFixture(t)
 	f.healthAnswers = true
-	out, calls := f.run(t, "unchanged", 1)
+	out, calls := f.run(t, false, 1)
 	if calledWith(calls, "nsenter") {
 		t.Errorf("restarted containerd while the health socket answered; calls %q", calls)
 	}

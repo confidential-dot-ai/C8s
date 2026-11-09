@@ -11,8 +11,8 @@ on:
 permissions: {}
 
 env:
-  CHART_DIR: internal/helmchart/c8s
-  CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s
+  CHART_DIR: charts/cloud
+  CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s-cloud
   CHART_REPO: ghcr.io/confidential-dot-ai/charts
   COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
   COSIGN_VERSION: "3.1.3"
@@ -31,9 +31,6 @@ env:
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
   RELEASE_WAIT_INTERVAL: 15s
-  # Node-image platforms whose allowlist seed is a release asset. Both formats
-  # of a platform that c8s-image.yml publishes bake that seed.
-  RELEASE_SEED_PLATFORMS: tdx snp
 
 jobs:
   calculate:
@@ -138,10 +135,7 @@ jobs:
           set -euo pipefail
 
           archive="$RUNNER_TEMP/git-cliff-$GIT_CLIFF_VERSION-x86_64-unknown-linux-musl.tar.gz"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "$archive" \
-            "https://github.com/orhun/git-cliff/releases/download/v$GIT_CLIFF_VERSION/$(basename "$archive")"
+          .github/scripts/fetch-release.sh orhun/git-cliff "v$GIT_CLIFF_VERSION" "$(basename "$archive")" "$archive"
           printf '%s  %s\n' "$GIT_CLIFF_SHA256" "$archive" | sha256sum --check --status
           tar -xzf "$archive" -C "$RUNNER_TEMP"
 
@@ -191,7 +185,7 @@ jobs:
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -220,11 +214,13 @@ jobs:
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             echo "reusing $IMAGE:$staging_tag at $digest"
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push commit-scoped staging image
+        id: build
         if: steps.staging.outputs.exists != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -240,15 +236,30 @@ jobs:
           # see docker.yml.
           cache-from: type=registry,ref=${{ matrix.image }}:main
 
-      - name: Validate commit-scoped staging image
+      # The chart job stamps the digest this leg pushed or reused.
+      - name: Validate and record commit-scoped staging image
         env:
+          BINARY: ${{ matrix.binary }}
           IMAGE: ${{ matrix.image }}
+          PUSHED_DIGEST: ${{ steps.build.outputs.digest || steps.staging.outputs.digest }}
           TARGET_SHA: ${{ inputs.target-sha }}
         run: |
           set -euo pipefail
 
-          digest="$(oras resolve "$IMAGE:release-$TARGET_SHA")"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PUSHED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(oras resolve "$IMAGE:release-$TARGET_SHA")" = "$PUSHED_DIGEST"
+          mkdir -p release-digest
+          printf '%s\t%s\n' "$IMAGE" "$PUSHED_DIGEST" > "release-digest/$BINARY.tsv"
+
+      - name: Upload release image digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-digest-${{ matrix.binary }}-${{ inputs.target-sha }}
+          path: release-digest/${{ matrix.binary }}.tsv
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: ./.github/actions/setup-grype
 
       - name: Scan release image
         id: container-scan
@@ -268,8 +279,8 @@ jobs:
 
   chart:
     name: Build release chart
-    needs: calculate
-    if: needs.calculate.outputs.publish == 'true'
+    needs: [calculate, images]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -289,6 +300,36 @@ jobs:
       - name: Lint and render chart
         run: .github/scripts/chart-verify.sh
 
+      - name: Download release image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-digest-*-${{ inputs.target-sha }}
+          path: ${{ runner.temp }}/release-digest
+          merge-multiple: true
+
+      - name: Install crane (checksum-pinned)
+        env:
+          VERSION: v0.21.6
+          # SHA256 from the release's checksums.txt (Linux_x86_64).
+          SHA256: 7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d -- "$RUNNER_TEMP/crane.XXXXXX")
+          curl -fsSL --retry 3 -o "$dir/crane.tar.gz" \
+            "https://github.com/google/go-containerregistry/releases/download/$VERSION/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "$SHA256  $dir/crane.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/crane.tar.gz" -C "$dir" crane
+          echo "$dir" >>"$GITHUB_PATH"
+          "$dir/crane" version
+
+      - name: Stamp release image digests
+        run: |
+          set -euo pipefail
+
+          cat "$RUNNER_TEMP"/release-digest/*.tsv > "$RUNNER_TEMP/release-image-digests"
+          cp -rL "$CHART_DIR" "$RUNNER_TEMP/c8s-cloud"
+          .github/scripts/chart-stamp.sh stamp "$RUNNER_TEMP/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
+
       - name: Package deterministic release chart
         env:
           TARGET_SHA: ${{ inputs.target-sha }}
@@ -304,115 +345,37 @@ jobs:
           raw="$RUNNER_TEMP/chart-raw"
           tree="$RUNNER_TEMP/chart-tree"
           mkdir -p "$raw" "$tree" dist
-          helm package "$CHART_DIR" \
+          helm package "$RUNNER_TEMP/c8s-cloud" \
             --version "$VERSION" \
             --app-version "$VERSION" \
             --destination "$raw"
-          tar -xzf "$raw/c8s-$VERSION.tgz" -C "$tree"
+          tar -xzf "$raw/c8s-cloud-$VERSION.tgz" -C "$tree"
           if find "$tree" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
             echo "::error::chart package contains a non-regular entry"
             exit 1
           fi
           tar --sort=name --owner=0 --group=0 --numeric-owner \
-            --mtime="@$source_epoch" -C "$tree" -cf - c8s \
-            | gzip -n > "dist/c8s-$VERSION.tgz"
-          (cd dist && sha256sum "c8s-$VERSION.tgz" > SHA256SUMS)
-          helm show chart "dist/c8s-$VERSION.tgz" > /dev/null
+            --mtime="@$source_epoch" -C "$tree" -cf - c8s-cloud \
+            | gzip -n > "dist/c8s-cloud-$VERSION.tgz"
+          (cd dist && sha256sum "c8s-cloud-$VERSION.tgz" > SHA256SUMS)
+          helm show chart "dist/c8s-cloud-$VERSION.tgz" > /dev/null
+          CHART_DIR="$tree/c8s-cloud" .github/scripts/chart-verify.sh
 
       - name: Upload release chart
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: c8s-release-chart-${{ inputs.target-sha }}
           path: |
-            dist/c8s-*.tgz
+            dist/c8s-cloud-*.tgz
             dist/SHA256SUMS
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  # The allowlist seed each node-image platform bakes, rendered from the staging
-  # digests that publish promotes and the node image later resolves. The sign
-  # job lists these assets in the statement; the node build checks its image
-  # against them before it publishes.
-  seeds:
-    name: Render release allowlist seeds
-    needs: [calculate, images]
-    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      # calculate requires target-sha to equal github.sha. Naming github.sha
-      # tells code scanning this unprivileged job builds the pushed commit.
-      - name: Checkout release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - uses: ./.github/actions/setup-go-c8s
-
-      - name: Read the Helm version mkosi.sync renders with
-        id: helm
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^HELM_VERSION="\(v[0-9.]*\)"$/\1/p' images/node-guest/c8s/mkosi.sync)"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: ${{ steps.helm.outputs.version }}
-
-      - name: Setup ORAS
-        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
-        with:
-          version: ${{ env.ORAS_VERSION }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Render allowlist seeds
-        env:
-          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
-          TARGET_SHA: ${{ inputs.target-sha }}
-        run: |
-          set -euo pipefail
-
-          digest() {
-            local d
-            d="$(oras resolve "ghcr.io/confidential-dot-ai/$1:release-$TARGET_SHA")"
-            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]
-            echo "$d"
-          }
-          operator="$(digest c8s-operator)"
-          mesh="$(digest armtls-mesh)"
-          make build-c8s VERSION="$RELEASE_TAG"
-          # shellcheck disable=SC2086 # one argument per platform
-          bash .github/scripts/release-seeds.sh render build/c8s dist \
-            "$operator" "$mesh" $RELEASE_SEED_PLATFORMS
-          (cd dist && sha256sum allowlist-seed-*.json)
-
-      - name: Upload allowlist seeds
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: c8s-release-seeds-${{ inputs.target-sha }}
-          path: dist/allowlist-seed-*.json
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
 
   publish:
     name: Publish release
-    needs: [calculate, images, chart, seeds]
-    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success' && needs.seeds.result == 'success'
+    needs: [calculate, images, chart]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -422,7 +385,16 @@ jobs:
     environment:
       name: release
       deployment: false
+    outputs:
+      chart-digest: ${{ steps.chart.outputs.digest }}
     steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.target-sha }}
+          sparse-checkout: .github/scripts
+
       - name: Download release chart
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -465,11 +437,11 @@ jobs:
             echo "::error::release payload contains a non-regular entry"
             exit 1
           fi
-          chart="dist/c8s-$VERSION.tgz"
+          chart="dist/c8s-cloud-$VERSION.tgz"
           test -f "$chart"
           test ! -L "$chart"
           manifest_hash="$(
-            awk -v file="c8s-$VERSION.tgz" \
+            awk -v file="c8s-cloud-$VERSION.tgz" \
               '$2 == file { count++; digest=$1 } END { if (count == 1) print digest; else exit 1 }' \
               dist/SHA256SUMS
           )"
@@ -536,15 +508,24 @@ jobs:
               >> "$RUNNER_TEMP/release-image-digests"
           done < "$RUNNER_TEMP/release-images"
 
-          chart_tags="$(oras repo tags "$CHART_IMAGE")"
+          mkdir -p "$RUNNER_TEMP/stamped"
+          tar -xzf "dist/c8s-cloud-$VERSION.tgz" -C "$RUNNER_TEMP/stamped"
+          .github/scripts/chart-stamp.sh check "$RUNNER_TEMP/stamped/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
+
+          # Until the first release pushes it, the registry knows no chart repository.
+          if ! chart_tags="$(oras repo tags "$CHART_IMAGE" 2>"$RUNNER_TEMP/chart-tags.err")"; then
+            grep -q 'name unknown' "$RUNNER_TEMP/chart-tags.err" \
+              || { cat "$RUNNER_TEMP/chart-tags.err" >&2; exit 1; }
+            chart_tags=""
+          fi
           chart_exists=false
           if grep -Fxq -- "$VERSION" <<< "$chart_tags"; then
             chart_exists=true
             mkdir -p "$RUNNER_TEMP/chart-preflight"
             helm pull "oci://$CHART_IMAGE" --version "$VERSION" \
               --destination "$RUNNER_TEMP/chart-preflight"
-            cmp "dist/c8s-$VERSION.tgz" \
-              "$RUNNER_TEMP/chart-preflight/c8s-$VERSION.tgz"
+            cmp "dist/c8s-cloud-$VERSION.tgz" \
+              "$RUNNER_TEMP/chart-preflight/c8s-cloud-$VERSION.tgz"
           fi
           echo "chart-exists=$chart_exists" >> "$GITHUB_OUTPUT"
 
@@ -661,6 +642,7 @@ jobs:
           done < "$RUNNER_TEMP/release-image-digests"
 
       - name: Publish or verify Helm chart
+        id: chart
         env:
           CHART_EXISTS: ${{ steps.preflight.outputs.chart-exists }}
           VERSION: ${{ needs.calculate.outputs.version }}
@@ -668,21 +650,25 @@ jobs:
           set -euo pipefail
 
           if [ "$CHART_EXISTS" = false ]; then
-            helm push "dist/c8s-$VERSION.tgz" "oci://$CHART_REPO"
+            helm push "dist/c8s-cloud-$VERSION.tgz" "oci://$CHART_REPO"
           fi
           mkdir -p "$RUNNER_TEMP/chart-verify"
           helm pull "oci://$CHART_IMAGE" --version "$VERSION" \
             --destination "$RUNNER_TEMP/chart-verify"
-          cmp "dist/c8s-$VERSION.tgz" \
-            "$RUNNER_TEMP/chart-verify/c8s-$VERSION.tgz"
+          cmp "dist/c8s-cloud-$VERSION.tgz" \
+            "$RUNNER_TEMP/chart-verify/c8s-cloud-$VERSION.tgz"
+          digest="$(oras resolve "$CHART_IMAGE:$VERSION")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-  # A keyless Sigstore signature over {repository, tag, commit} and the
-  # sha256 of each allowlist seed asset lets downstream automation trust a
-  # tag without trusting everyone who can push tags. Only this job holds an
-  # OIDC token. It neither checks out nor runs repository source.
+  # A keyless Sigstore signature over {repository, tag, commit, chart} lets
+  # downstream automation trust a tag, and the chart manifest it names, without
+  # trusting everyone who can push tags. Only
+  # this job holds an OIDC token. It neither checks out nor runs repository
+  # source.
   sign:
     name: Sign release tag
-    needs: [calculate, publish, seeds]
+    needs: [calculate, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -694,6 +680,7 @@ jobs:
     env:
       BUNDLE: release-statement.sigstore.json
       CHANNEL: ${{ needs.calculate.outputs.channel }}
+      CHART_DIGEST: ${{ needs.publish.outputs.chart-digest }}
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
       STATEMENT: release-statement.json
@@ -705,20 +692,18 @@ jobs:
           set -euo pipefail
 
           binary="$RUNNER_TEMP/cosign"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "$binary" \
-            "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
+          # The c8s mirror first, as in .github/scripts/fetch-release.sh, which
+          # this job cannot use: it does not check out the repository.
+          asset="sigstore/cosign/v$COSIGN_VERSION/cosign-linux-amd64"
+          curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --retry 3 \
+            --output "$binary" "https://confosaptmirrorae526a.blob.core.windows.net/gh-releases/$asset" ||
+            curl --fail --location --proto '=https' --tlsv1.2 --max-time 120 \
+              --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 \
+              --output "$binary" "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
           printf '%s  %s\n' "$COSIGN_SHA256" "$binary" | sha256sum --check --status
           chmod +x "$binary"
           "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
           echo "COSIGN_BIN=$binary" >> "$GITHUB_ENV"
-
-      - name: Download allowlist seeds
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: c8s-release-seeds-${{ inputs.target-sha }}
-          path: seeds
 
       # The statement names the commit that the published tag object points
       # at, read back from GitHub rather than taken from the caller. In a
@@ -765,21 +750,14 @@ jobs:
           )"
           test "$target_type" = commit
           test "$target_sha" = "$TARGET_SHA"
-
-          allowlist_seeds='{}'
-          for platform in $RELEASE_SEED_PLATFORMS; do
-            asset="allowlist-seed-$platform.json"
-            sha="$(sha256sum < "seeds/$asset")"
-            allowlist_seeds="$(jq -c --arg p "$platform" --arg a "$asset" --arg s "${sha%% *}" \
-              '.[$p] = {asset: $a, sha256: $s}' <<< "$allowlist_seeds")"
-          done
+          [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
-            --argjson allowlistSeeds "$allowlist_seeds" \
-            '{repository: $repository, tag: $tag, commit: $commit, allowlistSeeds: $allowlistSeeds}' \
+            --arg chart "$CHART_IMAGE@$CHART_DIGEST" \
+            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart}' \
             > "$STATEMENT"
           cat "$STATEMENT"
 
@@ -816,52 +794,37 @@ jobs:
             release_exists=false
           fi
 
-          seeds=()
-          for platform in $RELEASE_SEED_PLATFORMS; do
-            seeds+=("allowlist-seed-$platform.json")
-          done
-          payload=("$STATEMENT" "$BUNDLE" "${seeds[@]}")
-          present=0
-          patterns=()
-          for asset in "${payload[@]}"; do
-            if grep -Fxq -- "$asset" <<< "$assets"; then
-              present=$((present + 1))
-            fi
-            patterns+=(--pattern "$asset")
-          done
+          statement_published=false
+          bundle_published=false
+          if grep -Fxq -- "$STATEMENT" <<< "$assets"; then statement_published=true; fi
+          if grep -Fxq -- "$BUNDLE" <<< "$assets"; then bundle_published=true; fi
 
-          if [ "$present" = "${#payload[@]}" ]; then
+          if [ "$statement_published" = true ] && [ "$bundle_published" = true ]; then
             mkdir published
-            gh_release download "$RELEASE_TAG" --dir published "${patterns[@]}"
+            gh_release download "$RELEASE_TAG" --dir published \
+              --pattern "$STATEMENT" --pattern "$BUNDLE"
             cmp "$STATEMENT" "published/$STATEMENT"
-            for seed in "${seeds[@]}"; do
-              cmp "seeds/$seed" "published/$seed"
-            done
             cp "published/$BUNDLE" "$BUNDLE"
             verify
             echo "existing release statement for $RELEASE_TAG verified"
             exit 0
           fi
-          if [ "$present" != 0 ]; then
-            echo "::error::release $RELEASE_TAG has only part of its signed statement and seeds; delete those assets and rerun"
+          if [ "$statement_published" = true ] || [ "$bundle_published" = true ]; then
+            echo "::error::release $RELEASE_TAG carries a statement without its bundle or the reverse; delete that asset and rerun"
             exit 1
           fi
 
           "$COSIGN_BIN" sign-blob --yes --bundle "$BUNDLE" "$STATEMENT"
           verify
 
-          files=("$STATEMENT" "$BUNDLE")
-          for seed in "${seeds[@]}"; do
-            files+=("seeds/$seed")
-          done
           if [ "$release_exists" = true ]; then
-            gh_release upload "$RELEASE_TAG" "${files[@]}"
+            gh_release upload "$RELEASE_TAG" "$STATEMENT" "$BUNDLE"
           else
             gh_release create "$RELEASE_TAG" \
               --verify-tag \
               --latest="$UPDATE_LATEST" \
               --prerelease="$prerelease" \
               --title "$RELEASE_TAG" \
-              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT and the allowlist seeds it lists." \
-              "${files[@]}"
+              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT." \
+              "$STATEMENT" "$BUNDLE"
           fi

@@ -40,7 +40,7 @@ cluster; the log rules afterwards.
 
 | Field | Role | How it changes |
 |---|---|---|
-| `nodes` | the node images the cluster certifies at its Genesis | a `node-images` decree, which carries the whole set |
+| `nodes` | the node images the cluster certifies at its Genesis, if any | a `node-images` decree, which carries the whole set |
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
@@ -49,8 +49,7 @@ cluster; the log rules afterwards.
 The CDS images a replica may run are not in the file at all: the Genesis
 decree carries the first set, and a `pins` decree replaces it.
 
-`c8s cds config new --replica ... --voters 3` writes the file, and `c8s node
-launch-config new` writes the same under `--cds-replica` and `--cds-voters`. A
+`c8s cds config new --replica ... --voters 3` writes the file. A
 file with no `--replica` runs one CDS, which is the deployment
 [operator.md](operator.md) describes.
 
@@ -71,10 +70,23 @@ alarm when two members answer at one address.
 The ports are fixed. Clients and the operator reach a replica on 8443, and the
 replicas reach each other on 8444.
 
+The `ha` commands reach a name that resolves to one address by that name, so
+the TLS handshake carries it as SNI. Replicas can then sit behind one TLS
+passthrough front door that routes each name to its replica, and the operator
+still tells them apart. armTLS authenticates a replica by its evidence, never
+by the name. A name that resolves to several addresses is reached at each of
+them, as before.
+
 A node names its cluster's CDS by one `cds.address`. Several replicas behind
 that one name, or a load balancer in front of them, is what makes a client's
 request survive the loss of a replica: ordinary DNS resolution and the
 client's own retry do the failover.
+
+A load balancer in front of the replicas must pass TLS through to them
+without terminating it: the TLS session to a replica is the attested channel.
+It must also health-check each replica with an HTTPS `GET /readyz` on 8443. A
+replica that does not serve fails `/readyz` but still accepts connections, so
+a TCP health check keeps it in rotation.
 
 ## Decrees
 
@@ -96,8 +108,7 @@ applied is `c8s cds ha decrees`, read over the same channel.
 
 `genesis`, `recover` and `admit` are posted to the replica their `--target`
 names, which holds the decree until it acts on it. `--out` writes the signed
-decree to a file as well, which is what `launch-config add-agent
---pin-decree` reads.
+decree to a file as well.
 
 | Decree | What it does |
 |---|---|
@@ -168,12 +179,50 @@ is what a client pins and what `--cds-pin` takes during an image roll.
 `/readyz` answers for one replica: it serves when it holds the cluster,
 follows the log, and holds a read lease its leader confirmed. A replica that
 cannot reach a leader stops serving rather than answering from the state it
-still holds.
+still holds. KubeVirt guests use an HTTPS `/readyz` probe on port 8443.
+The aggregate client Service publishes ready guests on 8443; per-replica
+Services publish unready addresses on 8443 and 8444 for bootstrap, diagnostics
+and peer traffic.
+
+The cached readiness lease does not authorize a protected request. Each such
+request also confirms a new watermark through the leader's Raft barrier and
+waits for that watermark to apply locally before reading policy or releasing a
+secret. A revocation acknowledged before the request starts therefore applies
+to its authorization, even on a follower whose readiness lease is still valid.
+
+If confirmation fails, the request returns HTTP 503 without reaching its
+handler. This adds a quorum confirmation to protected requests and can increase
+latency or refusals during leader transitions. Health, readiness, metrics and
+`/ha/status`, `/ha/pins`, `/ha/decrees` remain reachable for diagnosis and
+recovery without a fresh confirmation. `/readyz` can briefly remain successful
+while protected requests fail their confirmation.
+
+A replica that observes its clock lagging an authenticated current member
+beyond the configured JWT allowance refuses client requests, CA acquisition
+and new local mutations. Its readiness reason describes the observed lag;
+voting, log application and in-memory state continue. This refusal lasts for
+the process lifetime, even if later clocks agree. Before an observation, a
+request can still fail JWT validation with HTTP 401. Restarting a process
+does not establish that the VM clock is repaired.
 
 **roll_safe** is the other gate, and the leader alone answers it: the seats
 are filled by voters that answer, none of them is retiring, and every staying
 voter holds the newest seat change. It is the gate to wait for between the
-replicas of a roll, and `ha status` prints it as `roll_safe=true`.
+replicas of a roll, and `ha status` prints it as `roll_safe=true`. A current
+voter known to be clock-quarantined keeps this gate false. A quarantined
+leader hands authority to a caught-up, clock-eligible voter while retaining
+its vote and replicated state.
+
+Controlled clock repair requires a serving leader and a working voting
+majority. Keep the serving leader and a majority of current voters available
+throughout repair.
+Repair or recreate one affected VM using the same launch file and address and a
+currently admitted image. Before repairing another, verify its replacement
+has joined, serves, has applied the leader's recorded watermark, and occupies
+a voter seat with the old member ID retired. The ordinary rolling gate stays
+false while a current voter is known quarantined. If no eligible voter can lead,
+preserve the running replicas and their state and escalate for recovery;
+a retained quorum alone does not restore authority.
 
 ## The CDS images a replica may run
 
@@ -200,6 +249,9 @@ posted to refuse one that binds none. A Genesis carries the nodes it names as
 they are. An upgrade is two decrees with the node relaunches between them:
 first the old and the new image together, then the new image alone. No launch
 file, client pin or CDS VM changes for it. Runbook 5 has the steps.
+
+A launch file may name no nodes. The Genesis of a cluster of workers then
+certifies only the workers of its first worker document (`--worker-document`).
 
 For a verifier this moves where the set comes from. The launch file's `nodes`
 is only the set the cluster started from, so

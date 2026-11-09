@@ -49,6 +49,8 @@ func NewCmd() *cobra.Command {
 	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
 	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "TTL of an issued mesh leaf, capped at 24h; a named leaf is further capped by --named-cert-ttl")
 	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
+	flags.DurationVar(&cfg.routerCertTTL, "router-cert-ttl", 20*time.Second, "TTL of a leaf issued to a router sandbox; must be shorter than --allowlist-node-delay, so every router advertises an allowlist write before it takes effect")
+	flags.DurationVar(&cfg.allowlistNodeDelay, "allowlist-node-delay", 30*time.Second, "how long after it is written an allowlist write takes effect on nodes; a write replaced before then never does")
 	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "how long an attestation nonce CDS hands out stays redeemable")
 	flags.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request /attest timeout (0 disables)")
 	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, "max request body bytes on /attest, /authenticate and the workload secret routes")
@@ -119,6 +121,8 @@ type config struct {
 	jwtClockSkew        int64
 	certTTL             time.Duration
 	namedCertTTL        time.Duration
+	routerCertTTL       time.Duration
+	allowlistNodeDelay  time.Duration
 	challengeTTL        time.Duration
 	requestTimeout      time.Duration
 	maxRequestSize      int64

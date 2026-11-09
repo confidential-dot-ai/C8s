@@ -2,6 +2,7 @@ package cds
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha512"
 	"encoding/json"
 	"fmt"
@@ -56,13 +57,26 @@ type operatorCluster struct {
 func newOperatorCluster(t *testing.T) operatorCluster {
 	t.Helper()
 	key, operatorPEM := operatorKeyPair(t)
+	config := measuredDocument(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}})
+	return newOperatorClusterBooting(t, key, operatorPEM, config)
+}
+
+// newOperatorClusterBooting is a cluster whose CDS boots config, which pins
+// operatorPEM, the public key of key.
+func newOperatorClusterBooting(
+	t *testing.T,
+	key *ecdsa.PrivateKey,
+	operatorPEM []byte,
+	config []byte,
+) operatorCluster {
+	t.Helper()
 	keyPEM, err := certutil.MarshalECKeyPEM(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	c := operatorCluster{
-		config:      measuredDocument(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}}),
+		config:      config,
 		configPath:  filepath.Join(dir, "cds-config.yaml"),
 		keyPath:     filepath.Join(dir, "operator.pem"),
 		operatorPEM: operatorPEM,

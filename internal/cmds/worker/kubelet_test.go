@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -117,49 +116,6 @@ func TestReadBootstrapTokenRefusesLinksAndFIFOs(t *testing.T) {
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("readBootstrapToken(%s) blocked", filepath.Base(path))
-		}
-	}
-}
-
-// writeBootID gives root a kernel boot ID.
-func writeBootID(t *testing.T, root, id string) {
-	t.Helper()
-	path := filepath.Join(root, bootIDPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o444); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// mustNodeName is the node name a worker rooted at root registers under.
-func mustNodeName(t *testing.T, root string) string {
-	t.Helper()
-	name, err := nodeName(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return name
-}
-
-func TestNodeNameFollowsTheBootID(t *testing.T) {
-	format := regexp.MustCompile(`^n-[0-9a-f]{16}$`)
-	name := func(id string) string {
-		t.Helper()
-		root := t.TempDir()
-		writeBootID(t, root, id)
-		return mustNodeName(t, root)
-	}
-	first, rerun, nextBoot := name("5a8c3b0e-9d1f-4e57-a2c6-0f3e8b7d1c24"), name("5a8c3b0e-9d1f-4e57-a2c6-0f3e8b7d1c24"), name("c0ffee00-1111-4222-8333-444455556666")
-	if !format.MatchString(first) || first != rerun || first == nextBoot {
-		t.Fatalf("names %q, %q (same boot), %q (next boot); want n-<16 hex>, stable within a boot, new on the next", first, rerun, nextBoot)
-	}
-	empty := t.TempDir()
-	writeBootID(t, empty, "")
-	for what, root := range map[string]string{"an empty boot ID": empty, "no boot ID": t.TempDir()} {
-		if got, err := nodeName(root); err == nil {
-			t.Errorf("nodeName = %q from %s", got, what)
 		}
 	}
 }

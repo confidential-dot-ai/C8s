@@ -147,7 +147,9 @@ type sandboxObservation struct {
 	// Sysctls is the container's own sysctl settings.
 	Sysctls []string
 	// Seccomp is the spec's seccomp default action, or "none" when the
-	// container runs unfiltered. Observed, not judged — see the doc.
+	// container runs unfiltered. Judged in the pod role only (violations): a
+	// node's own pods may run unfiltered under the node TCB, a pod CVM's
+	// kubelet applies the runtime default and the floor refuses an opt-out.
 	Seccomp string
 }
 
@@ -212,8 +214,9 @@ func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mou
 }
 
 // violations names every way the observation leaves the sandbox. An empty
-// result is the only admission.
-func (o sandboxObservation) violations() []string {
+// result is the only admission. podRole adds the pod CVM floor: a container
+// whose seccomp profile does not deny by default.
+func (o sandboxObservation) violations(podRole bool) []string {
 	var out []string
 	for _, ns := range sandboxNamespaces {
 		if !slices.Contains(o.PodNamespaces, ns) {
@@ -244,8 +247,16 @@ func (o sandboxObservation) violations() []string {
 	if len(o.Sysctls) > 0 {
 		out = append(out, "container sysctl")
 	}
+	if podRole && !slices.Contains(denyingSeccompActions, o.Seccomp) {
+		out = append(out, "unfiltered seccomp")
+	}
 	return out
 }
+
+// denyingSeccompActions are the default actions under which a syscall the
+// profile does not list fails. Any other default, including a missing
+// profile, lets every syscall through and is unfiltered.
+var denyingSeccompActions = []string{"SCMP_ACT_ERRNO", "SCMP_ACT_KILL", "SCMP_ACT_KILL_PROCESS", "SCMP_ACT_KILL_THREAD", "SCMP_ACT_TRAP"}
 
 // logAttrs renders the observation as slog key/value pairs.
 func (o sandboxObservation) logAttrs() []any {
@@ -338,9 +349,10 @@ func grantsBind(source, destination string, mounts []allowlist.ObservedMount, gr
 
 // nodeMounts names the sources credentialMounts binds into node credential clients.
 type nodeMounts struct {
-	socketDir  string
-	cdsPins    string
-	cdsAddress string
+	socketDir      string
+	cdsPins        string
+	cdsAddress     string
+	clientDocument string
 }
 
 // takesNodeMount reports whether ctr takes the node's own bind at destination:
@@ -356,6 +368,9 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 		return fetchesRouteManifest(pod, ctr)
 	case workloadclaims.CDSAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	case workloadclaims.ClientDocumentPath:
+		// Only a Pod CVM with a client document has a source for it.
+		return true
 	}
 	return false
 }
@@ -363,10 +378,11 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
 	source := map[string]string{
-		workloadclaims.SidecarSocketDir:  own.socketDir,
-		workloadclaims.CDSPinsPath:       own.cdsPins,
-		workloadclaims.RouterCDSPinsPath: own.cdsPins,
-		workloadclaims.CDSAddressPath:    own.cdsAddress,
+		workloadclaims.SidecarSocketDir:   own.socketDir,
+		workloadclaims.CDSPinsPath:        own.cdsPins,
+		workloadclaims.RouterCDSPinsPath:  own.cdsPins,
+		workloadclaims.CDSAddressPath:     own.cdsAddress,
+		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())
 }

@@ -13,7 +13,7 @@ accepts() { bash "$CHECKER" "$1" >"$WORK/stdout" 2>"$WORK/stderr"; }
 rejects() { ! accepts "$1"; }
 
 CASE=committed-configs
-for config in "$SNAPSHOT" "$TESTS_DIR/../kernel/c8s.config" "$TESTS_DIR/../kernel/c8s-dev.config"; do
+for config in "$SNAPSHOT" "$TESTS_DIR/../kernel/c8s.config"; do
     ok "accepts ${config##*/}" accepts "$config"
 done
 

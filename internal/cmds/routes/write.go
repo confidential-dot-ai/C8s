@@ -64,14 +64,14 @@ func newAddCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add or replace one route and store the next revision",
-		Long: `Fetch the stored manifest, verify it against --operator-keys (required), add a
-route for --host, and store the next revision. notBefore becomes now, or keeps
-the stored value when it is later. A route with the same --path and --match is
-replaced. When CDS stores no route manifest, add refuses unless --new is
-passed, and then writes a new one with --max-age; otherwise it keeps the
-stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last manifest
-instead: once routers apply manifests, a new one outranks the routes they hold
-and drops all but this one.
+		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
+CDS stores one), add a route for --host, and store the next revision. notBefore
+becomes now, or keeps the stored value when it is later. A route with the same
+--path and --match is replaced. When CDS stores no route manifest, add refuses
+unless --new is passed, and then writes a new one with --max-age; otherwise it
+keeps the stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last
+manifest instead: once routers apply manifests, a new one outranks the routes
+they hold and drops all but this one.
 --dry-run also fetches the stored manifest from CDS.
 
 Name the backend in one of two ways:
@@ -165,6 +165,81 @@ removed. Pass --match when the host has both an exact and a prefix route at
 	return cmd
 }
 
+func newAddPatternCmd(o *options) *cobra.Command {
+	var (
+		p           pkgroutes.Pattern
+		maxAge      time.Duration
+		revision    uint64
+		dryRun      bool
+		newManifest bool
+	)
+	cmd := &cobra.Command{
+		Use:   "add-pattern",
+		Short: "Add or replace one pattern rule and store the next revision",
+		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
+CDS stores one), add a pattern rule for --host-suffix, and store the next
+revision, as 'add' does. A pattern with the same --host-suffix is replaced.
+
+A pattern sends every request for <label>.<host-suffix> to the agent with that
+label: the router finds a pod CVM that publishes a client document whose
+agent label (base32 of the first 16 bytes of its SHA-256) is <label>, and
+requires its leaf to carry --workload and that client document digest. Adding
+an agent needs no manifest write. An exact host in the manifest shadows the
+pattern.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if maxAge < time.Second {
+				return fmt.Errorf("--max-age %s: pass at least 1s", maxAge)
+			}
+			var newMaxAge time.Duration
+			if newManifest {
+				newMaxAge = maxAge
+			}
+			return o.edit(cmd, dryRun, newMaxAge, revision, func(m *pkgroutes.Manifest) (string, error) {
+				return addPattern(m, p), nil
+			})
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&p.HostSuffix, "host-suffix", "", "host suffix the agent label is prepended to, lower-case (required)")
+	f.StringVar(&p.Workload, "workload", "", "allowlist workload name the agent's named leaf must carry (required)")
+	f.Uint16Var(&p.Port, "port", 0, "application port the agent serves on (required)")
+	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds of a manifest --new starts; otherwise the stored value is kept")
+	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none")
+	bindRevisionFlag(f, &revision)
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	for _, name := range []string{"host-suffix", "workload", "port"} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	return cmd
+}
+
+func newRmPatternCmd(o *options) *cobra.Command {
+	var (
+		hostSuffix string
+		revision   uint64
+		dryRun     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "rm-pattern",
+		Short: "Remove one pattern rule and store the next revision",
+		Long: `Fetch the stored manifest, verify it against --operator-keys (required), remove
+the pattern rule for --host-suffix, and store the next revision.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return o.edit(cmd, dryRun, 0, revision, func(m *pkgroutes.Manifest) (string, error) {
+				return removePattern(m, hostSuffix)
+			})
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&hostSuffix, "host-suffix", "", "host suffix of the pattern (required)")
+	bindRevisionFlag(f, &revision)
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	_ = cmd.MarkFlagRequired("host-suffix")
+	return cmd
+}
+
 func bindRevisionFlag(f *pflag.FlagSet, revision *uint64) {
 	f.Uint64Var(revision, "revision", 0, "revision to write, above the stored one; default the later of the stored revision plus one and the current Unix time")
 }
@@ -187,11 +262,6 @@ func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 // NextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
 // none; otherwise it refuses.
 func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration, revision uint64, change func(*pkgroutes.Manifest) (string, error)) error {
-	// Without verification, the operator would sign whatever routes the
-	// control plane planted in CDS.
-	if o.operatorKeys == "" {
-		return errors.New("add and rm re-sign the stored routes; pass --operator-keys to verify them first")
-	}
 	var signer operatorauth.Authorizer
 	if dryRun {
 		if err := o.RequirePinnedEndpoint(); err != nil {
@@ -209,7 +279,10 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	if err != nil {
 		return err
 	}
-	env, m, _, err := o.fetch(ctx(cmd), c)
+	env, m, verifiedAgainstOperatorKeys, err := o.fetch(ctx(cmd), c)
+	if storesManifest := err == nil; storesManifest && !verifiedAgainstOperatorKeys {
+		return fmt.Errorf("%s re-signs the stored routes; pass --operator-keys to verify them first", cmd.CommandPath())
+	}
 	var ifMatch string
 	switch {
 	case errors.Is(err, routesclient.ErrNotFound) && newMaxAge > 0:
@@ -276,5 +349,8 @@ func printResign(w io.Writer, stored uint64, m *pkgroutes.Manifest) {
 			}
 			fmt.Fprintf(w, "  %s %s %s -> %s, %s\n", host, r.Path, r.Match, r.Backend.Address, backend)
 		}
+	}
+	for _, p := range m.Patterns {
+		fmt.Fprintf(w, "  <label>.%s / prefix -> agent <label>, workload %s, port %d\n", p.HostSuffix, p.Workload, p.Port)
 	}
 }

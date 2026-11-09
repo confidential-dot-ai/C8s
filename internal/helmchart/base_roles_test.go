@@ -56,7 +56,6 @@ var otherSubcommandArgvs = [][]string{
 func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 	cases := map[string][]string{
 		"derived component digests": {
-			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 			"--set-string", "armtlsMesh.image.digest=" + roleMeshDigest,
 			"--set-string", "image.digest=" + roleOperatorDigest,
 		},
@@ -174,12 +173,6 @@ func baseRoleFor(base pkgallowlist.Allowlist, argv []string) string {
 	return roles[0]
 }
 
-// The router pod's own containers hold the same roles, and the chart renders
-// that pod itself. Its nginx comes from Docker Hub, which an image reference
-// may name explicitly, so the lane's floor labels the front door's digest
-// docker.io/<repository>@<digest> while the component value names the bare
-// repository.
-const roleNginxDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000e3"
 const roleTenantNginxDigest = "sha256:e400000000000000000000000000000000000000000000000000000000000000"
 
 // routerPodRoles is the role every container of the rendered router pod takes.
@@ -199,13 +192,15 @@ var routerPodRoles = map[string]string{
 // bootstrapAllowlist entry labelled the way the cluster lane's store scan
 // writes it.
 func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
+	// The router pod's own containers hold the same roles, and the chart
+	// renders that pod itself. Its nginx comes from Docker Hub, which an image
+	// reference may name explicitly, so the lane's floor labels the front
+	// door's digest docker.io/<repository>@<digest> while the pin names the
+	// bare repository.
+	roleNginxDigest := chartImageDigest(t, componentsFile, "routerNginx", "image", "digest")
 	digestArgs := []string{
 		"--set-string", "armtlsMesh.image.digest=" + roleMeshDigest,
 		"--set-string", "image.digest=" + roleOperatorDigest,
-		"--set-string", "router.nginx.image.digest=" + roleNginxDigest,
-		"--set", "router.attest.enabled=true",
-		"--set-string", "router.publicTLS.mode=acme",
-		"--set", "router.san={lb.example.com}",
 	}
 	// Tag-referenced C8s images and a registry-qualified front door, as the
 	// lane's containerd store lists what it loaded and pulled.
@@ -221,12 +216,6 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 	floorArgs = append(floorArgs,
 		anyArgvEntryArgs("nginx-tenant-floor", roleTenantNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleTenantNginxDigest)...,
 	)
-	// The webpki front door and its attestation sidecar mount the operator's
-	// Secret, which the base pins as data below the reserved prefix.
-	webpkiArgs := append(slices.Clone(digestArgs),
-		"--set-string", "router.publicTLS.mode=webpki",
-		"--set-string", "router.publicTLS.secretName=router-public-tls",
-	)
 	// Pinned operator keys put one more data mount on cds-attest, so the base
 	// the same values render must name it.
 	operatorKeysArgs := append(slices.Clone(digestArgs),
@@ -234,9 +223,8 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 	)
 	operatorKeysArgs = append(operatorKeysArgs, floorArgs...)
 	cases := map[string][]string{
-		"derived component digests": append(digestArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
+		"derived component digests": digestArgs,
 		"bootstrap floor digests":   append(digestArgs, floorArgs...),
-		"webpki front door":         append(webpkiArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
 		"pinned operator keys":      operatorKeysArgs,
 	}
 	for name, args := range cases {

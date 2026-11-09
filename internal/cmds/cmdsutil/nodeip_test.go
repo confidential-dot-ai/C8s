@@ -3,6 +3,7 @@ package cmdsutil
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 )
@@ -60,6 +61,46 @@ func TestWatchNodeIP(t *testing.T) {
 			tick <- time.Time{}
 			if err := NodeIPChanged(ctx, nil); err != nil {
 				t.Fatalf("NodeIPChanged() = %v after %q, want nil", err, tc.reads)
+			}
+		})
+	}
+}
+
+// An address no peer could dial leaves the node without a primary address.
+func TestPrimaryIPv4FollowsTheHostRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		chosen    string
+		chooseErr error
+		want      string
+		wantErr   error
+	}{
+		{name: "the host's route", chosen: "192.0.2.9", want: "192.0.2.9"},
+		{name: "no default route", chooseErr: errors.New("no default route"), wantErr: nil},
+		{name: "an IPv6 route", chosen: "2001:db8::1", wantErr: ErrNotIPv4},
+		{name: "a loopback route", chosen: "127.0.0.1", wantErr: ErrNotRoutableIPv4},
+		{name: "the unspecified address", chosen: "0.0.0.0", wantErr: ErrNotRoutableIPv4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, err := routableHostAddress(func() (net.IP, error) {
+				if tc.chooseErr != nil {
+					return nil, tc.chooseErr
+				}
+				return net.ParseIP(tc.chosen), nil
+			})
+			switch {
+			case tc.want != "":
+				if err != nil || addr.String() != tc.want {
+					t.Fatalf("primary address = %v, %v, want %s", addr, err, tc.want)
+				}
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("primary address = %v, %v, want %v", addr, err, tc.wantErr)
+				}
+			default:
+				if err == nil {
+					t.Fatalf("primary address = %v, want the route failure", addr)
+				}
 			}
 		})
 	}

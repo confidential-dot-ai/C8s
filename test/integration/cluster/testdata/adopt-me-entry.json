@@ -3,8 +3,8 @@
   "initContainers": null,
   "containers": [
     {
-      "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
-      "image": "docker.io/nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+      "digest": "sha256:7bbe8940bc478e5618e6d4cfbeda406e5b4217cacc06faacd665aca5e468595e",
+      "image": "docker.io/nginxinc/nginx-unprivileged@sha256:7bbe8940bc478e5618e6d4cfbeda406e5b4217cacc06faacd665aca5e468595e",
       "command": {
         "policy": "any"
       },

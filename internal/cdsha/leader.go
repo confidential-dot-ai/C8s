@@ -51,6 +51,9 @@ func (n *Node) applyThroughTheLeader(signed cdsdecree.Signed) (Delivered, error)
 }
 
 func (n *Node) applyDecree(signed cdsdecree.Signed) (Delivered, error) {
+	if err := n.ClockError(); err != nil {
+		return Delivered{}, err
+	}
 	intent := signed.Decree.IntentID
 	if err := n.refuses(signed.Decree); err != nil {
 		slog.Info("cds-ha: this leader refused a decree of its operator", "intent", intent, "error", err)
@@ -164,7 +167,7 @@ func (n *Node) decreeEntry(signed cdsdecree.Signed) (*DecreeEntry, error) {
 // renewMeshCA renews the cluster's mesh CA certificate through the log, under
 // the key the cluster holds, so the leaves issued under it keep their anchor.
 func (n *Node) renewMeshCA() {
-	if !n.leading() {
+	if !n.leading() || n.ClockError() != nil {
 		return
 	}
 	ca := n.fsm.CA()
@@ -211,7 +214,7 @@ const (
 // drops the same documents. Every write journals a whole document, so the
 // bound is judged every tick, and a history inside it writes nothing.
 func (n *Node) pruneHistory() {
-	if !n.leading() {
+	if !n.leading() || n.ClockError() != nil {
 		return
 	}
 	over, keep, err := n.historyOverItsBound()
@@ -246,7 +249,12 @@ func (n *Node) historyOverItsBound() (over bool, keep int, err error) {
 	if err != nil {
 		return false, 0, err
 	}
-	keep = max(1, min(historyDocuments, withinBytes))
+	// Never past the allowlist in effect on nodes.
+	inEffect, err := n.cfg.Allowlist.InEffectDepth(time.Now())
+	if err != nil {
+		return false, 0, err
+	}
+	keep = max(1, min(historyDocuments, withinBytes), inEffect)
 	return documents > keep, keep, nil
 }
 

@@ -1,22 +1,12 @@
-# Manual builds have no path to exact-image acceptance or stable promotion.
+# Manual builds have no path to stable promotion.
 # Automatic production publication remains in c8s-image-publish.yml.
 name: c8s-image manual
 run-name: c8s-image (manual dispatch)
 on:
   workflow_dispatch:
     inputs:
-      dev:
-        description: "Build the rke2-dev variant (serial root autologin, different measurement). Never ship."
-        required: false
-        type: boolean
-        default: false
-      ssh:
-        description: "With dev, also bake an OpenSSH server (confos ssh profile, no keys baked). Pushes :rke2-<platform>-dev-ssh-* tags. Never ship."
-        required: false
-        type: boolean
-        default: false
       c8s_ref:
-        description: "Bake c8s components from this published commit (short SHA) instead of the triggering commit. Rebuilds a release against the current CONFOS_REF; pushes only the :<variant>[-cdi]-<ref> tags, leaving the floating tags alone."
+        description: "Bake c8s components from this published commit (short SHA) instead of the triggering commit. Rebuilds a release against the current CONFOS_REF; pushes only the :sha-<ref>-<tee>[-kubevirt] tags, leaving the floating tags alone."
         required: false
         type: string
         default: ""
@@ -43,8 +33,6 @@ jobs:
       packages: write
     uses: ./.github/workflows/c8s-image.yml
     with:
-      dev: ${{ inputs.dev }}
-      ssh: ${{ inputs.ssh }}
       c8s_ref: ${{ inputs.c8s_ref }}
       confos_ref: ${{ inputs.confos_ref }}
       gate: ${{ inputs.gate }}

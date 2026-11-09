@@ -10,6 +10,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -166,5 +167,130 @@ func TestAdmissionAcceptsForwardedProbeTimeoutBudget(t *testing.T) {
 		if !validate(t, v, admit(t, m, pod, "tenant"), "tenant").Allowed {
 			t.Errorf("validator refused timeoutSeconds=%d", timeout)
 		}
+	}
+}
+
+// A C8s node always refuses these, so both webhooks do, with the field name in
+// the message.
+func TestAdmissionRejectsPrivilegesAboveFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		shape func(pod *corev1.Pod)
+		wants string
+	}{
+		{
+			name:  "privileged",
+			shape: privilegedApp,
+			wants: "privileged",
+		},
+		{
+			name:  "escalation allowed",
+			shape: escalatingApp,
+			wants: "allowPrivilegeEscalation",
+		},
+		{
+			name:  "container root",
+			shape: rootApp,
+			wants: "runAsUser",
+		},
+		{
+			name:  "pod root",
+			shape: rootPod,
+			wants: "runAsUser",
+		},
+		{
+			name:  "container overrides pod root",
+			shape: nonRootAppOnRootPod,
+		},
+		{
+			name:  "init container root",
+			shape: rootInitContainer,
+			wants: "migrate",
+		},
+		{
+			name:  "adds an undeclarable capability",
+			shape: appAddingNetRaw,
+			wants: "capabilities.add",
+		},
+		{
+			name:  "adds every capability",
+			shape: appAddingAll,
+			wants: "capabilities.add",
+		},
+		{
+			name:  "adds every capability in lower case",
+			shape: appAddingAllInLowerCase,
+			wants: "capabilities.add",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, v := meshHandlers(t, meshConfig())
+			pod := podWithApp()
+			tc.shape(pod)
+			if tc.wants == "" {
+				if resp := validate(t, v, admit(t, m, pod, "tenant"), "tenant"); !resp.Allowed {
+					t.Fatalf("validator denied the mutated pod: %+v", resp.Result)
+				}
+				return
+			}
+			for handler, resp := range map[string]admission.Response{
+				"mutator":   mutationResponse(t, m, pod),
+				"validator": validate(t, v, pod, "tenant"),
+			} {
+				if resp.Allowed {
+					t.Errorf("%s admitted the pod; want a denial mentioning %q", handler, tc.wants)
+				} else if resp.Result == nil || !strings.Contains(resp.Result.Message, tc.wants) {
+					t.Errorf("%s denial = %+v, want %s", handler, resp.Result, tc.wants)
+				}
+			}
+		})
+	}
+}
+
+func privilegedApp(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
+}
+
+func escalatingApp(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(true)}
+}
+
+func rootApp(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0))}
+}
+
+func rootPod(pod *corev1.Pod) {
+	pod.Spec.SecurityContext = &corev1.PodSecurityContext{RunAsUser: ptr.To(int64(0))}
+}
+
+func nonRootAppOnRootPod(pod *corev1.Pod) {
+	rootPod(pod)
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(1000))}
+}
+
+func rootInitContainer(pod *corev1.Pod) {
+	pod.Spec.InitContainers = []corev1.Container{
+		{
+			Name:            "migrate",
+			SecurityContext: &corev1.SecurityContext{RunAsUser: ptr.To(int64(0))},
+		},
+	}
+}
+
+func appAddingNetRaw(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_RAW"}},
+	}
+}
+
+func appAddingAll(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"ALL"}},
+	}
+}
+
+func appAddingAllInLowerCase(pod *corev1.Pod) {
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"all"}},
 	}
 }

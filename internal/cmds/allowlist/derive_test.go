@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ func deployJSON() string {
 	return `{
       "kind": "Deployment",
       "spec": {"template": {"spec": {
+        "securityContext": {"runAsUser": 1000},
         "initContainers": [
           {"name": "seed", "image": "` + testImage + `",
            "command": ["sh", "-c", "cp -an /a/. /seed/"]}
@@ -328,6 +330,106 @@ func TestDeriveReportsNothingWhenNothingIsDropped(t *testing.T) {
 	if stderr != "" {
 		t.Errorf("stderr = %q, want nothing reported", stderr)
 	}
+}
+
+func TestDeriveWarnsAboutAContainerThatMayRunAsUIDZero(t *testing.T) {
+	nonzeroUID := map[string]any{"runAsUser": 1000}
+	rootUID := map[string]any{"runAsUser": 0}
+	nonRoot := map[string]any{"runAsNonRoot": true}
+	rootUIDOnNonRoot := map[string]any{"runAsUser": 0, "runAsNonRoot": true}
+	for _, tc := range []struct {
+		name  string
+		pod   map[string]any
+		init  map[string]any
+		main  map[string]any
+		warns []string
+	}{
+		{
+			name:  "nothing set",
+			warns: []string{"seed", "app"},
+		},
+		{
+			name: "a nonzero runAsUser on each container",
+			init: nonzeroUID,
+			main: nonzeroUID,
+		},
+		{
+			name: "a nonzero runAsUser on the pod",
+			pod:  nonzeroUID,
+		},
+		{
+			name: "runAsNonRoot on each container",
+			init: nonRoot,
+			main: nonRoot,
+		},
+		{
+			name: "runAsNonRoot on the pod",
+			pod:  nonRoot,
+		},
+		{
+			name:  "a container that overrides the pod's nonzero uid with 0",
+			pod:   nonzeroUID,
+			main:  rootUID,
+			warns: []string{"app"},
+		},
+		{
+			name:  "runAsUser 0 beside runAsNonRoot",
+			pod:   nonzeroUID,
+			main:  rootUIDOnNonRoot,
+			warns: []string{"app"},
+		},
+		{
+			name:  "an init container alone",
+			main:  nonzeroUID,
+			warns: []string{"seed"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podJSON(t, tc.pod, tc.init, tc.main)
+			_, stderr, err := runDeriveStderr(t, pod, "app", "-", "--env=any", "--mounts=any")
+			if err != nil {
+				t.Fatalf("derive: %v", err)
+			}
+			for _, name := range []string{"seed", "app"} {
+				want := slices.Contains(tc.warns, name)
+				if got := strings.Contains(stderr, rootUIDWarning(name)); got != want {
+					t.Errorf("stderr = %q, warns about %q = %v, want %v", stderr, name, got, want)
+				}
+			}
+		})
+	}
+}
+
+// podJSON is a Pod with an init container "seed" and a container "app", each
+// security context omitted when nil.
+func podJSON(t *testing.T, pod, init, main map[string]any) string {
+	t.Helper()
+	container := func(name string, command []string, sc map[string]any) map[string]any {
+		c := map[string]any{
+			"command": command,
+			"image":   testImage,
+			"name":    name,
+		}
+		if sc != nil {
+			c["securityContext"] = sc
+		}
+		return c
+	}
+	spec := map[string]any{
+		"containers":     []any{container("app", []string{"sleep", "inf"}, main)},
+		"initContainers": []any{container("seed", []string{"sh"}, init)},
+	}
+	if pod != nil {
+		spec["securityContext"] = pod
+	}
+	data, err := json.Marshal(map[string]any{
+		"kind": "Pod",
+		"spec": spec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {

@@ -29,6 +29,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
+// operatorUser is the user c8s's operator authenticates as, beside the
+// workers' control plane.
+const operatorUser = "c8s-operator"
+
 // ciliumOperatorUser is the user the Cilium operator authenticates as, beside
 // the workers' control plane.
 const ciliumOperatorUser = "c8s-cilium-operator"

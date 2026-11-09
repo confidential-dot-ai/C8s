@@ -27,6 +27,8 @@
 #                                    allowlist_delete go through it.
 #   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
 #   pull_interval                    how often the plugin pulls, as a Go duration
+#   allowlist_node_delay             how long after it is written an allowlist
+#                                    write takes effect on nodes, as a Go duration
 #   plugin_ready <node>              wait until the node's admission plugin is registered and ready
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
@@ -72,9 +74,11 @@
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
 #                                    that is not an operator key
-#   allowlist_get [tag]              read the allowlist, naming tag in
-#                                    If-None-Match when given; prints
-#                                    "<status> <version> <tag>", then the body
+#   allowlist_get <tag|-> <operator|node>
+#                                    read the allowlist as that requester,
+#                                    naming tag in If-None-Match unless it is
+#                                    "-"; prints "<status> <version> <tag>",
+#                                    then the body
 #   cds_read <document> [plain]      read a document of the CDS with no client
 #                                    certificate (mesh-ca, reference-values,
 #                                    operator-key-set, allowlist, readiness),
@@ -177,9 +181,9 @@
 #                                    make the CDS unreachable for the router's
 #                                    allowlist relay, leaving every other
 #                                    client's reach alone, and undo it
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
-# pod_exec, exempt_namespace and api_service_name answer the same for a whole
-# run; callers may cache them. The
+# node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
+# cds_pod_url, cert_paths, pod_exec, exempt_namespace and api_service_name
+# answer the same for a whole run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
@@ -243,8 +247,8 @@ image_ref() {
     esac
 }
 
-# The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
-# which the node image bakes as the equal value (images/node-guest/c8s/
+# The plugin's pull interval: the chart's allowlist.pull.interval, which the
+# node image bakes as the equal value (images/node-guest/worker/
 # image-policy.yaml.in, allowlist.pull.interval). The steps poll
 # applied_version for the served version, with a deadline in these; where the
 # backend cannot reach the plugin they wait this out instead.
@@ -420,7 +424,7 @@ secrets_explain() {
 
 # Raw reads, so the steps see the document the CDS serves, as served.
 served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
-served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
+served_version() { allowlist_get - operator | awk 'NR == 1 {print $2}'; }
 
 # --- The harness's signed writes ---
 # A write replaces the whole document, so a write of one entry reads the
@@ -445,7 +449,7 @@ allowlist_replace() {
     local name="$1" entry="${2:-}" served version body token answer code reply
     body="$(scratch)/allowlist-write.json" || return
     for _ in $(seq 1 30); do
-        served="$(allowlist_get "")" || return
+        served="$(allowlist_get - operator)" || return
         version="$(awk 'NR == 1 {print $2}' <<<"$served")"
         if [ -n "$entry" ]; then
             printf '%s' "${served#*$'\n'}" |
@@ -471,13 +475,18 @@ response_header() {
 }
 
 allowlist_get() {
-    local url headers body status
+    local url headers body status route
     url="$(cds_url)" || return
+    case "${2:-}" in
+        operator) route=/allowlist ;;
+        node) route="/allowlist?requester=node" ;;
+        *) echo "backend: allowlist_get: no requester '${2:-}'" >&2; return 2 ;;
+    esac
     headers="$(mktemp)"
     body="$(mktemp)"
     local -a match=()
-    [ -z "${1:-}" ] || match=(-H "If-None-Match: $1")
-    status="$(curl -sSk -o "$body" -D "$headers" -w '%{http_code}' ${match[@]+"${match[@]}"} "$url/allowlist")" || status=000
+    [ "$1" = - ] || match=(-H "If-None-Match: $1")
+    status="$(curl -sSk -o "$body" -D "$headers" -w '%{http_code}' ${match[@]+"${match[@]}"} "$url$route")" || status=000
     echo "$status $(response_header "$headers" x-c8s-allowlist-version) $(response_header "$headers" etag)"
     cat "$body"
     rm -f "$headers" "$body"
@@ -695,7 +704,7 @@ owned_mesh_members_ready() {
 # Once per run, after the scenarios: what this backend kept for the run.
 teardown() { teardown_backend; }
 
-# A namespace the chart's webhook excludes (c8s.webhookExcludedNamespaces),
+# A namespace the chart's webhook excludes (c8s.webhookExcludedNamespacesMatchExpression),
 # which also admits the harness's pods.
 exempt_namespace() { echo kube-system; }
 # The fully qualified name of the cluster's API Service, which every

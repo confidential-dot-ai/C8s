@@ -1,7 +1,7 @@
 // The mesh endpoint's seeded launch. CDS serves the chart's seed and the node
 // image bakes it, and the enforcer admits a container that either the measured
 // base or the served document admits — so a seed entry wider than the measured
-// base (images/node-guest/c8s/image-policy.yaml.in) is what the mesh image may
+// base (images/node-guest/worker/image-policy.yaml.in) is what the mesh image may
 // actually run as, in any pod.
 package helmchart
 
@@ -17,7 +17,6 @@ import (
 const (
 	meshSeedDigest         = "sha256:00000000000000000000000000000000000000000000000000000000000000f1"
 	meshSeedOperatorDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000f2"
-	meshSeedNginxDigest    = "sha256:00000000000000000000000000000000000000000000000000000000000000f3"
 )
 
 // meshCertMount is the injected credential volume as the node classifies it: a
@@ -71,10 +70,8 @@ func meshLaunchWith(t *testing.T, argv []string, mounts []pkgallowlist.ObservedM
 // refuses.
 func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "armtlsMesh.image.digest="+meshSeedDigest,
 		"--set-string", "image.digest="+meshSeedOperatorDigest,
-		"--set-string", "router.nginx.image.digest="+meshSeedNginxDigest,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -83,7 +80,7 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 	measured := measuredBaseAllowlist(t, map[string]string{
 		"@MESH_DIGEST@":     meshSeedDigest,
 		"@OPERATOR_DIGEST@": meshSeedOperatorDigest,
-		"@ROUTER_DIGEST@":   meshSeedNginxDigest,
+		"@ROUTER_DIGEST@":   chartImageDigest(t, componentsFile, "routerNginx", "image", "digest"),
 	}).BuildIndex()
 
 	// CDS refuses to issue a certificate to a pod running a digest its

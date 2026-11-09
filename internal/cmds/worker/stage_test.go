@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -103,7 +105,7 @@ spec:
       args: ["--node=${NODE_NAME}"]
   containers:
     - name: kube-proxy
-      image: docker.io/rancher/hardened-kubernetes@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      image: registry.k8s.io/kube-proxy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       command: [kube-proxy]
       args:
         - --cluster-cidr=${POD_CIDR}
@@ -111,8 +113,7 @@ spec:
         - --kubeconfig=/var/lib/kubelet/kubeconfig
 `
 
-// workerRoot is a worker's filesystem holding its image's marker, baked
-// floor, component seed and static pod, and this boot's ID.
+// workerRoot is a worker's filesystem holding its marker and baked files.
 func workerRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -130,13 +131,16 @@ func workerRoot(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	writeBootID(t, root, "5a8c3b0e-9d1f-4e57-a2c6-0f3e8b7d1c24")
-	old := primaryIPv4
-	t.Cleanup(func() { primaryIPv4 = old })
-	primaryIPv4 = func() (string, error) {
-		return "10.0.0.7", nil
-	}
+	stubPrimaryIPv4(t, "10.0.0.7")
 	return root
+}
+
+// stubPrimaryIPv4 places the host on addr, the one seam over its routes.
+func stubPrimaryIPv4(t *testing.T, addr string) {
+	t.Helper()
+	old := cmdsutil.PrimaryIPv4
+	t.Cleanup(func() { cmdsutil.PrimaryIPv4 = old })
+	cmdsutil.PrimaryIPv4 = func() (netip.Addr, error) { return netip.MustParseAddr(addr), nil }
 }
 
 // tokenFile is the bootstrap token beside the document on the launch disk.
@@ -230,8 +234,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	var floor struct {
 		Allowlist struct {
 			Pull struct {
-				URL      string `yaml:"url"`
-				PinFloor uint64 `yaml:"cds_pin_floor"`
+				URL      string                  `yaml:"url"`
+				PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -275,11 +279,11 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)
 	}
-	launchFile, err := doc.CDS.LaunchFile()
+	cds, err := doc.CDS.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinned, err := cdsconfig.Parse(launchFile)
+	pinned, err := cdsconfig.Parse(cds.LaunchFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +535,7 @@ func TestStageWritesTheKubeletsInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	outputs := stagedOutputs(t, root)
-	if got, want := outputs[kubeletEnvPath], "-rw-r--r--\nNODE_NAME="+mustNodeName(t, root)+"\nNODE_IP=10.0.0.7\n"; got != want {
+	if got, want := outputs[kubeletEnvPath], "-rw-r--r--\nNODE_NAME=n-10-0-0-7\nNODE_IP=10.0.0.7\n"; got != want {
 		t.Errorf("kubelet.env = %q, want %q", got, want)
 	}
 	mode, bootstrap, _ := strings.Cut(outputs[bootstrapKubeconfigPath], "\n")
@@ -550,6 +554,131 @@ func TestStageWritesTheKubeletsInputs(t *testing.T) {
 	}
 	if mode != "-rw-r--r--" || !slices.Equal(got.ClusterDNS, []string{doc.Kubernetes.ClusterDNS}) {
 		t.Errorf("kubelet config mode %s, clusterDNS %v; want 0644 and the document's %s", mode, got.ClusterDNS, doc.Kubernetes.ClusterDNS)
+	}
+}
+
+func TestStageUsesTheNodeAddressConsistently(t *testing.T) {
+	for _, tc := range []struct {
+		scenario string
+		ip       string
+		name     string
+	}{
+		{
+			scenario: "first-address",
+			ip:       "10.0.0.7",
+			name:     "n-10-0-0-7",
+		},
+		{
+			scenario: "second-address",
+			ip:       "10.0.0.8",
+			name:     "n-10-0-0-8",
+		},
+	} {
+		t.Run(tc.scenario, func(t *testing.T) {
+			root := workerRoot(t)
+			stubPrimaryIPv4(t, tc.ip)
+			data := workerDocumentBytes(t)
+			if err := stage(
+				context.Background(),
+				root,
+				stagedDocument(t, data),
+				tokenFile(t),
+				launchedWith(t, data),
+			); err != nil {
+				t.Fatal(err)
+			}
+			outputs := stagedOutputs(t, root)
+			if got, want := outputs[kubeletEnvPath], "-rw-r--r--\nNODE_NAME="+tc.name+"\nNODE_IP="+tc.ip+"\n"; got != want {
+				t.Errorf("kubelet.env = %q, want %q", got, want)
+			}
+			if floor := outputs["/etc/nri/conf.d/image-policy.yaml"]; !strings.Contains(floor, "--hostname-override="+tc.name) {
+				t.Errorf("NRI floor does not use node name %s", tc.name)
+			}
+			if pod := outputs[staticPodPath+"/kube-proxy.yaml"]; !strings.Contains(pod, "--hostname-override="+tc.name) {
+				t.Errorf("kube-proxy static pod does not use node name %s", tc.name)
+			}
+			if got := outputs["/run/nri-image-policy/node-ip"]; !strings.HasSuffix(got, "\n"+tc.ip+"\n") {
+				t.Errorf("node-ip = %q, want %s", got, tc.ip)
+			}
+		})
+	}
+}
+
+func TestStageResolvesTheAddressOnce(t *testing.T) {
+	root := workerRoot(t)
+	calls := 0
+	cmdsutil.PrimaryIPv4 = func() (netip.Addr, error) {
+		calls++
+		if calls > 1 {
+			return netip.Addr{}, errors.New("address selected more than once")
+		}
+		return netip.MustParseAddr("10.0.0.7"), nil
+	}
+	data := workerDocumentBytes(t)
+	if err := stage(
+		context.Background(),
+		root,
+		stagedDocument(t, data),
+		tokenFile(t),
+		launchedWith(t, data),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("address lookups = %d, want 1", calls)
+	}
+	if got := stagedOutputs(t, root)[kubeletEnvPath]; !strings.Contains(got, "NODE_NAME=n-10-0-0-7\nNODE_IP=10.0.0.7\n") {
+		t.Fatalf("kubelet.env = %q", got)
+	}
+}
+
+func TestStageClearsOutputsWhenAddressSelectionFails(t *testing.T) {
+	root := workerRoot(t)
+	data := workerDocumentBytes(t)
+	document, token, api := stagedDocument(t, data), tokenFile(t), launchedWith(t, data)
+	if err := stage(context.Background(), root, document, token, api); err != nil {
+		t.Fatal(err)
+	}
+	cmdsutil.PrimaryIPv4 = func() (netip.Addr, error) {
+		return netip.Addr{}, errors.New("no address")
+	}
+	if err := stage(context.Background(), root, document, token, api); err == nil || !strings.Contains(err.Error(), "no address") {
+		t.Fatalf("stage = %v, want address selection error", err)
+	}
+	if left := stagedOutputs(t, root); len(left) != 0 {
+		t.Fatalf("failed address selection left outputs: %v", slices.Sorted(maps.Keys(left)))
+	}
+}
+
+func TestStageRefusesInvalidSelectedAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		addr netip.Addr
+	}{
+		{
+			name: "unset",
+			addr: netip.Addr{},
+		},
+		{
+			name: "ipv6",
+			addr: netip.MustParseAddr("2001:db8::1"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := workerRoot(t)
+			data := workerDocumentBytes(t)
+			document, token, api := stagedDocument(t, data), tokenFile(t), launchedWith(t, data)
+			if err := stage(context.Background(), root, document, token, api); err != nil {
+				t.Fatal(err)
+			}
+			cmdsutil.PrimaryIPv4 = func() (netip.Addr, error) { return tc.addr, nil }
+			if err := stage(context.Background(), root, document, token, api); err == nil {
+				t.Fatal("stage accepted a non-IPv4 address")
+			}
+			if left := stagedOutputs(t, root); len(left) != 0 {
+				t.Fatalf("invalid address left outputs: %v", slices.Sorted(maps.Keys(left)))
+			}
+		})
 	}
 }
 
@@ -607,7 +736,7 @@ func launches(t *testing.T, pods []fileutil.NewFile) map[string]allowlist.Runnin
 
 // The floor a worker stages admits the static pods it renders, and only with
 // this boot's values.
-func TestStagedFloorAdmitsOnlyThisBootsStaticPods(t *testing.T) {
+func TestStagedFloorAdmitsOnlyThisWorkersStaticPods(t *testing.T) {
 	data := workerDocumentBytes(t)
 	doc, err := Parse(data)
 	if err != nil {
@@ -632,8 +761,8 @@ func TestStagedFloorAdmitsOnlyThisBootsStaticPods(t *testing.T) {
 		}
 	}
 	for what, values := range map[string]map[string]string{
-		"another boot's node name": {nodeservices.NodeNamePlaceholder: "n-0000000000000000", nodeservices.PodCIDRPlaceholder: doc.Kubernetes.PodCIDR},
-		"another pod range":        {nodeservices.NodeNamePlaceholder: mustNodeName(t, root), nodeservices.PodCIDRPlaceholder: "10.99.0.0/16"},
+		"another node name": {nodeservices.NodeNamePlaceholder: "n-0000000000000000", nodeservices.PodCIDRPlaceholder: doc.Kubernetes.PodCIDR},
+		"another pod range": {nodeservices.NodeNamePlaceholder: "n-10-0-0-7", nodeservices.PodCIDRPlaceholder: "10.99.0.0/16"},
 	} {
 		other, err := staticPods(root, values)
 		if err != nil {

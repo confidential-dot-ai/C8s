@@ -803,14 +803,16 @@ var hostPortProtocols = []string{
 	"UDP",
 }
 
-// nodeServicePorts are the node's own service ports, which no pod publishes.
+// nodeServicePorts are the ports no pod publishes on the node's address: the
+// node's own services, and the ports a Kubernetes control plane answers on
+// wherever it runs.
 var nodeServicePorts = []int{
 	1019,  // workload inventory (pkg/workloadclaims DigestsPort)
 	2379,  // etcd client
 	2380,  // etcd peer
 	6443,  // Kubernetes API
-	8443,  // credential release
-	9345,  // agent join
+	8443,  // the router's front door, and a CDS by default
+	9345,  // node-join supervisor
 	10250, // kubelet
 }
 
@@ -876,6 +878,15 @@ var DefaultCapabilities = []string{
 	"SETFCAP",
 	"SETPCAP",
 	"SYS_CHROOT",
+}
+
+// UndeclarableCapability reports a capability no container may hold: one the
+// default set does not hold and no entry may declare, spelled with no CAP_
+// prefix. NET_ADMIN, NET_RAW, SETUID and SETGID are the names today; each
+// rewrites the pod's packet rules or takes an id trusted policy reserves for a
+// platform role.
+func UndeclarableCapability(name string) bool {
+	return !slices.Contains(DefaultCapabilities, name) && !slices.Contains(declarableCapabilities, name)
 }
 
 // declarableCapabilities are the Linux capabilities outside the container

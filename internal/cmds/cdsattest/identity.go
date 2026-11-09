@@ -24,6 +24,12 @@ type meshIdentity struct {
 	ca        *x509.Certificate
 	private   *ecdsa.PrivateKey
 	bundlePEM []byte
+	// servedUntil is the earliest NotAfter across the served tls.crt chain
+	// and the issuing CA: when nginx's chain stops validating.
+	servedUntil time.Time
+	// chainErr is why a block of tls.crt after the leaf did not parse. Only a
+	// cds front door serves that chain, so only attest-lb there acts on it.
+	chainErr error
 }
 
 // loadMeshIdentity reads all three files for every attestation request so a
@@ -93,9 +99,23 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
+	// X509KeyPair never parsed the extra blocks, and only a cds front door
+	// serves them: a block that does not parse is recorded, not fatal here.
+	chain := []*x509.Certificate{issuer}
+	var chainErr error
+	for _, der := range pair.Certificate[1:] {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			chainErr = fmt.Errorf("parse mesh identity chain: %w", err)
+			continue
+		}
+		chain = append(chain, cert)
+	}
+	servedUntil := chainExpiry(leaf, chain...)
+
 	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Raw})...)
-	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle}, nil
+	return &meshIdentity{leaf: leaf, ca: issuer, private: private, bundlePEM: bundle, servedUntil: servedUntil, chainErr: chainErr}, nil
 }
 
 // checkValidity delegates to the repo-wide validity window
@@ -146,6 +166,33 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER,
 		return nil, nil, err
 	}
 	return transcriptHash, proof, nil
+}
+
+// chainExpiry is when a chain served with leaf stops validating: the
+// earliest NotAfter across leaf and rest.
+func chainExpiry(leaf *x509.Certificate, rest ...*x509.Certificate) time.Time {
+	expires := leaf.NotAfter
+	for _, cert := range rest {
+		if cert.NotAfter.Before(expires) {
+			expires = cert.NotAfter
+		}
+	}
+	return expires
+}
+
+// checkACMEServingLeaf admits a serving leaf read from --serving-cert-file,
+// served with a chain that expires at expires. An acme leaf is a distinct
+// CA-issued certificate whose key the sidecar never sees, so only the
+// validity windows can be checked here.
+func checkACMEServingLeaf(serving *x509.Certificate, expires time.Time) error {
+	now := time.Now()
+	if err := certutil.CheckValidity(serving, now); err != nil {
+		return fmt.Errorf("acme serving leaf: %w", err)
+	}
+	if now.After(expires) {
+		return fmt.Errorf("acme serving chain expired at %s", expires.Format(time.RFC3339))
+	}
+	return nil
 }
 
 // prove signs a transcript hash with the mesh leaf key. The transcript's

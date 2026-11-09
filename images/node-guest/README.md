@@ -1,42 +1,41 @@
-# C8s node image
+# C8s worker image
 
-The C8s node image (`node-guest-base`, `rke2[-cdi]-*` tags), defined in THIS repo
-and built by [confidential-os-builder] acting purely as a builder.
+The C8s worker image (`guests/worker`, `<version>-<tee>[-kubevirt]` tags),
+defined in THIS repo and built by [confidential-os-builder] acting purely as a
+builder.
 Tracking issue: [#264].
+
+A worker runs a cluster's workloads while the cluster's Kubernetes control
+plane runs outside every TEE
+([docs/launch-configuration.md](../../docs/launch-configuration.md)).
 
 Layout:
 
-- `c8s/` — the mkosi profile (config, `mkosi.extra/`, `mkosi.sync`).
-  Staged into the confos build via
+- `worker/` — the mkosi profile (config, `mkosi.extra/`, `mkosi.sync` and the
+  NRI floor template). Staged into the confos build via
   `confos build --profile-dir` (confos ≥ the release carrying
   confidential-os-builder#81); the dir basename **is** the profile name, so
-  it must stay `c8s`.
-- Platform: `build` requires `C8S_PLATFORM=tdx|snp`. Both roles share the
-  same image for the selected platform and VM shape. Platform-specific
+  it must stay `worker`.
+- Platform: `build` requires `C8S_PLATFORM=tdx|snp`. Platform-specific
   service settings, node labels, measurement policy and image artifacts are
   generated at build time; TDX and SNP do not share a measurement or image
   digest. SNP also has one launch digest per supported vCPU count. Both
-  platforms support operator-key-bound launch configuration and credential
-  release: TDX binds the public key in RTMR[3], SNP in HOST_DATA.
-- `kernel/` — the guest-kernel config fragments (`c8s.config`,
-  `c8s-dev.config`), passed via `--kernel-config-fragment`.
-  confos's `required`/`hardening`
+  platforms bind the worker document into the launch: TDX in RTMR[3], SNP in
+  HOST_DATA.
+- `kernel/` — the guest-kernel config fragment (`c8s.config`), passed via
+  `--kernel-config-fragment`. confos's `required`/`hardening`
   baselines stay in confos: a fragment request that conflicts with them
   fails the build (see the balloon catch in #263).
 - `build` — drop-in replacement for confos's `bin/build-c8s`: same env
-  contract (`C8S_PLATFORM`, `C8S_REF`, `C8S_REGISTRY`, `C8S_DEV`, `C8S_NAME`, `C8S_MEMORY`) and the same profile stack
-  and order; only the c8s profile content and kernel fragments come from
-  here. Point `CONFOS_DIR` at a confos checkout (default: a sibling dir).
+  contract (`C8S_PLATFORM`, `C8S_REF`, `C8S_REGISTRY`, `C8S_NAME`,
+  `C8S_MEMORY`) and the same profile stack and order; only the worker profile
+  content and kernel fragments come from here. Point `CONFOS_DIR` at a confos
+  checkout (default: a sibling dir).
 
-  The locked image keeps the kubelet debugging handlers on so `kubectl logs`
-  works for every kubeconfig holder, and bakes the `pod-exec-policy.yaml`
-  AddOn so `kubectl exec`, `attach`, `port-forward` and `debug` (ephemeral
-  containers) are denied in admission for everyone, the operator included, 
-  and routes every ordinary pod through the measured
-  runtime wrapper, which denies `runc exec` but for kube-apiserver's probes — see
-  [Post-start exec](#post-start-exec).
-  `C8S_DEV=1` skips that AddOn (with the serial autologin), at a different
-  measurement.
+  The image's kubelet serves no debugging handler, so `kubectl exec`,
+  `attach`, `port-forward`, `debug` and `logs` reach no endpoint on it, and it
+  routes every ordinary pod through the measured runtime wrapper, which denies
+  `runc exec` — see [Post-start exec](#post-start-exec).
 
 ## Launch requirements
 
@@ -44,58 +43,49 @@ The `node-image` domain in [`.github/build-pins.json`](../../.github/build-pins.
 pins the confos commit the image builds with. Every pin since
 [confidential-os-builder#120](https://github.com/confidential-dot-ai/confidential-os-builder/pull/120)
 includes its immutable root.
-The node-image invariant gate requires immutable-root support by default and CI
+The image invariant gate requires immutable-root support by default and CI
 sets `EXPECT_IMMUTABLE_ROOT=1` explicitly.
 
-Every node VM needs a write-storage disk with virtio-blk serial
+Every worker VM needs a write-storage disk with virtio-blk serial
 `confai-scratch`, at least 64G. The serial is what matters: the confos
 initrd scans every attached virtio disk except the image disk for it and
 ignores labels, so the disk may be attached in any order. In KubeVirt that's
-`disk: {bus: virtio}` plus `serial: confai-scratch` (see the vendored
-`tdx-metal-e2e.yml`); confidential-metal attaches one by default
-(`--datadisk-gi`, 0 opts out).
+`disk: {bus: virtio}` plus `serial: confai-scratch`; confidential-metal
+attaches one by default (`--datadisk-gi`, 0 opts out).
 
 The initrd encrypts the disk and, via a dm mapping named `scratch`, backs
 writable overlays for directories declared by the measured image. The root
 and undeclared paths stay read-only. In addition to the base state directories,
-this profile declares `/etc/rancher`, `/etc/cni`, `/opt/cni` and `/etc/nri` in
-`/usr/lib/confai/state.d/60-c8s.conf`. All runtime state disappears on reboot.
-Without the disk
+this profile declares `/etc/cni`, `/opt/cni` and `/etc/nri` in
+`/usr/lib/confai/state.d/60-worker.conf`. All runtime state disappears on
+reboot. Without the disk
 the initrd falls back to a 2G RAM tmpfs: the guest comes up Ready, then
-wedges once RKE2 fills it — a flapping node, not a boot error.
+wedges once the runtime fills it — a flapping node, not a boot error.
 `scratch-enforce.service` closes that hole by checking for the dm mapping
-and powering the VM off before rke2 starts. It also verifies the crypt UUID and
-`confai-scratch` backing device, then writes boot-local provenance under
-`/run/c8s/scratch-provenance.json` for NRI mount classification.
+and powering the VM off before containerd starts. It also verifies the crypt
+UUID and `confai-scratch` backing device, then writes boot-local provenance
+under `/run/c8s/scratch-provenance.json` for NRI mount classification.
 
-Every boot also requires an ISO labelled `opkeydata` with these three files
-at its root:
+Every boot also requires an ISO labelled `opkeydata` with these two files at
+its root:
 
-- `pubkey`: the launch public key for this cluster and role. The measured
-  initrd stages the exact PEM bytes in read-only `/run/confai`, exposed through
-  `/etc/confai/operator-pubkey`, and binds them into TDX RTMR[3]. An SNP
-  launcher must set HOST_DATA to the SHA-256 of
+- the worker document, the strict `c8s-worker/v1` launch file naming the CDS
+  this cluster's clients trust, the router's TLS SAN, and the API server, CA,
+  ranges and cluster DNS of the control plane the worker joins. The measured
+  initrd stages its exact bytes in read-only `/run/confai` and binds their
+  digest into TDX RTMR[3]; an SNP launcher must set HOST_DATA to the SHA-256 of
   those same bytes.
-- `launch.yaml`: the strict `c8s-launch/v2` document selecting `server` or
-  `agent`, the image measurements, cluster/node identity, join tokens,
-  trusted role keys, TLS SAN and the CDS this cluster's clients trust.
-- `launch.yaml.sig`: the detached signature over those exact bytes.
+- `bootstrap-token`: the Kubernetes bootstrap token the kubelet requests its
+  client certificate with, outside the measurement.
 
-`c8s node launch-config new` writes all three for a server and its agents,
-with distinct server and agent keys and fresh tokens per cluster
-(`c8s node launch-config add-agent` extends a bundle later; `c8s keys
-sign-launch` re-signs a hand-edited document). The private keys stay with
-the operator. Agents receive only the
-RKE2 agent token; their documents must omit the server token entirely.
-There is no diskless/default-server boot. Missing or invalid signed input
-fails the role gate before RKE2 or core services can start.
+`c8s worker new` drafts a document, and `c8s cds ha decree node-images` admits
+it under the worker image's measurements, which is what lets CDS certify a
+worker booted on it. There is no diskless boot: a missing or unbound document
+fails staging, and `worker-stage.service` powers the VM off.
 
-See [Authenticated launch configuration](../../docs/operator.md#authenticated-launch-configuration)
-for complete server/agent bundle creation, image-manifest extraction,
-ISO and KubeVirt attachment examples, and the exact schema. A server may
-omit its address to use `node.ip` or primary-interface IPv4 autodetection;
-an agent must specify the server's reachable IPv4 address. Switching roles
-requires relaunching with the new role's authorized bundle and launch key.
+Every field, the admission decree and the boot-time staging order are
+[docs/launch-configuration.md](../../docs/launch-configuration.md). Each boot
+registers the worker under a node name derived from its primary IPv4 address.
 
 Additional optional disks:
 
@@ -105,134 +95,76 @@ Additional optional disks:
   `/var/lib/models`. It is unencrypted and host-writable; attach public
   weights whose digests the workload verifies (`models-disk.service`).
 
-## Operator kubeconfig bootstrap
-
-After launching the server with its signed `opkeydata`, use the matching
-image manifest and server private key to obtain a kubeconfig:
-
-```sh
-c8s get-kubeconfig --node "$SERVER_IP" \
-  --operator-key demo/server.key --image-manifest manifest.json \
-  --out demo/kubeconfig --release-wait 5m
-```
-
-Bootstrap uses the armTLS credential service on port 8443 for both the
-operator-authenticated nonce attestation and credential release. The raw
-attester stays on loopback. The client verifies the full image and launch-key
-binding in both the serving certificate and the fresh report before requesting
-credentials. Port 6443 is the Kubernetes API; `--release-url` and
-`--apiserver-url` support forwarded ports. The credential listener starts only
-after the RKE2, operator-RBAC and PodSecurity readiness gates pass.
-
-Use a rebuilt image containing the authenticated credential-service `/attest`
-endpoint. Updating only the operator CLI does not add this guest endpoint.
-See [the operator trust gate](../../docs/operator.md#trust-gate-c8s-get-kubeconfig)
-for the explicit legacy attestation URL option and verification rules.
-
 ## Measured services and Kubernetes integration
 
-Both roles use the same measured image. Host units are enabled at build time;
-role conditions skip server-only units on agents. Kubernetes owns the core
-application services:
+Host units are enabled at build time, and every one of them requires and
+follows `worker-stage.service`, the invariant gate's rule. The boot gates run
+before it: `scratch-enforce`, `apparmor-enforce`, `gpu-cc-enforce`,
+`c8s-modules-latch` and the two data-disk units, each a oneshot containerd
+waits for. Kubernetes owns the core application services:
 
 | Component | Lifecycle | Placement |
 |---|---|---|
-| Signed launch verification and policy staging | systemd oneshot | Every node, before RKE2 |
-| Local attestation API and Unix-socket proxy | systemd services | Every node |
-| NRI image admission | Required containerd plugin | Every node, before pods |
-| RKE2 | systemd service | Authenticated server or agent role |
-| armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
-| Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
-| Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
-| Attested operator credential release | systemd service | Server |
-| Stale Cilium node address restart (`cilium-node-ip.service`) | systemd service | Every node |
+| Launch verification, floor and kubelet staging | systemd oneshot | Every worker, before containerd |
+| Local attestation API and Unix-socket proxy | systemd services | Every worker |
+| NRI image admission | Required containerd plugin | Every worker, before pods |
+| containerd and the kubelet | systemd services | Every worker, after staging |
+| Cilium agent, kube-proxy and CoreDNS | kubelet static pods | Every worker |
+| armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every worker |
+| Router, certificate renewal and attestation helpers | Deployment | Any worker |
+| Operator, webhook and admission integration | Kubernetes resources | The control plane, outside the TEEs |
 
-`rke2-role.service` verifies and stages launch settings before either RKE2
-role starts. The local attester must precede this gate because launch
+`worker-stage.service` verifies and stages launch settings before containerd
+starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. Every CDS
-client dials the address the signed launch file names; agents join RKE2 at
-`9345`; the router exposes the server's port `443`. Cilium's VXLAN
-runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
-host often runs its own VXLAN on `8472` and drops the inner overlay. Open
-UDP `8473` between nodes in any firewall or security group.
+client dials the address the worker document names; the router exposes port
+`443`. Cilium's VXLAN runs on UDP `8473`, not the kernel default `8472`: a
+nested guest's outer host often runs its own VXLAN on `8472` and drops the
+inner overlay. Open UDP `8473` between nodes in any firewall or security
+group.
 
-A node may get a new address on every boot (KubeVirt pod networking, DHCP).
-RKE2 registers the current one (`node-ip` from the launch staging, published
-to `/run/nri-image-policy/node-ip` by `nri-node-ip.service`), but the Node
-object keeps the previous address until the kubelet's first status update.
-Cilium reads its node IP from the Node object once, when the agent starts,
-and announces it to the other nodes as this node's tunnel endpoint. An agent
-that starts first keeps the old address, and the node's pods stay unreachable
-(`listen tcp <old-ip>:4240: bind: cannot assign requested address`).
-`cilium-node-ip.service` (`c8s node-services cilium-node-ip`) polls the
-address the agent announces for this node (its local API,
-`/run/cilium/cilium.sock`). If that address is neither the published node
-address nor assigned to any local interface, it logs both addresses and sends
-SIGTERM to the agent: the `cilium-agent` process in a kubelet pod cgroup that
-holds the API socket. The kubelet restarts the container, and the new agent
-reads the updated Node. Without a published node address it does nothing, and
-it pauses between consecutive restarts of the same agent.
-
-`c8s/mkosi.sync` resolves the c8s binary and core image digests from `C8S_REF`,
-then runs `c8s node-image render` with the checksum-pinned build-time Helm
-binary and baked RKE2 Kubernetes version. The complete chart renders once
-into `/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml`, including
-router, mesh, operator, CRDs, RBAC, webhook and admission policies. The CDS
-those components trust runs on a confidential VM of its own, which
-`c8s launch-config new` writes the configuration and the pin for, so the image
+`worker/mkosi.sync` resolves the c8s binary and core image digests from
+`C8S_REF`, then runs `c8s node-image render` with the checksum-pinned
+build-time Helm binary and the baked Kubernetes version, and `c8s worker floor`
+over that render, which carries the c8s-worker chart's static pod templates,
+and this profile's floor template.
+The CDS those components trust runs on a confidential VM of its own, which
+`c8s cds config new` writes the configuration and the pin for, so the image
 neither renders a CDS nor preloads its image.
-Only `rke2-server` applies that directory; including it in the agent image
-is intentional. There is no guest Helm install, chart archive or runtime
-values merge.
 
-The renderer also emits the component allowlist seed, a list of pinned
-core images and the router's nginx configuration. The image installs that
-configuration in `/usr/lib/c8s/router-nginx`, and the router mounts it from
-there instead of from a ConfigMap the control plane could edit.
-`airgap-images.sh` preserves the core images' complete OCI content under
-`/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
-role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
-when every referenced blob is present and matches its digest, and copies the
-image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
-boot preparation merges the measured component seed into the NRI system
-floor, allowing the components to start while CDS is unavailable.
+The sync also installs the router's nginx configuration in
+`/usr/lib/c8s/router-nginx`, and the router mounts it from there instead of
+from a ConfigMap the control plane could edit. The static pods pull their
+images by digest at boot, and every other platform pod is the control plane's
+to schedule. Before containerd starts, staging writes the measured floor to
+`/etc/nri`, so the components start while CDS is unavailable.
 
-Boot preparation publishes only public identity inputs under `/run/c8s-node`:
-peer pins, the CDS pin the launch file carries, and, on the server, the
-operator public key and TLS hostname. Core pods mount these root-owned
-files read-only. They never mount `/run/confos/launch`, which contains join
-credentials. The operator reads the server policy from this mount and passes
-it to workload helpers. Every CDS client holds the CDS to the launch file's
-pin; peer connections accept the configured role keys. The shared image
-measurement alone does not identify the role.
+Staging publishes only public identity inputs under `/run/c8s-node`: the CDS
+pin the document carries, the operator keys of the CDS configuration that pin
+binds, the TLS hostname and the router's settings. Core pods mount these
+root-owned files read-only. They never mount the kubelet's inputs under
+`/run/kubernetes`, which carry the bootstrap token. Every CDS client holds the
+CDS to the document's pin.
 
-The router's get-cert helper runs alongside nginx again. It reads the signed
-hostname from `tls-san`, which `c8s launch-config new` writes into the CDS
-configuration as a leaf DNS name, so CDS permits that exact hostname in
-addition to its in-cluster Service DNS pattern. nginx uses one default virtual host;
-TLS clients validate the signed certificate hostname. Certificate and
-discovery files live in the router Pod's memory-backed volumes. The router
-and attestation helpers share the existing chart implementation. Adding a
-workload route, including an over-encrypted channel, therefore uses the same
-router code; the signed launch schema does not yet expose route configuration.
-The supported topology still has one server and one front door; moving the
-services into Pods does not add HA.
+The router's get-cert helper runs alongside nginx. It reads the hostname from
+`tls-san`, which the CDS configuration carries as a leaf DNS name, so CDS
+permits that exact hostname in addition to its in-cluster Service DNS pattern.
+nginx uses one default virtual host; TLS clients validate the signed
+certificate hostname. Certificate and discovery files live in the router Pod's
+memory-backed volumes. The router and attestation helpers share the existing
+chart implementation. Adding a workload route, including an over-encrypted
+channel, therefore uses the same router code.
 
-The launch measurement commits to the initial manifests, image archives and
-bootstrap code. It does not attest the current contents of Kubernetes API
-objects. Tenant credentials cannot modify the platform namespace or mount
-host policy files; cluster administrators remain trusted. The NRI bootstrap
-floor pins platform image digests, not every possible argument or mount for
-those images. `c8s install` refuses the `confidential.ai/baked=true` namespace
-so an ordinary chart install cannot replace this deployment accidentally.
+The launch measurement commits to the baked floor, the static pod templates
+and the bootstrap code. It does not attest the current contents of Kubernetes
+API objects. The NRI floor pins platform image digests, not every possible
+argument or mount for those images.
 
-Core version upgrades rebuild the image and relaunch with updated signed
-measurement pins. Restarting a Pod uses the same baked image. The current
-launch schema accepts one image policy and does not support mixed-image
-rolling upgrades. CDS has an ephemeral database and an in-memory CA;
-rebooting its VM requires certificate re-bootstrap. Launch settings do not
-enable volume support, arbitrary service arguments or front-door routes.
+Core version upgrades rebuild the image and relaunch with updated measurement
+pins. Restarting a Pod uses the same baked image. CDS has an ephemeral
+database and an in-memory CA; rebooting its VM requires certificate
+re-bootstrap.
 
 Published `C8S_REF` images must include the renderer and the SAN-file flags
 used by the manifests. The reproducibility gate builds the host binary and
@@ -240,40 +172,63 @@ core containers from the same checkout. `C8S_BINARY` supplies the binary;
 `C8S_IMAGES_DIR` supplies the same unpublished OCI layouts to both build legs,
 tagged with `C8S_REF`.
 
-Both metal CI lanes resolve the published image and manifest from the
-selected source commit: TDX from `rke2-tdx-cdi-<sha>` and `rke2-tdx-<sha>`,
-SNP from `rke2-snp-cdi-<sha>` and `rke2-snp-<sha>`, whose `manifest.json`
-pairs each `smp` variant's `snp_launch_digest` with the digest of the IGVM
-that measures to it. The SNP lane boots the `smp=4` variant through a hook
-sidecar that sets HOST_DATA from the launch public key, and stages the CDI
-disk and the IGVM on the launcher in digest-named claims that later runs of
-the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
-attester requires a new measured image. Automatic TDX acceptance reads the
-image identity and `launch_config_version=c8s-launch/v2` from the publication
-run's validated evidence.
+## Pod CVM image
 
-Before either platform boots, the lane builds the paired CLI and generates
-a fresh operator key and signed server launch document. The `opkeydata` disk
-carries `pubkey`, `launch.yaml` and `launch.yaml.sig`. Clients use the matching
-full image tuple and server-key policy when testing the baked services.
+`C8S_PROFILE=pod images/node-guest/build` (TDX only) stacks `pod/` after the
+worker profile and writes `output/c8s-pod/`. A pod CVM runs one assigned pod
+under a standalone kubelet and joins no cluster. It reuses the worker's
+kernel, runtime binaries, runtime wrapper, NRI plugin, boot gates and floor,
+and changes what stages and starts them:
 
-## Baked workload checks
+- `40-pod.preset` turns off worker staging, the worker's containerd,
+  kubelet, attest-proxy and volumed. `pod-stage.service` replaces worker
+  staging: `c8s launch-config stage` verifies the signed pod launch document
+  on the `opkeydata` disk under the measured pod launch key, then
+  `c8s node-services prepare` stages the pod network and kubelet inputs.
+  Like worker staging, a failure powers the VM off.
+- `podcvm-status.service` serves the attested status and assignment endpoint
+  on 8443. Once a pod is assigned it installs the runtime policy, starts
+  `podcvm-containerd` (which wants `nri-image-policy`) and, once the plugin
+  reports the pod registered, publishes the manifest and starts
+  `podcvm-kubelet`.
+- The pod's runtime policy is rendered from the worker floor: the mesh
+  endpoint entry and role only, the assigned entries, the CDS from the launch
+  document, and RTMR[3] image measurement. The endpoint is the worker's:
+  the worker sync pins armtls-mesh by digest in the floor, the pod's endpoint
+  container names that `repo@digest`, and containerd pulls it at pod start.
+  The image bakes no endpoint bytes.
+- `scratch-enforce` keeps its crypt check but drops the 64G floor on an image
+  that bakes `/usr/lib/c8s/pod-image`, and accepts memory-backed state there:
+  a pod CVM runs one pod and is launched with a small scratch disk or none.
+- The pod network uses the bridge, host-local and loopback CNI plugins the
+  pod sync bakes into `/opt/cni/bin` from the CNI release the worker sync
+  verified.
 
-With Go and Helm installed, validate both platform renders from the repository
-root. The archive test also needs ORAS, jq, Python 3 and GNU tar; the systemd
-harness needs Docker with privileged-container support:
+`opkeydata` is the `pod/` directory `c8s launch-config new-pod` writes: the
+pod launch public key (`pubkey`) as the launch file the initrd binds into
+RTMR[3], with `launch.yaml` and `launch.yaml.sig` beside it.
+
+## Image checks
+
+With Go, Docker and a `./confos` checkout (or `CONFOS_DIR`), validate the
+profile from the repository root:
 
 ```sh
-go test -count=1 ./cmd/c8s -run TestNodeImage
-make test-node-guest-image-airgap
-make test-node-guest-image-role-systemd
+make test-node-guest-image-invariants
+make test-node-guest-image-systemd
+make test-node-guest-image-containerd
+make test-node-guest-image-attester-finalize
 ```
 
-The rendering tests check complete workload manifests, image pins, namespace
-placement and required identity inputs. The offline archive test uses real
-ORAS copying to verify complete multi-platform content, canonical image
-names and reproducibility. The systemd harness checks the remaining host
-bootstrap dependencies in a disposable privileged container.
+The invariants target runs two checks: a shell gate over the kernel fragment,
+the boot gates, the programs the image bakes and the staging dependency of
+every host unit, each against a copy of the profile, and
+`go test ./images/node-guest/worker` over the profile's own consistency,
+including the measured runtime wrapper's path. The systemd harness
+runs the host units under real systemd with stubbed payloads, in a disposable
+privileged container. The containerd check proves that every ordinary-pod
+handler runs the wrapper, and the finalize check that each image narrows its
+attester to a loopback bind.
 These checks do not replace boot and attestation testing on TDX or SNP hardware.
 
 ## Immutable root checks
@@ -289,7 +244,7 @@ sudo make test-node-guest-image-immutable-root CONFOS_DIR=/path/to/confidential-
 
 The Bash test requires GNU coreutils/findutils, grep, cmp, and util-linux
 with mount namespace and overlay support. It stages the actual base, GPU,
-attestation and c8s profile extra trees, then executes the pinned base
+attestation and worker profile extra trees, then executes the pinned base
 finalizer and initrd unchanged in a private mount namespace and chroot.
 Real overlays must permit C8s state writes and atomic NRI floor replacement
 while `/usr`, `/opt/nri` and undeclared `/etc` paths stay read-only and the
@@ -300,7 +255,7 @@ that `mkosi.sync` creates them. Each case unmounts its fixture before cleanup.
 
 This checks initrd handoff with tmpfs state backing. Hardware discovery and
 `switch_root` are shims: it does not boot a full CVM, start systemd or validate
-encrypted scratch storage. Those require validation on the built node image.
+encrypted scratch storage. Those require validation on the built worker image.
 
 ## Workload isolation
 
@@ -311,94 +266,35 @@ tenant; the word says which side of the boundary a pod is on, not that
 several share a node.
 
 Tenant pods run on the node's own kernel under runc, so what a pod may ask
-for is what stands between it and the measured host. The image enforces the
-restricted PodSecurity standard by default
-(`etc/rancher/rke2/psa-config.yaml`): no privileged pods, no host
-namespaces, no root user, dropped ALL capabilities (only `NET_BIND_SERVICE`
-may be added back), and no unconfined seccomp or AppArmor. Only `kube-system`
-is exempt; `default` inherits Restricted.
+for is what stands between it and the measured host. The node's admission
+plugin refuses a container that holds host privilege outside the measured
+floor, and the runtime wrapper bounds every container of a member pod
+([../../docs/allowlist-and-capabilities.md](../../docs/allowlist-and-capabilities.md),
+[../../docs/node-exec-mode.md](../../docs/node-exec-mode.md)). The control
+plane that writes every pod spec is outside the worker's TEE, so those two are
+the floor every pod runs under, and the launch measurement vouches for them.
 
-A namespace label can normally lower that level. The baked
-`psa-level-policy.yaml` AddOn denies an `enforce` label other than
-`restricted`, or an `enforce-version` other than `latest`, unless the
-caller is authorized to grant `podsecurityexemptions.confidential.ai` (verb
-`grant`), a virtual resource no default role includes. Only the in-guest
-`rke2.yaml` (system:masters) passes; the released operator credential holds
-no wildcard and does not, nor does a tenant holding `admin` or `edit` in
-its own namespaces. The launch measurement vouches for the floor every pod
-runs under. No released credential can delete or edit the policy: the
-operator's `c8s-node-operator` ClusterRole (`cred-release-rbac.yaml`) has
-no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
-policy (`operator-scope-policy.yaml`) denies them in admission for every
-`c8s:` group regardless of RBAC, together with every write in the
-privileged namespaces (`kube-system`, the baked
-operator's `c8s-system` and the router role's `c8s-router`), except core Pod
-deletion without a subresource in `c8s-router` by `c8s:node-operators`, and the
-kubelet-proxy subresources. The
-`psa-ready.sh` gate proves that deny path before cred-release serves.
-
-`kubectl exec`, `attach`, `port-forward` and ephemeral containers are closed
-by the baked `pod-exec-policy.yaml` AddOn (`confos-pod-exec`), a constant
-deny on those subresources for every principal. The kubelet's debugging
-handlers stay on because they also serve `kubectl logs`, which the
-`log-reader` credential (`c8s get-kubeconfig --role log-reader`, bound by the
-baked `log-reader-rbac.yaml` AddOn to read pods, their logs, namespaces and
-events) exists for. As with the PodSecurity policy, no released credential
-can delete it.
-
-The guard AddOns live in `server/manifests`, which is on the writable
-overlay because RKE2 stages its bundled charts there. `mkosi.sync` therefore
-copies each guard to `/usr/lib/confai/guards` on the read-only root, and
-`psa-ready.sh` renders every copy through a server-side dry-run and requires
-the live objects to match it field for field before cred-release serves.
-
-RKE2 reconciles AddOns after kube-apiserver starts. The attested credential
-endpoint therefore remains closed until `psa-ready.sh` sees both policies,
-both credential bindings, and proves, through server-side dry-runs as a synthetic non-granter,
-that a restricted namespace is admitted and a privileged one is denied by
-`confos-psa-level`. No externally released operator credential can enter the
-first-boot reconciliation window.
-
-The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
-`nri-image-policy` mounts the inventory socket directory read-only into credential
-sidecars through NRI, below the Pod spec. Tenant namespaces keep Restricted
-enforcement, warning, and audit. `c8s install` labels its release namespace
-privileged for trusted platform components, including node DaemonSets.
-
-The chart's fail-closed `deny-host-namespaces` policies enforce Restricted
-controls and deny every tenant `hostPath` volume on Pod CREATE/UPDATE and
-`pods/ephemeralcontainers` updates. Existing Pods that still declare the old
-claims hostPath must be recreated to pick up NRI wiring; an unchanged prior
-sidecar or chart image never exempts the volume. Admission does not evict
-already-running Pods. The ephemeral policy also preserves the host-namespace
-and host-port checks over the full Pod.
+`nri-image-policy` mounts the inventory socket directory read-only into
+credential sidecars through NRI, below the Pod spec.
 
 ### Cluster storage
 
 Encrypted workload volumes use attested key release and `volumed` block
 attachment. See [../../docs/volumes.md](../../docs/volumes.md).
 
-Ephemeral containers may inherit safe pod-level `runAsNonRoot` and seccomp
-settings when their own settings are absent. Explicit unsafe Pod settings,
-including root UID, Unconfined seccomp or AppArmor, disallowed SELinux settings,
-and unsafe sysctls, are rejected even when the debugger specifies safe
-container settings. Explicit `runAsNonRoot: false` and legacy Unconfined
-AppArmor annotations are rejected too. The same Pod-level guards apply to
-ordinary Pod admission.
-
-Below admission sits AppArmor, the only enabled major LSM. Both kernel
-fragments pin the complete `CONFIG_LSM` order; the invariant gate checks
-them and the committed snapshot, and `build` checks the actual resolved
-kernel `.config`, including cache hits. Before either RKE2 role starts,
+Below admission sits AppArmor, the only enabled major LSM. The kernel
+fragment pins the complete `CONFIG_LSM` order; the invariant gate checks
+it and the committed snapshot, and `build` checks the actual resolved
+kernel `.config`, including cache hits. Before containerd starts,
 `apparmor-enforce.service` requires an active AppArmor LSM, an executable
 parser, a disabled, inactive `apparmor.service`, and
 `kernel.apparmor_restrict_unprivileged_unconfined = 0`. It loads a temporary
 profile, verifies its enforce-mode label and a denied read against a
-successful unconfined control, then removes the profile. Failure blocks
-RKE2. The package's stock host profiles are not loaded.
+successful unconfined control, then removes the profile. Failure blocks the
+runtime. The package's stock host profiles are not loaded.
 
 The apparmor package turns that sysctl on in `/usr/lib/sysctl.d/10-apparmor.conf`;
-`c8s/mkosi.extra/etc/sysctl.d/20-apparmor.conf` turns it back off. On, it
+`worker/mkosi.extra/etc/sysctl.d/20-apparmor.conf` turns it back off. On, it
 makes the kernel stack the profile a task asks for at exec with unconfined
 when the task lacks `CAP_MAC_OVERRIDE` (Linux 6.18.60, upstream
 `08c2f7c8d4b1`). runc has dropped the pod's capabilities by then, so every
@@ -414,7 +310,6 @@ stays on. The invariant gate checks that the drop-in sets the key to 0, that
 `apparmor-enforce.sh` asserts it, and that no sysctl.d file sorting after it in
 the profile or the pinned confos base sets the key again; without that, the
 failure would be a node powering itself off at first boot.
-`tests/apparmor-runtime-test.sh` asserts the plain label.
 
 Containerd selects `cri-containerd.apparmor.d` for non-privileged containers
 with omitted or explicit RuntimeDefault AppArmor settings. It denies mounts
@@ -422,10 +317,7 @@ and selected `/proc` and `/sys` writes, but permits shared-memory sysctls
 under `/proc/sys/kernel/shm*` and access to `/sys/fs/cgroup/**`. It also
 permits ptrace between processes using the same profile, which all
 RuntimeDefault containers share. PID namespaces, capabilities, DAC, Yama,
-seccomp and read-only mounts remain necessary isolation layers. Restricted
-PodSecurity rejects `Unconfined` but allows `Localhost`, which names an
-already loaded profile; no stock host profiles or boot probe profile remain
-available for tenants to select.
+seccomp and read-only mounts remain necessary isolation layers.
 
 From the repository root, run the configuration and boot regression tests
 with Docker available, then the real parser/kernel probe on a Docker host
@@ -441,100 +333,23 @@ The fault-injection harness copies the production script and `/bin/sh`
 byte-for-byte into a private chroot, placing fixtures at their actual
 absolute paths. It does not rewrite the script or mount host filesystems.
 The separate real-kernel probe uses Resolute userspace and the Docker host's
-kernel; neither test boots the node image. To verify containerd labels, mount
-denial/control and Unconfined admission rejection on the actual image,
-point `KUBECONFIG` at the operator credentials for a disposable single-node
-C8s cluster and run `make test-node-guest-image-apparmor-runtime` (requires
-`kubectl` and `jq`). This creates and cleans up a test namespace and a
-`kube-system` pod with `SYS_ADMIN`.
-
-Automatic main-push publication in `c8s-image-publish.yml` calls the separate
-`tdx-image-acceptance.yml` workflow after the build finishes. Only this
-automatic publisher can call exact-image acceptance; neither workflow has a
-manual-dispatch trigger. It consumes the same run and attempt's
-immutable evidence: the source SHA, CDI and ORAS digests, the published
-manifest, and `launch_config_version=c8s-launch/v2`. Evidence validation
-binds these to the publication run and attempt and rejects a missing or
-incompatible launch version. Disk and UKI hashes plus MRTD/RTMR1/RTMR2 must
-match the fresh build; a differing nonmeasured build timestamp is not a
-mismatch. The validated tuple supplies the signed launch configuration before
-boot. The published manifest is also passed unchanged to `get-kubeconfig`
-for attestation, together with that launch's operator private key.
-Tests are checked out at the build SHA. Before allocating the launcher,
-the reusable workflow independently requires a successful same-repository
-`main` push and exposes no c8s-ref override in exact-image mode. A read-only
-hosted preflight fetches trusted `main` history and verifies that the full
-build SHA is an ancestor before handing it to the launcher. It executes no
-code from the requested build. On the launcher, the action checks that the
-workspace HEAD equals that full SHA, then reuses the verified workspace for
-the CLI build and every E2E script. The seven-character ref selects only OCI
-image tags in exact mode.
-
-The `tdx-metal-e2e.yml` wrapper checks out its workflow revision independently.
-It builds the CLI and runs tests from that checkout, or from the explicit
-`c8s_ref` when supplied. The resolved commit selects its published
-`rke2-tdx-cdi-<sha>` disk and `rke2-tdx-<sha>` manifest; a missing image fails
-the run. The disk is pinned by digest and imported into a shared root PVC.
-Reusing that PVC requires its full import endpoint to match the selected
-image. The published manifest must contain the full MRTD/RTMR1/RTMR2 tuple
-and supplies both the signed launch configuration and attested kubeconfig
-retrieval. No refs ConfigMap is needed for TDX.
-Both wrappers share the lifecycle in `.github/actions/tdx-metal-e2e/action.yml`
-and the same concurrency group; checkout and evidence acquisition stay
-outside that shared action. Run the real-Git provenance, matching-prefix tag,
-source rejection, E2E routing and caller-isolation tests with
-`go test ./test/workflows`. These local tests do not boot a node image.
-
-The exact-image job imports the digest-pinned disk into its own 80Gi
-`local-path` PVC.
-A restricted scheduling pod selects a TDX node before CDI import starts;
-the pod has no service-account token or disk mount. Import has a 20-minute
-deadline, and cleanup checks ownership of the temporary pod and PVC. This
-requires working CDI, enough local disk space, and the launcher's existing
-namespace-scoped Pod/PVC permissions; no shared image ConfigMap, root PVC,
-or cluster-wide RBAC is changed. The hardware path must still be exercised
-on the TDX runner; the local evidence/lifecycle fixtures are run with:
-
-```sh
-bash .github/scripts/tests/test-tdx-image-acceptance.sh
-```
-
-The ordinary `confidential-e2e` TDX lane tests the image published for the
-requested commit. It does not consume publication-run acceptance evidence
-or run the automatic new-image AppArmor gate. Exact-image acceptance is
-post-publication validation, not a gate on stable-alias promotion. Manual, development and
-PR reproducibility builds do not invoke it. Attempt-bound evidence means
-rerunning the full publication workflow, including the builder, if the
-current attempt has no artifact; there is no fallback to older evidence.
-For manual image builds, dispatch `c8s-image-manual.yml` (Actions name:
-`c8s-image manual`), with the existing `dev`, `c8s_ref`, `confos_ref` and
-`gate` inputs. It builds through the same reusable builder but cannot call
-exact acceptance or promote stable aliases. To build the images of one
-commit without pairing it with another commit's profile or components, run
-`.github/scripts/publish-ref-images.sh --sha <full-sha> [--dev] [--confos-ref <sha>]`:
-it points a build branch at the commit, publishes the component tags through
-`docker.yml` if `:<short-sha>` is missing, then dispatches this workflow with
-the matching `c8s_ref`, and prints the resulting tags. `tdx-metal-e2e.yml` remains
-manually dispatchable for published-image regression and `keep_cvm` debugging.
+kernel; neither test boots the worker image.
 
 ### Post-start exec
 
 The kubelet setting above closes the kubelet's HTTP API. It does not close CRI
 `ExecSync`, which is how exec probes and lifecycle exec hooks start a process
-in a running container, nor a direct call to containerd. The locked image
+in a running container, nor a direct call to containerd. The image
 points the containerd runc handler's `BinaryName` at `/usr/local/bin/c8s-runc`
-(`mkosi.extra/.../config-v3.toml.d/10-c8s-runc.toml`), a measured wrapper that
-denies `runc exec` and passes every other verb to RKE2's runc. All of those
-paths end in that one call, so all of them fail, except RKE2's own probes of
-kube-apiserver.
+(`worker/mkosi.extra/etc/containerd/conf.d/10-c8s-runc.toml`), a measured wrapper
+that denies `runc exec` and passes every other verb to the pinned runc. All of
+those paths end in that one call, so all of them fail.
 
 The consequences for anything else running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
-probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
-probes, which its measured allowlist entry grants. See
+probes and SIGTERM handling instead. See
 [docs/node-exec-mode.md](../../docs/node-exec-mode.md) for the wrapper, the build
-gate that proves no handler escapes it, what to do in a new component, and
-which kube-apiserver probes it allows and why.
+gate that proves no handler escapes it, and what to do in a new component.
 
 ## Refreshing measurements
 
@@ -543,8 +358,8 @@ measurement configurations from their `manifest.json` files. Given built or
 downloaded image directories, use the existing CLI:
 
 ```sh
-c8s measurements derive --tee tdx --out measurements-tdx.json output/rke2-tdx
-c8s measurements derive --tee sev-snp --out measurements-snp.json output/rke2-snp
+c8s measurements derive --tee tdx --out measurements-tdx.json output/c8s-worker
+c8s measurements derive --tee sev-snp --out measurements-snp.json output/c8s-worker
 ```
 
 The input can also be a manifest path. Keep one configuration per platform:
@@ -552,18 +367,13 @@ TDX includes MRTD and RTMR[1]/RTMR[2]; SNP includes each measured vCPU variant.
 
 The PR reproducibility gate builds both platforms twice with a shared
 ephemeral module-signing key and the published component ref pinned by
-`c8s/mkosi.sync`. Its manifests and derived configurations are candidate
+`worker/mkosi.sync`. Its manifests and derived configurations are candidate
 evidence for that build. They are not production reference values: automatic
 publication uses the production signing key and components paired with its
 source commit. Derive production references from those newly published
 measured images, retaining their manifest and immutable artifact identity.
 Do not substitute gate measurements into an existing cluster's trusted
 reference configuration.
-
-Exact-image TDX hardware acceptance runs only after automatic publication,
-using that publication's source SHA, digests and manifest as described above.
-A successful PR comparison does not prove the new image boots on hardware;
-manual and PR gate builds cannot invoke the exact-image acceptance path.
 
 ## Module loading
 
@@ -576,14 +386,14 @@ Because the key exists on this kernel, the runtime lock has to be set here:
 confos's `99-kspp-hardening.conf` omits `kernel.modules_disabled` on the
 grounds that the base kernel has no such key. `c8s-modules-latch.service`
 sets it to 1 once boot-time loading is done, ordered after the gpu profile's
-`nvidia-modules-latch.service` and before the rke2 pair, which it is
+`nvidia-modules-latch.service` and before containerd, which it is
 `RequiredBy`. The latch is one-way for the rest of the boot.
 
 The gpu profile ships a latch of its own, so on the canonical GPU build both
 run and the second rewrites a 1. This one also covers the GPU-less
-composition (`attest` + `c8s`, no `gpu`), where that unit is absent. The same
-split applies to `99-c8s-bpf.conf`: the c8s profile owns the runtime locks its
-own kernel fragment makes necessary.
+composition (`attest` + `worker`, no `gpu`), where that unit is absent. The same
+split applies to `99-c8s-bpf.conf`: the worker profile owns the runtime locks
+its own kernel fragment makes necessary.
 
 ## Component pins
 
@@ -602,7 +412,7 @@ so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
 is the published attestation-api image of that release: the CDS image fetches
 it by that digest (`images/cds-guest/cds/mkosi.sync`) and the host DaemonSet
 runs it as the chart's `attestationApi` `pinnedDigest`
-(`internal/helmchart/c8s/values.yaml`), a copy that
+(`charts/lib/files/components.yaml`), a copy that
 `.github/scripts/chart-attestation-api-digest.sh` reads and writes and that
 pin-hygiene holds equal to the manifest. pin-hygiene also resolves
 `attestation-api:<attestation_rs_tag>` and
@@ -612,10 +422,9 @@ ways) and fails when either names another build, so the host and the guests
 verify with the same attestation-api release. pin-watch resolves the digest of
 a new attestation-rs release and writes the manifest and the chart together.
 
-The chart's three third-party images (kube-state-metrics, the router's nginx,
-the containerd-prep busybox) are digest-pinned in
-`internal/helmchart/c8s/values.yaml` and seeded into the allowlist floor. The
-line above each digest names the tag it was resolved from
+The chart's third-party image, the router's nginx, is digest-pinned in
+`charts/lib/files/components.yaml` and seeded into the allowlist
+floor. The line above each digest names the tag it was resolved from
 (`# Resolve REPOSITORY:TAG to bump this digest.`), which
 `.github/scripts/chart-image-pins.sh list` reads and `set` rewrites.
 pin-hygiene fails a digest without that line or one the registry no longer
@@ -638,9 +447,9 @@ out. An attestation-rs release that changes the attestation-api config or
 bump.
 
 Published builds resolve C8s container digests from the registry tag
-`C8S_REF` at build time. The rendered manifests, component seed and measured OCI
-archives record those pins. The NRI system floor comes from the pinned RKE2
-bundles. A rebuild after a mutable `C8S_REF` tag moves will not match.
+`C8S_REF` at build time. The rendered floor, the router configuration and the
+static pod pins record those digests. A rebuild after a mutable `C8S_REF` tag
+moves will not match.
 
 ## Physical host prerequisites
 
@@ -648,7 +457,7 @@ bundles. A rebuild after a mutable `C8S_REF` tag moves will not match.
 
 The authenticated launch gate requires a freshly generated and verified
 quote. Host quote-generation or certificate-provisioning failures block that
-gate before RKE2 and dependent services can start.
+gate before containerd and dependent services can start.
 
 - `qgsd` running on the host — the Intel DCAP Quote Generation Service
   that signs the TDREPORT into a full TDX quote. Talks over vsock.
@@ -711,31 +520,23 @@ Provision it with your host-provisioning system before installing C8s:
 Attach GPUs at VM launch. The guest kernel has PCI hotplug compiled out, so a
 GPU attached later is not enumerated. `gpu-cc-enforce.service` checks CC mode
 and attestation once per boot and relies on this; the invariant gate fails if
-the kernel fragments or the resolved snapshot enable any `HOTPLUG_PCI*`
+the kernel fragment or the resolved snapshot enable any `HOTPLUG_PCI*`
 symbol. A `/sys/bus/pci/rescan` by guest root or by any privileged platform
-pod (the NVIDIA device plugin, attestation-api, volumed, the NRI image-policy
-installer) still enumerates new devices without a check ([#669]). Tenant pods
-cannot do this under restricted PodSecurity.
+pod still enumerates new devices without a check
+([#669]). Tenant pods cannot do this under the measured floor.
 
 ## Troubleshooting
 
-Inspect the core workloads with the attested kubeconfig:
+Inspect the core workloads with the control plane's kubeconfig:
 
 ```sh
 kubectl -n c8s-system get pods -o wide
 kubectl -n c8s-router describe deployment/c8s-router
 ```
 
-`kubectl logs` works on every image. The locked image denies `kubectl exec`,
-`attach` and `port-forward` (see [Post-start exec](#post-start-exec)). On a
-debug image (`C8S_DEV=1`), you can also use the guest's serial console and
-local container runtime to inspect nginx directly:
-
-```sh
-export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock
-/var/lib/rancher/rke2/bin/crictl ps --name nginx
-/var/lib/rancher/rke2/bin/crictl logs <nginx-container-id>
-```
+A worker's kubelet answers no log request, so `kubectl logs` reads nothing
+there, and the image denies `kubectl exec`, `attach` and `port-forward` (see
+[Post-start exec](#post-start-exec)).
 
 **`Read-only file system` inside a container** — check its `volumeMounts` and
 `readOnlyRootFilesystem` setting. For a host service, check the unit's systemd
@@ -746,20 +547,18 @@ each declared writable directory exists.
 Changes to service binaries or persistent configuration belong in the measured
 image build. Changes made on the running guest are outside the image's
 measurement and disappear on reboot. Deploy workloads through Kubernetes and
-use the signed launch document for the supported per-boot settings.
+use the worker document for the supported per-boot settings.
 
 Migration state (see [#264] for the full plan):
 
 1. This directory is the canonical definition: `c8s-image.yml` builds via
-   `images/node-guest/build`, which stages `c8s/` into a confos checkout
+   `images/node-guest/build`, which stages `worker/` into a confos checkout
    with `--profile-dir` and passes the kernel fragment and
    `c8s-ref`/`c8s-registry` sync inputs explicitly. The
    `node-guest-image lint` workflow is permanent: it carries the
    invariants that moved here from confos `bin/lint` (fragment supersets
-   vs confos's gpu/dev fragments at the `node-image` confos pin in
-   `.github/build-pins.json`, the NRI
-   floor template's no-hardcoded-digest rule, and the nested RKE2
-   pod-CIDR check), plus the cloud-init disable gate.
+   vs confos's gpu fragment at the `node-image` confos pin in
+   `.github/build-pins.json`), plus the cloud-init disable gate.
 2. The switch was gated on building the same C8s ref both ways (confos
    in-tree vs staged from here) with identical `manifest.json`
    measurements; `c8s-image-manual.yml`'s `gate=true` dispatch input reruns that
@@ -770,4 +569,3 @@ Migration state (see [#264] for the full plan):
 [confidential-os-builder]: https://github.com/confidential-dot-ai/confidential-os-builder
 [#264]: https://github.com/confidential-dot-ai/c8s/issues/264
 [#669]: https://github.com/confidential-dot-ai/c8s/issues/669
-[operator.md]: ../../docs/operator.md

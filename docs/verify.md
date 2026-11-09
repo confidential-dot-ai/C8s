@@ -52,7 +52,8 @@ Pass `--mesh-ca` too with `--kind lb` and `--kind workload`: the mesh CA is
 what CDS signs their certificates with, and without it the certificate chains
 to a CA the endpoint committed itself, leaving its deployment and its stamped
 names unproven. CDS's own serving certificate is self-signed, so `--kind cds`
-refuses `--mesh-ca`, `--sandbox-id`, `--workload` and `--allowlist`. Read the
+refuses `--mesh-ca`, `--sandbox-id`, `--workload`, `--client-document` and
+`--allowlist`. Read the
 bundle from CDS:
 
 ```sh
@@ -77,28 +78,27 @@ into a measurements config ([measurements.md](measurements.md)). You need
 Fetch the manifest layer of the image you intend to accept:
 
 ```sh
-IMAGE=ghcr.io/confidential-dot-ai/node-guest-base
-mkdir rke2-tdx
-LAYER=$(oras manifest fetch "$IMAGE:rke2-tdx-<RELEASE_TAG>" | jq -er \
+IMAGE=ghcr.io/confidential-dot-ai/guests/worker
+mkdir worker-tdx
+LAYER=$(oras manifest fetch "$IMAGE:<RELEASE_TAG>-tdx" | jq -er \
   '[.layers[] | select(.annotations["org.opencontainers.image.title"]
      == "manifest.json")][0].digest')
-oras blob fetch "$IMAGE@$LAYER" --output rke2-tdx/manifest.json
+oras blob fetch "$IMAGE@$LAYER" --output worker-tdx/manifest.json
 ```
 
-`<RELEASE_TAG>` is the release the cluster runs; the platform tag is
-`rke2-tdx` or `rke2-snp`. The `-cdi` image is the same disk in another format,
-so derive from these tags for it too. Derive the config and read back what it
-pins:
+`<RELEASE_TAG>` is the release the cluster runs; the TEE term of the tag is
+`tdx` or `sev-snp`. The `-kubevirt` image is the same disk in another format, so
+derive from these tags for it too. Derive the config and read back what it pins:
 
 ```sh
-c8s measurements derive --tee tdx --out measurements.json rke2-tdx
+c8s measurements derive --tee tdx --out measurements.json worker-tdx
 c8s measurements lint measurements.json
 ```
 
 ```text
-rke2-tdx: 1 tdx entry from rke2-tdx/manifest.json
+worker-tdx: 1 tdx entry from worker-tdx/manifest.json
 ok: tdx, 1 image(s)
-  rke2-tdx: 2 register pin(s)
+  worker-tdx: 2 register pin(s)
 ```
 
 The two register pins are RTMR[1] and RTMR[2], so the file pins the guest
@@ -121,11 +121,11 @@ their bytes cannot be reproduced outside the build.
 
 Verify the router's attested handshake, which binds the connection you opened
 and the routes the router serves ([routes-evidence.md](routes-evidence.md)
-explains `attest-lb` and `attest-pq`). The router serves `attest-lb` when its
-public TLS mode is `cds` or `acme` (chart default `cds`); a `webpki` front door
-refuses it, leaving `--mode attest-pq`. CDS answers on its own endpoint, where
-a hostname or chain mismatch does not fail the run: the evidence is verified,
-not WebPKI.
+explains `attest-lb` and `attest-pq`). The router serves `attest-lb` on an
+installed cluster, where its public TLS mode is `cds`, and on a baked node
+whose launch file selects `cds` or `acme`. CDS answers on its own endpoint,
+where a hostname or chain mismatch does not fail the run: the evidence is
+verified, not WebPKI.
 
 ```sh
 c8s verify https://<ROUTER_HOST> --kind lb --mode attest-lb \

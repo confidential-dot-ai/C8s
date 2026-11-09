@@ -53,7 +53,10 @@ The replicas are booted and none of them holds a cluster.
    `--resume-version 0` is the first cluster under this cluster id. Every
    later Genesis names the highest version the old cluster reached.
    `--nodes` overrides the node images the cluster starts out certifying; the
-   launch file's `nodes` is the default.
+   launch file's `nodes` is the default. A cluster of workers whose launch
+   file names no nodes starts from its first worker document instead: add
+   `--worker-document worker.yaml --worker-image worker-image.json`
+   ([launch-configuration.md](launch-configuration.md#admitting-a-worker-document)).
 
 3. Wait for the cluster. Within a few seconds of the decree being posted, the
    decreed replica leads and the others join:
@@ -349,17 +352,16 @@ voters agree.
 
 A node follows the cluster's pin decrees, so it must not take one that still
 names a retired CDS image. A node already running holds the newer decree and
-refuses older ones. A node added later needs the floor in its own document:
+refuses older ones. A worker added later needs the floor in its own document:
 
 ```sh
-c8s cds ha pin-policy --config cds-config.yaml --cds-pin cds-pin.json \
-    --decree-out pins-applied.json
-c8s node launch-config add-agent --bundle bundle --name node-7 \
-    --pin-decree pins-applied.json
+c8s cds ha pin-policy --config cds-config.yaml --cds-pin cds-pin.json
 ```
 
-The document then pins the images that decree names and carries the version it
-applies at as the node's pin floor: a replayed older decree, including one that
-still named the retired image, is refused. A node that reboots forgets the
-decree it followed and starts from its own document again, which is why the
-floor belongs in the document rather than in the node's state.
+It reports the version the applied pin decree stands at. Pass that version as
+`c8s worker new --cds-pin-floor`, and the document carries it as the worker's
+pin floor: a replayed
+older decree, including one that still named the retired image, is refused. A
+worker that reboots forgets the decree it followed and starts from its own
+document again, which is why the floor belongs in the document rather than in
+the node's state.

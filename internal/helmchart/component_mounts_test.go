@@ -221,7 +221,7 @@ func componentPins(t *testing.T, out string, args []string) map[string]component
 	for _, w := range renderedPodSpecs(t, out) {
 		for _, c := range w.spec.Containers {
 			if strings.Contains(c.Image, "nginx-unprivileged@") {
-				pins[imageDigest(c.Image)] = values["router.nginx"]
+				pins[imageDigest(c.Image)] = values["routerNginx"]
 			}
 		}
 	}
@@ -240,7 +240,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // and by the plugin's base where one renders, under exactly the argv, mount
 // table and environment it is rendered with: one argument more, one mount
 // fewer or one more, a loader variable or a redirected PATH is refused. On
-// default, bare-metal and baked renders alike, no component entry leaves env
+// default, AKS and worker renders alike, no component entry leaves env
 // open, nor args or mounts except the injected sidecar shapes, whose args are
 // per pod and whose mount tables leave out the inventory socket.
 func TestChartComponentShapesAreExact(t *testing.T) {
@@ -249,32 +249,20 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	for valuePath, digest := range componentTestDigests {
 		digests = append(digests, "--set", valuePath+".digest="+digest)
 	}
-	derived := append([]string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}, digests...)
-	measurements := strings.Repeat("a", 96)
-	measurementsConfig := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[{"name":"first","mrtd":"`+measurements+`"}]}`)
+	derived := digests
 	for _, tc := range []struct {
-		name string
-		args []string
-		base bool
+		name   string
+		render func(t *testing.T, args ...string) (string, error)
+		args   []string
+		base   bool
 	}{
-		{"default", append(slices.Clone(derived), "--set", "volumed.enabled=true", "--set", "attestationApi.enabled=true"), true},
-		{"gke", append(slices.Clone(derived), "--set", "attestationApi.cvmMode=gke", "--set", "attestationApi.enabled=true", "--set", "volumed.enabled=true"), true},
-		{"bare-metal", append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.baked=true", "--set", "router.attest.enabled=true", "--set", "volumed.enabled=true"), false},
-		{"bare-metal router gate", append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.baked=true",
-			"--set", "router.attest.enabled=true", "--set", "router.attest.expectedWorkload=front", "--set", "router.hostPort.enabled=false"), false},
-		{"webpki and discovery", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=webpki", "--set", "router.publicTLS.secretName=pub", "--set", "router.discovery.enabled=true",
-			"--set-file", "armtlsMesh.measurementsConfig="+measurementsConfig), true},
-		{"acme", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
-		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
-		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
+		{"default", helmTemplate, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
+		{"aks-snp", helmTemplateAKSSNP, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
+		{"pod CVM provider", helmTemplate, append(slices.Clone(derived), "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=pod-launch-config"), true},
+		{"worker", helmTemplateWorker, workerRenderArgs, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
+			out, err := tc.render(t, tc.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -349,24 +337,30 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 }
 
-// A baked router reads its nginx configuration and its entrypoint from the
+// helmTemplateAKSSNP renders the cloud chart with values-aks-snp.yaml.
+func helmTemplateAKSSNP(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return helmTemplatePlatform(t, "aks-snp", args...)
+}
+
+// The worker router reads its nginx configuration and its entrypoint from the
 // image, so the seed refuses a ConfigMap swapped in over that directory.
-func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
+func TestWorkerChartNginxRefusesConfigMapConfig(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
+	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
 	i := slices.IndexFunc(spec.Containers, func(c corev1.Container) bool { return c.Name == "nginx" })
 	if i < 0 {
-		t.Fatal("baked router has no nginx container")
+		t.Fatal("worker router has no nginx container")
 	}
 	nginx := spec.Containers[i]
-	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
+	pin := componentPins(t, out, workerRenderArgs)[imageDigest(nginx.Image)]
 	argv := runtimeArgv(nginx, pin.entrypoint)
 	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/serve.sh") {
-		t.Errorf("baked nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/serve.sh", argv)
+		t.Errorf("worker nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/serve.sh", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
@@ -375,15 +369,15 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 		})
 	}
 	if !admits() {
-		t.Fatal("baked seed refuses nginx as rendered")
+		t.Fatal("worker seed refuses nginx as rendered")
 	}
 	v := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == "nginx-config" })
 	if v < 0 || spec.Volumes[v].HostPath == nil || spec.Volumes[v].HostPath.Path != "/usr/lib/c8s/router-nginx" {
-		t.Fatalf("baked router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
+		t.Fatalf("worker router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
 	}
 	spec.Volumes[v].VolumeSource = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}
 	if admits() {
-		t.Error("baked seed admits nginx with its configuration from a ConfigMap")
+		t.Error("worker seed admits nginx with its configuration from a ConfigMap")
 	}
 }
 

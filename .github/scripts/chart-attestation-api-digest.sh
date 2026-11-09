@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Read or write the chart's copy of the attestation-api digest.
 #
-#   chart-attestation-api-digest.sh get [VALUES_YAML]
-#   chart-attestation-api-digest.sh set sha256:HEX [VALUES_YAML]
+#   chart-attestation-api-digest.sh get [COMPONENTS_YAML]
+#   chart-attestation-api-digest.sh set sha256:HEX [COMPONENTS_YAML]
 #
 # .github/build-pins.json's attestation_api_digest is the pin; the chart's
 # attestationApi pinnedDigest (what `c8s install` runs on the host) is a copy
@@ -19,7 +19,7 @@ die() {
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-default_values="$script_dir/../../internal/helmchart/c8s/values.yaml"
+default_values="$script_dir/../../charts/lib/files/components.yaml"
 pattern='^[[:space:]]*pinnedDigest:[[:space:]]*sha256:[0-9a-f]{64}$'
 
 current() {
@@ -31,11 +31,11 @@ current() {
 
 case "${1:-}" in
   get)
-    [[ $# -le 2 ]] || die "usage: get [VALUES_YAML]"
+    [[ $# -le 2 ]] || die "usage: get [COMPONENTS_YAML]"
     current "${2:-$default_values}"
     ;;
   set)
-    [[ $# -ge 2 && $# -le 3 ]] || die "usage: set sha256:HEX [VALUES_YAML]"
+    [[ $# -ge 2 && $# -le 3 ]] || die "usage: set sha256:HEX [COMPONENTS_YAML]"
     digest=$2 values=${3:-$default_values}
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$digest is not an OCI digest (sha256:<64 lowercase hex>)"
     current "$values" >/dev/null
@@ -43,6 +43,6 @@ case "${1:-}" in
     [[ "$(current "$values")" == "$digest" ]] || die "pinnedDigest in $values was not rewritten to $digest"
     ;;
   *)
-    die "usage: get [VALUES_YAML] | set sha256:HEX [VALUES_YAML]"
+    die "usage: get [COMPONENTS_YAML] | set sha256:HEX [COMPONENTS_YAML]"
     ;;
 esac

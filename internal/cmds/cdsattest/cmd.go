@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/time/rate"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -38,6 +39,8 @@ type config struct {
 	sessionMaxAge     time.Duration
 	readHeaderTimeout time.Duration
 	tunnelIOTimeout   time.Duration
+	establishRate     float64
+	establishBurst    int
 
 	// Launch-driven inputs (node image): each file overrides its flag.
 	frontDoorModeFile   string
@@ -74,7 +77,7 @@ func NewCmd() *cobra.Command {
 	f.IntVarP(&cfg.port, "port", "p", 8800, "listen port")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: cds (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
-	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In cds front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER. Re-read per request to follow get-cert rotation.")
+	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; cds mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
@@ -85,6 +88,8 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.sessionMaxAge, "session-max-age", defaultSessionMaxAge, "absolute session lifetime: a session's keys retire this long after establishment, however busy it is")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", 5*time.Second, "HTTP read-header timeout")
 	f.DurationVar(&cfg.tunnelIOTimeout, "tunnel-io-timeout", defaultTunnelIOTimeout, "how long a tunnel upload, or its sealed response download, may make no progress")
+	f.Float64Var(&cfg.establishRate, "establish-rate", defaultEstablishRate, "attest-pq and attest-lb requests per second each client address may make")
+	f.IntVar(&cfg.establishBurst, "establish-burst", defaultEstablishBurst, "attest-pq and attest-lb requests a client address may make at once before --establish-rate applies")
 	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
 	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
 	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes")
@@ -124,6 +129,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
+	}
+	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
+		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
 	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
 	if err != nil {
@@ -175,6 +183,8 @@ func run(ctx context.Context, cfg config) error {
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
 		TunnelIOTimeout:        cfg.tunnelIOTimeout,
+		EstablishRate:          rate.Limit(cfg.establishRate),
+		EstablishBurst:         cfg.establishBurst,
 		DisableAttestEndpoints: cfg.attestOff,
 	}
 	srv := NewServer(srvCfg)

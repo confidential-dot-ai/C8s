@@ -1,9 +1,6 @@
 package worker
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -35,12 +32,11 @@ const (
 )
 
 const (
-	containerdEndpoint = "unix:///run/k3s/containerd/containerd.sock"
+	containerdEndpoint = "unix:///run/containerd/containerd.sock"
 	// resolvConf lists systemd-resolved's upstream servers, which pods reach.
 	resolvConf = "/run/systemd/resolve/resolv.conf"
 	// clusterDomain is the domain the baked CoreDNS serves.
 	clusterDomain = "cluster.local"
-	bootIDPath    = "/proc/sys/kernel/random/boot_id"
 )
 
 // bootstrapTokenPattern is a Kubernetes bootstrap token, "<id>.<secret>", and
@@ -86,20 +82,9 @@ func tokenFileError(err error) error {
 	return fmt.Errorf("--bootstrap-token-file: %w", err)
 }
 
-// nodeName is the name this boot registers under, "n-" and 16 hex digits
-// derived from the kernel's random boot ID: new every boot, the same on a
-// rerun.
-func nodeName(rootDir string) (string, error) {
-	bootID, err := os.ReadFile(filepath.Join(rootDir, bootIDPath))
-	if err != nil {
-		return "", fmt.Errorf("node name: %w", err)
-	}
-	bootID = bytes.TrimSpace(bootID)
-	if len(bootID) == 0 {
-		return "", fmt.Errorf("node name: %s is empty", bootIDPath)
-	}
-	digest := sha256.Sum256(bootID)
-	return "n-" + hex.EncodeToString(digest[:8]), nil
+// nodeName identifies the worker slot at address.
+func nodeName(address [4]byte) string {
+	return fmt.Sprintf("n-%d-%d-%d-%d", address[0], address[1], address[2], address[3])
 }
 
 // kubeletConfiguration is the part of kubelet.config.k8s.io/v1beta1 a worker

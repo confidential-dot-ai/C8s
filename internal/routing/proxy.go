@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +59,18 @@ const ExporterHeader = "X-C8s-Exporter"
 // attest-lb handshake on the same connection; it is not evidence.
 const ConnectionHeader = "X-C8s-Connection"
 
+// ExpectAllowlistHeader carries, in hex, the allowlist digest a client read
+// from the router stamp it verified. The routing listener refuses a request
+// whose value is not its own router digest, so a client forwarding on a
+// cached verdict learns that the router renewed under another allowlist.
+const ExpectAllowlistHeader = "X-C8s-Expect-Allowlist"
+
+// ExpectRouteHeader carries, in hex, the route digest a client verified. The
+// routing listener refuses a request whose value is not the applied route
+// digest, so a client forwarding on a cached verdict learns that the route
+// manifest changed.
+const ExpectRouteHeader = "X-C8s-Expect-Route"
+
 // Binding is what a client verified on an attested handshake: the digest of
 // the manifest it bound, and the allowlist digest of the router stamp on the
 // mesh leaf it bound, empty for a leaf without one.
@@ -110,7 +123,11 @@ type ProxyConfig struct {
 	// (Acquire); one client may hold a quarter of it, or at least one
 	// full-size request. Zero means DefaultTunnelBudget.
 	TunnelBudget int64
-	Logger       *slog.Logger
+	// Agents resolves the agent a pattern route names to the address
+	// discovery reports for it. nil resolves none: a pattern route then
+	// answers 404.
+	Agents *AgentIndex
+	Logger *slog.Logger
 }
 
 // Proxy routes application requests by the applied manifest. It serves the
@@ -120,6 +137,7 @@ type Proxy struct {
 	state      *State
 	transports *Transports
 	bindings   ConnectionBindings
+	agents     *AgentIndex
 	timeout    time.Duration
 	log        *slog.Logger
 
@@ -144,6 +162,7 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		state:      cfg.State,
 		transports: cfg.Transports,
 		bindings:   cfg.Bindings,
+		agents:     cfg.Agents,
 		timeout:    cfg.Timeout,
 		log:        logger,
 		budget:     budget,
@@ -201,32 +220,83 @@ func (p *Proxy) Acquire(client string, recordBytes int64) (release func(), ok bo
 // ServeHTTP routes r by its Host (M1) and the path bytes it arrived with
 // (routes.Table.Select). It drops a client's X-C8s-Exporter: backends trust
 // it as the tunnel's channel binding. A request on a bound connection is
-// routed only while its binding holds.
+// routed only while its binding holds, one carrying X-C8s-Expect-Route only
+// while that digest is the applied one, and one carrying
+// X-C8s-Expect-Allowlist only while that digest is the router's.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del(ExporterHeader)
 	connection := r.Header.Get(ConnectionHeader)
 	r.Header.Del(ConnectionHeader)
+	expected := r.Header.Values(ExpectAllowlistHeader)
+	r.Header.Del(ExpectAllowlistHeader)
+	expectedRoute := r.Header.Values(ExpectRouteHeader)
+	r.Header.Del(ExpectRouteHeader)
 	applied := p.state.Current()
 	if applied == nil {
 		http.Error(w, "routes not applied", http.StatusServiceUnavailable) // A2
 		return
 	}
-	held := p.bindings.Hold(connection)
-	if held != nil {
-		defer held.Release()
-		if code := p.refusalCode(held, applied); code != "" {
-			p.refuseBound(w, r, held, code)
+	if len(expectedRoute) > 0 {
+		route := applied.Signed.Digest()
+		if !bytes.Equal(decodeExpected(expectedRoute), route[:]) {
+			http.Error(w, types.ErrorCodeRouteDigestChanged, http.StatusServiceUnavailable)
 			return
 		}
 	}
-	route, target, ok := applied.Table.Select(r)
+	var expectedDigest string
+	if len(expected) > 0 {
+		var err error
+		expectedDigest, err = p.checkExpected(expected)
+		if err != nil {
+			var changed *BindingChangedError
+			if errors.As(err, &changed) {
+				http.Error(w, changed.Code, http.StatusServiceUnavailable)
+			} else {
+				p.log.Warn("router credential unavailable", "error", err)
+				http.Error(w, "backend unavailable", http.StatusBadGateway)
+			}
+			return
+		}
+	}
+	held := p.bindings.Hold(connection)
+	if held != nil {
+		defer held.Release()
+		if held.RefusedWith != "" {
+			p.refuseBound(w, r, held, held.RefusedWith)
+			return
+		}
+		if err := p.checkBinding(held.Binding, applied); err != nil {
+			var changed *BindingChangedError
+			if errors.As(err, &changed) {
+				p.refuseBound(w, r, held, changed.Code)
+			} else {
+				p.log.Warn("router credential unavailable", "error", err)
+				http.Error(w, "backend unavailable", http.StatusBadGateway)
+			}
+			return
+		}
+		if expectedDigest != "" && held.RouterDigest != expectedDigest {
+			p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+			return
+		}
+	}
+	route, target, ok := p.selectRoute(applied, r)
 	if !ok {
 		http.NotFound(w, r) // M5
 		return
 	}
-	transport, ok := p.transport(route, held)
+	var transport *http.Transport
+	if held == nil && expectedDigest != "" {
+		transport, ok = p.transports.ForRouterDigest(route.Backend, expectedDigest)
+	} else {
+		transport, ok = p.transport(route, held)
+	}
 	if !ok {
-		p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+		if held != nil {
+			p.refuseBound(w, r, held, types.ErrorCodeRouterDigestChanged)
+		} else {
+			http.Error(w, types.ErrorCodeRouterDigestChanged, http.StatusServiceUnavailable)
+		}
 		return
 	}
 	if p.timeout > 0 {
@@ -242,6 +312,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status, body := p.backendFailure(err, r.Host, target.RawPath, route.Backend.Address)
 		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
+}
+
+// selectRoute is Table.Select, with the agent a pattern route names resolved
+// to the address discovery reports for it. An agent discovery does not know
+// gets no route.
+func (p *Proxy) selectRoute(applied *Applied, r *http.Request) (routes.Route, *url.URL, bool) {
+	route, target, ok := applied.Table.Select(r)
+	if !ok || route.Backend.AgentLabel == "" {
+		return route, target, ok
+	}
+	addr, ok := p.agents.Lookup(route.Backend.AgentLabel, route.Backend.AgentPort)
+	if !ok {
+		return routes.Route{}, nil, false
+	}
+	route.Backend.Address = addr
+	return route, target, true
 }
 
 // transport returns route's backend transport. A bound request gets none from
@@ -261,25 +347,55 @@ func (p *Proxy) refuseBound(w http.ResponseWriter, r *http.Request, held *HeldBi
 	http.Error(w, code, http.StatusServiceUnavailable)
 }
 
-// refusalCode returns the code refusing a request on held's connection: an
-// earlier refusal, else what changed since it was bound, else "".
-func (p *Proxy) refusalCode(held *HeldBinding, applied *Applied) string {
-	if held.RefusedWith != "" {
-		return held.RefusedWith
+// checkBinding refreshes the published credential before admitting a bound request.
+func (p *Proxy) checkBinding(
+	b Binding,
+	applied *Applied,
+) error {
+	if applied.Signed.Digest() != b.RouteDigest {
+		return &BindingChangedError{Code: types.ErrorCodeRouteDigestChanged}
 	}
-	return p.changedSince(held.Binding, applied)
+	routerDigest := ""
+	if p.transports != nil {
+		if err := p.transports.syncRouterDigest(); err != nil {
+			return err
+		}
+		routerDigest = p.transports.RouterDigest()
+	}
+	if routerDigest != b.RouterDigest {
+		return &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	}
+	return nil
 }
 
-// changedSince returns the code for what changed since b was bound, or ""
-// while applied and the router digest are b's.
-func (p *Proxy) changedSince(b Binding, applied *Applied) string {
-	switch {
-	case applied.Signed.Digest() != b.RouteDigest:
-		return types.ErrorCodeRouteDigestChanged
-	case p.transports.RouterDigest() != b.RouterDigest:
-		return types.ErrorCodeRouterDigestChanged
+// checkExpected refreshes the published credential, as checkBinding does, and
+// returns the expected digest only when it matches the router's. A malformed
+// value or an unstamped router matches nothing.
+func (p *Proxy) checkExpected(expected []string) (string, error) {
+	changed := &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	want := decodeExpected(expected)
+	if want == nil {
+		return "", changed
 	}
-	return ""
+	if p.transports != nil {
+		if err := p.transports.syncRouterDigest(); err != nil {
+			return "", err
+		}
+	}
+	if p.transports.RouterDigest() != string(want) {
+		return "", changed
+	}
+	return string(want), nil
+}
+
+// decodeExpected returns the one SHA-256 digest an expect header carries in
+// hex, or nil for anything else.
+func decodeExpected(values []string) []byte {
+	want, err := hex.DecodeString(values[0])
+	if len(values) != 1 || err != nil || len(want) != sha256.Size {
+		return nil
+	}
+	return want
 }
 
 // backendFailure logs a failed backend exchange and returns the response it
@@ -348,8 +464,8 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 		return textResponse(http.StatusServiceUnavailable, "routes not applied"), nil
 	}
 	// Checked against the manifest that then routes the request.
-	if code := p.changedSince(bound, applied); code != "" {
-		return types.TunnelResponse{}, &BindingChangedError{Code: code}
+	if err := p.checkBinding(bound, applied); err != nil {
+		return types.TunnelResponse{}, err
 	}
 	if p.timeout > 0 {
 		var cancel context.CancelFunc
@@ -386,7 +502,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}).WithContext(ctx)
 	// in carries the sealed Host and request target only, so the outer
 	// request's host never reaches Select (M1).
-	route, target, ok := applied.Table.Select(in)
+	route, target, ok := p.selectRoute(applied, in)
 	if !ok {
 		return textResponse(http.StatusNotFound, "404 page not found"), nil
 	}

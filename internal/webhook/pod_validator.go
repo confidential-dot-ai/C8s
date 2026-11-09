@@ -36,6 +36,9 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	if err := v.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, false); handled {
+		return response
+	}
 
 	// An ephemeral container changes no injected container, so the only
 	// decision is whether it may reach what they hold.
@@ -124,7 +127,7 @@ func validateFinalSpec(pod *corev1.Pod, namespace string, cfg Config) error {
 // rendered: a probe moved back onto an application port is a plaintext request
 // into the port the mesh listener answers.
 func matchesWorkloadProbes(want, got *corev1.Pod) error {
-	wantContainers, gotContainers := workloadProbeContainers(want), workloadProbeContainers(got)
+	wantContainers, gotContainers := authorContainers(want), authorContainers(got)
 	if len(wantContainers) != len(gotContainers) {
 		return fmt.Errorf("%w: workload containers changed", errUninjectedPod)
 	}

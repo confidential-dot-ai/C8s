@@ -82,6 +82,7 @@ func openStores(cfg config) (stores, error) {
 	if err != nil {
 		return stores{}, fmt.Errorf("open allowlist database: %w", err)
 	}
+	db.SetNodeDelay(cfg.allowlistNodeDelay)
 	return stores{
 		allowlist: db,
 		secrets:   newSecretsStore(cfg),

@@ -109,6 +109,40 @@ func TestTunnelRefusesAChangedBinding(t *testing.T) {
 	}
 }
 
+func TestTunnelRetainsItsSessionWhenRouterCredentialsAreUnreadable(t *testing.T) {
+	rs := newRoutedServer(t)
+	rs.apply(t, 1, time.Hour)
+	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
+	req := types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusOK {
+		t.Fatalf("initial tunnel response = %d, want 200", resp.Status)
+	}
+	<-rs.lastHost
+
+	pointer := filepath.Join(rs.meshDir, "current")
+	generation, err := os.Readlink(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusBadGateway {
+		t.Fatalf("encrypted response with unreadable credentials = %d, want 502", resp.Status)
+	}
+	if len(rs.lastHost) != 0 {
+		t.Fatal("request with unreadable credentials reached the backend")
+	}
+
+	if err := os.Symlink(generation, pointer); err != nil {
+		t.Fatal(err)
+	}
+	if resp := tunnel(t, rs.ts.URL, channel, sessionID, req); resp.Status != http.StatusOK {
+		t.Fatalf("same session after restoring credentials = %d, want 200", resp.Status)
+	}
+	<-rs.lastHost
+}
+
 // attestLB runs attest-lb on connection, sending no connection header when
 // connection is empty, and returns the response.
 func attestLB(t *testing.T, base, connection string) *http.Response {
@@ -193,20 +227,39 @@ func TestListenerRefusesABoundConnection(t *testing.T) {
 // before a renewal keeps presenting its leaf: a handshake on it attests that
 // leaf, and one on a new connection the renewed leaf.
 func TestAttestLBAttestsTheLeafItsConnectionPresents(t *testing.T) {
-	var servingCert string
-	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, c *Config) { servingCert = c.ServingCertFile })
-	rs.apply(t, 1, time.Hour)
-	opened := attestedServingLeaf(t, rs.ts.URL, "7.1")
-
-	_, renewed := writeTestServingLeaf(t)
-	writeTestPEM(t, servingCert, "CERTIFICATE", renewed)
-
-	if got := attestedServingLeaf(t, rs.ts.URL, "7.1"); got != opened {
-		t.Fatalf("attest-lb on the connection opened before the renewal attests %s, want its own leaf %s", got, opened)
+	tests := []struct {
+		name  string
+		mode  types.FrontDoorMode
+		renew func(*testing.T, *routedServer, string) []byte
+	}{
+		{"cds", types.FrontDoorModeCDS, func(t *testing.T, rs *routedServer, _ string) []byte {
+			renewed := namedLeaf(t, rs.ca, "router")
+			publishLeaf(t, rs.meshDir, renewed, rs.ca)
+			return renewed.Certificate[0]
+		}},
+		{"acme", types.FrontDoorModeACME, func(t *testing.T, _ *routedServer, servingCert string) []byte {
+			_, renewed := writeTestServingLeaf(t)
+			writeTestPEM(t, servingCert, "CERTIFICATE", renewed)
+			return renewed
+		}},
 	}
-	sum := sha256.Sum256(renewed)
-	if got, want := attestedServingLeaf(t, rs.ts.URL, "7.2"), base64.RawURLEncoding.EncodeToString(sum[:]); got != want {
-		t.Fatalf("attest-lb on a new connection attests %s, want the renewed leaf %s", got, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			servingCert, _ := writeTestServingLeaf(t)
+			rs := newRoutedServer(t, func(_ *routing.ProxyConfig, c *Config) {
+				c.FrontDoorMode, c.ServingCertFile = tc.mode, servingCert
+			})
+			rs.apply(t, 1, time.Hour)
+			opened := attestedServingLeaf(t, rs.ts.URL, "7.1")
+
+			sum := sha256.Sum256(tc.renew(t, rs, servingCert))
+			if got := attestedServingLeaf(t, rs.ts.URL, "7.1"); got != opened {
+				t.Fatalf("attest-lb on the connection opened before the renewal attests %s, want its own leaf %s", got, opened)
+			}
+			if got, want := attestedServingLeaf(t, rs.ts.URL, "7.2"), base64.RawURLEncoding.EncodeToString(sum[:]); got != want {
+				t.Fatalf("attest-lb on a new connection attests %s, want the renewed leaf %s", got, want)
+			}
+		})
 	}
 }
 
@@ -255,36 +308,132 @@ func TestServedLeavesKeepsTheLastFew(t *testing.T) {
 // A served leaf expires with the first certificate of its chain to expire, as
 // get-cert expires a generation when its CA does.
 func TestServingLeafExpiresWithItsChain(t *testing.T) {
-	_, leafDER := writeTestServingLeaf(t)
-	ca := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "mesh"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Minute),
+	t.Run("acme", func(t *testing.T) {
+		_, leafDER := writeTestServingLeaf(t)
+		ca := &x509.Certificate{
+			SerialNumber: big.NewInt(2),
+			Subject:      pkix.Name{CommonName: "mesh"},
+			NotBefore:    time.Now().Add(-time.Minute),
+			NotAfter:     time.Now().Add(time.Minute),
+		}
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "chain.pem")
+		chain := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})...)
+		if err := os.WriteFile(path, chain, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s := &Server{cfg: Config{ServingCertFile: path}}
+		_, leaf, err := s.servingLeaf()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(leaf.der, leafDER) {
+			t.Fatal("servingLeaf() committed another certificate than the chain's first")
+		}
+		if !leaf.expires.Equal(ca.NotAfter.Truncate(time.Second)) {
+			t.Fatalf("servingLeaf() expires %v, want the CA's earlier NotAfter %v", leaf.expires, ca.NotAfter)
+		}
+	})
+
+	// A cds front door serves tls.crt, so a bound mesh leaf is dropped once
+	// its CA or an intermediate in tls.crt expires, whichever comes first.
+	now := time.Now()
+	mint := func(t *testing.T, tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey, signer *ecdsa.PrivateKey) *x509.Certificate {
+		t.Helper()
+		if parent == nil {
+			parent = tmpl
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "chain.pem")
-	chain := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})...)
-	if err := os.WriteFile(path, chain, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{cfg: Config{ServingCertFile: path}}
-	leaf, err := s.servingLeaf()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(leaf.der, leafDER) {
-		t.Fatal("servingLeaf() committed another certificate than the chain's first")
-	}
-	if !leaf.expires.Equal(ca.NotAfter.Truncate(time.Second)) {
-		t.Fatalf("servingLeaf() expires %v, want the CA's earlier NotAfter %v", leaf.expires, ca.NotAfter)
+	for _, tc := range []struct {
+		name         string
+		caNotAfter   time.Time
+		intermediate time.Time // NotAfter of an intermediate in tls.crt; zero for none
+	}{
+		{name: "cds leaf expires first", caNotAfter: now.Add(3 * time.Hour)},
+		{name: "cds CA expires first", caNotAfter: now.Add(10 * time.Minute)},
+		{name: "cds intermediate expires first", caNotAfter: now.Add(time.Hour), intermediate: now.Add(10 * time.Minute)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ca := mint(t, &x509.Certificate{
+				SerialNumber:          big.NewInt(1),
+				Subject:               pkix.Name{CommonName: "mesh CA"},
+				NotBefore:             now.Add(-time.Minute),
+				NotAfter:              tc.caNotAfter,
+				KeyUsage:              x509.KeyUsageCertSign,
+				BasicConstraintsValid: true,
+				IsCA:                  true,
+			}, nil, &caKey.PublicKey, caKey)
+			leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf := mint(t, &x509.Certificate{
+				SerialNumber: big.NewInt(2),
+				Subject:      pkix.Name{CommonName: "router"},
+				NotBefore:    now.Add(-time.Minute),
+				NotAfter:     now.Add(2 * time.Hour),
+			}, ca, &leafKey.PublicKey, caKey)
+			certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
+			want := ca.NotAfter
+			if leaf.NotAfter.Before(want) {
+				want = leaf.NotAfter
+			}
+			if !tc.intermediate.IsZero() {
+				intermediate := mint(t, &x509.Certificate{
+					SerialNumber: big.NewInt(3),
+					Subject:      pkix.Name{CommonName: "intermediate"},
+					NotBefore:    now.Add(-time.Minute),
+					NotAfter:     tc.intermediate,
+				}, nil, &caKey.PublicKey, caKey)
+				certPEM = append(certPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: intermediate.Raw})...)
+				want = intermediate.NotAfter
+			}
+			keyDER, err := x509.MarshalECPrivateKey(leafKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := parseMeshIdentity(certPEM,
+				pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !identity.servedUntil.Equal(want) {
+				t.Fatalf("servedUntil = %v, want the earlier NotAfter %v", identity.servedUntil, want)
+			}
+
+			s := &Server{cfg: Config{FrontDoorMode: types.FrontDoorModeCDS}, bindings: NewBindings()}
+			if _, ok := s.servingLeafOf(httptest.NewRecorder(), "", identity); !ok {
+				t.Fatal("servingLeafOf(cds) refused a valid mesh identity")
+			}
+			hash := sha256.Sum256(leaf.Raw)
+			if _, kept := s.servedLeaves.find(hash, want); !kept {
+				t.Fatal("find(mesh leaf) at servedUntil = dropped, want kept")
+			}
+			if _, kept := s.servedLeaves.find(hash, want.Add(time.Second)); kept {
+				t.Fatal("find(mesh leaf) past servedUntil = kept, want dropped")
+			}
+		})
 	}
 }
 

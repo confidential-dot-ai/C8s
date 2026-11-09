@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -22,9 +22,6 @@ import (
 // stagedLaunchFile is where the measured initrd stages the launch file,
 // read-only, once its digest matched the launch's init data.
 const stagedLaunchFile = "/run/confai/operator-pubkey"
-
-// primaryIPv4 is a package var so tests can fake the host's routes.
-var primaryIPv4 = launchconfig.PrimaryIPv4
 
 // workerImageMarker is the file a worker image bakes; no other image runs
 // stage.
@@ -42,12 +39,12 @@ then publish the CDS pin and router settings under /run/c8s-node, write
 the NRI floor with the document's CDS, pod and Service ranges and cluster
 DNS, publish the node's primary IPv4 for the NRI inventory, and write
 the kubelet's configuration, bootstrap kubeconfig and static pods under
-/run/kubernetes. The node name is derived from this boot's ID. Every output
-is removed first, and again if any step fails.`,
+/run/kubernetes. The node name is derived from the primary IPv4 address.
+Every output is removed first, and again if any step fails.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := stage(cmd.Context(), "", document, bootstrapTokenFile, launchconfig.DefaultAttestationAPIURL); err != nil {
+			if err := stage(cmd.Context(), "", document, bootstrapTokenFile, DefaultAttestationAPIURL); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "worker document staged")
@@ -63,9 +60,14 @@ is removed first, and again if any step fails.`,
 // stage removes every output, then writes them from the document at
 // documentPath and the bootstrap token at tokenPath. On any error it removes
 // them again, so nothing usable is left behind. Off a worker image it touches
-// nothing. rootDir rebases the outputs, the marker, the static pod templates
-// and the boot ID for tests.
-func stage(ctx context.Context, rootDir, documentPath, tokenPath, attestationAPIURL string) error {
+// nothing. rootDir rebases the outputs, marker and static pod templates for tests.
+func stage(
+	ctx context.Context,
+	rootDir string,
+	documentPath string,
+	tokenPath string,
+	attestationAPIURL string,
+) error {
 	if err := requireWorkerImage(rootDir); err != nil {
 		return err
 	}
@@ -111,8 +113,8 @@ func stageDocument(ctx context.Context, rootDir, documentPath, tokenPath, attest
 	if err != nil {
 		return err
 	}
-	err = credrelease.VerifyLaunchBinding(ctx, attestationAPIURL, filepath.Join(rootDir, armtls.NodeJournal), data)
-	if errors.Is(err, credrelease.ErrLaunchFileNotBound) {
+	err = launchbinding.VerifyLaunchBinding(ctx, attestationAPIURL, filepath.Join(rootDir, armtls.NodeJournal), data)
+	if errors.Is(err, launchbinding.ErrLaunchFileNotBound) {
 		return fmt.Errorf("--document %s is not the document this worker launched with: %w", documentPath, err)
 	}
 	if err != nil {
@@ -129,18 +131,26 @@ func stageDocument(ctx context.Context, rootDir, documentPath, tokenPath, attest
 	return writeOutputs(rootDir, doc, token)
 }
 
+// DefaultAttestationAPIURL is the loopback attestation-api the worker image's
+// unit serves, which staging checks the launch binding against.
+const DefaultAttestationAPIURL = "http://127.0.0.1:8400"
+
 // writeOutputs checks the floor it writes before writing the node address and
 // the kubelet's inputs, the outputs clearOutputs removes first.
-func writeOutputs(rootDir string, doc *Document, token string) error {
-	name, err := nodeName(rootDir)
-	if err != nil {
-		return err
-	}
-	address, err := primaryIPv4()
+func writeOutputs(
+	rootDir string,
+	doc *Document,
+	token string,
+) error {
+	address, err := cmdsutil.PrimaryIPv4()
 	if err != nil {
 		return fmt.Errorf("resolve node address: %w", err)
 	}
-	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address)
+	if !address.Is4() {
+		return fmt.Errorf("resolve node address: expected IPv4, got %s", address)
+	}
+	name := nodeName(address.As4())
+	kubelet, err := renderKubelet(rootDir, doc.Kubernetes, token, name, address.String())
 	if err != nil {
 		return err
 	}
@@ -180,17 +190,17 @@ func checkFloor(rootDir string) error {
 	return nil
 }
 
-// The files the router reads beside its settings, as on a server.
+// The files the router reads beside its settings.
 const (
 	operatorKeysOutput = "operator-pubkey"
 	tlsSANOutput       = "tls-san"
 )
 
-// routerOutputs are the files the router reads under /run/c8s-node, as on a
-// server: its settings, the operator keys it verifies routes under and its
-// front-door name.
+// routerOutputs are the files the router reads under /run/c8s-node: its
+// settings, the operator keys it verifies routes under and its front-door
+// name.
 func routerOutputs(doc *Document) (map[string][]byte, error) {
-	outputs, err := nodeservices.RouterOutputs(doc.Router)
+	outputs, err := nodeservices.RouterOutputs(doc.router())
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +215,7 @@ func routerOutputs(doc *Document) (map[string][]byte, error) {
 
 // stagedPublicNames are the files stage publishes under /run/c8s-node.
 func stagedPublicNames() ([]string, error) {
-	router, err := nodeservices.RouterOutputs(nil)
+	router, err := nodeservices.RouterOutputs(nodeservices.Router{})
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +228,7 @@ func readDocument(path string) ([]byte, error) {
 		return nil, fmt.Errorf("--document: %w", err)
 	}
 	defer f.Close()
-	data, err := readutil.ReadAll(f, launchconfig.MaxDocumentSize)
+	data, err := readutil.ReadAll(f, MaxDocumentSize)
 	if err != nil {
 		return nil, fmt.Errorf("--document %s: %w", path, err)
 	}

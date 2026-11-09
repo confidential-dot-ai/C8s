@@ -6,8 +6,12 @@ set -euo pipefail
 
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [[ "${1:-}" != --inside ]]; then
-    # The node and CDS images each narrow a composed attester.
-    FINALIZE_SCRIPTS=(/ngi/c8s/mkosi.finalize /cgi/cds/mkosi.finalize)
+    # Every profile of the node-guest image narrows a composed attester, as
+    # the CDS image does.
+    FINALIZE_SCRIPTS=(/cgi/cds/mkosi.finalize)
+    for finalize in "$TESTS_DIR"/../*/mkosi.finalize; do
+        FINALIZE_SCRIPTS+=("/ngi/${finalize#"$TESTS_DIR/../"}")
+    done
     CONFOS_DIR=${CONFOS_DIR:-"$TESTS_DIR/../../../confos"}
     [[ -d "$CONFOS_DIR" ]] || { echo "CONFOS_DIR must name the pinned confos checkout" >&2; exit 2; }
     CONFOS_DIR=$(cd "$CONFOS_DIR" && pwd)

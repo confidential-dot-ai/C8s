@@ -28,9 +28,13 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 		t.Fatal("helm is required to verify the install/upload topology contract")
 	}
 	resetCLIState(t)
-	for _, mode := range []string{"bare-metal", "gke", "aks"} {
-		t.Run(mode, func(t *testing.T) {
-			desired := renderedTopologyAllowlist(t, mode)
+	for platform, mode := range map[string]string{
+		"aks-snp": "aks",
+		"aks-tdx": "aks",
+		"gke-snp": "gke",
+	} {
+		t.Run(platform, func(t *testing.T) {
+			desired := renderedTopologyAllowlist(t, platform)
 			apiEntries := []string{}
 			for name, workload := range desired.Workloads {
 				for _, container := range workload.Containers {
@@ -39,14 +43,11 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 					}
 				}
 			}
-			if wantAPI := mode != "bare-metal"; (len(apiEntries) > 0) != wantAPI {
-				t.Fatalf("rendered attestation-api entries = %v, want present: %v", apiEntries, wantAPI)
+			if len(apiEntries) == 0 {
+				t.Fatal("the render seeds no attestation-api entry")
 			}
 			if err := dryRunTopologyUpload(t, mode, desired); err != nil {
-				t.Fatalf("upload rendered %s allowlist: %v", mode, err)
-			}
-			if len(apiEntries) == 0 {
-				return
+				t.Fatalf("upload rendered %s allowlist: %v", platform, err)
 			}
 			for _, name := range apiEntries {
 				delete(desired.Workloads, name)
@@ -58,19 +59,16 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 	}
 }
 
-func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist {
+func renderedTopologyAllowlist(t *testing.T, platform string) pkgallowlist.Allowlist {
 	t.Helper()
-	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+	chart := filepath.Join("..", "..", "charts", "cloud")
+	args := []string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system",
+		"-f", filepath.Join(chart, "values-"+platform+".yaml"),
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
 	args = append(args, chartCDSArgs(t)...)
 	for i, path := range []string{"image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
-	}
-	args, err := appendCvmModeInstallArgs(args, mode, "sev-snp")
-	if err != nil {
-		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), "helm", args...)
 	var diagnostics bytes.Buffer

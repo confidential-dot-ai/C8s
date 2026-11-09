@@ -21,8 +21,6 @@ const (
 var containerdRoots = []string{
 	"/var/lib/containerd",
 	"/run/containerd",
-	"/var/lib/rancher/rke2/agent/containerd",
-	"/run/k3s/containerd",
 }
 
 // MountContext binds path-shaped runtime evidence to the object currently
@@ -280,6 +278,9 @@ func nodeRootMissing(mounts []allowlist.ObservedMount) string {
 
 func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	mount := observed(m, allowlist.MountHost, allowlist.MountUnknown)
+	// Unsupported recursive attributes stop host-source evidence collection;
+	// preserve that fail-closed partial observation below.
+	mount.ReadOnly = false
 	for _, option := range m.GetOptions() {
 		switch option {
 		case "ro":
@@ -302,7 +303,7 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 }
 
 func observed(m *api.Mount, class allowlist.MountClass, storage allowlist.MountStorage) allowlist.ObservedMount {
-	return allowlist.ObservedMount{Destination: m.GetDestination(), Source: m.GetSource(), Class: class, Storage: storage}
+	return allowlist.ObservedMount{Destination: m.GetDestination(), Source: m.GetSource(), Class: class, Storage: storage, ReadOnly: endsReadOnly(m)}
 }
 
 func cleanAbsolute(p string) bool {

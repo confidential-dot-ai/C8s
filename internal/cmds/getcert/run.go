@@ -78,6 +78,8 @@ type config struct {
 	UnnamedRenewInterval            time.Duration
 	ExpectedWorkload                string
 	MeasuredPoliciesFile            string
+	// guest is set only by the in-process trusted guest broker, never flags.
+	guest *GuestConfig
 }
 
 // nodeInventory is the local inventory get-cert redeems its workload identity
@@ -394,6 +396,10 @@ func assertedInstanceID(ctx context.Context, cfg config) (string, error) {
 // generation (docs/getcert-workload-binding.md), so waiting out a renewal
 // interval to re-ask would strand it for that long.
 func renewLoop(ctx context.Context, cfg config, client attestclient.Client, policyClient allowlistclient.Client, creds *credentials) error {
+	var changes <-chan struct{}
+	if cfg.guest != nil {
+		changes = cfg.guest.Changes
+	}
 	initialBackoff := backoff.NewExponentialBackOff()
 	initialBackoff.MaxInterval = maxInitialRetryInterval
 	if cfg.InitialRetryInterval > 0 {
@@ -404,6 +410,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// refusals the consecutive requests CDS or the inventory refused. They
 	// only pace the timer.
 	var unnamedRuns, failures, refusals int
+	// retrying is set while the timer holds a backed-off retry of a failed
+	// request, so a change does not shorten it.
+	var retrying bool
 	warned := map[string]bool{}
 	warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 	next := renewalInterval(cfg, creds.current, unnamedRuns)
@@ -446,6 +455,15 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		}
 		operationCtx, cancelOperation = generationValidityContext(ctx, creds.current)
 		select {
+		case _, ok := <-changes:
+			if !ok {
+				changes = nil
+				continue
+			}
+			// A pending retry already re-asks with the current snapshot.
+			if !retrying {
+				resetRenewal(0)
+			}
 		case <-operationCtx.Done():
 			if ctx.Err() != nil {
 				slog.Info("shutting down cert renewer")
@@ -458,7 +476,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if creds.current == nil {
 				continue
 			}
-			stale, err := servedCAStale(operationCtx, client, cfg.CAPath, creds.issuer)
+			stale, err := servedCAStale(operationCtx, client, creds.issuer, creds.volume)
 			// On error, fall through: it may be local (an unreadable
 			// --ca-path), which must not mute the policy check.
 			if err != nil {
@@ -500,6 +518,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			policyRenewPending = false
 			published := creds.current != nil
 			err := obtainCertFn(operationCtx, cfg, client, creds)
+			if cfg.guest != nil && errors.Is(err, errFailClosed) {
+				return err
+			}
 			refusals = countRefusal(refusals, err)
 			if err != nil && !published {
 				retry := initialBackoff.NextBackOff()
@@ -507,6 +528,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 					retry = refusedRetryInterval(cfg, refusals)
 				}
 				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
@@ -524,10 +546,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				failures++
 				retry := renewalRetryInterval(cfg, creds.current, failures, refusals)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
 			failures = 0
+			retrying = false
 			warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 			if isNamedLeaf(cfg, creds.current) {
 				unnamedRuns = 0
@@ -816,6 +840,9 @@ func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Cl
 // match that key, the pod's instance or its bound CA key leaves the previous
 // generation in place.
 func obtainCert(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) error {
+	if cfg.guest != nil {
+		return obtainGuestCert(ctx, *cfg.guest, client, creds)
+	}
 	// One request, one key: the sandbox token, the evidence and the CSR below
 	// all bind to this key, and it is published only with the certificate
 	// issued for it.
@@ -1142,8 +1169,9 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 	return out, nil
 }
 
-// servedCAStale detects a renewed CA certificate under the pod's bound issuer key.
-func servedCAStale(ctx context.Context, client attestclient.Client, caPath string, bound issuerKeyID) (bool, error) {
+// servedCAStale detects a renewed CA certificate under the pod's bound issuer
+// key, comparing what CDS serves now with the CA the volume publishes.
+func servedCAStale(ctx context.Context, client attestclient.Client, bound issuerKeyID, volume credentialVolume) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
 		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
@@ -1159,7 +1187,7 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 	if issuer != bound {
 		return false, nil
 	}
-	servedPEM, err := os.ReadFile(caPath)
+	servedPEM, err := volume.readPublished(volume.caName)
 	if err != nil {
 		return false, fmt.Errorf("read served mesh CA: %w", err)
 	}

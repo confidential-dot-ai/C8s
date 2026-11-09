@@ -15,37 +15,30 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// The chart's baked router pins its launch and reads only files worker stage
-// publishes, so a worker image's floor builds from it and the image's static
+// The worker chart's router pins its launch and reads only files worker stage
+// publishes, so a worker image's floor builds from the render and its static
 // pod templates, and the router's entry declares the HTTPS and HTTP host ports
 // its Deployment maps.
 func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not installed")
+		t.Fatal("helm CLI not found")
 	}
 	out := t.TempDir()
 	cmd := newNodeImageCmd()
 	cmd.SetArgs([]string{
 		"render", "--hardware-platform", "sev-snp", "--kube-version", "v1.36.4",
-		"--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "c8s"),
+		"--chart-dir", workerChartDir,
 		"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 		"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
-		"--router-image-digest", nodeImageTestRouterDigest, "--router-image-repository", "registry.example.com/nginx",
 		"--output-dir", out,
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "c8s", "image-policy.yaml.in"))
+	template, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "worker", "image-policy.yaml.in"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeFloor := strings.NewReplacer(
-		"@PLATFORM@", "snp",
-		"@MESH_REPO@", "registry.example.com/armtls-mesh", "@MESH_DIGEST@", nodeImageTestMeshDigest,
-		"@OPERATOR_REPO@", "registry.example.com/c8s-operator", "@OPERATOR_DIGEST@", testDigest,
-		"@ROUTER_REPO@", "registry.example.com/nginx", "@ROUTER_DIGEST@", nodeImageTestRouterDigest,
-	).Replace(string(template))
 	read := func(name string) []byte {
 		data, err := os.ReadFile(filepath.Join(out, name))
 		if err != nil {
@@ -53,7 +46,14 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		}
 		return data
 	}
-	templateDir := filepath.Join("..", "..", "images", "node-guest", "worker", "mkosi.extra", "usr", "lib", "c8s", "worker", "static-pods")
+	routerRepo, routerDigest, _ := strings.Cut(strings.TrimSpace(string(read("router-image.txt"))), "@")
+	nodeFloor := strings.NewReplacer(
+		"@PLATFORM@", "snp",
+		"@MESH_REPO@", "registry.example.com/armtls-mesh", "@MESH_DIGEST@", nodeImageTestMeshDigest,
+		"@OPERATOR_REPO@", "registry.example.com/c8s-operator", "@OPERATOR_DIGEST@", testDigest,
+		"@ROUTER_REPO@", routerRepo, "@ROUTER_DIGEST@", routerDigest,
+	).Replace(string(template))
+	templateDir := filepath.Join(out, "static-pods")
 	entries, err := os.ReadDir(templateDir)
 	if err != nil {
 		t.Fatal(err)

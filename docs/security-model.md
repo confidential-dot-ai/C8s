@@ -28,10 +28,10 @@ of its own.
   refuses a pin set naming no guest before any request, and an issuance binds a
   single-use challenge into the report ([armtls.md](armtls.md#cds-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
-- **Relaunch a node with other settings**: the `c8s-launch/v2` document is
-  signed over its exact bytes and the launch key's public half binds into its
-  evidence ([launch-configuration.md](launch-configuration.md),
-  [operator.md](operator.md#authenticated-launch-configuration));
+- **Relaunch a node with other settings**: the digest of the `c8s-worker/v1`
+  document a worker boots with binds into its evidence, and CDS certifies a
+  worker only under an image entry bound to that document
+  ([launch-configuration.md](launch-configuration.md));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 - **Edit or roll back a volume's ciphertext**: an immutable volume's dm-verity
   tree sits inside the encryption, so a changed block surfaces as an I/O error,
@@ -39,15 +39,10 @@ of its own.
   volume has no tree, so keep such data immutable ([volumes.md](volumes.md));
   [Data stays in the TEE](guarantees.md#data-stays-in-the-tee).
 
-In router mode `webpki` the public-TLS key is an operator Secret the host can
-read, so the router refuses attest-lb, the attested handshake that binds the
-serving leaf of a client's own connection: clients that need it must run mode
-`cds` or `acme` ([operator.md](operator.md#the-router)).
-
 ## The Kubernetes control plane and the cluster administrator
 
-This adversary holds the control plane and the credential `c8s get-kubeconfig`
-releases: it can create any pod and edit every object that credential reaches.
+This adversary holds the control plane: it can create any pod and edit every
+object in the cluster.
 
 - **Admit a pod running other code**: admission runs in the node CVM below the
   API server, keyed on image digest, at container creation, adjustment
@@ -63,23 +58,16 @@ releases: it can create any pod and edit every object that credential reaches.
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege),
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor));
   [No privileged way in](guarantees.md#no-privileged-way-in).
-- **Exec, attach, or debug into a pod**: the measured node image denies
-  `pods/exec`, `pods/attach`, `pods/portforward`, and
-  `pods/ephemeralcontainers` for every principal, and `c8s-runc` refuses the
-  `exec` verb ([node-exec-mode.md](node-exec-mode.md));
-  [No privileged way in](guarantees.md#no-privileged-way-in).
-- **Escalate with the released credential**: its ClusterRole is enumerated,
-  and a baked admission policy re-checks the same exclusions for every
-  principal in a `c8s:` group — the RBAC groups those credentials carry —
-  refusing writes in the privileged namespaces, takeovers of a platform
-  address, and the kubelet-proxy subresources
-  ([operator.md](operator.md#bounded-operator));
+- **Exec, attach, or debug into a pod**: the measured node image's kubelet
+  serves no exec, attach or port-forward handler, and `c8s-runc` refuses the
+  `exec` verb under the runtime ([node-exec-mode.md](node-exec-mode.md));
   [No privileged way in](guarantees.md#no-privileged-way-in).
 - **Write policy or routes of its own**: a write needs a single-use operator
   signature over that exact method, path, and body, made outside the cluster
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#writing-policy)).
   A baked node — one booted from the measured node image — takes the operator
-  keys from its launch configuration; elsewhere they are cluster configuration,
+  keys from the CDS configuration its document pins; elsewhere they are cluster
+  configuration,
   so pin the route digest or those keys
   ([operator.md](operator.md#route-manifest));
   [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
@@ -91,9 +79,11 @@ releases: it can create any pod and edit every object that credential reaches.
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 
 The node-side defences above are the measured node image's. On the chart lanes
-(`gke`, `aks`) the plugin's own base allowlist and mode, the host-namespace
-policy, and the exec path are chart values the same administrator writes
-([overview.md](overview.md#cvm-modes-and-hardware-platforms)), so an
+(`gke`, `aks`) the plugin's own base allowlist and mode are chart values the
+same administrator writes
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)), and the
+host-namespace policy is a cluster policy the chart always renders, which that
+administrator can delete, so an
 adversarial administrator means the measured node image. Deleting CDS drops the
 served entries, the secrets, and the route manifest, after which every member
 pod must be recreated ([operator.md](operator.md#cds-is-a-singleton)).
@@ -109,14 +99,13 @@ pod must be recreated ([operator.md](operator.md#cds-is-a-singleton)).
   ([armtls.md](armtls.md));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 - **Dial a pod around the mesh, or have it dial out**: the node's packet rules
-  deny both directions except five named kinds, and reach beyond the mesh is
-  the `egress` its entry names ([allowlist-entries.md](allowlist-entries.md));
+  deny both directions except the kinds [armtls.md](armtls.md) lists, and reach
+  beyond the mesh is the `egress` its entry names
+  ([allowlist-entries.md](allowlist-entries.md));
   [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
 
-Two of those kinds are C8s's own plaintext — resolver queries, and the baked
-cluster-metrics Service, readable by any member pod on a measured node
-([armtls.md](armtls.md#cluster-metrics)) — and a pod's declared egress is the
-third way out in the clear.
+Of those kinds, resolver queries are C8s's own plaintext, and a pod's declared
+egress is the other way out in the clear.
 
 ## Another tenant's pod
 
@@ -146,8 +135,9 @@ separate nodes and volume workloads need single-tenant ones.
 
 - **Break out to the node**: on a measured node admission bounds a container's
   capabilities to the node's default set and what its entry declares, and the
-  privilege floor keeps `no_new_privs` set and refuses user namespaces and the
-  privileged marks; the chart lanes have only the chart's cluster policy
+  privilege floor holds the create to that same bound, keeps
+  `no_new_privs` set and refuses user namespaces and the privileged marks; the
+  chart lanes have only the chart's cluster policy
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege),
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor));
   [No privileged way in](guarantees.md#no-privileged-way-in).

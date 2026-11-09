@@ -1,0 +1,20 @@
+{
+  "nginx": {
+    "policy": "match",
+    "variables": {
+      "PATH": {"exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+      "NGINX_VERSION": {"exact": "1.30.5"},
+      "PKG_RELEASE": {"exact": "1"},
+      "DYNPKG_RELEASE": {"exact": "1"},
+      "HOSTNAME": {"present": true},
+      "KUBERNETES_SERVICE_HOST": {"present": true},
+      "KUBERNETES_SERVICE_PORT": {"exact": "443"},
+      "KUBERNETES_SERVICE_PORT_HTTPS": {"exact": "443"},
+      "KUBERNETES_PORT": {"present": true},
+      "KUBERNETES_PORT_443_TCP": {"present": true},
+      "KUBERNETES_PORT_443_TCP_ADDR": {"present": true},
+      "KUBERNETES_PORT_443_TCP_PORT": {"exact": "443"},
+      "KUBERNETES_PORT_443_TCP_PROTO": {"exact": "tcp"}
+    }
+  }
+}

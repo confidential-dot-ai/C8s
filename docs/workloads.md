@@ -8,10 +8,15 @@ After step 3, do only the steps you need; terms left undefined here are in
 
 ## Prerequisites
 
-- A cluster running C8s ([QUICKSTART.md](QUICKSTART.md)) and the operator
+- A cluster running C8s ([operator.md](operator.md)) and the operator
   private key you installed it with.
 - Every image in the pod template pinned by digest: a tag names whatever the
   registry serves at pull time.
+- Every container running as a nonzero UID, from its image's `USER` or its
+  `runAsUser`: a C8s node refuses a container that runs as root. The webhook
+  sets the rest of the node's privilege floor on a container that leaves it
+  unset, `allowPrivilegeEscalation: false` with `NET_RAW`, `SETGID` and
+  `SETUID` dropped ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 - `kubectl` on PATH, and `crane` for any container that sets no `command`:
   `derive` then reads that image's `Entrypoint` and `Cmd` from the registry.
 - `mkfs.erofs` for step 5, or `mkfs.ext4` with `--mutable`: `c8s volume create`
@@ -221,21 +226,27 @@ c8s routes add --host api.example.com --path / --workload <ENTRY> \
 
 `<PORT>` is the port the workload itself listens on, not a C8s port. `--new`
 starts the first manifest of a cluster; without it `add` refuses an empty store.
-`--operator-keys` is required because the write re-signs every stored route.
+`--operator-keys` is required once CDS stores a manifest, because the write
+re-signs every stored route.
 `--workload` is the entry name the backend's certificate must carry, so the
 router handshakes with the pod's mesh endpoint and answers 502 rather than reach
-it in the clear. That certificate must also carry the same allowlist digest as
-the router's own, so after an allowlist write the route refuses requests — 502
-while the backend lags, 503 while the router does — until both have renewed
-([operator.md](operator.md#route-manifest)). Which manifest the router applied
+it in the clear. That entry must also be the same in the allowlist the
+certificate is stamped under as in the router's own, so an allowlist write that
+redefines or removes the entry refuses the route with 502 until both have
+renewed ([operator.md](operator.md#route-manifest)). Which manifest the router applied
 is evidence a client can check:
 [routes-evidence.md](routes-evidence.md).
 
 ## 8. Confirm, or find out why not
 
-`kubectl -n <NAMESPACE> get pods` shows the pod running. A pod that runs but
-never gets its secret or volume was refused by CDS, and only CDS can say why —
-the container set it compared is invisible to the pod:
+`kubectl -n <NAMESPACE> get pods` shows the pod running. A pod that never
+appears was refused at admission: `kubectl -n <NAMESPACE> describe rs` says why.
+A container stuck in `CreateContainerError` or `RunContainerError` was refused
+by its node: `kubectl -n <NAMESPACE> describe pod <POD>` shows the refusal, and
+one from the privilege floor names the `securityContext` field to set.
+
+A pod that runs but never gets its secret or volume was refused by CDS, and only
+CDS can say why — the container set it compared is invisible to the pod:
 
 ```sh
 c8s secrets explain --sandbox <SANDBOX_ID> $PIN $KEY

@@ -31,9 +31,26 @@ func write(opts options) error {
 			return err
 		}
 	}
-	nodes, err := readInput("node-pins", opts.nodePins)
-	if err != nil {
-		return err
+	var nodes []byte
+	if opts.nodePins != "" {
+		if nodes, err = readInput("node-pins", opts.nodePins); err != nil {
+			return err
+		}
+	}
+	var podImagePolicy []byte
+	if opts.podImagePolicy != "" {
+		if podImagePolicy, err = readInput("pod-image-policy-file", opts.podImagePolicy); err != nil {
+			return err
+		}
+		if len(podImagePolicy) == 0 {
+			return fmt.Errorf("--pod-image-policy-file must contain a nonempty Pod image policy")
+		}
+	}
+	var kms *cdsconfig.KMS
+	if opts.kmsURL != "" || opts.kmsTLSKey != "" {
+		if kms, err = cdsconfig.ParseKMS(opts.kmsURL, opts.kmsTLSKey); err != nil {
+			return fmt.Errorf("--kms-url/--kms-tls-key-sha256: %w", err)
+		}
 	}
 	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.clusterID,
@@ -41,11 +58,13 @@ func write(opts options) error {
 		ComponentSeed:   components,
 		TenantWorkloads: tenant,
 		Nodes:           nodes,
+		PodImagePolicy:  podImagePolicy,
 		NodeCIDRs:       opts.nodeCIDRs,
 		ClusterCIDRs:    append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...),
 		LeafDNSNames:    opts.leafDNSNames,
 		LeafDNSPatterns: opts.leafDNSPatterns,
 		HA:              opts.ha,
+		KMS:             kms,
 		ManifestPath:    opts.manifest,
 		Family:          family,
 		VCPUs:           opts.vcpus,

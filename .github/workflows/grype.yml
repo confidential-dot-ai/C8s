@@ -16,7 +16,7 @@ on:
       - "go.sum"
       - "go.work"
       - "go.work.sum"
-      - "internal/helmchart/c8s/values.yaml"
+      - "charts/lib/files/components.yaml"
       - ".github/workflows/grype.yml"
       - ".grype.yaml"
 
@@ -35,6 +35,8 @@ jobs:
 
     - name: Set up Go
       uses: ./.github/actions/setup-go-c8s
+
+    - uses: ./.github/actions/setup-grype
 
     - name: Scan for vulnerabilities
       id: scan
@@ -56,7 +58,7 @@ jobs:
           echo '```'
         } >> $GITHUB_STEP_SUMMARY
 
-  # The router nginx image is a third-party pin (chart values router.nginx.image)
+  # The router nginx image is a third-party pin (c8s-lib components.yaml routerNginx.image)
   # that never goes through the scans of our own images.
   router-image:
     runs-on: ubuntu-latest
@@ -67,12 +69,14 @@ jobs:
       id: image
       run: |
         set -euo pipefail
-        repo=$(yq -r '.router.nginx.image.repository' internal/helmchart/c8s/values.yaml)
-        digest=$(yq -r '.router.nginx.image.digest' internal/helmchart/c8s/values.yaml)
+        repo=$(yq -r '.routerNginx.image.repository' charts/lib/files/components.yaml)
+        digest=$(yq -r '.routerNginx.image.digest' charts/lib/files/components.yaml)
         if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-          echo "::error file=internal/helmchart/c8s/values.yaml::router.nginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
+          echo "::error file=charts/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
         fi
         echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+
+    - uses: ./.github/actions/setup-grype
 
     - name: Scan for High/Critical vulnerabilities
       id: scan

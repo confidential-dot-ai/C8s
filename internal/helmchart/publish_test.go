@@ -112,7 +112,7 @@ func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 // under repository, or the chart default when empty.
 func publishOverride(t *testing.T, repository string) {
 	t.Helper()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	if repository != "" {
 		args = append(args, "--set", "image.repository="+repository)
 	}
@@ -124,7 +124,7 @@ func publishOverride(t *testing.T, repository string) {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
 	operatorDigest := componentTestDigests["image"]
-	changed := append(slices.Clone(args), "--set-json", `operator.extraArgs=["--zap-log-level=debug"]`)
+	changed := append(slices.Clone(args), "--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}")
 	generated, err := helmTemplate(t, changed...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, generated)

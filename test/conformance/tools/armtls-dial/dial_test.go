@@ -194,6 +194,7 @@ func TestRunUsage(t *testing.T) {
 		{"--self-signed", "--platform", "sev-snp", "127.0.0.1:1", "10.0.0.2:80"},
 		{"--self-signed", "--platform", "sev-snp", "--attestation-url", "http://127.0.0.1:1", "127.0.0.1:1"},
 		{"--foreign-ca", "--self-signed", "127.0.0.1:1", "10.0.0.2:80"},
+		{"--mesh", "--self-signed", "--write-cert", "a", "--write-key", "b"},
 		{"--foreign-ca", "--cert", "x", "--key", "y", "127.0.0.1:1", "10.0.0.2:80"},
 		{"--self-signed", "--platform", "tdx", "127.0.0.1:1", "10.0.0.2:80"},
 		{"--self-signed", "--attestation-url", "http://127.0.0.1:1", "127.0.0.1:1", "10.0.0.2:80"},

@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"os/exec"
 	"slices"
 	"testing"
@@ -10,12 +11,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestChartRouterNodeMountAdmission(t *testing.T) {
-	deployment := renderBakedRouterDeployment(t)
+	deployment := renderWorkerRouterDeployment(t)
 	for _, client := range []struct {
 		name string
 		role string
@@ -178,7 +180,7 @@ func onlyMountAt(t *testing.T, mounts []allowlist.ObservedMount, destination str
 
 func routerNodeMountPlugin(t *testing.T) *plugin {
 	t.Helper()
-	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	cfg, err := parseConfig([]byte(renderWorkerImagePolicy(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,24 +241,23 @@ func routerNodeMountObserver(p *plugin) mountObserver {
 	})
 }
 
-func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
+func renderWorkerRouterDeployment(t *testing.T) appsv1.Deployment {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	cmd := exec.Command("helm", "template", "c8s", "../../helmchart/c8s",
-		"--show-only", "templates/router-deployment.yaml",
+	cmd := exec.Command("helm", "template", "c8s", testutil.RepoPath("charts", "worker"),
+		"--show-only", "templates/cluster/router-deployment.yaml",
 		"--namespace", "c8s-system", "--kube-version", "1.30.0",
-		"--set", "node.baked=true,attestationApi.enabled=false,nriImagePolicy.enabled=false,nriImagePolicy.bootstrapAllowlist.deriveComponents=true,router.attest.enabled=true",
+		"-f", testutil.RepoPath("charts", "worker", "values-sev-snp.yaml"),
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
-		"--set-string", "router.nginx.image.digest="+routerImageDigest,
-		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
-		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("render baked router: %v\n%s", err, out)
+		t.Fatalf("render the worker router: %v\n%s", err, stderr.Bytes())
 	}
 	var deployment appsv1.Deployment
 	if err := sigsyaml.UnmarshalStrict(out, &deployment); err != nil {

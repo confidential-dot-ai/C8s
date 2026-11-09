@@ -85,8 +85,17 @@ func TestClusterDeploymentFixturesMeetRestrictedPolicy(t *testing.T) {
 					t.Fatalf("expected one fixture app container, got %d", len(pod.Spec.Containers))
 				}
 				app := pod.Spec.Containers[0]
-				if app.Image != image {
-					t.Errorf("fixture image %q differs from pre-pull/floor image %q", app.Image, image)
+				switch file {
+				case "adopt-me.yaml":
+					// Out of the floor: install's --workload-ref entry must be
+					// the only one that describes this pod.
+					if !strings.HasPrefix(app.Image, "nginxinc/nginx-unprivileged@sha256:") || app.Image == image {
+						t.Errorf("adopted fixture image %q must be pinned and apart from the floor image %q", app.Image, image)
+					}
+				default:
+					if app.Image != image {
+						t.Errorf("fixture image %q differs from pre-pull/floor image %q", app.Image, image)
+					}
 				}
 				var ports []int32
 				for _, p := range app.Ports {

@@ -83,6 +83,66 @@ func (s *Store) Served() (body []byte, version string, err error) {
 	return body, version, nil
 }
 
+// InEffect returns the allowlist in effect on nodes at now: a write takes
+// effect the node delay after it is written, unless another write replaced it
+// first, and the first allowlist takes effect at once. Pruning keeps it
+// (InEffectDepth).
+func (s *Store) InEffect(now time.Time) (body []byte, version string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version, digest, _, err := s.inEffect(now)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&body); err != nil {
+		return nil, "", fmt.Errorf("read the allowlist in effect: %w", err)
+	}
+	return body, version, nil
+}
+
+// InEffectDepth is how many of the newest history entries reach the one in
+// effect at now, which pruning must keep.
+func (s *Store) InEffectDepth(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _, depth, err := s.inEffect(now)
+	return depth, err
+}
+
+// SetNodeDelay sets how long after a write it takes effect on nodes
+// (InEffect). Zero makes every write take effect at once.
+func (s *Store) SetNodeDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeDelay = d
+}
+
+// inEffect walks the history from the newest entry to the first that was not
+// replaced within the node delay. Callers must hold s.mu.
+func (s *Store) inEffect(now time.Time) (version, digest string, depth int, err error) {
+	rows, err := s.db.Query("SELECT position, version, digest, published_at_ms FROM journal_event ORDER BY position DESC")
+	if err != nil {
+		return "", "", 0, fmt.Errorf("read the allowlist history: %w", err)
+	}
+	defer rows.Close()
+	replacedMS := now.UnixMilli()
+	for rows.Next() {
+		var position, publishedMS int64
+		if err := rows.Scan(&position, &version, &digest, &publishedMS); err != nil {
+			return "", "", 0, err
+		}
+		depth++
+		if position == 1 || replacedMS-publishedMS >= s.nodeDelay.Milliseconds() {
+			return version, digest, depth, nil
+		}
+		replacedMS = publishedMS
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", 0, err
+	}
+	return "", "", 0, errors.New("no allowlist in the history is in effect")
+}
+
 // startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls

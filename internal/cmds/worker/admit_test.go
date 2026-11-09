@@ -117,6 +117,32 @@ func TestAdmitAddsTheWorkerImageBoundToTheDocumentsBytes(t *testing.T) {
 	}
 }
 
+// A cluster of workers has no set in force before its first worker, which
+// starts the set alone.
+func TestAdmitStartsAFirstSetWithTheWorkerImageAlone(t *testing.T) {
+	for _, family := range workerFamilies {
+		t.Run(string(family), func(t *testing.T) {
+			f := newAdmitFixture(t, family)
+			a, err := AdmitFirst(bytes.NewReader(f.document), f.in.CDSPin, f.in.WorkerImage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set, err := refvalues.Parse(a.Nodes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := independentDigest(family, f.document)
+			if set.Family != family || len(set.Images) != 1 || !bytes.Equal(set.Images[0].LaunchFileDigest, want) {
+				t.Fatalf("first set = %+v, want the worker image alone, bound to digest %x", set, want)
+			}
+			resp, platform := evidence(family, f.document, workerRTMRs)
+			if err := enforce(t, a, resp, platform); err != nil {
+				t.Fatalf("the worker launched with the admitted document was refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestAdmitPrintsTheFactsTheDocumentCarries(t *testing.T) {
 	f := newAdmitFixture(t, teetypes.FamilySNP)
 	var report strings.Builder

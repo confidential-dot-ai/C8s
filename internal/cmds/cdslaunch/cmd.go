@@ -20,6 +20,7 @@ type options struct {
 	allowlistSeed   string
 	workloads       string
 	nodePins        string
+	podImagePolicy  string
 	nodeCIDRs       []string
 	podCIDRs        []string
 	serviceCIDRs    []string
@@ -28,6 +29,8 @@ type options struct {
 	manifest        string
 	platform        string
 	vcpus           []int
+	kmsURL          string
+	kmsTLSKey       string
 	// ha is the replica set the cluster's CDS runs as, empty for a cluster
 	// whose CDS is a singleton.
 	ha cdsconfig.HA
@@ -79,14 +82,17 @@ fix the cluster for its life.`,
 	f.StringVar(&opts.operatorKeys, "operator-keys", "", "PEM bundle of the operator public keys authorizing policy writes")
 	f.StringVar(&opts.allowlistSeed, "allowlist-seed", "", "JSON allowlist holding this cluster's component entries")
 	f.StringVar(&opts.workloads, "workloads", "", "JSON allowlist of tenant workloads added to the seed; an entry may not take a component entry's name")
-	f.StringVar(&opts.nodePins, "node-pins", "", "measurements config pinning the node launch identities CDS admits and serves")
+	f.StringVar(&opts.nodePins, "node-pins", "", "measurements config pinning the node launch identities CDS admits and serves (required without --replica: a replica set's Genesis decree may name them instead)")
+	f.StringVar(&opts.podImagePolicy, "pod-image-policy-file", "", "optional complete TDX Pod image and launch-key policy embedded in the measured CDS configuration; grants no node authority")
 	f.StringArrayVar(&opts.nodeCIDRs, "node-cidr", nil, "subnet holding the node addresses CDS may dial for a sandbox's admission inventory; repeatable")
 	f.StringArrayVar(&opts.podCIDRs, "pod-cidr", nil, "the cluster's pod range; a node subnet reaching into it is refused; repeatable")
 	f.StringArrayVar(&opts.serviceCIDRs, "service-cidr", nil, "the cluster's service range; a node subnet reaching into it is refused; repeatable")
 	f.StringArrayVar(&opts.leafDNSNames, "leaf-dns-name", nil, "literal DNS SAN a leaf may carry; repeatable")
 	f.StringArrayVar(&opts.leafDNSPatterns, "leaf-dns-pattern", nil,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
-	cdsconfig.BindReplicaSetFlags(f, "", &opts.ha)
+	f.StringVar(&opts.kmsURL, "kms-url", "", "optional https URL of the key management service CDS brokers pod secret release to (docs/pod-secrets.md); needs --pod-image-policy-file")
+	f.StringVar(&opts.kmsTLSKey, "kms-tls-key-sha256", "", "lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the KMS's TLS certificate; required with --kms-url")
+	cdsconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
@@ -95,7 +101,6 @@ fix the cluster for its life.`,
 		"cluster-id",
 		"operator-keys",
 		"allowlist-seed",
-		"node-pins",
 		"node-cidr",
 		"pod-cidr",
 		"service-cidr",

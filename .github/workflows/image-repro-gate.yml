@@ -1,8 +1,9 @@
-# Reproducibility gates for measured images. Node-image changes build the image
-# TWICE and require every measured value to match (c8s#264). This runs on every
-# PR and decides relevance itself — a paths filter would leave the required
-# `compare` check pending on unrelated PRs. Fork PRs are exempt
-# (security-over-coverage); the post-merge builds remain the publication gates.
+# Reproducibility gates for measured images. A change to the worker image's
+# inputs builds it TWICE and requires every measured value to match (c8s#264).
+# This runs on every PR and decides relevance itself — a paths filter would
+# leave the required `compare` check pending on unrelated PRs. Fork PRs are
+# exempt (security-over-coverage); the post-merge builds remain the publication
+# gates.
 name: image repro gate
 on:
   pull_request:
@@ -26,21 +27,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          # The diff step reads only the PR merge commit and its parents.
+          fetch-depth: 2
       - id: diff
         env:
           PR: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then
             image=true
           else
+            # HEAD is GitHub's PR merge commit; diff against its first parent.
+            # The event's base sha can move past it (base force-pushed after
+            # the merge was cached) and would charge the PR with the base's gains.
+            git rev-parse --verify -q HEAD^2 >/dev/null
+            base=$(git rev-parse HEAD^1)
             base_manifest="$RUNNER_TEMP/base-build-pins.json"
             changed_paths="$RUNNER_TEMP/changed-paths"
-            git cat-file -e "${BASE_SHA}^{commit}"
-            git show "${BASE_SHA}:.github/build-pins.json" >"$base_manifest"
-            git diff --name-only -z "$BASE_SHA" HEAD -- >"$changed_paths"
+            git show "${base}:.github/build-pins.json" >"$base_manifest"
+            git diff --name-only -z "$base" HEAD -- >"$changed_paths"
             result=$(bash .github/scripts/repro-gate-changes \
               .github/build-pins.json "$base_manifest" "$changed_paths")
             image=$(sed -n 's/^image=//p' <<<"$result")
@@ -49,7 +54,7 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
           ref=$(git rev-parse HEAD)
           echo "c8s_ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "node-image relevant: $image (host binary and core containers from \`$ref\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "worker image relevant: $image (host binary and core containers from \`$ref\`)" >> "$GITHUB_STEP_SUMMARY"
 
       # PR code must never run with the production module-signing key. This
       # keypair is shared by both legs, used only in unpublished gate images,
@@ -129,7 +134,7 @@ jobs:
       gate_images_artifact: gate-core-images-${{ github.run_id }}
 
   compare:
-    # The required check: green fast when the node-image domain is not relevant (and on
+    # The required check: green fast when no measured input changed (and on
     # fork PRs, whose changes job is skipped); otherwise enforce every build
     # and comparison selected by the classifier.
     needs: [changes, build-a, build-b]
@@ -166,14 +171,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'EOF'
-          import json, os, sys
+          import glob, json, os, sys
           run_id = os.environ["GITHUB_RUN_ID"]
           fail = False
           lines = ["### image repro gate", "", "| platform | field | verdict |", "|---|---|---|"]
           for plat in ("tdx", "snp"):
               legs = {}
               for leg in ("a", "b"):
-                  d = f"evidence/gate-rke2-{plat}-{run_id}-{leg}"
+                  # The builder names the directory after the variant it built.
+                  found = glob.glob(f"evidence/gate-*-{plat}-{run_id}-{leg}")
+                  if len(found) != 1:
+                      sys.exit(f"want one evidence directory for {plat} leg {leg}, got {found}")
+                  d = found[0]
                   m = json.load(open(f"{d}/manifest.json"))
                   # The report timestamp is metadata, not a baked byte.
                   m.get("build", {}).pop("timestamp", None)

@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -29,8 +30,11 @@ type Config struct {
 	// OperatorKeys authorize policy writes.
 	OperatorKeys operatorauth.KeyBundle
 	Workloads    *allowlist.Allowlist
-	// Nodes pins the node launch identities CDS admits and serves.
+	// Nodes pins the node launch identities CDS admits and serves. A replica
+	// set's may be empty, and its Genesis then names the first set.
 	Nodes refvalues.ReferenceValues
+	// PodImages authorize quote-bound Pod mesh issuance only, never node callbacks.
+	PodImages []remote.ImagePin
 	// NodeCIDRs bounds the addresses CDS may call a sandbox inventory on.
 	NodeCIDRs workloadclaims.CIDRHosts
 	// DNSSANPatterns are the rules a leaf's DNS SANs are matched against,
@@ -39,6 +43,8 @@ type Config struct {
 	DNSSANPatterns []*regexp.Regexp
 	// HA is the replica set this CDS belongs to; nil runs the singleton.
 	HA *HA
+	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
+	KMS *KMS
 }
 
 // wire mirrors the document. Workloads and Nodes keep the JSON wire schemas
@@ -49,11 +55,13 @@ type wire struct {
 	ClusterID          string   `yaml:"clusterID"`
 	OperatorPublicKeys string   `yaml:"operatorPublicKeys"`
 	Workloads          string   `yaml:"workloads"`
-	Nodes              string   `yaml:"nodes"`
+	Nodes              string   `yaml:"nodes,omitempty"`
+	PodImagePolicy     string   `yaml:"podImagePolicy,omitempty"`
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
 	HA                 *haWire  `yaml:"ha,omitempty"`
+	KMS                *kmsWire `yaml:"kms,omitempty"`
 }
 
 // Parse validates a CDS configuration document. It authenticates nothing:
@@ -81,9 +89,17 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workloads: %w", err)
 	}
-	nodes, err := refvalues.Parse([]byte(w.Nodes))
+	nodes, err := parseNodes(w.Nodes)
 	if err != nil {
-		return nil, fmt.Errorf("nodes: %w", err)
+		return nil, err
+	}
+	var podImages []remote.ImagePin
+	if w.PodImagePolicy != "" {
+		pods, err := workloadclaims.ParsePodImagePolicy([]byte(w.PodImagePolicy))
+		if err != nil {
+			return nil, fmt.Errorf("podImagePolicy: %w", err)
+		}
+		podImages = pods.Images
 	}
 	subnets, err := parseNodeCIDRs(w.NodeCIDRs)
 	if err != nil {
@@ -97,15 +113,53 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{
+	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
+		return nil, err
+	}
+	kms, err := w.KMS.parse()
+	if err != nil {
+		return nil, err
+	}
+	if kms != nil && len(podImages) == 0 {
+		return nil, errors.New("kms: pod secret release needs a podImagePolicy")
+	}
+	cfg := &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
 		Workloads:      workloads,
 		Nodes:          nodes,
+		PodImages:      podImages,
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
 		HA:             ha,
-	}, nil
+		KMS:            kms,
+	}
+	if err := cfg.ValidatePodAuthorities(); err != nil {
+		return nil, fmt.Errorf("podImagePolicy: %w", err)
+	}
+	return cfg, nil
+}
+
+// parseNodes reads the node pins a launch file names, which may be none.
+func parseNodes(document string) (refvalues.ReferenceValues, error) {
+	if document == "" {
+		return refvalues.ReferenceValues{}, nil
+	}
+	nodes, err := refvalues.Parse([]byte(document))
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
+	}
+	return nodes, nil
+}
+
+// checkSingleCDSNamesNodes requires a single CDS to name its nodes: it
+// certifies the launch file's set for life, where a replica set's Genesis
+// may name the first.
+func checkSingleCDSNamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
+	if runsASingleCDS(ha) && nodes.Empty() {
+		return errors.New("nodes: a single CDS certifies only the nodes its launch file names, and this one names none")
+	}
+	return nil
 }
 
 // Cluster is what a client takes from the launch file it pins its CDS to.

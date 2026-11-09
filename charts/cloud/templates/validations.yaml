@@ -1,0 +1,22 @@
+{{- $_ := include "c8s.validatedCDSPin" . -}}
+{{- include "c8s.checkCDSAddress" .Values.cds.address -}}
+{{- /* The operator keys the router holds the route manifest to, which it reads
+       from its own namespace (templates/cds-operator-keys.yaml). */ -}}
+{{- if and .Values.cds.operatorKeys (not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys)) -}}
+{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>` or helm --set-file cds.operatorKeys=<file>" -}}
+{{- end -}}
+{{- /* The keys that name the cluster's confidential VMs. A stock values file
+       values-<platform>.yaml sets all three; nothing else can know them.
+       attestationApi.devices must be present, and an empty list is an answer:
+       a mock attestation API reads no device. */ -}}
+{{- $platformHint := "pass `c8s install --platform aks-snp|aks-tdx|gke-snp`, which applies the chart's values-<platform>.yaml, or give helm that file with -f" -}}
+{{- if not (hasKey .Values.attestationApi "devices") -}}
+{{- fail (printf "VALIDATION_ERROR kind=platform_values: attestationApi.devices is unset: %s" $platformHint) -}}
+{{- end -}}
+{{- range $key, $value := dict
+      "nriImagePolicy.platform" (dig "platform" "" .Values.nriImagePolicy)
+      "router.attest.platform" (dig "attest" "platform" "" .Values.router) -}}
+{{- if empty $value -}}
+{{- fail (printf "VALIDATION_ERROR kind=platform_values: %s is unset: %s" $key $platformHint) -}}
+{{- end -}}
+{{- end -}}

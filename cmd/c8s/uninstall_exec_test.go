@@ -23,8 +23,7 @@ import (
 func hostReleaseValuesFile(t *testing.T) string {
 	t.Helper()
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled": true, "distro": "k8s",
-		"containerdPrep": map[string]any{"image": map[string]any{"repository": "busybox", "digest": testDigest}},
+		"image": map[string]any{"repository": "ghcr.io/confidential-dot-ai/nri-image-policy", "digest": testDigest},
 	}}
 	data, err := json.Marshal(tree)
 	if err != nil {
@@ -44,8 +43,9 @@ type uninstallStubs struct {
 
 // newUninstallStubs wires stub helm/kubectl for `c8s uninstall` runs.
 // valuesFile == "" makes `helm get values` answer release-not-found. Every
-// kubectl query not overridden by extra answers empty (no pods, no labelled
-// nodes), which is the healthy post-drain cluster.
+// node query answers one Ready node, and every other kubectl query not
+// overridden by extra answers empty (no pods), which is the healthy
+// post-drain cluster.
 func newUninstallStubs(t *testing.T, valuesFile, kubectlExtra string, helmUninstallFails bool) *uninstallStubs {
 	t.Helper()
 	f := newFakeBin(t)
@@ -65,6 +65,7 @@ uninstall) `+fail+` ;;
 esac`)
 	f.tool(t, "kubectl", `case "$*" in
 `+kubectlExtra+`"apply -f -") /bin/cat >> '`+s.applied+`' ;;
+"get nodes -l "*) /usr/bin/printf 'node-a\tTrue\n' ;;
 esac`)
 	return s
 }
@@ -153,7 +154,12 @@ func TestUninstallSweepsNodeState(t *testing.T) {
 		t.Fatalf("uninstall: %v", err)
 	}
 	calls := s.f.calls(t)
+	ii := lineIndex(calls, "kubectl delete daemonset -n c8s-system -l "+nriInstallerSelector("c8s")+" --ignore-not-found")
+	wi := lineIndex(calls, "kubectl get pods -n c8s-system -l "+nriInstallerSelector("c8s")+" -o name")
 	hi := lineIndex(calls, "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
+	if ii < 0 || wi < ii || hi < wi {
+		t.Fatalf("the NRI installer must be gone before the hook runs (delete=%d wait=%d helm=%d):\n%s", ii, wi, hi, strings.Join(calls, "\n"))
+	}
 	ai := lineIndex(calls, "kubectl apply -f -")
 	ri := lineIndex(calls, "kubectl rollout status daemonset/c8s-host-sweep -n c8s-system --timeout=5m")
 	di := lineIndex(calls, "kubectl delete daemonset c8s-host-sweep -n c8s-system --ignore-not-found")
@@ -198,7 +204,7 @@ func TestUninstallSweepRolloutFailureKeepsDaemonSet(t *testing.T) {
 		t.Fatalf("want the sweep-incomplete error, got %v", err)
 	}
 	// The DaemonSet holds the only per-node failure logs; it must survive.
-	mustNotContainPrefix(t, s.f.calls(t), "kubectl delete daemonset")
+	mustNotContainPrefix(t, s.f.calls(t), "kubectl delete daemonset c8s-host-sweep")
 }
 
 func TestUninstallSweepNamespaceApplyFailure(t *testing.T) {
@@ -214,7 +220,7 @@ func TestUninstallSweepNamespaceApplyFailure(t *testing.T) {
 
 func TestUninstallSweepWaitFailure(t *testing.T) {
 	values := hostReleaseValuesFile(t)
-	s := newUninstallStubs(t, values, `"get pods -n c8s-system -l "*) exit 1 ;;
+	s := newUninstallStubs(t, values, `"get pods -n c8s-system -l app.kubernetes.io/instance=c8s,app.kubernetes.io/name=armtls-mesh "*) exit 1 ;;
 `, false)
 	err := runC8s(t, "uninstall")
 	if err == nil || !strings.Contains(err.Error(), "waiting for armtls-mesh pods") {
@@ -271,8 +277,8 @@ func TestUninstallDeleteCRDsAndNamespace(t *testing.T) {
 }
 
 func TestUninstallHostSweepOnlyUsesChartDefaults(t *testing.T) {
-	// Release already gone: config comes from the embedded chart defaults and
-	// the detected distro, and the helm uninstall step is skipped entirely.
+	// Release already gone: config comes from the embedded chart defaults,
+	// and the helm uninstall step is skipped entirely.
 	s := newUninstallStubs(t, "", "", false)
 	if err := runC8s(t, "uninstall", "--host-sweep-only"); err != nil {
 		t.Fatalf("uninstall --host-sweep-only: %v", err)
@@ -283,9 +289,9 @@ func TestUninstallHostSweepOnlyUsesChartDefaults(t *testing.T) {
 	mustNotContainPrefix(t, calls, "kubectl get configmap")
 	mustContainLine(t, calls, "kubectl rollout status daemonset/c8s-host-sweep -n c8s-system --timeout=5m")
 	ds := appliedDaemonSet(t, s.applied)
-	// With the release gone the baked plugin still enforces the release-pinned
-	// nri-image-policy digest, so the sweep runs the nri image at this CLI's
-	// version tag ("main" for this dev build) rather than the busybox default.
+	// With the release gone the installed plugin still enforces the
+	// release-pinned nri-image-policy digest, so the sweep runs the nri image
+	// at this CLI's version tag ("main" for this dev build).
 	if want := "ghcr.io/confidential-dot-ai/nri-image-policy:main"; ds.Spec.Template.Spec.InitContainers[0].Image != want {
 		t.Errorf("sweep image = %q, want %q", ds.Spec.Template.Spec.InitContainers[0].Image, want)
 	}
@@ -480,7 +486,6 @@ func hostReleaseValuesNRIFile(t *testing.T, imageRef string) string {
 	t.Helper()
 	repo, digest, _ := strings.Cut(imageRef, "@")
 	tree := map[string]any{"nriImagePolicy": map[string]any{
-		"enabled": true, "distro": "k8s",
 		"image": map[string]any{"repository": repo, "digest": digest},
 	}}
 	data, err := json.Marshal(tree)
@@ -700,4 +705,97 @@ func TestUninstallSweepReplayNamesAMissingLIOStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A removal pod cannot start on a NotReady node, so the uninstall stops before
+// helm waits on one, and names the node-level recovery. The nodes are the
+// sweep's when it runs, else the hooks'.
+func TestUninstallStopsAtNotReadyRemovalNodes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		values   map[string]any
+		flags    []string
+		selector string
+	}{
+		{
+			"the sweep's nodes",
+			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
+			nil,
+			linuxNodeSelector(),
+		},
+		{
+			"the hooks' nodes of a release naming its confidential nodes",
+			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
+			[]string{"--host-sweep=false"},
+			"c8s.example/confidential=true",
+		},
+		{
+			"the hooks' nodes of a release naming none",
+			map[string]any{},
+			[]string{"--host-sweep=false"},
+			linuxNodeSelector(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newUninstallStubs(t, releaseValuesFile(t, tc.values), `"get nodes -l `+tc.selector+` -o jsonpath"*) /usr/bin/printf 'node-a\tTrue\nnode-b\tUnknown\nnode-c\tFalse\nnode-d\t\n' ;;
+`, false)
+			err := runC8s(t, append([]string{"uninstall"}, tc.flags...)...)
+			if err == nil || !strings.Contains(err.Error(), "nodes node-b (Ready=Unknown), node-c (Ready=False), node-d (no Ready condition) do not report themselves Ready") || !strings.Contains(err.Error(), "delete /opt/nri/plugins/10-nri-image-policy, and run 'systemctl restart containerd'") {
+				t.Fatalf("want a refusal naming the nodes that are not Ready and the recovery, got %v", err)
+			}
+			mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
+		})
+	}
+}
+
+// A malformed selector and a selector no node matches stop the uninstall
+// rather than check no node.
+func TestUninstallRefusesRemovalNodesItCannotName(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values map[string]any
+		nodes  string
+		want   string
+	}{
+		{
+			"a malformed confidential-node selector",
+			map[string]any{"confidentialNodeSelector": "c8s.example/confidential"},
+			"",
+			"is not a map of node labels",
+		},
+		{
+			"no node matching",
+			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
+			`"get nodes -l c8s.example/confidential=true -o jsonpath"*) ;;
+`,
+			"no node matches c8s.example/confidential=true",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newUninstallStubs(t, releaseValuesFile(t, tc.values), tc.nodes, false)
+			err := runC8s(t, "uninstall", "--host-sweep=false")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
+			}
+			mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
+		})
+	}
+}
+
+// releaseValuesFile writes values plus the pinned NRI image every release
+// carries.
+func releaseValuesFile(t *testing.T, values map[string]any) string {
+	t.Helper()
+	values["nriImagePolicy"] = map[string]any{
+		"image": map[string]any{"repository": "ghcr.io/confidential-dot-ai/nri-image-policy", "digest": testDigest},
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "release-values.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

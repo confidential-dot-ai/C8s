@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,6 +86,12 @@ func inputs(t *testing.T, out string) []string {
 		"--platform", "sev-snp",
 		"--vcpus", "4",
 	}
+}
+
+// withoutNodePins are args with --node-pins and its value taken out.
+func withoutNodePins(args []string) []string {
+	flag := slices.Index(args, "--node-pins")
+	return slices.Concat(args[:flag], args[flag+2:])
 }
 
 func run(t *testing.T, args ...string) error {
@@ -180,6 +187,66 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 	}
 }
 
+// The generator embeds a complete Pod policy in the measured
+// configuration the CDS pin binds, and writes nothing for an invalid one.
+func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
+	podKey := publicKeyPEM(t)
+	policy, err := refvalues.Format(refvalues.ReferenceValues{
+		Family: teetypes.FamilyTDX,
+		Images: []remote.ImagePin{{Name: "pod", Digest: bytes.Repeat([]byte{0x21}, refvalues.DigestSize),
+			Registers: map[int][]byte{1: bytes.Repeat([]byte{0x22}, refvalues.DigestSize), 2: bytes.Repeat([]byte{0x23}, refvalues.DigestSize)}, Anchor: []byte(podKey)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, policy string
+		allowed      bool
+	}{
+		{"valid", string(policy), true}, {"empty", "", false}, {"malformed", "null", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "cds")
+			args := append(inputs(t, out), "--pod-image-policy-file", writeInput(t, "pods.json", tc.policy))
+			err := run(t, args...)
+			if !tc.allowed {
+				if err == nil {
+					t.Fatal("invalid explicit Pod policy accepted")
+				}
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatal("refused policy wrote output")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			configuration, err := os.ReadFile(filepath.Join(out, cdsconfig.ConfigFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cdsconfig.Parse(configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.PodImages) != 1 || !bytes.Equal(cfg.PodImages[0].Anchor, []byte(podKey)) {
+				t.Fatal("measured Pod policy lost")
+			}
+			pinBytes, err := os.ReadFile(filepath.Join(out, cdsconfig.PinFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin, err := refvalues.Parse(pinBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pin.Images) != 1 || !bytes.Equal(pin.Images[0].LaunchFile, configuration) {
+				t.Fatal("CDS pin does not bind Pod policy")
+			}
+		})
+	}
+}
+
 // Every replica of a cluster boots one configuration, so the generator takes
 // the replica set and writes no replica's own name into the document.
 func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
@@ -210,6 +277,28 @@ func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 	}
 	if cfg := parseWritten(t, out); cfg.HA != nil {
 		t.Fatalf("replica set = %+v, want the singleton CDS", cfg.HA)
+	}
+}
+
+// A replica set's Genesis may name its first node set; a single CDS has no
+// Genesis.
+func TestNewNeedsNodePinsOnlyForASingleCDS(t *testing.T) {
+	single := filepath.Join(t.TempDir(), "cds")
+	if err := run(t, withoutNodePins(inputs(t, single))...); err == nil {
+		t.Fatal("a single CDS naming no nodes was written")
+	}
+	if _, err := os.Stat(single); !os.IsNotExist(err) {
+		t.Fatal("the refused run still wrote its outputs")
+	}
+	replicated := filepath.Join(t.TempDir(), "cds")
+	args := append(withoutNodePins(inputs(t, replicated)),
+		"--replica", "cds-1.acme.example",
+		"--voters", "1")
+	if err := run(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := parseWritten(t, replicated); !cfg.Nodes.Empty() {
+		t.Fatalf("nodes = %+v, want none", cfg.Nodes)
 	}
 }
 
@@ -247,4 +336,16 @@ func parseWritten(t *testing.T, out string) *cdsconfig.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func TestNewRefusesAKMSWithoutItsPinnedKey(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "cds")
+	args := append(inputs(t, out), "--kms-url", "https://kms.example.org/release")
+	err := run(t, args...)
+	if err == nil || !strings.Contains(err.Error(), "--kms-url/--kms-tls-key-sha256") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("the refused run still wrote its outputs")
+	}
 }

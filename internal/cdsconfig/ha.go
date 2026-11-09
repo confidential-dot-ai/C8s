@@ -34,6 +34,12 @@ type haWire struct {
 	Voters   int      `yaml:"voters"`
 }
 
+// runsASingleCDS reports whether a document's ha block, nil when it has none,
+// runs one CDS rather than a replica set.
+func runsASingleCDS(ha *HA) bool {
+	return ha == nil
+}
+
 // parse reads the block; a document without one runs the singleton CDS.
 func (w *haWire) parse() (*HA, error) {
 	if w == nil {

@@ -3,10 +3,11 @@ name: docs install parity
 on:
   pull_request:
     paths: &parity-paths
-      - "docs/QUICKSTART.md"
       - "docs/DEMO.md"
       # The flag validation and preflights the gate exercises live here.
       - "cmd/c8s/**"
+      - "charts/**"
+      - "internal/helmchart/**"
       - "scripts/check-doc-install-commands.sh"
       - ".github/workflows/docs-install-parity.yml"
   push:

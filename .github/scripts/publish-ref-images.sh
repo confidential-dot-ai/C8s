@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the component images and the node image for one commit, from one
+# Publish the component images and the worker image for one commit, from one
 # command, so a manual image build cannot pair one commit's binaries with
 # another commit's image profile and cannot start before its components exist.
 #
@@ -14,10 +14,10 @@
 # remote (pushed to any branch):
 #   1. ensures a build branch points at exactly that commit (creates it, or
 #      refuses if it exists at another commit);
-#   2. checks the component tags the node image syncs (:<short-sha>) in ghcr;
+#   2. checks the component tags the worker image syncs (:<short-sha>) in ghcr;
 #      if any is missing, dispatches docker.yml on the build branch and waits;
 #   3. dispatches c8s-image-manual.yml on the build branch with c8s_ref set to
-#      the same short SHA (plus --dev / --confos-ref when given) and waits;
+#      the same short SHA (plus --confos-ref when given) and waits;
 #   4. prints the run URLs and the published image tags.
 #
 # Who may run it: anyone who can push a branch and dispatch workflows in the
@@ -25,10 +25,9 @@
 # workflows run exactly as a manual dispatch from the Actions UI would.
 #
 # Usage:
-#   publish-ref-images.sh --sha <40-hex> [--dev] [--confos-ref <ref>]
+#   publish-ref-images.sh --sha <40-hex> [--confos-ref <ref>]
 #       [--branch <name>] [--repo <owner/name>] [--dry-run]
 #
-#   --dev          build the rke2-dev variant (different measurement; never ship)
 #   --confos-ref   build with this confos commit instead of the pinned one
 #   --branch       build branch name (default: build/<short-sha>)
 #   --repo         GitHub repository (default: confidential-dot-ai/C8s)
@@ -41,9 +40,11 @@ set -euo pipefail
 
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
-# The repositories images/node-guest/c8s/mkosi.sync resolves at C8S_REF.
+# The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
 components=(c8s-operator nri-image-policy cds armtls-mesh)
-image_repo=node-guest-base
+image_repo=guests/worker
+# One oras artifact and one KubeVirt image per TEE, per commit.
+ref_tags_expected=4
 docker_workflow=docker.yml
 image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
@@ -51,7 +52,6 @@ find_run_attempts="${PUBLISH_REF_IMAGES_FIND_ATTEMPTS:-20}"
 
 repo=confidential-dot-ai/C8s
 sha=""
-dev=false
 confos_ref=""
 branch=""
 dry_run=false
@@ -69,7 +69,6 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha) sha="${2:-}"; shift 2 ;;
-    --dev) dev=true; shift ;;
     --confos-ref) confos_ref="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
@@ -140,6 +139,19 @@ registry_token() {
   fi
   curl -fsS "${auth[@]}" "https://$registry_host/token?service=$registry_host&scope=repository:$registry_namespace/$scope:pull" \
     | jq -r '.token // empty'
+}
+
+# ref_tags <repository> <prefix>: the repository's tags that start with prefix.
+# The listing is checked on its own, so an unreadable package is not a missing
+# tag.
+ref_tags() {
+  local repository=$1 prefix=$2 token listing
+  token=$(registry_token "$repository")
+  [ -n "$token" ] || die "no registry token for $registry_namespace/$repository"
+  listing=$(curl -fsS -H "Authorization: Bearer $token" \
+    "https://$registry_host/v2/$registry_namespace/$repository/tags/list") \
+    || die "cannot list $registry_namespace/$repository"
+  jq -r --arg prefix "$prefix" '.tags[]? | select(startswith($prefix))' <<< "$listing" | sort
 }
 
 # tag_exists <repository> <tag>: HEAD on the manifest, any media type.
@@ -214,11 +226,6 @@ else
 fi
 
 image_args=(-f "c8s_ref=$short")
-variant_suffix=""
-if [ "$dev" = true ]; then
-  image_args+=(-f dev=true)
-  variant_suffix="-dev"
-fi
 if [ -n "$confos_ref" ]; then
   image_args+=(-f "confos_ref=$confos_ref")
 fi
@@ -229,8 +236,21 @@ else
   dispatch_and_wait "$image_workflow" "${image_args[@]}"
 fi
 
+# The commit's tags as the registry lists them, so a tag spelled differently
+# than c8s-image.yml pushes it is a count error rather than a bad hint.
 echo "images for $short (profile and components from the same commit):"
-for platform in tdx snp; do
-  echo "  $registry_host/$registry_namespace/$image_repo:rke2-$platform$variant_suffix-$short"
-  echo "  $registry_host/$registry_namespace/$image_repo:rke2-$platform$variant_suffix-cdi-$short"
-done
+tag_prefix="sha-$short-"
+if [ "$dry_run" = true ]; then
+  echo "  would publish $ref_tags_expected $registry_host/$registry_namespace/$image_repo:$tag_prefix* tags"
+else
+  listing=$(ref_tags "$image_repo" "$tag_prefix")
+  published=()
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && published+=("$tag")
+  done <<< "$listing"
+  [ "${#published[@]}" -eq "$ref_tags_expected" ] \
+    || die "$image_workflow succeeded but $image_repo has ${#published[@]} :$tag_prefix* tags, expected $ref_tags_expected: ${published[*]:-none}"
+  for tag in "${published[@]}"; do
+    echo "  $registry_host/$registry_namespace/$image_repo:$tag"
+  done
+fi

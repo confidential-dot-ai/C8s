@@ -4,8 +4,9 @@ What a C8s deployment promises: for each promise, what it covers, what enforces
 it, and how to check it. The parts and their layout are in
 [overview.md](overview.md), the terms in [glossary.md](glossary.md), and the
 promises adversary by adversary in [security-model.md](security-model.md). What
-enforces a promise can differ by CVM mode, the deployment shape
-`c8s install --cvm-mode` picks; where it does, the section says so.
+enforces a promise can differ by CVM mode, the node shape
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)); where it does,
+the section says so.
 
 ## Data stays in the TEE
 
@@ -25,8 +26,7 @@ storage, so a key that leaks opens every copy of it the host kept, and a
 - **Encrypted volumes**: host-stored dm-crypt images opened inside the CVM for
   a pod the allowlist names — [volumes.md](volumes.md).
 - **Keys made where they are used**: pod keys and the mesh CA are generated in
-  TEE memory and never written out; public TLS mode `webpki` is the exception,
-  its serving private key coming from an operator Secret the host can read.
+  TEE memory and never written out.
 
 A node is one trust domain: its pods share its TEE, so distrusting tenants
 belong on separate nodes; availability, side channels, and physical attacks are
@@ -52,8 +52,9 @@ policy keeps host namespaces away from tenant pods
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
 - **Admission plugin** (`nri-image-policy`): checks every container at
-  creation, adjustment validation, and start, and the runtime starts nothing
-  while it is disconnected.
+  creation, adjustment validation, and start, and the runtime starts no
+  container while it is disconnected: on the measured node image from boot, on
+  `gke` and `aks` once the installer has run on that boot.
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
@@ -64,6 +65,15 @@ All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
 by the digests those pods ran at the plugin's first connect, and
 `nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
+
+On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
+plugin registered gets no identity, certificate or secret until it is deleted,
+even for its containers that start later. A denied image may run until the
+plugin is ready and stops it. That window opens on a reboot, on a fresh node,
+and for as long as the plugin is down on a running node. On COS each boot
+repeats the `kube-system` digest capture, from what ran in that window. The
+measured node image has no boot window: its CNI needs the plugin before any pod
+sandbox gets a network.
 
 ## Identity comes from hardware evidence
 
@@ -87,8 +97,8 @@ comes from the Azure vTPM
   the containers each pod sandbox ran — signs over a pod's key and CDS's
   challenge, stamped on the pod's certificate with the matched workload when the
   pod matches one entry — [armtls.md](armtls.md#sandbox-identity).
-- **Launch key binding**: on `bare-metal`, the public half of the operator
-  keypair a node boots with, bound into its evidence —
+- **Launch binding**: on `bare-metal`, the digest of the document a worker
+  boots with, bound into its evidence —
   [launch-configuration.md](launch-configuration.md).
 
 A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
@@ -98,31 +108,22 @@ A name on a self-issued certificate is peer-chosen, so `c8s verify` needs
 ## No privileged way in
 
 On a measured node image no interface starts a new process in a running
-container or hands one host privilege — for any principal, including the holder
-of the operator credential C8s releases. The exception is an exact command the
-measured base allowlist grants a container: anyone who reaches the runtime can
-start that command, and only that one. The release image grants one pair,
-RKE2's `/livez` and `/readyz` checks in kube-apiserver.
+container or hands one host privilege, for any principal.
 
-Two independent layers close it: the API server denies `pods/exec`,
-`pods/attach`, `pods/portforward`, and `pods/ephemeralcontainers`, and the
-measured `c8s-runc` wrapper denies the `exec` verb under the runtime, where a
-CRI call, an exec probe, or a lifecycle hook lands, letting through only
-granted commands ([node-exec-mode.md](node-exec-mode.md#granted-execs)). The
-release node image carries both; a development build (`C8S_DEV=1`) carries
-neither and has its own measurement, so exec posture is what a verifier pins.
-`gke` and `aks` keep the ordinary exec path
-([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
+Two independent layers close it: the kubelet serves no `exec`, `attach` or
+`port-forward`, and the measured `c8s-runc` wrapper denies the `exec` verb
+under the runtime, where a CRI call, an exec probe, or a lifecycle hook lands
+([node-exec-mode.md](node-exec-mode.md)). `gke` and `aks` keep the ordinary
+exec path ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
-- **Privilege floor**: the `no_new_privs`, namespace, and privileged-mark limits
-  `c8s-runc` enforces on every container of a member pod outside the node's own
-  exempt namespaces; the pod sandbox keeps the privileges the runtime gave it —
+- **Privilege floor**: the capability, `no_new_privs`, namespace, and
+  privileged-mark limits `c8s-runc` enforces on every container of a member pod
+  outside the node's own exempt namespaces; the pod sandbox keeps the
+  privileges the runtime gave it —
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor).
 - **Platform role**: the identity a measured base grants one C8s node-side
   invocation, with the command line and mounts its measured declaration pins —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
-- **Bounded operator credential**: an enumerated ClusterRole with no path to
-  those guards ([operator.md](operator.md#bounded-operator)).
 
 Creating a pod is not what this closes: whoever can create one chooses its
 initial process, which the allowlist restricts.
@@ -134,10 +135,9 @@ route manifest names for it, and tells a client which manifest it is serving.
 
 The router is the front door for application traffic. It answers 503 until a
 manifest is applied, refuses one whose write token does not verify, and binds
-the digest of the manifest it applied into the attested handshakes a TEE-held
-front door offers (`cds`, `acme`; a `webpki` one offers attest-pq alone), so a
-session routes by the two digests that handshake bound — the manifest's and the
-router's own allowlist digest — and nothing else.
+the digest of the manifest it applied into the attested handshakes its front
+door offers, so a session routes by the two digests that handshake bound — the
+manifest's and the router's own allowlist digest — and nothing else.
 CDS's own API is reachable separately, at the address the install named with
 `--cds-address`.
 
@@ -152,8 +152,8 @@ CDS's own API is reachable separately, at the address the install named with
   session's requests get 503 and the client attests again —
   [routes-evidence.md](routes-evidence.md#session-binding).
 
-A baked node takes the operator keys from its signed launch configuration
-([launch-configuration.md](launch-configuration.md)); elsewhere they are
+A baked node takes the operator keys from the CDS configuration its document
+pins ([launch-configuration.md](launch-configuration.md)); elsewhere they are
 Kubernetes configuration, so a client that cares pins the route digest or the
 keys — `c8s verify --route-digest`, `--operator-keys` ([verify.md](verify.md)).
 

@@ -18,6 +18,10 @@ import (
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
 func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
+	defer p.lockPodAdmission()()
+	if err := p.refuseDisconnectedPod(); err != nil {
+		return err
+	}
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
@@ -25,10 +29,13 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
 	}
 	ctr, env := adjustedLaunchContainer(req)
+	imageRef, err := p.containerImage(req.GetPod(), ctr)
+	if err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate and the static-pod check run ahead of admission; all three
 	// share one lookup, so they judge one digest.
-	imageRef := ctr.GetAnnotations()[annotationImageName]
 	lookup := p.digestLookup(ctx, imageRef)
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
@@ -46,13 +53,31 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if err := p.unpinnedStaticPod(p.cfg, req.GetPod(), ctr, lookup, env, mounts); err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, p.policy.current(), req.GetPod(), ctr, imageRef, lookup, launchFinal, env, mounts)
+	snap := p.policy.current()
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, snap, req.GetPod(), ctr, imageRef, lookup, launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
+	p.noteCapabilityGrant(p.cfg, ctr, lookup, snap, env, mounts)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
+}
+
+// noteCapabilityGrant records what the allowlists declare for this launch, for
+// the runtime wrapper to hold the container's create to (capabilitygrants.go).
+// The record belongs to this hook: a validator that does not answer fails the
+// create, and the wrapper reads the record before the start check runs. It
+// reads the digest and snapshot admission judged; with no allowlist nothing
+// declares a capability, so it looks up no digest.
+func (p *plugin) noteCapabilityGrant(cfg *config, ctr *api.Container, lookup func() (string, error), snap *policySnapshot, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+	var declared [][]string
+	if cfg.AllowlistEnabled() {
+		declared = p.policy.declaredCapabilities(snap, lookedUpLaunch(lookup, ctr, env, mounts))
+	}
+	if err := p.capGrants.note(ctr.GetId(), declared); err != nil {
+		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", ctr.GetId(), "error", err)
+	}
 }
 
 // refuseSourceEdit refuses an NRI edit setting or removing the kubelet's
@@ -94,6 +119,17 @@ func (p *plugin) gateMesh(req *api.ValidateContainerAdjustmentRequest, ctr *api.
 	declared := launch
 	declared.Mounts = p.observedMounts(pod, req.GetContainer())
 	role := p.roleOf(declared)
+	if p.cfg.podRole() {
+		// The Pod endpoint receives no node mounts. Its final adjusted mounts
+		// must retain the exact private RAM volume, even under an any policy.
+		role = p.roleOf(launch)
+		if _, err := p.podCredentialSource(pod, ctr, role, mounts); err != nil {
+			return err
+		}
+		if err := p.podSecretReader(pod, ctr, role, mounts); err != nil {
+			return err
+		}
+	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,
 		mountsPinned: p.bindsRoleMounts(declared, role),

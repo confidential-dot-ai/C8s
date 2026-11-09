@@ -31,6 +31,8 @@ const requestTimeout = 30 * time.Second
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	// query is appended to GET /allowlist.
+	query string
 }
 
 // NewClient creates a new allowlist client.
@@ -41,6 +43,13 @@ func NewClient(baseURL string) Client {
 // NewClientWithHTTP creates a new allowlist client with a custom HTTP client.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{baseURL: strings.TrimRight(baseURL, "/"), httpClient: httpClient}
+}
+
+// ForNodes returns c reading the allowlist in effect on nodes
+// (allowlist.NodeQuery).
+func (c Client) ForNodes() Client {
+	c.query = "?" + allowlist.NodeQuery
+	return c
 }
 
 // Authorizer produces the HTTP Authorization header value for a mutation,
@@ -104,7 +113,7 @@ func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 }
 
 func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Served, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist"+c.query, nil)
 	if err != nil {
 		return Served{}, false, fmt.Errorf("create request: %w", err)
 	}
@@ -147,6 +156,33 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		Version:   servedVersion(resp.Header),
 		Digest:    "sha256:" + hex.EncodeToString(sum[:]),
 	}, false, nil
+}
+
+// Object returns the allowlist document of the CDS's history whose digest is
+// digest (GET /allowlist/objects/sha256/<hex>). It refuses bytes that hash to
+// anything else, so the caller needs no trust in the store for them.
+func (c Client) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	path := "/allowlist/objects/sha256/" + hex.EncodeToString(digest[:])
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, operatorauth.ResponseError(resp)
+	}
+	body, err := readCapped(resp.Body, maxAllowlistResponseBytes)
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(body) != digest {
+		return nil, fmt.Errorf("fetch %s: the body hashes to another digest", path)
+	}
+	return allowlist.ParseServedJSON(body)
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new

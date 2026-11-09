@@ -3,6 +3,7 @@
 package nriimagepolicy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -329,6 +330,26 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	if err := baseGate.verifyMember(base.GetId()); err != nil {
 		t.Fatalf("a recovered base-ruleset pod was refused an assertion: %v", err)
 	}
+}
+
+// A sandbox that started before this enforcer connected holds no pod ruleset:
+// recovery refuses it, stops nothing, and names the pod to delete.
+func TestRecoveryRefusesAPrePluginSandboxInTheNamespace(t *testing.T) {
+	pod := sandboxPod(t, "default", "pod")
+	pod.Uid = "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b"
+	p, logs, killed := prePluginPlugin()
+
+	ctrs := []*api.Container{runningCtr(pod, "app", pushDigestA)}
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, ctrs); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if p.mesh.pods[pod.GetId()].refusal == nil {
+		t.Fatal("recovery took a sandbox without a pod ruleset under the gate")
+	}
+	if len(*killed) != 0 {
+		t.Errorf("recovery stopped %v", *killed)
+	}
+	assertPodWithoutIdentity(t, logs, pod)
 }
 
 // A container's network namespace is matched to the sandbox's by kernel

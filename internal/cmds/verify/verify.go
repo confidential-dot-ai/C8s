@@ -126,6 +126,7 @@ type config struct {
 	measurementsConfig string
 	servedPolicyFile   string
 	sandboxID          string
+	clientDocument     string
 	workload           string
 	allowlistFile      string
 	meshCA             string
@@ -243,9 +244,10 @@ responder chose).`,
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as 'c8s routes show' prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
-	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own — for a cluster launched from a c8s launch-config bundle this is peers.json. It asks for the served-set equality check; --image-policy-file pins the target's own identity. A replicated CDS takes node identities by signed command: take this file from the decree in force (docs/cds-ha.md)")
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets): the node identities a CDS admits, which are not its own. It asks for the served-set equality check; --image-policy-file pins the target's own identity. For a singleton CDS this is the file given to 'c8s cds config new --node-pins'; a replicated CDS takes node identities by signed command, so take it from the decree in force (docs/cds-ha.md)")
 	const refusedWithKindCDS = ". Refused with --kind cds: CDS's serving certificate is self-signed"
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.clientDocument, "client-document", "", "file holding the exact client document the target Pod CVM was assigned; the leaf's client document digest must equal SHA-256 of these bytes. Requires --mesh-ca, since CDS's signature on the leaf is what vouches for the digest"+refusedWithKindCDS)
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindCDS)
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindCDS)
@@ -419,6 +421,9 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence, fetch att
 // KDS fetch) is bounded by --timeout; an unobtainable-collateral failure is
 // exit 3, not a verification verdict.
 func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, servedMeasurements measurementsReport, out, errOut io.Writer) int {
+	if ev.podLeaf {
+		return verifyPodLeaf(cfg, plan, ev, held, out)
+	}
 	verifyCtx := ctx
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc
@@ -452,6 +457,39 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	return verdictExitCode(oc)
 }
 
+// backendMeshChain names the verdict on a leaf that carries no hardware
+// evidence: only its chain to --mesh-ca stands behind it.
+const backendMeshChain = "mesh CA chain"
+
+// verifyPodLeaf renders the verdict on a Pod CVM leaf (podLeafEvidence): the
+// chain to --mesh-ca, already checked, and the CA-vouched stamps the leaf
+// carries and the pins ask for. A pin on hardware evidence cannot hold for a
+// leaf that carries none, so it fails the verdict.
+func verifyPodLeaf(cfg config, plan *verifyPlan, ev *evidence, held *heldAllowlist, out io.Writer) int {
+	oc := Outcome{
+		Backend:    backendMeshChain,
+		VerifiedAt: time.Now().UTC(),
+		Source:     ev.source,
+		Binding:    ev.bindingNote,
+		CertSHA256: ev.certSHA256,
+		CertBody:   describeCertBody(cfg, ev),
+		Verified:   true,
+	}
+	if len(plan.policy.Policy.Measurements) > 0 || plan.pins.any() || !plan.refValues.Empty() || plan.initDataHash != nil ||
+		minTCBFromCfg(cfg) != nil {
+		oc.Verified = false
+		oc.Error = "a Pod CVM leaf carries no hardware evidence, so measurement, register, init-data, TCB and policy-history pins cannot be checked against it; pin its stamps (--workload, --client-document, --sandbox-id, --allowlist) instead"
+	}
+	applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, plan, measurementsReport{})
+	applyWorkloadPolicy(&oc, cfg, ev, held)
+	applyClientDocumentPolicy(&oc, cfg, ev)
+	if oc.Verified {
+		oc.ChainAnchor = "verified against the pinned --mesh-ca bundle"
+	}
+	render(cfg, oc, out)
+	return verdictExitCode(oc)
+}
+
 // applyVerdictPolicies runs every post-verification policy in verdict order:
 // the CA-vouched pins first (they authenticate the leaf's stamps and can fail
 // the verdict), then the honesty demotions, which only ever turn a passing
@@ -460,6 +498,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
+	applyClientDocumentPolicy(oc, cfg, ev)
 	applyPinPolicy(oc, cfg, ev)
 	applyUncheckedHistoryPolicy(oc, cfg)
 	applyFrontDoorPolicy(oc, ev)
@@ -690,22 +729,12 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// deliberately NOT unioned into the --measurements allowlist: an allowlist
 	// is satisfied by ANY member, so a launch digest from some other pinned
 	// build would pass while RTMR[1]/[2] were pinned against this manifest,
-	// splitting the atomic tuple. MRTD is instead compared exactly, the same
-	// rule get-kubeconfig's gate applies to the same manifest (newOutcome).
-	pins, err := resolveRTMRPins(cfg)
+	// splitting the atomic tuple. MRTD is instead compared exactly (see
+	// newOutcome).
+	pins, err := resolveAndCheckRTMRPins(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// RTMR[3] is the runtime extend chain of a guest whose image the host
-	// chose. Without an image pin the host can boot anything and reproduce the
-	// chain, so a lone RTMR[3] verdict reads like a proof of identity while
-	// proving none — the same reason get-kubeconfig makes the manifest
-	// mandatory. One check for both ways of supplying the pin: a second,
-	// parallel rule is a second place for the requirement to be forgotten.
-	if pins.rtmr3 != nil && pins.image == nil {
-		return nil, fmt.Errorf("%s requires --image-manifest: RTMR[3] records events extended into a guest whose image the untrusted host selects, so pinning it without pinning the image proves nothing about what is running", rtmr3FlagUsed(cfg))
-	}
-
 	if _, err := expectedOperatorKeysDigest(cfg); err != nil {
 		return nil, err
 	}
@@ -728,6 +757,10 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 			// checking that signature would pin a string the presenter chose.
 			return nil, fmt.Errorf("--sandbox-id requires --mesh-ca: the sandbox ID is vouched by CDS's signature on the leaf, not by the hardware evidence")
 		}
+	}
+
+	if cfg.clientDocument != "" && cfg.meshCA == "" {
+		return nil, fmt.Errorf("--client-document requires --mesh-ca: the client document digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
 	}
 
 	// The matched-workload stamp is CA-vouched exactly like the sandbox ID, so
@@ -877,6 +910,9 @@ func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
 	if cfg.workload != "" {
 		used = append(used, "--workload")
 	}
+	if cfg.clientDocument != "" {
+		used = append(used, "--client-document")
+	}
 	if cfg.allowlistFile != "" {
 		used = append(used, "--allowlist")
 	}
@@ -899,10 +935,12 @@ func rtmr3FlagUsed(cfg config) string {
 	}
 }
 
-// resolveRTMRPins parses --image-manifest and the RTMR[3] pin. Called exactly
-// once, from buildPolicy, so a bad flag is a usage error and the manifest's
-// three registers can never come from two different reads of the file.
-func resolveRTMRPins(cfg config) (rtmrPins, error) {
+// resolveAndCheckRTMRPins parses --image-manifest and the RTMR[3] pin and
+// applies the rules relating them: the pins it returns are checked, so no
+// caller repeats them. Called exactly once, from buildPolicy, so a bad flag is
+// a usage error and the manifest's three registers can never come from two
+// different reads of the file.
+func resolveAndCheckRTMRPins(cfg config) (rtmrPins, error) {
 	manual, err := refvalues.ParseRegisterPins(cfg.rtmrs)
 	if err != nil {
 		return rtmrPins{}, fmt.Errorf("--rtmr: %w", err)
@@ -960,7 +998,7 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 			return rtmrPins{}, fmt.Errorf("--operator-pkey %s: %w", cfg.operatorPubkey, err)
 		}
 		// The seed is derived by the shared convention package, never
-		// recomputed here: the initrd, cred-release and get-kubeconfig all go
+		// recomputed here: the initrd and internal/launchbinding both go
 		// through runtimemeasure.Seed, and a second implementation of the same
 		// arithmetic is a second thing to drift. It hashes the file bytes
 		// verbatim — the check above only inspects them.
@@ -988,8 +1026,8 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 	// RTMR[3] is the opposite: it records events extended inside a guest whose
 	// image the untrusted host selects, so without an image pin the host boots
 	// anything and reproduces the chain. A lone RTMR[3] verdict then reads as
-	// proof of identity while proving none — the same reason get-kubeconfig
-	// makes the manifest mandatory.
+	// proof of identity while proving none, which is why the manifest is
+	// mandatory.
 	if pins.rtmr3 != nil && pins.image == nil {
 		return rtmrPins{}, fmt.Errorf("%s requires --image-manifest: RTMR[3] records events extended into a guest whose image the untrusted host selects, so pinning it without pinning the image proves nothing about what is running", rtmr3FlagUsed(cfg))
 	}
@@ -1293,6 +1331,13 @@ type Outcome struct {
 	WorkloadAllowlistDigest  string `json:"workload_allowlist_digest,omitempty"`
 	WorkloadNote             string `json:"workload_note,omitempty"`
 
+	// ClientDocumentDigest is the hex client document digest on a Pod CVM's
+	// leaf and AgentLabel the DNS label derived from it. CA-vouched like the
+	// sandbox ID; ClientDocumentNote says what stands behind it.
+	ClientDocumentDigest string `json:"client_document_digest,omitempty"`
+	AgentLabel           string `json:"agent_label,omitempty"`
+	ClientDocumentNote   string `json:"client_document_note,omitempty"`
+
 	// RouteDigest is the hex route digest the attested transcript binds
 	// (attest-pq and attest-lb only); RouteRevision is the published
 	// manifest's revision when --operator-keys checked it, and RouteNote says
@@ -1433,6 +1478,52 @@ func checkServedPolicy(plan *verifyPlan, report measurementsReport, fail func(st
 		return
 	}
 	checkServedMeasurements(*plan.served, report, fail)
+}
+
+// applyClientDocumentPolicy surfaces a Pod CVM leaf's client document digest
+// and enforces --client-document. The mesh-CA chain check (applySandboxPolicy,
+// which runs first) authenticates the digest; the pin only ever demotes
+// Verified.
+func applyClientDocumentPolicy(oc *Outcome, cfg config, ev *evidence) {
+	fail := func(format string, args ...any) {
+		oc.Verified = false
+		if oc.Error == "" {
+			oc.Error = fmt.Sprintf(format, args...)
+		}
+	}
+	var digest []byte
+	if ev.leaf != nil {
+		digest, _ = armtls.ClientDocumentDigest(ev.leaf)
+	}
+	if oc.Verified && digest != nil {
+		oc.ClientDocumentDigest = hex.EncodeToString(digest)
+		oc.AgentLabel = armtls.AgentLabel(digest)
+		if cfg.meshCA == "" {
+			oc.ClientDocumentNote = "not verified: CDS's signature on the leaf vouches for this digest; pass --mesh-ca to check it"
+		} else {
+			oc.ClientDocumentNote = "ca-vouched: the leaf chains to the supplied mesh CA"
+		}
+	}
+	if cfg.clientDocument == "" {
+		return
+	}
+	document, err := os.ReadFile(cfg.clientDocument)
+	if err != nil {
+		fail("--client-document: %v", err)
+		return
+	}
+	if digest == nil {
+		fail("client_document_absent: --client-document is pinned but the leaf carries no well-formed client document digest")
+		return
+	}
+	want := sha256.Sum256(document)
+	if !bytes.Equal(digest, want[:]) {
+		fail("client_document_mismatch: the leaf names client document sha256:%x, --client-document hashes to sha256:%x", digest, want)
+		return
+	}
+	if oc.Verified {
+		oc.ClientDocumentNote += ", and the digest matches --client-document"
+	}
 }
 
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces
@@ -1582,8 +1673,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		// The manifest's MRTD is compared exactly, not merged into the
 		// allowlist: RTMR[1]/[2] are pinned against THIS manifest, so an MRTD
 		// that merely appears somewhere in --measurements would let a launch
-		// digest from a different build satisfy the tuple. Same rule as
-		// guestverify's Policy.checkIdentity — one manifest, one meaning.
+		// digest from a different build satisfy the tuple: one manifest, one
+		// meaning.
 		// buildPolicy now refuses a manifest and an allowlist in the same run,
 		// so the two compares below cannot both fire on a CLI-built plan; the
 		// exact compare stays exact anyway, because widening it is precisely
@@ -1916,8 +2007,11 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 		fmt.Fprintf(out, "  reason:       %s\n", oc.Error)
 		return
 	}
-	fmt.Fprintf(out, "  platform:     %s\n", oc.Platform)
-	fmt.Fprintf(out, "  measurement:  %s\n", oc.Measurement)
+	hardware := oc.Backend != backendMeshChain
+	if hardware {
+		fmt.Fprintf(out, "  platform:     %s\n", oc.Platform)
+		fmt.Fprintf(out, "  measurement:  %s\n", oc.Measurement)
+	}
 	for _, p := range oc.RTMRsPinned {
 		idx, hexVal, _ := strings.Cut(p, ":")
 		fmt.Fprintf(out, "  RTMR[%s]:      %s (matched)\n", idx, hexVal)
@@ -1933,7 +2027,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 			fmt.Fprintf(out, "  init-data:    %s\n", oc.InitDataNote)
 		}
 	}
-	fmt.Fprintf(out, "  TCB:          %s   debug=%t smt=%t\n", oc.CurrentTCB, oc.Debug, oc.SMT)
+	if hardware {
+		fmt.Fprintf(out, "  TCB:          %s   debug=%t smt=%t\n", oc.CurrentTCB, oc.Debug, oc.SMT)
+	}
 	if oc.CertSHA256 != "" {
 		fmt.Fprintf(out, "  cert sha256:  %s\n", oc.CertSHA256)
 	}
@@ -1968,6 +2064,10 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 		fmt.Fprintf(out, "  workload:     %s  (allowlist version %s, digest %s)\n", oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest)
 		fmt.Fprintf(out, "                %s\n", oc.WorkloadNote)
 	}
+	if oc.ClientDocumentDigest != "" {
+		fmt.Fprintf(out, "  client doc:   sha256:%s  (agent label %s)\n", oc.ClientDocumentDigest, oc.AgentLabel)
+		fmt.Fprintf(out, "                %s\n", oc.ClientDocumentNote)
+	}
 	if len(oc.OperatorKeys) > 0 {
 		label := "operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):"
 		fmt.Fprintf(out, "  %s\n", label)
@@ -1989,7 +2089,7 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	default:
 		fmt.Fprintf(out, "  note:         freshness NOT proven (no per-request nonce bound)\n")
 	}
-	if !oc.Pinned {
+	if !oc.Pinned && hardware {
 		fmt.Fprintf(out, "  WARNING:      no --measurements pinned — any genuine TEE is accepted (UNSAFE for production)\n")
 	}
 	if cfg.showEvidence {

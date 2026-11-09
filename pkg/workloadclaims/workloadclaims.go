@@ -163,6 +163,20 @@ const (
 	MeshHealthPort   int32  = 15021
 )
 
+// AnnotationWorkloadID names the workload a pod belongs to, confidential.ai/cw.
+// It is the allowlist workload name the pod's entries are looked up under, so
+// its grammar is the allowlist's (pkg/workloadname).
+const AnnotationWorkloadID = "confidential.ai/cw"
+
+// IsMeshPort reports whether port is one the mesh endpoint binds: a capture
+// port or the health port. None of them answers an application.
+func IsMeshPort(port int) bool {
+	return port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort)
+}
+
+// PodStatusPort is the pod CVM guest's attested status port; no pod container may declare it.
+const PodStatusPort int32 = 8443
+
 // MeshProbePrefix is where the endpoint answers an application probe the
 // injector moved onto MeshHealthPort. The rendered path names the port and the
 // path the probe reaches inside the pod, so the injector and the endpoint
@@ -226,7 +240,7 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	if port < 1 || port > 65535 {
 		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
 	}
-	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+	if IsMeshPort(port) {
 		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
 	}
 	appPath := "/" + path
@@ -246,6 +260,10 @@ const (
 	MeshRole        = "mesh"
 	CredentialsRole = "credentials"
 )
+
+// RouterRole is the role of the router's front door. CDS gives a sandbox
+// running one a short-lived leaf.
+const RouterRole = "router"
 
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the CDS address, and the enforcer refuses it in any
@@ -723,3 +741,14 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 	}
 	return &out, nil
 }
+
+// AnnotationPodCVMEndpoints is where the pod CVM provider publishes the
+// addresses a pod CVM's ports are reachable at: a JSON list of
+// {"name", "host", "port"}, one per port, named PodCVMAppEndpointPrefix and
+// the application port for an application port. Anyone who may update the
+// pod can rewrite it, so it says where to dial, never who answers.
+const AnnotationPodCVMEndpoints = "confidential.ai/pod-cvm-endpoints"
+
+// PodCVMAppEndpointPrefix prefixes the application port in the name of a
+// pod CVM's ingress rule and published endpoint, as in app-4096.
+const PodCVMAppEndpointPrefix = "app-"

@@ -29,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -98,7 +99,7 @@ func run(cfg config) error {
 		"not_after", issuing.CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	nodeImages := back.NodeImages()
+	nodeImages := separatePodAuthorities(back.NodeImages(), cfg.measured.PodImages)
 	logNodeImages(nodeImages.Current())
 
 	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
@@ -195,7 +196,9 @@ func run(cfg config) error {
 			MeshCA:            mesh,
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
+			RouterCertTTL:     cfg.routerCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
+			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    allowlistWrites,
@@ -225,6 +228,14 @@ func run(cfg config) error {
 		SecretsChallenges: secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
+	}
+	if kms := cfg.measured.KMS; kms != nil {
+		broker, err := newSecretBroker(mesh)
+		if err != nil {
+			return err
+		}
+		deps.PodSecrets = &PodSecretHandler{Broker: broker, KMS: newKMSClient(kms)}
+		slog.Info("serving "+secretbroker.PodRoute+"; pod secret release is brokered to the configured KMS", "kms_url", kms.URL)
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
@@ -423,6 +434,9 @@ func validateConfig(cfg config) error {
 	if len(cfg.measured.OperatorKeys.Keys()) == 0 {
 		return fmt.Errorf("--config: the configuration pins no operator key, so no policy write could ever be authorized")
 	}
+	if err := cfg.measured.ValidatePodAuthorities(); err != nil {
+		return fmt.Errorf("--config: %w", err)
+	}
 	for _, timeout := range []struct {
 		name  string
 		value time.Duration
@@ -450,6 +464,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.namedCertTTL > issuer.MaxNamedLeafTTL {
 		return fmt.Errorf("--named-cert-ttl must not exceed %v (issuer.MaxNamedLeafTTL, the documented stale-identity bound); it can only shorten that ceiling", issuer.MaxNamedLeafTTL)
+	}
+	if cfg.routerCertTTL <= 0 || cfg.routerCertTTL >= cfg.allowlistNodeDelay {
+		return fmt.Errorf("--router-cert-ttl (%v) must be positive and shorter than --allowlist-node-delay (%v)", cfg.routerCertTTL, cfg.allowlistNodeDelay)
 	}
 	if cfg.maxRequestSize <= 0 {
 		return fmt.Errorf("--max-request-size must be positive")

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -119,6 +121,8 @@ type routingEngine struct {
 	log    *slog.Logger
 	proxy  *routing.Proxy
 	poller *routing.Poller
+	kube   kubernetes.Interface
+	agents *routing.AgentIndex
 }
 
 // newRoutingEngine builds the engine; its routing listener refuses requests on
@@ -145,15 +149,23 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	if err != nil {
 		return nil, err
 	}
+	kube, err := kubeClient()
+	if err != nil {
+		return nil, err
+	}
+	agents := routing.NewAgentIndex()
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Logger: logger})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Allowlist: cds, Logger: logger, Agents: agents})
 	return &routingEngine{
-		cfg: r,
-		log: logger,
+		cfg:    r,
+		log:    logger,
+		kube:   kube,
+		agents: agents,
 		proxy: routing.NewProxy(routing.ProxyConfig{
 			State:        state,
 			Transports:   transports,
 			Bindings:     bindings,
+			Agents:       agents,
 			Timeout:      r.backendTimeout,
 			TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger),
 			Logger:       logger,
@@ -266,6 +278,26 @@ func nodeAddress(nodeIPPath string) (netip.Addr, error) {
 	return address.Unmap(), nil
 }
 
+// kubeClient reaches the Kubernetes API with the pod's service account, for
+// the pods a pattern route resolves its agent from. What the API reports
+// only decides where a dial goes: the dial checks the agent's leaf. Outside a
+// cluster it is nil: there is no pod to discover, and every pattern route
+// answers 404.
+func kubeClient() (kubernetes.Interface, error) {
+	cfg, err := rest.InClusterConfig()
+	if errors.Is(err, rest.ErrNotInCluster) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agent discovery: %w", err)
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("agent discovery: %w", err)
+	}
+	return client, nil
+}
+
 // The leaf and the key of the credential generation get-cert publishes on a
 // member pod's volume, beside workloadclaims.MemberCAPath.
 const (
@@ -326,6 +358,11 @@ func loadKeys(path string) error {
 // from the listener arrive on errc.
 func (e *routingEngine) start(ctx context.Context, readHeaderTimeout time.Duration, errc chan<- error) error {
 	go e.poller.Run(ctx)
+	if e.kube != nil {
+		go routing.WatchAgents(ctx, e.kube, e.agents, e.log)
+	} else {
+		e.log.Warn("agent discovery off: not running in a Kubernetes cluster")
+	}
 	if e.cfg.port == 0 {
 		return nil
 	}

@@ -3,6 +3,10 @@
 # during the harness's upgrade step. It serves plaintext on 8080: the pod's
 # injected endpoint holds the mesh leaf and carries what the router sends,
 # and the workload itself reads no credentials.
+#
+# Its image is pinned apart from the harness's floor image: the entry that
+# install writes for this workload must be the only allowlist entry
+# describing its pod, so run.sh keeps this digest out of the floor.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -32,7 +36,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0 # 1.30.5-alpine-slim
+          image: nginxinc/nginx-unprivileged@sha256:7bbe8940bc478e5618e6d4cfbeda406e5b4217cacc06faacd665aca5e468595e # 1.30.4-alpine-slim
           # The config is written to /tmp rather than mounted: the only mount
           # install's allowlist entry admits is the injected cert volume.
           command: ["/bin/sh", "-c"]

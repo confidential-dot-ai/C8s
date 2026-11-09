@@ -1,0 +1,56 @@
+# Mount /var/lib/containerd, containerd's root, on a real (non-overlay)
+# filesystem before containerd starts. Its overlay snapshotter cannot stack on
+# overlayfs, and the initrd mounts /var as an overlay (a confos state.d dir:
+# verity lower + tmpfs/scratch-disk upper), so /var/lib/* is overlayfs by
+# default — containerd's "multiple-lowerdir-check" probe fails when its
+# snapshotter tries to use that as an upperdir. The mount must therefore
+# escape the overlay onto its own FS.
+#
+# Backing, in preference order:
+#   1. a LABEL=containerd block device → ephemeral, encrypted in-guest with a
+#      random per-boot key (the untrusted host sees only ciphertext; contents do
+#      not survive a reboot, which is fine — the image cache is re-pullable).
+#      This is what keeps the multi-GiB image cache OUT of guest RAM.
+#   2. no such device → a tmpfs (writes lost on reboot, and counted against guest
+#      memory — attach a LABEL=containerd disk to avoid).
+#
+# A oneshot service (not a .mount unit) because the backing choice needs runtime
+# detection + cryptsetup/mkfs, which a static .mount cannot express. RemainAfterExit
+# keeps the mount's lifecycle tied to the unit. Ordered before
+# containerd.service, so the dir is ready when containerd starts.
+[Unit]
+Description=Back containerd data dir with a LABEL=containerd disk (encrypted) or tmpfs
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target containerd.service
+After=systemd-udevd.service
+# Order After=systemd-udevd so udevd is at least started before we touch dm. We
+# still do NOT hard-Require it nor wait for udev-settle (deprecated / may be
+# absent on systemd 259, and a dep on the by-label device unit would hang when no
+# disk is attached, breaking the tmpfs fallback). The script polls for the label.
+# Belt-and-suspenders with DM_DISABLE_UDEV below: this unit runs ~6s into boot,
+# the same moment udevd is still coming up, and cryptsetup's default post-creation
+# udev-cookie wait deadlocks in D-state if udevd isn't serving yet.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Make libdevmapper create the /dev/mapper node directly instead of waiting for a
+# udev cookie. Without this, `cryptsetup open` deadlocks in uninterruptible
+# D-state at early boot (this unit runs the same second udevd is still starting),
+# blowing past every timeout. With it, the open/mkfs/mount sequence finishes in
+# seconds. The node still gets udev-processed once udevd catches up.
+Environment=DM_DISABLE_UDEV=1
+ExecStart=/usr/local/bin/containerd-data-disk.sh
+# Fail-safe: this unit is Before=local-fs.target, so a hang here wedges the whole
+# boot. Cap total runtime; the script wraps each risky step (cryptsetup/mkfs) in
+# its own `timeout` and always ends by ensuring the dir is mounted (tmpfs if the
+# disk path failed), so containerd can start regardless. Failure is non-fatal
+# to boot.
+TimeoutStartSec=180
+SuccessExitStatus=0 1
+# Best-effort unwind on stop; the tmpfs/dm device is torn down at shutdown anyway.
+ExecStop=-/bin/sh -c 'umount /var/lib/containerd 2>/dev/null; cryptsetup close containerd 2>/dev/null; true'
+
+[Install]
+WantedBy=local-fs.target

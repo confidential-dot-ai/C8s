@@ -26,8 +26,8 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	if !slices.Equal(server.Listeners, routerListeners) || !slices.Equal(server.Egress.Ports, acmeEgressPorts) {
 		t.Fatalf("server ports = %+v, want the compiled listeners and egress ports", server)
 	}
-	// The identity that forwards application traffic holds no egress port, so
-	// a forwarded connection outside the cluster is captured, not passed.
+	// nginx's identity holds no egress port, so a connection it relays
+	// outside the cluster is captured, not passed.
 	if server.Egress.UID != workloadclaims.AcmeUID {
 		t.Fatalf("server egress = %+v, want the reserved %d", server.Egress, workloadclaims.AcmeUID)
 	}
@@ -51,48 +51,6 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	}
 }
 
-// The router answers from the signed route manifest it fetches from CDS, so a
-// pod of its namespace reaches the port the credential role is bound to
-// outside the cluster and, where policy names a port for it, the verifier
-// that weighs that CDS's evidence: the attestation-api on its own node,
-// wherever CDS runs.
-func TestPodRulesetGivesTheRouterRoleItsCDSAndThisNodesVerifier(t *testing.T) {
-	policy := meshRoles()
-	node := netip.MustParseAddr("172.18.0.2")
-	policy.nodeAddr = node
-	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
-		UID:  workloadclaims.CredentialsUID,
-		Port: 8443,
-	})
-
-	server := policy.podRuleset(routerNamespace, nil).Server
-	if server.OutsidePort != 8443 {
-		t.Fatalf("router outside port = %d, want the port its CDS serves on", server.OutsidePort)
-	}
-	if len(server.Services) != 0 {
-		t.Fatalf("router services = %+v, want none while no verifier port is named", server.Services)
-	}
-	if member := policy.podRuleset("default", nil).Server; member.OutsidePort != 0 {
-		t.Fatalf("a pod outside that namespace reaches port %d", member.OutsidePort)
-	}
-
-	// A node whose attestation-api answers over a port, not a socket: the
-	// router weighs that CDS's evidence on its own node and nowhere else.
-	policy.CredentialAttestationPort = 8400
-	want := []ruleset.Destination{{Addr: node, Port: 8400}}
-	if got := policy.podRuleset(routerNamespace, nil).Server.Services; !slices.Equal(got, want) {
-		t.Fatalf("router services = %+v, want this node's verifier", got)
-	}
-
-	// A node that cannot say what its own address is names no verifier a
-	// ruleset could admit.
-	policy.nodeAddr = netip.Addr{}
-	if got := policy.podRuleset(routerNamespace, nil).Server.Services; len(got) != 0 {
-		t.Fatalf("router services = %+v, want none", got)
-	}
-}
-
 // A member pod's ruleset carries the exits it was granted and no others: the
 // CDS its credential clients are bound to is theirs, not the workload's.
 func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
@@ -110,49 +68,6 @@ func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
 	want := []ruleset.Exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
 	if got := policy.podRuleset("default", granted).Exits; !slices.Equal(got, want) {
 		t.Fatalf("exits = %+v, want the granted exit alone", got)
-	}
-}
-
-// Every member pod reaches each platform service the policy names, on its
-// port alone, before the exits it was granted; the CDS its credential clients
-// are bound to stays theirs.
-func TestPodRulesetGivesEveryMemberThePolicyExits(t *testing.T) {
-	policy := meshRoles()
-	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
-		UID:  workloadclaims.CredentialsUID,
-		Port: 30808,
-	})
-	policy.Exits = []netip.AddrPort{netip.MustParseAddrPort("10.53.0.11:8080")}
-
-	want := []ruleset.Exit{{Range: netip.MustParsePrefix("10.53.0.11/32"), Port: 8080}}
-	for _, namespace := range []string{"default", routerNamespace} {
-		if got := policy.podRuleset(namespace, nil).Exits; !slices.Equal(got, want) {
-			t.Fatalf("exits of a pod in %s = %+v, want the policy's exit alone", namespace, got)
-		}
-	}
-	granted := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
-	want = append(want, ruleset.Exit{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443})
-	if got := policy.podRuleset("default", granted).Exits; !slices.Equal(got, want) {
-		t.Fatalf("exits = %+v, want the policy's exit and the granted exit", got)
-	}
-}
-
-// A policy exit must name one address and a port.
-func TestMeshPolicyRefusesAnExitWithoutAPort(t *testing.T) {
-	policy := meshRoles()
-	policy.Exits = []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("10.53.0.11"), 0)}
-	if err := policy.validate(); err == nil {
-		t.Fatal("mesh policy accepted an exit without a port")
-	}
-}
-
-// A policy that binds no CDS leaves the router role without one, as it leaves
-// the credential clients without one.
-func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {
-	server := meshRoles().podRuleset(routerNamespace, nil).Server
-	if server.OutsidePort != 0 || len(server.Services) != 0 {
-		t.Fatalf("router reaches port %d and %+v, want neither", server.OutsidePort, server.Services)
 	}
 }
 
@@ -197,5 +112,23 @@ func TestRulesetPolicyNamesThisNodesVerifier(t *testing.T) {
 	gate.nodeAddress = func() (netip.Addr, error) { return netip.Addr{}, errors.New("unknown") }
 	if got := gate.rulesetPolicy().nodeAddr; got.IsValid() {
 		t.Fatalf("ruleset node address = %v, want none", got)
+	}
+}
+
+// Standalone Pod capture stays distinct from the member policy's CDS port
+// exceptions when both are rendered through podRuleset.
+func TestStandalonePodRulesetKeepsSignedPeersWithoutCredentialBypass(t *testing.T) {
+	policy := meshRoles()
+	policy.Roles = policy.Roles[:1]
+	policy.ClusterRanges = nil
+	peer := netip.MustParseAddrPort("203.0.113.7:8443")
+	policy.Pod = &podMeshPolicy{Peers: []netip.AddrPort{peer}}
+	got := policy.podRuleset("tenant", nil)
+	want := []ruleset.Destination{{Addr: peer.Addr(), Port: peer.Port()}}
+	if got.Pod == nil || !slices.Equal(got.Pod.Peers, want) {
+		t.Fatalf("standalone capture = %+v, want signed peer %v", got.Pod, want)
+	}
+	if len(got.Roles) != 0 || got.Server.Upstream != 0 {
+		t.Fatalf("standalone Pod gained platform exceptions: %+v", got)
 	}
 }

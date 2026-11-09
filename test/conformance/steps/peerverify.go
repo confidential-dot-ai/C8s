@@ -163,8 +163,7 @@ func connectsAsMeshPeer(ctx context.Context, src, dest string) error {
 		return err
 	}
 	w.peerVerify.dest, w.peerVerify.srcIP = d, srcIP
-	args := append(append([]string{"armtls-dial", "--mesh"}, flags...), net.JoinHostPort(ip, strconv.Itoa(d.hello)))
-	res, err := w.exec(p, strings.Join(args, " "))
+	res, err := w.exec(p, dialCommand(flags, ip, d.hello))
 	if err != nil {
 		return err
 	}
@@ -207,6 +206,13 @@ func chainRefusals(log, srcIP string) int {
 		}
 	}
 	return n
+}
+
+// dialCommand is the armtls-dial command line for a mesh dial of ip:port.
+// The address is single-quoted: an IPv6 one is bracketed, a glob to sh.
+func dialCommand(flags []string, ip string, port int) string {
+	args := append([]string{"armtls-dial", "--mesh"}, flags...)
+	return strings.Join(args, " ") + " '" + net.JoinHostPort(ip, strconv.Itoa(port)) + "'"
 }
 
 // endpointRefusals counts the chain refusals of a peer at srcIP in the log

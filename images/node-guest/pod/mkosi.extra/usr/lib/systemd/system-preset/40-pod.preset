@@ -1,0 +1,12 @@
+# Read before the worker's 50-worker.preset, so these lines win. A pod CVM
+# stages a pod launch document instead of a worker document and starts its
+# runtime only once a pod is assigned (podcvm-status), so the worker's staging,
+# runtime, kubelet and node services stay off.
+enable pod-stage.service
+enable podcvm-status.service
+disable worker-stage.service
+disable containerd.service
+disable nri-image-policy.service
+disable kubelet.service
+disable attest-proxy.service
+disable volumed.path

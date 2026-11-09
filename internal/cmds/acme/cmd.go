@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
 const letsEncryptDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
@@ -49,7 +48,7 @@ type config struct {
 
 // The front door's issued credential, split so that a reader of the chain
 // never holds the key. The chart mounts these two paths and serves the pair
-// from them (internal/helmchart/c8s/templates/router-helpers.tpl).
+// from them (charts/worker/templates/cluster/_router.tpl).
 const (
 	certDir = "/etc/c8s-acme-tls"
 	keyDir  = "/etc/c8s-acme-key"
@@ -189,7 +188,7 @@ func validateConfig(cfg *config) error {
 	}
 	seen := make(map[string]struct{}, len(cfg.domains))
 	for _, d := range cfg.domains {
-		if err := launchconfig.ValidateHostname(d); err != nil {
+		if err := cmdsutil.ValidateHostname(d); err != nil {
 			return fmt.Errorf("--domains: %w", err)
 		}
 		if _, dup := seen[d]; dup {

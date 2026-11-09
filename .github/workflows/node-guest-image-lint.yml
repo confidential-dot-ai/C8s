@@ -1,11 +1,11 @@
 # PERMANENT lint for images/node-guest/ and images/cds-guest/ — the invariants
-# that moved here with the c8s profile from confos bin/lint (c8s#264), plus
-# the cloud-init disable gate. These jobs lint content this repo owns. The fragment superset
-# checks compare against confos's gpu/dev fragments at the pinned
+# that moved here with the measured profiles from confos bin/lint (c8s#264),
+# plus the cloud-init disable gate. These jobs lint content this repo owns. The
+# fragment superset check compares against confos's gpu fragment at the pinned
 # CONFOS_REF — the exact tree the image builds with.
 #
-# The rke2-role jobs run the role-dispatch tests (script and systemd level)
-# from images/node-guest/tests/.
+# Every job that reads the profiles runs a Makefile target, so a PR that moves
+# a profile file updates the Makefile and nothing here.
 name: node-guest-image lint
 
 on:
@@ -13,63 +13,28 @@ on:
     paths:
       - "images/node-guest/**"
       - "images/cds-guest/**"
-      - "internal/cmds/launchconfig/**"
-      - "internal/cmds/nodeservices/**"
-      - "cmd/c8s/node_image*.go"
-      - "cmd/c8s/node_services*.go"
-      - "internal/helmchart/**"
       - "test/e2e/**"
       - "test/conformance/**"
       - ".github/workflows/node-guest-image-lint.yml"
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
-      # The rke2-role job runs via make; a broken/renamed target must fail
+      # Every job here runs via make; a broken or renamed target must fail
       # here, not on the next images/node-guest change.
       - "Makefile"
-      # The lint guards this vendored file's c8s-local bait/tripwire markers;
-      # a re-vendor PR touches nothing else and must fail here.
-      - ".github/workflows/tdx-metal-e2e.yml"
-      - ".github/workflows/snp-metal-e2e.yml"
-      - ".github/workflows/tdx-image-acceptance.yml"
-      - ".github/actions/tdx-metal-e2e/**"
       # The invariants gate body; a script-only change must run the gate.
-      - ".github/scripts/node-guest-image-invariants.sh"
-      - ".github/scripts/tests/test-node-guest-image-invariants.sh"
       - ".github/scripts/cds-guest-image-invariants.sh"
       - ".github/scripts/tests/test-cds-guest-image-invariants.sh"
-      - ".github/scripts/tdx-image-acceptance.sh"
-      - ".github/scripts/snp-node-image.sh"
-      - ".github/scripts/tests/test-snp-node-image.sh"
-      - ".github/scripts/tests/test-tdx-image-acceptance.sh"
       - ".github/workflows/c8s-image.yml"
       - ".github/workflows/c8s-image-publish.yml"
       - ".github/workflows/c8s-image-manual.yml"
-      # The runtime wrapper the image's containerd config names: the gate
-      # pins its real-runtime path against mkosi.sync.
-      - "internal/cmds/c8srunc/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  containerd:
-    name: pinned RKE2 containerd config
-    needs: lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check RKE2-generated config with bundled containerd
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
-        run: bash images/node-guest/tests/containerd-test.sh
-
   lint:
-    name: node-guest-image invariants
+    name: worker-image invariants
     runs-on: ubuntu-latest
     outputs:
       confos-release: ${{ steps.release.outputs.release }}
@@ -90,17 +55,17 @@ jobs:
           ref: ${{ steps.pins.outputs.confos }}
           path: confos
 
-      - name: node-guest-image invariants
-        env:
-          # The node-image pin must support the measured writable-state list.
-          EXPECT_IMMUTABLE_ROOT: "1"
-          CONFOS_REF: ${{ steps.pins.outputs.confos }}
-        run: |
-          .github/scripts/node-guest-image-invariants.sh
-          bash .github/scripts/tests/test-node-guest-image-invariants.sh
+      - uses: ./.github/actions/setup-go-c8s
 
-      - name: Preserve the selected attester configuration with a loopback bind
-        run: ./images/node-guest/tests/attester-finalize-test.sh
+      - name: The worker image's kernel, runtime wrapper and unit ordering
+        env:
+          CONFOS_DIR: ${{ github.workspace }}/confos
+        run: make test-node-guest-image-invariants
+
+      - name: Each image narrows its attester to a loopback bind
+        env:
+          CONFOS_DIR: ${{ github.workspace }}/confos
+        run: make test-node-guest-image-attester-finalize
 
       - name: Resolve the confos base release
         id: release
@@ -110,6 +75,32 @@ jobs:
           rel=$(sed -n 's/^Release=[[:space:]]*//p' "$conf" | head -1)
           [ -n "$rel" ] || { echo "::error::no Release= in $conf"; exit 1; }
           echo "release=$rel" >> "$GITHUB_OUTPUT"
+
+  systemd:
+    name: worker host units under systemd
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the systemd-level harness
+        run: make test-node-guest-image-systemd
+
+  containerd:
+    name: every pod runtime reaches the measured wrapper
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - name: Check the baked containerd configuration's handlers
+        run: make test-node-guest-image-containerd
 
   cds-image:
     name: cds-guest-image invariants
@@ -187,7 +178,7 @@ jobs:
         run: shellcheck images/node-guest/tests/immutable-root-test.sh
 
   cloud-init-disabled:
-    name: cloud-init cannot run in the node image
+    name: cloud-init cannot run in the worker image
     # Runs as root, so it gets its own job: no privileged step shares a
     # workspace with the confos checkout. The gate needs the release, not
     # the tree.
@@ -202,92 +193,6 @@ jobs:
         env:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
         run: sudo CONFOS_RELEASE="$CONFOS_RELEASE" make test-node-guest-image-cloud-init
-
-  system-floor:
-    name: system floor lockstep
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: ./.github/actions/setup-go-c8s
-
-      - name: Read the RKE2 bundle pins
-        id: pins
-        run: |
-          set -euo pipefail
-          sync=images/node-guest/c8s/mkosi.sync
-          version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$sync")
-          core=$(sed -n 's/^RKE2_IMAGES_CORE_SHA256="\(.*\)"$/\1/p' "$sync")
-          cilium=$(sed -n 's/^RKE2_IMAGES_CILIUM_SHA256="\(.*\)"$/\1/p' "$sync")
-          for v in "$version" "$core" "$cilium"; do
-            [ -n "$v" ] || { echo "::error::could not read the RKE2 pins from $sync"; exit 1; }
-          done
-          {
-            echo "version=$version"
-            echo "core=$core"
-            echo "cilium=$cilium"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Fetch the pinned airgap bundles
-        env:
-          RKE2_VERSION: ${{ steps.pins.outputs.version }}
-          CORE_SHA256: ${{ steps.pins.outputs.core }}
-          CILIUM_SHA256: ${{ steps.pins.outputs.cilium }}
-        run: |
-          set -euo pipefail
-          # '+' is %2B in a release URL, as mkosi.sync does.
-          base="https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}"
-          curl -fL --retry 3 --retry-delay 5 -o core.tar.zst "$base/rke2-images-core.linux-amd64.tar.zst"
-          curl -fL --retry 3 --retry-delay 5 -o cilium.tar.zst "$base/rke2-images-cilium.linux-amd64.tar.zst"
-          echo "$CORE_SHA256  core.tar.zst" | sha256sum -c -
-          echo "$CILIUM_SHA256  cilium.tar.zst" | sha256sum -c -
-
-      - name: The baked base allowlist matches the pinned bundles
-        # systemfloor holds every system image in image-policy.yaml.in to the
-        # digest containerd stores for it from the pinned bundles, so an RKE2
-        # pin bump without updating the floor cannot merge and wedge node boot.
-        run: |
-          set -euo pipefail
-          manifests=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
-          go run ./images/node-guest/c8s/systemfloor \
-            -bundle core.tar.zst \
-            -bundle cilium.tar.zst \
-            -manifest "$manifests/nvidia-device-plugin.yaml" \
-            images/node-guest/c8s/image-policy.yaml.in
-
-  containerd-runtime-handlers:
-    name: every pod runtime reaches the measured wrapper
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: ./.github/actions/setup-go-c8s
-
-      - name: Render the effective containerd config and check its handlers
-        # containerdcheck renders RKE2's own base template and merges the
-        # drop-ins containerd imports, so a handler
-        # that would reach an unwrapped runc fails here instead of shipping an
-        # image where `kubectl exec` works.
-        run: |
-          set -euo pipefail
-          dir=images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
-          go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir"
-          # The same check must fail when RKE2's runtime auto-detection finds
-          # another runtime on the node's PATH.
-          if go run ./images/node-guest/c8s/containerdcheck -config-dir "$dir" \
-               -extra-runtime crun=/usr/bin/crun 2>/dev/null; then
-            echo "::error::containerdcheck accepted an unwrapped auto-detected runtime"
-            exit 1
-          fi
-
-  gpu-label:
-    name: gpu-node-label logic
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Run the gpu-node-label unit test
-        run: make test-node-guest-image-gpu-label
 
   gpu-cc:
     name: gpu-cc-enforce logic
@@ -319,24 +224,13 @@ jobs:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
         run: make test-node-guest-image-apparmor
 
-      - name: Check exact-image acceptance evidence and lifecycle
-        run: bash .github/scripts/tests/test-tdx-image-acceptance.sh
-
-      - name: Check the SNP node image resolution and staging manifests
-        run: bash .github/scripts/tests/test-snp-node-image.sh
-
       - name: Check the CDS replica launch binding and Service ports
         run: bash test/e2e/cds-ha-vms-test.sh
 
-      - name: Shellcheck the AppArmor, acceptance and staging scripts
+      - name: Shellcheck the AppArmor and end-to-end scripts
         run: |
           shellcheck -x -P SCRIPTDIR images/node-guest/check-apparmor-config.sh \
-            images/node-guest/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh \
-            images/node-guest/tests/apparmor-{config,enforce,kernel,runtime}-test.sh \
-            .github/scripts/tdx-image-acceptance.sh \
-            .github/scripts/tests/test-tdx-image-acceptance.sh \
-            .github/scripts/snp-node-image.sh \
-            .github/scripts/tests/test-snp-node-image.sh
+            images/node-guest/tests/apparmor-{config,enforce,kernel}-test.sh
           shellcheck -x -P SCRIPTDIR test/e2e/lib{,-test}.sh
           shellcheck -x -P SCRIPTDIR test/e2e/cds-ha-vms{,-test}.sh
           shellcheck -x -P SCRIPTDIR test/conformance/run.sh test/conformance/backends/*.sh
@@ -345,56 +239,3 @@ jobs:
         env:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
         run: bash images/node-guest/tests/apparmor-kernel-test.sh
-
-  psa-ready:
-    name: PodSecurity credential-release gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Run the exact production-script harness
-        run: make test-node-guest-image-psa-ready
-
-  rke2-role:
-    name: rke2-role dispatch (script)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Run the script-level harness
-        # The production script runs unchanged in an unprivileged container.
-        run: make test-node-guest-image-role
-
-  rke2-role-systemd:
-    name: rke2-role dispatch (systemd)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Run the systemd-level harness
-        run: make test-node-guest-image-role-systemd
-
-  baked-workloads:
-    name: rendered workloads and measured image archives
-    needs: lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: ./.github/actions/setup-go-c8s
-
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.14.4
-
-      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
-
-      - name: Check the image archiver and offline fixture
-        run: shellcheck images/node-guest/c8s/{image-source,airgap-images,check-seed-images}.sh images/node-guest/tests/{airgap-images,check-seed-images}-test.sh
-
-      - name: Validate complete workloads and preserved image pins
-        run: |
-          go test -count=1 ./cmd/c8s -run TestNodeImage
-          make test-node-guest-image-airgap
-          bash images/node-guest/tests/check-seed-images-test.sh

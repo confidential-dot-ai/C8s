@@ -9,15 +9,16 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// A configuration-only upgrade keeps every image digest but changes the
-// operator's argv and so the installer's boot config. The store starts with
+// A configuration-only upgrade (one more namespace the webhooks leave alone)
+// keeps every image digest but changes the operator's argv and so the
+// installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
 // recreated. Once the new seed is published (c8s allowlist apply), the old
 // and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -25,7 +26,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
-	upgraded := append(slices.Clone(args), "--set-json", `operator.extraArgs=["--zap-log-level=debug"]`)
+	upgraded := append(slices.Clone(args), "--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}")
 	after, err := helmTemplate(t, upgraded...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, after)
@@ -119,7 +120,6 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 		return got
 	}
 	derived := []string{
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "volumed.enabled=true",
 		"--set-string", "volumed.image.digest=" + volumedDigest,
 	}
@@ -144,7 +144,7 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 // DigestEntryName with open args and mounts, and one before env matching
 // seeded each shape with env any; the current seed must retire both.
 func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}

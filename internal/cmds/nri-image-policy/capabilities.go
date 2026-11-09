@@ -76,11 +76,11 @@ func (p *plugin) storedProcess(ctx context.Context, ctr *api.Container) (*specs.
 // ungrantedCapabilities is why this process may not hold what it holds, nil when
 // the default set covers it or an entry declares every capability beyond it.
 func (p *plugin) ungrantedCapabilities(ctr *api.Container, lookup func() (string, error), snap *policySnapshot, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount, process *specs.Process) error {
-	held := heldCapabilities(process.Capabilities)
+	held := HeldCapabilities(process.Capabilities)
 	if role, reserved := p.mesh.policy.roleIdentity(process.User); reserved {
 		return roleRefusal(role, held)
 	}
-	undeclared := undeclaredCapabilities(held)
+	undeclared := BeyondDefaultCapabilities(held)
 	if len(undeclared) == 0 {
 		return nil
 	}
@@ -103,9 +103,9 @@ func (p *plugin) undeclaredRefusal(snap *policySnapshot, launch allowlist.Runnin
 	return fmt.Errorf("the container holds capabilities %s, which no allowlist entry declares for this launch", strings.Join(undeclared, ", "))
 }
 
-// heldCapabilities is every capability the five sets hold, spelled as an entry
+// HeldCapabilities is every capability the five sets hold, spelled as an entry
 // declares them: no CAP_ prefix.
-func heldCapabilities(sets *specs.LinuxCapabilities) []string {
+func HeldCapabilities(sets *specs.LinuxCapabilities) []string {
 	held := slices.Concat(sets.Bounding, sets.Effective, sets.Permitted, sets.Inheritable, sets.Ambient)
 	for i, name := range held {
 		held[i] = strings.TrimPrefix(name, "CAP_")
@@ -114,8 +114,9 @@ func heldCapabilities(sets *specs.LinuxCapabilities) []string {
 	return slices.Compact(held)
 }
 
-// undeclaredCapabilities names the held capabilities an entry has to declare.
-func undeclaredCapabilities(held []string) []string {
+// BeyondDefaultCapabilities names the held capabilities an entry has to
+// declare: those outside the node's default set.
+func BeyondDefaultCapabilities(held []string) []string {
 	var out []string
 	for _, name := range held {
 		if !slices.Contains(allowlist.DefaultCapabilities, name) {

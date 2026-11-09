@@ -2,7 +2,7 @@
 # Prove an SNP vCPU count boots and attests, and report its measurement.
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Not an e2e test, and deliberately NOT built on cvm-e2e.yml: that primitive
+# Not an e2e test, and deliberately NOT built on the hardware CVM e2e lane: that lane
 # delivers its payload over the serial console, and the base-cpu image emits
 # nothing after the EFI stub (no autologin) — the flavor that can boot a
 # non-default vCPU count is the one that cannot take a console payload.
@@ -14,13 +14,13 @@
 #
 # WHY: an SNP launch measurement covers initial vCPU state, so the image ships
 # one measured IGVM per supported count and the manifest publishes a digest for
-# each. get-kubeconfig's trust gate accepts any of them, but the e2e lanes only
-# ever boot the cell default, so the other counts are pinned without having been
-# launched. A digest that is wrong for a count nobody boots surfaces as a real
-# node booting fine and then being refused credentials.
+# each. `c8s verify` accepts any of them, but CI only ever boots the cell
+# default, so the other counts are pinned without having been launched. A
+# digest that is wrong for a count nobody boots surfaces as a real node booting
+# fine and then being refused its workloads.
 #
-# WHAT THIS PROVES: that a vCPU count actually boots and attests. cvm-e2e
-# hardcodes CORES per cell, so every other count ships measured IGVMs that
+# WHAT THIS PROVES: that a vCPU count actually boots and attests. The hardware
+# CVM e2e lane hardcodes CORES per cell, so every other count ships measured IGVMs that
 # nothing in CI has ever launched. A count that cannot boot, or boots and
 # fails to attest, is a node that never joins — and this is the only lane
 # that can find that out.
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$PWD/bin"
-          curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
+          curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 "https://dl.k8s.io/release/$(curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
           chmod +x bin/kubectl; echo "$PWD/bin" >> "$GITHUB_PATH"
           go build -o bin/c8s ./cmd/c8s
 
@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "booting $VM: $IGVMFILE at ${CORES} vCPU"
-          # Same shape as cvm-e2e.yml's VM, minus the console plumbing. The
+          # Same shape as the hardware lane's VM, minus the console plumbing. The
           # ci.confidential.ai labels are what the shared reaper keys on.
           kubectl apply -f - <<EOF
           apiVersion: kubevirt.io/v1
@@ -192,10 +192,10 @@ jobs:
             sleep 10
           done
           [ -n "${H:-}" ] || { echo "::error::attestation-api never answered on $GUEST_IP:8400"; exit 1; }
-          # POST /attest with a fresh nonce as report_data — the same request
-          # get-kubeconfig's gate makes — then read the measurement out of the
-          # verdict. Unpinned on purpose: this lane reports what the hardware
-          # measured, it does not enforce a policy.
+          # POST /attest with a fresh nonce as report_data, then read the
+          # measurement out of `c8s verify`'s verdict below. Unpinned on
+          # purpose: this lane reports what the hardware measured, it does not
+          # enforce a policy.
           nonce=$(head -c 32 /dev/urandom | base64 -w0)
           curl -fsS --max-time 30 -H 'Content-Type: application/json' \
             -d "{\"platform\":\"auto\",\"report_data\":\"$nonce\"}" \

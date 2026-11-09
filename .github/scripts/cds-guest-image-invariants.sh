@@ -11,12 +11,12 @@ profile="$image/cds"
 unit="$profile/mkosi.extra/etc/systemd/system/cds.service"
 preset="$profile/mkosi.extra/usr/lib/systemd/system-preset/50-cds.preset"
 finalize="$profile/mkosi.finalize"
-node_finalize=images/node-guest/c8s/mkosi.finalize
+worker_finalize=images/node-guest/worker/mkosi.finalize
 staged=/run/confai/operator-pubkey
 
 # The composition is confos's base + attest and this profile, in that order.
-# RKE2, a container runtime and the kubelet reach an image only through the
-# c8s profile, an interactive shell only through ssh or dev, and forwarded
+# A container runtime and the kubelet reach an image only through the worker
+# profile, an interactive shell only through ssh or dev, and forwarded
 # arguments would let a caller this gate never sees add any of them.
 mapfile -t profiles < <(grep -oE -- '--profile [a-z0-9-]+' "$build" | awk '{print $2}')
 if [ "${profiles[*]}" != "attest cds" ]; then
@@ -101,8 +101,8 @@ fi
 # VM's attestation for its own keys. confos copies each profile dir into its
 # own tree, which rejects a link out of it, so both images carry the same
 # finalize hook rather than sharing one file.
-if [ ! -x "$finalize" ] || ! cmp -s "$finalize" "$node_finalize"; then
-  echo "::error::$finalize must be executable and byte-identical to $node_finalize, whose content the node gate checks"
+if [ ! -x "$finalize" ] || ! cmp -s "$finalize" "$worker_finalize"; then
+  echo "::error::$finalize must be executable and byte-identical to $worker_finalize, whose content the worker gate checks"
   exit 1
 fi
 if ! grep -qF -- '--attestation-api-url=http://127.0.0.1:8400' "$unit"; then
