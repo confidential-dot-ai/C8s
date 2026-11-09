@@ -70,11 +70,14 @@ On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
 plugin registered gets no identity, certificate or secret, even for its later
 containers. The plugin deletes such a pod; a controller that owns one replaces
 it with a pod this node admits. A denied image may run until the
-plugin is ready and stops it. That window opens on a reboot, on a fresh node,
-and for as long as the plugin is down on a running node. On COS each boot
-repeats the `kube-system` digest capture, from what ran in that window. The
-measured node image has no boot window: its CNI needs the plugin before any pod
-sandbox gets a network.
+plugin is ready and stops it. That window opens on a fresh node, for as long as
+the plugin is down on a running node, and on `aks` on a reboot. A `gke` reboot
+keeps it shut: containerd launches the plugin before it serves its first
+container, from the binary and the config the node keeps across a boot. Until
+the installer has run on that boot the node's own containerd configuration does
+not require the plugin, so a plugin that fails to start there leaves containers
+unchecked. The measured node image has no boot window: its CNI needs the plugin
+before any pod sandbox gets a network.
 
 ## Identity comes from hardware evidence
 

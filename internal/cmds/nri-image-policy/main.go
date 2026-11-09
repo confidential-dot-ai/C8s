@@ -99,8 +99,12 @@ func Run(args []string) error {
 			return runPluginRunning(args[1:])
 		}
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve the plugin's own path: %w", err)
+	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
-	configPath := fs.String("config", DefaultConfigPath, "path to config file")
+	configPath := fs.String("config", startupConfigPath(exe), "path to config file")
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")
@@ -142,6 +146,9 @@ func Run(args []string) error {
 func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health healthServerConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if err := createSocketDir(cfg.WorkloadClaims.SocketDir); err != nil {
+		return err
+	}
 	logger.Debug("initializing containerd resolver",
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
@@ -784,7 +791,7 @@ func (p *nodeIPPublisher) write(path, host, source string) error {
 		p.logger.Warn("node address changed; publishing it if the next recheck agrees", "address", host, "source", source, "published", current, "recheck_in", nodeIPRecheckInterval)
 		return nil
 	}
-	if err := writeNodeIP(p.cfg.WorkloadClaims.SocketDir, path, host); err != nil {
+	if err := writeNodeIP(path, host); err != nil {
 		return err
 	}
 	p.pending = ""
@@ -897,14 +904,30 @@ func usableNodeIP(ip net.IP) bool {
 	return ip != nil && ip.IsGlobalUnicast()
 }
 
+// createSocketDir creates the directory the plugin serves its sockets in,
+// leaving one that exists as its owner made it.
+func createSocketDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o711); err != nil {
+		return fmt.Errorf("create the plugin's socket directory: %w", err)
+	}
+	// 0711 whatever the umask: the non-root get-cert sidecar needs o+x.
+	if err := os.Chmod(dir, 0o711); err != nil {
+		return fmt.Errorf("set the mode of the plugin's socket directory: %w", err)
+	}
+	return nil
+}
+
 // writeNodeIP writes host to path in place: components bind-mount the file
 // itself, so a renamed replacement would leave their mount on the old inode.
 // A write can fail after it changed the file, so a failed one puts the
 // previous content back, or empties a file that held none.
-func writeNodeIP(dir, path, host string) error {
-	if err := os.MkdirAll(dir, 0o711); err != nil {
-		return err
-	}
+func writeNodeIP(path, host string) error {
 	previous, readErr := os.ReadFile(path)
 	// World-readable: non-root components read it.
 	err := writeNodeIPFile(path, []byte(host+"\n"), 0o644)
