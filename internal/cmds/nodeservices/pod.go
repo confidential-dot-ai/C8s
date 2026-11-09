@@ -116,6 +116,9 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 	// Standalone kubelet appends the guest's original launch name.
 	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
 	floor["mesh"] = mesh
+	// The pod profile is an overlay on the worker image, whose floor marks a
+	// worker; the pod plugin's configuration is a pod's alone.
+	delete(floor, "worker")
 	policy["exempt_namespaces"] = []string{}
 	delete(policy, "exempt_snapshot_path")
 	policy["sandbox"] = "enforce"

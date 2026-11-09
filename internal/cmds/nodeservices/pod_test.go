@@ -41,9 +41,9 @@ const podEndpoint = `      c8s-mesh-endpoint:
             mounts: {policy: any}
 `
 
-// podFloor is the shared mesh policy with the pod endpoint and the pod
-// plugin's restart check baked.
-var podFloor = strings.Replace(strings.Replace(floor, "  pull:", podEndpoint+"  pull:", 1), "  enforce_existing: true\n", "  enforce_existing: true\n  fatal_existing: true\n  boot_marker_path: /run/nri-image-policy/registered\n", 1) +
+// podFloor is the worker image's floor, which marks a worker, with the pod
+// endpoint and the pod plugin's restart check baked.
+var podFloor = "worker: true\n" + strings.Replace(strings.Replace(floor, "  pull:", podEndpoint+"  pull:", 1), "  enforce_existing: true\n", "  enforce_existing: true\n  fatal_existing: true\n  boot_marker_path: /run/nri-image-policy/registered\n", 1) +
 	meshPolicy
 
 // podManifestPath is where the assignment publishes the manifest; a generic
@@ -171,6 +171,9 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	if resolver := got["mesh"].(map[string]any)["resolver"]; resolver != "1.1.1.1" {
 		t.Fatalf("mesh resolver = %v, want the first measured upstream", resolver)
 	}
+	if _, ok := got["worker"]; ok {
+		t.Fatal("pod runtime policy kept the worker marker")
+	}
 	if a["node_tcb"] != false {
 		t.Fatal("pod workloads must not be exempt from the sandbox policy")
 	}
@@ -196,6 +199,11 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	}
 	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != workloadclaims.MeshContainerName || !pod.Spec.InitContainers[0].VolumeMounts[0].ReadOnly || pod.Spec.Volumes[0].Name != podmesh.CertVolumeName {
 		t.Fatalf("rendered endpoint = %+v", pod.Spec)
+	}
+	// The endpoint is pulled at runtime by the digest the measured floor pins;
+	// the image bakes no endpoint bytes.
+	if endpoint := pod.Spec.InitContainers[0]; endpoint.Image != "registry.test/mesh@sha256:"+strings.Repeat("d", 64) || endpoint.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("rendered endpoint image = %q (%s), want the measured pin", endpoint.Image, endpoint.ImagePullPolicy)
 	}
 }
 

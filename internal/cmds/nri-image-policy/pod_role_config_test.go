@@ -58,6 +58,10 @@ func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != workloadclaims.MeshRole || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {
 		t.Fatalf("base = %+v, want signed app and measured endpoint", base)
 	}
+	// The endpoint starts only at the digest the worker floor's sync pinned.
+	if got := cfg.Pod.Images[workloadclaims.MeshContainerName]; got != nriimagepolicy.MeshImageDigest {
+		t.Fatalf("pod endpoint pin = %q, want the measured floor's %q", got, nriimagepolicy.MeshImageDigest)
+	}
 }
 
 const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -173,6 +173,39 @@ core containers from the same checkout. `C8S_BINARY` supplies the binary;
 `C8S_IMAGES_DIR` supplies the same unpublished OCI layouts to both build legs,
 tagged with `C8S_REF`.
 
+## Pod CVM image
+
+`C8S_PROFILE=pod images/node-guest/build` (TDX only) stacks `pod/` after the
+worker profile and writes `output/c8s-pod/`. A pod CVM runs one assigned pod
+under a standalone kubelet and joins no cluster. It reuses the worker's
+kernel, runtime binaries, runtime wrapper, NRI plugin, boot gates and floor,
+and changes what stages and starts them:
+
+- `40-pod.preset` turns off worker staging, the worker's containerd,
+  kubelet, attest-proxy and volumed. `pod-stage.service` replaces worker
+  staging: `c8s launch-config stage` verifies the signed pod launch document
+  on the `opkeydata` disk under the measured pod launch key, then
+  `c8s node-services prepare` stages the pod network and kubelet inputs.
+  Like worker staging, a failure powers the VM off.
+- `podcvm-status.service` serves the attested status and assignment endpoint
+  on 8443. Once a pod is assigned it installs the runtime policy, starts
+  `podcvm-containerd` (which wants `nri-image-policy`) and, once the plugin
+  reports the pod registered, publishes the manifest and starts
+  `podcvm-kubelet`.
+- The pod's runtime policy is rendered from the worker floor: the mesh
+  endpoint entry and role only, the assigned entries, the CDS from the launch
+  document, and RTMR[3] image measurement. The endpoint is the worker's:
+  the worker sync pins armtls-mesh by digest in the floor, the pod's endpoint
+  container names that `repo@digest`, and containerd pulls it at pod start.
+  The image bakes no endpoint bytes.
+- The pod network uses the bridge, host-local and loopback CNI plugins the
+  pod sync bakes into `/opt/cni/bin` from the CNI release the worker sync
+  verified.
+
+`opkeydata` is the `pod/` directory `c8s launch-config new-pod` writes: the
+pod launch public key (`pubkey`) as the launch file the initrd binds into
+RTMR[3], with `launch.yaml` and `launch.yaml.sig` beside it.
+
 ## Image checks
 
 With Go, Docker and a `./confos` checkout (or `CONFOS_DIR`), validate the
