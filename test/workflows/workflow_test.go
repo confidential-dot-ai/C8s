@@ -11,11 +11,12 @@ import (
 
 type workflowStep struct {
 	Name, ID, Uses, Run, If string
-	With                    map[string]string
+	With, Env               map[string]string
 }
 
 type workflowDocument struct {
 	Jobs map[string]struct {
+		Env   map[string]string
 		Steps []workflowStep
 	}
 }

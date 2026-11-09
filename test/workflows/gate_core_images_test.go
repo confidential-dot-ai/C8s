@@ -100,19 +100,41 @@ func TestGateCoreImagesSharedWithoutPublication(t *testing.T) {
 			t.Errorf("%s must depend on the shared core-image artifact", name)
 		}
 	}
+	buildAndPush := readWorkflow(t, "c8s-image.yml").Jobs["build-and-push"]
+	if buildAndPush.Env["GATE_CORE_IMAGES"] != "${{ inputs.gate_images_artifact != '' }}" {
+		t.Error("a build must use local core images exactly when a core-image artifact is supplied")
+	}
 	steps := make(map[string]workflowStep)
-	for _, step := range readWorkflow(t, "c8s-image.yml").Jobs["build-and-push"].Steps {
+	for _, step := range buildAndPush.Steps {
 		steps[step.Name] = step
 	}
 	if steps["Checkout c8s"].With["ref"] != "${{ github.event.workflow_run.head_sha || github.sha }}" {
 		t.Error("gate node image and core-image producer must check out the same PR revision")
 	}
-	guard := steps["Require local core images exactly for gate builds"]
-	if guard.If != "(inputs.gate == true) != (inputs.gate_images_artifact != '')" || !strings.Contains(guard.Run, "exit 1") {
-		t.Error("missing artifact must fail gate builds; supplied artifacts must fail published builds")
+	guard := steps["Check the gate inputs"]
+	if guard.Env["GATE"] != "${{ inputs.gate }}" || guard.Env["IMAGES_ARTIFACT"] != "${{ inputs.gate_images_artifact }}" {
+		t.Fatal("the gate input check must read the gate flag and the core-image artifact")
+	}
+	if gateInputCheckPasses(t, guard.Run, "false", "core-images") {
+		t.Error("a supplied core-image artifact must fail published builds")
+	}
+	if !gateInputCheckPasses(t, guard.Run, "true", "core-images") {
+		t.Error("a gate build must accept a supplied core-image artifact")
+	}
+	if !gateInputCheckPasses(t, guard.Run, "true", "") {
+		t.Error("a manual gate build must run without a core-image artifact")
 	}
 	download := steps["Download gate core images"]
-	if download.If != "inputs.gate == true" || download.With["name"] != "${{ inputs.gate_images_artifact }}" {
+	if download.If != "env.GATE_CORE_IMAGES == 'true'" || download.With["name"] != "${{ inputs.gate_images_artifact }}" {
 		t.Error("gate builds must download the supplied core-image artifact")
 	}
+}
+
+// gateInputCheckPasses reports whether the gate input check exits zero for a dispatch with these inputs.
+func gateInputCheckPasses(t *testing.T, script, gate, imagesArtifact string) bool {
+	t.Helper()
+	withoutSigningArtifact := "SIGNING_ARTIFACT="
+	cmd := exec.CommandContext(t.Context(), "bash", "-c", script)
+	cmd.Env = append(os.Environ(), "GATE="+gate, "IMAGES_ARTIFACT="+imagesArtifact, withoutSigningArtifact)
+	return cmd.Run() == nil
 }
