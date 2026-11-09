@@ -247,6 +247,11 @@ type DigestsClientConfig struct {
 	// held to one standard. Pins that name no guest are refused
 	// ([armtls.ErrUnpinned]).
 	Pins armtls.Pins
+	// CurrentPins, when set, replaces Pins on every handshake: for a set
+	// that changes while CDS runs (a replica set's nodes entry). Pair it with
+	// CloseIdleConnections on a change, so no connection made under the old
+	// set carries a later request.
+	CurrentPins func() armtls.Pins
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
 	// MeasuredPoliciesFile is the node's measured-policy journal its TDX client
@@ -255,13 +260,24 @@ type DigestsClientConfig struct {
 }
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
-	return &armtls.ClientConfig{
+	cfg := &armtls.ClientConfig{
 		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
 	}
+	if current := c.CurrentPins; current != nil {
+		cfg.Policy = current().VerifyPolicy(c.AttestationAPIURL)
+		cfg.Current = func() (*armtls.VerifyPolicy, error) {
+			return current().VerifyPolicy(c.AttestationAPIURL), nil
+		}
+	}
+	return cfg
 }
+
+// CloseIdleConnections drops every pooled connection, so the next callback
+// handshakes under the pins in force.
+func (c *DigestsClient) CloseIdleConnections() { c.http.CloseIdleConnections() }
 
 // NewDigestsClient builds the client. ctx bounds the client's certificate
 // renewal, so callers pass their lifetime context.

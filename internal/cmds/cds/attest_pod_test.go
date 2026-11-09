@@ -127,7 +127,8 @@ func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 		change func(*AttestHandler, *types.AttestRequestBody)
 	}{
 		{"node pins are not Pod pins", func(h *AttestHandler, r *types.AttestRequestBody) {
-			h.Images = h.PodImages
+			pods := h.PodImages
+			h.Images = func() []remote.ImagePin { return pods }
 			h.PodImages = nil
 		}},
 		{"mixed token", func(h *AttestHandler, r *types.AttestRequestBody) { r.SandboxToken = json.RawMessage(`{}`) }},

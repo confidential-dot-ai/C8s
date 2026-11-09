@@ -13,6 +13,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -135,6 +136,14 @@ func (w wire) parse() (*Config, error) {
 	}
 	if err := w.HA.validate(); err != nil {
 		return nil, err
+	}
+	// A replica set serves its node set from the chain, whose nodes entries
+	// carry only images that bind their launch: the launch file's set is the
+	// first of them.
+	if w.HA != nil {
+		if err := cdschain.CheckNodes([]byte(w.Nodes)); err != nil {
+			return nil, err
+		}
 	}
 	cfg := &Config{
 		HA:             w.HA,

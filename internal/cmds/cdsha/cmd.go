@@ -56,6 +56,9 @@ replica serving a chain without that head.`,
 	pf.StringVar(&o.stateDir, "state-dir", "", "directory of the per-cluster record (default c8s/cds-ha in the user config directory: $XDG_CONFIG_HOME on Linux)")
 	pf.DurationVar(&o.retryFor, "retry-for", time.Minute, "how long accept-image and raise-floor re-read and retry a write another write beat")
 	cmd.AddCommand(newStatusCmd(o), newGenesisCmd(o), newAcceptImageCmd(o), newRaiseFloorCmd(o), newStoreCredentialCmd(o), newResolveCmd(o))
+	for _, c := range operatorCommands {
+		cmd.AddCommand(c(o))
+	}
 	return cmd
 }
 
@@ -131,6 +134,9 @@ func newStatusCmd(o *options) *cobra.Command {
 		},
 	}
 }
+
+// operatorCommands are the commands only the operator build carries.
+var operatorCommands []func(*options) *cobra.Command
 
 func newStoreCredentialCmd(o *options) *cobra.Command {
 	var file string

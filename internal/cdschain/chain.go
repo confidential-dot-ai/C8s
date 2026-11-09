@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -79,6 +80,7 @@ const (
 	TypePolicy       Type = "policy"
 	TypeRoutes       Type = "routes"
 	TypeAccepted     Type = "accepted"
+	TypeNodes        Type = "nodes"
 )
 
 // Body is what a writer signs. Seq and Prev place it at one position of one
@@ -172,6 +174,12 @@ type Accepted struct {
 	Accepted []Build `json:"accepted"`
 }
 
+// Nodes replaces the whole set of node images the CDS certifies (a measurements
+// document): the launch file's nodes until the first one.
+type Nodes struct {
+	Nodes string `json:"nodes"`
+}
+
 // Member names the member key of one slot.
 type Member struct {
 	Slot int    `json:"slot"`
@@ -208,9 +216,12 @@ type State struct {
 	// PolicySeq; nil before one.
 	Policy    []byte
 	PolicySeq uint64
-	Routes    *Routes
-	Entries   int
-	Bytes     int64
+	// Nodes is the measurements document of the newest nodes entry: the node
+	// images the CDS certifies. "" before one: the launch file's nodes.
+	Nodes   string
+	Routes  *Routes
+	Entries int
+	Bytes   int64
 }
 
 // VerifyGenesis checks entry 0 on its own: a chain's genesis is pinned by
@@ -342,6 +353,16 @@ func (s *State) applyPayload(b Body) error {
 			return err
 		}
 		return s.setAccepted(p.Accepted)
+	case TypeNodes:
+		var p Nodes
+		if err := DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		if err := CheckNodes([]byte(p.Nodes)); err != nil {
+			return err
+		}
+		s.Nodes = p.Nodes
+		return nil
 	}
 	return fmt.Errorf("unknown entry type %q", b.Type)
 }
@@ -394,6 +415,32 @@ func (s *State) setAccepted(builds []Build) error {
 	// a pin every node client loads. An empty set is refused here too.
 	_, err := cmdsutil.CDSLaunchFile(s.Pins())
 	return err
+}
+
+// CheckNodes holds a node image set to what a nodes entry may carry: at least
+// one image, every one binding the launch of the nodes it certifies.
+// INVARIANT: an entry binding no launch would certify its image however the
+// host launched it.
+func CheckNodes(measurements []byte) error {
+	nodes, err := refvalues.Parse(measurements)
+	if err != nil {
+		return fmt.Errorf("nodes: %w", err)
+	}
+	if len(nodes.Images) == 0 {
+		return errors.New("nodes: the set names no image")
+	}
+	for _, image := range nodes.Images {
+		if !BindsLaunch(image) {
+			return fmt.Errorf("nodes: entry %q binds no launch: give it an approver_key, launch_file or launch_file_digest", image.Name)
+		}
+	}
+	return nil
+}
+
+// BindsLaunch reports whether one entry binds the launch of the guests it
+// admits: by approver key, launch file or launch file digest.
+func BindsLaunch(image remote.ImagePin) bool {
+	return image.Anchor != nil || image.LaunchFile != nil || image.LaunchFileDigest != nil
 }
 
 // Values parses the build's pin.

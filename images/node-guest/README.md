@@ -79,7 +79,8 @@ its root:
   client certificate with, outside the measurement.
 
 `c8s worker new` drafts a document. CDS certifies a worker booted on it only
-under a node image entry that binds the document's digest. There is no diskless boot: a missing or unbound document
+under a node image entry that binds the document's digest (`c8s cds ha
+accept-node`). There is no diskless boot: a missing or unbound document
 fails staging, and `worker-stage.service` powers the VM off.
 
 Every field, the admission rule and the boot-time staging order are

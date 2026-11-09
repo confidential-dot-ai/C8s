@@ -167,3 +167,28 @@ func TestParseRefusesAnUndeclaredField(t *testing.T) {
 		t.Fatal("Parse accepted a setting CDS does not define")
 	}
 }
+
+// A replica set's launch file pins only node images that bind their launch,
+// the rule every nodes entry of its chain follows; a single CDS keeps its
+// unbound pins.
+func TestParseRefusesUnboundNodesForAReplicaSet(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	document := testDocument(t, operatorPEM, anchorPEM)
+	unbound, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{{Name: "worker", Digest: bytes.Repeat([]byte{0x22}, refvalues.DigestSize)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document.Nodes = string(unbound)
+	if _, err := Parse(render(t, document)); err != nil {
+		t.Fatalf("a single CDS with an unbound node pin: %v", err)
+	}
+	document.HA = &HA{Endpoints: []string{"10.0.0.11:8443", "10.0.0.12:8443", "10.0.0.13:8443"}}
+	if _, err := Parse(render(t, document)); err == nil || !strings.Contains(err.Error(), "binds no launch") {
+		t.Fatalf("a replica set with an unbound node pin: %v", err)
+	}
+	document.Nodes = testNodePins(t, anchorPEM)
+	if _, err := Parse(render(t, document)); err != nil {
+		t.Fatalf("a replica set with a bound node pin: %v", err)
+	}
+}

@@ -16,7 +16,6 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
@@ -102,9 +101,9 @@ func run(ctx context.Context, cfg config) error {
 	// Served at /measurements so a verifier holding the operator's own file can
 	// detect a swapped config. Built from the enforced values, never re-read
 	// from disk: re-reading would attest the file rather than the policy.
-	measurementsDoc, err := refvalues.Render(pinned)
+	nodes, err := newNodeSet(pinned)
 	if err != nil {
-		return fmt.Errorf("render /measurements document: %w", err)
+		return err
 	}
 	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
 	if err != nil {
@@ -156,8 +155,7 @@ func run(ctx context.Context, cfg config) error {
 	// identity"). Pins the same node identities as /attest, so the inventory
 	// answering is held to the standard its armTLS certificate already met.
 	inventoryHosts := cfg.measured.NodeCIDRs
-	nodePins := armtls.Pins{Images: pinned.Images}
-	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodePins))
+	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodes.pins))
 	if err != nil {
 		return err
 	}
@@ -214,7 +212,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	var replica *cdsha.Replica
 	if cfg.measured.HA != nil {
-		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers); err != nil {
+		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers, nodes, sandboxDigests.CloseIdleConnections); err != nil {
 			return err
 		}
 	}
@@ -230,7 +228,7 @@ func run(ctx context.Context, cfg config) error {
 			NamedCertTTL:      cfg.namedCertTTL,
 			RouterCertTTL:     cfg.routerCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
-			Images:            pinned.Images,
+			Images:            nodes.images,
 			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
@@ -253,7 +251,7 @@ func run(ctx context.Context, cfg config) error {
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
 		OperatorKeysPEM:   operatorKeys.PEM(),
-		MeasurementsDoc:   measurementsDoc,
+		Measurements:      nodes.document,
 		RateLimiter:       rateLimiter,
 		ChallengeLimiter:  challengeLimiter,
 		MaxRequestSize:    cfg.maxRequestSize,
@@ -359,12 +357,12 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 
 // digestsClientConfig is the client CDS calls node inventories back with for
 // a sandbox's container digests.
-func digestsClientConfig(cfg config, pins armtls.Pins) workloadclaims.DigestsClientConfig {
+func digestsClientConfig(cfg config, pins func() armtls.Pins) workloadclaims.DigestsClientConfig {
 	return workloadclaims.DigestsClientConfig{
 		Platform:             cfg.armtlsPlatform.String(),
 		AttestFunc:           armtlsAttestFunc(cfg),
 		AttestationAPIURL:    cfg.attestationApiURL,
-		Pins:                 pins,
+		CurrentPins:          pins,
 		Timeout:              cfg.requestTimeout,
 		MeasuredPoliciesFile: "",
 	}

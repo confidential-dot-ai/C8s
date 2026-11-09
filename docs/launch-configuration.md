@@ -21,7 +21,7 @@ and writes it to `--out`, or to stdout without one.
 ## Fields
 
 Names below are YAML paths: `kubernetes.apiServer` is `apiServer` under
-`kubernetes`. The document pins no measurement of its own: the node image entry
+`kubernetes`. The document pins no measurement of its own: the `nodes` entry
 that admits it names the worker image it is bound to
 ([below](#admitting-a-worker-document)).
 
@@ -49,9 +49,43 @@ the CDS configuration that `cds.measurements` binds.
 ## Admitting a worker document
 
 The CDS certifies a worker only under a node image entry bound to its exact
-document: the worker image's measurements with `launch_file_digest` set to the
-document's digest (SHA-256 on SEV-SNP, SHA-384 on TDX), under
-`schema_version` `"2"`, among the node images the CDS configuration names.
+document. On a CDS replica set, the operator writes it into the chain's
+`nodes` entry ([cds-ha.md](cds-ha.md#the-chain)), and the command adds that
+entry itself:
+
+```sh
+c8s cds ha accept-node \
+    --url https://cds-1.example.org:8443 \
+    --operator-key operator.key \
+    --worker-document worker.yaml \
+    --worker-image worker-image.json
+```
+
+| Flag | Holds |
+|---|---|
+| `--worker-document` | The worker document, read once. Its `cds.chain` must name an entry of the set's chain, and its `cds.measurements` must pin exactly a CDS build the chain accepts. |
+| `--worker-image` | The worker image's measurements, as `c8s measurements derive` writes them: the TEE family of the set in force, and no launch binding. |
+
+The entry certifies, under `schema_version` `"2"`, every node image the chain
+certifies now (the CDS configuration's `nodes` before the first `nodes`
+entry), unchanged, followed by each `--worker-image` entry with
+`launch_file_digest` set to the document's digest (SHA-256 on SEV-SNP, SHA-384
+on TDX) and the digest's first 12 hex digits appended to its name.
+
+Nothing is written if a check fails: the document breaks the rules above,
+pins another chain or a CDS build the chain does not accept, the set in force
+already admits the worker image with this document, or an entry would bind no
+launch. Otherwise the command prints, to standard error, the API server, the
+CA's subject and SHA-256 fingerprint, the pod and Service ranges, the cluster
+DNS address, the CDS address and chain entry, the router's TLS SAN and
+hostnames, and the name of every node image it would certify. It writes only
+once you confirm them on standard input: any answer but `y` or `yes` (in any
+case), or none, writes nothing. Workers launched with the same document need
+no new entry; a changed document, such as one naming a new CA, is admitted
+beside the old one.
+
+A single CDS certifies the node images its configuration's `nodes` names: add
+the bound worker image entry there.
 
 A cluster whose nodes are all workers has no set in force before its first
 worker: its launch file names no nodes (`c8s cds config new` without

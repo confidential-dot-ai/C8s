@@ -28,7 +28,7 @@ type dependencies struct {
 	ReadyFn           attestation.ReadinessFunc
 	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
-	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
+	Measurements      func() []byte         // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
 	ChallengeLimiter  *issuer.IPRateLimiter // /authenticate's own, so it cannot spend the map above
 	MaxRequestSize    int64                 // applied to write endpoints; must be > 0
@@ -112,7 +112,7 @@ func newRouter(deps dependencies) http.Handler {
 
 	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
-	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
+	r.Get("/measurements", handleMeasurements(deps.Measurements))
 
 	return r
 }
@@ -172,8 +172,12 @@ func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
 // handleMeasurements serves the reference values this CDS is enforcing. An
 // empty set is served, not 404'd: "admitting any measurement" is the state a
 // verifier most needs to be told about.
-func handleMeasurements(doc []byte) http.HandlerFunc {
+func handleMeasurements(measurements func() []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		var doc []byte
+		if measurements != nil {
+			doc = measurements()
+		}
 		if len(doc) == 0 {
 			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
 			return
