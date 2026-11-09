@@ -119,8 +119,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends jq ca-certificates bsdutils expect
           mkdir -p "$PWD/bin"
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 "https://dl.k8s.io/release/$(curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 https://github.com/kubevirt/kubevirt/releases/download/v1.7.0/virtctl-v1.7.0-linux-amd64 -o bin/virtctl
+          curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 "https://dl.k8s.io/release/$(curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
+          curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 https://github.com/kubevirt/kubevirt/releases/download/v1.7.0/virtctl-v1.7.0-linux-amd64 -o bin/virtctl
           echo "ec6ee5619290e19590f3f9cd8b8dfce1affe0380eaaca77b3784c7b1acea86a6  bin/virtctl" | sha256sum -c -
           chmod +x bin/*; echo "$PWD/bin" >> "$GITHUB_PATH"
 

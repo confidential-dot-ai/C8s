@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$PWD/bin"
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 "https://dl.k8s.io/release/$(curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
+          curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 "https://dl.k8s.io/release/$(curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors --connect-timeout 20 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o bin/kubectl
           chmod +x bin/kubectl; echo "$PWD/bin" >> "$GITHUB_PATH"
           go build -o bin/c8s ./cmd/c8s
 

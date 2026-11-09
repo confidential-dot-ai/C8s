@@ -60,8 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/golangci-lint.tar.gz"
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$archive" \
-            "https://github.com/golangci/golangci-lint/releases/download/v$VERSION/golangci-lint-$VERSION-linux-amd64.tar.gz"
+          .github/scripts/fetch-release.sh golangci/golangci-lint "v$VERSION" "golangci-lint-$VERSION-linux-amd64.tar.gz" "$archive"
           echo "$SHA256  $archive" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/golangci-lint"
           tar -xzf "$archive" -C "$RUNNER_TEMP/golangci-lint" --strip-components=1 "golangci-lint-$VERSION-linux-amd64/golangci-lint"

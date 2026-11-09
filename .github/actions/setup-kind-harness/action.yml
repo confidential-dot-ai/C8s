@@ -15,6 +15,6 @@ runs:
     - name: Install kind
       shell: bash
       run: |
-        curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+        "$GITHUB_ACTION_PATH/../../scripts/fetch-release.sh" kubernetes-sigs/kind v0.33.0 kind-linux-amd64 "$RUNNER_TEMP/kind"
         echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum -c -
         sudo install "$RUNNER_TEMP/kind" /usr/local/bin/kind

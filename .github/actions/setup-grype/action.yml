@@ -2,7 +2,7 @@ name: Set up grype
 description: >-
   Put the grype release that anchore/scan-action installs into the runner
   tool cache, where the scan step looks before downloading it. The binary is
-  kept in the actions cache and fetched with retries on a miss, because the
+  kept in the actions cache and fetched by fetch-release.sh on a miss, because the
   GitHub release download returns 504 under burst load. VERSION must match
   the default in the pinned scan-action's GrypeVersion.js; if it does not,
   scan-action downloads its own grype as before.
@@ -31,8 +31,8 @@ runs:
       run: |
         set -euo pipefail
         archive="$RUNNER_TEMP/grype.tar.gz"
-        curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$archive" \
-          "https://github.com/anchore/grype/releases/download/v$VERSION/grype_${VERSION}_linux_amd64.tar.gz"
+        "$GITHUB_ACTION_PATH/../../scripts/fetch-release.sh" anchore/grype "v$VERSION" \
+          "grype_${VERSION}_linux_amd64.tar.gz" "$archive"
         echo "$SHA256  $archive" | sha256sum -c -
         # Tool cache layout: <tool>/<version>/<arch>/ plus <arch>.complete.
         mkdir -p "$DIR/x64"

@@ -18,8 +18,8 @@ runs:
         : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
         : "${GITHUB_PATH:?GITHUB_PATH is required}"
         dir=$(mktemp -d -- "$RUNNER_TEMP/crane.XXXXXX")
-        curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$dir/crane.tar.gz" \
-          "https://github.com/google/go-containerregistry/releases/download/$VERSION/go-containerregistry_Linux_x86_64.tar.gz"
+        "$GITHUB_ACTION_PATH/../../scripts/fetch-release.sh" google/go-containerregistry "$VERSION" \
+          go-containerregistry_Linux_x86_64.tar.gz "$dir/crane.tar.gz"
         echo "$SHA256  $dir/crane.tar.gz" | sha256sum -c -
         tar -xzf "$dir/crane.tar.gz" -C "$dir" crane
         echo "$dir" >>"$GITHUB_PATH"
