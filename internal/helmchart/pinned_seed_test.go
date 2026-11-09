@@ -148,10 +148,8 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// base is digest-only admission — carrying an argv-pinned image there
-// would bypass the pin. Neither the installer image nor any busybox may
-// appear.
-func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
+// A busybox in the base admits any command line on any pod.
+func TestChartBootConfigCarriesNoOpenShell(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
@@ -162,9 +160,6 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 		t.Fatal("base must stay non-empty (pull bootstrap)")
 	}
 	for digest, image := range baseImages(cfg.Allowlist.Base) {
-		if digest == baseNRIDigest {
-			t.Error("installer image self-allowed in base: the argv pin would be bypassed")
-		}
 		if strings.Contains(image, "busybox") {
 			t.Errorf("busybox %s in base: admits any command line on any pod", digest)
 		}
@@ -175,17 +170,19 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 // across entries): the derive loop must never emit one for the installer image
 // — the argvPinned skip is the only thing between the pin and a silent
 // any-argv shadow.
-func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
+func TestChartPinnedDigestHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	seed := renderedSeed(t, out)
-	for name, w := range seed.Workloads {
-		for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
-			if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
-				t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	for _, document := range []*pkgallowlist.Allowlist{renderedSeed(t, out), &cfg.Allowlist.Base} {
+		for name, w := range document.Workloads {
+			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
+				if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
+					t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
+				}
 			}
 		}
 	}

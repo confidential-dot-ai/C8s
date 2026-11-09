@@ -127,9 +127,10 @@ gone (e.g. a previous bare 'helm uninstall' left the hosts dirty), pass
 --host-sweep-only: the helm step is skipped and the sweep uses the embedded
 chart's defaults.
 
-The uninstall stops while a node the sweep runs on is not Ready, and names
-the recovery to run on it. It deletes the NRI image-policy installer first,
-so no installer run re-adds the plugin the sweep removes.
+The sweep pod runs on the node's network. Where a node's kubelet starts no
+sweep container, the uninstall names that node, the state its sweep is in, and
+the removal to run on the node itself. It deletes the NRI image-policy
+installer first, so no installer run re-adds the plugin the sweep removes.
 
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so
@@ -183,7 +184,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 		// Sweep host state even if it outlived the release that created it.
 		sweep := uninstallHostSweep
 		if sweep {
-			if err := refuseNotReadySweepNodes(ctx, cfg); err != nil {
+			if err := refuseNodelessSweep(ctx); err != nil {
 				return err
 			}
 		}
@@ -247,70 +248,27 @@ func validateUninstallFlags(hostSweep, hostSweepOnly bool) error {
 }
 
 // The label selecting every linux node: the nodes the sweep DaemonSet runs on
-// (hostSweepDaemonSet) and the ones it must find Ready first.
+// (hostSweepDaemonSet).
 const (
 	linuxNodeLabel = "kubernetes.io/os"
 	linuxNodeValue = "linux"
 )
 
-// notReadyNodesJSONPath dumps one "name\tReady status" line per node.
-const notReadyNodesJSONPath = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
-
-// refuseNotReadySweepNodes stops the uninstall before it waits on a sweep pod
-// that cannot start: a NotReady node runs none.
-func refuseNotReadySweepNodes(ctx context.Context, cfg hostUninstallConfig) error {
-	nodes, err := notReadyNodes(ctx, linuxNodeSelector())
-	if err != nil {
-		return err
-	}
-	if len(nodes) > 0 {
-		return notReadyNodesError(nodes, cfg)
-	}
-	return nil
-}
-
 func linuxNodeSelector() string {
 	return fmt.Sprintf("%s=%s", linuxNodeLabel, linuxNodeValue)
 }
 
-// notReadyNodes lists the nodes matching selector whose Ready condition is not
-// True, and refuses a selector no node matches.
-func notReadyNodes(ctx context.Context, selector string) ([]string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector, "-o", notReadyNodesJSONPath).Output()
+// A DaemonSet that wants no pod rolls out successfully having swept nothing.
+func refuseNodelessSweep(ctx context.Context) error {
+	selector := linuxNodeSelector()
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector, "-o", "name").Output()
 	if err != nil {
-		return nil, fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
+		return fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
 	}
-	listed := strings.TrimSpace(string(out))
-	if listed == "" {
-		return nil, fmt.Errorf("no node matches %s, the nodes this uninstall sweeps", selector)
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("no node matches %s, the nodes this uninstall sweeps", selector)
 	}
-	var nodes []string
-	for line := range strings.SplitSeq(listed, "\n") {
-		name, ready, _ := strings.Cut(line, "\t")
-		if name != "" && ready != "True" {
-			nodes = append(nodes, unreadyNode(name, ready))
-		}
-	}
-	return nodes, nil
-}
-
-// unreadyNode names a node and the Ready status it reports, a node that
-// reports none included.
-func unreadyNode(name, ready string) string {
-	if ready == "" {
-		return name + " (no Ready condition)"
-	}
-	return name + " (Ready=" + ready + ")"
-}
-
-// notReadyNodesError names the nodes and the node-level recovery, which no pod
-// can run there.
-func notReadyNodesError(nodes []string, cfg hostUninstallConfig) error {
-	return fmt.Errorf("nodes %s do not report themselves Ready, and the host sweep runs a pod on each of them. A confidential node whose containerd cannot load the C8s config, or whose image-policy plugin is down, starts no container, so recover it on the node: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
-		strings.Join(nodes, ", "),
-		cfg.ContainerdConfigDir,
-		path.Join(cfg.NriPluginDir, cfg.NriPluginFilename),
-		cfg.RestartCommand)
+	return nil
 }
 
 // nriInstallerSelector selects a release's NRI installer DaemonSet and its
@@ -575,7 +533,7 @@ func seedPinnedSweepArgvs(ctx context.Context, namespace, release, image string)
 			continue
 		}
 		switch {
-		case strings.Contains(argv[len(argv)-1], "c8s host sweep"):
+		case helmchart.IsHostSweepScript(argv):
 			if sweep != nil {
 				return nil, fmt.Errorf("entry %q pins two host-sweep script shapes", entryName)
 			}
@@ -733,7 +691,7 @@ func runHostSweep(ctx context.Context, namespace, release string, cfg hostUninst
 		"-n", namespace, "--timeout=5m"); err != nil {
 		// Leave the DaemonSet in place: its sweep container logs are the
 		// only record of which node failed and why.
-		return fmt.Errorf("host sweep did not complete: %w — inspect with 'kubectl -n %s logs ds/%s -c sweep', then remove it with 'kubectl -n %s delete ds %s'", err, namespace, name, namespace, name)
+		return hostSweepError(ctx, namespace, release, cfg, err)
 	}
 
 	return kubectlRun(ctx, "delete", "daemonset", name, "-n", namespace, "--ignore-not-found")
@@ -741,6 +699,133 @@ func runHostSweep(ctx context.Context, namespace, release string, cfg hostUninst
 
 func hostSweepName(release string) string {
 	return release + "-host-sweep"
+}
+
+const (
+	hostSweepComponent = "host-sweep"
+	sweepContainerName = "sweep"
+)
+
+func hostSweepSelector(release string) string {
+	return fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=%s", release, hostSweepComponent)
+}
+
+type unfinishedSweep struct {
+	// report is "<node or pod>: <what its sweep came to>".
+	report string
+	// needsNodeRemoval is set where the kubelet started no sweep container.
+	needsNodeRemoval bool
+}
+
+// hostSweepError names, per node, the state of a sweep the rollout wait gave up on.
+func hostSweepError(ctx context.Context, namespace, release string, cfg hostUninstallConfig, cause error) error {
+	inspect := sweepInspectSteps(namespace, release)
+	pods, err := sweepPods(ctx, namespace, release)
+	if err != nil {
+		return fmt.Errorf("host sweep did not complete: %w\nreading its pods failed too: %w\n%s", cause, err, inspect)
+	}
+	report := append(unfinishedSweepReport(pods, cfg), inspect)
+	return fmt.Errorf("host sweep did not complete: %w\n%s", cause, strings.Join(report, "\n"))
+}
+
+// One line per node whose sweep did not finish, plus the node-level removal
+// where a kubelet started none.
+func unfinishedSweepReport(pods []corev1.Pod, cfg hostUninstallConfig) []string {
+	if len(pods) == 0 {
+		return []string{"  the sweep DaemonSet has no pod on any node", nodeRemovalSteps(cfg)}
+	}
+	var report []string
+	nodeRemoval := false
+	for _, sweep := range unfinishedSweeps(pods) {
+		report = append(report, "  "+sweep.report)
+		nodeRemoval = nodeRemoval || sweep.needsNodeRemoval
+	}
+	if nodeRemoval {
+		report = append(report, nodeRemovalSteps(cfg))
+	}
+	return report
+}
+
+func sweepInspectSteps(namespace, release string) string {
+	name := hostSweepName(release)
+	return fmt.Sprintf("inspect it with 'kubectl -n %s describe pod -l %s' and 'kubectl -n %s logs ds/%s -c %s', then remove it with 'kubectl -n %s delete ds %s'",
+		namespace, hostSweepSelector(release), namespace, name, sweepContainerName, namespace, name)
+}
+
+func nodeRemovalSteps(cfg hostUninstallConfig) string {
+	return fmt.Sprintf("A node whose kubelet starts no sweep container keeps enforcing until the plugin comes off it on the node itself: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
+		cfg.ContainerdConfigDir,
+		path.Join(cfg.NriPluginDir, cfg.NriPluginFilename),
+		cfg.RestartCommand)
+}
+
+func sweepPods(ctx context.Context, namespace, release string) ([]corev1.Pod, error) {
+	selector := hostSweepSelector(release)
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get pods -n %s -l %s: %w", namespace, selector, withStderr(err))
+	}
+	var list corev1.PodList
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse the sweep pods: %w", err)
+	}
+	return list.Items, nil
+}
+
+func unfinishedSweeps(pods []corev1.Pod) []unfinishedSweep {
+	var unfinished []unfinishedSweep
+	for _, pod := range pods {
+		if sweep, ok := unfinishedSweepOf(pod); ok {
+			unfinished = append(unfinished, sweep)
+		}
+	}
+	slices.SortFunc(unfinished, func(a, b unfinishedSweep) int { return strings.Compare(a.report, b.report) })
+	return unfinished
+}
+
+// ok=false for a sweep that exited successfully.
+func unfinishedSweepOf(pod corev1.Pod) (unfinishedSweep, bool) {
+	subject := pod.Spec.NodeName
+	if subject == "" {
+		subject = "pod " + pod.Name
+	}
+	state := sweepContainerState(pod)
+	var came string
+	switch {
+	case state.Terminated != nil:
+		if state.Terminated.ExitCode == 0 {
+			return unfinishedSweep{}, false
+		}
+		came = fmt.Sprintf("the sweep exited %d (%s)", state.Terminated.ExitCode, state.Terminated.Reason)
+	case state.Running != nil:
+		came = "the sweep is still running"
+	case state.Waiting != nil:
+		came = "the kubelet has not started the sweep: " + waitingState(*state.Waiting)
+	default:
+		came = fmt.Sprintf("the kubelet reports no sweep container (the pod is %s)", pod.Status.Phase)
+	}
+	return unfinishedSweep{
+		report:           subject + ": " + came,
+		needsNodeRemoval: state.Running == nil && state.Terminated == nil,
+	}, true
+}
+
+// sweepContainerState is the zero state where the kubelet reports no sweep container.
+func sweepContainerState(pod corev1.Pod) corev1.ContainerState {
+	for _, status := range pod.Status.InitContainerStatuses {
+		if status.Name == sweepContainerName {
+			return status.State
+		}
+	}
+	return corev1.ContainerState{}
+}
+
+// A container the node's image policy refused carries the refusal in its message.
+func waitingState(waiting corev1.ContainerStateWaiting) string {
+	if waiting.Message == "" {
+		return waiting.Reason
+	}
+	return waiting.Reason + ": " + waiting.Message
 }
 
 // waitPodsGone polls until no pod in the namespace matches the selector.
@@ -779,7 +864,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "c8s-operator",
 		"app.kubernetes.io/instance":  release,
-		"app.kubernetes.io/component": "host-sweep",
+		"app.kubernetes.io/component": hostSweepComponent,
 	}
 	nodeSelector := map[string]string{linuxNodeLabel: linuxNodeValue}
 	privileged := true
@@ -799,7 +884,9 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 				Spec: corev1.PodSpec{
 					// hostPID: the sweep nsenters into PID 1 for host binaries
 					// (systemctl, iptables, losetup) and the runtime restart.
-					HostPID:      true,
+					HostPID: true,
+					// On the node's network the sandbox needs no CNI address.
+					HostNetwork:  true,
 					NodeSelector: nodeSelector,
 					// The install's pull secret, so the sweep image pulls on
 					// private-mirror clusters too (chart-wide values).
@@ -807,7 +894,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 					// Sweep control-plane and otherwise-tainted nodes too.
 					Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
 					InitContainers: []corev1.Container{{
-						Name:            "sweep",
+						Name:            sweepContainerName,
 						Image:           cfg.SweepImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						Command:         cfg.SweepArgv,
