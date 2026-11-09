@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -128,6 +129,10 @@ gone (e.g. a previous bare 'helm uninstall' left the hosts dirty), pass
 --host-sweep-only: the helm step is skipped and the sweep uses the embedded
 chart's defaults.
 
+The uninstall stops while a node it runs a removal pod on is not Ready, and
+names the recovery to run on it. It deletes the NRI image-policy installer
+first, so no installer run re-adds the plugin the pre-delete hook removes.
+
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so
 removing it under a live volume strands the mappings on the node, where they
@@ -185,6 +190,13 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 		// Chart pre-delete hooks are the healthy-release first line;
 		// --host-sweep=false opts out of this additional cleanup.
 		sweep := uninstallHostSweep
+		removalNodes, err := removalNodeSelector(values, sweep)
+		if err != nil {
+			return err
+		}
+		if err := refuseNotReadyRemovalNodes(ctx, removalNodes, cfg); err != nil {
+			return err
+		}
 
 		// volumed goes with the release and is the only component that unmaps
 		// a pod's volume devices, so the teardown order is load-bearing.
@@ -202,6 +214,9 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 		}
 
 		if !uninstallHostSweepOnly {
+			if err := removeNriInstaller(ctx, uninstallNamespace, uninstallRelease); err != nil {
+				return err
+			}
 			helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
 			fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
 			hc := exec.CommandContext(ctx, "helm", helmArgs...)
@@ -237,6 +252,111 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 func validateUninstallFlags(hostSweep, hostSweepOnly bool) error {
 	if hostSweepOnly && !hostSweep {
 		return fmt.Errorf("--host-sweep-only runs only the host sweep, which --host-sweep=false disables; drop one of the two flags")
+	}
+	return nil
+}
+
+// The label selecting every linux node: the nodes the host sweep runs on.
+const (
+	linuxNodeLabel = "kubernetes.io/os"
+	linuxNodeValue = "linux"
+)
+
+// notReadyNodesJSONPath dumps one "name\tReady status" line per node.
+const notReadyNodesJSONPath = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
+
+// refuseNotReadyRemovalNodes stops the uninstall before it waits on a removal
+// pod that cannot start: a NotReady node runs none.
+func refuseNotReadyRemovalNodes(ctx context.Context, selector string, cfg hostUninstallConfig) error {
+	nodes, err := notReadyNodes(ctx, selector)
+	if err != nil {
+		return err
+	}
+	if len(nodes) > 0 {
+		return notReadyNodesError(nodes, cfg)
+	}
+	return nil
+}
+
+// removalNodeSelector selects the nodes this uninstall runs a removal pod on:
+// every linux node when the host sweep runs, else the pre-delete hooks' nodes.
+func removalNodeSelector(values map[string]any, hostSweep bool) (string, error) {
+	if hostSweep {
+		return linuxNodeSelector(), nil
+	}
+	return hookNodeSelector(values)
+}
+
+// hookNodeSelector selects the nodes the chart's pre-delete hooks run on: the
+// release's confidential nodes, or every linux node for a release whose chart
+// named none.
+func hookNodeSelector(values map[string]any) (string, error) {
+	if _, named := values[confidentialNodeSelectorKey]; !named {
+		return linuxNodeSelector(), nil
+	}
+	return confidentialNodeSelector(values)
+}
+
+func linuxNodeSelector() string {
+	return fmt.Sprintf("%s=%s", linuxNodeLabel, linuxNodeValue)
+}
+
+// notReadyNodes lists the nodes matching selector whose Ready condition is not
+// True, and refuses a selector no node matches.
+func notReadyNodes(ctx context.Context, selector string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector, "-o", notReadyNodesJSONPath).Output()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
+	}
+	listed := strings.TrimSpace(string(out))
+	if listed == "" {
+		return nil, fmt.Errorf("no node matches %s, the nodes this uninstall runs a removal pod on", selector)
+	}
+	var nodes []string
+	for line := range strings.SplitSeq(listed, "\n") {
+		name, ready, _ := strings.Cut(line, "\t")
+		if name != "" && ready != "True" {
+			nodes = append(nodes, unreadyNode(name, ready))
+		}
+	}
+	return nodes, nil
+}
+
+// unreadyNode names a node and the Ready status it reports, a node that
+// reports none included.
+func unreadyNode(name, ready string) string {
+	if ready == "" {
+		return name + " (no Ready condition)"
+	}
+	return name + " (Ready=" + ready + ")"
+}
+
+// notReadyNodesError names the nodes and the node-level recovery, which no pod
+// can run there.
+func notReadyNodesError(nodes []string, cfg hostUninstallConfig) error {
+	return fmt.Errorf("nodes %s do not report themselves Ready, and the uninstall runs a pod on each of them. A confidential node whose containerd cannot load the C8s config, or whose image-policy plugin is down, starts no container, so recover it on the node: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
+		strings.Join(nodes, ", "),
+		cfg.ContainerdConfigDir,
+		path.Join(cfg.NriPluginDir, cfg.NriPluginFilename),
+		cfg.RestartCommand)
+}
+
+// nriInstallerSelector selects a release's NRI installer DaemonSet and its
+// pods.
+func nriInstallerSelector(release string) string {
+	return fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=%s", release, helmchart.NriInstallerComponent)
+}
+
+// removeNriInstaller deletes the release's NRI installer and waits out its
+// pods, so no installer run re-adds the plugin while the pre-delete hook takes
+// it off the nodes.
+func removeNriInstaller(ctx context.Context, namespace, release string) error {
+	selector := nriInstallerSelector(release)
+	if err := kubectlRun(ctx, "delete", "daemonset", "-n", namespace, "-l", selector, "--ignore-not-found"); err != nil {
+		return err
+	}
+	if err := waitPodsGone(ctx, namespace, selector); err != nil {
+		return fmt.Errorf("waiting for the NRI installer pods to terminate: %w", err)
 	}
 	return nil
 }
@@ -392,8 +512,9 @@ func imagePullSecretNames(tree map[string]any) []string {
 }
 
 // The host paths and restart the sweep cleans, each the constant the chart's
-// own helpers render (templates/nri-image-policy-helpers.tpl). The sweep only
-// restarts when it removed a still-registered NRI config block.
+// own helpers render (templates/nri-image-policy-helpers.tpl). The sweep
+// restarts containerd when it removed the NRI config block or the plugin still
+// runs.
 const (
 	hostContainerdConfigDir = "/etc/containerd"
 	hostNriCacheDir         = "/var/lib/nri-image-policy"
@@ -690,7 +811,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 		"app.kubernetes.io/instance":  release,
 		"app.kubernetes.io/component": "host-sweep",
 	}
-	nodeSelector := map[string]string{"kubernetes.io/os": "linux"}
+	nodeSelector := map[string]string{linuxNodeLabel: linuxNodeValue}
 	privileged := true
 	pullSecrets := make([]corev1.LocalObjectReference, 0, len(cfg.ImagePullSecretRef))
 	for _, n := range cfg.ImagePullSecretRef {
@@ -724,6 +845,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 							{Name: "HOST_CONTAINERD_DIR", Value: cfg.ContainerdConfigDir},
 							{Name: "RESTART_COMMAND", Value: cfg.RestartCommand},
 							{Name: "NRI_PLUGIN_DIR", Value: cfg.NriPluginDir},
+							// Read by the sweeps earlier charts pinned.
 							{Name: "NRI_PLUGIN_FILENAME", Value: cfg.NriPluginFilename},
 							{Name: "NRI_CONFIG_DIR", Value: cfg.NriConfigDir},
 							{Name: "NRI_RUNTIME_DIR", Value: cfg.NriRuntimeDir},

@@ -246,23 +246,23 @@ func cdsValues(valuesFiles []string) (map[string]any, error) {
 	return values, nil
 }
 
-// confidentialNodeSelectorPath is the cloud value naming the labels this
+// confidentialNodeSelectorKey is the cloud value naming the labels this
 // platform puts on a confidential node.
-const confidentialNodeSelectorPath = "confidentialNodeSelector"
+const confidentialNodeSelectorKey = "confidentialNodeSelector"
 
 // confidentialNodeSelector is the chart's confidential-node labels in kubectl
 // -l form, so install reasons about the nodes the chart places C8s on. The
 // schema requires the labels, so an empty selector never reaches a render.
 func confidentialNodeSelector(effectiveValues map[string]any) (string, error) {
-	labels, ok := nestedMap(effectiveValues, confidentialNodeSelectorPath)
+	labels, ok := nestedMap(effectiveValues, confidentialNodeSelectorKey)
 	if !ok {
-		return "", fmt.Errorf("%s is not a map of node labels", confidentialNodeSelectorPath)
+		return "", fmt.Errorf("%s is not a map of node labels", confidentialNodeSelectorKey)
 	}
 	terms := make([]string, 0, len(labels))
 	for key, value := range labels {
 		text, isText := value.(string)
 		if !isText {
-			return "", fmt.Errorf("%s.%s must be a label value, got %v", confidentialNodeSelectorPath, key, value)
+			return "", fmt.Errorf("%s.%s must be a label value, got %v", confidentialNodeSelectorKey, key, value)
 		}
 		terms = append(terms, key+"="+text)
 	}
@@ -288,7 +288,7 @@ func confidentialNodes(ctx context.Context, selector string) ([]string, error) {
 	}
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no node carries %s, the labels that mark this cluster's confidential VMs, so every C8s node agent and the router would have nowhere to run: create a confidential node pool carrying them, or set %s to the labels this cluster's confidential nodes carry",
-			selector, confidentialNodeSelectorPath)
+			selector, confidentialNodeSelectorKey)
 	}
 	return nodes, nil
 }
