@@ -181,9 +181,18 @@
 #                                    make the CDS unreachable for the router's
 #                                    allowlist relay, leaving every other
 #                                    client's reach alone, and undo it
+#   pod_cvm_node                     the node the Pod CVM provider registered, or
+#                                    unsupported where the cluster runs no provider
+#   pod_cvm_max_pods                 the provider's pod budget
+#   pod_cvm_oversize_memory          a memory quantity one pod CVM cannot hold
+#                                    and the provider's node can
+#   pod_cvm_allocation <uid>         the allocation identity the provider derives
+#                                    for the pod with that UID
+#   pod_cvm_record <allocation>      yes/no: the provider holds a record for it
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
-# cds_pod_url, cert_paths, pod_exec, exempt_namespace and api_service_name
-# answer the same for a whole run; callers may cache them. The
+# cds_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
+# pod_cvm_node and pod_cvm_max_pods answer the same for a whole run;
+# callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
@@ -712,6 +721,13 @@ exempt_namespace() { echo kube-system; }
 api_service_name() { echo kubernetes.default.svc.cluster.local; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
+
+# The Pod CVM provider: unsupported unless the backend's cluster runs one.
+pod_cvm_node() { return "$UNSUPPORTED"; }
+pod_cvm_max_pods() { return "$UNSUPPORTED"; }
+pod_cvm_oversize_memory() { return "$UNSUPPORTED"; }
+pod_cvm_allocation() { return "$UNSUPPORTED"; }
+pod_cvm_record() { return "$UNSUPPORTED"; }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
 dispatch() {
