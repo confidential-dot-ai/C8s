@@ -69,7 +69,11 @@ by the digests the images running there carried when it read the cluster, and
 On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
 plugin registered gets no identity, certificate or secret, even for its later
 containers. The plugin deletes such a pod; a controller that owns one replaces
-it with a pod this node admits. A denied image may run until the
+it with a pod this node admits. That delete goes as the node, under the
+credential the kubelet's kubeconfig names — on `gke` a credential helper the
+plugin runs. A helper that fails leaves the pod named in the plugin's log for an
+operator to delete; a helper that never returns holds that node's deletes with
+no such line. A denied image may run until the
 plugin is ready and stops it. That window opens on a fresh node, for as long as
 the plugin is down on a running node, and on `aks` on a reboot. A `gke` reboot
 keeps it shut: containerd launches the plugin before it serves its first

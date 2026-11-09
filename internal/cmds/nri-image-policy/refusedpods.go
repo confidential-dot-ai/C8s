@@ -19,9 +19,9 @@ const nodeKubeconfig = "/var/lib/kubelet/kubeconfig"
 
 const nodeDeleteTimeout = 30 * time.Second
 
-// Credentials are read per delete: the kubelet rotates its client certificate.
-func deleteNodePod(ctx context.Context, pod *api.PodSandbox) error {
-	pods, err := nodePodClient(nodeKubeconfig)
+// The kubeconfig is read per delete: the kubelet rotates the credential it names.
+func (p *plugin) deleteNodePod(ctx context.Context, pod *api.PodSandbox) error {
+	pods, err := p.cfg.nodePodClient(nodeKubeconfig)
 	if err != nil {
 		return err
 	}
@@ -43,20 +43,26 @@ func refusedPodGone(err error) bool {
 	return err == nil || apierrors.IsNotFound(err) || apierrors.IsConflict(err)
 }
 
-func nodePodClient(kubeconfig string) (coreclient.CoreV1Interface, error) {
+func (c *config) nodePodClient(kubeconfig string) (coreclient.CoreV1Interface, error) {
 	credentials := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
 	document, err := credentials.Load()
 	if err != nil {
 		return nil, fmt.Errorf("read this node's API credentials from %s: %w", kubeconfig, err)
 	}
-	cfg, err := clientcmd.NewDefaultClientConfig(*document, &clientcmd.ConfigOverrides{}).ClientConfig()
+	nodeAPI, err := clientcmd.NewDefaultClientConfig(*document, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("this node's API credentials at %s: %w", kubeconfig, err)
 	}
-	if namesACredentialHelper(cfg) {
+	if c.refusesACredentialHelper() && namesACredentialHelper(nodeAPI) {
 		return nil, fmt.Errorf("this node's API credentials at %s name a credential helper to run", kubeconfig)
 	}
-	return coreclient.NewForConfig(cfg)
+	return coreclient.NewForConfig(nodeAPI)
+}
+
+// A measured worker's kubelet writes that kubeconfig itself, naming certificate
+// files; a gke kubelet's names a helper the node runs.
+func (c *config) refusesACredentialHelper() bool {
+	return c.Worker
 }
 
 func namesACredentialHelper(cfg *rest.Config) bool {
