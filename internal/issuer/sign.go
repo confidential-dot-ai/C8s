@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -40,6 +41,11 @@ type SignCSRParams struct {
 	// extension (armtls.OIDClientDocumentDigest). The caller MUST have read it
 	// from Pod claims the verified evidence binds.
 	ClientDocumentDigest []byte
+
+	// ExtraDNSNames are DNS SANs the caller adds past the CSR's own, which
+	// ValidateCSR does not see. The caller MUST derive them from its own
+	// policy, never from the request.
+	ExtraDNSNames []string
 }
 
 // SignCSR returns the signed leaf's PEM, common name, and serial number.
@@ -72,7 +78,7 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, subjectCN string, serial 
 	if err != nil {
 		return nil, "", nil, err
 	}
-	template.DNSNames = p.CSR.DNSNames
+	template.DNSNames = slices.Concat(p.CSR.DNSNames, p.ExtraDNSNames)
 	template.IPAddresses = p.CSR.IPAddresses
 
 	digest := sha256.Sum256(p.Evidence)
