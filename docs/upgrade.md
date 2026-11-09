@@ -136,3 +136,10 @@ publishes is not there; it warns and goes on where it cannot reach CDS. It also
 refuses when the resolved policy would deny a platform pod the cluster already
 runs, before touching anything; `--force` overrides that one. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
+
+A release upgrade restarts every confidential workload pod. A node's plugin
+admits only the sidecar images its own configuration names, so it deletes a pod
+whose injected sidecars are the previous release's; the workload's controller
+recreates it with the new ones, and a pod no controller owns does not come back.
+Pods go as the new plugin takes each node, one node at a time, and a deleted pod
+is serving again about 40 seconds later.
