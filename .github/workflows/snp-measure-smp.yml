@@ -2,7 +2,7 @@
 # Prove an SNP vCPU count boots and attests, and report its measurement.
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Not an e2e test, and deliberately NOT built on cvm-e2e.yml: that primitive
+# Not an e2e test, and deliberately NOT built on the hardware CVM e2e lane: that lane
 # delivers its payload over the serial console, and the base-cpu image emits
 # nothing after the EFI stub (no autologin) — the flavor that can boot a
 # non-default vCPU count is the one that cannot take a console payload.
@@ -19,8 +19,8 @@
 # digest that is wrong for a count nobody boots surfaces as a real node booting
 # fine and then being refused its workloads.
 #
-# WHAT THIS PROVES: that a vCPU count actually boots and attests. cvm-e2e
-# hardcodes CORES per cell, so every other count ships measured IGVMs that
+# WHAT THIS PROVES: that a vCPU count actually boots and attests. The hardware
+# CVM e2e lane hardcodes CORES per cell, so every other count ships measured IGVMs that
 # nothing in CI has ever launched. A count that cannot boot, or boots and
 # fails to attest, is a node that never joins — and this is the only lane
 # that can find that out.
@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "booting $VM: $IGVMFILE at ${CORES} vCPU"
-          # Same shape as cvm-e2e.yml's VM, minus the console plumbing. The
+          # Same shape as the hardware lane's VM, minus the console plumbing. The
           # ci.confidential.ai labels are what the shared reaper keys on.
           kubectl apply -f - <<EOF
           apiVersion: kubevirt.io/v1
