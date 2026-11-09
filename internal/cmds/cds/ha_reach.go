@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,7 +59,9 @@ func (reach clusterReach) cluster(ctx context.Context) (decreeConfig, []replica,
 	return c, replicas, nil
 }
 
-// One entry may answer at several addresses, and two entries at one.
+// One entry may answer at several addresses, and two entries at one. A name
+// that answers at one address stays a name, so replicas a shared passthrough
+// front door routes by SNI stay distinct replicas behind its one address.
 func (reach clusterReach) addresses(ctx context.Context, c decreeConfig) ([]string, error) {
 	entries, err := reach.entries(c)
 	if err != nil {
@@ -70,13 +73,28 @@ func (reach clusterReach) addresses(ctx context.Context, c decreeConfig) ([]stri
 		if err != nil {
 			return nil, err
 		}
-		for _, address := range answering {
-			if !slices.Contains(resolved, address.String()) {
-				resolved = append(resolved, address.String())
+		for _, address := range reachedAs(entry, answering) {
+			if !slices.Contains(resolved, address) {
+				resolved = append(resolved, address)
 			}
 		}
 	}
 	return resolved, nil
+}
+
+// reachedAs is how each replica an entry resolves to is dialed: by the entry's
+// name when the name stands for one replica, by address otherwise.
+func reachedAs(entry string, answering []netip.AddrPort) []string {
+	host, _, err := splitReplicaAddress(entry)
+	_, literal := netip.ParseAddr(host)
+	if err == nil && literal != nil && len(answering) == 1 {
+		return []string{entry}
+	}
+	addresses := make([]string, 0, len(answering))
+	for _, address := range answering {
+		addresses = append(addresses, address.String())
+	}
+	return addresses
 }
 
 // A configuration that names no replica set runs a singleton CDS, which has

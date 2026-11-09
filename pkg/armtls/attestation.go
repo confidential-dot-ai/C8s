@@ -83,10 +83,11 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 	return &withList
 }
 
-// The measured-policy journal lists the allowlist policies a TDX node extends
-// into RTMR[3]. Its writer is the policy measurer in nri-image-policy, which
-// keeps it in the plugin's runtime directory (workload_claims.socket_dir, the
-// chart's nriImagePolicy.hostPaths.runtimeDir).
+// The measured-policy journal lists what a TDX guest extends into RTMR[3]: the
+// allowlist policies of a node, the admitted image digests of a pod CVM. Its
+// one writer per boot is nri-image-policy, which keeps it in the plugin's
+// runtime directory (workload_claims.socket_dir, the chart's
+// nri-image-policy.runtimeDir).
 // NodeJournal is its path on the node and in pods that mount that directory at
 // its host path; workloadclaims.MeasuredPoliciesJournal is its path in the
 // sidecars the plugin mounts the directory into.
@@ -131,6 +132,7 @@ type Journal struct {
 	mu       sync.Mutex
 	reported string // the last read error logged
 	absent   bool   // the missing journal was logged
+	present  bool   // the journal was seen to exist; on its tmpfs it stays until reboot
 }
 
 // NewJournal returns the journal at path, or nil when path is empty.
@@ -160,8 +162,11 @@ func (j *Journal) Policies() []string {
 	defer j.mu.Unlock()
 	if err == nil {
 		j.reported = ""
-		if list == nil && !j.absent {
-			if _, statErr := os.Stat(j.path); errors.Is(statErr, fs.ErrNotExist) {
+		if list == nil && !j.absent && !j.present {
+			// ReadRuntimeExtensions reads a missing journal as an empty one.
+			_, statErr := os.Stat(j.path)
+			j.present = statErr == nil
+			if errors.Is(statErr, fs.ErrNotExist) {
 				j.absent = true
 				slog.Info("armtls: no measured-policy journal; evidence lists no measured policies until it appears", "path", j.path)
 			}

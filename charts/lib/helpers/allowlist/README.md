@@ -1,0 +1,257 @@
+# Allowlist helpers
+
+Source: [templates/_allowlist.tpl](../../templates/_allowlist.tpl).
+[All helpers](../README.md).
+
+`c8s.components` resolves the `components` table of c8s-lib's
+`files/components.yaml` (`c8s.componentList`) into a JSON list of
+`{name, image, enabled, argvPinned, entrypoint}` records. `valuePath` selects the image object;
+`enabledPath` selects its boolean gate, with an empty path enabling the component;
+`entrypoint` is the argv prefix every container running the image starts with.
+`c8s.entrypoint` takes `(dict "root" $ "valuePath" "image")` and returns
+that entrypoint as JSON; each component container renders it as its
+`command`, so the argv never depends on the image's ENTRYPOINT or CMD.
+The derived name is the component's `valuePath`. `c8s.valueAtPath` takes
+`(dict "root" <dict> "path" "a.b.c")` and returns the resolved value as JSON.
+Boolean gates compare that JSON text to `true`: Helm's `fromJson` expects an
+object, so scalar booleans must be handled as text here.
+
+The component inventory drives allowlist derivation; `c8s install` also reads
+it. Components marked `argvPinned` are covered by argv-pinned
+seed entries and excluded from component derivation.
+
+`c8s.imageAllowlist` returns a digest-to-`{image, entrypoint}` map containing enabled,
+digest-pinned components, plus router nginx. Nginx is independently versioned and derives from
+its own pin (`routerNginx` in `files/components.yaml`). A derived
+component without an entrypoint fails the render. `c8s.componentShapes` turns
+each such image into its allowlist containers; see
+[Component shapes](#component-shapes). Argv-pinned components are seeded
+through `c8s.argvPinnedEntries`.
+
+`c8s.openArgsEntries` extracts workload digests whose args, environment and
+mount policies are unconstrained and whose command is `any` or `exact`, as
+digest-to-`{image, entrypoint}` with an empty entrypoint for `any`. An omitted
+mount policy is `deny` and prevents inclusion. `c8s.pinnedComponentEntries`
+extracts the other operator containers whose command is `any` or `exact` for a
+component digest, verbatim. `c8s.baseWorkloads` renders the host plugin's boot
+base, excluding `c8s.argvPinnedDigests`: each `c8s.componentShapes` image with
+its containers, each `c8s.openArgsEntries` digest under the command it pins or
+under any (`c8s.openArgsContainer`), and each `c8s.pinnedComponentEntries`
+container. The component shapes keep their own entry, named as in the seed;
+the operator's containers for a digest share one named
+`c8s.digestWorkloadName`, so each entry's per-variable evidence budget counts
+only its own containers. Workloads that pin
+args, env or mounts for any other digest remain in the served seed without
+reaching the base.
+
+`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per
+`c8s.generatedShapes` digest, with its containers, followed by
+`c8s.argvPinnedEntries`, the [router entry](#router-entry) and
+`bootstrapAllowlist.workloads`. The volumed entry
+also carries the pre-delete teardown hook's script and pause. A
+`bootstrapAllowlist.workloads` override named `c8s.digestWorkloadName`
+replaces a component entry whole, hook
+containers included; an override must declare them too, or the pre-delete hook
+is refused and the uninstall fails. `c8s.generatedShapes` is
+`c8s.componentShapes` less the argv-pinned digests and the overridden ones,
+and `c8s.baseWorkloads` builds from it too, so an override replaces the
+generated entry in the boot base as well. An override named for an
+argv-pinned image's digest replaces its `c8s.argvPinnedEntries` entry in the
+seed the same way. The document must satisfy
+`pkg/allowlist.ParseJSON`.
+
+## Entry names
+
+`c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
+to its final repository segment, truncates it to 50 characters, substitutes
+`image` for an invalid name, and appends the first 12 lowercase digest hex digits.
+Keep this naming rule aligned with `pkg/allowlist.DigestEntryName`.
+
+`c8s.shapeWorkloadName` names every entry the chart generates: the component
+entries, in the seed and the base alike, and the argv-pinned entries. It cuts
+the image segment to 41 characters and appends the first 8 hex digits of the
+SHA-256 over the entry's seed-form containers (`c8s.seedContainers`), so the
+name stays within 63 characters. A configuration change that alters a shape
+without changing a digest names a new entry, which CDS's additive seeding adds
+beside the old one; the old entry keeps admitting running pods and rollbacks
+until an operator deletes it. `c8s allowlist lint --seed` names such stale
+entries. CDS deletes a replaced generated entry itself, the pre-shape
+`<image>-<12hex>` form included, when it leaves a component's args or mounts
+open, and every generated entry for a digest the seed carries an operator
+override for (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
+the same names.
+
+## Component shapes
+
+`c8s.componentPods` renders the pod spec of every component workload its
+`templates` field names (the cloud chart: operator, attestation-api, volumed
+and its teardown hook, router; the worker chart: router) through the same
+named templates the workloads use, and
+`c8s.podShapes` turns each container whose image is a component digest into an
+allowlist container:
+
+- `command` is `exact` at the component's entrypoint when the argv starts with
+  it, else at the container's own command; `args` is `exact` at the rest of the
+  argv, or `deny` when there is none.
+- The argv is what the kubelet hands the runtime (`c8s.kubeletExpand`): `$$`
+  becomes `$`, and any `$(NAME)` reference fails the render, since the kubelet
+  may expand it from env, `envFrom` or a service variable. Escape it as
+  `$$(NAME)` and expand it in the binary, as the attestation-api URL does with
+  `HOST_IP`; the volumed teardown script is escaped whole.
+- A container with neither command nor args fails the render: the image's CMD
+  would run, which the chart cannot pin.
+- `mounts` is `exact` at one rule per volume mount (`c8s.mountRules`): `host`
+  with the hostPath `source` and `readOnly`, `emptyDir`, or `data` for a
+  ConfigMap, Secret, projected, downward-API or PVC volume, which must sit
+  under `/mnt/c8s-data/`. The node admits an `emptyDir` or `data` mount only on
+  memory or encrypted storage, so the component templates use memory
+  `emptyDir`s and project their ConfigMaps, which puts them on tmpfs. A `subPath`, an unclean path or another volume source
+  fails the render, as does a hostPath under `/var/run`: containerd resolves
+  symlinks in the source, and `/var/run` is `/run` on some nodes only.
+- `env` is `match` over every variable the container launches with
+  (`c8s.componentEnv`), so a pod cannot add a loader variable such as
+  `LD_PRELOAD` or `BASH_ENV`, nor move `PATH`: containerd's `HOSTNAME`
+  (`present`), the image config's `Env` from the component's `imageEnv`
+  (`exact`, with containerd's default `PATH` when it sets none), the kubelet's
+  `KUBERNETES_*` variables for the API server's Service (`c8s.runtimeEnv`),
+  then the container's `env`: a constant `exact`, a `valueFrom` `present`.
+  `envFrom`, an optional key reference or a `$(NAME)` reference in a value
+  fails the render, since the names or values would depend on objects the
+  chart does not render. Every component pod sets `enableServiceLinks: false`,
+  so no per-Service variables join the set.
+
+`c8s.injectedShapes` adds the sidecars the webhook injects to the C8s image's
+entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`
+(`c8s.injectedModes`), each pinned to its invocation with the argument rule of
+`c8s.injectedArgs` (the cert-wait gate's constant arguments, `any` for the
+clients, which carry per-pod SANs, secrets and volumes), its env
+matched as above over the variables the webhook's `getCertEnv` sets
+(`present`, since they differ per pod; none for `probe-file`), and one
+container per mount table of `c8s.injectedMountTables`: the destinations the
+webhook mounts for that mode, without and with the optional discovery mount.
+No table names the inventory socket mount: the NRI plugin adds it and observes
+it as a platform mount, which exact rules never match. The webhook turns
+service links off in every pod it injects into. The destinations match the
+webhook's fixed ones (`internal/webhook`).
+
+`c8s.roleFloorWorkloads` renders the role entries for a digest the base admits
+only through an open-args floor entry (the cluster lane's image-store scan),
+which pins nothing but the image's executable: one `c8s-role-<mode>-<digest>`
+entry per role invocation, with `args: any`. The credentials and mesh roles are
+dropped from the workload match, so the credential clients are granted theirs
+only under the `c8s.injectedArgs` and `c8s.injectedMountTables` of their mode,
+one container per table, the mesh endpoint only under `c8s.meshArgs` and the
+bound certificate volume, and the router pod's `allowlist-proxy` only under
+its `-pinned` entry; the `upstream`, `acme` and `router` invocations keep
+`mounts: any`. Beside
+each entry, a `-pinned` one names the rendered router pod's own mount set for
+that container (`c8s.routerContainerMounts`), since a pod of the router's
+namespace runs a role container only under a declaration that pins its mounts.
+
+Every credentials and mesh grant in the base names the volume behind its
+certificate and secrets mounts. `c8s.injectedMountTables` with `bind` names the webhook's
+`c8s-certs` and `c8s-secrets`: the floor pins those bound tables, and
+`c8s.baseWorkloads` binds the role-tagged shapes through
+`c8s.bindInjectedVolumes`, which reads the names from them. `c8s.mountRules`
+with `bind` names the router pod's own volumes. The webhook refuses a pod's own mount of its reserved volumes but
+not another memory volume at the same destination, which the node would
+otherwise admit under an unbound rule. The seed carries the same tables
+unbound, since a served entry binds no volume.
+
+`c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
+pinned to its entrypoint, arguments (`c8s.meshArgs`) and credential mount, with one container
+per combination of the optional probe variable.
+
+`c8s.componentShapes` collects them per digest, tagging each shape the node
+grants a platform role with `role` (`c8s.platformRole`). Every component
+digest must have a rendered container, or the render fails. It takes the same
+`root` and `templates` pair as `c8s.componentPods`, as do
+`c8s.generatedShapes`, `c8s.baseWorkloads`, `c8s.roleFloorWorkloads` and
+`c8s.allowlistSeedJSON`: the chart that renders the component workloads is the
+one that names them.
+[component_mounts_test.go](../../../../internal/helmchart/component_mounts_test.go) checks that the
+seed and the base admit every rendered component container exactly as
+rendered, with the environment it launches with, and refuse it with one
+argument or mount more, one mount fewer, `LD_PRELOAD` set or `PATH` moved, for
+each platform's render.
+
+The optional Pod CVM provider uses the same derivation. Its operator config flag
+and read-only Secret mount at `/mnt/c8s-data/pod-cvm` are included in the exact
+component shape. Enabling it changes that shape; the provider render is covered
+by the component admission tests too.
+
+## Argv-pinned entries
+
+`c8s.argvPinnedEntries` takes the chart context and returns a JSON map of
+entry names to workload policies for these platform images:
+
+| Image/use | Included when | Pinned invocation |
+|---|---|---|
+| NRI installer | always | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+
+Script argv comes from the same includes/files as the DaemonSets. Trailing
+newlines collapse to one, matching YAML block-scalar clipping. Image
+references are digest-pinned.
+
+Install and uninstall entries explicitly
+set `mounts: {policy: any}` because these platform scripts require host mounts,
+which exact workload mount rules do not support. Their command/args pins still
+apply. The pause and `plugin-ready` containers have no workload mounts and
+retain the default `deny` policy. `plugin-ready` runs under `/bin/sh -c`
+because `c8s uninstall` takes the entry's one non-script shape as its sweep
+pause. Operator-supplied workload policies are preserved as authored.
+
+Names use `c8s.shapeWorkloadName`. `c8s.allowlistSeedJSON` excludes these
+digests from its component derivations, adds the pinned entries, then applies
+`bootstrapAllowlist.workloads`. An image bump or a changed script produces a
+new entry name for additive seeding.
+
+`c8s.argvPinnedDigests` derives its matching digest set from values alone:
+calling `argvPinnedEntries` there would recurse through the install script's
+boot config. Keep the inclusion conditions of both helpers aligned.
+
+[pinned_seed_test.go](../../../../internal/helmchart/pinned_seed_test.go) checks rendered invocations and mounts,
+rejection of different argv, and exclusion from the boot config's local base.
+The operator-facing bootstrap behavior is described in
+[Allowlist and capabilities](../../../../docs/allowlist-and-capabilities.md#bootstrap).
+
+## Router entry
+
+The router pod's non-injected containers span two images, so no single-image
+entry matches it. `c8s.routerEntry` returns the entry that does, which the
+seed names `c8s.routerWorkloadName`. It renders `router.podSpec` and pins each
+nginx and c8s-image container through `c8s.podShapes`, exactly as the
+component entries pin them: command, args and mount table as rendered, env
+matched.
+
+| Container | Declared as |
+|---|---|
+| nginx | main |
+| cds-attest | main |
+| allowlist-proxy | main |
+| acme, `c8s-cert`, `c8s-cert-wait` | init |
+
+A declared init container is admitted but not required. The router's own `c8s-cert` and `c8s-cert-wait`
+are pinned to their exact args, so they are not dropped as injected
+containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
+them.
+
+`c8s.allowlistSeedJSON` seeds the entry when the nginx pin's digest and
+`image.digest` are both set. An argv reference the kubelet would expand fails
+the render in `c8s.kubeletExpand`, so the pinned argv is the one the runtime
+starts. The chart does not emulate `MatchWorkload`: a
+`bootstrapAllowlist.workloads` entry that also matches the router pod beside the
+seeded one makes the match ambiguous, and CDS issues the router's leaf
+unnamed.
+
+`c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
+the SHA-256 of the rendered entry, so a changed digest, argv or mount yields a
+new name. CDS seeds additively by name, so the new entry lands beside the old
+one, as with the digest-named entries. The entry's own name sits inside its
+argv, as `c8s-cert`'s `--expected-workload`. The hash therefore renders the pod
+with `routerNamePlaceholder` set in the context, under which
+`c8s.routerWorkloadName` returns a fixed placeholder.
+
+[router_entry_test.go](../../../../internal/helmchart/router_entry_test.go) feeds the rendered router
+pod, with the argv and mounts a node observes, through
+`secrets.WorkloadContainers` and `MatchWorkload`.

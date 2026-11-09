@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,11 +28,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/podprovider"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Options configures the controller-manager runtime.
@@ -54,7 +60,10 @@ type Options struct {
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
 	GetCertImage string
 
-	// AttestationApiURL points at the attestation-api.
+	// AttestationApiURL points at the attestation-api. Empty with
+	// WorkloadClaimsHostDir set defaults to that directory's own socket (the
+	// injected sidecars have no in-cluster service account to fall back to);
+	// empty otherwise means no verification.
 	AttestationApiURL string
 
 	// WebhookConfigName is the MutatingWebhookConfiguration to patch. The pod
@@ -63,20 +72,29 @@ type Options struct {
 
 	WebhookServiceName      string
 	WebhookServiceNamespace string
+	// WebhookHost, when set, is the host the API server reaches the webhook at
+	// from outside the cluster: the serving certificate names it and the
+	// webhook server binds it, in place of the Service.
+	WebhookHost string
+	// Kubeconfig names the cluster's kubeconfig file; empty is the in-cluster
+	// service account.
+	Kubeconfig string
 
 	CertFSGroup       int64
 	CertRenewInterval time.Duration
 
 	// ExcludeNamespaces are namespaces the startup reinject sweep and the
 	// workload-service reconciler skip, on top of the release namespace and
-	// the kube-system family. Mirrors webhook.extraExcluded so the sweep,
-	// the reconciler, and the webhook config agree.
+	// the kube-system family. Mirrors controlPlane.webhook.extraExcluded so the
+	// sweep, the reconciler, and the webhook config agree.
 	ExcludeNamespaces []string
 
 	// WorkloadClaimsHostDir, when set (node-CVM), is the nri-image-policy inventory
 	// socket directory: that plugin NRI-mounts it into c8s-cert and the webhook
 	// injects the get-cert workload-digest claim (docs/armtls.md). See webhook.Config.
 	WorkloadClaimsHostDir string
+	// PodCVMProviderConfig enables the Cloud-backed virtual node from trusted mounted configuration.
+	PodCVMProviderConfig string
 }
 
 var scheme = runtime.NewScheme()
@@ -103,11 +121,11 @@ var podName = func() (string, error) {
 }
 
 // Production wiring hoisted to vars so Run's error paths are testable.
-// getKubeConfig is the in-cluster service-account config only: a kubeconfig
-// from KUBECONFIG or HOME could name an exec credential plugin, code the
-// operator's pinned arguments never named.
+// getKubeConfig is the in-cluster service-account config or the file the
+// operator is given, never one KUBECONFIG or HOME names: that could name an
+// exec credential plugin, code the operator's arguments never named.
 var (
-	getKubeConfig      = rest.InClusterConfig
+	getKubeConfig      = kubeConfig
 	newManager         = ctrl.NewManager
 	newDiscoveryClient = discovery.NewDiscoveryClientForConfig
 )
@@ -117,14 +135,36 @@ func init() {
 	utilruntime.Must(v1alpha2.AddToScheme(scheme))
 }
 
+// defaultAttestationApiURL derives --attestation-api-url from
+// --workload-claims-host-dir when the flag is unset: the injected c8s-cert
+// sidecar has no in-cluster service account to fall back to, so it needs the
+// node's own socket in the inventory directory it already mounts, named the
+// same way webhook.Config rebases an explicit URL into the sidecar.
+func defaultAttestationApiURL(opts Options) string {
+	if opts.AttestationApiURL != "" || opts.WorkloadClaimsHostDir == "" {
+		return opts.AttestationApiURL
+	}
+	return "unix://" + strings.TrimRight(opts.WorkloadClaimsHostDir, "/") + "/" + filepath.Base(workloadclaims.AttestationAPISocket)
+}
+
 // Run boots the manager and blocks until ctx is cancelled or the manager exits.
 func Run(ctx context.Context, opts Options) error {
+	if opts.WebhookHost != "" && (opts.GetCertImage == "" || opts.MeshImage == "") {
+		return fmt.Errorf("--webhook-host requires --get-cert-image and --mesh-image to serve admission webhooks")
+	}
+	opts.AttestationApiURL = defaultAttestationApiURL(opts)
+	if opts.AttestationApiURL != "" {
+		if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", opts.AttestationApiURL); err != nil {
+			return err
+		}
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 
-	config, err := getKubeConfig()
+	config, err := getKubeConfig(opts.Kubeconfig)
 	if err != nil {
-		return fmt.Errorf("in-cluster config: %w", err)
+		return fmt.Errorf("kube config: %w", err)
 	}
 	// Match ctrl.GetConfigOrDie: QPS 0 means client-go's default 5 QPS
 	// limiter, which the manager, cache and webhook bootstrap would share.
@@ -162,10 +202,21 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
+// kubeConfig loads path, or the in-cluster service account without one.
+func kubeConfig(path string) (*rest.Config, error) {
+	if path == "" {
+		return rest.InClusterConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", path)
+}
+
 // managerOptions is the single source of the manager configuration Run uses;
 // factored out so tests can build a manager with the same cache/label scoping.
 func managerOptions(opts Options) ctrl.Options {
-	return ctrl.Options{
+	objects := map[client.Object]cache.ByObject{
+		&corev1.Service{}: {Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue})},
+	}
+	options := ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsserver.Options{BindAddress: opts.MetricsAddr},
 		HealthProbeBindAddress:  opts.HealthAddr,
@@ -181,18 +232,21 @@ func managerOptions(opts Options) ctrl.Options {
 			// foreign Service is invisible through this cache — CreateOrUpdate
 			// then tries Create and the reconciler maps AlreadyExists to its
 			// not-adopting skip.
-			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Service{}: {
-					Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue}),
-				},
-			},
+			ByObject: objects,
 		},
 	}
+	if opts.WebhookHost != "" {
+		options.WebhookServer = crwebhook.NewServer(crwebhook.Options{Host: opts.WebhookHost, CertDir: webhookCertDir})
+	}
+	return options
 }
 
 // setupManager wires all controllers, the webhook, and the startup runnables
 // onto mgr. dc may be nil when opts.DisableStatusMirror is set.
 func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesForGroupVersion, opts Options, logger logr.Logger) error {
+	if err := setupPodCVMProvider(mgr, opts); err != nil {
+		return err
+	}
 	if opts.DisableStatusMirror {
 		logger.Info("status-mirror controller disabled by configuration")
 	} else {
@@ -260,6 +314,7 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			CertFSGroup:           new(opts.CertFSGroup),
 			CertRenewInterval:     opts.CertRenewInterval,
 			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
+			PodCVMProviderEnabled: opts.PodCVMProviderConfig != "",
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}
@@ -287,6 +342,32 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 	}
 	if err := mgr.AddReadyzCheck("readyz", readyzCheck(mgr, opts)); err != nil {
 		return fmt.Errorf("add readyz: %w", err)
+	}
+	return nil
+}
+
+var loadPodCVMProvider = podprovider.LoadConfig
+var registerPodCVMProvider = podprovider.Setup
+
+func setupPodCVMProvider(mgr manager.Manager, opts Options) error {
+	if opts.PodCVMProviderConfig == "" {
+		return nil
+	}
+	if opts.GetCertImage == "" {
+		return fmt.Errorf("--pod-cvm-provider-config requires the pod admission webhooks")
+	}
+	if !opts.LeaderElection {
+		return fmt.Errorf("--pod-cvm-provider-config requires --leader-elect=true")
+	}
+	cfg, err := loadPodCVMProvider(opts.PodCVMProviderConfig)
+	if err != nil {
+		return fmt.Errorf("load pod CVM provider: %w", err)
+	}
+	if cfg.Namespace != opts.LeaderElectionNS {
+		return fmt.Errorf("pod CVM provider namespace must match --leader-election-namespace")
+	}
+	if err := registerPodCVMProvider(mgr, cfg); err != nil {
+		return fmt.Errorf("setup pod CVM provider: %w", err)
 	}
 	return nil
 }
@@ -354,18 +435,9 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		return nil
 	}
 
-	svcName := opts.WebhookServiceName
-	svcNS := opts.WebhookServiceNamespace
-	if svcNS == "" {
-		svcNS = opts.LeaderElectionNS
-	}
-	if svcName == "" {
-		return fmt.Errorf("webhook-service-name is required when webhook-config-name is set")
-	}
-
-	hostnames := []string{
-		fmt.Sprintf("%s.%s.svc", svcName, svcNS),
-		fmt.Sprintf("%s.%s.svc.cluster.local", svcName, svcNS),
+	name, hostnames, err := webhookNames(opts)
+	if err != nil {
+		return err
 	}
 
 	// The pod name in the CA's CommonName is its identity in the caBundle:
@@ -376,7 +448,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	if err != nil {
 		return fmt.Errorf("resolve pod name: %w", err)
 	}
-	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook %s", svcName, pod), webhook.WebhookCATTL)
+	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook %s", name, pod), webhook.WebhookCATTL)
 	if err != nil {
 		return fmt.Errorf("mint webhook CA: %w", err)
 	}
@@ -405,7 +477,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	// it after the old pod, so nothing is ever pruned: the bundle keeps one
 	// CA per past pod, bounded by webhook.MaxCABundleCerts (oldest pods
 	// dropped first), rather than reopen the rollout window.
-	if opts.LeaderElection {
+	if prunesSupersededCAs(opts) {
 		pruner := webhookCABundlePruner(mgr.GetWebhookServer().StartedChecker(), c,
 			opts.WebhookConfigName, validatorConfigName(opts.WebhookConfigName), caPEM, 10*time.Second,
 			mgr.GetLogger().WithName("webhook-cabundle-pruner"))
@@ -418,10 +490,47 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	// keeps validating rotated leaves without a re-patch.
 	rotator := webhookCertRotator(ca, hostnames, webhookCertDir, webhook.ServingTLSTTL,
 		mgr.GetLogger().WithName("webhook-cert-rotator"))
-	if err := mgr.Add(manager.RunnableFunc(rotator)); err != nil {
+	if err := mgr.Add(everyReplica(rotator)); err != nil {
 		return fmt.Errorf("add webhook cert rotator: %w", err)
 	}
 	return nil
+}
+
+// everyReplica is a runnable every replica runs, leader or not.
+type everyReplica manager.RunnableFunc
+
+func (r everyReplica) Start(ctx context.Context) error { return r(ctx) }
+
+func (everyReplica) NeedLeaderElection() bool { return false }
+
+// webhookNames are the name the webhook's CA carries and the hosts its serving
+// certificate names: opts.WebhookHost, or else the Service's DNS names.
+func webhookNames(opts Options) (string, []string, error) {
+	if opts.WebhookHost != "" {
+		if opts.WebhookServiceName != "" {
+			return "", nil, fmt.Errorf("webhook-host and webhook-service-name each name the webhook; give one")
+		}
+		return opts.WebhookHost, []string{opts.WebhookHost}, nil
+	}
+	svcName := opts.WebhookServiceName
+	svcNS := opts.WebhookServiceNamespace
+	if svcNS == "" {
+		svcNS = opts.LeaderElectionNS
+	}
+	if svcName == "" {
+		return "", nil, fmt.Errorf("webhook-service-name or webhook-host is required when webhook-config-name is set")
+	}
+	return svcName, []string{
+		fmt.Sprintf("%s.%s.svc", svcName, svcNS),
+		fmt.Sprintf("%s.%s.svc.cluster.local", svcName, svcNS),
+	}, nil
+}
+
+// prunesSupersededCAs reports whether this operator drops the CAs of the pods
+// before it. At a webhook host each control-plane replica's API server calls
+// its own operator, so an older operator may still be serving.
+func prunesSupersededCAs(opts Options) bool {
+	return opts.LeaderElection && opts.WebhookHost == ""
 }
 
 // webhookCABundlePruner waits until this pod's webhook server accepts TLS,

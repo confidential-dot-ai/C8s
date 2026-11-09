@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
+
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 // ErrNodeIPChanged is the cause WatchNodeIP cancels its context with.
@@ -70,4 +74,25 @@ func NodeIPChanged(ctx context.Context, err error) error {
 		return cause
 	}
 	return err
+}
+
+// PrimaryIPv4 is the address a node registers and publishes: Kubernetes'
+// route-aware selection, so it matches the kubelet's own registration. It is
+// a var so a test can place the node on a known address.
+var PrimaryIPv4 = func() (netip.Addr, error) {
+	return routableHostAddress(utilnet.ChooseHostInterface)
+}
+
+// routableHostAddress refuses what no peer can dial, so a host routed over
+// IPv6 has no primary IPv4 address rather than an unusable one.
+func routableHostAddress(choose func() (net.IP, error)) (netip.Addr, error) {
+	ip, err := choose()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	addr, err := routableIPv4(ip.String())
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("the host's primary address %s %w", ip, err)
+	}
+	return addr, nil
 }

@@ -1,0 +1,177 @@
+# Cilium as a static pod on upstream's image, its configuration measured and
+# its API access the kubelet's (docs/launch-configuration.md).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cilium
+  namespace: kube-system
+  labels: {k8s-app: cilium}
+spec:
+  hostNetwork: true
+  dnsPolicy: Default
+  enableServiceLinks: false
+  priorityClassName: system-node-critical
+  terminationGracePeriodSeconds: 1
+  securityContext:
+    appArmorProfile: {type: Unconfined}
+    seccompProfile: {type: Unconfined}
+  initContainers:
+  - name: mount-cgroup
+    image: quay.io/cilium/cilium:v1.19.6@sha256:0df5b2750b64c49843aba1d649e9eaf61467cb0645ad3171db6f6962c095ac92
+    command:
+    - bash
+    - -ec
+    - |
+      cp /usr/bin/cilium-mount /hostbin/cilium-mount;
+      nsenter --cgroup=/hostproc/1/ns/cgroup --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-mount" $CGROUP_ROOT;
+      rm /hostbin/cilium-mount
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: HUBBLE_SERVER, value: 'unix:///var/run/cilium/hubble.sock'}
+    - {name: INITSYSTEM, value: SYSTEMD}
+    - {name: CGROUP_ROOT, value: /run/cilium/cgroupv2}
+    - {name: BIN_PATH, value: /opt/cni/bin}
+    securityContext:
+      capabilities:
+        add: [SYS_ADMIN, SYS_CHROOT, SYS_PTRACE]
+        drop: [ALL]
+    volumeMounts:
+    - {name: hostproc, mountPath: /hostproc}
+    - {name: cni-path, mountPath: /hostbin}
+  - name: apply-sysctl-overwrites
+    image: quay.io/cilium/cilium:v1.19.6@sha256:0df5b2750b64c49843aba1d649e9eaf61467cb0645ad3171db6f6962c095ac92
+    command:
+    - bash
+    - -ec
+    - |
+      cp /usr/bin/cilium-sysctlfix /hostbin/cilium-sysctlfix;
+      nsenter --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-sysctlfix";
+      rm /hostbin/cilium-sysctlfix
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: HUBBLE_SERVER, value: 'unix:///var/run/cilium/hubble.sock'}
+    - {name: INITSYSTEM, value: SYSTEMD}
+    - {name: BIN_PATH, value: /opt/cni/bin}
+    securityContext:
+      capabilities:
+        add: [SYS_ADMIN, SYS_CHROOT, SYS_PTRACE]
+        drop: [ALL]
+    volumeMounts:
+    - {name: hostproc, mountPath: /hostproc}
+    - {name: cni-path, mountPath: /hostbin}
+  - name: mount-bpf-fs
+    image: quay.io/cilium/cilium:v1.19.6@sha256:0df5b2750b64c49843aba1d649e9eaf61467cb0645ad3171db6f6962c095ac92
+    command: [/bin/bash, -c, --]
+    args: [mount | grep "/sys/fs/bpf type bpf" || mount -t bpf bpf /sys/fs/bpf]
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: HUBBLE_SERVER, value: 'unix:///var/run/cilium/hubble.sock'}
+    - {name: INITSYSTEM, value: SYSTEMD}
+    securityContext: {privileged: true}
+    volumeMounts:
+    - {name: bpf-maps, mountPath: /sys/fs/bpf, mountPropagation: Bidirectional}
+  - name: install-cni-binaries
+    image: quay.io/cilium/cilium:v1.19.6@sha256:0df5b2750b64c49843aba1d649e9eaf61467cb0645ad3171db6f6962c095ac92
+    command: [/install-plugin.sh]
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: HUBBLE_SERVER, value: 'unix:///var/run/cilium/hubble.sock'}
+    - {name: INITSYSTEM, value: SYSTEMD}
+    securityContext:
+      capabilities:
+        drop: [ALL]
+    volumeMounts:
+    - {name: cni-path, mountPath: /host/opt/cni/bin}
+  containers:
+  - name: cilium-agent
+    image: quay.io/cilium/cilium:v1.19.6@sha256:0df5b2750b64c49843aba1d649e9eaf61467cb0645ad3171db6f6962c095ac92
+    command: [cilium-agent]
+    args: [--config=/etc/cilium/config.yaml]
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: HUBBLE_SERVER, value: 'unix:///var/run/cilium/hubble.sock'}
+    - {name: INITSYSTEM, value: SYSTEMD}
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef: {fieldPath: spec.nodeName}
+    - {name: CILIUM_K8S_NAMESPACE, value: kube-system}
+    - {name: KUBE_CLIENT_BACKOFF_BASE, value: '1'}
+    - {name: KUBE_CLIENT_BACKOFF_DURATION, value: '120'}
+    ports:
+    - {name: health, containerPort: 9879, hostPort: 9879, protocol: TCP}
+    startupProbe:
+      httpGet:
+        host: 127.0.0.1
+        path: /healthz
+        port: 9879
+        httpHeaders:
+        - {name: brief, value: 'true'}
+      failureThreshold: 300
+      periodSeconds: 2
+    livenessProbe:
+      httpGet:
+        host: 127.0.0.1
+        path: /healthz
+        port: 9879
+        httpHeaders:
+        - {name: brief, value: 'true'}
+        - {name: require-k8s-connectivity, value: 'false'}
+      periodSeconds: 30
+      failureThreshold: 10
+      timeoutSeconds: 5
+    readinessProbe:
+      httpGet:
+        host: 127.0.0.1
+        path: /healthz
+        port: 9879
+        httpHeaders:
+        - {name: brief, value: 'true'}
+      periodSeconds: 30
+      failureThreshold: 3
+      timeoutSeconds: 5
+    securityContext:
+      capabilities:
+        add: [CHOWN, KILL, NET_ADMIN, NET_RAW, IPC_LOCK, SYS_MODULE, SYS_ADMIN, SYS_RESOURCE, DAC_OVERRIDE, FOWNER, SETGID, SETUID, SYSLOG]
+        drop: [ALL]
+    volumeMounts:
+    - {name: host-proc-sys-net, mountPath: /host/proc/sys/net}
+    - {name: host-proc-sys-kernel, mountPath: /host/proc/sys/kernel}
+    - {name: bpf-maps, mountPath: /sys/fs/bpf, mountPropagation: HostToContainer}
+    - {name: cilium-run, mountPath: /var/run/cilium}
+    - {name: cilium-netns, mountPath: /var/run/cilium/netns, mountPropagation: HostToContainer}
+    - {name: etc-cni-netd, mountPath: /host/etc/cni/net.d}
+    - {name: lib-modules, mountPath: /lib/modules, readOnly: true}
+    - {name: xtables-lock, mountPath: /run/xtables.lock}
+    - {name: tmp, mountPath: /tmp}
+    - {name: config, mountPath: /etc/cilium, readOnly: true}
+    - {name: kubeconfig, mountPath: /var/lib/kubelet/kubeconfig, readOnly: true}
+    - {name: kubelet-pki, mountPath: /var/lib/kubelet/pki, readOnly: true}
+  volumes:
+  - name: tmp
+    emptyDir: {medium: Memory}
+  - name: config
+    hostPath: {path: /usr/lib/c8s/worker/cilium, type: Directory}
+  - name: kubeconfig
+    hostPath: {path: /var/lib/kubelet/kubeconfig, type: File}
+  - name: kubelet-pki
+    hostPath: {path: /var/lib/kubelet/pki, type: Directory}
+  - name: cilium-run
+    hostPath: {path: /var/run/cilium, type: DirectoryOrCreate}
+  - name: cilium-netns
+    hostPath: {path: /var/run/netns, type: DirectoryOrCreate}
+  - name: bpf-maps
+    hostPath: {path: /sys/fs/bpf, type: DirectoryOrCreate}
+  - name: hostproc
+    hostPath: {path: /proc, type: Directory}
+  - name: cni-path
+    hostPath: {path: /opt/cni/bin, type: DirectoryOrCreate}
+  - name: etc-cni-netd
+    hostPath: {path: /etc/cni/net.d, type: DirectoryOrCreate}
+  - name: lib-modules
+    hostPath: {path: /lib/modules}
+  - name: xtables-lock
+    hostPath: {path: /run/xtables.lock, type: FileOrCreate}
+  - name: host-proc-sys-net
+    hostPath: {path: /proc/sys/net, type: Directory}
+  - name: host-proc-sys-kernel
+    hostPath: {path: /proc/sys/kernel, type: Directory}

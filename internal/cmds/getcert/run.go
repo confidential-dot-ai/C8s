@@ -35,6 +35,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -77,6 +78,8 @@ type config struct {
 	UnnamedRenewInterval            time.Duration
 	ExpectedWorkload                string
 	MeasuredPoliciesFile            string
+	// guest is set only by the in-process trusted guest broker, never flags.
+	guest *GuestConfig
 }
 
 // nodeInventory is the local inventory get-cert redeems its workload identity
@@ -393,6 +396,10 @@ func assertedInstanceID(ctx context.Context, cfg config) (string, error) {
 // generation (docs/getcert-workload-binding.md), so waiting out a renewal
 // interval to re-ask would strand it for that long.
 func renewLoop(ctx context.Context, cfg config, client attestclient.Client, policyClient allowlistclient.Client, creds *credentials) error {
+	var changes <-chan struct{}
+	if cfg.guest != nil {
+		changes = cfg.guest.Changes
+	}
 	initialBackoff := backoff.NewExponentialBackOff()
 	initialBackoff.MaxInterval = maxInitialRetryInterval
 	if cfg.InitialRetryInterval > 0 {
@@ -403,6 +410,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// refusals the consecutive requests CDS or the inventory refused. They
 	// only pace the timer.
 	var unnamedRuns, failures, refusals int
+	// retrying is set while the timer holds a backed-off retry of a failed
+	// request, so a change does not shorten it.
+	var retrying bool
 	warned := map[string]bool{}
 	warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 	next := renewalInterval(cfg, creds.current, unnamedRuns)
@@ -420,10 +430,6 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	}
 	// policyRenewPending debounces the policy watch until the timer fires.
 	var policyRenewPending bool
-	// policyVersion is the If-None-Match version: the stamp's, advanced to any
-	// served version whose bytes still match it, so a no-op allowlist write
-	// costs one 200 rather than one per tick until the next re-issue.
-	policyVersion := stampedPolicyVersion(publishedLeaf(creds.current))
 
 	var cdsWatchC <-chan time.Time
 	if cfg.CAWatchInterval > 0 {
@@ -449,6 +455,15 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		}
 		operationCtx, cancelOperation = generationValidityContext(ctx, creds.current)
 		select {
+		case _, ok := <-changes:
+			if !ok {
+				changes = nil
+				continue
+			}
+			// A pending retry already re-asks with the current snapshot.
+			if !retrying {
+				resetRenewal(0)
+			}
 		case <-operationCtx.Done():
 			if ctx.Err() != nil {
 				slog.Info("shutting down cert renewer")
@@ -461,7 +476,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if creds.current == nil {
 				continue
 			}
-			stale, err := servedCAStale(operationCtx, client, cfg.CAPath, creds.issuer)
+			stale, err := servedCAStale(operationCtx, client, creds.issuer, creds.volume)
 			// On error, fall through: it may be local (an unreadable
 			// --ca-path), which must not mute the policy check.
 			if err != nil {
@@ -483,18 +498,17 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if err != nil || stamp == nil {
 				continue
 			}
-			served, stale, err := stampedPolicyStale(operationCtx, policyClient, policyVersion, stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(operationCtx, policyClient, stamp.AllowlistDigest)
 			if err != nil {
 				slog.Warn("allowlist policy check failed", "error", err)
 				continue
 			}
 			if !stale {
-				policyVersion = served
 				continue
 			}
 			delay := policyRenewDelayFn(cfg.CAWatchInterval, time.Until(renewDue))
-			if served == policyVersion {
-				slog.Warn("cds serves different allowlist bytes at a version that matched the stamp, renewing", "stamped_version", stamp.AllowlistVersion, "matched_version", policyVersion, "delay", delay)
+			if served == stamp.AllowlistVersion {
+				slog.Warn("cds serves different allowlist bytes at the version the stamp names, renewing", "stamped_version", stamp.AllowlistVersion, "delay", delay)
 			} else {
 				slog.Info("cds serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", served, "delay", delay)
 			}
@@ -504,6 +518,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			policyRenewPending = false
 			published := creds.current != nil
 			err := obtainCertFn(operationCtx, cfg, client, creds)
+			if cfg.guest != nil && errors.Is(err, errFailClosed) {
+				return err
+			}
 			refusals = countRefusal(refusals, err)
 			if err != nil && !published {
 				retry := initialBackoff.NextBackOff()
@@ -511,6 +528,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 					retry = refusedRetryInterval(cfg, refusals)
 				}
 				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
@@ -528,12 +546,13 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				failures++
 				retry := renewalRetryInterval(cfg, creds.current, failures, refusals)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
+				retrying = true
 				resetRenewal(retry)
 				continue
 			}
 			failures = 0
+			retrying = false
 			warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
-			policyVersion = stampedPolicyVersion(publishedLeaf(creds.current))
 			if isNamedLeaf(cfg, creds.current) {
 				unnamedRuns = 0
 			} else {
@@ -589,7 +608,7 @@ var renewalRetryBase = 15 * time.Second
 // the previous CA certificate expires. That second bound is also what
 // keeps a leaf from expiring exactly as its renewal fires: CDS caps a named
 // leaf at issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on
-// the flag alone — which the chart sets to the same value — would reset the
+// the flag alone — which the chart sets below that cap — would reset the
 // timer after issuance, drift later every cycle, and leave a single failed
 // renewal on a dead generation for a full interval.
 //
@@ -821,6 +840,9 @@ func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Cl
 // match that key, the pod's instance or its bound CA key leaves the previous
 // generation in place.
 func obtainCert(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) error {
+	if cfg.guest != nil {
+		return obtainGuestCert(ctx, *cfg.guest, client, creds)
+	}
 	// One request, one key: the sandbox token, the evidence and the CSR below
 	// all bind to this key, and it is published only with the certificate
 	// issued for it.
@@ -1147,8 +1169,9 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 	return out, nil
 }
 
-// servedCAStale detects a renewed CA certificate under the pod's bound issuer key.
-func servedCAStale(ctx context.Context, client attestclient.Client, caPath string, bound issuerKeyID) (bool, error) {
+// servedCAStale detects a renewed CA certificate under the pod's bound issuer
+// key, comparing what CDS serves now with the CA the volume publishes.
+func servedCAStale(ctx context.Context, client attestclient.Client, bound issuerKeyID, volume credentialVolume) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
 		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
@@ -1164,7 +1187,7 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 	if issuer != bound {
 		return false, nil
 	}
-	servedPEM, err := os.ReadFile(caPath)
+	servedPEM, err := volume.readPublished(volume.caName)
 	if err != nil {
 		return false, fmt.Errorf("read served mesh CA: %w", err)
 	}
@@ -1176,39 +1199,18 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 }
 
 // stampedPolicyStale reports whether the allowlist CDS serves differs from the
-// stamped digest, and the served version. It sends version as If-None-Match, a
-// version already known to serve the stamped bytes. Strict clients decide on
-// the digest and read the version only for diagnostics, so a version bump with
-// identical bytes needs no renewal. A 304 settles on CDS's version counter
-// alone, so bytes that diverge at an unchanged counter (a restored database)
-// are not seen here; the CA watch covers a CDS restart. The fetch rides the
-// armTLS-verified client, like servedCAStale's.
-func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, version string, digest []byte) (string, bool, error) {
-	served, notModified, err := client.FetchServed(ctx, `W/"`+version+`"`)
+// stamped bytes, and the version it serves them at. It sends the stamped
+// digest's tag as If-None-Match, so an allowlist whose bytes are unchanged
+// costs a 304 however its version moves. The fetch rides the armTLS-verified
+// client, like servedCAStale's.
+func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, digest []byte) (servedVersion string, stale bool, err error) {
+	stamped := "sha256:" + hex.EncodeToString(digest)
+	served, notModified, err := client.FetchServed(ctx, pkgallowlist.EntityTag(stamped))
 	if err != nil {
 		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
 	}
-	if notModified {
-		return version, false, nil
-	}
-	servedVersion := allowlistclient.VersionFromETag(served.ETag)
-	if servedVersion == "" {
-		return "", false, fmt.Errorf("fetch allowlist from cds: ETag %q is not a weak ETag W/\"N\"", served.ETag)
-	}
-	return servedVersion, served.Digest != "sha256:"+hex.EncodeToString(digest), nil
-}
-
-// stampedPolicyVersion is the allowlist version leaf's stamp names, or "" when
-// leaf is nil or unnamed.
-func stampedPolicyVersion(leaf *x509.Certificate) string {
-	if leaf == nil {
-		return ""
-	}
-	stamp, err := armtls.MatchedWorkloadFromCert(leaf)
-	if err != nil || stamp == nil {
-		return ""
-	}
-	return stamp.AllowlistVersion
+	stale = !notModified && served.Digest != stamped
+	return served.Version, stale, nil
 }
 
 // policyRenewDelayFn is a var so the debounce test can hold a renewal pending.

@@ -1,0 +1,4 @@
+router:
+  attest:
+    platform: snp
+    generation: genoa

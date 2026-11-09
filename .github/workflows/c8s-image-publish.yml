@@ -35,7 +35,7 @@ concurrency:
 jobs:
   # A release tag is created inside the successful parent Docker run. Resolve it
   # from that run's exact revision only for the trusted automatic main and beta
-  # paths; manual node-image rebuilds must never mint or move release aliases.
+  # paths; manual worker-image rebuilds must never mint or move release aliases.
   # main resolves only stable tags and beta only -beta.N tags.
   release-context:
     name: Resolve release context
@@ -103,28 +103,12 @@ jobs:
     secrets:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
 
-  # Exact-image acceptance consumes this run's immutable publication evidence,
-  # never the independently maintained staged-image ConfigMap or root PVC.
-  verify-tdx-image:
-    name: Verify the published TDX image
-    needs: [release-context, build-and-push]
-    if: >-
-      needs.release-context.result == 'success' &&
-      needs.build-and-push.result == 'success'
-    permissions:
-      contents: read
-      actions: read
-      packages: read # The acme check reads the component images.
-    uses: ./.github/workflows/tdx-image-acceptance.yml
-    with:
-      image_acceptance_artifact_prefix: node-image-acceptance-rke2-tdx
-
   # Wait for both TDX/SNP matrix legs, then preflight every exact alias before
   # creating any of them. Registry publication is not transactional, so a
   # network failure may leave a subset; a rerun repairs missing aliases and
   # rejects any existing alias whose digest differs.
   promote-release:
-    name: Publish exact node-image release aliases
+    name: Publish exact worker-image release aliases
     needs: [release-context, build-and-push]
     if: |
       always() &&
@@ -144,7 +128,7 @@ jobs:
           version: "1.2.3"
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -153,43 +137,41 @@ jobs:
       - name: Publish or verify exact release aliases
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          IMAGE: ghcr.io/confidential-dot-ai/node-guest-base
+          IMAGE: ghcr.io/confidential-dot-ai/guests/worker
           RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
         run: |
           set -euo pipefail
 
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
              [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
-            echo "::error::invalid node-image release context"
+            echo "::error::invalid worker-image release context"
             exit 1
           fi
           short="${HEAD_SHA:0:7}"
           repo_tags="$(oras repo tags "$IMAGE")"
-          aliases="$RUNNER_TEMP/node-release-aliases"
+          aliases="$RUNNER_TEMP/worker-release-aliases"
           : > "$aliases"
 
-          for platform in tdx snp; do
-            for format in '' -cdi; do
-              base_tag="rke2-$platform$format"
-              source_tag="$base_tag-$short"
-              release_alias="$base_tag-$RELEASE_TAG"
-              source_digest="$(oras resolve "$IMAGE:$source_tag")"
-              if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                echo "::error::$IMAGE:$source_tag did not resolve to an OCI digest"
+          # c8s-image.yml publishes one tag per suffix: <ref>-<suffix>.
+          for suffix in tdx tdx-kubevirt sev-snp sev-snp-kubevirt; do
+            source_tag="sha-$short-$suffix"
+            release_alias="$RELEASE_TAG-$suffix"
+            source_digest="$(oras resolve "$IMAGE:$source_tag")"
+            if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::$IMAGE:$source_tag did not resolve to an OCI digest"
+              exit 1
+            fi
+
+            exists=false
+            if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
+              exists=true
+              destination_digest="$(oras resolve "$IMAGE:$release_alias")"
+              if [ "$destination_digest" != "$source_digest" ]; then
+                echo "::error::$IMAGE:$release_alias already names $destination_digest, expected $source_digest"
                 exit 1
               fi
-
-              exists=false
-              if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
-                exists=true
-                destination_digest="$(oras resolve "$IMAGE:$release_alias")"
-                if [ "$destination_digest" != "$source_digest" ]; then
-                  echo "::error::$IMAGE:$release_alias already names $destination_digest, expected $source_digest"
-                  exit 1
-                fi
-              fi
-              printf '%s\t%s\t%s\n' "$release_alias" "$source_digest" "$exists" >> "$aliases"
-            done
+            fi
+            printf '%s\t%s\t%s\n' "$release_alias" "$source_digest" "$exists" >> "$aliases"
           done
 
           while IFS=$'\t' read -r release_alias source_digest exists; do
@@ -200,6 +182,6 @@ jobs:
           done < "$aliases"
 
           {
-            echo "### $RELEASE_TAG node image aliases"
-            cut -f1 "$aliases" | sed 's/^/- `ghcr.io\/confidential-dot-ai\/node-guest-base:/' | sed 's/$/`/'
+            echo "### $RELEASE_TAG worker image aliases"
+            cut -f1 "$aliases" | sed "s|^|- \`$IMAGE:|; s|\$|\`|"
           } >> "$GITHUB_STEP_SUMMARY"

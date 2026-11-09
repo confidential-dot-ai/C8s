@@ -48,11 +48,81 @@ set_paths docs/development.md
 expect_result false
 
 reset_case
-set_paths images/node-guest/c8s/mkosi.conf
+set_paths images/node-guest/worker/mkosi.conf
+expect_result true
+
+# Anything under mkosi.extra is baked, whatever its suffix.
+reset_case
+set_paths images/node-guest/worker/mkosi.extra/usr/share/doc/c8s/README.md
+expect_result true
+
+# mkosi.sync installs the worker chart's static pods.
+reset_case
+set_paths charts/worker/files/static-pods/kube-proxy.yaml
+expect_result true
+
+# Beside the image sources but never baked: tests, lint tools, docs.
+reset_case
+set_paths images/node-guest/tests/immutable-root-test.sh \
+  images/node-guest/tools/containerdcheck/main.go \
+  images/node-guest/README.md
+expect_result false
+
+# The pod profile stacks on the worker profile; the gate builds neither it
+# nor anything it stages, its mkosi.extra included.
+reset_case
+set_paths images/node-guest/pod/mkosi.conf \
+  images/node-guest/pod/mkosi.extra/usr/local/bin/pod-stage.sh
+expect_result false
+
+# The worker image's shared build inputs beside the profile.
+reset_case
+set_paths images/node-guest/build
 expect_result true
 
 reset_case
+set_paths images/node-guest/kernel/c8s.config
+expect_result true
+
+reset_case
+set_paths images/node-guest/worker/mkosi.sync
+expect_result true
+
+# mkosi.sync installs the router's nginx files as they are.
+reset_case
+set_paths charts/lib/files/router-nginx/nginx.conf
+expect_result true
+
+# Go, chart, CI and test changes outside the image tree. The legs share one
+# c8s binary and core image build, so source changes cannot make them differ.
+reset_case
+set_paths cmd/c8s/main.go \
+  charts/cloud/templates/router-deployment.yaml \
+  charts/worker/templates/cluster/controlplane.yaml \
+  test/workflows/workflow_test.go \
+  .github/workflows/ci.yml \
+  .github/scripts/fetch-release.sh \
+  .github/actions/setup-crane/action.yml
+expect_result false
+
+# Publication and the classifier itself are outside the gate's build path;
+# actionlint.yml runs this test for the classifier.
+reset_case
+set_paths .github/workflows/c8s-image-publish.yml \
+  .github/scripts/repro-gate-changes \
+  .github/scripts/tests/test-repro-gate-changes.sh
+expect_result false
+
+reset_case
 set_paths .github/actions/setup-mkosi/action.yml
+expect_result true
+
+reset_case
+set_paths .github/workflows/c8s-image.yml
+expect_result true
+
+reset_case
+set_paths .github/workflows/image-repro-gate.yml
 expect_result true
 
 reset_case

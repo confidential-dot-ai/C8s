@@ -2,9 +2,12 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"slices"
@@ -42,7 +45,7 @@ const (
 )
 
 // policySnapshot is an immutable admission view: an Index built from the
-// last-applied CDS pull, tagged with that pull's version (the ETag counter).
+// last-applied CDS pull, tagged with that pull's version.
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
 	index *allowlist.Index
@@ -58,7 +61,11 @@ type policySnapshot struct {
 // withheld pull never drops it.
 type policyStore struct {
 	base *allowlist.Index // the boot-time base allowlist document
-	snap atomic.Pointer[policySnapshot]
+	// grants is base without its static-pod entries, which grant no host
+	// bind, host port or capability: the node TCB excuses a static pod
+	// (nodeTCBExempt).
+	grants *allowlist.Index
+	snap   atomic.Pointer[policySnapshot]
 }
 
 // newPolicyStore seeds the store with an empty snapshot (version 0) so admission
@@ -68,9 +75,17 @@ func newPolicyStore(base *allowlist.Allowlist) *policyStore {
 	if base == nil {
 		base = &allowlist.Allowlist{}
 	}
-	s := &policyStore{base: base.BuildIndex()}
+	s := &policyStore{base: base.BuildIndex(), grants: withoutStaticPods(base).BuildIndex()}
 	s.snap.Store(&policySnapshot{index: (&allowlist.Allowlist{}).BuildIndex()})
 	return s
+}
+
+// withoutStaticPods is a without its allowlist.Workload.StaticPod entries.
+func withoutStaticPods(a *allowlist.Allowlist) *allowlist.Allowlist {
+	out := *a
+	out.Workloads = maps.Clone(a.Workloads)
+	maps.DeleteFunc(out.Workloads, func(_ string, w allowlist.Workload) bool { return w.StaticPod })
+	return &out
 }
 
 func (s *policyStore) current() *policySnapshot {
@@ -101,56 +116,72 @@ func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
 	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
 }
 
-// grantsHostBind reports whether the base or the applied allowlist hands r the
-// host bind m (allowlist.Index.GrantsHostBind).
+// grantsHostBind reports whether the base, less its static-pod entries, or the
+// applied allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
 func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsHostBind(r, m) {
+	if s.grants.GrantsHostBind(r, m) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
-// declaresHostPorts reports whether an entry of the base or the applied
-// allowlist declares every mapping (allowlist.Index.DeclaresHostPorts).
+// declaresHostPorts reports whether an entry of the base, less its static-pod
+// entries, or the applied allowlist declares every mapping
+// (allowlist.Index.DeclaresHostPorts).
 func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.DeclaresHostPorts(mappings) {
+	if s.grants.DeclaresHostPorts(mappings) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.DeclaresHostPorts(mappings)
 }
 
-// grantsHostPorts reports whether the base or the applied allowlist hands r
-// every mapping (allowlist.Index.GrantsHostPorts).
+// grantsHostPorts reports whether the base, less its static-pod entries, or the
+// applied allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
 func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsHostPorts(r, mappings) {
+	if s.grants.GrantsHostPorts(r, mappings) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
-// grantsCapabilities reports whether the base or the applied allowlist hands r
-// every capability in caps (allowlist.Index.GrantsCapabilities).
+// grantsCapabilities reports whether the base, less its static-pod entries, or
+// the applied allowlist hands r every capability in caps
+// (allowlist.Index.GrantsCapabilities).
 func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.GrantsCapabilities(r, caps) {
+	if s.grants.GrantsCapabilities(r, caps) {
 		return true
 	}
 	snap := s.current()
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
+}
+
+// declaredCapabilities is every capability the base, less its static-pod
+// entries, or the applied allowlist declares for this launch
+// (allowlist.Index.DeclaredCapabilities).
+func (s *policyStore) declaredCapabilities(r allowlist.RunningContainer) [][]string {
+	if s == nil {
+		return nil
+	}
+	declared := s.grants.DeclaredCapabilities(r)
+	if snap := s.current(); snap != nil {
+		declared = append(declared, snap.index.DeclaredCapabilities(r)...)
+	}
+	return declared
 }
 
 // declaresNodeRoot reports whether the base or applied allowlist has a
@@ -199,6 +230,24 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	return true
 }
 
+// raiseAppliedVersion raises the applied version to version, at which CDS
+// still serves the document the last pull named: a write that moved the
+// version and kept the bytes raises the version later pulls are judged
+// against. It never lowers it.
+func (s *policyStore) raiseAppliedVersion(version uint64) {
+	for {
+		cur := s.snap.Load()
+		if version <= cur.version {
+			return
+		}
+		next := *cur
+		next.version = version
+		if s.snap.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
+}
+
 // rolledBack reports whether version is below the applied one.
 func (s *policyStore) rolledBack(version uint64) bool {
 	cur := s.snap.Load()
@@ -209,6 +258,7 @@ func (s *policyStore) rolledBack(version uint64) bool {
 // *Resolver satisfies it.
 type containerdOps interface {
 	Resolve(ctx context.Context, imageRef string) (string, error)
+	VerifyContainerImage(ctx context.Context, containerID, sandboxID, digest string) error
 	ContainerSpec(ctx context.Context, containerID string) (*specs.Spec, error)
 	StopContainer(ctx context.Context, containerID string) error
 	SandboxNetwork(ctx context.Context, sandboxID string, pod ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error)
@@ -216,13 +266,14 @@ type containerdOps interface {
 
 // plugin implements the NRI plugin interface for image policy enforcement.
 type plugin struct {
-	stub       stub.Stub
-	cfg        *config
-	policy     *policyStore
-	audit      *audit.Logger
-	logger     *slog.Logger
-	ready      atomic.Bool
-	containerd containerdOps
+	stub          stub.Stub
+	cfg           *config
+	policy        *policyStore
+	audit         *audit.Logger
+	logger        *slog.Logger
+	ready         atomic.Bool
+	podRegistered atomic.Bool
+	containerd    containerdOps
 
 	mountStorage mountStorageInspector
 
@@ -237,10 +288,30 @@ type plugin struct {
 	// and the nil-guarded hooks/seeding no-op rather than fail a container
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
+	// execGrants records the started containers the measured base grants execs,
+	// for the runtime wrapper (execgrants.go). nil where the base grants none.
+	execGrants *execGrants
+	// capGrants records the capabilities the allowlists declare for each
+	// container admission clears, for the runtime wrapper
+	// (capabilitygrants.go).
+	capGrants *capabilityGrants
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
 	mesh *meshGate
+	// measurer extends each started workload into RTMR[3]; nil unless
+	// measure.rtmr3. Pause sandboxes never reach StartContainer.
+	measurer workloadMeasurer
+	// Pod admission and credential publication share one ordering boundary.
+	podMu                sync.Mutex
+	podBroker            *podCredentialBroker
+	podStarts            map[string]podStartGrant
+	podStartDisconnected atomic.Bool
+	// podEnded is set once endPodIdentity ran, in this process or an earlier
+	// one of this boot (podEndedMarker): the health socket reports it, so the
+	// status service can project the pod as failed while a kubelet under
+	// restartPolicy Always keeps recreating refused containers.
+	podEnded atomic.Bool
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
 	// the injected credential clients, or "" when no pod of this node is
@@ -256,6 +327,12 @@ type plugin struct {
 	// prepareCDSAddress sets it before any container can be created
 	// (cdsaddress.go).
 	cdsAddress string
+
+	// clientDocument is the guest-side path of a Pod CVM's client document,
+	// bound read-only into every container of the Pod, or "" when the
+	// assignment carried none. prepareClientDocument sets it before any
+	// container can be created.
+	clientDocument string
 
 	// cdiSpecDirs are the CDI spec directories the sandbox policy expands a
 	// container's trusted CDI devices from (cdi.go).
@@ -294,6 +371,7 @@ func newPlugin(
 		cdiSpecDirs: cdiSpecDirs,
 	}
 	p.boot = newBootGate(cfg, logger)
+	p.restorePodEnded()
 	// Every sandbox namespace is proven against the enforcer's own, read here
 	// before any thread of it can attach to a pod's (meshgate.go).
 	if _, err := enforcerNetworkNamespace(); err != nil {
@@ -304,6 +382,11 @@ func newPlugin(
 	logger.Info("mesh gate enabled",
 		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
 		"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
+	measurer, err := openMeasurer(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	p.measurer = measurer
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -312,11 +395,20 @@ func newPlugin(
 		p.inventory = newAdmissionInventory(procRoot)
 		p.inventory.needsVariableEvidence = store.needsVariableEvidence
 	}
+	if grantsExecs(cfg.Allowlist.Base) {
+		p.execGrants = &execGrants{dir: ExecGrantDir}
+	}
+	// A served allowlist can declare capabilities the base does not, so the
+	// records are kept whatever the base declares.
+	p.capGrants = &capabilityGrants{dir: CapabilityGrantDir}
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
 
 	var opts []stub.Option
+	if cfg.podRole() {
+		opts = append(opts, stub.WithOnClose(p.disconnectPodStarts))
+	}
 	if !isPreInstalled {
 		// Only set name/idx for external plugins - pre-installed plugins
 		// get these from environment variables set by containerd
@@ -360,6 +452,9 @@ func (p *plugin) AppliedAllowlistVersion() uint64 {
 
 // Run starts the plugin and blocks until context is cancelled.
 func (p *plugin) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer p.disconnectPodStarts()
 	go func() {
 		<-ctx.Done()
 		p.stub.Stop()
@@ -395,6 +490,8 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 // exited in its sandbox's record (inventory.stop). A stop of a created
 // container ends nothing: a start already past StartContainer still runs it.
 func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
+	defer p.lockPodAdmission()()
+	delete(p.podStarts, ctr.GetId())
 	if wasStarted(ctr) {
 		p.running.remove(ctr.GetId())
 	}
@@ -411,7 +508,11 @@ func wasStarted(ctr *api.Container) bool {
 // RemoveContainer drops a removed container from the running set and from
 // caller resolution; the sandbox's record keeps it (inventory.remove).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	defer p.lockPodAdmission()()
+	delete(p.podStarts, ctr.GetId())
 	p.running.remove(ctr.GetId())
+	p.execGrants.remove(ctr.GetId())
+	p.capGrants.remove(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -419,19 +520,38 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 }
 
 // RunPodSandbox refuses a sandbox holding host ports no allowlist entry
-// declares (hostports.go), records it for the inventory's sandbox set and
-// installs the pod's packet protection, before any container of that pod is
-// created. A failed install refuses the sandbox, so the gate is what refuses
-// its containers (docs/armtls.md).
+// declares (hostports.go), records a started pod sandbox for the inventory's
+// sandbox set and installs the pod's packet protection, before any container
+// of that pod is created. A failed install refuses the sandbox, so the gate is
+// what refuses its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	if err := p.admitSandboxHostPorts(ctx, p.cfg, pod); err != nil {
 		return err
+	}
+	defer p.lockPodAdmission()()
+	if err := p.assignedPodSandbox(pod); err != nil {
+		return p.denyContainer(pod.GetId(), err)
 	}
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
 	}
 	if err := p.mesh.protect(pod); err != nil {
-		p.logger.Error("cannot protect a pod; every container of it will be refused", "error", err)
+		p.reportUnprotected(pod, err)
+		if p.cfg.podRole() {
+			return p.denyContainer(pod.GetId(), err)
+		}
+	}
+	return nil
+}
+
+// assignedPodSandbox refuses a sandbox on a Pod guest that is not the
+// assigned Pod's.
+func (p *plugin) assignedPodSandbox(pod *api.PodSandbox) error {
+	if !p.cfg.podRole() {
+		return nil
+	}
+	if pod.GetUid() == "" || pod.GetId() == "" || pod.GetName() != p.cfg.Pod.Name || pod.GetNamespace() != p.cfg.Pod.Namespace {
+		return errors.New("pod sandbox does not match its assignment")
 	}
 	return nil
 }
@@ -439,6 +559,8 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 // RemovePodSandbox evicts a removed pod sandbox (and its containers) from the
 // inventory and the mesh gate.
 func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	defer p.lockPodAdmission()()
+	p.endPodIdentity(errors.New("pod sandbox removed; its boot history cannot be reused for a new identity"))
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
 	}
@@ -486,9 +608,13 @@ func (p *plugin) DigestsForSandbox(sandboxID string) ([]string, []workloadclaims
 // INVARIANT: every refusal a hook returns in enforcing mode passes through
 // here, so the sandbox it belongs to asserts no identity.
 func (p *plugin) denyContainer(sandboxID string, refusal error) error {
+	if p.cfg.podRole() {
+		p.endPodIdentity(refusal)
+	}
 	if p.inventory != nil {
 		p.inventory.recordDenial(sandboxID, refusal)
 	}
+	p.podChanged()
 	return refusal
 }
 
@@ -501,37 +627,33 @@ func (p *plugin) denyContainerCreation(sandboxID, containerName string, refusal 
 	if p.inventory != nil {
 		p.inventory.recordCreationDenial(sandboxID, containerName, refusal)
 	}
+	p.podChanged()
 	return refusal
 }
 
 // recordForInventory resolves a container's image digest and records it for the
-// admission inventory. A resolve failure records an empty digest, which makes
-// the inventory refuse the pod's whole answer rather than commit a subset —
-// fail-closed, and logged at error because it costs the pod its claim.
+// admission inventory and the runtime wrapper's exec grants. A resolve
+// failure records an empty digest, which makes the inventory refuse the pod's
+// whole answer rather than commit a subset — fail-closed, and logged at error
+// because it costs the pod its claim.
 //
 // INVARIANT: callers record what runs, not what passed the checks.
 func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	if p.inventory == nil {
+	if p.inventory == nil && p.execGrants == nil {
 		return
 	}
-	digest := extractDigest(imageRef)
-	if digest == "" && imageRef != "" {
-		if resolved, err := p.containerd.Resolve(ctx, imageRef); err == nil {
-			digest = extractDigest(resolved)
-		} else {
-			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
-		}
+	digest, err := p.imageDigest(ctx, imageRef)
+	if err != nil {
+		p.logger.Error("cannot resolve the image digest of a running container; any sandbox inventory refuses to answer for its pod, and it is granted no execs", "image", imageRef, "error", err)
 	}
-	p.recordDigest(ctr, digest, p.observedMounts(pod, ctr))
+	p.recordDigest(pod, ctr, digest, p.observedMounts(pod, ctr))
 }
 
-// recordDigest is the only inventory.record call site. ctr.Args is the
-// effective OCI process.args, the same value the checks read, and the role is
-// the one the measured base binds to that whole launch.
-func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
-	if p.inventory == nil {
-		return
-	}
+// recordDigest is the only inventory.record and exec-grant record call site.
+// ctr.Args is the effective OCI process.args, the same value the checks read,
+// and the role and execs are the ones the measured base binds to that whole
+// launch.
+func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	env := containerEnv(ctr)
 	launch := allowlist.RunningContainer{
 		Digest: digest,
@@ -539,19 +661,49 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 		Env:    env,
 		Mounts: mounts,
 	}
+	if p.execGrants != nil {
+		if err := p.execGrants.note(ctr.GetId(), p.execsOf(pod, launch)); err != nil {
+			p.logger.Error("cannot record the container's exec grant; the runtime wrapper denies its execs", "container", ctr.GetId(), "error", err)
+		}
+	}
+	if p.inventory == nil {
+		return
+	}
 	role := p.roleOf(launch)
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
+}
+
+// nodeMounts grants no node-service exception to a measured Pod workload;
+// its one guest bind is the client document.
+func (p *plugin) nodeMounts() nodeMounts {
+	if p.cfg.podRole() {
+		return nodeMounts{clientDocument: p.clientDocument}
+	}
+	return nodeMounts{
+		socketDir:  p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
+	}
 }
 
 func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}).Observe(pod, ctr)
+	return newMountObserver(p.mountStorage, p.nodeMounts()).Observe(pod, ctr)
+}
+
+// imageDigest returns imageRef's digest, resolving a tag through containerd.
+// It returns "" without error when imageRef is empty or resolves to no digest.
+func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, error) {
+	if d := extractDigest(imageRef); d != "" || imageRef == "" {
+		return d, nil
+	}
+	resolved, err := p.resolve(ctx, imageRef)
+	if err != nil {
+		return "", err
+	}
+	return extractDigest(resolved), nil
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -565,11 +717,34 @@ func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if imageRef == "" {
 		return ""
 	}
-	resolved, err := p.containerd.Resolve(ctx, imageRef)
+	resolved, err := p.resolve(ctx, imageRef)
 	if err != nil {
 		return ""
 	}
 	return resolved
+}
+
+type resolvedKey struct{}
+
+// withResolved scopes one hook call: within it each tag resolves once, so
+// admission, the RTMR[3] measurement and the inventory see one digest even if
+// the tag moves, and the hook pays one containerd round-trip per tag.
+func withResolved(ctx context.Context) context.Context {
+	return context.WithValue(ctx, resolvedKey{}, &sync.Map{})
+}
+
+func (p *plugin) resolve(ctx context.Context, imageRef string) (string, error) {
+	memo, _ := ctx.Value(resolvedKey{}).(*sync.Map)
+	if memo != nil {
+		if d, ok := memo.Load(imageRef); ok {
+			return d.(string), nil
+		}
+	}
+	d, err := p.containerd.Resolve(ctx, imageRef)
+	if err == nil && memo != nil {
+		memo.Store(imageRef, d)
+	}
+	return d, err
 }
 
 // evaluateRule checks whether a pod satisfies a compiled Kubernetes selector.
@@ -629,6 +804,16 @@ const (
 	launchFinal
 )
 
+// keepsTag reports whether a container may run an image by tag: the base's,
+// as the node's manifests name carried images by tag, or a mesh-exempt
+// namespace's, whose pods get no workload traffic. A worker keeps none.
+func (p *plugin) keepsTag(cfg *config, baseAdmitted bool, namespace string) bool {
+	if cfg.Worker {
+		return false
+	}
+	return baseAdmitted || p.mesh.policy.exempts(namespace)
+}
+
 // checkImagePhase checks the image and observed launch specification against
 // the base and served allowlists for the requested admission phase.
 func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
@@ -666,7 +851,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	digest := extractDigest(check.ImageRef)
 	pinned := digest != ""
 	if !pinned {
-		resolved, err := p.containerd.Resolve(ctx, check.ImageRef)
+		resolved, err := p.resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
 			p.audit.Log(audit.Event{
@@ -706,10 +891,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// A tag is resolved here, at hook time, while the runtime builds the
 	// rootfs from the image kubelet resolved earlier; a tag moved in between
 	// would let this check judge one image and the container run another.
-	// Only the base keeps tags: the node's own manifests name its carried
-	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
-	// are not mesh members, so they never receive workload traffic.
-	if !pinned && !baseAdmitted && !p.mesh.policy.exempts(check.Namespace) {
+	if !pinned && !p.keepsTag(cfg, baseAdmitted, check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
@@ -741,7 +923,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 				}
 			}
 		}
-		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
+		attrs := []any{"digest", digest, "image", check.ImageRef, "argv_sha256", argvDigest(check.Argv), "reason", reason}
 		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
 			attrs = append(attrs, "node_root_unavailable", missing)
 		}
@@ -768,6 +950,13 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		Image:     check.ImageRef,
 	})
 	return verdictAllow, ""
+}
+
+// argvDigest identifies an argv in the node's journal without its values,
+// which can carry credentials.
+func argvDigest(argv []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(argv, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // checkContainer runs the label rules and the image allowlist over a
@@ -903,13 +1092,9 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
 			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
 	}
-	own := nodeMounts{
-		socketDir:  cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}
+	own := p.nodeMounts()
 	obs := observeSandbox(pod, ctr, own, mounts, noBindGrant{}, cdi)
-	violations := obs.violations()
+	violations := obs.violations(cfg.podRole())
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
@@ -918,7 +1103,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		obs.HostBinds = hostBinds(pod, ctr, own, mounts, declaredBindGrant{policy: p.policy, launch: rc}, cdi)
-		if violations = obs.violations(); len(violations) == 0 {
+		if violations = obs.violations(cfg.podRole()); len(violations) == 0 {
 			return verdictAllow, ""
 		}
 	}
@@ -976,21 +1161,27 @@ const (
 	staticPodSource        = "file"
 )
 
+// StaticPodAnnotations reports the annotations of a pod the kubelet read from
+// its manifest directory.
+func StaticPodAnnotations(annotations map[string]string) bool {
+	return annotations[configSourceAnnotation] == staticPodSource
+}
+
+// staticPod reports a pod the kubelet read from its manifest directory.
+func staticPod(pod *api.PodSandbox) bool {
+	return StaticPodAnnotations(pod.GetAnnotations())
+}
+
 // nodeTCBExempt reports whether the measured base excuses a launch holding
-// host privilege:
-//   - a kubelet static pod whose launch the base admits: its manifest is
-//     written only by RKE2 on the node, from the measured config and the signed
-//     launch document;
-//   - any other pod only for a launch a base entry pins
-//     (allowlist.Container.LaunchPinned).
+// host privilege: a kubelet static pod whose launch a base entry pins
+// (allowlist.Container.LaunchPinned). Its manifest is written on the worker
+// alone, from the measured image and the worker document, while the control
+// plane that writes every other pod sits outside this TEE.
 //
 // An open entry (command, args or mounts any) therefore admits its image but
-// never hands it host privilege, the host network included.
+// never hands a pod host privilege, the host network included.
 func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
-	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource {
-		return p.policy.baseAdmits(rc, launchFinal)
-	}
-	return p.policy.baseAdmitsPinned(rc)
+	return staticPod(pod) && p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,
@@ -1078,8 +1269,12 @@ func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs
 // existing container, checks what it can, and kills violations when
 // enforce_existing is set.
 func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
+	defer p.lockPodAdmission()()
+	clear(p.podStarts)
 	cfg := p.cfg
-
+	if cfg.podRole() && p.podStartDisconnected.Load() {
+		return nil, errors.New("pod runtime connection ended")
+	}
 	// Seed the inventory's sandbox set now, even when the container check is
 	// deferred: sandbox existence needs no allowlist.
 	if p.inventory != nil {
@@ -1091,16 +1286,26 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
-	// call does not return when that is what happened.
+	// call does not return when that is what happened. A Pod guest keeps no
+	// admission history across a plugin restart, so a restart within one boot
+	// ends the Pod identity and stops the Pod's containers. Its runtime starts
+	// only once the pod is assigned, so the first registration is the assigned
+	// one and no restart is expected before the pod runs.
 	if p.boot.check(ctx, p, pods, ctrs) {
 		p.bootRestart.Store(true)
+		p.endPodIdentity(errors.New("pod inventory was reconstructed after a plugin restart"))
+		p.stopPodContainers(ctx, pods, ctrs)
 	}
 
 	// Load or capture the exempt-namespace snapshot from this connect-time set,
 	// before any container check reads it and regardless of readiness.
 	p.initExempt(ctx, pods, ctrs)
 
+	if cfg.podRole() && !p.bootRestart.Load() && (len(pods) != 0 || len(ctrs) != 0) {
+		return nil, errors.New("fresh Pod registration found an existing runtime")
+	}
 	p.trackRunning(pods, ctrs)
+	p.podRegistered.Store(p.cfg.podRole() && !p.bootRestart.Load())
 
 	// If not ready yet, defer recovery and the startup check until CDS init
 	// completes: recovery needs the served allowlist to decide exits. Ready is
@@ -1200,9 +1405,33 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			// Already on record means protect() took the pod first; it is
 			// protected, so this is not a failure to recover.
 		default:
-			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
+			p.logPodWithoutIdentity(pod, err)
 		}
 	}
+}
+
+// reportUnprotected names a pod whose sandbox the gate refused: a pod whose
+// recovery this process refused gets no identity until it is deleted, any
+// other failure refuses this sandbox's containers.
+func (p *plugin) reportUnprotected(pod *api.PodSandbox, refusal error) {
+	if errors.Is(refusal, errRecoveryRefusedPod) {
+		p.logPodWithoutIdentity(pod, refusal)
+		return
+	}
+	p.logger.Error("cannot protect a pod; every container of it will be refused",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"error", refusal)
+}
+
+// logPodWithoutIdentity names the pod an operator deletes to let it get an
+// identity.
+func (p *plugin) logPodWithoutIdentity(pod *api.PodSandbox, refusal error) {
+	p.logger.Warn("a pod running before this enforcer connected gets no identity; delete the pod to give it one",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"pod_uid", pod.GetUid(),
+		"error", refusal)
 }
 
 // recoveredExits reads back the exit grant a running sandbox holds. An
@@ -1231,19 +1460,29 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	}
 	var killed, failed int
 	for _, ctr := range ctrs {
-		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
-		if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
-			p.inventory.stop(ctr.GetId())
+		unreconstructable := cfg.podRole()
+		if unreconstructable {
+			// Current runtime metadata cannot reconstruct the complete history
+			// required by a Pod identity after a plugin restart.
+			_ = p.denyContainer(ctr.GetPodSandboxId(), errors.New("cannot reconstruct Pod admission history from existing containers"))
+		} else {
+			// Node inventory records even containers without a known sandbox.
+			if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
+				p.inventory.stop(ctr.GetId())
+			}
+			p.recordForInventory(ctx, pod, ctr, imageRef)
 		}
-		p.recordForInventory(ctx, pod, ctr, imageRef)
 		if pod == nil {
 			continue
 		}
-		verdict, denial := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
-		if verdict != verdictDeny {
-			continue
+		denial := "cannot reconstruct Pod admission history from existing containers"
+		if !unreconstructable {
+			var verdict imageVerdict
+			if verdict, denial = p.checkContainer(ctx, cfg, pod, ctr, imageRef); verdict != verdictDeny {
+				continue
+			}
 		}
 		// A running container in an exempt namespace is never killed: stopping a
 		// platform container (kube-proxy, CoreDNS) can cut the node. A snapshot
@@ -1289,10 +1528,20 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
 		}
-		imageRef := c.ctr.GetAnnotations()[annotationImageName]
-		verdict, denial := p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
+		// The same image admission matched: on a Pod guest the staged pin,
+		// not an alias the CRI annotation may have moved since.
+		imageRef, err := p.containerImage(c.pod, c.ctr)
+		verdict, denial := verdictDeny, ""
+		if err == nil {
+			verdict, denial = p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
+		} else {
+			denial = err.Error()
+		}
 		if verdict != verdictDeny {
 			continue
+		}
+		if cfg.podRole() {
+			_ = p.denyContainer(c.pod.GetId(), errors.New(denial))
 		}
 		if p.killRunning(ctx, c.pod, c.ctr, denial) {
 			killed++
@@ -1316,10 +1565,34 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	return true
 }
 
+// stopPodContainers stops every running container a plugin restart found on a
+// Pod guest. The identity has ended, so no start of the Pod is admitted again;
+// stopping what already runs lets the kubelet report the Pod's containers
+// terminated instead of leaving a Pod that runs but can never renew its
+// credentials. Failures are logged: a container that stays up is still refused
+// every later start and issuance.
+func (p *plugin) stopPodContainers(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	if !p.cfg.podRole() {
+		return
+	}
+	podByID := podsByID(pods)
+	for _, ctr := range ctrs {
+		if ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
+			continue
+		}
+		pod := podByID[ctr.GetPodSandboxId()]
+		if pod == nil {
+			pod = &api.PodSandbox{Id: ctr.GetPodSandboxId()}
+		}
+		p.killRunning(ctx, pod, ctr, "pod identity ended by a plugin restart within this boot")
+	}
+}
+
 // RunDeferredCheck recovers and checks the pods/containers that were seen
 // during Synchronize before the plugin was ready. Should be called after
 // SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
+	defer p.lockPodAdmission()()
 	cfg := p.cfg
 
 	p.deferredMu.Lock()
@@ -1383,16 +1656,28 @@ func (p *plugin) admitWhileInitializing(ctx context.Context, cfg *config, pod *a
 // OCI spec after all NRI/CDI edits.
 // Nothing is added to the admission history until that final check.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
-	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, ctr.GetAnnotations()[annotationImageName], launchPreliminary)
+	defer p.lockPodAdmission()()
+	if err := p.refuseDisconnectedPod(); err != nil {
+		return nil, nil, err
+	}
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), err)
+	}
+	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, imageRef, launchPreliminary)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		if !p.Ready() {
-			return nil, nil, fmt.Errorf("image policy plugin initializing: %s", reason)
+			refusal := fmt.Errorf("image policy plugin initializing: %s", reason)
+			if p.cfg.podRole() {
+				return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), refusal)
+			}
+			return nil, nil, refusal
 		}
 		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
 	adjustment, err := p.credentialMounts(ctx, pod, ctr)
 	if err != nil && p.cfg.Policy.Mode != ModeAudit {
-		return nil, nil, err
+		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), err)
 	}
 	return adjustment, nil, nil
 }
@@ -1414,11 +1699,46 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 // precedes other plugins and runtime CDI injection. Start updates cannot edit
 // argv/env. Failed checks leave no admitted-container evidence.
 func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	defer p.lockPodAdmission()()
+	if err := p.refuseDisconnectedPod(); err != nil {
+		return err
+	}
+	delete(p.podStarts, ctr.GetId())
+	ctx = withResolved(ctx)
 	cfg := p.cfg
-	imageRef := ctr.GetAnnotations()[annotationImageName]
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return p.denyContainer(pod.GetId(), err)
+	}
+	var credentialSource string
+	if cfg.podRole() {
+		if p.measurer == nil {
+			return p.denyContainer(pod.GetId(), errors.New("pod start requires the runtime measurement journal"))
+		}
+		if err := p.containerd.VerifyContainerImage(ctx, ctr.GetId(), pod.GetId(), imageRef); err != nil {
+			return p.denyContainer(pod.GetId(), fmt.Errorf("verify selected Pod image: %w", err))
+		}
+		mounts := p.observedMounts(pod, ctr)
+		launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), mounts)
+		role := p.roleOf(launch)
+		var err error
+		credentialSource, err = p.podCredentialSource(pod, ctr, role, mounts)
+		if err == nil {
+			err = p.podSecretReader(pod, ctr, role, mounts)
+		}
+		if err == nil {
+			err = p.mesh.admit(pod, ctr, gatedContainer{role: role, mountsPinned: p.bindsRoleMounts(launch, role), digest: launch.Digest, argv: launch.Argv})
+		}
+		if err != nil {
+			return p.denyContainer(pod.GetId(), err)
+		}
+	}
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
-			return err
+			return p.transientRefusal(pod, err)
+		}
+		if err := p.measureStarted(ctx, imageRef); err != nil {
+			return p.transientRefusal(pod, err)
 		}
 		unlock := p.mesh.lockStarts(pod)
 		defer unlock()
@@ -1434,11 +1754,14 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 		// brings up with CDS.
 		p.noteMeshStarted(ctx, pod, ctr, imageRef)
 		p.recordForInventory(ctx, pod, ctr, imageRef)
-		return nil
+		return p.finishPodStart(ctx, pod, ctr, credentialSource)
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
+	}
+	if err := p.measureStarted(ctx, imageRef); err != nil {
+		return p.transientRefusal(pod, err)
 	}
 	unlock := p.mesh.lockStarts(pod)
 	defer unlock()
@@ -1447,7 +1770,18 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
-	return nil
+	return p.finishPodStart(ctx, pod, ctr, credentialSource)
+}
+
+// transientRefusal returns a start refusal a node does not record, so a
+// container retried once the plugin is ready or the journal settles is not
+// held against its sandbox; a pod CVM records it, since every refusal there
+// ends the pod's identity (denyContainer).
+func (p *plugin) transientRefusal(pod *api.PodSandbox, refusal error) error {
+	if p.cfg.podRole() {
+		return p.denyContainer(pod.GetId(), refusal)
+	}
+	return refusal
 }
 
 // noteMeshStarted tells the gate a pod's mesh endpoint is running, the start
@@ -1470,6 +1804,16 @@ func (p *plugin) roleOf(launch allowlist.RunningContainer) string {
 		return ""
 	}
 	return p.policy.base.RoleOf(launch)
+}
+
+// execsOf is the commands the measured base lets the runtime wrapper start in
+// this finalized launch. Like a role, they come from the base alone, and a pod
+// the mesh gates cover holds none: no new process starts in a member.
+func (p *plugin) execsOf(pod *api.PodSandbox, launch allowlist.RunningContainer) [][]string {
+	if p.policy == nil || pod == nil || (p.mesh != nil && p.mesh.hosts(pod)) {
+		return nil
+	}
+	return p.policy.base.ExecsOf(launch)
 }
 
 // bindsRoleMounts reports whether the declaration granting this launch its
@@ -1507,6 +1851,12 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
+	if p.cfg.podRole() {
+		if p.clientDocument == "" {
+			return nil, nil
+		}
+		return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
+	}
 	if fetchesRouteManifest(pod, ctr) {
 		if err := p.refusedUntilFirstDecree(); err != nil {
 			return nil, err
@@ -1606,7 +1956,10 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 // classifies them, so a declaration that pins a mount set is matched here too.
 // StartContainer re-reads the same fields from the final spec.
 func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) string {
-	imageRef := ctr.GetAnnotations()[annotationImageName]
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return ""
+	}
 	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
 }
 

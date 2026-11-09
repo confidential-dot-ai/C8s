@@ -1,0 +1,17 @@
+# Presets are applied at image build time.
+enable worker-stage.service
+enable containerd.service
+enable nri-image-policy.service
+enable kubelet.service
+enable attest-proxy.service
+enable volumed.path
+enable containerd-data-disk.service
+enable models-disk.service
+enable scratch-enforce.service
+enable c8s-modules-latch.service
+enable apparmor-enforce.service
+enable gpu-cc-enforce.service
+enable systemd-timesyncd.service
+enable systemd-time-wait-sync.service
+# Only the parser is wanted: the package's stock host profiles are not.
+disable apparmor.service

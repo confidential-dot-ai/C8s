@@ -3,44 +3,62 @@ package nodeservices
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// Prepare publishes a fixed set of nonsecret workload inputs from the
-// verified launch document loaded by LoadStaged. rootDir rebases paths for tests.
-// The root bootstrap service owns these files; pods mount them read-only.
-func Prepare(rootDir string, d *launchconfig.Document) error {
-	if err := validateRole(d); err != nil {
-		return err
-	}
+// FloorInputs are what Prepare completes the measured NRI floor with, and the
+// public files it publishes beside it.
+type FloorInputs struct {
+	// CDS is where the plugin pulls from and the credential role dials; its
+	// pin is published as cds.json.
+	CDS cmdsutil.CDS
+	// ClusterRanges, when given, are the cluster's pod and Service ranges,
+	// the mesh policy's cluster_ranges; none keeps the baked ones.
+	ClusterRanges []string
+	// Resolver, when given, is the cluster DNS address, the mesh policy's
+	// resolver; empty keeps the baked one.
+	Resolver string
+	// Placeholders give each "<flag>=<placeholder>" in the measured base its
+	// value; an empty value drops the flag.
+	Placeholders map[string]string
+	// Outputs are published under PublicDir, each a publicOutputNames entry.
+	Outputs map[string][]byte
+}
+
+// Prepare publishes the CDS pin as cds.json, in.Outputs and the measured NRI
+// floor completed with in, and removes every other public output. rootDir
+// rebases paths for tests. The root bootstrap service owns these files; pods
+// mount them read-only.
+func Prepare(rootDir string, in FloorInputs) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	peers, err := readPeerPolicy(path(launchDir+"peers.json"), d.Image.Platform)
+	endpoint, err := in.CDS.Parse()
 	if err != nil {
 		return err
 	}
-	// The staged document is this node's only source for its CDS.
-	cds, err := d.CDSPolicy()
+	cds, err := endpoint.Policy()
 	if err != nil {
 		return err
 	}
-	outputs := map[string][]byte{
-		"peers.json": peers,
-		"cds.json":   cds,
+	outputs := map[string][]byte{CDSOutput: cds}
+	for name, data := range in.Outputs {
+		if err := refuseReservedOutput(name); err != nil {
+			return err
+		}
+		outputs[name] = data
 	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {
@@ -50,50 +68,25 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err != nil {
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
-	if d.Role == launchconfig.Server {
-		server, err := serverOutputs(d)
-		if err != nil {
-			return err
-		}
-		for name, data := range server.files() {
-			outputs[name] = data
-		}
-	}
 
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
 	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
-	}
-	pull, ok := a["pull"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing pull")
+	if _, err := bindCDSPull(a, in.CDS); err != nil {
+		return err
 	}
 	base, err := bakedBase(a["base"])
 	if err != nil {
 		return err
 	}
-	if err := fillNodeValues(base, d.Node); err != nil {
+	if err := bindPlaceholderFlags(base, in.Placeholders); err != nil {
 		return err
 	}
-	if err := mergeBakedSeed(base, bakedSeed); err != nil {
+	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	port, err := d.CDSPort()
-	if err != nil {
-		return err
-	}
-	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
-	pull["cds_measurements_config"] = PublicDir + "/cds.json"
-	pull["cds_pin_floor"] = d.CDS.PinFloor
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -102,42 +95,187 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	if err := appendCredentialRole(policy, port); err != nil {
+	if err := appendCredentialRole(policy, endpoint.Port); err != nil {
 		return err
 	}
-	data, err = yaml.Marshal(floor)
+	if err := setClusterRanges(policy, in.ClusterRanges); err != nil {
+		return err
+	}
+	if err := setResolver(policy, in.Resolver); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
 	}
 
-	// Validate every input before publishing anything. RKE2 only starts after
-	// this preparation succeeds, so pods never observe partially staged input.
-	publicPath := path(PublicDir)
+	// Validate every input before publishing anything. The node's runtime
+	// only starts after this preparation succeeds, so pods never observe
+	// partially staged input.
+	if err := publishPublic(path(PublicDir), outputs); err != nil {
+		return err
+	}
+	return writeFile(path(floorConfigPath), data, 0600)
+}
+
+// loadFloor reads the NRI policy baked into the image, returning the whole
+// document and its allowlist section for the caller to edit.
+func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err error) {
+	data, err := os.ReadFile(filepath.Join(rootDir, "/usr/lib/c8s/image-policy.yaml"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := yaml.Unmarshal(data, &floor); err != nil {
+		return nil, nil, fmt.Errorf("baked NRI policy: %w", err)
+	}
+	allowlistSection, ok := floor["allowlist"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("baked NRI policy missing allowlist")
+	}
+	return floor, allowlistSection, nil
+}
+
+// bindCDSPull points the floor's pull at the document's CDS and its
+// launch-file-bound pins.
+func bindCDSPull(a map[string]any, cds cmdsutil.CDS) (map[string]any, error) {
+	pull, ok := a["pull"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("baked NRI policy missing pull")
+	}
+	if _, err := cds.Parse(); err != nil {
+		return nil, err
+	}
+	pull["url"] = cmdsutil.CDSURL(cds.Address)
+	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
+	pull["cds_pin_floor"] = cds.PinFloor
+	return pull, nil
+}
+
+// publishPublic writes outputs under publicPath and removes every other
+// public output.
+func publishPublic(publicPath string, outputs map[string][]byte) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {
 		return err
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role == launchconfig.Agent {
-		if err := removeServerOutputs(publicPath); err != nil {
-			return err
-		}
-	}
-	for name, data := range outputs {
-		dst := filepath.Join(publicPath, name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
-			return err
-		}
-	}
-	policyPath := path("/etc/nri/conf.d/image-policy.yaml")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+	if err := clearUnpublished(publicPath, outputs); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(policyPath, data, 0600)
+	for name, data := range outputs {
+		if err := writeFile(filepath.Join(publicPath, name), data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return fileutil.WriteAtomic(path, data, mode)
+}
+
+// floorConfigPath is the NRI plugin's configuration Prepare writes.
+const floorConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// Clear removes every output Prepare writes.
+func Clear(rootDir string) error {
+	policy := os.Remove(filepath.Join(rootDir, floorConfigPath))
+	if errors.Is(policy, fs.ErrNotExist) {
+		policy = nil
+	}
+	return errors.Join(policy, removeOutputs(filepath.Join(rootDir, PublicDir), publicOutputNames))
+}
+
+// The outputs a caller may not hand Prepare.
+var (
+	errOutputIsCDSPin   = errors.New("is the CDS pin staging writes itself")
+	errOutputNotCleared = errors.New("is not a public output staging clears")
+)
+
+// refuseReservedOutput refuses a caller's output that is Prepare's own CDS
+// pin, or one Prepare does not clear.
+func refuseReservedOutput(name string) error {
+	if name == CDSOutput {
+		return fmt.Errorf("output %q %w", name, errOutputIsCDSPin)
+	}
+	if !slices.Contains(publicOutputNames, name) {
+		return fmt.Errorf("output %q %w", name, errOutputNotCleared)
+	}
+	return nil
+}
+
+// clearUnpublished removes every public output published does not hold, so no
+// output outlives the staging that wrote it. It runs before the writes.
+func clearUnpublished(publicPath string, published map[string][]byte) error {
+	var stale []string
+	for _, name := range publicOutputNames {
+		if _, ok := published[name]; !ok {
+			stale = append(stale, name)
+		}
+	}
+	return removeOutputs(publicPath, stale)
+}
+
+// setClusterRanges completes the measured mesh policy with this cluster's
+// ranges, if given. A policy that declares another set is one this step would
+// contradict.
+func setClusterRanges(policy map[string]any, ranges []string) error {
+	if len(ranges) == 0 {
+		return nil
+	}
+	if declared, ok := policy["cluster_ranges"]; ok {
+		baked, err := stringList(declared)
+		if err != nil {
+			return fmt.Errorf("baked NRI mesh cluster_ranges %w", err)
+		}
+		if !sameSet(baked, ranges) {
+			return fmt.Errorf("baked NRI mesh cluster_ranges %v contradict this cluster's %v", baked, ranges)
+		}
+	}
+	policy["cluster_ranges"] = ranges
+	return nil
+}
+
+// setResolver completes the measured mesh policy with this cluster's DNS
+// address, if given. A policy that declares another is one this step would
+// contradict.
+func setResolver(policy map[string]any, resolver string) error {
+	if resolver == "" {
+		return nil
+	}
+	if declared, ok := policy["resolver"]; ok && declared != resolver {
+		return fmt.Errorf("baked NRI mesh resolver %v contradicts this cluster's %s", declared, resolver)
+	}
+	policy["resolver"] = resolver
+	return nil
+}
+
+// stringList is a decoded YAML sequence of strings.
+func stringList(declared any) ([]string, error) {
+	items, ok := declared.([]any)
+	if !ok {
+		return nil, fmt.Errorf("is %T, not a list", declared)
+	}
+	list := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("holds %T, not a string", item)
+		}
+		list = append(list, s)
+	}
+	return list, nil
+}
+
+func sameSet(a, b []string) bool {
+	set := func(s []string) []string {
+		return slices.Compact(slices.Sorted(slices.Values(s)))
+	}
+	return slices.Equal(set(a), set(b))
 }
 
 // bakedBase decodes the measured base out of the boot config it is written in.
@@ -161,20 +299,36 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 	return &base, nil
 }
 
-// The measured floor writes a static-pod flag whose value RKE2 takes from
-// this node's launch document as "<flag>=<placeholder>"
-// (images/node-guest/c8s/image-policy.yaml.in).
+// A measured floor pins a static-pod flag as "<flag>=<placeholder>"
+// (images/node-guest/worker/image-policy.yaml.in); each preparation gives the
+// values of the placeholders its node fills.
 const (
-	nodeNamePlaceholder             = "${NODE_NAME}"
-	nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
+	NodeNamePlaceholder = "${NODE_NAME}"
+	PodCIDRPlaceholder  = "${POD_CIDR}"
 )
 
-// fillNodeValues gives each placeholder flag in the base's argv pins this
-// node's value.
-func fillNodeValues(base *allowlist.Allowlist, node launchconfig.Node) error {
-	values := map[string]string{
-		nodeNamePlaceholder:             node.Name,
-		nodeAdvertiseAddressPlaceholder: node.AdvertiseAddress(),
+const nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
+
+// floorPlaceholders are every placeholder a measured floor may name.
+var floorPlaceholders = []string{NodeNamePlaceholder, nodeAdvertiseAddressPlaceholder, PodCIDRPlaceholder}
+
+// NamedPlaceholder is the first floor placeholder data names, or "".
+func NamedPlaceholder(data []byte) string {
+	for _, p := range floorPlaceholders {
+		if bytes.Contains(data, []byte(p)) {
+			return p
+		}
+	}
+	return ""
+}
+
+// bindPlaceholderFlags gives each placeholder flag in the base's argv pins
+// its value.
+func bindPlaceholderFlags(base *allowlist.Allowlist, values map[string]string) error {
+	for placeholder := range values {
+		if !slices.Contains(floorPlaceholders, placeholder) {
+			return fmt.Errorf("%s is not a placeholder a floor names", placeholder)
+		}
 	}
 	for name, w := range base.Workloads {
 		for i := range w.InitContainers {
@@ -194,7 +348,7 @@ func fillNodeValues(base *allowlist.Allowlist, node launchconfig.Node) error {
 
 func fillContainer(c *allowlist.Container, values map[string]string) error {
 	for _, policy := range []*allowlist.ArgvPolicy{&c.Command, &c.Args} {
-		argv, err := argvWithNodeValues(policy.Argv, values)
+		argv, err := ArgvWithValues(policy.Argv, values)
 		if err != nil {
 			return err
 		}
@@ -203,32 +357,48 @@ func fillContainer(c *allowlist.Container, values map[string]string) error {
 	return nil
 }
 
-// argvWithNodeValues is argv with each "<flag>=<placeholder>" element given
-// the node's value, and left out where the node has none, as RKE2 then
-// passes no such flag. An element that names a placeholder in any other way,
-// or a flag set to a placeholder the floor does not define, is an error. Any
-// other "${" is literal: a pinned shell script expands its own variables.
-func argvWithNodeValues(argv []string, values map[string]string) ([]string, error) {
+// DropFlag is the placeholder value that passes no flag: a service reads an
+// empty one as a value.
+const DropFlag = ""
+
+// ArgvWithValues is argv with each "<flag>=<placeholder>" element given its
+// value, and left out where the value is DropFlag. An element that names a
+// placeholder in any other way, or one values gives no value, is an error.
+// Any other "${" is literal: a pinned shell script expands its own variables.
+func ArgvWithValues(argv []string, values map[string]string) ([]string, error) {
 	filled := make([]string, 0, len(argv))
 	for _, element := range argv {
 		flag, placeholder, isFlag := strings.Cut(element, "=")
-		namesPlaceholder := isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${")
-		for p := range values {
-			namesPlaceholder = namesPlaceholder || strings.Contains(element, p)
-		}
-		if !namesPlaceholder {
+		if !namesFloorPlaceholder(element, flag, placeholder, isFlag) {
 			filled = append(filled, element)
 			continue
 		}
-		value, defined := values[placeholder]
-		if !isFlag || !defined {
-			return nil, fmt.Errorf("argv element %q is not a flag set to a placeholder the floor defines", element)
+		if !isFlag {
+			return nil, fmt.Errorf("argv element %q names a placeholder outside \"<flag>=<placeholder>\"", element)
 		}
-		if value != "" {
+		value, defined := values[placeholder]
+		if !defined {
+			return nil, fmt.Errorf("argv element %q sets a placeholder this preparation has no value for", element)
+		}
+		if value != DropFlag {
 			filled = append(filled, flag+"="+value)
 		}
 	}
 	return filled, nil
+}
+
+// namesFloorPlaceholder reports whether an argv element sets a placeholder:
+// one a floor names anywhere in the element, or any "${" after a flag.
+func namesFloorPlaceholder(
+	element string,
+	flag string,
+	placeholder string,
+	isFlag bool,
+) bool {
+	if isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${") {
+		return true
+	}
+	return slices.ContainsFunc(floorPlaceholders, func(p string) bool { return strings.Contains(element, p) })
 }
 
 // appendCredentialRole completes the measured mesh policy with the one binding
@@ -265,161 +435,38 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 	return nil
 }
 
-// serverConfig holds the inputs only a server publishes. An agent must never
-// carry them, so they are produced and removed as one named set rather than
-// as loose strings spread across Prepare.
-type serverConfig struct {
-	operatorPubKey []byte
-	tlsSAN         string
-	router         launchconfig.Router
-}
+// publicOutputNames are every file Prepare may publish under PublicDir. It
+// removes each one it does not publish, so no output outlives the staging
+// that wrote it.
+var publicOutputNames = append([]string{CDSOutput, "operator-pubkey", "tls-san"}, routerOutputNames...)
 
-// serverOutputNames is the set both roles agree on: a server writes exactly
-// these, and an agent clears exactly these. The router files are always
-// written, empty when unset, so the router pod never waits on a missing file.
-var serverOutputNames = []string{
-	"operator-pubkey",
-	"tls-san",
-	"router/tls.conf",
-	"router/hostnames",
-	"router/acme-email",
-	"router/acme-directory-url",
-	"router/front-door-mode",
-	"router/request-body.conf",
-}
+// CDSOutput is the CDS pin Prepare publishes under PublicDir.
+const CDSOutput = "cds.json"
 
-// RouterTLSSnippetDir is where the node image installs tls-cds.conf and
-// tls-acme.conf and the baked router mounts them; router/tls.conf includes the
-// one the front-door mode selects. The chart's router.bakedNginxDir must equal
-// it.
-const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
-
-// line renders an optional single-line value: empty stays empty.
-func line(s string) []byte {
-	if s == "" {
-		return []byte{}
-	}
-	return []byte(s + "\n")
-}
-
-func (c serverConfig) files() map[string][]byte {
-	mode := "cds"
-	if len(c.router.Hostnames) > 0 {
-		mode = "acme"
-	}
-	hostnames := []byte{}
-	for _, name := range c.router.Hostnames {
-		hostnames = append(hostnames, name+"\n"...)
-	}
-	files := map[string][]byte{
-		"operator-pubkey": c.operatorPubKey,
-		"tls-san":         []byte(c.tlsSAN + "\n"),
-		// nginx includes this in its server block to pick the certificate.
-		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
-		"router/hostnames":          hostnames,
-		"router/acme-email":         line(c.router.ACMEEmail),
-		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
-		"router/front-door-mode":    []byte(mode + "\n"),
-		// nginx includes this in its application location.
-		"router/request-body.conf": []byte(fmt.Sprintf("client_max_body_size %d;\n", c.router.RequestBodyLimit())),
-	}
-	// A server output an agent does not clear would survive a demotion, so
-	// the two sets must not drift apart.
-	if len(files) != len(serverOutputNames) {
-		panic("serverConfig.files and serverOutputNames disagree")
-	}
-	for _, name := range serverOutputNames {
-		if _, ok := files[name]; !ok {
-			panic("serverOutputNames lists an unwritten server output: " + name)
+// removeOutputs removes the named outputs from the public directory, trying
+// every one.
+func removeOutputs(publicPath string, names []string) error {
+	var errs []error
+	for _, name := range names {
+		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
 		}
 	}
-	return files
+	return errors.Join(errs...)
 }
 
-// serverOutputs validates the server-only fields of the staged document. It
-// writes nothing: Prepare publishes only after every input has been validated.
-func serverOutputs(d *launchconfig.Document) (serverConfig, error) {
-	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
-		return serverConfig{}, fmt.Errorf("staged TLS SAN: %w", err)
-	}
-	pub := []byte(d.Server.OperatorPublicKey)
-	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
-		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
-	}
-	var router launchconfig.Router
-	if d.Router != nil {
-		router = *d.Router
-	}
-	// LoadStaged validated the document; check the hostnames again, so no
-	// path can publish an injectable file.
-	for _, name := range router.Hostnames {
-		if err := launchconfig.ValidateHostname(name); err != nil {
-			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
-		}
-	}
-	return serverConfig{operatorPubKey: pub, tlsSAN: d.TLSSAN, router: router}, nil
-}
-
-// removeServerOutputs clears the server-only inputs from an agent's public
-// directory, so a node demoted to agent cannot keep serving stale ones.
-func removeServerOutputs(publicPath string) error {
-	for _, name := range serverOutputNames {
-		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-// readPeerPolicy accepts the launch identities this cluster's nodes boot
-// with, refusing partial pins even when the staged file parses: the
-// authenticated launcher emits an anchored tuple for every permitted role, on
-// the family this node booted.
-func readPeerPolicy(path, platform string) ([]byte, error) {
-	family, err := teetypes.ParseFamily(platform)
-	if err != nil {
-		return nil, fmt.Errorf("staged image platform: %w", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	pins, err := refvalues.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("staged identity policy %s: %w", path, err)
-	}
-	if pins.Family != family {
-		return nil, fmt.Errorf("staged identity policy %s does not pin this node's TEE family", path)
-	}
-	if !policyPinsComplete(pins) {
-		return nil, fmt.Errorf("staged identity policy %s requires complete image and operator pins", path)
-	}
-	return data, nil
-}
-
-// policyPinsComplete reports whether every image pin carries an anchor and,
-// on TDX, the kernel and operator registers the launch verifier compares.
-func policyPinsComplete(pins refvalues.ReferenceValues) bool {
-	for _, pin := range pins.Images {
-		if len(pin.Anchor) == 0 {
-			return false
-		}
-		if pins.Family == teetypes.FamilyTDX && (len(pin.Registers[1]) == 0 || len(pin.Registers[2]) == 0) {
-			return false
-		}
-	}
-	return true
-}
-
-// mergeBakedSeed adds the baked component seed to the measured NRI base: both
-// are measured bootstrap sources, so an entry present in each must be
-// identical rather than replaced.
-func mergeBakedSeed(base, seed *allowlist.Allowlist) error {
-	for name, workload := range seed.Workloads {
+// mergeWorkloads adds extra's workloads to the measured NRI base. With
+// allowIdentical an entry present in both must be identical (both are measured
+// bootstrap sources); without it any collision is refused.
+func mergeWorkloads(base, extra *allowlist.Allowlist, allowIdentical bool) error {
+	for name, workload := range extra.Workloads {
 		existing, exists := base.Workloads[name]
 		if !exists {
 			base.Workloads[name] = workload
 			continue
+		}
+		if !allowIdentical {
+			return fmt.Errorf("workload %q replaces a baked component", name)
 		}
 		old, err := json.Marshal(existing)
 		if err != nil {

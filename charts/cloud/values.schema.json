@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$comment": "The root key set is closed, and the subtrees operators hand-write are sealed, so an unknown or misspelled key is a render-time error instead of a silently dropped value. Every key of those subtrees in values.yaml must appear here. Leaf types stay unconstrained except where a wrong value is otherwise accepted silently (see the enums and patterns below). The platform keys have no defaults: templates/validations.yaml fails a render that leaves them unset, except confidentialNodeSelector, which this schema requires non-empty. Maps whose keys belong to the consumer (label maps, digest maps) are left open.",
+  "type": "object",
+  "required": ["attestationApi", "confidentialNodeSelector", "nriImagePolicy", "router"],
+  "properties": {
+    "cds": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "address": { "type": "string" },
+        "measurementsConfig": {
+          "type": "string"
+        },
+        "operatorKeys": {}
+      }
+    },
+    "nriImagePolicy": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "platform": { "enum": ["snp", "tdx"] },
+        "mesh": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clusterRanges": {},
+            "resolver": {}
+          }
+        },
+        "bootstrapAllowlist": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "workloads": {}
+          }
+        },
+        "hostPaths": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "configDir": {},
+            "pluginDir": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9._/-]+$"
+            }
+          }
+        },
+        "image": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "digest": {},
+            "repository": {},
+            "tag": {}
+          }
+        },
+        "policy": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "exemptNamespaces": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": { "type": "string" }
+            },
+            "mode": {
+              "enum": [
+                "fail-closed",
+                "audit",
+                null
+              ]
+            }
+          }
+        }
+      }
+    },
+    "router": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "attest": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "generation": { "enum": ["", "genoa", "milan", "turin"] },
+            "platform": { "enum": ["az-snp", "az-tdx", "snp", "tdx"] }
+          },
+          "required": ["generation"]
+        },
+        "routePublication": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
+        "routing": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pollInterval": { "type": "string", "pattern": "^0*[1-9][0-9]*(ms|s|m|h)$" }
+          }
+        },
+        "san": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-zA-Z0-9.*-]+$" }
+        }
+      }
+    },
+    "volumed": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {},
+        "image": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "digest": {},
+            "repository": {},
+            "tag": {}
+          }
+        }
+      }
+    },
+    "c8s-lib": {},
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "c8s-lib": {},
+        "global": {},
+        "webhook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "extraExcluded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "image": {},
+    "operator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "podCVMProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" }
+          }
+        }
+      }
+    },
+    "imagePullSecrets": {},
+    "imagePullSecret": {},
+    "confidentialNodeSelector": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string" }
+    },
+    "attestationApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^/dev/[a-z0-9-]+$" }
+        },
+        "image": {}
+      }
+    },
+    "armtlsMesh": {}
+  },
+  "additionalProperties": false
+}

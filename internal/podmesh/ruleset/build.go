@@ -74,10 +74,18 @@ func captureInbound(p Policy) chain {
 // listener. Pod-local destinations, queries to an approved resolver, the
 // pod's exits and platform-role sockets stay uncaptured; the resolver port
 // elsewhere is captured like every other destination.
+// Standalone Pods instead capture only their signed peer TCP tuples.
 func captureOutbound(p Policy) chain {
 	rules := []rule{
 		{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictReturn)},
 		{"mesh-sockets", withVerdict(matchSocketUID(p.MeshUID), expr.VerdictReturn)},
+	}
+	if p.Pod != nil {
+		for _, peer := range p.Pod.Peers {
+			match := slices.Concat(matchDestination(peer.Addr), matchTCPPort(peer.Port), redirectTo(p.Capture.Outbound))
+			rules = append(rules, rule{fmt.Sprintf("capture-peer-%s-%d", peer.Addr, peer.Port), match})
+		}
+		return captureChain("capture-outbound", *nftables.ChainHookOutput, rules)
 	}
 	for _, role := range p.Roles {
 		name := fmt.Sprintf("role-%d-sockets", role.UID)
@@ -86,9 +94,7 @@ func captureOutbound(p Policy) chain {
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
 	rules = append(rules, exitRules(p, expr.VerdictReturn)...)
-	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
-	rules = append(rules, serverOutsideRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
@@ -112,9 +118,27 @@ func filterInput(p Policy) chain {
 // a pod-local address, neighbour discovery, an approved resolver query, TCP
 // from the mesh endpoint's own sockets or to one of the pod's exits, or sent
 // by a platform role to a destination it is bound to. No member pod process
-// runs as root, so a root-owned socket here entered the namespace from
-// outside, as port-forward does.
+// on a node runs as root, so a root-owned socket there entered the namespace
+// from outside, as port-forward does.
+// Standalone Pods additionally admit ordinary IPv4 TCP/UDP egress, and admit
+// root: a pod CVM's containers may run as root, and nothing enters its pod
+// network namespace from outside the CVM.
 func filterOutput(p Policy) chain {
+	if p.Pod != nil {
+		rules := slices.Concat([]rule{
+			{"deny-link-local", withVerdict(matchDestinationRange(netip.MustParsePrefix("169.254.0.0/16")), expr.VerdictDrop)},
+		}, listenerOwnerRules(p), replyAndControlRules(), []rule{
+			{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},
+		})
+		// Signed peer TCP has already been captured. The endpoint's socket
+		// carries it over armTLS; every other IPv4 TCP/UDP flow is ordinary
+		// egress. The guest independently denies its own local services.
+		for _, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+			match := slices.Concat([]expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{unix.NFPROTO_IPV4})}, matchProtocol(protocol))
+			rules = append(rules, rule{fmt.Sprintf("pod-egress-%d", protocol), withVerdict(match, expr.VerdictAccept)})
+		}
+		return denyChain("filter-output", *nftables.ChainHookOutput, rules)
+	}
 	resolverUDP := fmt.Sprintf("resolver-%s-udp", p.Resolver)
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules := slices.Concat([]rule{
@@ -130,9 +154,7 @@ func filterOutput(p Policy) chain {
 		rules = append(rules, outsidePortRules(p, role.UID, role.OutsidePort, expr.VerdictAccept)...)
 	}
 	rules = append(rules, exitRules(p, expr.VerdictAccept)...)
-	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictAccept)...)
-	rules = append(rules, serverOutsideRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
@@ -146,6 +168,9 @@ func listenerOwnerRules(p Policy) []rule {
 	rules := make([]rule, 0, 4)
 	for _, port := range []uint16{p.Capture.Inbound, p.Capture.Health} {
 		mesh := slices.Concat(matchSocketUID(p.MeshUID), matchTCPSourcePort(port))
+		if p.Pod != nil {
+			mesh = append(mesh, matchCtState(ctStateEstablished)...)
+		}
 		name := fmt.Sprintf("mesh-listener-%d", port)
 		rules = append(rules, rule{name, withVerdict(mesh, expr.VerdictAccept)})
 		taken := fmt.Sprintf("listener-%d-taken-over", port)
@@ -223,42 +248,24 @@ func serverClusterRuleName(port uint16, in netip.Prefix) string {
 	return fmt.Sprintf("server-egress-%d-in-cluster-%s", port, in)
 }
 
-// serverServiceRules match the upstream identity's traffic to one service
-// address and port. They precede the capture, so that destination is the one
-// it reaches itself; everything else outside the cluster it dials is
-// redirected.
-func serverServiceRules(p Policy, kind expr.VerdictKind) []rule {
-	rules := make([]rule, 0, len(p.Server.Services))
-	for _, dst := range p.Server.Services {
-		exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchDestination(dst.Addr), matchTCPPort(dst.Port))
-		name := fmt.Sprintf("server-service-%s-%d", dst.Addr, dst.Port)
-		rules = append(rules, rule{name, withVerdict(exprs, kind)})
-	}
-	return rules
-}
-
-// serverUpstreamRules match the upstream identity's traffic to this cluster,
-// which it carries itself: it dials the member a signed route names as a mesh
-// client and refuses a peer whose leaf names another workload. No other
-// identity of the pod matches them, so every other container's connection to
-// a member is captured.
+// serverUpstreamRules match the upstream identity's TCP wherever it goes,
+// which it carries itself: it dials a member pod or a pod CVM's endpoint as a
+// mesh client and refuses a peer whose leaf names another workload or agent,
+// an address backend over TLS to the route's anchors, and its CDS over
+// armTLS. No other identity of the pod matches them, so every other
+// container's connection, nginx's included, is captured.
 func serverUpstreamRules(p Policy, kind expr.VerdictKind) []rule {
 	if !p.Server.serves() {
 		return nil
 	}
-	rules := make([]rule, 0, len(p.ClusterRanges))
-	for _, in := range p.ClusterRanges {
-		exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchDestinationRange(in), matchProtocol(unix.IPPROTO_TCP))
-		name := fmt.Sprintf("server-upstream-in-cluster-%s", in)
-		rules = append(rules, rule{name, withVerdict(exprs, kind)})
-	}
-	return rules
+	exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchProtocol(unix.IPPROTO_TCP))
+	return []rule{{"server-upstream", withVerdict(exprs, kind)}}
 }
 
 // serverEgressRules match the egress identity's traffic to its egress ports
 // outside the cluster: the one traffic of a member pod that leaves it in the
-// clear. The identity that forwards application traffic is not that one, so a
-// forwarded connection is captured wherever its destination resolves.
+// clear. Neither nginx nor the upstream identity, which forward application
+// traffic, is that one.
 func serverEgressRules(p Policy, kind expr.VerdictKind) []rule {
 	var rules []rule
 	for _, port := range p.Server.Egress.Ports {
@@ -315,19 +322,6 @@ func outsidePortRules(p Policy, uid uint32, port uint16, kind expr.VerdictKind) 
 	exprs := slices.Concat(matchSocketUID(uid), matchTCPPort(port))
 	name := fmt.Sprintf("role-%d-outside-%d", uid, port)
 	return append(rules, rule{name, withVerdict(exprs, kind)})
-}
-
-// serverOutsideRules match the upstream identity's traffic to the port it
-// reaches outside this cluster: where the CDS it fetches the signed route
-// manifest from serves. They follow serverUpstreamRules, which carry that
-// identity's traffic to the cluster itself.
-func serverOutsideRules(p Policy, kind expr.VerdictKind) []rule {
-	if !p.Server.serves() || p.Server.OutsidePort == 0 {
-		return nil
-	}
-	exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchTCPPort(p.Server.OutsidePort))
-	name := fmt.Sprintf("server-upstream-outside-%d", p.Server.OutsidePort)
-	return []rule{{name, withVerdict(exprs, kind)}}
 }
 
 // replyAndControlRules permit the replies of an admitted connection, its ICMP

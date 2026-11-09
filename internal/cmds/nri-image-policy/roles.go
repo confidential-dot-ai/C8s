@@ -9,6 +9,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -27,7 +28,7 @@ const (
 	CredentialRole = workloadclaims.CredentialsRole
 	// routerRole answers the cluster's external traffic on ports of its own,
 	// in the router's namespace.
-	routerRole = "router"
+	routerRole = workloadclaims.RouterRole
 	// acmeRole is the one role of that namespace whose sockets leave the
 	// cluster in the clear.
 	acmeRole = "acme"
@@ -47,7 +48,7 @@ const routerNamespace = workloadclaims.RouterNamespace
 // forwards outside the cluster is captured wherever its name resolves.
 //
 // INVARIANT: routerListeners are the container ports the chart's router pod
-// binds (router.nginx.httpsPort, the HTTP-01 port and the acme sidecar's
+// binds (the nginx HTTPS port, the HTTP-01 port and the acme sidecar's
 // readiness port), and acmeEgressPorts are the ports public certificate
 // issuance uses: the directory the sidecar orders from, and the plain HTTP
 // port each public name is checked on before validation.
@@ -77,10 +78,33 @@ type meshPolicy struct {
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.
 	ClusterRanges []netip.Prefix `yaml:"cluster_ranges"`
-	// Exits are the platform services every container of a member pod
-	// reaches over TCP uncaptured, each one address and port: the baked
-	// kube-state-metrics Service.
-	Exits []netip.AddrPort `yaml:"exits"`
+	// Pod restricts a guest endpoint to the signed peer and ingress tuples.
+	Pod *podMeshPolicy `yaml:"pod,omitempty"`
+}
+
+type podMeshPolicy struct {
+	Peers        []netip.AddrPort `yaml:"peers"`
+	IngressPorts []uint16         `yaml:"ingress_ports"`
+}
+
+// validate applies the guest ruleset's limits at load, so a tuple the
+// ruleset would refuse fails startup rather than every container.
+func (p podMeshPolicy) validate() error {
+	peers := make([]string, len(p.Peers))
+	for i, peer := range p.Peers {
+		peers[i] = peer.String()
+	}
+	if _, err := podmesh.ParseMeshPeers(peers); err != nil {
+		return fmt.Errorf("mesh.pod.peers: %w", err)
+	}
+	// The ports the guest ruleset refuses: none, the status service's and
+	// the mesh endpoint's.
+	for _, port := range p.IngressPorts {
+		if port == 0 || port == uint16(workloadclaims.PodStatusPort) || workloadclaims.IsMeshPort(int(port)) {
+			return fmt.Errorf("mesh.pod.ingress_ports: port %d is reserved for the guest's own services", port)
+		}
+	}
+	return nil
 }
 
 type capturePorts struct {
@@ -99,13 +123,19 @@ type roleBinding struct {
 	Port uint16 `yaml:"port"`
 }
 
-// MeshFloor is the measured mesh policy as the node's runtime wrapper reads
-// it: the namespaces that host no member pods, and what the role behind each
-// reserved id may hold. Trusted policy reserves that number as both a UID and
-// a GID (internal/cmds/c8srunc).
+// MeshFloor is the measured mesh policy as the mesh gate and the node's
+// runtime wrapper read it: the namespaces that host no member pods, what the
+// role behind each reserved id may hold, and whether the policy is a pod
+// CVM's. Trusted policy reserves that number as both a UID and a GID
+// (internal/cmds/c8srunc).
 type MeshFloor struct {
 	ExemptNamespaces []string
 	ReservedIDs      map[uint32]RoleFloor
+	// PodRole marks the policy of a pod CVM, which runs one pod: its floor
+	// admits a root user outside every role, since no other tenant shares
+	// the kernel, and every workload start requires a live admission permission.
+	// validatePod ties mesh.pod to the pod role's other markers.
+	PodRole bool
 }
 
 // RoleFloor is one platform role as the floor reads it.
@@ -125,17 +155,20 @@ func LoadMeshFloor(configPath string) (MeshFloor, error) {
 	if err != nil {
 		return MeshFloor{}, err
 	}
+	return cfg.Mesh.floor(), nil
+}
+
+// floor is the policy as its identity floor.
+func (p meshPolicy) floor() MeshFloor {
 	floor := MeshFloor{
-		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
+		ExemptNamespaces: p.ExemptNamespaces,
 		ReservedIDs:      map[uint32]RoleFloor{},
+		PodRole:          p.Pod != nil,
 	}
-	for _, role := range cfg.Mesh.Roles {
-		floor.ReservedIDs[role.UID] = RoleFloor{Name: role.Name}
+	for role, reserved := range p.reservedIdentities() {
+		floor.ReservedIDs[reserved] = RoleFloor{Name: role}
 	}
-	floor.ReservedIDs[workloadclaims.RouterUID] = RoleFloor{Name: routerRole}
-	floor.ReservedIDs[workloadclaims.AcmeUID] = RoleFloor{Name: acmeRole}
-	floor.ReservedIDs[workloadclaims.UpstreamUID] = RoleFloor{Name: upstreamRole}
-	return floor, nil
+	return floor
 }
 
 // validate requires a policy the pod ruleset can be built from, at config
@@ -154,11 +187,6 @@ func (p meshPolicy) validate() error {
 	for _, in := range p.ClusterRanges {
 		if !in.IsValid() || in.Addr().Is4In6() || in != in.Masked() {
 			return fmt.Errorf("mesh.cluster_ranges %s is not a masked prefix of one address family", in)
-		}
-	}
-	for _, exit := range p.Exits {
-		if !exit.IsValid() || exit.Port() == 0 || exit.Addr().Is4In6() {
-			return fmt.Errorf("mesh.exits %s needs one address of one family and a nonzero port", exit)
 		}
 	}
 	if slices.Contains(p.ExemptNamespaces, routerNamespace) {
@@ -280,8 +308,10 @@ func (p meshPolicy) requireRoleIdentity(ctr *api.Container, role string) error {
 // ruleset grants a role's traffic permissions by socket UID.
 func (p meshPolicy) requireUnreservedIdentity(ctr *api.Container, role string) error {
 	user := ctr.GetUser()
-	if user.GetUid() == 0 {
-		return errors.New("a gated pod container requires a nonzero uid")
+	// A pod CVM's workload outside every role may run as root: no other
+	// tenant shares its kernel.
+	if user.GetUid() == 0 && (p.Pod == nil || role != "") {
+		return errors.New("a gated pod container requires a nonzero uid: set securityContext.runAsUser to a nonzero uid")
 	}
 	for _, id := range append([]uint32{user.GetUid(), user.GetGid()}, user.GetAdditionalGids()...) {
 		if owner, reserved := p.roleHolding(id); reserved && owner != role {

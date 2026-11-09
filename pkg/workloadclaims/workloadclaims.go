@@ -119,6 +119,27 @@ const CDSAddressPath = "/run/c8s/cds-address"
 // it.
 const AnnotationInjected = "confidential.ai/c8s-injected"
 
+// AnnotationSecrets, when it names at least one secret, adds the secret
+// fetcher and mounts the memory-backed SecretsVolumeName emptyDir read-only
+// into every container at SecretDir, unless the container already mounts it.
+const (
+	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	SecretsVolumeName = "c8s-secrets"
+	SecretDir         = "/run/c8s/secrets"
+)
+
+// SplitList returns the trimmed, non-blank items of a comma-separated
+// annotation value such as AnnotationSecrets.
+func SplitList(value string) []string {
+	var items []string
+	for _, part := range strings.Split(value, ",") {
+		if item := strings.TrimSpace(part); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
@@ -141,6 +162,20 @@ const (
 	MeshInboundPort  int32  = 15006
 	MeshHealthPort   int32  = 15021
 )
+
+// AnnotationWorkloadID names the workload a pod belongs to, confidential.ai/cw.
+// It is the allowlist workload name the pod's entries are looked up under, so
+// its grammar is the allowlist's (pkg/workloadname).
+const AnnotationWorkloadID = "confidential.ai/cw"
+
+// IsMeshPort reports whether port is one the mesh endpoint binds: a capture
+// port or the health port. None of them answers an application.
+func IsMeshPort(port int) bool {
+	return port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort)
+}
+
+// PodStatusPort is the pod CVM guest's attested status port; no pod container may declare it.
+const PodStatusPort int32 = 8443
 
 // MeshProbePrefix is where the endpoint answers an application probe the
 // injector moved onto MeshHealthPort. The rendered path names the port and the
@@ -205,7 +240,7 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	if port < 1 || port > 65535 {
 		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
 	}
-	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+	if IsMeshPort(port) {
 		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
 	}
 	appPath := "/" + path
@@ -225,6 +260,10 @@ const (
 	MeshRole        = "mesh"
 	CredentialsRole = "credentials"
 )
+
+// RouterRole is the role of the router's front door. CDS gives a sandbox
+// running one a short-lived leaf.
+const RouterRole = "router"
 
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the CDS address, and the enforcer refuses it in any
@@ -702,3 +741,14 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 	}
 	return &out, nil
 }
+
+// AnnotationPodCVMEndpoints is where the pod CVM provider publishes the
+// addresses a pod CVM's ports are reachable at: a JSON list of
+// {"name", "host", "port"}, one per port, named PodCVMAppEndpointPrefix and
+// the application port for an application port. Anyone who may update the
+// pod can rewrite it, so it says where to dial, never who answers.
+const AnnotationPodCVMEndpoints = "confidential.ai/pod-cvm-endpoints"
+
+// PodCVMAppEndpointPrefix prefixes the application port in the name of a
+// pod CVM's ingress rule and published endpoint, as in app-4096.
+const PodCVMAppEndpointPrefix = "app-"

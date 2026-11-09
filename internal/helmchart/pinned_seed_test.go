@@ -1,8 +1,7 @@
 // Tests for the chart's argv-pinned seed entries (c8s.argvPinnedEntries):
-// platform images that carry a shell — the nri-image-policy installer image
-// and the rke2 busybox use (containerd-prep) — must be
-// admitted by the served allowlist only under their exact expected argv,
-// never by digest alone. The boot config's base is digest-only
+// platform images that carry a shell — the nri-image-policy installer image —
+// must be admitted by the served allowlist only under their exact expected
+// argv, never by digest alone. The boot config's base is digest-only
 // admission, so it must not carry any of them either.
 package helmchart
 
@@ -11,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,30 +23,33 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// chartImageDigest reads the digest values.yaml pins for one third-party
-// image, so a bump by pin-watch or through
-// .github/scripts/chart-image-pins.sh set needs no edit here.
-func chartImageDigest(t *testing.T, path ...string) string {
+// componentsFile is c8s-lib's component table and image pins.
+var componentsFile = filepath.Join(chartsDir, "lib", "files", "components.yaml")
+
+// chartImageDigest reads the digest file pins for one third-party image, so a
+// bump by pin-watch or through .github/scripts/chart-image-pins.sh set needs
+// no edit here.
+func chartImageDigest(t *testing.T, file string, path ...string) string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(file)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", file, err)
 	}
 	var values map[string]any
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", file, err)
 	}
 	var node any = values
 	for _, key := range path {
 		m, ok := node.(map[string]any)
 		if !ok {
-			t.Fatalf("values.yaml has no %s", strings.Join(path, "."))
+			t.Fatalf("%s has no %s", file, strings.Join(path, "."))
 		}
 		node = m[key]
 	}
 	digest, ok := node.(string)
 	if !ok || !strings.HasPrefix(digest, "sha256:") {
-		t.Fatalf("values.yaml %s is %v, not a digest", strings.Join(path, "."), node)
+		t.Fatalf("%s %s is %v, not a digest", file, strings.Join(path, "."), node)
 	}
 	return digest
 }
@@ -129,13 +130,12 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 	denyArgvs(t, seed, baseNRIDigest, []string{"sleep", "infinity"}) // argv[0] must be /bin/sh
 }
 
-// The install script embeds the component entries' argv, where an operator
-// argument escaped as $$(NAME) is pinned as $(NAME). The kubelet expands the
-// installer's own args too, so they must reach the runtime as the seed pins
-// them.
+// The install script's shell carries $ throughout, escaped against the
+// kubelet's expansion of the installer's args, so they must reach the runtime
+// as the seed pins them.
 func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	t.Parallel()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set-json", `operator.extraArgs=["$$(KUBERNETES_SERVICE_HOST)"]`}
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -150,91 +150,44 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// The node-as-CVM (baked) installer runs the policy-measurement script instead of the
-// install script; the seed must admit exactly that argv from the nri image.
-func TestChartPinnedSeedAdmitsBakedPinsArgv(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.baked=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	seed := renderedSeed(t, out)
-	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	for _, c := range allContainers(&worker) {
-		admitPlatformContainer(t, seed, baseNRIDigest, c)
-	}
-	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", "rm -rf /"})
-}
-
-// On rke2 the installer DaemonSet's containerd-prep initContainer runs the
-// busybox prep image under the prep script; the seed must admit that exact
-// argv and no other from that image.
-func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.distro=rke2")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	seed := renderedSeed(t, out)
-	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	prep, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "containerd-prep")
-	if !ok {
-		t.Fatalf("rke2 render missing the containerd-prep initContainer")
-	}
-	prepBusyboxDigest := chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")
-	admitPlatformContainer(t, seed, prepBusyboxDigest, prep)
-	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "-c", "rm -rf /"})
-	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "/script/setup"})
-}
-
 // base is digest-only admission — carrying an argv-pinned image there
 // would bypass the pin. Neither the installer image nor any busybox may
-// appear, in either the k8s or the rke2 shape.
+// appear.
 func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{
-		nil,
-		{"--set", "nriImagePolicy.distro=rke2"},
-	} {
-		out, err := helmTemplate(t, args...)
-		if err != nil {
-			t.Fatalf("helm template %v: %v\n%s", args, err, out)
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	if len(baseImages(cfg.Allowlist.Base)) == 0 {
+		t.Fatal("base must stay non-empty (pull bootstrap)")
+	}
+	for digest, image := range baseImages(cfg.Allowlist.Base) {
+		if digest == baseNRIDigest {
+			t.Error("installer image self-allowed in base: the argv pin would be bypassed")
 		}
-		cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-		if len(baseImages(cfg.Allowlist.Base)) == 0 {
-			t.Fatalf("base must stay non-empty (pull bootstrap): %v", args)
-		}
-		for digest, image := range baseImages(cfg.Allowlist.Base) {
-			if digest == baseNRIDigest {
-				t.Errorf("installer image self-allowed in base (%v): the argv pin would be bypassed", args)
-			}
-			if strings.Contains(image, "busybox") {
-				t.Errorf("busybox %s in base (%v): admits any command line on any pod", digest, args)
-			}
+		if strings.Contains(image, "busybox") {
+			t.Errorf("busybox %s in base: admits any command line on any pod", digest)
 		}
 	}
 }
 
 // An any-argv entry for a pinned digest voids the pin (admission is the union
-// across entries): with deriveComponents on, the derive loop must never emit
-// one for the installer or busybox images — the argvPinned skip is the only
-// thing between the pin and a silent any-argv shadow.
+// across entries): the derive loop must never emit one for the installer image
+// — the argvPinned skip is the only thing between the pin and a silent
+// any-argv shadow.
 func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.distro=rke2",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-	)
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	seed := renderedSeed(t, out)
-	for _, digest := range []string{baseNRIDigest, chartImageDigest(t, "nriImagePolicy", "containerdPrep", "image", "digest")} {
-		for name, w := range seed.Workloads {
-			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
-				if c.Digest.String() == digest && c.AnyArgv() {
-					t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, digest[:19])
-				}
+	for name, w := range seed.Workloads {
+		for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
+			if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
+				t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
 			}
 		}
 	}
@@ -314,79 +267,62 @@ var componentTestDigests = map[string]string{
 	"attestationApi.image": "sha256:1111000000000000000000000000000000000000000000000000000000000004",
 }
 
-// componentPinValues reads the entrypoints values.yaml declares for every
-// derived component, keyed by valuePath, plus the router nginx one under
-// "router.nginx".
+// componentPinValues reads the entrypoints the components file declares for
+// every derived component, keyed by valuePath, plus the router nginx one under
+// "routerNginx".
 func componentPinValues(t *testing.T) map[string][]string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(componentsFile)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", componentsFile, err)
 	}
 	var values struct {
 		Components []struct {
 			ValuePath  string   `json:"valuePath"`
 			ArgvPinned bool     `json:"argvPinned"`
 			Entrypoint []string `json:"entrypoint"`
-		} `json:"c8sComponents"`
-		Router struct {
-			Nginx struct {
-				Entrypoint []string `json:"entrypoint"`
-			} `json:"nginx"`
-		} `json:"router"`
+		} `json:"components"`
+		RouterNginx struct {
+			Entrypoint []string `json:"entrypoint"`
+		} `json:"routerNginx"`
 	}
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", componentsFile, err)
 	}
-	pins := map[string][]string{"router.nginx": values.Router.Nginx.Entrypoint}
+	pins := map[string][]string{"routerNginx": values.RouterNginx.Entrypoint}
 	for _, c := range values.Components {
 		if c.ArgvPinned {
 			continue
 		}
 		if len(c.Entrypoint) == 0 {
-			t.Errorf("c8sComponents %s declares no entrypoint", c.ValuePath)
+			t.Errorf("component %s declares no entrypoint", c.ValuePath)
 		}
 		pins[c.ValuePath] = c.Entrypoint
 	}
 	return pins
 }
 
-// withMatcher returns p, a match policy, with name matched by matcher, a
-// JSON matcher.
-func withMatcher(t *testing.T, p pkgallowlist.EnvPolicy, name, matcher string) pkgallowlist.EnvPolicy {
-	t.Helper()
-	var m pkgallowlist.EnvMatcher
-	if err := json.Unmarshal([]byte(matcher), &m); err != nil {
-		t.Fatal(err)
-	}
-	variables := maps.Clone(p.Variables)
-	variables[name] = m
-	return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: variables}
-}
-
-// componentImageEnvValues reads the imageEnv values.yaml declares for every
-// derived component, keyed like componentPinValues.
+// componentImageEnvValues reads the imageEnv the components file declares for
+// every derived component, keyed like componentPinValues.
 func componentImageEnvValues(t *testing.T) map[string]map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile("c8s/values.yaml")
+	raw, err := os.ReadFile(componentsFile)
 	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
+		t.Fatalf("read %s: %v", componentsFile, err)
 	}
 	var values struct {
 		Components []struct {
 			ValuePath string            `json:"valuePath"`
 			ImageEnv  map[string]string `json:"imageEnv"`
-		} `json:"c8sComponents"`
-		Router struct {
-			Nginx struct {
-				ImageEnv map[string]string `json:"imageEnv"`
-			} `json:"nginx"`
-		} `json:"router"`
+		} `json:"components"`
+		RouterNginx struct {
+			ImageEnv map[string]string `json:"imageEnv"`
+		} `json:"routerNginx"`
 	}
 	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse values.yaml: %v", err)
+		t.Fatalf("parse %s: %v", componentsFile, err)
 	}
-	envs := map[string]map[string]string{"router.nginx": values.Router.Nginx.ImageEnv}
+	envs := map[string]map[string]string{"routerNginx": values.RouterNginx.ImageEnv}
 	for _, c := range values.Components {
 		envs[c.ValuePath] = c.ImageEnv
 	}
@@ -426,7 +362,7 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 		"attestationApi.image": {"/attestation-api"},
 		// ENTRYPOINT plus the first CMD token: docker-entrypoint.sh execs
 		// whatever follows it, so the script alone pins nothing.
-		"router.nginx": {"/docker-entrypoint.sh", "nginx"},
+		"routerNginx": {"/docker-entrypoint.sh", "nginx"},
 	} {
 		if got := pins[valuePath]; !slices.Equal(got, want) {
 			t.Errorf("%s entrypoint = %q, want %q", valuePath, got, want)
@@ -439,11 +375,7 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 // for each.
 func componentRender(t *testing.T) string {
 	t.Helper()
-	args := []string{
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		"--set", "volumed.enabled=true",
-		"--set", "attestationApi.enabled=true",
-	}
+	args := []string{"--set", "volumed.enabled=true"}
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -488,7 +420,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	if nginxDigest == "" {
 		t.Fatal("the router's nginx container is not digest-pinned")
 	}
-	pinned[nginxDigest] = pins["router.nginx"]
+	pinned[nginxDigest] = pins["routerNginx"]
 
 	for digest, entrypoint := range pinned {
 		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {
@@ -526,7 +458,6 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set-string", "image.digest="+opD,
 		"--set", "nriImagePolicy.policy.mode=fail-closed",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", p+"digest="+opD,
 		"--set-string", p+"command.policy=exact",
 		"--set-string", p+"command.argv[0]=/c8s",
@@ -543,130 +474,6 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 	}
 	if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
 		t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
-	}
-}
-
-// An operator entry for a component digest that pins args and mounts is a
-// component entry like the chart's own: copied from the chart's derived entry,
-// it covers the component for the fail-closed guard and reaches the base
-// verbatim. Missing any container the chart runs the executable in, an
-// injected sidecar shape among them, or with an env that would refuse the
-// launch environment or leave it open, it does not cover the component.
-func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
-	t.Parallel()
-	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
-	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, derived)
-	}
-	var containers []pkgallowlist.Container
-	for _, w := range renderedSeed(t, derived).Workloads {
-		for _, c := range w.Containers {
-			if c.Digest.String() == opD {
-				containers = append(containers, c)
-			}
-		}
-	}
-	operatorArgv := runtimeArgv(renderedDeploymentContainer(t, derived, "c8s-operator", "operator"), []string{"/c8s"})
-	resolvedLayout := func(c pkgallowlist.Container) bool {
-		return slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return strings.HasPrefix(r.Source, "/run/nri-image-policy") })
-	}
-	for _, tc := range []struct {
-		name      string
-		drop      func(pkgallowlist.Container) bool
-		env       func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy
-		uppercase bool
-		covered   bool
-	}{
-		{name: "the chart's entry", covered: true},
-		{name: "uppercase digest", uppercase: true, covered: true},
-		{name: "without the operator's container", drop: func(c pkgallowlist.Container) bool {
-			return c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
-		}},
-		{name: "without the resolved layout of a host mount", drop: resolvedLayout},
-		{name: "without the injected sidecars", drop: injectedShape},
-		{name: "env denied", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyDeny}
-		}},
-		{name: "env open", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
-		}},
-		{name: "env matching one more variable", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return withMatcher(t, p, "EXTRA", `{"present":true}`)
-		}},
-		{name: "env pinning a value the pod chooses", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
-			return withMatcher(t, p, "HOSTNAME", `{"exact":"c8s-0"}`)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			entry := slices.Clone(containers)
-			if tc.env != nil {
-				for i := range entry {
-					entry[i].Env = tc.env(entry[i].Env)
-				}
-			}
-			if tc.drop != nil {
-				entry = slices.DeleteFunc(entry, tc.drop)
-				if len(entry) == len(containers) {
-					t.Fatal("the derived entry has no container to drop")
-				}
-			}
-			raw, err := json.Marshal(map[string]any{"containers": entry})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.uppercase {
-				raw = []byte(strings.ReplaceAll(string(raw), `"digest":"`+opD, `"digest":"sha256:`+strings.ToUpper(strings.TrimPrefix(opD, "sha256:"))))
-			}
-			out, err := helmTemplate(t,
-				"--set-string", "image.digest="+opD,
-				"--set", "nriImagePolicy.policy.mode=fail-closed",
-				"--set-json", "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator="+string(raw),
-			)
-			if !tc.covered {
-				if err == nil || parseValidationErrorKind(out) != "uncovered_component_digest" {
-					t.Fatalf("helm template = %v, want uncovered_component_digest\n%s", err, out)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("helm template should render with the component covered by a pinned entry: %v\n%s", err, out)
-			}
-			base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
-			if !base.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: operatorArgv}) {
-				t.Errorf("base does not admit the operator as rendered: %v", base.Workloads)
-			}
-		})
-	}
-}
-
-// An open-args entry pinned to another executable does not cover the
-// component: it would reach the base and still deny the component on its
-// own node. One pinned to the C8s binary does not cover it either: allowlist
-// lint refuses that shape. Two open-args entries pinning one digest
-// differently cannot both reach the base, so the render fails.
-func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
-	t.Parallel()
-	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
-	entry := func(name, argv0 string) []string {
-		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + ".containers[0]."
-		return []string{
-			"--set-string", p + "digest=" + opD,
-			"--set-string", p + "command.policy=exact",
-			"--set-string", p + "command.argv[0]=" + argv0,
-			"--set-string", p + "args.policy=any",
-			"--set-string", p + "mounts.policy=any",
-		}
-	}
-	base := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
-	for _, argv0 := range []string{"/bin/sh", "/c8s"} {
-		out, err := helmTemplate(t, append(base, entry("c8s-operator", argv0)...)...)
-		if err == nil {
-			t.Fatalf("helm template succeeded with the component covered only by an open entry pinned to %s\n%s", argv0, out)
-		}
-		if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
-			t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
-		}
 	}
 }
 
@@ -707,7 +514,6 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
 	out, err := helmTemplate(t,
 		"--set-string", "image.digest="+opD,
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", attest+"digest="+opD,
 		"--set-string", attest+"command.policy=exact",
 		"--set-string", attest+"command.argv[0]=/c8s",

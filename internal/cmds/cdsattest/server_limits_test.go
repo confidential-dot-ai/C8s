@@ -183,7 +183,7 @@ func TestAttestPQMetersEachClientSeparately(t *testing.T) {
 }
 
 // TestAttestLBIsMetered pins the other unauthenticated session-establishment
-// route onto the same budget.
+// route onto the same budget, set by EstablishRate and EstablishBurst.
 func TestAttestLBIsMetered(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
@@ -195,8 +195,9 @@ func TestAttestLBIsMetered(t *testing.T) {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		Bindings:             NewBindings(),
+		EstablishRate:        0.001,
+		EstablishBurst:       1,
 	})
-	srv.establishLimiter = newLimiter(0.001, 1, clientBuckets)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -367,9 +368,9 @@ func TestTimingsMeetTheirStatedRequirements(t *testing.T) {
 	// through: five a second is a browser reloading a page, and a session
 	// costs one request.
 	const steadySessionsPerSecond = 5
-	if establishRateLimit < 2*steadySessionsPerSecond {
+	if defaultEstablishRate < 2*steadySessionsPerSecond {
 		t.Fatalf("establishment is limited to %v/s, under the %d requests headroom %d sessions a second need",
-			establishRateLimit, 2*steadySessionsPerSecond, steadySessionsPerSecond)
+			defaultEstablishRate, 2*steadySessionsPerSecond, steadySessionsPerSecond)
 	}
 }
 

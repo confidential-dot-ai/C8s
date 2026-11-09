@@ -2,9 +2,11 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // meshYAML is the mesh policy every enforcer configuration carries.
@@ -238,6 +241,67 @@ policy:
 	}
 	if cfg.Policy.ExemptSnapshotPath == "" {
 		t.Error("ExemptSnapshotPath not parsed")
+	}
+}
+
+// bootConfigDocument is an installer's configuration document, with the
+// namespaces image admission exempts and the ones the mesh gate exempts.
+func bootConfigDocument(exempt, meshExempt string) string {
+	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
+  pull:
+    url: https://127.0.0.1:30808
+    attestation_api_url: http://localhost:30840
+policy:
+  mode: fail-closed
+  exempt_namespaces: %s
+  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
+mesh:
+  exempt_namespaces: %s
+  resolver: "10.43.0.10"
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`, exempt, meshExempt)
+}
+
+// CheckBootConfig is how a caller validates a config document before a node is
+// made to require the plugin that reads it: the same keys and the same
+// refusals the plugin applies at start.
+func TestCheckBootConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, want string
+	}{
+		{
+			"an exemption the mesh exempts too",
+			bootConfigDocument("[kube-system]", "[kube-system, local-path-storage]"),
+			"",
+		},
+		{
+			"an exemption the mesh does not",
+			bootConfigDocument("[kube-system]", "[local-path-storage]"),
+			"must also be in mesh.exempt_namespaces",
+		},
+		{
+			"the router namespace",
+			bootConfigDocument("[kube-system]", "[kube-system, c8s-router]"),
+			"whose pods serve the router's ports",
+		},
+		{
+			"a misspelt key",
+			strings.Replace(bootConfigDocument("[kube-system]", "[kube-system]"), "\n  mode: fail-closed\n", "\n  modes: fail-closed\n", 1),
+			"field modes not found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckBootConfig([]byte(tc.config))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("CheckBootConfig = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("CheckBootConfig = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -617,5 +681,120 @@ func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
 	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
 		t.Fatal("an unreadable CDS pin was accepted")
+	}
+}
+
+// podRoleConfig is a valid assigned pod-role configuration: the measured
+// endpoint in the base, the pod's own mesh policy and no node exemptions.
+func podRoleConfig(t *testing.T) config {
+	t.Helper()
+	cfg := validConfig()
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	return cfg
+}
+
+// A signed peer or ingress port the guest ruleset would refuse fails at load,
+// not at the first sandbox.
+func TestPodRoleRefusesTuplesTheGuestRulesetWouldRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pod  podMeshPolicy
+		want string
+	}{
+		{"zero ingress port", podMeshPolicy{IngressPorts: []uint16{0}}, "mesh.pod.ingress_ports"},
+		{"mesh ingress port", podMeshPolicy{IngressPorts: []uint16{uint16(workloadclaims.MeshInboundPort)}}, "mesh.pod.ingress_ports"},
+		{"local peer", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:443")}}, "mesh.pod.peers"},
+		{"peer without port", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:0")}}, "mesh.pod.peers"},
+	} {
+		cfg := podRoleConfig(t)
+		cfg.Mesh.Pod = &tc.pod
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	cfg := podRoleConfig(t)
+	cfg.Mesh.Pod = &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:443")}, IngressPorts: []uint16{8080}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid tuples refused: %v", err)
+	}
+}
+
+// The register has no writer besides the plugin's measured launches;
+// The journal lives where its readers look.
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+	cfg := podRoleConfig(t)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one writer: %v", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
+	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
+		t.Fatalf("journal elsewhere than its readers look: %v", err)
+	}
+}
+
+func TestPodRoleConfigRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+		want   string
+	}{
+		{"worker", func(c *config) { c.Worker = true }, "not a worker"},
+		{"no pod", func(c *config) { c.Pod = nil }, "measure.rtmr3 and the signed pod"},
+		{"no pod mesh policy", func(c *config) { c.Mesh.Pod = nil }, "measure.rtmr3 and the signed pod"},
+		{"SNP", func(c *config) { c.Platform = "snp" }, "requires TDX"},
+		{"audit sandbox", func(c *config) { c.Policy.Sandbox = SandboxAudit }, "requires TDX"},
+		{"mesh exemption", func(c *config) { c.Mesh.ExemptNamespaces = []string{"kube-system"} }, "no namespace exemptions"},
+		{"router namespace", func(c *config) { c.Pod.Namespace = routerNamespace }, "no namespace exemptions"},
+		{"credential port", func(c *config) { c.Mesh.CredentialAttestationPort = 9000 }, "only the mesh role"},
+		{"no pod UID", func(c *config) { c.Pod.UID = "" }, "signed pod uid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := podRoleConfig(t)
+			tc.change(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidate_PullSourceRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+		want   string
+	}{
+		{"URL and address file", func(c *config) { c.Allowlist.Pull.CDSAddressFile = "/run/cds-address" }, "cannot be combined"},
+		{"zero interval", func(c *config) { c.Allowlist.Pull.Interval = 0 }, "allowlist.pull.interval"},
+		{"node IP without socket dir", func(c *config) {
+			c.WorkloadClaims.PublishNodeIP = true
+			c.WorkloadClaims.SocketDir = ""
+		}, "publish_node_ip requires workload_claims.socket_dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.change(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

@@ -172,8 +172,9 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 	}
 }
 
-// An injected pod that asked for service links is admitted with a warning, so
-// its author learns the variables are gone; the default stays quiet.
+// An injected pod with service links on is admitted with a warning, so its
+// author learns the variables are gone. The API server defaults the field to
+// true, so only an explicit false stays quiet in a cluster.
 func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -843,6 +844,16 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 			t.Fatalf("platform container %s c8s-certs mounts = %d, want 1", c.Name, mounts)
 		}
 	}
+	t.Run("the privilege floor defaults", func(t *testing.T) {
+		sc := pod.Spec.Containers[0].SecurityContext
+		if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+			t.Errorf("allowPrivilegeEscalation = %v after two injections, want false", sc.AllowPrivilegeEscalation)
+		}
+		want := []corev1.Capability{"NET_RAW", "SETGID", "SETUID"}
+		if !slices.Equal(sc.Capabilities.Drop, want) {
+			t.Errorf("capabilities.drop = %v after two injections, want %v", sc.Capabilities.Drop, want)
+		}
+	})
 }
 
 // TestHandleRejectsReservedCertContainerName proves an opted-in pod cannot park

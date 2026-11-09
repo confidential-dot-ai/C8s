@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/deployment"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -226,7 +225,7 @@ func (e *unconfirmedError) Unwrap() error { return e.cause }
 func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist, version string, signer allowlistclient.Authorizer) error {
 	if version == "" {
 		// Without a version the write would be unconditional.
-		return errors.New(`CDS served the allowlist without a version (ETag W/"N"), so the write cannot be made conditional on it`)
+		return errors.New(`CDS served the allowlist without a version, so the write cannot be made conditional on it`)
 	}
 	err := c.ReplaceAll(ctx, doc, version, signer)
 	if err == nil {
@@ -275,20 +274,19 @@ func servesDocument(ctx context.Context, c allowlistclient.Client, doc *pkgallow
 	return bytes.Equal(want, got), served, nil
 }
 
+// requiredComponentsForMode omits the attestation API and the admission
+// plugin on bare-metal, whose measured image runs both.
 func requiredComponentsForMode(mode string) ([]string, error) {
-	if mode == "" {
+	switch mode {
+	case "", "gke", "aks":
 		return slices.Clone(defaultRequiredComponents), nil
-	}
-	baked, err := deployment.BakedAttestationAndNRIPlugin(mode)
-	if err != nil {
-		return nil, err
-	}
-	if baked {
+	case "bare-metal":
 		return slices.DeleteFunc(slices.Clone(defaultRequiredComponents), func(component string) bool {
 			return component == "attestation-api" || component == "nri-image-policy"
 		}), nil
+	default:
+		return nil, fmt.Errorf("--cvm-mode must be one of bare-metal, gke, aks, got %q", mode)
 	}
-	return slices.Clone(defaultRequiredComponents), nil
 }
 
 // requireLabel rejects an empty or bare-wildcard label. Image and name labels

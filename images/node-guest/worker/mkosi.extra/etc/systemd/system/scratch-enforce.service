@@ -1,0 +1,24 @@
+# Fail the boot when the confos initrd backed the writable state with the
+# 2G tmpfs fallback instead of the confai-scratch disk. confos deliberately tolerates
+# that fallback; a C8s worker must not (its runtime wedges when the tmpfs fills).
+[Unit]
+Description=Refuse to start the worker unless writable state is on the scratch disk
+# No After=: the dm mapping exists from the initrd or not at all, so the
+# one sysfs scan needs no other unit up.
+Before=containerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/scratch-enforce.sh
+TimeoutStartSec=30
+# Fail closed: power off rather than leave a node that registers Ready and
+# then wedges — a powered-off node does not flap.
+FailureAction=poweroff-force
+
+# vsock fence: only attestation-api may use AF_VSOCK (see kernel/gpu.config).
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=containerd.service

@@ -81,9 +81,6 @@ API server — below the layer the adversary controls.
   volume.
 - **volumed** is the node agent that opens an entitled pod's encrypted volumes —
   [volumes.md](volumes.md).
-- On the measured node image, **kube-state-metrics** runs in `kube-system`
-  outside the mesh, and the measured mesh policy lets every member pod reach its
-  Service uncaptured — [armtls.md](armtls.md#cluster-metrics).
 
 ```text
   outside the TEE
@@ -111,28 +108,28 @@ API server — below the layer the adversary controls.
 
 ## CVM modes and hardware platforms
 
-`c8s install` requires two orthogonal choices. `--cvm-mode` is the deployment
-shape; all three are node-as-CVM, and this table is the one place they differ.
+C8s runs in three node-as-CVM shapes, and this table is the one place they
+differ. A cluster of workers boots the C8s measured node image;
+`c8s install --platform` deploys the chart on GKE or AKS confidential VMs.
 
 | | `bare-metal` | `gke` | `aks` |
 |---|---|---|---|
 | The node is | the C8s measured node image | a GKE confidential VM | an AKS confidential VM |
-| Node services | baked into the image (a chart DaemonSet writes the release's CDS pins into the baked config) | deployed by the chart | deployed by the chart |
-| Base allowlist | a baked file, measured with the image | chart values | chart values |
+| Node services | baked into the image | deployed by the chart | deployed by the chart |
+| Base allowlist | the floor the image build rendered, measured with it | chart values | chart values |
 | Privilege floor | `c8s-runc`, measured | none | none |
-| Exec, attach, port-forward | denied by a baked policy | the ordinary path | the ordinary path |
+| Exec, attach, port-forward | served by no kubelet handler, denied under the runtime | the ordinary path | the ordinary path |
 | Evidence | the CPU TEE directly | the CPU TEE directly | the Azure vTPM (`az-snp`, `az-tdx`) |
 | volumed | `volumed.service` | chart DaemonSet, `--volumes` | chart DaemonSet, `--volumes` |
-| Launch configuration | signed `launch.yaml` | none | none |
+| Launch configuration | the worker document `worker.yaml` | none | none |
 
 Node services are `attestation-api` and the admission plugin; the base
 allowlist is the set of entries each plugin holds itself
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)); the
 privilege floor and the exec denial are
-[node-exec-mode.md](node-exec-mode.md); the launch configuration fixes a
-measured node's role, identity, and image pins
-([operator.md](operator.md#authenticated-launch-configuration), with every
-field in [launch-configuration.md](launch-configuration.md)).
+[node-exec-mode.md](node-exec-mode.md); the launch configuration names the CDS
+a worker trusts and the control plane it joins, with every field in
+[launch-configuration.md](launch-configuration.md).
 
 Only the measured node image carries the baked policy that refuses host
 privilege. On the chart lanes the plugin's own configuration comes from chart
@@ -141,11 +138,21 @@ namespaces off there is the chart's `<release>-deny-host-namespaces` cluster
 policy —
 [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
 
-`--hardware-platform` is the CPU TEE: `sev-snp` or `tdx`. Under `aks` it selects
-which vTPM report shape to ask for rather than a guest device. On TDX, pinning
-the launch measurement alone covers the firmware; pinning the guest needs the
-image manifest published with the node image — [verify.md](verify.md),
-[measurements.md](measurements.md).
+The CPU TEE is `sev-snp` or `tdx`. A cluster of workers takes it as
+`c8s node-image render --hardware-platform`; the chart lanes take the mode and
+the TEE as one `c8s install --platform`:
+
+| `--platform` | CVM mode | CPU TEE | Report |
+|---|---|---|---|
+| `aks-snp` | `aks` | `sev-snp` | vTPM report wrapping an SNP report (`az-snp`) |
+| `aks-tdx` | `aks` | `tdx` | vTPM report wrapping a TD quote (`az-tdx`) |
+| `gke-snp` | `gke` | `sev-snp` | the SNP report (`snp`) |
+
+GKE confidential VMs are SEV-SNP only, so `gke-tdx` is not a platform. Under
+`aks` the TEE selects which vTPM report shape the node asks for rather than a
+guest device. On TDX, pinning the launch measurement alone covers the firmware;
+pinning the guest needs the image manifest published with the node image —
+[verify.md](verify.md), [measurements.md](measurements.md).
 
 How the node image is built is `../images/node-guest/README.md`.
 
@@ -183,10 +190,10 @@ How the node image is built is `../images/node-guest/README.md`.
    [secrets.md](secrets.md), [volumes.md](volumes.md).
 8. Public requests reach the router, which routes only by the operator-signed
    route manifest. A route names either a workload backend, whose leaf must
-   carry that workload name under the router's own allowlist digest, or an
-   address backend with its own server name and CA. A client can attest the
-   router, and its session then routes only by what that handshake bound —
-   [routes-evidence.md](routes-evidence.md).
+   carry that workload name with the same entry as in the router's own
+   allowlist, or an address backend with its own server name and CA. A client
+   can attest the router, and its session then routes only by what that
+   handshake bound — [routes-evidence.md](routes-evidence.md).
 
 ## Design intentions
 

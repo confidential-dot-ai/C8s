@@ -21,7 +21,7 @@ sentences needs no change in this repo.
 | Variable | Meaning |
 |---|---|
 | `CONFORMANCE_FEATURES` | the directory of `.feature` files to run |
-| `CONFORMANCE_BACKEND` | the backend, `kind` or `metal` |
+| `CONFORMANCE_BACKEND` | the backend, `kind` |
 
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
@@ -63,8 +63,7 @@ it reads the pod's files from the pod's log instead. The reporter image
 ([`images/reporter`](images/reporter)) is `image_ref`'s model-server with the
 reporter as its `sleep`: it sleeps as asked and, while it does, prints each
 file of the certificate volume but the key, of the secret client's output
-directory, and of the discovery volume the metal backend adds, as
-`c8s-report file <path> <base64>` when it appears or changes, and that
+directory, as `c8s-report file <path> <base64>` when it appears or changes, and that
 directory's filesystem type, as `c8s-report fstype <dir> <type>`.
 The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
 python with the programs the steps run in a tenant pod on its `PATH`: the
@@ -84,7 +83,7 @@ backend down, reading:
 
 | Variable | Meaning |
 |---|---|
-| `CONFORMANCE_BACKEND` | the backend, `kind` or `metal`, plus whatever that backend requires |
+| `CONFORMANCE_BACKEND` | the backend, `kind`, plus whatever it requires |
 | `CONFORMANCE_FEATURES` | the directory of `.feature` files to run |
 | `CONFORMANCE_REPORT` | where to write the Cucumber JSON report |
 | `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
@@ -106,10 +105,14 @@ names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
 when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
-undone after the scenario. The steps then poll the allowlist version the
-plugin reports on its health endpoint until it is the served one, within three
-pull intervals of the write; where the backend cannot reach the plugin, or the
-plugin is meant to ignore what is served, they wait two intervals out instead.
+undone after the scenario. A write takes effect on nodes the CDS's node delay
+after it is written, so the steps then wait for the CDS to serve nodes the
+version the write left, and poll the allowlist version the plugin reports on
+its health endpoint until it reaches it, within the node delay and three pull
+intervals of the write; where the backend cannot reach the plugin, or the
+plugin is meant to ignore what is served, they wait the node delay and two
+intervals out instead. A step that starts a plugin first waits for the write
+to take effect on nodes.
 
 A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
@@ -196,7 +199,6 @@ rejects unknown names.
 | Backend | Environment | Requires |
 |---|---|---|
 | [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_CDS_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
@@ -206,32 +208,6 @@ peers the cluster does not have, not for the steps' judgement. A change to any o
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
 
-### The metal backend
-
-On a metal lane the harness host has no node shell and no TEE, the
-operator's credential may neither exec, port-forward, write Node objects nor
-write in the privileged namespaces (kube-system, c8s-system),
-the only ones admitting host-network and root pods, and the node image holds
-the seed and the router's configuration.
-A function the backend cannot answer some other way under those limits
-answers unsupported, which the steps report as a skip, so the scenarios that need it are
-reported as not run on metal, never as passed; the skipped step carries a
-`skip-reason` attachment naming the function, as does a step that skips
-for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` answers agent: a pod the
-steps mark `c8s-conformance/harness-argv`, because they chose its first
-container's argv, runs an agent there in place of that argv, and `agent_exec`
-reaches it. Pods whose argv a scenario pins are read from a reporter image's
-log instead. A pod the agent runs in that carries a workload ID also asks its
-credential client for the discovery document and mounts the volume the client
-writes it into, so `pod_cert_file` reads the pod's leaf from there; the key,
-and the leaf as another container sees it, stay out of reach. No namespace the mesh exempts is open to the operator, so the
-requester the steps drive runs as a mesh member and the scenarios that need a
-pod outside the mesh skip. The CDS routes the router does not relay are sent
-to the CDS VM the lane launched the cluster on (`C8S_CDS_URL`), which answers
-the harness host on both platforms.
-[`metal.sh`](backends/metal.sh) gives each
-function's answer and its reason beside the function.
-
 ## What is a coordinated change
 
 The suite calls `run.sh` and the backends by name. Renaming a backend
@@ -240,5 +216,4 @@ and `TestFeatures` read is a coordinated change with the suite's judge
 configuration. Adding a step or a backend function is not.
 
 Nothing here runs a scenario in this repo's CI: `make test` compiles the steps
-and `TestFeatures` skips. The suite's own CI runs the steps on kind and on both
-metal lanes.
+and `TestFeatures` skips. The suite's own CI runs the steps on kind.

@@ -10,12 +10,14 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | `attestation-api` | The node-local service that produces and verifies this node's hardware evidence. | [overview.md](overview.md) |
 | baked node | A node booted from the measured C8s node image, which carries its services and policy. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
 | CVM | Confidential VM: CPU-encrypted memory whose launch state the hardware measures. | [overview.md](overview.md) |
-| CVM mode (`--cvm-mode`) | The deployment shape: `bare-metal`, `gke`, or `aks`. All three are node-as-CVM. | [overview.md](overview.md) |
+| cluster of workers | A cluster whose nodes all boot the measured C8s node image, installed from its launch file rather than by `c8s install`. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
+| CVM mode | The node shape: `bare-metal` (the measured node image), `gke`, or `aks`. All three are node-as-CVM. | [overview.md](overview.md) |
 | evidence | A hardware-signed attestation report plus the material a verifier needs to check it. | [overview.md](overview.md) |
-| hardware platform (`--hardware-platform`) | The CPU TEE: `sev-snp` or `tdx`. Chosen independently of the CVM mode. | [overview.md](overview.md) |
+| hardware platform (`--hardware-platform`) | The CPU TEE: `sev-snp` or `tdx`, named by `c8s node-image render` and `c8s worker control-plane render`. | [overview.md](overview.md) |
 | launch measurement | Digest of what the CVM booted: the SEV-SNP measurement or the TDX MRTD. | [measurements.md](measurements.md) |
 | node image | The measured guest image a node boots: firmware, kernel, and dm-verity root. | [overview.md](overview.md) |
 | node-as-CVM | The node is the confidential VM; its pods are processes inside it. | [overview.md](overview.md) |
+| platform (`--platform`) | The CVM mode and CPU TEE pair `c8s install` deploys on: `aks-snp`, `aks-tdx` or `gke-snp`. | [overview.md](overview.md#cvm-modes-and-hardware-platforms) |
 | SEV-SNP | AMD Secure Encrypted Virtualization with Secure Nested Paging, one of the two platforms. | [overview.md](overview.md) |
 | TDX | Intel Trust Domain Extensions, the other platform; measures firmware (MRTD) and registers (RTMR). | [overview.md](overview.md) |
 | TEE | Trusted Execution Environment: the hardware boundary C8s puts the workload inside. | [overview.md](overview.md) |
@@ -28,7 +30,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | grant | The secret paths a workload entry may read or write. | [allowlist-entries.md](allowlist-entries.md) |
 | host privilege | Host namespaces, binds, devices, hooks, or sysctls; only measured node components may hold them. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
 | mount class | A mount rule's `kind`: `emptyDir`, `data`, `host`, or `nodeRootFile`; `platform` is the class the node assigns its own mounts, which no rule names. | [allowlist-entries.md](allowlist-entries.md) |
-| operator key | The EC keypair authorizing policy writes and `c8s get-kubeconfig`; CDS pins its public half. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
+| operator key | The EC keypair authorizing policy writes; CDS pins its public half. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | operator write token | The write token of one policy write: an operator signature over that method, path, and body. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | platform role | An identity a measured base grants one C8s node-side invocation, such as the credentials role. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
 | policy history | The allowlist policies a TDX node extends into RTMR[3] for verifiers to replay, when policy measurement is on. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history) |
@@ -60,14 +62,14 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | **Ingress and routing** | | |
 | attest-lb | Attested handshake that binds the serving leaf of the connection a client is already on. | [routes-evidence.md](routes-evidence.md) |
 | attest-pq | Attested handshake whose X-Wing key exchange lets a client over-encrypt requests inside ordinary TLS. | [routes-evidence.md](routes-evidence.md) |
-| public TLS mode | How the router gets its public certificate: `cds`, `acme`, or `webpki`. | [operator.md](operator.md) |
+| public TLS mode | How the router gets its public certificate: `cds` or `acme`. | [operator.md](operator.md) |
 | route digest | The SHA-256 of the route manifest bytes, bound into the router's attestation. | [routes-evidence.md](routes-evidence.md) |
 | route manifest | Operator-signed hosts, paths, and backends. The router serves nothing else. | [operator.md](operator.md#route-manifest) |
 | router | The front door: terminates public TLS and routes application traffic by the signed manifest. | [operator.md](operator.md) |
 | **Operating a cluster** | | |
 | `c8s operator` | The controller-manager and admission webhooks; an ordinary cluster pod, not a person. | [operator.md](operator.md) |
-| launch configuration | The signed `launch.yaml` fixing a node's role, identity, and image measurements. | [launch-configuration.md](launch-configuration.md) |
-| launch key | The keypair a node boots with (`pubkey` on its config disk); its public half binds into the node's evidence. On a baked cluster the server launch key is also the operator key. | [launch-configuration.md](launch-configuration.md) |
+| launch configuration | The `worker.yaml` a measured worker boots from: the CDS it trusts, its control plane, and its ranges. | [launch-configuration.md](launch-configuration.md) |
+| launch binding | The launch file a guest's hardware report commits, by digest: a worker's document, or the CDS's configuration. | [launch-configuration.md](launch-configuration.md) |
 | `pod-injector`, `pod-validator` | The mutating and validating admission webhooks that give a pod its C8s shape. | [operator.md](operator.md) |
 | **Verifying a deployment** | | |
 | `c8s verify` | Client command that checks a component's evidence against the pins you supply. | [verify.md](verify.md) |

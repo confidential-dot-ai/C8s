@@ -1,0 +1,13 @@
+# Route ordinary pods through the measured runtime wrapper.
+#
+# containerd's runc shim runs the binary named here for every runtime verb, so
+# this is the one setting that decides whether a CRI exec request — kubectl
+# exec, an exec probe, a lifecycle hook — reaches runc. The locked image's
+# wrapper denies `runc exec` and passes everything else to the real runtime at
+# /usr/lib/c8s/worker/bin/runc. See c8s internal/cmds/c8srunc.
+#
+# containerd merges an import over the main config key by key, so the handler's
+# SystemdCgroup there survives this table.
+version = 4
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+  BinaryName = "/usr/local/bin/c8s-runc"

@@ -6,6 +6,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -31,9 +33,10 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
+	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -47,6 +50,15 @@ var (
 	allowlistApiMaxRetries   = 5
 	allowlistApiInitialDelay = 2 * time.Second
 )
+
+type containerdConnection interface {
+	containerdOps
+	Close() error
+}
+
+var newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
+	return ctrdresolver.NewResolver(socket, namespace)
+}
 
 var (
 	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached CDS allowlist")
@@ -75,11 +87,17 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == setMeasurePoliciesVerb {
-		return runSetMeasurePolicies(os.Stdout, args[1:])
-	}
-	if len(args) > 0 && args[0] == pluginReadyVerb {
-		return runPluginReady(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case checkConfigVerb:
+			return runCheckConfig(args[1:])
+		case checkContainerdConfigVerb:
+			return runCheckContainerdConfig(args[1:], os.Stdin)
+		case pluginReadyVerb:
+			return runPluginReady(args[1:])
+		case pluginRunningVerb:
+			return runPluginRunning(args[1:])
+		}
 	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to config file")
@@ -111,11 +129,24 @@ func Run(args []string) error {
 		"mode", startupSourceMode(cfg),
 	)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runConfigured(ctx, cfg, logger, healthServerConfig{
+		addr:         *healthAddr,
+		readTimeout:  *readTimeout,
+		writeTimeout: *writeTimeout,
+	})
+}
+
+// runConfigured is the startup path after configuration validation.
+func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health healthServerConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	logger.Debug("initializing containerd resolver",
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
 	)
-	resolver, err := ctrdresolver.NewResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
+	resolver, err := newContainerdResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
 	if err != nil {
 		return fmt.Errorf("create containerd resolver: %w", err)
 	}
@@ -133,8 +164,9 @@ func Run(args []string) error {
 	}
 
 	var (
-		wlClient allowlistclient.Client
-		pull     *allowlistPull
+		wlClient      allowlistclient.Client
+		pull          *allowlistPull
+		cdsHTTPClient *http.Client
 	)
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
@@ -143,13 +175,42 @@ func Run(args []string) error {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
 		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient).ForNodes()
+		cdsHTTPClient = httpClient
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
+	}
+	if err := plugin.prepareClientDocument(); err != nil {
+		return fmt.Errorf("prepare the Pod's client document: %w", err)
+	}
+	var podSecretsClient *http.Client
+	if cfg.PullEnabled() && cfg.podRole() {
+		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+			return fmt.Errorf("create Pod secrets client: %w", err)
+		}
+	}
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient, podSecretsClient); err != nil {
+		return fmt.Errorf("prepare Pod credential broker: %w", err)
+	}
+	defer plugin.closePodBroker()
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+		// NRI closes transport before every queued handler necessarily returns.
+		// Disconnect rejects late callbacks; this lock drains the active mutation.
+		plugin.disconnectPodStarts()
+		plugin.podMu.Lock()
+		clear(plugin.podStarts)
+		plugin.podMu.Unlock()
+	}()
+	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
+	if cfg.podRole() {
+		applyPolicy = plugin.applyPodPolicy
 	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
@@ -162,20 +223,9 @@ func Run(args []string) error {
 	}
 	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		logger.Info("received shutdown signal", "signal", sig)
-		cancel()
-	}()
-
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
 
-	if cfg.WorkloadClaims.PublishNodeIP {
+	if cfg.injectsCredentialClients() && cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
 		// first attempt runs here so the signer below reads a file this
@@ -185,7 +235,7 @@ func Run(args []string) error {
 		go publisher.run(ctx, publisher.publish())
 	}
 
-	addr := *healthAddr
+	addr := health.addr
 	if cfg.Plugin.HealthAddr != "" {
 		addr = cfg.Plugin.HealthAddr
 	}
@@ -194,18 +244,21 @@ func Run(args []string) error {
 		plugin:       plugin,
 		pull:         pull,
 		addr:         addr,
-		readTimeout:  *readTimeout,
-		writeTimeout: *writeTimeout,
+		readTimeout:  health.readTimeout,
+		writeTimeout: health.writeTimeout,
 	}); err != nil {
 		return fmt.Errorf("start health server on %q: %w", addr, err)
 	}
 
 	pluginErrCh := make(chan error, 1)
-	go func() {
-		pluginErrCh <- plugin.Run(ctx)
-	}()
+	startListener, err := plugin.listenPodStarts()
+	if err != nil {
+		return fmt.Errorf("start Pod runtime admission: %w", err)
+	}
+	workers.Add(1)
+	go func() { defer workers.Done(); pluginErrCh <- plugin.runWithPodStarts(ctx, startListener) }()
 
-	if plugin.inventory != nil {
+	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
 		if err := startAdmissionInventory(ctx, logger, cfg, cdsPins, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
@@ -224,6 +277,7 @@ func Run(args []string) error {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			apply:       applyPolicy,
 			measure:     measure,
 			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
@@ -259,18 +313,23 @@ func Run(args []string) error {
 	logger.Info("plugin ready")
 
 	if cfg.PullEnabled() {
-		go runPullLoop(ctx, pullLoopArgs{
-			client:   wlClient,
-			store:    store,
-			measure:  measure,
-			pull:     pull,
-			interval: cfg.Allowlist.Pull.Interval,
-			timeout:  cfg.Allowlist.Pull.Timeout,
-			etag:     initialETag,
-			logger:   logger,
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runPullLoop(ctx, pullLoopArgs{
+				client:   wlClient,
+				store:    store,
+				apply:    applyPolicy,
+				measure:  measure,
+				pull:     pull,
+				interval: cfg.Allowlist.Pull.Interval,
+				timeout:  cfg.Allowlist.Pull.Timeout,
+				etag:     initialETag,
+				logger:   logger,
 
-			killRevoked: plugin.KillRevoked,
-		})
+				killRevoked: plugin.KillRevoked,
+			})
+		}()
 	}
 
 	plugin.RunDeferredCheck(ctx)
@@ -345,6 +404,12 @@ func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slo
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
+	return cdsHTTPClientWithLeaf(cfg, pins, clusterDNS, nil)
+}
+
+// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
+// set, as its TLS client certificate.
+func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
 	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
 	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
 		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
@@ -352,6 +417,9 @@ func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS n
 			return nil, err
 		}
 		built.DialContext = dial
+		if clientCert != nil {
+			built.TLSClientConfig.GetClientCertificate = clientCert
+		}
 		return built, nil
 	})
 	if err != nil {
@@ -364,6 +432,7 @@ func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS n
 }
 
 type pullArgs struct {
+	apply       func(context.Context, *allowlist.Allowlist, uint64) error
 	client      allowlistclient.Client
 	store       *policyStore
 	measure     func(digest string) error // nil measures nothing
@@ -402,16 +471,22 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 			} else if wl == nil {
 				err = errInitialAllowlistNil
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
-				version := parseVersion(etag)
-				args.store.apply(wl, version)
-				args.pull.reached()
-				args.logger.Info("initial allowlist pulled from CDS",
-					"workloads", len(wl.Workloads),
-					"version", version,
-					"etag", etag,
-					"digest", served.Digest,
-				)
-				return etag, nil
+				version := parseVersion(served.Version)
+				if args.apply != nil {
+					err = args.apply(ctx, wl, version)
+				} else {
+					args.store.apply(wl, version)
+				}
+				if err == nil {
+					args.pull.reached()
+					args.logger.Info("initial allowlist pulled from CDS",
+						"workloads", len(wl.Workloads),
+						"version", version,
+						"etag", etag,
+						"digest", served.Digest,
+					)
+					return etag, nil
+				}
 			}
 		}
 
@@ -435,6 +510,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 }
 
 type pullLoopArgs struct {
+	apply    func(context.Context, *allowlist.Allowlist, uint64) error
 	client   allowlistclient.Client
 	store    *policyStore
 	measure  func(digest string) error // nil measures nothing
@@ -452,7 +528,8 @@ type pullLoopArgs struct {
 // pulled document, advances the ETag and kills the running containers it no
 // longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched. A
+// forward version arrives. 304 raises the applied version to the one CDS
+// serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
 // once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
@@ -478,15 +555,16 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		if notModified {
+			args.store.raiseAppliedVersion(parseVersion(served.Version))
 			args.pull.reached()
-			args.logger.Debug("pull loop: not modified", "etag", etag)
+			args.logger.Debug("pull loop: not modified", "etag", etag, "version", served.Version)
 			continue
 		}
 		if wl == nil {
 			args.logger.Warn("pull loop fetch returned nil allowlist")
 			continue
 		}
-		version := parseVersion(newETag)
+		version := parseVersion(served.Version)
 		// A rolled-back document is never enforced, so it is not measured.
 		if args.store.rolledBack(version) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
@@ -518,7 +596,15 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			}
 			continue
 		}
-		args.store.apply(wl, version)
+		if args.apply != nil {
+			if err := args.apply(ctx, wl, version); err != nil {
+				args.pull.failed(err)
+				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
+				continue
+			}
+		} else {
+			args.store.apply(wl, version)
+		}
 		args.pull.reached()
 		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
@@ -527,15 +613,17 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
-		args.killRevoked(ctx)
+		if args.apply == nil {
+			args.killRevoked(ctx)
+		}
 	}
 }
 
-// parseVersion extracts the monotone counter N from a weak ETag W/"N" — the CDS
-// mutation counter used for epoch anti-rollback. An unparseable ETag yields 0,
-// which can only be rejected as a rollback once a real version has been applied.
-func parseVersion(etag string) uint64 {
-	n, err := strconv.ParseUint(allowlistclient.VersionFromETag(etag), 10, 64)
+// parseVersion reads the CDS mutation counter a pull was served at, used for
+// epoch anti-rollback. An unparseable version yields 0, which can only be
+// rejected as a rollback once a real version has been applied.
+func parseVersion(version string) uint64 {
+	n, err := strconv.ParseUint(version, 10, 64)
 	if err != nil {
 		return 0
 	}
@@ -564,7 +652,11 @@ func (cfg healthServerConfig) allowlistStall() string {
 type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
-	AllowlistStall   string `json:"allowlist_stall,omitempty"`
+	PodUID           string `json:"pod_uid,omitempty"`
+	PodRegistered    bool   `json:"pod_registered,omitempty"`
+	// PodEnded reports that the Pod identity ended for the rest of this boot.
+	PodEnded       bool   `json:"pod_ended,omitempty"`
+	AllowlistStall string `json:"allowlist_stall,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -577,6 +669,11 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 			Status:           "ok",
 			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
 			AllowlistStall:   cfg.allowlistStall(),
+		}
+		if cfg.plugin.cfg.Pod != nil {
+			body.PodUID = cfg.plugin.cfg.Pod.UID
+			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
+			body.PodEnded = cfg.plugin.podEnded.Load()
 		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
@@ -1055,7 +1152,7 @@ func measureWith(measure func(string) error, digest string) error {
 // openPolicyJournal opens the journal over the hardware register. Vars so tests
 // can supply a key and a register.
 var (
-	readOperatorKey   = credrelease.ReadOperatorPubkey
+	readOperatorKey   = launchbinding.ReadOperatorPubkey
 	openPolicyJournal = openJournal
 )
 
@@ -1084,7 +1181,7 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 			journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
 		}
 		if journal == nil {
-			if errors.Is(err, credrelease.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
+			if errors.Is(err, launchbinding.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
 				err = fmt.Errorf("%w: %w", errPolicyRefused, err)
 			}
 			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
@@ -1185,7 +1282,7 @@ func createReadable(path string) error {
 // openJournal opens the measured-policy journal in dir over this node's
 // RTMR[3], whose launch seeded it from anchor.
 func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-	reg, err := runtimemeasure.Open(platform)
+	reg, err := openRegister(platform)
 	if err != nil {
 		return nil, err
 	}

@@ -25,7 +25,7 @@ func (m stubStartManager) Start(context.Context) error { return m.startErr }
 func stubRunWiring(t *testing.T, mgr manager.Manager, mgrErr error) {
 	t.Helper()
 	origConfig, origManager := getKubeConfig, newManager
-	getKubeConfig = func() (*rest.Config, error) { return &rest.Config{}, nil }
+	getKubeConfig = func(string) (*rest.Config, error) { return &rest.Config{}, nil }
 	newManager = func(*rest.Config, ctrl.Options) (manager.Manager, error) { return mgr, mgrErr }
 	t.Cleanup(func() { getKubeConfig, newManager = origConfig, origManager })
 }
@@ -65,6 +65,77 @@ func TestRunManagerCreateError(t *testing.T) {
 	err := Run(context.Background(), Options{})
 	if err == nil || !strings.Contains(err.Error(), "create manager: boom") {
 		t.Fatalf("Run error = %v, want wrapped create-manager error", err)
+	}
+}
+
+func TestRunWebhookHostRequiresInjectionImages(t *testing.T) {
+	for name, opts := range map[string]Options{
+		"both images missing": {},
+		"get-cert missing":    {MeshImage: "mesh"},
+		"mesh missing":        {GetCertImage: "get-cert"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := getKubeConfig
+			getKubeConfig = func(string) (*rest.Config, error) {
+				t.Fatal("loaded Kubernetes credentials before rejecting missing webhook images")
+				return nil, nil
+			}
+			t.Cleanup(func() { getKubeConfig = original })
+
+			opts.WebhookHost = "127.0.0.1"
+			err := Run(context.Background(), opts)
+			if err == nil || !strings.Contains(err.Error(), "--get-cert-image") || !strings.Contains(err.Error(), "--mesh-image") {
+				t.Fatalf("Run error = %v, want the external webhook's required image flags", err)
+			}
+		})
+	}
+}
+
+func TestDefaultAttestationApiURL(t *testing.T) {
+	cases := map[string]struct {
+		opts Options
+		want string
+	}{
+		"worker mode derives the node socket": {
+			opts: Options{WorkloadClaimsHostDir: "/run/nri-image-policy"},
+			want: "unix:///run/nri-image-policy/attestation-api.sock",
+		},
+		"explicit flag overrides the derived default": {
+			opts: Options{
+				WorkloadClaimsHostDir: "/run/nri-image-policy",
+				AttestationApiURL:     "http://attestation-api.c8s-system.svc:8400",
+			},
+			want: "http://attestation-api.c8s-system.svc:8400",
+		},
+		"chart mode (explicit flag, no host dir) is unchanged": {
+			opts: Options{AttestationApiURL: "http://attestation-api.c8s-system.svc:8400"},
+			want: "http://attestation-api.c8s-system.svc:8400",
+		},
+		"neither flag set stays empty": {
+			opts: Options{},
+			want: "",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := defaultAttestationApiURL(tc.opts); got != tc.want {
+				t.Fatalf("defaultAttestationApiURL(%+v) = %q, want %q", tc.opts, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunRejectsMalformedAttestationAPIURL(t *testing.T) {
+	original := getKubeConfig
+	getKubeConfig = func(string) (*rest.Config, error) {
+		t.Fatal("loaded Kubernetes credentials before rejecting a malformed --attestation-api-url")
+		return nil, nil
+	}
+	t.Cleanup(func() { getKubeConfig = original })
+
+	err := Run(context.Background(), Options{AttestationApiURL: "ftp://attestation-api"})
+	if err == nil || !strings.Contains(err.Error(), "--attestation-api-url") {
+		t.Fatalf("Run error = %v, want a rejected --attestation-api-url", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -74,7 +75,7 @@ func TestListenerRefusesAChangedBinding(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil { // records the router digest
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 
 	if w := f.getOn("1.1"); w.Code != http.StatusOK {
@@ -100,7 +101,7 @@ func TestListenerRefusesAChangedBinding(t *testing.T) {
 	}
 
 	// The binding stays refused once its digests hold again.
-	bindings.entries["1.1"] = f.bound()
+	bindings.entries["1.1"] = f.bound(t)
 	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
 		t.Fatalf("GET / on a refused connection whose digests hold again = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
 	}
@@ -126,19 +127,20 @@ func TestEmptyRouterDigestComparesAsAValue(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if code := f.proxy.changedSince(unbound, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changedSince(empty router digest) under a stamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
+	var changed *BindingChangedError
+	if err := f.proxy.checkBinding(unbound, f.state.Current()); !errors.As(err, &changed) || changed.Code != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("checkBinding(empty router digest) under a stamped router = %v, want %q", err, types.ErrorCodeRouterDigestChanged)
 	}
-	stamped := f.bound()
+	stamped := f.bound(t)
 	f.renew(t, issueLeaf(t, f.mesh, ""))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if code := f.proxy.changedSince(stamped, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changedSince(stamped router digest) under an unstamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
+	if err := f.proxy.checkBinding(stamped, f.state.Current()); !errors.As(err, &changed) || changed.Code != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("checkBinding(stamped router digest) under an unstamped router = %v, want %q", err, types.ErrorCodeRouterDigestChanged)
 	}
-	if code := f.proxy.changedSince(unbound, f.state.Current()); code != "" {
-		t.Fatalf("changedSince(empty router digest) under an unstamped router = %q, want none", code)
+	if err := f.proxy.checkBinding(unbound, f.state.Current()); err != nil {
+		t.Fatalf("checkBinding(empty router digest) under an unstamped router = %v, want none", err)
 	}
 }
 
@@ -148,7 +150,7 @@ func TestForwardRefusesAChangedBinding(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
 	f.apply(t, simpleManifest(1, web.addr()))
-	bound := f.bound()
+	bound := f.bound(t)
 	f.apply(t, simpleManifest(2, web.addr()))
 	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 	_, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, bound)
@@ -172,7 +174,7 @@ func TestRenewalBeforeThePollRefusesABoundDial(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
 	f.transports.For(backend) // built under the bound digest
@@ -195,10 +197,8 @@ func TestRenewalBeforeThePollRefusesABoundDial(t *testing.T) {
 	}
 }
 
-// TestRenewalBeforeThePollRefusesAnUnboundDial: the unbound request whose
-// dial retires the pools gets a retryable 503, not a backend 502, and the
-// next one is served.
-func TestRenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
+// An unbound dial retires pools on renewal and serves under the renewed leaf.
+func TestRenewalBeforeThePollServesAnUnboundDial(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
 	f.apply(t, simpleManifest(1, web.addr()))
@@ -209,8 +209,14 @@ func TestRenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
 	f.transports.For(backend)
 
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
-	if w := f.get("/"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("unbound GET / on a pool built before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("unbound GET / after renewal = %d %q, want 200", w.Code, w.Body.String())
+	}
+	if got := web.hits.Load(); got != 1 {
+		t.Fatalf("backend requests = %d, want 1", got)
+	}
+	if got := f.transports.RouterDigest(); got != string(digestOf(0x43)) {
+		t.Fatalf("RouterDigest() = %x, want %x", got, digestOf(0x43))
 	}
 	if w := f.get("/"); w.Code != http.StatusOK {
 		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
@@ -226,7 +232,7 @@ func TestTransportUnderAnotherDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
-	bound := f.bound()
+	bound := f.bound(t)
 	if _, ok := f.proxy.transport(route, &HeldBinding{Binding: bound}); !ok {
 		t.Fatal("transport(bound to the tracked digest) refused, want it")
 	}
@@ -248,11 +254,11 @@ func TestListenerRefusesAPoolUnderAnotherDigest(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
-	f.transports.For(backend)
-	key := backendKey(backend)
+	f.transports.ForRouterDigest(backend, bindings.entries["1.1"].RouterDigest)
+	key := poolKey{backend: backendKey(backend), pinned: true}
 	f.transports.mu.Lock()
 	pool := f.transports.cache[key]
 	pool.routerDigest = string(digestOf(0x44))
@@ -277,7 +283,7 @@ func TestUnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(t)})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
 	before := f.transports.For(backend)
@@ -293,7 +299,7 @@ func TestUnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
 		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
 	}
 	if w := f.getOn("1.1"); w.Code != http.StatusBadGateway {
-		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the dial fails, the binding holds)", w.Code, w.Body.String())
+		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the binding holds)", w.Code, w.Body.String())
 	}
 	f.publish(t, caPEM(f.mesh))
 	if err := f.transports.dropMeshPools(); err != nil {
@@ -336,5 +342,84 @@ func TestSyncRouterDigestReadsAnUnreadCredential(t *testing.T) {
 	}
 	if _, known := f.transports.knownRouterDigest(); !known {
 		t.Fatal("knownRouterDigest() after SyncRouterDigest = unknown, want the credential read")
+	}
+}
+
+// TestListenerChecksTheExpectedAllowlist: a request carrying
+// X-C8s-Expect-Allowlist is routed only while that digest is the router's,
+// read fresh, and the backend never sees the header.
+func TestListenerChecksTheExpectedAllowlist(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	get := func(expect string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = testHost
+		r.Header.Set(ExpectAllowlistHeader, expect)
+		w := httptest.NewRecorder()
+		f.proxy.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusOK {
+		t.Fatalf("GET / expecting the router digest = %d %q, want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := web.seen().header.Values(ExpectAllowlistHeader); len(got) != 0 {
+		t.Fatalf("backend saw %s %q, want it dropped", ExpectAllowlistHeader, got)
+	}
+
+	hits := web.hits.Load()
+	for _, expect := range []string{hex.EncodeToString(digestOf(0x43)), "not hex", hex.EncodeToString(testDigest[:16])} {
+		if w := get(expect); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+			t.Fatalf("GET / expecting %q = %d %q, want 503 %q", expect, w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+		}
+	}
+	// A renewal no poll has seen yet is read before the comparison.
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET / expecting the digest before a renewal = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	f.renew(t, issueLeaf(t, f.mesh, ""))
+	if w := get(hex.EncodeToString(testDigest)); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET / expecting a digest from an unstamped router = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	if got := web.hits.Load(); got != hits {
+		t.Fatalf("backend served %d requests after refusals, want %d", got, hits)
+	}
+}
+
+// TestListenerChecksTheExpectedRoute: a request carrying X-C8s-Expect-Route is
+// routed only while that digest is the applied one, and the backend never sees
+// the header.
+func TestListenerChecksTheExpectedRoute(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	digest := f.state.Current().Signed.Digest()
+	get := func(expect string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = testHost
+		r.Header.Set(ExpectRouteHeader, expect)
+		w := httptest.NewRecorder()
+		f.proxy.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := get(hex.EncodeToString(digest[:])); w.Code != http.StatusOK {
+		t.Fatalf("GET / expecting the applied route digest = %d %q, want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := web.seen().header.Values(ExpectRouteHeader); len(got) != 0 {
+		t.Fatalf("backend saw %s %q, want it dropped", ExpectRouteHeader, got)
+	}
+
+	hits := web.hits.Load()
+	f.apply(t, simpleManifest(2, web.addr()))
+	for _, expect := range []string{hex.EncodeToString(digest[:]), "not hex", hex.EncodeToString(digest[:16])} {
+		if w := get(expect); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
+			t.Fatalf("GET / expecting %q = %d %q, want 503 %q", expect, w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
+		}
+	}
+	if got := web.hits.Load(); got != hits {
+		t.Fatalf("backend served %d requests after refusals, want %d", got, hits)
 	}
 }

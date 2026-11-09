@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // attestationPath is the LB's explicit attest-pq endpoint for nonce-bound
@@ -115,6 +117,10 @@ type evidence struct {
 	// workloadErr records a carried matched-workload extension this build
 	// cannot interpret (or a duplicate). The verdict fails closed on it.
 	workloadErr error
+	// podLeaf marks a Pod CVM leaf: CDS issued it after verifying the pod's
+	// attestation, so it carries no hardware evidence of its own, and the
+	// chain to --mesh-ca is all that stands behind it (verifyPodLeaf).
+	podLeaf bool
 	// route is the route digest erd binds (attested modes only; nil
 	// otherwise).
 	route *boundRoute
@@ -257,6 +263,9 @@ func authorizeLeafBody(cert *x509.Certificate, body certutil.BodyAuthentication,
 // authenticateLeafBody + authorizeLeafBody enforce together.
 func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*evidence, error) {
 	platform, raw, params, err := localverify.CertEnvelope(cert)
+	if errors.Is(err, armtls.ErrNoAttestation) {
+		return podLeafEvidence(cert, source, trust)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +299,42 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 		frontDoor:         frontDoorNone,
 		sandboxID:         sandboxID,
 		sandboxErr:        sandboxErr,
+		workload:          workload,
+		workloadErr:       workloadErr,
+	}, nil
+}
+
+// podLeafEvidence accepts a leaf without the attestation extension only when
+// it names a Pod CVM instance and chains to --mesh-ca. CDS stamps such a leaf
+// after verifying the pod's attestation (docs/armtls.md), so the client that
+// verified CDS once and pinned its mesh CA trusts the leaf, and its stamps, by
+// that chain alone.
+func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*evidence, error) {
+	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
+	if sandboxErr != nil || !strings.HasPrefix(sandboxID, workloadclaims.PodInstancePrefix) {
+		return nil, armtls.ErrNoAttestation
+	}
+	if trust.meshCA == nil {
+		return nil, fmt.Errorf("%w: the leaf names Pod CVM %s, whose leaf CDS issued after attesting it; pass --mesh-ca to verify it by its chain", armtls.ErrNoAttestation, sandboxID)
+	}
+	if _, err := authorizeLeafBody(cert, certutil.BodyCAVouched, trust); err != nil {
+		return nil, err
+	}
+	if err := localverify.CheckServingLeaf(cert); err != nil {
+		return nil, &securityError{err: fmt.Errorf("serving %w", err)}
+	}
+	workload, workloadErr := armtls.MatchedWorkloadFromCert(cert)
+	sum := sha256.Sum256(cert.Raw)
+	return &evidence{
+		source:            source,
+		certSHA256:        hex.EncodeToString(sum[:]),
+		bindingNote:       "no hardware evidence on the leaf: CDS issued it to a Pod CVM it attested, and the leaf chains to the pinned --mesh-ca bundle",
+		leaf:              cert,
+		leafBody:          certutil.BodyCAVouched,
+		leafChainVerified: true,
+		frontDoor:         frontDoorNone,
+		podLeaf:           true,
+		sandboxID:         sandboxID,
 		workload:          workload,
 		workloadErr:       workloadErr,
 	}, nil

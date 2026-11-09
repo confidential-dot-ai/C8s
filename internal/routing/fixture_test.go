@@ -118,6 +118,13 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 // issueStampedLeaf is issueLeaf with the allowlist digest set to digest.
 func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
+	return issueAgentLeaf(t, ca, workload, digest, nil, dnsNames...)
+}
+
+// issueAgentLeaf is issueStampedLeaf carrying clientDocumentDigest when it is
+// not nil, as CDS stamps a pod CVM's leaf.
+func issueAgentLeaf(t testing.TB, ca *issuer.CA, workload string, digest, clientDocumentDigest []byte, dnsNames ...string) tls.Certificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +139,7 @@ func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byt
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID}
+	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, ClientDocumentDigest: clientDocumentDigest}
 	if workload != "" {
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
@@ -323,6 +330,7 @@ type manifestSpec struct {
 	notBefore time.Time
 	maxAge    time.Duration
 	hosts     map[string][]route
+	patterns  []routes.Pattern
 }
 
 func (m manifestSpec) bytes(t testing.TB) []byte {
@@ -341,13 +349,21 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 		}
 		hosts[name] = map[string]any{"routes": list}
 	}
-	b, err := json.Marshal(map[string]any{
+	doc := map[string]any{
 		"schema":        routes.Schema,
 		"revision":      m.revision,
 		"notBefore":     m.notBefore.UTC().Format(time.RFC3339),
 		"maxAgeSeconds": int64(m.maxAge / time.Second),
 		"hosts":         hosts,
-	})
+	}
+	if m.patterns != nil {
+		var list []any
+		for _, p := range m.patterns {
+			list = append(list, map[string]any{"hostSuffix": p.HostSuffix, "workload": p.Workload, "port": p.Port})
+		}
+		doc["patterns"] = list
+	}
+	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +382,7 @@ type fixture struct {
 	op            operator
 	clock         *fakeClock
 	state         *State
+	agents        *AgentIndex
 	transports    *Transports
 	proxy         *Proxy
 }
@@ -387,8 +404,9 @@ func newFixture(t testing.TB) *fixture {
 	}
 	f.identity = identity
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil))})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: newFakeBindings(nil), Timeout: 10 * time.Second})
+	f.agents = NewAgentIndex()
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil)), Agents: f.agents})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: newFakeBindings(nil), Timeout: 10 * time.Second, Agents: f.agents})
 	return f
 }
 
@@ -491,9 +509,12 @@ func (f *fixture) get(target string) *httptest.ResponseRecorder {
 	return w
 }
 
-// bound is the binding of a session admitted now: the applied manifest's
-// digest, zero before the first apply, and the router digest last polled.
-func (f *fixture) bound() Binding {
+// bound admits a session under the published credential and applied manifest.
+func (f *fixture) bound(t testing.TB) Binding {
+	t.Helper()
+	if err := f.transports.syncRouterDigest(); err != nil {
+		t.Fatal(err)
+	}
 	b := Binding{RouterDigest: f.transports.RouterDigest()}
 	if applied := f.state.Current(); applied != nil {
 		b.RouteDigest = applied.Signed.Digest()

@@ -82,6 +82,11 @@ func parseSourceIP(host string) net.IP {
 	return net.ParseIP(host)
 }
 
+// AdmitsDNSName reports whether ValidateCSR lets a CSR carry the DNS SAN name.
+func (p CSRPolicy) AdmitsDNSName(name string) bool {
+	return matchesAnyPattern(name, p.DNSSANPatterns)
+}
+
 // matchesAnyPattern reports whether value fully matches at least one of the
 // patterns. Nil entries are skipped, so a SAN passes if it satisfies any
 // configured allow-pattern.

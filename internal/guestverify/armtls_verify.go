@@ -34,13 +34,13 @@ func NewClient(exp Policy, timeout time.Duration) *http.Client {
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{TLSClientConfig: TLSConfig(exp)},
+		Transport: &http.Transport{TLSClientConfig: armTLSVerifiedConfig(exp)},
 	}
 }
 
-// TLSConfig verifies the peer's armTLS certificate against exp in place of
-// Go's chain and hostname checks.
-func TLSConfig(exp Policy) *tls.Config {
+// armTLSVerifiedConfig verifies the peer's armTLS certificate against exp in
+// place of Go's chain and hostname checks.
+func armTLSVerifiedConfig(exp Policy) *tls.Config {
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check

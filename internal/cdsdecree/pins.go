@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
@@ -57,6 +58,28 @@ func NewNodeImages(measurements []byte) (*NodeImages, error) {
 // Images are the node pins the decree names.
 func (n NodeImages) Images() (refvalues.ReferenceValues, error) {
 	return refvalues.Parse(n.json)
+}
+
+// RequireLaunchBindings requires every entry to bind the launch of the nodes
+// it certifies: an entry binding none certifies its image however the host
+// launched it. A set already in a cluster's log applies without it.
+func (n NodeImages) RequireLaunchBindings() error {
+	images, err := n.Images()
+	if err != nil {
+		return err
+	}
+	for _, image := range images.Images {
+		if !EntryBindsLaunch(image) {
+			return fmt.Errorf("entry %q binds no launch: give it an approver_key, launch_file or launch_file_digest", image.Name)
+		}
+	}
+	return nil
+}
+
+// EntryBindsLaunch reports whether one entry binds the launch of the guests
+// it admits: by approver key, launch file or launch file digest.
+func EntryBindsLaunch(image remote.ImagePin) bool {
+	return image.Anchor != nil || image.LaunchFile != nil || image.LaunchFileDigest != nil
 }
 
 // PinDocument is the image set a decree pins a CDS to: the cluster's

@@ -51,7 +51,7 @@ func (r *Resolver) Resolve(ctx context.Context, imageRef string) (string, error)
 
 	// containerd stores images under their fully-qualified names
 	// (e.g. docker.io/library/nginx:1.27); kubelet may pass short
-	// forms (nginx:1.27, rancher/local-path-provisioner:v0.0.30).
+	// forms (nginx:1.27, cilium/cilium:v1.19.6).
 	// Normalize before looking up.
 	normalized := imageRef
 	if named, err := reference.ParseDockerRef(imageRef); err == nil {

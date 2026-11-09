@@ -267,14 +267,21 @@ func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
 	return pins
 }
 
-// The node images bind no launch file of their own.
 func testNodeImages(t *testing.T, digests ...byte) *cdsdecree.NodeImages {
+	t.Helper()
+	return nodeImagesBoundTo(t, nil, digests...)
+}
+
+// nodeImagesBoundTo pins one TDX node image per digest, each bound to the
+// launch file of this SHA-384, none for nil.
+func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *cdsdecree.NodeImages {
 	t.Helper()
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
 		images = append(images, remote.ImagePin{
-			Name:   fmt.Sprintf("node-%02x", digest),
-			Digest: bytes.Repeat([]byte{digest}, refvalues.DigestSize),
+			Name:             fmt.Sprintf("node-%02x", digest),
+			Digest:           bytes.Repeat([]byte{digest}, refvalues.DigestSize),
+			LaunchFileDigest: launched,
 		})
 	}
 	document, err := refvalues.Format(refvalues.ReferenceValues{
@@ -415,8 +422,12 @@ func newPeerReplica(
 }
 
 // serve starts the replica's peer port on the loopback.
-func (r *testReplica) serve(t *testing.T) {
+func (r *testReplica) serve(t *testing.T, handlers ...controlHandler) {
 	t.Helper()
+	answer := r.answer
+	if len(handlers) > 0 {
+		answer = handlers[0]
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -430,7 +441,7 @@ func (r *testReplica) serve(t *testing.T) {
 		raftAddr{endpoint: endpoint, member: r.member},
 		r.certificate,
 		r.verifier(),
-		r.answer,
+		answer,
 	)
 	r.mux.serving()
 	t.Cleanup(func() { r.mux.Close() })

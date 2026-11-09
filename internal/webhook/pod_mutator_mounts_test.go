@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"maps"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -22,8 +24,8 @@ const (
 	chartRuntimeDir     = "/run/nri-image-policy"
 )
 
-// chartMeshEntrypoint is the endpoint image's entrypoint, which the chart
-// carries in c8sComponents.
+// chartMeshEntrypoint is the endpoint image's entrypoint, which the chart's
+// component table carries.
 var chartMeshEntrypoint = []string{"/app/c8s", "armtls-mesh"}
 
 // chartSeed renders the chart with the operator image derived and returns the
@@ -33,23 +35,25 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
-	out, err := exec.Command("helm", "template", "c8s", "../helmchart/c8s",
+	cmd := exec.Command("helm", "template", "c8s", testutil.RepoPath("charts", "cloud"),
+		"-f", testutil.RepoPath("charts", "cloud", "values-gke-snp.yaml"),
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--show-only", "templates/allowlist-seed.yaml",
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "cds.address=10.9.9.9:8443",
 		"--set-file", "cds.measurementsConfig=../testdata/cds-pin.json",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.digest="+chartMeshDigest,
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
-	).CombinedOutput()
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
+		t.Fatalf("helm template: %v\n%s", err, stderr.Bytes())
 	}
 	for _, doc := range strings.Split(string(out), "\n---\n") {
 		var cm corev1.ConfigMap
@@ -66,11 +70,11 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	return nil
 }
 
-// chartImageEnv reads one component image's Env from the chart's
-// c8sComponents, named by its valuePath.
+// chartImageEnv reads one component image's Env from the chart's component
+// table, named by its valuePath.
 func chartImageEnv(t *testing.T, valuePath string) map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile("../helmchart/c8s/values.yaml")
+	raw, err := os.ReadFile(testutil.RepoPath("charts", "lib", "files", "components.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,7 @@ func chartImageEnv(t *testing.T, valuePath string) map[string]string {
 		Components []struct {
 			ValuePath string            `json:"valuePath"`
 			ImageEnv  map[string]string `json:"imageEnv"`
-		} `json:"c8sComponents"`
+		} `json:"components"`
 	}
 	if err := yaml.Unmarshal(raw, &values); err != nil {
 		t.Fatal(err)
@@ -88,7 +92,7 @@ func chartImageEnv(t *testing.T, valuePath string) map[string]string {
 			return c.ImageEnv
 		}
 	}
-	t.Fatalf("values.yaml declares no %s", valuePath)
+	t.Fatalf("components.yaml declares no %s", valuePath)
 	return nil
 }
 

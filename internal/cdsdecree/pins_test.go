@@ -3,7 +3,10 @@ package cdsdecree
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
+	"slices"
 	"strings"
 	"testing"
 
@@ -123,6 +126,53 @@ func TestDecreeNodePinsAreADocument(t *testing.T) {
 	d.NodePins = &NodeImages{document{json: []byte(`{"tee":"nothing"}`)}}
 	if err := verifySigned(t, key, keys, d); err == nil {
 		t.Fatal("a decree carrying no node pin document verified")
+	}
+}
+
+// A node entry certifies its image only as launched with what it binds. A new
+// set must bind every entry, and a decree carrying one that does not still
+// verifies, so a cluster replays a log that already holds it.
+func TestRequireLaunchBindingsCoversEveryEntry(t *testing.T) {
+	key, keys := operatorKey(t)
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchKey := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	launched := []byte("schemaVersion: c8s-worker/v1\n")
+	digest := sha256.Sum256(launched)
+	bound := []remote.ImagePin{
+		{Name: "anchor", Digest: register(0x21), Anchor: launchKey},
+		{Name: "launch file", Digest: register(0x22), LaunchFile: launched},
+		{Name: "launch file digest", Digest: register(0x23), LaunchFileDigest: digest[:]},
+	}
+	unbound := remote.ImagePin{Name: "unbound", Digest: register(0x24)}
+	for _, tc := range []struct {
+		name    string
+		images  []remote.ImagePin
+		wantErr bool
+	}{
+		{"every binding", bound, false},
+		{"an entry binding nothing", append(slices.Clone(bound), unbound), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			measurements, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: tc.images})
+			if err != nil {
+				t.Fatal(err)
+			}
+			images, err := NewNodeImages(measurements)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := images.RequireLaunchBindings(); (err != nil) != tc.wantErr {
+				t.Errorf("RequireLaunchBindings = %v, want error %v", err, tc.wantErr)
+			}
+			d := complete(t, SetNodeImages)
+			d.NodePins = images
+			if err := verifySigned(t, key, keys, d); err != nil {
+				t.Errorf("Verify = %v, want a decree a cluster already logged to verify", err)
+			}
+		})
 	}
 }
 

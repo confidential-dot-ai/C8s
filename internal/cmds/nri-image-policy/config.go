@@ -1,6 +1,10 @@
 package nriimagepolicy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -16,8 +20,10 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // config represents the plugin configuration.
@@ -34,11 +40,64 @@ type config struct {
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
-	Mesh *meshPolicy `yaml:"mesh"`
+	Mesh    *meshPolicy   `yaml:"mesh"`
+	Measure measureConfig `yaml:"measure"`
+	Pod     *podConfig    `yaml:"pod,omitempty"`
+	// Worker marks a worker, whose Kubernetes control plane runs outside
+	// its TEE; only the worker image's measured config sets it.
+	Worker bool `yaml:"worker"`
 
 	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
 	// from what names it (cdsaddress.go). "" when nothing does.
 	cdsAddress string
+}
+
+// podConfig is the signed identity the guest preparation stages. Runtime UID
+// and sandbox identity come independently from NRI, never from this document.
+type podConfig struct {
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
+	// ClientDocument is the signed assignment's client document, empty when
+	// it carried none. Its digest goes into the Pod claims and every
+	// container reads it at workloadclaims.ClientDocumentPath.
+	ClientDocument clientDocument `yaml:"client_document,omitempty"`
+}
+
+// clientDocument is opaque bytes, standard base64 in the configuration.
+type clientDocument []byte
+
+func (d *clientDocument) UnmarshalYAML(node *yaml.Node) error {
+	var value string
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(decoded) > podassign.MaxClientDocument {
+		return errors.New("pod.client_document must be standard base64 of a bounded client document")
+	}
+	*d = decoded
+	return nil
+}
+
+// digest is the client document's lowercase hex SHA-256, empty for an empty
+// document.
+func (d clientDocument) digest() string {
+	if len(d) == 0 {
+		return ""
+	}
+	h := sha256.Sum256(d)
+	return hex.EncodeToString(h[:])
+}
+
+// measureConfig extends each started workload's image digest into RTMR[3]
+// (pod-role CVMs only; set by node-services prepare), into the measured-policy
+// journal under workload_claims.socket_dir, seeded with the staged launch key
+// the register already holds. It excludes allowlist.pull.measure_policies: a
+// boot has one RTMR[3] writer.
+type measureConfig struct {
+	RTMR3 bool `yaml:"rtmr3"`
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -79,8 +138,8 @@ type workloadClaimsConfig struct {
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
 // entries. The chart's component entries pin each container's argv and mount
-// table and leave env open; the node image's generated RKE2 system entries
-// leave command and args open.
+// table and leave env open; a worker image's floor pins every command and
+// leaves args open only where the pod chooses them.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -189,9 +248,9 @@ type policyConfig struct {
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
-	// denies one on a plugin restart. For the measured node image, where the
-	// plugin is pre-registered and containerd's required_plugins gate means no
-	// container can legitimately predate it. See bootgate.go.
+	// denies one on a plugin restart. For the measured node image, where
+	// containerd's required_plugins gate means no container can legitimately
+	// predate the plugin's first registration. See bootgate.go.
 	FatalExisting bool `yaml:"fatal_existing"`
 	// BootMarkerPath separates the first registration since boot from a plugin
 	// restart. Must be on tmpfs: a marker that survived a reboot would read
@@ -247,8 +306,8 @@ const defaultPullTimeout = 30 * time.Second
 const NodeIPFile = "node-ip"
 
 // DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, the file set-measure-policies patches, and the
-// measured policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+// resolves for this plugin, and the measured policy the node's runtime
+// wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -258,6 +317,11 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
+	return completeConfig(data)
+}
+
+// completeConfig parses data and completes its runtime role bindings.
+func completeConfig(data []byte) (*config, error) {
 	cfg, err := parseConfig(data)
 	if err != nil {
 		return nil, err
@@ -276,9 +340,43 @@ func loadConfig(path string) (*config, error) {
 	return cfg, nil
 }
 
-// parseConfig validates static configuration for the plugin and
-// set-measure-policies.
-// loadConfig completes runtime role bindings before validating them.
+// CheckBootConfig loads data the way the plugin loads its configuration file
+// at start, refusing any key the plugin does not read, so a misspelt key is an
+// error rather than a server's rules.
+func CheckBootConfig(data []byte) error {
+	_, err := checkedConfig(data)
+	return err
+}
+
+// checkedConfig is the configuration the plugin would run with, or the error
+// it would exit with.
+func checkedConfig(data []byte) (*config, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&config{}); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return completeConfig(data)
+}
+
+// CheckWorkerConfig loads data the way the plugin does and requires a worker's
+// posture: worker: true, and policy measurement.
+func CheckWorkerConfig(data []byte) error {
+	cfg, err := checkedConfig(data)
+	if err != nil {
+		return err
+	}
+	if !cfg.Worker {
+		return errors.New("config does not set worker: true")
+	}
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return errors.New("worker requires allowlist.pull.measure_policies: its evidence records each served allowlist it applies")
+	}
+	return nil
+}
+
+// parseConfig validates static configuration for the plugin. loadConfig
+// completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -346,11 +444,17 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// injectsCredentialClients reports whether a pod of this node carries the
-// webhook's credential clients: the inventory directory is what the plugin
-// mounts into them, and without it no pod of this node is injected.
+// podRole reports whether this boot is a pod CVM's: the signed pod section is
+// present, and validatePod ties it to measure.rtmr3 and mesh.pod, so the
+// plugin asks this one question wherever the two roles part.
+func (c *config) podRole() bool {
+	return c.Pod != nil
+}
+
+// injectsCredentialClients excludes a pod CVM: measuring its workloads does
+// not grant containers access to node credential services.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != ""
+	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
 // PullEnabled: a config naming two CDS sources never loads (cdsSource), so
@@ -465,6 +569,12 @@ func (c *config) Validate() error {
 	if c.Allowlist.NodeTCB && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.node_tcb needs a non-empty allowlist.base: it exempts the base's digests from the sandbox policy")
 	}
+	// The exemption rests on the base being measured with the image, which is
+	// the worker image's floor; the only other base is a chart-rendered one,
+	// chosen by the admin the policy defends against.
+	if c.Allowlist.NodeTCB && !c.Worker {
+		return errors.New("allowlist.node_tcb requires worker: true: a measured base is a worker image's floor")
+	}
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
@@ -479,13 +589,84 @@ func (c *config) Validate() error {
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
 	}
+	if c.Measure.RTMR3 {
+		if c.Allowlist.Pull.MeasurePolicies {
+			return ErrPodRoleMeasurePolicies
+		}
+		if filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+			return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
+		}
+	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
 	}
 	if err := c.validateMesh(); err != nil {
 		return err
 	}
+	if err := c.validatePod(); err != nil {
+		return err
+	}
+	if err := c.validateWorker(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+func (c *config) validatePod() error {
+	if !c.Measure.RTMR3 && c.Pod == nil && c.Mesh.Pod == nil {
+		return nil
+	}
+	if c.Worker {
+		return errors.New("a Pod guest is not a worker")
+	}
+	if !c.Measure.RTMR3 || c.Pod == nil || c.Mesh.Pod == nil {
+		return fmt.Errorf("the Pod broker requires measure.rtmr3 and the signed pod uid, namespace and name")
+	}
+	if c.NormalizedPlatform() != "tdx" || !c.PullEnabled() || c.Allowlist.Pull.CDSMeasurementsConfig == "" || c.Allowlist.NodeTCB || c.Policy.Mode != ModeFailClosed || c.Policy.Sandbox != SandboxEnforce || !c.Policy.FatalExisting {
+		return fmt.Errorf("the Pod broker requires TDX, authenticated CDS pull and fail-closed sandbox enforcement without node TCB")
+	}
+	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
+		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
+	}
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
+		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
+	}
+	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
+		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
+	}
+	if err := c.Mesh.Pod.validate(); err != nil {
+		return err
+	}
+	return c.validatePodImages()
+}
+
+// validateWorker requires a worker to enforce its policy and to exempt no
+// namespace.
+func (c *config) validateWorker() error {
+	if !c.Worker {
+		return nil
+	}
+	if !c.enforcesWorkerPolicy() {
+		return fmt.Errorf("worker requires allowlist.node_tcb, allowlist.base, policy.mode %q, policy.sandbox %q and policy.deny_missing_annotation", ModeFailClosed, SandboxEnforce)
+	}
+	if len(c.Mesh.ExemptNamespaces) > 0 {
+		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	if c.Mesh.CredentialAttestationPort != 0 {
+		return errors.New("worker requires no mesh.credential_attestation_port: its credential clients verify through the node's attestation socket")
+	}
+	return nil
+}
+
+// enforcesWorkerPolicy reports whether c's base allowlist is the node's TCB
+// and its policy fails closed, enforces sandbox checks and denies containers
+// without an image annotation.
+func (c *config) enforcesWorkerPolicy() bool {
+	return c.Allowlist.NodeTCB &&
+		c.Allowlist.Base != nil &&
+		c.Policy.Mode == ModeFailClosed &&
+		c.Policy.Sandbox == SandboxEnforce &&
+		c.Policy.DenyMissingAnnotation
 }
 
 // validateMesh requires a mesh policy this node can enforce.
@@ -535,7 +716,7 @@ func (c *config) validateMeshRoleBindings() error {
 // install, where the mesh runs for test clusters and the admin who wrote the
 // policy could undo the enforcement anyway.
 func (c *config) requiresTrustedMeshEnforcement() bool {
-	return c.Allowlist.NodeTCB
+	return c.Allowlist.NodeTCB || c.Measure.RTMR3
 }
 
 // validateLabelRules checks label rules for errors.

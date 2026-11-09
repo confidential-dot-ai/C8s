@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/charts"
 )
 
 // The teardown script is the pre-delete hook's whole body and had no test that
@@ -15,7 +17,7 @@ import (
 // That is how a swallowed close failure shipped, so these run the shipped bytes
 // against a fixture tree.
 
-const teardownScriptPath = "c8s/files/scripts/volumed-teardown.sh"
+const volumedTeardownFSPath = CloudChartFSPath + "/files/scripts/volumed-teardown.sh"
 
 type teardownFixture struct {
 	root   string
@@ -36,9 +38,9 @@ func newTeardownFixture(t *testing.T, mappings []string, mounted []string, close
 		log:    filepath.Join(dir, "calls.log"),
 	}
 
-	body, err := ChartFS.ReadFile(teardownScriptPath)
+	body, err := charts.FS.ReadFile(volumedTeardownFSPath)
 	if err != nil {
-		t.Fatalf("read %s from the chart: %v", teardownScriptPath, err)
+		t.Fatalf("read %s from the chart: %v", volumedTeardownFSPath, err)
 	}
 	if err := os.WriteFile(f.script, body, 0o755); err != nil {
 		t.Fatalf("write script: %v", err)

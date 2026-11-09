@@ -284,6 +284,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 func TestMeshPolicyAddressesAreParsedAtLoad(t *testing.T) {
 	document := func(resolver, port string) []byte {
 		return []byte(`
+worker: true
 allowlist:
   node_tcb: true
   base:
@@ -299,6 +300,8 @@ allowlist:
 policy:
   mode: fail-closed
   fatal_existing: true
+  sandbox: enforce
+  deny_missing_annotation: true
   boot_marker_path: /run/nri-image-policy/registered
 mesh:
   resolver: "` + resolver + `"
@@ -409,6 +412,7 @@ func TestRequireRoleIdentity(t *testing.T) {
 		role    string
 		user    *api.User
 		refused bool
+		wants   string
 	}{
 		{name: "role on its own uid", role: testCertRole, user: &api.User{Uid: testCertUID, Gid: testCertUID}},
 		{name: "role on another uid", role: testCertRole, user: &api.User{Uid: testWorkloadUID}, refused: true},
@@ -417,6 +421,7 @@ func TestRequireRoleIdentity(t *testing.T) {
 			name:    "workload on root uid",
 			user:    &api.User{},
 			refused: true,
+			wants:   "set securityContext.runAsUser to a nonzero uid",
 		},
 		{name: "workload on a reserved uid", user: &api.User{Uid: testMeshUID}, refused: true},
 		{name: "workload on a reserved gid", user: &api.User{Uid: testWorkloadUID, Gid: testMeshUID}, refused: true},
@@ -430,6 +435,9 @@ func TestRequireRoleIdentity(t *testing.T) {
 			err := policy.requireRoleIdentity(&api.Container{User: tc.user}, tc.role)
 			if (err != nil) != tc.refused {
 				t.Fatalf("requireRoleIdentity = %v, refused=%v", err, tc.refused)
+			}
+			if tc.wants != "" && !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("error = %v, want it to name %q", err, tc.wants)
 			}
 		})
 	}

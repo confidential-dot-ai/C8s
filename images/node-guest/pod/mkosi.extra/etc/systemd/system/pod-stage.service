@@ -1,0 +1,18 @@
+[Unit]
+Description=Stage the signed pod launch document and the pod's boot inputs
+Requires=attestation-api.service
+After=network-online.target attestation-api.service
+Wants=network-online.target
+# A pod CVM that cannot stage its document powers off.
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ${CRED_PLATFORM} comes from the pod sync's platform drop-in.
+ExecStart=/usr/local/bin/pod-stage.sh
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

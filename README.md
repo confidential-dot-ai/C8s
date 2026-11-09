@@ -69,7 +69,9 @@ that satisfy its admission, image, and network policies.
   ([`cmd/armtls-mesh/README.md`](cmd/armtls-mesh/README.md)).
 
 - **Node-as-CVM.** Run the whole node as one confidential virtual machine
-  (CVM). Supported modes are `bare-metal`, `gke`, and `aks`. See
+  (CVM). `c8s install` deploys on the platforms `aks-snp`, `aks-tdx` and
+  `gke-snp`; a cluster of workers boots the measured node image
+  ([`images/node-guest/README.md`](images/node-guest/README.md)). See
   [Architecture](#architecture).
 
 - **Measured boot end to end.** Node images boot via the IGVM guest-image
@@ -118,8 +120,8 @@ that satisfy its admission, image, and network policies.
   post-quantum over-encrypted channel let end users verify the cluster with
   no special client, via [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js).
 
-- **One-command install.** `c8s install --cvm-mode=<shape>` brings all of this
-  to an existing cluster (vanilla Kubernetes or RKE2, including AKS
+- **One-command install.** `c8s install --platform=<platform>` brings all of
+  this to an existing cluster running upstream containerd (including AKS
   confidential node pools, where both SEV-SNP and Intel TDX attest through the
   Azure vTPM).
 
@@ -161,19 +163,18 @@ virtualization (for example Azure AKS).
 
 ## Quickstart
 
-Install C8s onto an existing cluster. The full walkthrough is
-[docs/QUICKSTART.md](docs/QUICKSTART.md); the hosted version with
-provisioning guides is at
+Install C8s onto an existing cluster. The walkthrough with provisioning
+guides is at
 [confidential.ai/docs/c8s](https://confidential.ai/docs/c8s/how-to/install).
 
 ### Prerequisites
 
-- A Kubernetes cluster (vanilla or RKE2) with platform-admin permissions.
+- A Kubernetes cluster running upstream containerd, with platform-admin
+  permissions.
 - SEV-SNP / TDX confidential VMs as nodes for node-as-CVM
   (see the [first-cluster tutorial](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster)).
   Node kernels must expose the selected TEE attestation interface and support
-  the admission inventory's `SO_PEERPIDFD` checks — see
-  [docs/QUICKSTART.md](docs/QUICKSTART.md).
+  the admission inventory's `SO_PEERPIDFD` checks.
 - An external CDS CVM, or capacity to launch one before installing. Its measured
   configuration must pin your operator public key; installation needs its
   address and `cds-pin.json` (see [operator docs](docs/operator.md)).
@@ -183,11 +184,16 @@ provisioning guides is at
 ### Install
 
 ```sh
-# Build and install the c8s CLI
-git clone https://github.com/confidential-dot-ai/c8s
+# Build and install the c8s CLI of a release
+git clone --branch <RELEASE_TAG> https://github.com/confidential-dot-ai/c8s
 cd c8s
 make install
 ```
+
+`c8s install` pins the component images to the digests of the `c8s-cloud`
+chart released at its own version, so build it from a release tag. A build of
+any other commit needs `--chart` and image values
+(`c8s install --help`).
 
 For an existing CDS, reuse the operator keypair matching its measured
 configuration and its `cds-pin.json`. For a new CDS, generate the keypair first:
@@ -213,25 +219,23 @@ listening on port 8443. `--workload-ref` uses
 
 ```sh
 # Install and adopt the workload; follow install's route-manifest instructions
-c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
+c8s install --platform=aks-snp --namespace c8s-system \
   --operator-keys operator.pub \
   --cds-address <ip:port of your CDS> --cds-pin cds-pin.json \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 
-`--cvm-mode` is required and has no default — `bare-metal`, `gke`, and `aks` are the
-node-as-CVM shapes. `--hardware-platform` is required the
-same way: `sev-snp` or `tdx`. An unstated shape would silently mismatch the
-cluster it lands on, so the install refuses to guess.
+`--platform` names the cluster's confidential VMs: `aks-snp`, `aks-tdx` or
+`gke-snp`, which is unverified on a GKE node. Without it the `-f` files must
+set `confidentialNodeSelector`, `attestationApi.devices`,
+`nriImagePolicy.platform` and `router.attest.platform` themselves, or the
+chart refuses to render.
 
 `--workload-ref` adopts the workload, patches its pod template with
 `confidential.ai/cw: vllm`, and resolves its images into the bootstrap allowlist.
 The adopted workload needs no separate annotation step (see
 [existing workload adoption](docs/operator.md#existing-workload-adoption)).
-If you would rather not trust install-time digest resolution, pass
-`--resolve-digests=false` and allowlist the digests yourself — see
-[Managing the image allowlist](#managing-the-image-allowlist).
 
 ### Opt workloads in
 
@@ -296,7 +300,7 @@ attestation and reports the operator keys it pins.
 | Component | Description | Docs |
 |---|---|---|
 | [`cmd/cds`](cmd/cds/) | Certificate Distribution Service - verifies TEE attestation evidence, signs workload CSRs with an in-process mesh CA, and serves the allowlist and secret-release APIs | [operator docs](docs/operator.md) |
-| [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm chart | [operator docs](docs/operator.md) |
+| [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm charts | [operator docs](docs/operator.md) |
 | [`cmd/get-cert`](cmd/get-cert/) | CLI tool and init-container for TEE-attested certificate provisioning | [README](cmd/get-cert/README.md) |
 | [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Transparent L4 proxy wrapping inter-node K8s traffic in armTLS | [README](cmd/armtls-mesh/README.md) |
 | [`cmd/nri-image-policy`](cmd/nri-image-policy/) | NRI plugin enforcing the image and argv allowlist on the host; also the node's admission inventory | [allowlist](docs/allowlist-and-capabilities.md) |
@@ -322,12 +326,14 @@ attestation and reports the operator keys it pins.
 
 ```text
 api/               CRD types
+charts/            Helm charts, embedded into the c8s binary: c8s-cloud,
+                   c8s-worker, c8s-control-plane and the c8s-lib library
 cmd/               Binaries: c8s, get-cert, armtls-mesh, nri-image-policy
                    (cmd/cds is only
                    the Dockerfile for the `c8s cds` subcommand,
                    internal/cmds/cds)
 internal/          Operator, webhook, attestation, mesh CA, secret store,
-                   embedded Helm chart
+                   chart extraction
 pkg/               Public Go libraries (see Libraries above)
 images/node-guest/ The node-image definition for node-as-CVM
 images/cds-guest/  The CDS-image definition for the CDS as its own CVM
@@ -368,9 +374,9 @@ make clean
 CDS serves the image-digest allowlist that `nri-image-policy` consumes alongside
 its node policy. The `c8s allowlist` command reads and mutates it. By default,
 router publishes the complete `/allowlist` API and verifies CDS's attestation before forwarding requests.
-When router uses the chart default CDS-issued public certificate
-(`router.publicTLS.secretName` is empty, discovery mode `cds`), point the CLI at
-the same router URL used for application traffic; no port-forward is required.
+When router serves the CDS-issued public certificate (discovery mode `cds`),
+point the CLI at the same router URL used for application traffic; no
+port-forward is required.
 
 ```sh
 ROUTER=https://<router-host>
@@ -391,10 +397,11 @@ c8s allowlist upload allowlist.json \
   --operator-key operator.key
 ```
 
-For a bare-metal install, pass `--cvm-mode bare-metal` to `allowlist upload`;
-its required component set uses the measured host attestation service. GKE, AKS,
-and uploads without a mode require the attestation-api image. `--require`
-overrides the required set.
+`allowlist upload` takes its own `--cvm-mode`, which `c8s install` no longer
+has: pass `--cvm-mode bare-metal` for a cluster of workers, whose required
+component set uses the measured host attestation service. GKE, AKS, and uploads
+without a mode require the attestation-api image. `--require` overrides the
+required set.
 
 `--measurements` identifies the trusted build of the endpoint you connected
 to. Here `<router-launch-digest>` is the launch digest of the confidential node
@@ -412,17 +419,6 @@ credential signing it, would go to whatever answered. A plaintext `--insecure`
 dev endpoint is exempt: it already declares that nothing about it is
 attested.
 
-Do not point this CLI at router when `router.publicTLS.secretName` is set. That
-front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
-not cryptographically bound to the discovery attestation, so the CLI
-deliberately refuses it. Use the CDS address the install was given instead, with
-the pin it was given:
-
-```sh
-c8s allowlist export --url https://<CDS_ADDRESS> \
-  --image-policy-file cds-pin.json
-```
-
 Writes are authorized by an operator EC keypair whose **public** half CDS
 pins in its measured launch configuration. Reuse the matching keypair from
 [Install](#install), supplying the same public key to the router:
@@ -432,18 +428,15 @@ c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
 The install flag supplies the router's trusted route-signing keys; it does not
-change CDS's operator keys. `c8s install` requires `--force` when neither
-`--operator-keys` nor a values file is supplied. This CLI guard does not determine
-CDS write authorization. Supply the private key to the CLI by flag
+change CDS's operator keys. Without it the router uses the keys the pinned
+CDS serves. Supply the private key to the CLI by flag
 (`--operator-key`) or environment (`C8S_OPERATOR_KEY`). Write tokens are
 short-lived and bound to the request body, so a captured token cannot be
 replayed against a different payload. The private key remains on the operator
 machine: router forwards only
 the signed request and CDS verifies it against the pinned public key.
 
-Set `router.allowlist.enabled=false` to remove the built-in public route. A
-direct connection to the CDS address can still be passed explicitly with
-`--url`.
+A direct connection to the CDS address can also be passed with `--url`.
 
 Verify CDS's root of trust — its launch measurement and the operator key set it
 serves — before exposing public ingress, using your own install inputs (the
@@ -461,10 +454,9 @@ A swapped key set fails this closed. The check protects the verifier that runs
 it, so run it continuously (CI), not only at bootstrap.
 
 Operator-key changes require updating CDS's measured configuration and the
-client pins that bind it. For GitOps consumers,
-`c8s render-values --operator-keys operator.pub` embeds the router's trusted
-key bundle as PEM content (the chart value takes content, never a file path);
-the chart wiring is described in [docs/operator.md](docs/operator.md).
+client pins that bind it. For GitOps consumers, `cds.operatorKeys` takes the
+router's trusted key bundle as PEM content, never a file path; the chart wiring
+is described in [docs/operator.md](docs/operator.md).
 
 ## Manage the route manifest
 
@@ -482,10 +474,10 @@ Per-role image names remain stable, but each image copies the same multi-mode
 `c8s` binary and sets an appropriate entrypoint. See
 [docs/releases.md](docs/releases.md) for the version policy.
 
-The measured `node-guest-base` artifacts follow the same root release with
-platform-qualified exact aliases such as `rke2-tdx-v0.1.0` and
-`rke2-snp-cdi-v0.1.0`; they intentionally have no ambiguous bare or moving
-SemVer alias.
+The measured guest images follow the same root release with TEE-qualified exact
+aliases such as `guests/worker:v0.1.0-tdx` and
+`guests/worker:v0.1.0-sev-snp-kubevirt`; they intentionally have no ambiguous
+bare or moving SemVer alias.
 
 | Image | Base | Notes |
 |---|---|---|
@@ -533,8 +525,8 @@ than let you discover them:
 - **The image allowlist gates digest and command line, not the rest of the
   pod spec.** Each container's `command` prefix and `args` remainder are
   enforced against the effective argv, env values are enforced by both backends,
-  and bind-mount destinations are enforceable in the guest; capabilities and the
-  remaining pod-spec fields are not. Nothing enforces which images run
+  and an `exact` mount policy pins each bind mount's destination and source
+  class; capabilities and the remaining pod-spec fields are not. Nothing enforces which images run
   *together* — every running image must be allowlisted, but no gate requires
   the set in one pod to match a single workload entry.
 
@@ -548,10 +540,7 @@ than let you discover them:
   injected secret fetcher is a native sidecar, so it keeps running alongside
   the workload.
 
-- **Encrypted volumes are attached at node boot, and a force-deleted volume
-  pod leaks its dm stack.** A volume reaches a node-as-CVM node as a block
-  device declared in the VM spec; adding one to a running node is not
-  supported (it is a VM spec change and a node reboot). `volumed` tears a
+- **A force-deleted volume pod leaks its dm stack.** `volumed` tears a
   volume down only when the pod's cgroup empties; a `kubectl delete pod
   --force --grace-period=0` that leaves it populated leaves the
   dm-crypt/dm-verity targets and the mount behind, with the volume key

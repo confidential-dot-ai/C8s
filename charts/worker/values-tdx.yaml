@@ -1,0 +1,5 @@
+router:
+  attest:
+    platform: tdx
+    ## The browser verifier takes the processor generation for SNP alone.
+    generation: ""

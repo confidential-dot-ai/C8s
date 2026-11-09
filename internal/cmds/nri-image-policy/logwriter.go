@@ -8,10 +8,11 @@ import (
 )
 
 // logWriter is where the plugin's log and audit records go: the configured
-// syslog socket, one JSON record per message, or else stdout.
-func logWriter(cfg loggingConfig) (io.Writer, error) {
+// syslog socket, one JSON record per message, or else stdout. Close releases
+// the syslog connection and leaves the process's stdout open.
+func logWriter(cfg loggingConfig) (io.WriteCloser, error) {
 	if cfg.Syslog == "" {
-		return os.Stdout, nil
+		return stdoutLog{os.Stdout}, nil
 	}
 	w, err := syslog.Dial("unixgram", cfg.Syslog, syslog.LOG_INFO|syslog.LOG_DAEMON, "nri-image-policy")
 	if err != nil {
@@ -19,3 +20,8 @@ func logWriter(cfg loggingConfig) (io.Writer, error) {
 	}
 	return w, nil
 }
+
+// stdoutLog keeps the process's stdout open when the log sink is closed.
+type stdoutLog struct{ io.Writer }
+
+func (stdoutLog) Close() error { return nil }

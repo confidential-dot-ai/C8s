@@ -1,9 +1,8 @@
 package nodeservices
 
 import (
-	"bytes"
-	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,45 +11,20 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-func testPins(t *testing.T) refvalues.ReferenceValues {
+// testCDS is the CDS block a staged document carries: the cluster's CDS on
+// another TEE family than this node's, at the pin floor its launch named.
+func testCDS(t *testing.T) cmdsutil.CDS {
 	t.Helper()
-	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pins
-}
-
-// document is a staged launch configuration of the node image the staged
-// peer policy pins, under the server launch key that policy anchors.
-func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
-	t.Helper()
-	server := testPins(t).Images[0]
-	return &launchconfig.Document{
-		SchemaVersion: launchconfig.SchemaVersion, Role: role,
-		CDS: launchconfig.CDS{
-			Address:      "cds.example.org:8443",
-			Measurements: string(externalCDSPin(t)),
-			PinFloor:     9,
-		},
-		Image: launchconfig.Image{
-			Platform:    "tdx",
-			Measurement: hex.EncodeToString(server.Digest),
-			RTMRs: map[int]string{
-				1: hex.EncodeToString(server.Registers[1]),
-				2: hex.EncodeToString(server.Registers[2]),
-			},
-		},
-		Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(server.Anchor)},
-		TLSSAN: "c8s.local",
+	return cmdsutil.CDS{
+		Address:      "cds.example.org:8443",
+		Measurements: string(externalCDSPin(t)),
+		PinFloor:     9,
 	}
 }
 
@@ -74,12 +48,6 @@ func prepareRoot(t *testing.T) string {
 	for name, data := range map[string]string{"image-policy.yaml": meshFloor, "allowlist-seed.json": seed} {
 		writeInput(t, root, "/usr/lib/c8s/"+name, []byte(data))
 	}
-	peers, err := refvalues.Format(testPins(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeInput(t, root, launchDir+"peers.json", peers)
-	writeInput(t, root, launchDir+"config.json", []byte(`{"rke2":{"serverToken":"SECRET-SERVER-TOKEN","agentToken":"SECRET-AGENT-TOKEN"}}`))
 	return root
 }
 
@@ -96,54 +64,53 @@ func basePolicy(t *testing.T, v any) *allowlist.Allowlist {
 	return base
 }
 
-func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
-	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-		t.Run(string(role), func(t *testing.T) {
-			root := prepareRoot(t)
-			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
-				t.Fatal(err)
-			}
-			data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got, before map[string]any
-			if err := yaml.Unmarshal(data, &got); err != nil {
-				t.Fatal(err)
-			}
-			if err := yaml.Unmarshal([]byte(floor), &before); err != nil {
-				t.Fatal(err)
-			}
-			ga := got["allowlist"].(map[string]any)
-			if !reflect.DeepEqual(got["policy"], before["policy"]) {
-				t.Fatal("changed baked enforcement policy")
-			}
-			base := basePolicy(t, ga["base"])
-			original := basePolicy(t, before["allowlist"].(map[string]any)["base"])
-			if !reflect.DeepEqual(base.Workloads["system"], original.Workloads["system"]) {
-				t.Fatal("changed baked system workload")
-			}
-			if len(base.Workloads) != 2 || len(base.Workloads["operator"].Containers) != 1 {
-				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
-			}
-			pull := ga["pull"].(map[string]any)
-			if pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
-				t.Fatalf("bad pull config: %v", pull)
-			}
-			// The floor must arrive as the number the enforcer reads.
-			if floor := publishedPinFloor(t, pull); floor != doc.CDS.PinFloor {
-				t.Fatalf("pull cds_pin_floor = %d, want the launch document's %d", floor, doc.CDS.PinFloor)
-			}
-		})
+// Staging completes the measured floor: the baked enforcement policy and
+// system workload stay as they are, the chart's components join the base, and
+// the pull section names the CDS the document carries.
+func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
+	root := prepareRoot(t)
+	cds := testCDS(t)
+	if err := Prepare(root, FloorInputs{CDS: cds}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, before map[string]any
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(floor), &before); err != nil {
+		t.Fatal(err)
+	}
+	ga := got["allowlist"].(map[string]any)
+	if !reflect.DeepEqual(got["policy"], before["policy"]) {
+		t.Fatal("changed baked enforcement policy")
+	}
+	base := basePolicy(t, ga["base"])
+	original := basePolicy(t, before["allowlist"].(map[string]any)["base"])
+	if !reflect.DeepEqual(base.Workloads["system"], original.Workloads["system"]) {
+		t.Fatal("changed baked system workload")
+	}
+	if len(base.Workloads) != 2 || len(base.Workloads["operator"].Containers) != 1 {
+		t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
+	}
+	pull := ga["pull"].(map[string]any)
+	if pull["url"] != cmdsutil.CDSURL(cds.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+		t.Fatalf("bad pull config: %v", pull)
+	}
+	// The floor must arrive as the number the enforcer reads.
+	if floor := publishedPinFloor(t, pull); floor != cds.PinFloor {
+		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, cds.PinFloor)
 	}
 }
 
-func TestPublishNodeIPHonorsAuthenticatedAddress(t *testing.T) {
+// The address a node publishes is world-readable, so every non-root component
+// can read the attestation-api address, and one no peer can dial is refused.
+func TestPublishNodeAddressWritesAReadableRoutableAddress(t *testing.T) {
 	root := t.TempDir()
-	doc := document(t, launchconfig.Agent)
-	doc.Node.IP = "192.0.2.22"
-	if err := PublishNodeIP(root, doc); err != nil {
+	if err := PublishNodeAddress(root, netip.MustParseAddr("192.0.2.22")); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, nodeIPPath))
@@ -154,81 +121,43 @@ func TestPublishNodeIPHonorsAuthenticatedAddress(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(root, nodeIPPath)); err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("node-ip mode = %v, %v, want 0644", info.Mode().Perm(), err)
 	}
-	for _, ip := range []string{"0.0.0.0", "127.0.0.1", "::1"} {
-		doc.Node.IP = ip
-		if err := PublishNodeIP(t.TempDir(), doc); err == nil {
+	for _, ip := range []string{"0.0.0.0", "127.0.0.1", "::1", "224.0.0.1"} {
+		if err := PublishNodeAddress(t.TempDir(), netip.MustParseAddr(ip)); err == nil {
 			t.Errorf("accepted %s", ip)
 		}
 	}
 }
 
-func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
-	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-		t.Run(string(role), func(t *testing.T) {
-			root := prepareRoot(t)
-			doc := document(t, role)
-			if err := Prepare(root, doc); err != nil {
-				t.Fatal(err)
-			}
-			entries, err := os.ReadDir(filepath.Join(root, PublicDir))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var names []string
-			for _, entry := range entries {
-				names = append(names, entry.Name())
-				if entry.IsDir() {
-					continue // router/, covered by TestPrepareWritesRouterInputs
-				}
-				info, err := entry.Info()
-				if err != nil || info.Mode().Perm() != 0644 {
-					t.Fatalf("public file permissions: %v, %v", info, err)
-				}
-				data, err := os.ReadFile(filepath.Join(root, PublicDir, entry.Name()))
-				if err != nil || bytes.Contains(data, []byte("SECRET-")) {
-					t.Fatalf("secret or unreadable public file %s: %v", entry.Name(), err)
-				}
-			}
-			want := []string{"cds.json", "peers.json"}
-			if role == launchconfig.Server {
-				want = []string{"cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
-				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
-					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
-					if err != nil || string(data) != expected {
-						t.Fatalf("public %s does not match authenticated document: %v", name, err)
-					}
-				}
-			}
-			if !reflect.DeepEqual(names, want) {
-				t.Fatalf("public files = %v, want %v", names, want)
-			}
-			original, err := os.ReadFile(filepath.Join(root, launchDir, "peers.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			public, err := os.ReadFile(filepath.Join(root, PublicDir, "peers.json"))
-			if err != nil || !bytes.Equal(original, public) {
-				t.Fatalf("changed authenticated peers.json: %v", err)
-			}
-			private, err := os.Stat(filepath.Join(root, launchDir, "config.json"))
-			if err != nil || private.Mode().Perm() != 0600 {
-				t.Fatalf("private launch config permissions: %v, %v", private, err)
-			}
-		})
-	}
-}
-
-func TestPrepareAgentRemovesServerOutputs(t *testing.T) {
+// Every file Prepare publishes is world-readable, and one it published before
+// is removed when the next staging does not name it.
+func TestPreparePublishesWorldReadableOutputsAndClearsTheRest(t *testing.T) {
 	root := prepareRoot(t)
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	router, err := RouterOutputs(Router{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Prepare(root, document(t, launchconfig.Agent)); err != nil {
+	if len(router) != len(routerOutputNames) {
+		t.Fatalf("the router inputs are %d files, want the %d staging clears", len(router), len(routerOutputNames))
+	}
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t), Outputs: router}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range serverOutputNames {
+	for _, name := range routerOutputNames {
+		info, err := os.Stat(filepath.Join(root, PublicDir, name))
+		if err != nil || info.Mode().Perm() != 0o644 {
+			t.Fatalf("public %s mode = %v, %v, want 0644", name, info, err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(root, PublicDir, CDSOutput)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("public %s mode = %v, %v, want 0644", CDSOutput, info, err)
+	}
+
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range routerOutputNames {
 		if _, err := os.Stat(filepath.Join(root, PublicDir, name)); !os.IsNotExist(err) {
-			t.Fatalf("agent retained server output %s: %v", name, err)
+			t.Fatalf("staging kept %s, which it did not publish: %v", name, err)
 		}
 	}
 }
@@ -240,47 +169,43 @@ func TestPrepareRejectsChartFloorNameCollision(t *testing.T) {
 		"different args":   strings.ReplaceAll(collision, `"args":{"policy":"any"}`, `"args":{"policy":"deny"}`),
 		"different mounts": strings.ReplaceAll(collision, `"args":{"policy":"any"}`, `"args":{"policy":"any"},"mounts":{"policy":"any"}`),
 	} {
-		for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-			t.Run(name+"/"+string(role), func(t *testing.T) {
-				root := prepareRoot(t)
-				writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(incoming))
-				if err := Prepare(root, document(t, role)); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
-					t.Fatalf("accepted chart replacing system floor: %v", err)
-				}
-			})
-		}
+		t.Run(name, func(t *testing.T) {
+			root := prepareRoot(t)
+			writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(incoming))
+			if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
+				t.Fatalf("accepted chart replacing system floor: %v", err)
+			}
+		})
 	}
 }
 
 func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
-	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
-		root := prepareRoot(t)
-		writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(strings.ReplaceAll(seed, "operator", "system")))
-		if err := Prepare(root, document(t, role)); err != nil {
-			t.Fatalf("%s: identical measured floor entry: %v", role, err)
-		}
-		data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got map[string]any
-		if err := yaml.Unmarshal(data, &got); err != nil {
-			t.Fatal(err)
-		}
-		base := basePolicy(t, got["allowlist"].(map[string]any)["base"])
-		if len(base.Workloads) != 1 {
-			t.Fatalf("duplicate bootstrap entry: %v", base.Workloads)
-		}
+	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(strings.ReplaceAll(seed, "operator", "system")))
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+		t.Fatalf("identical measured floor entry: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	base := basePolicy(t, got["allowlist"].(map[string]any)["base"])
+	if len(base.Workloads) != 1 {
+		t.Fatalf("duplicate bootstrap entry: %v", base.Workloads)
 	}
 }
 
 func TestPrepareWritesRouterInputs(t *testing.T) {
 	tests := []struct {
 		name   string
-		router *launchconfig.Router
+		router Router
 		want   map[string]string
 	}{
-		{"unset", nil, map[string]string{
+		{"unset", Router{}, map[string]string{
 			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
 			"hostnames":          "",
 			"acme-email":         "",
@@ -288,11 +213,11 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"front-door-mode":    "cds\n",
 			"request-body.conf":  "client_max_body_size 1048576;\n",
 		}},
-		{"body limit", &launchconfig.Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
+		{"body limit", Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
 			"front-door-mode":   "cds\n",
 			"request-body.conf": "client_max_body_size 67108864;\n",
 		}},
-		{"public", &launchconfig.Router{
+		{"public", Router{
 			Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 			ACMEEmail:        "ops@confidential.ai",
 			ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -308,9 +233,11 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			root := prepareRoot(t)
-			doc := document(t, launchconfig.Server)
-			doc.Router = tc.router
-			if err := Prepare(root, doc); err != nil {
+			outputs, err := RouterOutputs(tc.router)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Prepare(root, FloorInputs{CDS: testCDS(t), Outputs: outputs}); err != nil {
 				t.Fatal(err)
 			}
 			for name, want := range tc.want {
@@ -327,14 +254,8 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	}
 
 	// An unvalidated document still cannot publish nginx syntax.
-	root := prepareRoot(t)
-	doc := document(t, launchconfig.Server)
-	doc.Router = &launchconfig.Router{Hostnames: []string{`a.example.com; return 200 "x"`}}
-	if err := Prepare(root, doc); err == nil {
-		t.Fatal("injected hostname was published")
-	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "hostnames")); !os.IsNotExist(err) {
-		t.Fatalf("rejected document published router input: %v", err)
+	if _, err := RouterOutputs(Router{Hostnames: []string{`a.example.com; return 200 "x"`}}); err == nil {
+		t.Fatal("an injected hostname became a router input")
 	}
 }
 
@@ -344,9 +265,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
-	doc := document(t, launchconfig.Server)
-
-	if err := Prepare(root, doc); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -382,7 +301,7 @@ func TestPrepareRefusesABakedConfigWithoutAMeshPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(floor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil {
 		t.Fatal("staging completed a baked config with no mesh policy")
 	}
 }
@@ -401,7 +320,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor+tc.role))
 
-			if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+			if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil {
 				t.Fatal("staging completed a policy that already binds the credential role")
 			}
 		})
@@ -414,7 +333,7 @@ func TestPrepareKeepsTheMeasuredRoles(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(roleFloor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,14 +427,14 @@ const meshPolicy = `mesh:
 const meshFloor = floor + meshPolicy
 
 // publishedPinFloor is the floor the enforcer reads out of the pull section.
-func publishedPinFloor(t *testing.T, pull map[string]any) uint64 {
+func publishedPinFloor(t *testing.T, pull map[string]any) cmdsutil.ClusterVersion {
 	t.Helper()
 	data, err := yaml.Marshal(pull)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var read struct {
-		PinFloor uint64 `yaml:"cds_pin_floor"`
+		PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
 	}
 	if err := yaml.Unmarshal(data, &read); err != nil {
 		t.Fatal(err)

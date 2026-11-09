@@ -203,6 +203,11 @@ exemption only downgrades a denial — the label rules and the allowlist still r
 and still audit — and never a host-privilege refusal
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
 
+An exempt namespace sits outside the mesh gate too: its pods came up before any
+enforcer connected, so the plugin requires every name in
+`policy.exempt_namespaces` to appear in `mesh.exempt_namespaces`, and the cloud
+chart renders the second list from the first.
+
 The captured set is persisted and is loaded, not recaptured, on a restart or
 reboot: on a reboot containerd gates every container on this plugin, so the
 plugin would see an empty node and freeze nothing. Only the installer rewriting

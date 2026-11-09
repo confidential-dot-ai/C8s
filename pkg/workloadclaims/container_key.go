@@ -29,7 +29,7 @@ func (c SandboxContainer) Key() string {
 	} else {
 		key.WriteByte('[')
 		for _, m := range c.Mounts {
-			fmt.Fprintf(&key, "{%q %q %q %q %t %q}", m.Destination, m.Class, m.Storage, m.HostSourceDigest, m.ReadOnly, m.Provenance)
+			fmt.Fprintf(&key, "{%q %q %q %q %q %t %q}", m.Destination, m.Class, m.Storage, m.Volume, m.HostSourceDigest, m.ReadOnly, m.Provenance)
 		}
 		key.WriteByte(']')
 	}

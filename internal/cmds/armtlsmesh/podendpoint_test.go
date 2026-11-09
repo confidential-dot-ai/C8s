@@ -407,22 +407,20 @@ func TestRequireDeliverable(t *testing.T) {
 	}
 }
 
-// A captured connection leaves the pod and enters its peer on an application
-// port.
+// A captured connection leaves the pod, and never for a mesh port.
 func TestRequireMeshDestination(t *testing.T) {
-	endpoint := &podEndpoint{
-		own: podAddresses{netip.MustParseAddr("10.42.0.7")},
-	}
 	tests := []struct {
 		dst     string
 		wantErr bool
 	}{
 		{"10.42.0.9:8080", false},
 		{"10.42.0.7:8080", true},
+		{"10.42.0.9:15001", true},
 		{"10.42.0.9:15006", true},
 		{"10.42.0.9:15021", true},
 	}
 	for _, tc := range tests {
+		endpoint := &podEndpoint{own: podAddresses{netip.MustParseAddr("10.42.0.7")}}
 		err := endpoint.requireMeshDestination(netip.MustParseAddrPort(tc.dst))
 		if (err != nil) != tc.wantErr {
 			t.Errorf("requireMeshDestination(%q) = %v, wantErr %v", tc.dst, err, tc.wantErr)

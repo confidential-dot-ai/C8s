@@ -882,6 +882,9 @@ type Peer struct {
 	// match was decided under, empty with WorkloadName.
 	AllowlistVersion string
 	AllowlistDigest  []byte
+	// ClientDocumentDigest is the client document digest CDS stamped on the
+	// leaf, nil where it stamped none.
+	ClientDocumentDigest []byte
 	// Purpose is the TLS purpose the peer's role required of it:
 	// serverAuth for the peer a mesh client reached, clientAuth for the peer
 	// a mesh server accepted.
@@ -967,9 +970,14 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 		if err != nil {
 			return fmt.Errorf("armtls: mesh peer matched workload: %w", err)
 		}
+		clientDocument, err := clientDocumentDigestFromCert(leaf)
+		if err != nil {
+			return fmt.Errorf("armtls: mesh peer client document: %w", err)
+		}
 		peer := Peer{
-			SandboxID: sandboxID,
-			Purpose:   peerPurpose,
+			SandboxID:            sandboxID,
+			ClientDocumentDigest: clientDocument,
+			Purpose:              peerPurpose,
 		}
 		if matched != nil {
 			peer.WorkloadName = matched.Name

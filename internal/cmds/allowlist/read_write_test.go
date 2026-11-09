@@ -38,7 +38,7 @@ func servingCDS(t *testing.T, digests map[string]string) (url string, methods *[
 		mu.Unlock()
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"7"`)
+			w.Header().Set(pkgallowlist.VersionHeader, "7")
 			_, _ = w.Write(body)
 			return
 		}

@@ -28,13 +28,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -43,7 +43,7 @@ import (
 const (
 	// AnnotationWorkload names the workload a pod belongs to and requests a
 	// SAN for its leaf. Injection does not depend on it.
-	AnnotationWorkload = "confidential.ai/cw"
+	AnnotationWorkload = workloadclaims.AnnotationWorkloadID
 
 	// AnnotationInjected is stamped on pods after a successful mutation
 	// so re-invocations of the webhook are no-ops. Shared with the node's
@@ -80,7 +80,7 @@ const (
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
 	// list of NAME=/store/path. NAME is the file each value is written to
 	// under the secrets directory. Setting it injects the fetcher sidecar.
-	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	AnnotationSecrets = workloadclaims.AnnotationSecrets
 	// AnnotationSecretDir once moved the secrets directory. It is refused
 	// unless it names the fixed one; see pinnedDestinations.
 	AnnotationSecretDir = "confidential.ai/c8s-secret-dir"
@@ -120,7 +120,7 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 // endpoint, the fetchers and the workload — resolves the same three paths.
 const (
 	// CertVolumeName is the injected memory-backed credential volume.
-	CertVolumeName = "c8s-certs"
+	CertVolumeName = podmesh.CertVolumeName
 	// CertDir is where the injected containers mount it; no other container
 	// may (rejectCredentialMounts).
 	CertDir  = workloadclaims.MemberCertDir
@@ -131,14 +131,14 @@ const (
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
-const secretsVolumeName = "c8s-secrets"
+const secretsVolumeName = workloadclaims.SecretsVolumeName
 
 // The injected sidecars' mount destinations. The allowlist pins each
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
 // cannot move them.
 const (
 	// defaultSecretDir is where the fetcher writes, matching its own default.
-	defaultSecretDir = "/run/c8s/secrets"
+	defaultSecretDir = workloadclaims.SecretDir
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
 	discoveryMountPath = "/run/c8s/discovery"
 )
@@ -174,6 +174,9 @@ const reservedMeshContainerName = workloadclaims.MeshContainerName
 
 // Config tunes the injector.
 type Config struct {
+	// PodCVMProviderEnabled routes explicitly opted-in Pods to the virtual node.
+	PodCVMProviderEnabled bool
+
 	// GetCertImage is the c8s multi-mode binary image used for the
 	// injected get-cert containers.
 	GetCertImage string
@@ -298,10 +301,10 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 		WorkloadID: id,
 		SAN:        selectSAN(annotations, id, namespace),
 		Secrets: secretsSpec{
-			Specs: listAnnotation(annotations, AnnotationSecrets),
+			Specs: workloadclaims.SplitList(annotations[AnnotationSecrets]),
 		},
 		Volumes: volumesSpec{
-			Specs: listAnnotation(annotations, AnnotationVolumes),
+			Specs: workloadclaims.SplitList(annotations[AnnotationVolumes]),
 			Dir:   strings.TrimSpace(annotations[AnnotationVolumeDir]),
 		},
 		Discovery: discoverySpec{
@@ -362,22 +365,6 @@ func boolAnnotation(annotations map[string]string, name string) (bool, error) {
 		return false, fmt.Errorf("%w %s: %v", errInvalidInjectionAnnotation, name, err)
 	}
 	return parsed, nil
-}
-
-func listAnnotation(annotations map[string]string, name string) []string {
-	value := strings.TrimSpace(annotations[name])
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	items := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item != "" {
-			items = append(items, item)
-		}
-	}
-	return items
 }
 
 func hasInjectionDetailAnnotations(annotations map[string]string) bool {
@@ -565,6 +552,9 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	if err := m.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+	if response, handled := handlePodCVM(req, pod, m.decoder, m.cfg, true); handled {
+		return response
+	}
 
 	// An ephemeral container is attached to a running pod, so nothing here is
 	// injected — the only decision is whether it may reach what the injected
@@ -623,8 +613,8 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return resp
 }
 
-// serviceLinksWarning tells the pod's author that mutatePod overrode an
-// explicit enableServiceLinks: true.
+// serviceLinksWarning tells the pod's author that mutatePod turned service
+// links off.
 const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them; set enableServiceLinks: false in the pod template to silence this warning"
 
 // rejectUnservedRequests requires the inventory socket for injected credentials.
@@ -646,7 +636,7 @@ func (cfg Config) rejectUnservedRequests(inj *injection) error {
 // rejectReservedResources refuses a pod in scope that occupies something the
 // injector owns and cannot safely reconcile: a reserved container name, a
 // reserved volume under another shape, a credential mount outside the platform
-// containers, or a mesh port.
+// containers, a mesh port, or a container the privilege floor always refuses.
 func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error {
 	if err := rejectHostNetwork(pod); err != nil {
 		return err
@@ -674,6 +664,12 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 		return err
 	}
 	if err := rejectUnforwardableProbes(pod); err != nil {
+		return err
+	}
+	if err := podmesh.RefusePrivilegesAboveFloor(pod); err != nil {
+		return err
+	}
+	if err := rejectRootContainers(pod); err != nil {
 		return err
 	}
 	return rejectSharedNamespaces(pod)
@@ -852,6 +848,8 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	pod.Spec.EnableServiceLinks = new(false)
 	pod.Spec.AutomountServiceAccountToken = new(false)
 
+	podmesh.ApplyPrivilegeFloor(pod)
+
 	probes := rewriteWorkloadProbes(pod)
 	// The pod's own endpoint leads: it runs before any credential exists.
 	injected := []corev1.Container{
@@ -908,82 +906,7 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 // pod's fsGroup owns the credential volume, which is how the mesh role reads a
 // key get-cert's UID wrote.
 func meshContainer(cfg Config, probes []string) corev1.Container {
-	always := corev1.ContainerRestartPolicyAlways
-	return corev1.Container{
-		Name:            reservedMeshContainerName,
-		Image:           cfg.MeshImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		RestartPolicy:   &always,
-		Args: []string{
-			"--cert-path=" + certPath(certFile),
-			"--key-path=" + certPath(keyFile),
-			"--ca-path=" + certPath(caFile),
-		},
-		// The pod's probe targets, which vary per pod: a node's measured
-		// policy pins the endpoint's arguments and mounts for every member
-		// pod alike (images/node-guest/c8s/image-policy.yaml.in).
-		Env: meshEnv(probes),
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      CertVolumeName,
-				MountPath: CertDir,
-				ReadOnly:  true,
-			},
-		},
-		SecurityContext: meshSecurityContext(),
-		// Startup reports initialization, readiness adds usable credentials
-		// and working listeners: one minute to initialize, and endpoints
-		// withdrawn after 15 unready seconds.
-		StartupProbe:   meshProbe("/startupz", 1, 60),
-		ReadinessProbe: meshProbe("/readyz", 5, 3),
-	}
-}
-
-// meshEnv names the probes the injector rewrote onto the health port. A pod
-// with none leaves the endpoint forwarding nothing.
-func meshEnv(probes []string) []corev1.EnvVar {
-	if len(probes) == 0 {
-		return nil
-	}
-	return []corev1.EnvVar{
-		{
-			Name:  workloadclaims.MeshProbesEnv,
-			Value: workloadclaims.JoinMeshProbePaths(probes),
-		},
-	}
-}
-
-// meshSecurityContext is the mesh role's floor: its reserved UID and no
-// capabilities, because the pod's packet rules are the node enforcer's.
-func meshSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: new(false),
-		ReadOnlyRootFilesystem:   new(true),
-		RunAsNonRoot:             new(true),
-		RunAsUser:                new(int64(workloadclaims.MeshUID)),
-		RunAsGroup:               new(int64(workloadclaims.MeshUID)),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-	}
-}
-
-// meshProbe is an HTTP probe on the endpoint's health port, every field set so
-// a stored pod still matches what the injector built. Never exec: that would
-// run another process inside the mesh role.
-func meshProbe(path string, period, failureThreshold int32) *corev1.Probe {
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path:   path,
-				Port:   intstr.FromInt32(workloadclaims.MeshHealthPort),
-				Scheme: corev1.URISchemeHTTP,
-			},
-		},
-		PeriodSeconds:    period,
-		TimeoutSeconds:   1,
-		SuccessThreshold: 1,
-		FailureThreshold: failureThreshold,
-	}
+	return podmesh.Endpoint(cfg.MeshImage, probes)
 }
 
 // certContainer is the workload's mesh-cert sidecar. It publishes the pod's

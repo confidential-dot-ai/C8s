@@ -11,10 +11,12 @@ package cdsha_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha512"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -69,6 +71,23 @@ const (
 	noAnswer = 0
 )
 
+// raftBackend is the backend a launch file selects with ha.voters.
+const raftBackend = "raft"
+
+// backend is the replica backend every cluster of this run runs; CDSHA_BACKEND
+// picks another, raft by default.
+var backend = cmp.Or(os.Getenv("CDSHA_BACKEND"), raftBackend)
+
+// raftOnly skips a scenario about Raft's own membership: voter seats,
+// majorities and leadership handoff. Every other scenario is the contract each
+// backend keeps.
+func raftOnly(t *testing.T) {
+	t.Helper()
+	if backend != raftBackend {
+		t.Skipf("a scenario of the raft backend, and this run's is %s", backend)
+	}
+}
+
 // nextCDSImage is the CDS image an image roll adds beside the one the replicas run.
 const nextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
@@ -99,13 +118,15 @@ var (
 	nextNodeImages      = nodeImagesCertifying(nextNodeImage)
 )
 
-// A node pin document, as `ha decree node-images --nodes` reads one.
+// A node pin document, as `ha decree node-images --nodes` reads one, each
+// image bound to the launch file its nodes boot.
 func nodeImagesCertifying(images ...nodeImage) string {
+	launched := sha512.Sum384([]byte("schemaVersion: c8s-worker/v1\n"))
 	entries := make([]string, 0, len(images))
 	for _, image := range images {
-		entries = append(entries, fmt.Sprintf(`{"name":%q,"mrtd":%q}`, image.name, image.mrtd))
+		entries = append(entries, fmt.Sprintf(`{"name":%q,"mrtd":%q,"launch_file_digest":"%x"}`, image.name, image.mrtd, launched))
 	}
-	return `{"schema_version":"1","tee":"tdx","measurements":[` + strings.Join(entries, ",") + `]}`
+	return `{"schema_version":"2","tee":"tdx","measurements":[` + strings.Join(entries, ",") + `]}`
 }
 
 const seededWorkload = "attestation-api"
@@ -316,6 +337,22 @@ func (c *cluster) requireFreeAddresses(replicas int) {
 	}
 }
 
+// haBlock is the launch file's ha block for this run's backend. A backend
+// selects itself by the block it adds beside replicas.
+func (c *cluster) haBlock(
+	addresses []string,
+	size shape,
+) map[string]any {
+	c.t.Helper()
+	if backend != raftBackend {
+		c.t.Fatalf("CDSHA_BACKEND %q names no backend this harness configures", backend)
+	}
+	return map[string]any{
+		"replicas": addresses,
+		"voters":   size.voters,
+	}
+}
+
 // configure writes the launch file every replica of the cluster boots: one
 // document serves them all, and nothing in it names one replica.
 func (c *cluster) configure(size shape) {
@@ -334,10 +371,7 @@ func (c *cluster) configure(size shape) {
 		"nodes":        nodeImagesDocument,
 		"nodeCIDRs":    []string{"10.0.0.0/24"},
 		"leafDNSNames": []string{"workload." + clusterID + ".svc"},
-		"ha": map[string]any{
-			"replicas": addresses,
-			"voters":   size.voters,
-		},
+		"ha":           c.haBlock(addresses, size),
 	})
 	if err != nil {
 		c.t.Fatal(err)

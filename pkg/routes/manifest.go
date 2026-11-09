@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net"
 	"regexp"
 	"slices"
@@ -55,6 +56,21 @@ type Manifest struct {
 	MaxAge    time.Duration
 	// Hosts is keyed by lower-case DNS host name. It may be empty.
 	Hosts map[string]Host
+	// Patterns are the pattern rules, in manifest order, each with its own
+	// host suffix. A pattern sends every request for <label>.<HostSuffix> to
+	// the agent with that label, and no manifest write names the agent.
+	Patterns []Pattern
+}
+
+// Pattern routes every host <label>.<HostSuffix> to a backend whose leaf
+// carries Workload and a client document digest with that agent label
+// (armtls.AgentLabel). The router finds the backend's address itself; that
+// address is never evidence of identity, as with Backend.Address.
+type Pattern struct {
+	HostSuffix string
+	Workload   string
+	// Port is the application port the agent serves on.
+	Port uint16
 }
 
 // Host holds the routes of one host, in manifest order. The order carries no
@@ -82,6 +98,11 @@ type Backend struct {
 	ServerName string
 	// CA is the PEM bundle of trust anchors for an address backend.
 	CA string
+	// AgentLabel and AgentPort are set only on the backend a Pattern selects:
+	// the agent label its leaf must carry and the port the Pattern names.
+	// Address is then empty until the router resolves the agent.
+	AgentLabel string
+	AgentPort  uint16
 
 	anchors []*x509.Certificate
 }
@@ -113,7 +134,7 @@ func parse(data []byte) (*Manifest, error) {
 	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
-	top, err := members(data, "manifest", []string{"schema", "revision", "notBefore", "maxAgeSeconds", "hosts"}, nil)
+	top, err := members(data, "manifest", []string{"schema", "revision", "notBefore", "maxAgeSeconds", "hosts"}, []string{"patterns"})
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +164,61 @@ func parse(data []byte) (*Manifest, error) {
 	if m.Hosts, err = parseHosts(top["hosts"]); err != nil {
 		return nil, err
 	}
+	if raw, ok := top["patterns"]; ok {
+		if m.Patterns, err = parsePatterns(raw); err != nil {
+			return nil, err
+		}
+	}
 	return &m, nil
+}
+
+// maxHostSuffix leaves room for a 26-character agent label and its dot
+// within a 253-octet host name.
+const maxHostSuffix = 253 - 27
+
+func parsePatterns(raw json.RawMessage) ([]Pattern, error) {
+	if !isKind(raw, '[') {
+		return nil, errors.New("patterns: must be a list")
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("patterns: %w", err)
+	}
+	if len(items) == 0 {
+		return nil, errors.New("patterns: must not be empty")
+	}
+	patterns := make([]Pattern, 0, len(items))
+	for i, item := range items {
+		at := fmt.Sprintf("patterns[%d]", i)
+		obj, err := members(item, at, []string{"hostSuffix", "workload", "port"}, nil)
+		if err != nil {
+			return nil, err
+		}
+		var p Pattern
+		if p.HostSuffix, err = stringValue(obj["hostSuffix"], at+".hostSuffix"); err != nil {
+			return nil, err
+		}
+		if err := CheckHost(p.HostSuffix); err != nil {
+			return nil, fmt.Errorf("%s.hostSuffix: %w", at, err)
+		}
+		if len(p.HostSuffix) > maxHostSuffix {
+			return nil, fmt.Errorf("%s.hostSuffix: longer than %d octets, leaving no room for an agent label", at, maxHostSuffix)
+		}
+		if slices.ContainsFunc(patterns, func(q Pattern) bool { return q.HostSuffix == p.HostSuffix }) {
+			return nil, fmt.Errorf("%s.hostSuffix: another pattern has host suffix %q", at, p.HostSuffix)
+		}
+		if p.Workload, err = stringValue(obj["workload"], at+".workload"); err != nil {
+			return nil, err
+		}
+		if !workloadname.Valid(p.Workload) {
+			return nil, fmt.Errorf("%s.workload: %q is not a valid allowlist workload name", at, p.Workload)
+		}
+		if p.Port, err = portNumber(obj["port"], at+".port"); err != nil {
+			return nil, err
+		}
+		patterns = append(patterns, p)
+	}
+	return patterns, nil
 }
 
 // dateTime is the RFC 3339 §5.6 date-time grammar. time.Parse alone also
@@ -456,6 +531,16 @@ func integer(raw json.RawMessage, at string, limit uint64) (uint64, error) {
 		return 0, fmt.Errorf("%s: must be an integer from 1 to %d", at, limit)
 	}
 	return n, nil
+}
+
+// portNumber is integer for a TCP port, parsed at the port's own width.
+func portNumber(raw json.RawMessage, at string) (uint16, error) {
+	s := string(bytes.TrimSpace(raw))
+	n, err := strconv.ParseUint(s, 10, 16)
+	if err != nil || s[0] == '0' {
+		return 0, fmt.Errorf("%s: must be an integer from 1 to %d", at, math.MaxUint16)
+	}
+	return uint16(n), nil
 }
 
 func isKind(raw json.RawMessage, first byte) bool {

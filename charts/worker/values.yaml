@@ -1,0 +1,28 @@
+## The worker image build and `c8s worker control-plane` render this chart with
+## helm template; no release installs it. The stock files values-sev-snp.yaml
+## and values-tdx.yaml set router.attest for the worker image's CPU TEE.
+## templates/image renders what the image bakes, templates/cluster what the
+## workers' control plane holds.
+
+## The operator/get-cert image; the render sets its digest.
+image:
+  repository: ghcr.io/confidential-dot-ai/c8s-operator
+
+## The mesh endpoint every covered pod runs; the render sets its digest.
+armtlsMesh:
+  image:
+    repository: ghcr.io/confidential-dot-ai/armtls-mesh
+
+## clusterDNS: the kube-dns Service's IPv4 address, which `c8s worker
+## control-plane render` takes from the worker document.
+
+operator:
+  podCVMProvider:
+    ## Grant the operator's Pod CVM provider, bound to the user c8s-operator;
+    ## `c8s worker control-plane render --pod-cvm-provider` sets it.
+    enabled: false
+
+controlPlane:
+  webhook:
+    ## The operator serves its webhooks beside the workers' API server.
+    url: https://127.0.0.1:9443

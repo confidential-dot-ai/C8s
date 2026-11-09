@@ -216,7 +216,11 @@ Reads are unauthenticated; writes are signed with the operator key from
 `deny`), `--label`, and `--secret-read`. A policy file maps container names to
 policies and must cover every init and main container the entry declares.
 `derive` reads an unset command or args from the image config with `crane`, and
-drops the containers C8s injects.
+drops the containers C8s injects. For a pod that sets
+`confidential.ai/c8s-secrets`, it adds the secrets mount the webhook injects to
+each `deny` or `exact` policy: an `emptyDir` rule at `/run/c8s/secrets`, or
+wherever the container already mounts the volume (`data` for a `subPath`
+mount).
 
 `apply`, `upload`, and `edit` show a diff before they write. `apply` and
 `upload` lint the whole document first, and `add` checks its one entry against

@@ -342,6 +342,17 @@ func TestCABundleFromChain(t *testing.T) {
 			t.Fatal("expected error for a leaf-only chain, got nil")
 		}
 	})
+
+	t.Run("skips blocks that are not certificates", func(t *testing.T) {
+		key := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: []byte("key")}))
+		got, err := caBundleFromChain([]byte(key + leaf + key + ca1))
+		if err != nil {
+			t.Fatalf("caBundleFromChain: %v", err)
+		}
+		if string(got) != ca1 {
+			t.Fatalf("bundle = %q, want %q", got, ca1)
+		}
+	})
 }
 
 // plaintextCDSClient builds an attestclient over the default transport for
@@ -556,6 +567,45 @@ func TestValidateOutputPaths(t *testing.T) {
 			t.Fatal("validateOutputPaths succeeded, want error for file parent")
 		}
 	})
+
+	t.Run("read-only dir", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory permissions")
+		}
+		ro := filepath.Join(dir, "read-only")
+		if err := os.Mkdir(ro, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateOutputPaths(filepath.Join(ro, "cert.pem")); err == nil || !strings.Contains(err.Error(), "is not writable") {
+			t.Fatalf("validateOutputPaths = %v, want a not-writable error", err)
+		}
+	})
+}
+
+func TestCommandRejectsUnreadableDiscoveryFiles(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	for _, flag := range []string{"--discovery-public-tls-mode-file", "--discovery-public-tls-hostnames-file"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := NewCmd()
+			cmd.SetArgs([]string{
+				"--san", "host.example.com", "--attestation-api-url", "http://127.0.0.1:1",
+				"--cert-path", filepath.Join(dir, "tls.crt"), "--key-path", filepath.Join(dir, "tls.key"), "--ca-path", filepath.Join(dir, "ca.crt"),
+				flag, missing,
+			})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), flag) {
+				t.Fatalf("Execute = %v, want an error naming %s", err, flag)
+			}
+		})
+	}
+}
+
+func TestPrivateKeyModeRequiresDirectory(t *testing.T) {
+	if _, err := privateKeyMode(filepath.Join(t.TempDir(), "missing", "tls.key")); err == nil {
+		t.Fatal("privateKeyMode succeeded for a missing directory")
+	}
 }
 
 func TestCreateCSR(t *testing.T) {
@@ -1363,6 +1413,16 @@ func TestWriteDiscoveryDocument(t *testing.T) {
 	}
 	if err := writeDiscoveryDocument(config{}, result); err != nil {
 		t.Fatalf("without --discovery-out: %v", err)
+	}
+	unwritable := cfg
+	unwritable.DiscoveryOutPath = filepath.Join(dir, "missing", "discovery.json")
+	if err := writeDiscoveryDocument(unwritable, result); err == nil || !strings.Contains(err.Error(), "failed to write discovery metadata") {
+		t.Fatalf("unwritable discovery path: %v", err)
+	}
+	unparsable := result
+	unparsable.Certificate = "not a certificate"
+	if err := writeDiscoveryDocument(cfg, unparsable); err == nil || !strings.Contains(err.Error(), "parse issued certificate for discovery") {
+		t.Fatalf("unparsable certificate: %v", err)
 	}
 }
 

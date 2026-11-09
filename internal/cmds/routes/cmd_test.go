@@ -177,6 +177,14 @@ func (h *harness) mustRun(t *testing.T, args ...string) string {
 	return out
 }
 
+// storeManifest stores a first manifest the harness key signed and forgets the
+// write, so a later writes-reached-CDS count is the test's own.
+func (h *harness) storeManifest(t *testing.T) {
+	t.Helper()
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.cds.puts = 0
+}
+
 // C6: a new manifest starts at the Unix time.
 func TestAddStartsAtUnixTime(t *testing.T) {
 	h := newHarness(t)
@@ -369,11 +377,11 @@ func TestPutRejectsInvalidFileLocally(t *testing.T) {
 	}
 }
 
-// add and rm re-sign what they fetch, so they refuse to run unverified, and
-// refuse a stored manifest no trusted key signed.
 func TestEditRequiresVerifiedManifest(t *testing.T) {
 	h := newHarness(t)
 	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	h.storeManifest(t)
+
 	if _, err := h.runUnverified(t, add...); err == nil || !strings.Contains(err.Error(), "pass --operator-keys") {
 		t.Fatalf("add without --operator-keys: error = %v", err)
 	}
@@ -402,6 +410,27 @@ func TestEditRequiresVerifiedManifest(t *testing.T) {
 	}
 	if h.cds.puts != 0 {
 		t.Fatalf("CDS saw %d writes, want none", h.cds.puts)
+	}
+}
+
+// --new on an empty store signs only the route named on the command line, so
+// there is nothing for --operator-keys to verify.
+func TestAddNewRunsUnverifiedOnAnEmptyStore(t *testing.T) {
+	h := newHarness(t)
+	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	if _, err := h.runUnverified(t, add...); err != nil {
+		t.Fatalf("add --new on an empty store without --operator-keys: %v", err)
+	}
+	m := h.cds.stored(t)
+	if len(m.Hosts) != 1 {
+		t.Fatalf("stored hosts = %+v, want app.example alone", m.Hosts)
+	}
+	rs := m.Hosts["app.example"].Routes
+	if len(rs) != 1 {
+		t.Fatalf("stored routes of app.example = %+v, want the one named on the command line", rs)
+	}
+	if rs[0].Backend.Address != "a:1" {
+		t.Errorf("stored backend = %+v, want the address named on the command line", rs[0].Backend)
 	}
 }
 

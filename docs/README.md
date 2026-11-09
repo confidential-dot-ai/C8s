@@ -10,8 +10,7 @@ connection it uses before it sends any application data. The full manual is at
 
 Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 
-- Platform operator: [QUICKSTART.md](QUICKSTART.md),
-  [operator.md](operator.md),
+- Platform operator: [operator.md](operator.md),
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md),
   [upgrade.md](upgrade.md).
 - Workload owner: [DEMO.md](DEMO.md), [workloads.md](workloads.md),
@@ -21,6 +20,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
   [security-model.md](security-model.md).
 - Contributor: [glossary.md](glossary.md),
   [engineering-standards.md](engineering-standards.md),
+  [review-guide.md](review-guide.md),
   [integration-tests.md](integration-tests.md).
 
 ## Pages
@@ -42,15 +42,16 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [certificate-extensions.md](certificate-extensions.md) | reference | Every X.509 extension C8s issues, and who checks it |
 | **Workload data** | | |
 | [secrets.md](secrets.md) | explanation | Secret release |
+| [pod-secrets.md](pod-secrets.md) | reference | Pod CVM secret release brokered to a KMS, and the CDS-to-KMS wire |
 | [volumes.md](volumes.md) | explanation | Encrypted volumes |
 | [workloads.md](workloads.md) | how-to | Onboard your own workload |
 | [DEMO.md](DEMO.md) | tutorial | Deploy the sample workload and inspect what was injected |
 | **Ingress and routing** | | |
 | [routes-evidence.md](routes-evidence.md) | explanation | Proving which routes the router serves |
 | **Operating a cluster** | | |
-| [QUICKSTART.md](QUICKSTART.md) | tutorial | Install C8s on a cluster and confirm it works |
-| [operator.md](operator.md) | explanation | Running a cluster: install, the Certificate Distribution Service, the router, credentials |
-| [launch-configuration.md](launch-configuration.md) | reference | The signed launch document a measured node boots with |
+| [operator.md](operator.md) | explanation | Running a cluster: install, the Certificate Distribution Service, the router |
+| [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
+| [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
 | [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |
 | [cds-ha-runbooks.md](cds-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated CDS |
 | [cds-ha-alerts.md](cds-ha-alerts.md) | reference | What to watch on a replicated CDS |
@@ -62,4 +63,5 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [../SECURITY.md](../SECURITY.md) | policy | Reporting a vulnerability |
 | **Contributing** | | |
 | [engineering-standards.md](engineering-standards.md) | policy | Engineering standards for this repository |
+| [review-guide.md](review-guide.md) | how-to | Review correctness, security and supporting evidence |
 | [integration-tests.md](integration-tests.md) | how-to | Run the test harnesses |

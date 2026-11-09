@@ -1,0 +1,36 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "c8s.fullname" . }}-pod-injector
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+  {{- include "c8s.webhookAnnotationsBlock" . | nindent 2 }}
+webhooks:
+  - name: pods.c8s.confidential.ai
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    # Not tunable: an injection the webhook never made leaves a pod unprotected.
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    reinvocationPolicy: Never
+    # Every pod of a namespace this selector admits is injected, so the
+    # excluded set is the whole opt-out. The reinject sweep excludes the same set.
+    namespaceSelector:
+      matchExpressions:
+        {{- include "c8s.webhookExcludedNamespacesMatchExpression" . | nindent 8 }}
+    rules:
+      - operations: [CREATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+        scope: Namespaced
+      # Ephemeral containers attach to a running pod and are stripped from a
+      # CREATE, so they are only visible on this subresource. Without it,
+      # `kubectl debug` could mount the volume holding a released secret or the
+      # pod's private key and read it out (docs/secrets.md).
+      - operations: [UPDATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods/ephemeralcontainers]
+        scope: Namespaced
+    {{- include "c8s.webhookClientConfig" (dict "root" . "path" "/mutate-pods") | nindent 4 }}

@@ -5,10 +5,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// Inputs is everything one cluster's CDS VM is configured with. Both
-// generators (`c8s cds config new` and `c8s launch-config new`) fill it, so
-// either one's configuration is built and checked the same way. Each embedded
-// policy is the exact bytes its own parser reads.
+// Inputs is everything one cluster's CDS VM is configured with, as `c8s cds
+// config new` fills it. Each embedded policy is the exact bytes its own parser
+// reads.
 type Inputs struct {
 	ClusterID string
 	// OperatorKeys authorize policy writes.
@@ -17,8 +16,12 @@ type Inputs struct {
 	// the operator's own, nil for a cluster running components only.
 	ComponentSeed   []byte
 	TenantWorkloads []byte
-	// Nodes is the measurements document pinning the nodes CDS admits.
+	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// for a replica set whose Genesis names the first set.
 	Nodes []byte
+	// PodImagePolicy optionally pins Pod identities separately from Nodes.
+	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
+	PodImagePolicy []byte
 	// NodeCIDRs are the subnets CDS may dial a sandbox inventory in;
 	// ClusterCIDRs are the pod and service ranges they may not reach into.
 	NodeCIDRs    []string
@@ -28,6 +31,8 @@ type Inputs struct {
 	LeafDNSPatterns []string
 	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
 	HA HA
+	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
+	KMS *KMS
 	// ManifestPath, Family and VCPUs select the CDS guest image the VM boots
 	// and the launch digests its pin carries.
 	ManifestPath string
@@ -50,10 +55,12 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		OperatorKeys:    in.OperatorKeys,
 		Workloads:       workloads,
 		Nodes:           in.Nodes,
+		PodImagePolicy:  in.PodImagePolicy,
 		NodeCIDRs:       in.NodeCIDRs,
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,
 		HA:              in.HA,
+		KMS:             in.KMS,
 	})
 	if err != nil {
 		return nil, nil, err

@@ -36,7 +36,7 @@ func (c ClusterState) format() uint32 {
 // The group writes a new encoding only after the last replica that cannot
 // read it has given up its seat.
 func (n *Node) raiseFormat() {
-	if !n.leading() {
+	if !n.leading() || n.ClockError() != nil {
 		return
 	}
 	agreed := n.fsm.ClusterState().format()

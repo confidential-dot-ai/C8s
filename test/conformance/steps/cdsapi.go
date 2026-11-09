@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"time"
+	"strings"
 
 	"github.com/cucumber/godog"
 )
@@ -39,7 +39,7 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS refuses the write as invalid$`, cdsRefusesInvalid)
 	sc.Step(`^a relying party reads the version$`, readsVersion)
 	sc.Step(`^a relying party reads the allowlist with no client authentication$`, readsAllowlist)
-	sc.Step(`^that relying party reads the allowlist naming the version it read before$`, readsAllowlistNamingVersion)
+	sc.Step(`^that relying party reads the allowlist naming the document it read before$`, readsAllowlistNamingDocument)
 	sc.Step(`^that relying party receives the served allowlist$`, receivesServed)
 	sc.Step(`^the CDS answers with the version and no body$`, answersVersionNoBody)
 	sc.Step(`^(a|no) workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedDeclares)
@@ -72,6 +72,7 @@ type write struct {
 type reading struct {
 	status  int
 	version string
+	tag     string
 	body    []byte
 }
 
@@ -86,6 +87,7 @@ type cdsAPIState struct {
 	lastStatus    int
 	pending       *write
 	versionBefore string
+	tagBefore     string
 	read          *reading
 }
 
@@ -193,7 +195,9 @@ func (w *world) sendVia(fn string, wr write, auth string) error {
 	}
 	w.api.lastStatus = a.status
 	if w.api.lastStatus == http.StatusNoContent && wr.entry != "" {
-		lastMutation = time.Now()
+		if err := w.noteMutation(); err != nil {
+			return err
+		}
 		if !wr.removes {
 			w.written[wr.entry] = true
 		}
@@ -428,45 +432,67 @@ func cdsRefusesInvalid(ctx context.Context) error {
 	return getWorld(ctx).cdsAnswered(http.StatusUnprocessableEntity, "validation failed")
 }
 
+// readsVersion records the version and the tag of the document served now.
 func readsVersion(ctx context.Context) error {
 	w := getWorld(ctx)
-	version, err := w.be.call("served_version")
+	r, err := w.read("", asOperator)
 	if err != nil {
 		return err
 	}
-	if version == "" {
+	if r.version == "" {
 		return errors.New("the CDS answered with no version")
 	}
-	w.api.versionBefore = version
+	w.api.versionBefore, w.api.tagBefore = r.version, r.tag
 	return nil
 }
 
-// get reads the allowlist, naming version in If-None-Match when given.
-func (w *world) get(version string) error {
-	var args []string
-	if version != "" {
-		args = append(args, version)
+// allowlistRequester is whose view of the allowlist a read asks the CDS for:
+// nodes are served a write the node delay after it is written, the operator
+// at once.
+type allowlistRequester string
+
+const (
+	asOperator allowlistRequester = "operator"
+	asNode     allowlistRequester = "node"
+)
+
+// read reads the allowlist as who asks, naming tag in If-None-Match when
+// given.
+func (w *world) read(tag string, as allowlistRequester) (*reading, error) {
+	if tag == "" {
+		tag = "-" // the backend's "no If-None-Match"
 	}
-	out, err := w.be.call("allowlist_get", args...)
+	out, err := w.be.call("allowlist_get", tag, string(as))
+	if err != nil {
+		return nil, err
+	}
+	status, more, body, err := statusLine(out)
+	if err != nil {
+		return nil, fmt.Errorf("allowlist_get: %w", err)
+	}
+	version, tag, _ := strings.Cut(more, " ")
+	return &reading{status: status, version: version, tag: tag, body: body}, nil
+}
+
+// get reads the allowlist as the relying party's last read, naming tag in
+// If-None-Match when given.
+func (w *world) get(tag string) error {
+	r, err := w.read(tag, asOperator)
 	if err != nil {
 		return err
 	}
-	status, version, body, err := statusLine(out)
-	if err != nil {
-		return fmt.Errorf("allowlist_get: %w", err)
-	}
-	w.api.read = &reading{status: status, version: version, body: body}
+	w.api.read = r
 	return nil
 }
 
 func readsAllowlist(ctx context.Context) error { return getWorld(ctx).get("") }
 
-func readsAllowlistNamingVersion(ctx context.Context) error {
+func readsAllowlistNamingDocument(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.api.versionBefore == "" {
-		return errors.New("the relying party has read no version")
+	if w.api.tagBefore == "" {
+		return errors.New("the relying party has read no document tag")
 	}
-	return w.get(w.api.versionBefore)
+	return w.get(w.api.tagBefore)
 }
 
 // received is the allowlist the last read carried.

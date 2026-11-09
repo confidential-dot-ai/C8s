@@ -129,12 +129,11 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		Transports: rs.transports,
 		Bindings:   rs.bindings,
 	}
-	certPath, _ := writeTestServingLeaf(t)
 	srvCfg := Config{
 		Logger:          slog.New(slog.DiscardHandler),
 		Evidence:        FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:   types.FrontDoorModeCDS,
-		ServingCertFile: certPath,
+		ServingCertFile: volumeFile(meshDir, "tls.crt"),
 		// The attestation endpoints bind the leaf the router dials with, as
 		// the chart mounts one credential for both.
 		MeshIdentityCertFile: volumeFile(meshDir, "tls.crt"),

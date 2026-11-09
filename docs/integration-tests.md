@@ -39,8 +39,9 @@ workload certificates — and a mock attestation-api, the node-local service tha
 produces hardware evidence for CDS and every other component. It runs get-cert,
 the sidecar that obtains a pod's certificate, through the real armTLS flow, and
 checks that nginx serves HTTPS with the issued certificate. The second boots a
-kind cluster, builds the component images, and runs
-`c8s install --cvm-mode=bare-metal`. The first two end with their check count:
+kind cluster, builds the component images, and runs `c8s install --chart
+charts/cloud` with `test/integration/cluster/values.yaml`. The first two end with their check
+count:
 
 ```text
 === All <N> integration checks passed ===
@@ -54,10 +55,10 @@ subset a pull request runs.
 
 ## What the kind harness substitutes
 
-The TEE is replaced at exactly one point: evidence generation.
-`test/mock-attestation` serves synthetic SNP reports with an all-zero launch
-measurement on the node IP `:8400`, the address `bare-metal` consumers dial for
-the node-baked attestation-api. It answers verification requests too, so no hop
+The TEE is replaced at exactly one point: evidence generation. The chart's
+attestation-api DaemonSet runs `test/mock-attestation`, which serves synthetic
+SNP reports with an all-zero launch measurement behind the chart's own
+attest-proxy socket. It answers verification requests too, so no hop
 proves a hardware property; what matches production is the pinning — that
 measurement is the one this cluster's CDS pin and node pins carry, compared
 exactly as in production — and every component delegating verification to the
@@ -85,10 +86,9 @@ mount enforcement runs in.
 
 No TEE property is asserted. Hardware verification, measurements that mean
 anything, encrypted volumes (`volumed` needs the node kernel's device mapper),
-`c8s get-kubeconfig`, and the `c8s verify`, `c8s allowlist` and `c8s routes`
-CLIs stay on the hardware CI lanes (`snp-metal-e2e`, `tdx-metal-e2e`,
-`cvm-e2e`): those verify evidence in process with real hardware cryptography,
-which synthetic evidence cannot pass.
+and the `c8s verify`, `c8s allowlist` and `c8s routes` CLIs stay on the
+hardware CI lane: it verifies evidence in process with real
+hardware cryptography, which synthetic evidence cannot pass.
 
 ## Keep the cluster for another driver
 
@@ -115,5 +115,3 @@ with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
   from the install-time allowlist, which the harness writes from the node's
   image store before install. Pre-pull the image in the
   `node_exec ctr -n k8s.io images pull` block near the top of `run.sh`.
-- The mock-attestation Deployment is `Recreate` on purpose: two host-network
-  pods cannot both bind `:8400` on a single-node cluster.

@@ -181,7 +181,7 @@ func demoteNaming(oc *Outcome, note string) {
 
 // noHistory explains an empty replayed history: a node that does not measure
 // its policies proves nothing about which ones it enforced.
-const noHistory = "no measured policy replayed against RTMR[3]; target a node that measures its policies (nriImagePolicy.measurePolicies)"
+const noHistory = "no measured policy replayed against RTMR[3]; target a node that measures its policies (a measured worker image)"
 
 // historyTimeouts is how many --timeout spans the whole history check gets, so
 // a target answering each fetch just in time cannot stall verify for hours.

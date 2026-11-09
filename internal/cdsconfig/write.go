@@ -29,8 +29,12 @@ type Document struct {
 	OperatorKeys operatorauth.KeyBundle
 	// Workloads is the cluster's allowlist, as MergeWorkloads builds it.
 	Workloads *allowlist.Allowlist
-	// Nodes is the measurements document pinning the nodes CDS admits.
+	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// for a replica set whose Genesis names the first set.
 	Nodes []byte
+	// PodImagePolicy optionally pins Pod identities separately from Nodes.
+	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
+	PodImagePolicy []byte
 	// NodeCIDRs are the subnets CDS may call a sandbox inventory on.
 	NodeCIDRs []string
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
@@ -38,6 +42,8 @@ type Document struct {
 	LeafDNSPatterns []string
 	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
 	HA HA
+	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
+	KMS *KMS
 }
 
 // Format renders doc as a CDS launch file under the schema version this
@@ -68,10 +74,12 @@ func (d Document) wire() (wire, error) {
 		OperatorPublicKeys: string(d.OperatorKeys.PEM()),
 		Workloads:          string(workloads),
 		Nodes:              string(d.Nodes),
+		PodImagePolicy:     string(d.PodImagePolicy),
 		NodeCIDRs:          d.NodeCIDRs,
 		LeafDNSNames:       d.LeafDNSNames,
 		LeafDNSPatterns:    d.LeafDNSPatterns,
 		HA:                 d.HA.wire(),
+		KMS:                d.KMS.wire(),
 	}, nil
 }
 

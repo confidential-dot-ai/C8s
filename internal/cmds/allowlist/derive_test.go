@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +23,7 @@ func deployJSON() string {
 	return `{
       "kind": "Deployment",
       "spec": {"template": {"spec": {
+        "securityContext": {"runAsUser": 1000},
         "initContainers": [
           {"name": "seed", "image": "` + testImage + `",
            "command": ["sh", "-c", "cp -an /a/. /seed/"]}
@@ -329,6 +332,106 @@ func TestDeriveReportsNothingWhenNothingIsDropped(t *testing.T) {
 	}
 }
 
+func TestDeriveWarnsAboutAContainerThatMayRunAsUIDZero(t *testing.T) {
+	nonzeroUID := map[string]any{"runAsUser": 1000}
+	rootUID := map[string]any{"runAsUser": 0}
+	nonRoot := map[string]any{"runAsNonRoot": true}
+	rootUIDOnNonRoot := map[string]any{"runAsUser": 0, "runAsNonRoot": true}
+	for _, tc := range []struct {
+		name  string
+		pod   map[string]any
+		init  map[string]any
+		main  map[string]any
+		warns []string
+	}{
+		{
+			name:  "nothing set",
+			warns: []string{"seed", "app"},
+		},
+		{
+			name: "a nonzero runAsUser on each container",
+			init: nonzeroUID,
+			main: nonzeroUID,
+		},
+		{
+			name: "a nonzero runAsUser on the pod",
+			pod:  nonzeroUID,
+		},
+		{
+			name: "runAsNonRoot on each container",
+			init: nonRoot,
+			main: nonRoot,
+		},
+		{
+			name: "runAsNonRoot on the pod",
+			pod:  nonRoot,
+		},
+		{
+			name:  "a container that overrides the pod's nonzero uid with 0",
+			pod:   nonzeroUID,
+			main:  rootUID,
+			warns: []string{"app"},
+		},
+		{
+			name:  "runAsUser 0 beside runAsNonRoot",
+			pod:   nonzeroUID,
+			main:  rootUIDOnNonRoot,
+			warns: []string{"app"},
+		},
+		{
+			name:  "an init container alone",
+			main:  nonzeroUID,
+			warns: []string{"seed"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podJSON(t, tc.pod, tc.init, tc.main)
+			_, stderr, err := runDeriveStderr(t, pod, "app", "-", "--env=any", "--mounts=any")
+			if err != nil {
+				t.Fatalf("derive: %v", err)
+			}
+			for _, name := range []string{"seed", "app"} {
+				want := slices.Contains(tc.warns, name)
+				if got := strings.Contains(stderr, rootUIDWarning(name)); got != want {
+					t.Errorf("stderr = %q, warns about %q = %v, want %v", stderr, name, got, want)
+				}
+			}
+		})
+	}
+}
+
+// podJSON is a Pod with an init container "seed" and a container "app", each
+// security context omitted when nil.
+func podJSON(t *testing.T, pod, init, main map[string]any) string {
+	t.Helper()
+	container := func(name string, command []string, sc map[string]any) map[string]any {
+		c := map[string]any{
+			"command": command,
+			"image":   testImage,
+			"name":    name,
+		}
+		if sc != nil {
+			c["securityContext"] = sc
+		}
+		return c
+	}
+	spec := map[string]any{
+		"containers":     []any{container("app", []string{"sleep", "inf"}, main)},
+		"initContainers": []any{container("seed", []string{"sh"}, init)},
+	}
+	if pod != nil {
+		spec["securityContext"] = pod
+	}
+	data, err := json.Marshal(map[string]any{
+		"kind": "Pod",
+		"spec": spec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 	file := t.TempDir() + "/env.json"
 	if err := os.WriteFile(file, []byte(`{"seed":{"policy":"deny"},"frontend":{"policy":"any"},"worker":{"policy":"any"},"ghost":{"policy":"any"}}`), 0600); err != nil {
@@ -414,5 +517,133 @@ func TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint(t *testing.T) {
 		if idx.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: longer}) {
 			t.Errorf("%s: entry admits an extended argv %v", tc.name, longer)
 		}
+	}
+}
+
+// annotatedDeployJSON is deployJSON with annotations on its pod template.
+func annotatedDeployJSON(annotations string) string {
+	return strings.Replace(deployJSON(), `"spec": {"template": {"spec": {`,
+		`"spec": {"template": {"metadata": {"annotations": {`+annotations+`}}, "spec": {`, 1)
+}
+
+func TestDeriveAddsInjectedMounts(t *testing.T) {
+	const withSecrets = `"confidential.ai/c8s-secrets": "db=/db/password"`
+	secrets := pkgallowlist.MountRule{Destination: "/run/c8s/secrets", Kind: pkgallowlist.MountEmptyDir}
+	config := pkgallowlist.MountRule{Destination: "/config", Kind: pkgallowlist.MountEmptyDir}
+	exact := func(rules ...pkgallowlist.MountRule) pkgallowlist.MountPolicy {
+		return pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: rules}
+	}
+	mounting := func(mounts string) string {
+		return strings.ReplaceAll(annotatedDeployJSON(withSecrets), `"image": "`+testImage+`",`,
+			`"image": "`+testImage+`", "volumeMounts": [`+mounts+`],`)
+	}
+	tests := []struct {
+		name       string
+		object     string
+		mounts     string
+		mountsFile string
+		want       pkgallowlist.MountPolicy
+		wantErr    string
+		wantStderr string
+	}{
+		{name: "no secrets", object: annotatedDeployJSON(`"confidential.ai/cw": "dynamo"`), want: pkgallowlist.MountPolicy{}},
+		{name: "empty secrets list", object: annotatedDeployJSON(`"confidential.ai/c8s-secrets": " ,\n "`), want: pkgallowlist.MountPolicy{}},
+		{
+			name:       "default",
+			object:     annotatedDeployJSON(withSecrets),
+			want:       exact(secrets),
+			wantStderr: "mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone\n",
+		},
+		{name: "deny", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=deny", want: exact(secrets)},
+		{name: "any", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=any", want: pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
+		{
+			name:   "container already mounts the secrets volume",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/secrets"}`),
+			want:   exact(pkgallowlist.MountRule{Destination: "/secrets", Kind: pkgallowlist.MountEmptyDir}),
+		},
+		{
+			name:   "secrets volume mounted twice, once by subpath",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/secrets"}, {"name": "c8s-secrets", "mountPath": "/mnt/c8s-data/db", "subPath": "db"}`),
+			want: exact(
+				pkgallowlist.MountRule{Destination: "/mnt/c8s-data/db", Kind: pkgallowlist.MountData},
+				pkgallowlist.MountRule{Destination: "/secrets", Kind: pkgallowlist.MountEmptyDir},
+			),
+		},
+		{
+			name:    "secrets volume mounted by subpath outside the data prefix",
+			object:  mounting(`{"name": "c8s-secrets", "mountPath": "/etc/app/db", "subPath": "db"}`),
+			wantErr: `container "seed" mounts c8s-secrets by subpath at /etc/app/db`,
+		},
+		{
+			name:   "subpath outside the data prefix under any",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/etc/app/db", "subPath": "db"}`),
+			mounts: "--mounts=any",
+			want:   pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+		},
+		{
+			name:       "file lists the secrets destination with another kind",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"host","source":"/var/secrets"}]}`,
+			wantErr:    `gives /run/c8s/secrets kind "host", but c8s mounts its c8s-secrets volume there as "emptyDir"`,
+		},
+		{
+			name:       "exact file",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/config","kind":"emptyDir"}]}`,
+			want:       exact(config, secrets),
+		},
+		{
+			name:       "file already lists the secrets mount",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"emptyDir"}]}`,
+			want:       exact(secrets),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"dynamo", "-", "--env=any"}
+			if tt.mounts != "" {
+				args = append(args, tt.mounts)
+			}
+			if tt.mountsFile != "" {
+				file := t.TempDir() + "/mounts.json"
+				p := tt.mountsFile
+				data := `{"seed":` + p + `,"frontend":` + p + `,"worker":` + p + `}`
+				if err := os.WriteFile(file, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--mounts-file", file)
+			}
+			got, stderr, err := runDeriveStderr(t, tt.object, args...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("derive error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantStderr != "" && stderr != tt.wantStderr {
+				t.Errorf("stderr = %q, want %q", stderr, tt.wantStderr)
+			}
+			raw, err := json.Marshal(got["dynamo"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := pkgallowlist.ParseWorkloadJSON(raw)
+			if err != nil {
+				t.Fatalf("derived entry does not parse: %v", err)
+			}
+			want := tt.want
+			if want.Policy == "" {
+				want.Policy = pkgallowlist.PolicyDeny
+			}
+			for _, c := range allContainers(*applied) {
+				if !reflect.DeepEqual(c.Mounts, want) {
+					t.Errorf("mounts = %+v, want %+v", c.Mounts, want)
+				}
+			}
+		})
 	}
 }

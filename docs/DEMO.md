@@ -5,7 +5,7 @@ what the admission webhook injected into the pod.
 
 ## Prerequisites
 
-- C8s installed ([QUICKSTART.md](QUICKSTART.md)) and its operator key.
+- C8s installed ([operator.md](operator.md)) and its operator key.
 - `crane` on PATH: the sample sets no `command`, so the entry takes that image's
   baked argv from the registry.
 
@@ -14,13 +14,14 @@ what the admission webhook injected into the pod.
 Nodes admit containers by image digest and deny everything else, so the sample
 needs a workload entry: an allowlist entry naming the containers a pod may run.
 Open a path to CDS and set `$PIN` and `$KEY` as the first step of
-[workloads.md](workloads.md) shows, then write it. `--env any` admits any
-environment, `--mounts deny` platform mounts alone, and `apply` lints and diffs
-before signing:
+[workloads.md](workloads.md) shows, then write it. `--env-file` names every
+variable the container launches with, `--mounts deny` admits platform mounts
+alone, and `apply` lints and diffs before signing:
 
 ```sh
 kubectl create -o json --dry-run=server -f samples/nginx-confidential-pod.yaml |
-  c8s allowlist derive demo-nginx - --env any --mounts deny |
+  c8s allowlist derive demo-nginx - --mounts deny \
+    --env-file samples/nginx-env-policy.json |
   c8s allowlist apply - $PIN $KEY
 ```
 

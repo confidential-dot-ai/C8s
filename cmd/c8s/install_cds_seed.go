@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
@@ -164,27 +167,117 @@ func clusterNodes(ctx context.Context) (*corev1.NodeList, error) {
 	return &nodes, nil
 }
 
+// clusterPods reads the live pod list, which is what says where this cluster's
+// pods answer.
+func clusterPods(ctx context.Context) (*corev1.PodList, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "--all-namespaces", "-o", "json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get pods --all-namespaces: %w", withStderr(err))
+	}
+	var pods corev1.PodList
+	if err := json.Unmarshal(out, &pods); err != nil {
+		return nil, fmt.Errorf("parse pod list: %w", err)
+	}
+	return &pods, nil
+}
+
+// publishedPodRanges are the ranges this cluster's nodes state they assign pod
+// addresses from.
+func publishedPodRanges(nodes *corev1.NodeList) []string {
+	var ranges []string
+	for _, node := range nodes.Items {
+		ranges = append(ranges, workloadclaims.PodCIDRs(&node)...)
+	}
+	return ranges
+}
+
+// checkEveryNodePublishesPodRange refuses a node that states no pod range: with
+// no range declared either, nothing says where this cluster's pods answer.
+func checkEveryNodePublishesPodRange(nodes *corev1.NodeList) error {
+	for _, node := range nodes.Items {
+		if len(workloadclaims.PodCIDRs(&node)) == 0 {
+			return fmt.Errorf("node %s publishes no podCIDR, so nothing says whether this CDS's node subnets reach its pods: pass --%s <cidr> once per range this cluster assigns pod addresses from. On AKS: az aks show -g <group> -n <cluster> --query networkProfile.podCidr", node.Name, flagPodCIDR)
+		}
+	}
+	return nil
+}
+
+// answersAtNodeAddress holds for a pod on the host network, which answers where
+// its node does.
+func answersAtNodeAddress(pod *corev1.Pod) bool {
+	return pod.Spec.HostNetwork
+}
+
+// firstPodIPOutside is an address this pod answers at that no known pod range
+// holds. An address that does not parse is held by no range.
+func firstPodIPOutside(pod *corev1.Pod, ranges []netip.Prefix) (string, bool) {
+	for _, podIP := range pod.Status.PodIPs {
+		address, _ := netip.ParseAddr(podIP.IP)
+		if !slices.ContainsFunc(ranges, func(r netip.Prefix) bool { return r.Contains(address) }) {
+			return podIP.IP, true
+		}
+	}
+	return "", false
+}
+
+// checkPodIPsInRanges refuses pod ranges this cluster's own pods answer outside:
+// the inventory bound is checked against these ranges alone, so an address
+// beyond them is an address that check never saw.
+func checkPodIPsInRanges(ctx context.Context, ranges []string) error {
+	prefixes := make([]netip.Prefix, 0, len(ranges))
+	for _, r := range ranges {
+		prefix, err := netip.ParsePrefix(r)
+		if err != nil {
+			return fmt.Errorf("pod range %q: %w", r, err)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	pods, err := clusterPods(ctx)
+	if err != nil {
+		return err
+	}
+	checked := 0
+	for _, pod := range pods.Items {
+		if answersAtNodeAddress(&pod) {
+			continue
+		}
+		if outside, found := firstPodIPOutside(&pod, prefixes); found {
+			return fmt.Errorf("pod %s/%s answers at %s, outside the pod ranges this install knows (%s): pass --%s once per range this cluster assigns pod addresses from, in every address family its pods answer in", pod.Namespace, pod.Name, outside, strings.Join(ranges, ", "), flagPodCIDR)
+		}
+		checked += len(pod.Status.PodIPs)
+	}
+	if checked == 0 {
+		return fmt.Errorf("no pod in this cluster answers at an address of its own, so nothing confirms the pod ranges (%s) this CDS's node subnets are checked against", strings.Join(ranges, ", "))
+	}
+	return nil
+}
+
 // checkNodeSubnets refuses a CDS whose inventory bound reaches pod addresses:
 // inside it, a pod answering as a node's admission inventory would have CDS
 // resolve its signing key, so the bound must hold node addresses alone.
-func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config) error {
+func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config, declaredPodCIDRs []string) error {
 	nodes, err := clusterNodes(ctx)
 	if err != nil {
 		return err
 	}
-	var podRanges []string
-	for _, node := range nodes.Items {
-		ranges := workloadclaims.PodCIDRs(&node)
-		if len(ranges) == 0 {
-			return fmt.Errorf("node %s publishes no podCIDR, so nothing says whether this CDS's node subnets reach its pods", node.Name)
+	// A declared range stands for every node; with none declared, every node
+	// states its own.
+	if len(declaredPodCIDRs) == 0 {
+		if err := checkEveryNodePublishesPodRange(nodes); err != nil {
+			return err
 		}
-		podRanges = append(podRanges, ranges...)
 	}
-	subnets := make([]string, 0, len(config.NodeCIDRs))
+	knownPodRanges := append(slices.Clone(declaredPodCIDRs), publishedPodRanges(nodes)...)
+	if err := checkPodIPsInRanges(ctx, knownPodRanges); err != nil {
+		return err
+	}
+	// IPNet.String() unmaps an IPv4-mapped prefix, which the netip overlap
+	// check reads as IPv6.
+	inventoryBound := make([]string, 0, len(config.NodeCIDRs))
 	for _, subnet := range config.NodeCIDRs {
-		subnets = append(subnets, subnet.String())
+		inventoryBound = append(inventoryBound, subnet.String())
 	}
-	if err := cdsconfig.CheckNodeSubnets(subnets, podRanges); err != nil {
+	if err := cdsconfig.CheckNodeSubnets(inventoryBound, knownPodRanges); err != nil {
 		return fmt.Errorf("the CDS this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s cds config new` with node subnets outside the cluster's pod ranges", err)
 	}
 	return nil
@@ -204,5 +297,5 @@ func checkNamedCDS(ctx context.Context, render seedRender, pin *cdsPin) error {
 	if err := checkSeedServed(seed, pin.config); err != nil {
 		return err
 	}
-	return checkNodeSubnets(ctx, pin.config)
+	return checkNodeSubnets(ctx, pin.config, installPodCIDRs)
 }

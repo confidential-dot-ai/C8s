@@ -8,7 +8,11 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func TestNormalizeArgvAlias(t *testing.T) {
@@ -112,4 +116,21 @@ func TestIsRuncAlias(t *testing.T) {
 			t.Errorf("isRuncAlias(%q) = %v, want %v", tt.argv0, got, tt.want)
 		}
 	}
+}
+
+// pflag turns the first backtick-quoted word of a usage string into the
+// flag's placeholder, so a quoted command line in help text replaces the type.
+func TestFlagPlaceholders(t *testing.T) {
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		cmd.Flags().VisitAll(func(f *pflag.Flag) {
+			if name, _ := pflag.UnquoteUsage(f); strings.ContainsAny(name, " '") {
+				t.Errorf("%s --%s placeholder = %q, want a type name", cmd.CommandPath(), f.Name, name)
+			}
+		})
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+	walk(rootCmd)
 }

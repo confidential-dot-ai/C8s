@@ -48,10 +48,14 @@ the handshake and the certificate's validity window are the freshness bound
 there. A challenge binds only the evidence an issuance request carries, which no
 certificate embeds, so a leaf proves measurement at issuance. On TDX the
 evidence also carries the allowlist policy digests the node extended into
-RTMR[3], for a verifier to replay
+RTMR[3] — on a Pod CVM, the image digests it admitted — for a verifier to replay
 ([measurements.md](measurements.md#policy-history)); weighing those policies is
 an external verifier's job
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
+
+CDS-issued leaves can carry a sandbox identity from either a node inventory
+token or the [Pod CVM issuance profile](#pod-cvm-issuance). A Pod identity
+does not grant node-inventory or secret-release authority.
 
 ## The handshake and pin checks
 
@@ -75,6 +79,14 @@ of the guest's runtime measurement registers pinned too: RTMR[1], holding the
 kernel, and RTMR[2], holding the command line that carries the dm-verity root
 hash. A measurement covers boot state, so runtime compromise inside a measured
 node is out of scope.
+
+A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
+`ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
+the key was not generated in that TEE) and `ErrPolicyViolation` (a pin not met).
+An attestation-api refusal of the evidence (a 400, 415 or 422 in its JSON
+envelope) maps to `ErrInvalidReport` and is terminal, as does an unset
+attestation-api URL; every other status, a non-JSON body and transport errors
+stay unwrapped, as retryable or as a verifier deployment fault.
 
 ## CDS issuance
 
@@ -124,39 +136,20 @@ outbound, 15006 inbound and 15021 for probes.
 
 A member pod's application TCP is redirected into those listeners in both
 directions, so it crosses the pod boundary over armTLS. The node's packet rules
-deny everything else in both directions and leave five kinds of traffic
+deny everything else in both directions and leave four kinds of traffic
 uncaptured:
 
 - **Resolver queries**: to the single address trusted policy names, on port 53.
 - **Probes**: the ones the mesh endpoint forwards to the pod's own address on
   port 15021.
-- **Platform-role sockets**: the credential clients that reach CDS, and the
-  endpoint itself.
-- **Platform services**: the ones the measured mesh policy names for every
-  member pod (see [Cluster metrics](#cluster-metrics)).
+- **Platform-role sockets**: the credential clients that reach CDS, the
+  endpoint itself, and, in the router's pod, the route authority
+  (`cds-attest`), which authenticates each backend itself
+  ([operator.md](operator.md#pattern-rules)).
 - **Declared egress**: what the pod's workload entry declares, once the pod
   matches that entry ([allowlist-entries.md](allowlist-entries.md)).
 
 Loopback stays reachable.
-
-### Cluster metrics
-
-A baked node — one booted from the measured C8s node image — runs
-kube-state-metrics as a platform add-on, and every non-root socket of a member
-pod may open TCP to its Service at `10.53.0.11:8080`, uncaptured, and read `GET
-/metrics` there: the measured mesh policy names that one address and port. It
-runs in `kube-system`, outside the mesh, from a stock image the node's base
-allowlist pins to its exact argv, mounts, and environment, over plain HTTP.
-
-What it exports is Kubernetes object metadata: names, owners, status and
-conditions, restart counts, container images, pod IPs and node addresses, and
-resource and replica figures, for pods, nodes, namespaces, Services, volumes,
-the workload controllers and pod disruption budgets. Its RBAC is list and watch
-on those kinds alone, so it reads no Secret and no ConfigMap; it exports no
-labels, annotations or environment, and the series describing the host rather
-than the workloads are off. Any member pod can read that metadata about every
-other pod in the cluster: like the resolver, this is an address and a port the
-mesh leaves open, not a payload filter.
 
 ### The mesh endpoint profile
 
@@ -171,13 +164,88 @@ chain path read: the router's route authority, which holds the cluster's
 operator-signed route manifest, requires a route's backend to be the workload
 that manifest names, stamped under the allowlist digest on the router's own
 leaf, or by name alone while that leaf carries no stamp
-([operator.md](operator.md#route-manifest)).
+([operator.md](operator.md#route-manifest)), and for a pattern rule also
+carrying the agent's client document digest
+([operator.md](operator.md#pattern-rules)).
 
 ### No session resumption
 
 Every armTLS configuration disables session tickets and sets no client session
 cache: a resumed handshake would skip the callback where armTLS checks chain and
 evidence.
+
+### Pod CVM issuance
+
+A `role: pod` guest runs the same mesh endpoint, with credentials supplied by
+its measured admission plugin instead of a container credential client and node
+inventory callback. The guest authenticates CDS against the CDS pins its signed
+launch document carries, then sends an empty-subject CSR, a fresh
+challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
+bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
+revision, the complete ordered image measurement list and every retained
+admission, completed containers included: its image digest, effective argv,
+environment commitment, mounts with their named volumes, the platform role the
+guest's measured base binds to it, and `spec_digest`, a domain-separated
+SHA-256 over the argv, environment commitment and mounts that CDS recomputes.
+When the Pod has a client document, the claims also carry its SHA-256 as
+`client_document_digest`. `pkg/workloadclaims` owns their encoding. The report
+data is:
+
+```text
+SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
+```
+
+CDS verifies that binding and replays the whole measurement list against its
+separate Pod image policy. Every measured digest must be in the current workload
+policy. When the Pod's whole observation set, without the platform's mesh
+endpoint, matches exactly one allowlist entry of the same policy snapshot,
+the leaf carries the matched-workload stamp, as a node workload's does, under
+the named-leaf lifetime cap. Otherwise it is the unnamed membership leaf: no
+match, more than one match, or an image no single entry lists. Neither a
+status quote nor a node inventory token substitutes for this profile.
+
+This is a proposed change to the Pod CVM profile, whose leaves were always
+unnamed and whose claims carried image digests only. Naming a Pod lets a
+relying party pin which workload a Pod CVM runs, like any other workload.
+
+Measured Pod launch keys remain separate from node and operator authority. In
+an HA cluster, that boundary also applies to signed node-image replacements.
+A replacement sharing a Pod launch key makes the entire node set untrusted
+until a disjoint replacement arrives; it is never filtered or combined with
+earlier pins. Pod issuance continues to use its separate measured policy.
+
+The guest publishes complete credential generations to a verified RAM-backed
+volume only the endpoint mounts, read-only. Publication rechecks the retained
+revision, sandbox and packet protection. The revision moves when the history
+gains an admission, the applied policy changes or the sandbox's identity ends.
+Stopping or removing a container does not change it or restart issuance. Renewal
+uses fresh evidence and the current policy. The guest holds complete history,
+boot and sandbox identity and applied policy only in the plugin process: a
+plugin restart within the boot ends the Pod identity instead of reconstructing
+them, and no start permission survives it.
+Policy changes invalidate issuance responses obtained under an earlier revision.
+
+Losing retained history or protection ends issuance and removes the published
+credentials. A copied leaf stays usable until expiry, and an abrupt process
+failure cannot guarantee immediate local removal.
+
+These are ordinary mesh leaves: a relying party sees neither the claims nor the
+profile, and a named leaf records authorization at issuance, not current
+liveness or exclusive assignment. The profile creates no node inventory binding
+and does not enable secret release. Setup is in
+[operator.md](operator.md#pod-cvm).
+
+A standalone pod CVM captures only its signed IPv4 TCP peer tuples: the pod
+network namespace's packet rules, which the guest installs from outside it and
+no container can change (every container lacks `NET_ADMIN`), send the pod's TCP
+to a tuple through the endpoint, and the endpoint dials the peer itself, as a
+member pod's does. The endpoint refuses a peer on a mesh control port before
+any handshake, and the pod CVM provider publishes no endpoint on one. Other
+IPv4 TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves
+with the CVM's source address. Pod and
+guest rules exclude IPv4 link-local and block container-initiated access to
+guest-local services, the endpoint's included. An entry's declared exits grant nothing in a pod CVM,
+whose egress needs none.
 
 ## Sandbox identity
 
@@ -243,10 +311,13 @@ the snapshot's version and digest; anything else — a malformed answer, no matc
 mid-lifecycle, an ambiguous match — issues the unnamed, membership-only leaf,
 since an incomplete pod still needs a certificate. The digest pins which policy
 decided the match, so a client holding the same bytes detects skew. The router
-keeps a route's backend inside its own allowlist by requiring the two stamps to
-carry the same digest, checking the name alone while its own leaf carries no
+keeps a route's backend inside its own allowlist by requiring the entry the
+backend's stamp names to be the same in both stamps' documents, checking the name alone while its own leaf carries no
 stamp and refusing every workload dial with 502 while its own stamp does not
-parse ([operator.md](operator.md#route-manifest)).
+parse ([operator.md](operator.md#route-manifest)). A sandbox whose inventory
+reports a `router`-role container gets a leaf of `--router-cert-ttl` (20s),
+shorter than the delay before an allowlist write takes effect on nodes
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#refresh-and-anti-rollback)).
 
 A sandbox goes from unnamed to named at the first renewal after its pod is
 complete. There is no third state, and losing the match costs the pod its name

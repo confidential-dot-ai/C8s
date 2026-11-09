@@ -193,6 +193,9 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 	defer target.Close()
 	for _, tc := range []string{"redirect", "malformed", "oversized", "truncated", "headers", "body", "cancel"} {
 		t.Run(tc, func(t *testing.T) {
+			// Keep the response incomplete until the client observes cancellation.
+			release := make(chan struct{})
+			defer close(release)
 			srv, connections := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
 				switch tc {
 				case "redirect":
@@ -205,11 +208,11 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 					w.Header().Set("Content-Length", "100")
 					w.Write([]byte("short"))
 				case "headers":
-					<-r.Context().Done()
+					<-release
 				default:
 					w.WriteHeader(http.StatusOK)
 					w.(http.Flusher).Flush()
-					<-r.Context().Done()
+					<-release
 				}
 			})
 			ctx, cancel := context.WithCancel(context.Background())

@@ -1,0 +1,22 @@
+## Azure confidential VMs on AMD SEV-SNP: evidence is the vTPM's HCL report,
+## which wraps the SNP report.
+attestationApi:
+  devices:
+    - /dev/tpm0
+    - /dev/tpmrm0
+## AKS marks a confidential node pool with this label.
+confidentialNodeSelector:
+  kubernetes.azure.com/security-type: ConfidentialVM
+controlPlane:
+  webhook:
+    ## AKS's admissions enforcer rewrites a webhook's namespaceSelector, which
+    ## makes every helm upgrade conflict.
+    annotations:
+      admissions.enforcer/disabled: "true"
+nriImagePolicy:
+  platform: snp
+router:
+  attest:
+    platform: az-snp
+    ## The report carries the processor generation.
+    generation: ""

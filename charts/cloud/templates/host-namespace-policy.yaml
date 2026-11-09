@@ -1,0 +1,524 @@
+{{- /*
+Enforce Restricted Pod Security controls in workload namespaces, including a
+blanket hostPath denial. The inventory socket directory reaches credential
+sidecars through NRI below the Pod spec, so no volume or image exception is
+needed here.
+
+The release namespace, the router role's own, and kube-system host trusted platform components that legitimately
+need privileges which tenant workloads must never receive: a front-door pod
+binds the node's port and reads its inventory socket.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "c8s.fullname" . }}-deny-host-namespaces
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: host-namespace-policy
+spec:
+  # Fail closed: a CEL evaluation error denies the pod. Every optional field
+  # is has()-guarded so ordinary defaulting does not produce evaluation errors.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+            - {{ include "c8s.routerMeshNamespace" . }}
+            - kube-system
+            - local-path-storage
+  validations:
+    - expression: >-
+        !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
+      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port CDS uses to identify the admission inventory, and impersonate it."
+    - expression: >-
+        !has(object.spec.hostPID) || object.spec.hostPID == false
+      message: "hostPID is denied: sharing the node PID namespace defeats the kernel peer-credential binding the admission inventory uses to identify its caller."
+    - expression: >-
+        !has(object.spec.hostIPC) || object.spec.hostIPC == false
+      message: "hostIPC is denied for tenant pods."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
+      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have CDS resolve its signing key."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          (!has(c.livenessProbe) ||
+           ((!has(c.livenessProbe.httpGet) || !has(c.livenessProbe.httpGet.host) ||
+             c.livenessProbe.httpGet.host == '') &&
+            (!has(c.livenessProbe.tcpSocket) || !has(c.livenessProbe.tcpSocket.host) ||
+             c.livenessProbe.tcpSocket.host == ''))) &&
+          (!has(c.readinessProbe) ||
+           ((!has(c.readinessProbe.httpGet) || !has(c.readinessProbe.httpGet.host) ||
+             c.readinessProbe.httpGet.host == '') &&
+            (!has(c.readinessProbe.tcpSocket) || !has(c.readinessProbe.tcpSocket.host) ||
+             c.readinessProbe.tcpSocket.host == ''))) &&
+          (!has(c.startupProbe) ||
+           ((!has(c.startupProbe.httpGet) || !has(c.startupProbe.httpGet.host) ||
+             c.startupProbe.httpGet.host == '') &&
+            (!has(c.startupProbe.tcpSocket) || !has(c.startupProbe.tcpSocket.host) ||
+             c.startupProbe.tcpSocket.host == ''))) &&
+          (!has(c.lifecycle) ||
+           ((!has(c.lifecycle.postStart) ||
+             ((!has(c.lifecycle.postStart.httpGet) || !has(c.lifecycle.postStart.httpGet.host) ||
+               c.lifecycle.postStart.httpGet.host == '') &&
+              (!has(c.lifecycle.postStart.tcpSocket) || !has(c.lifecycle.postStart.tcpSocket.host) ||
+               c.lifecycle.postStart.tcpSocket.host == ''))) &&
+            (!has(c.lifecycle.preStop) ||
+             ((!has(c.lifecycle.preStop.httpGet) || !has(c.lifecycle.preStop.httpGet.host) ||
+               c.lifecycle.preStop.httpGet.host == '') &&
+              (!has(c.lifecycle.preStop.tcpSocket) || !has(c.lifecycle.preStop.tcpSocket.host) ||
+               c.lifecycle.preStop.tcpSocket.host == ''))))))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          (!has(c.livenessProbe) ||
+           ((!has(c.livenessProbe.httpGet) || !has(c.livenessProbe.httpGet.host) ||
+             c.livenessProbe.httpGet.host == '') &&
+            (!has(c.livenessProbe.tcpSocket) || !has(c.livenessProbe.tcpSocket.host) ||
+             c.livenessProbe.tcpSocket.host == ''))) &&
+          (!has(c.readinessProbe) ||
+           ((!has(c.readinessProbe.httpGet) || !has(c.readinessProbe.httpGet.host) ||
+             c.readinessProbe.httpGet.host == '') &&
+            (!has(c.readinessProbe.tcpSocket) || !has(c.readinessProbe.tcpSocket.host) ||
+             c.readinessProbe.tcpSocket.host == ''))) &&
+          (!has(c.startupProbe) ||
+           ((!has(c.startupProbe.httpGet) || !has(c.startupProbe.httpGet.host) ||
+             c.startupProbe.httpGet.host == '') &&
+            (!has(c.startupProbe.tcpSocket) || !has(c.startupProbe.tcpSocket.host) ||
+             c.startupProbe.tcpSocket.host == ''))) &&
+          (!has(c.lifecycle) ||
+           ((!has(c.lifecycle.postStart) ||
+             ((!has(c.lifecycle.postStart.httpGet) || !has(c.lifecycle.postStart.httpGet.host) ||
+               c.lifecycle.postStart.httpGet.host == '') &&
+              (!has(c.lifecycle.postStart.tcpSocket) || !has(c.lifecycle.postStart.tcpSocket.host) ||
+               c.lifecycle.postStart.tcpSocket.host == ''))) &&
+            (!has(c.lifecycle.preStop) ||
+             ((!has(c.lifecycle.preStop.httpGet) || !has(c.lifecycle.preStop.httpGet.host) ||
+               c.lifecycle.preStop.httpGet.host == '') &&
+              (!has(c.lifecycle.preStop.tcpSocket) || !has(c.lifecycle.preStop.tcpSocket.host) ||
+               c.lifecycle.preStop.tcpSocket.host == '')))))))
+      message: "Probe and lifecycle HTTP/TCP handlers must not set an explicit host."
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: "hostPath volumes are denied for tenant pods: a mount of the node filesystem could swap the sockets c8s components dial (docs/getcert-workload-binding.md, Corner 7)."
+    - expression: >-
+        !has(object.spec.volumes) || object.spec.volumes.all(v,
+          has(v.configMap) || has(v.csi) || has(v.downwardAPI) ||
+          has(v.emptyDir) || has(v.ephemeral) ||
+          has(v.persistentVolumeClaim) || has(v.projected) || has(v.secret))
+      message: "Volumes must use a Restricted-safe source."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.windowsOptions) ||
+         !has(object.spec.securityContext.windowsOptions.hostProcess) ||
+         object.spec.securityContext.windowsOptions.hostProcess == false) &&
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+          !has(c.securityContext.windowsOptions.hostProcess) ||
+          c.securityContext.windowsOptions.hostProcess == false)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+          !has(c.securityContext.windowsOptions.hostProcess) ||
+          c.securityContext.windowsOptions.hostProcess == false)) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+          !has(c.securityContext.windowsOptions.hostProcess) ||
+          c.securityContext.windowsOptions.hostProcess == false))
+      message: "Windows HostProcess containers are denied."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false))
+      message: "Privileged containers are denied."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false))
+      message: "Every container must set allowPrivilegeEscalation: false."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.runAsNonRoot) ||
+         object.spec.securityContext.runAsNonRoot == true) &&
+        ((!has(object.spec.containers) || object.spec.containers.all(c,
+          (has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ?
+            c.securityContext.runAsNonRoot == true :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.runAsNonRoot) &&
+             object.spec.securityContext.runAsNonRoot == true))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ?
+            c.securityContext.runAsNonRoot == true :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.runAsNonRoot) &&
+             object.spec.securityContext.runAsNonRoot == true))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ?
+            c.securityContext.runAsNonRoot == true :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.runAsNonRoot) &&
+             object.spec.securityContext.runAsNonRoot == true))))
+      message: "Pod runAsNonRoot must not be false; every container must run as non-root explicitly or by inheritance."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.runAsUser) ||
+         object.spec.securityContext.runAsUser != 0) &&
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.runAsUser) ||
+          c.securityContext.runAsUser != 0)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.runAsUser) ||
+          c.securityContext.runAsUser != 0)) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.runAsUser) ||
+          c.securityContext.runAsUser != 0))
+      message: "runAsUser must not be UID 0 at pod or container scope."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+          (!has(c.securityContext.capabilities.add) ||
+           c.securityContext.capabilities.add.all(cap, cap == 'NET_BIND_SERVICE')))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+          (!has(c.securityContext.capabilities.add) ||
+           c.securityContext.capabilities.add.all(cap, cap == 'NET_BIND_SERVICE')))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+          (!has(c.securityContext.capabilities.add) ||
+           c.securityContext.capabilities.add.all(cap, cap == 'NET_BIND_SERVICE'))))
+      message: "Every container must drop ALL capabilities and may add back only NET_BIND_SERVICE."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.seccompProfile) ||
+         object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']) &&
+        ((!has(object.spec.containers) || object.spec.containers.all(c,
+          (has(c.securityContext) && has(c.securityContext.seccompProfile)) ?
+            c.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'] :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.seccompProfile) &&
+             object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.seccompProfile)) ?
+            c.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'] :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.seccompProfile) &&
+             object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.seccompProfile)) ?
+            c.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'] :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.seccompProfile) &&
+             object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']))))
+      message: "Pod and container seccomp profiles must be RuntimeDefault or Localhost; every container must set or inherit one."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.appArmorProfile) ||
+         object.spec.securityContext.appArmorProfile.type != 'Unconfined') &&
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+          c.securityContext.appArmorProfile.type != 'Unconfined')) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+          c.securityContext.appArmorProfile.type != 'Unconfined')) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+          c.securityContext.appArmorProfile.type != 'Unconfined')) &&
+        (!has(object.metadata) || !has(object.metadata.annotations) ||
+         object.metadata.annotations.all(k,
+           !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+           object.metadata.annotations[k] != 'unconfined'))
+      message: "AppArmor must not be explicitly set to Unconfined."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.seLinuxOptions) ||
+         ((!has(object.spec.securityContext.seLinuxOptions.user) ||
+           object.spec.securityContext.seLinuxOptions.user == '') &&
+          (!has(object.spec.securityContext.seLinuxOptions.role) ||
+           object.spec.securityContext.seLinuxOptions.role == '') &&
+          (!has(object.spec.securityContext.seLinuxOptions.type) ||
+           object.spec.securityContext.seLinuxOptions.type in
+             ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']))) &&
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.seLinuxOptions) ||
+          ((!has(c.securityContext.seLinuxOptions.user) ||
+            c.securityContext.seLinuxOptions.user == '') &&
+           (!has(c.securityContext.seLinuxOptions.role) ||
+            c.securityContext.seLinuxOptions.role == '') &&
+           (!has(c.securityContext.seLinuxOptions.type) ||
+            c.securityContext.seLinuxOptions.type in
+              ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t'])))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.seLinuxOptions) ||
+          ((!has(c.securityContext.seLinuxOptions.user) ||
+            c.securityContext.seLinuxOptions.user == '') &&
+           (!has(c.securityContext.seLinuxOptions.role) ||
+            c.securityContext.seLinuxOptions.role == '') &&
+           (!has(c.securityContext.seLinuxOptions.type) ||
+            c.securityContext.seLinuxOptions.type in
+              ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t'])))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.seLinuxOptions) ||
+          ((!has(c.securityContext.seLinuxOptions.user) ||
+            c.securityContext.seLinuxOptions.user == '') &&
+           (!has(c.securityContext.seLinuxOptions.role) ||
+            c.securityContext.seLinuxOptions.role == '') &&
+           (!has(c.securityContext.seLinuxOptions.type) ||
+            c.securityContext.seLinuxOptions.type in
+              ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']))))
+      message: "SELinux user and role must be unset, and type must be a container-safe type."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.procMount) ||
+          c.securityContext.procMount == 'Default')) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.procMount) ||
+          c.securityContext.procMount == 'Default')) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.procMount) ||
+          c.securityContext.procMount == 'Default'))
+      message: "procMount must be Default."
+    - expression: >-
+        !has(object.spec.securityContext) ||
+        !has(object.spec.securityContext.sysctls) ||
+        object.spec.securityContext.sysctls.all(s, s.name in [
+          'kernel.shm_rmid_forced',
+          'net.ipv4.ip_local_port_range',
+          'net.ipv4.ip_unprivileged_port_start',
+          'net.ipv4.tcp_syncookies',
+          'net.ipv4.ping_group_range',
+          'net.ipv4.ip_local_reserved_ports',
+          'net.ipv4.tcp_keepalive_time',
+          'net.ipv4.tcp_fin_timeout',
+          'net.ipv4.tcp_keepalive_intvl',
+          'net.ipv4.tcp_keepalive_probes',
+          'net.ipv4.tcp_rmem',
+          'net.ipv4.tcp_wmem'
+        ])
+      message: "Only sysctls allowed by the Kubernetes Restricted profile may be set."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "c8s.fullname" . }}-deny-host-namespaces
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: host-namespace-policy
+spec:
+  policyName: {{ include "c8s.fullname" . }}-deny-host-namespaces
+  validationActions:
+    - Deny
+---
+# pods/ephemeralcontainers is validated separately, but its admission object is
+# the full Pod. Honor pod-level defaults while validating ephemeral containers;
+# the subresource update preserves the other containers and pod security context.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "c8s.fullname" . }}-deny-host-namespaces-ephemeral
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: host-namespace-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+            - {{ include "c8s.routerMeshNamespace" . }}
+            - kube-system
+            - local-path-storage
+  validations:
+    - expression: >-
+        !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
+      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port CDS uses to identify the admission inventory, and impersonate it."
+    - expression: >-
+        !has(object.spec.hostPID) || object.spec.hostPID == false
+      message: "hostPID is denied: sharing the node PID namespace defeats the kernel peer-credential binding the admission inventory uses to identify its caller."
+    - expression: >-
+        !has(object.spec.hostIPC) || object.spec.hostIPC == false
+      message: "hostIPC is denied for tenant pods."
+    - expression: >-
+        (!has(object.spec.containers) || object.spec.containers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
+      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have CDS resolve its signing key."
+    # Keep the blanket denial for full-Pod ephemeral updates too, including
+    # Pods admitted before this policy that still contain a hostPath.
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: "hostPath volumes are denied for tenant pods: a mount of the node filesystem could swap the sockets c8s components dial (docs/getcert-workload-binding.md, Corner 7)."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+          !has(c.securityContext.windowsOptions.hostProcess) ||
+          c.securityContext.windowsOptions.hostProcess == false)
+      message: "Ephemeral containers must not be Windows HostProcess containers."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: "Ephemeral containers must not be privileged."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)
+      message: "Every ephemeral container must set allowPrivilegeEscalation: false."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.runAsNonRoot) ||
+         object.spec.securityContext.runAsNonRoot == true) &&
+        (!has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ?
+            c.securityContext.runAsNonRoot == true :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.runAsNonRoot) &&
+             object.spec.securityContext.runAsNonRoot == true)))
+      message: "Pod runAsNonRoot must not be false; every ephemeral container must run as non-root explicitly or by inheritance."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.runAsUser) ||
+         object.spec.securityContext.runAsUser != 0) &&
+        (!has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.runAsUser) ||
+          c.securityContext.runAsUser != 0))
+      message: "runAsUser must not be UID 0 at pod or ephemeral-container scope."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+          (!has(c.securityContext.capabilities.add) ||
+           c.securityContext.capabilities.add.all(cap, cap == 'NET_BIND_SERVICE')))
+      message: "Every ephemeral container must drop ALL capabilities and may add back only NET_BIND_SERVICE."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.seccompProfile) ||
+         object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']) &&
+        (!has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          (has(c.securityContext) && has(c.securityContext.seccompProfile)) ?
+            c.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'] :
+            (has(object.spec.securityContext) &&
+             has(object.spec.securityContext.seccompProfile) &&
+             object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'])))
+      message: "Pod and ephemeral-container seccomp profiles must be RuntimeDefault or Localhost; every ephemeral container must set or inherit one."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.appArmorProfile) ||
+         object.spec.securityContext.appArmorProfile.type != 'Unconfined') &&
+        (!has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+          c.securityContext.appArmorProfile.type != 'Unconfined')) &&
+        (!has(object.metadata) || !has(object.metadata.annotations) ||
+         object.metadata.annotations.all(k,
+           !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+           object.metadata.annotations[k] != 'unconfined'))
+      message: "AppArmor must not be Unconfined at pod or ephemeral-container scope."
+    - expression: >-
+        (!has(object.spec.securityContext) ||
+         !has(object.spec.securityContext.seLinuxOptions) ||
+         ((!has(object.spec.securityContext.seLinuxOptions.user) ||
+           object.spec.securityContext.seLinuxOptions.user == '') &&
+          (!has(object.spec.securityContext.seLinuxOptions.role) ||
+           object.spec.securityContext.seLinuxOptions.role == '') &&
+          (!has(object.spec.securityContext.seLinuxOptions.type) ||
+           object.spec.securityContext.seLinuxOptions.type in
+             ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']))) &&
+        (!has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.seLinuxOptions) ||
+          ((!has(c.securityContext.seLinuxOptions.user) ||
+            c.securityContext.seLinuxOptions.user == '') &&
+           (!has(c.securityContext.seLinuxOptions.role) ||
+            c.securityContext.seLinuxOptions.role == '') &&
+           (!has(c.securityContext.seLinuxOptions.type) ||
+            c.securityContext.seLinuxOptions.type in
+              ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']))))
+      message: "Pod and ephemeral-container SELinux user and role must be unset, and type must be a container-safe type."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.procMount) ||
+          c.securityContext.procMount == 'Default')
+      message: "Ephemeral-container procMount must be Default."
+    - expression: >-
+        !has(object.spec.securityContext) ||
+        !has(object.spec.securityContext.sysctls) ||
+        object.spec.securityContext.sysctls.all(s, s.name in [
+          'kernel.shm_rmid_forced',
+          'net.ipv4.ip_local_port_range',
+          'net.ipv4.ip_unprivileged_port_start',
+          'net.ipv4.tcp_syncookies',
+          'net.ipv4.ping_group_range',
+          'net.ipv4.ip_local_reserved_ports',
+          'net.ipv4.tcp_keepalive_time',
+          'net.ipv4.tcp_fin_timeout',
+          'net.ipv4.tcp_keepalive_intvl',
+          'net.ipv4.tcp_keepalive_probes',
+          'net.ipv4.tcp_rmem',
+          'net.ipv4.tcp_wmem'
+        ])
+      message: "Only sysctls allowed by the Kubernetes Restricted profile may be set."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "c8s.fullname" . }}-deny-host-namespaces-ephemeral
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: host-namespace-policy
+spec:
+  policyName: {{ include "c8s.fullname" . }}-deny-host-namespaces-ephemeral
+  validationActions:
+    - Deny

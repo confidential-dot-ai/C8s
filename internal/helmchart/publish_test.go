@@ -78,11 +78,12 @@ type node struct {
 
 func (n *node) pull(t *testing.T) {
 	t.Helper()
-	doc, etag, _, err := n.client.Fetch(context.Background(), "")
+	served, _, err := n.client.FetchServed(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err := strconv.ParseUint(allowlistclient.VersionFromETag(etag), 10, 64)
+	doc := served.Allowlist
+	version, err := strconv.ParseUint(served.Version, 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 // under repository, or the chart default when empty.
 func publishOverride(t *testing.T, repository string) {
 	t.Helper()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	if repository != "" {
 		args = append(args, "--set", "image.repository="+repository)
 	}
@@ -123,7 +124,7 @@ func publishOverride(t *testing.T, repository string) {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
 	operatorDigest := componentTestDigests["image"]
-	changed := append(slices.Clone(args), "--set-json", `operator.extraArgs=["--zap-log-level=debug"]`)
+	changed := append(slices.Clone(args), "--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}")
 	generated, err := helmTemplate(t, changed...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, generated)

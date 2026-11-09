@@ -37,8 +37,16 @@ type certOptions struct {
 // selfSignedCert mints a P-256 key, binds it to TEE evidence from the
 // attestation API the way the mesh does (armtls.SelfSignedProvider with
 // attestclient.MakeSNPARMTLSAttestFunc, which is platform-agnostic) and
-// wraps the evidence in a certificate shaped by o.
+// wraps the evidence in a certificate shaped by o. With neither an
+// attestation URL nor a platform the certificate carries no evidence.
 func selfSignedCert(ctx context.Context, o certOptions) (tls.Certificate, error) {
+	if o.attestationURL == "" && o.platform == "" {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+		return certFromDER(key, nil, o)
+	}
 	family, err := teetypes.ParseFamily(o.platform)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -54,7 +62,12 @@ func selfSignedCert(ctx context.Context, o certOptions) (tls.Certificate, error)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	der, err := buildCert(key, &armtls.Attestation{Family: family, Report: []byte(evidence)}, o)
+	return certFromDER(key, &armtls.Attestation{Family: family, Report: []byte(evidence)}, o)
+}
+
+// certFromDER builds the certificate buildCert shapes and pairs it with key.
+func certFromDER(key *ecdsa.PrivateKey, att *armtls.Attestation, o certOptions) (tls.Certificate, error) {
+	der, err := buildCert(key, att, o)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -65,15 +78,82 @@ func selfSignedCert(ctx context.Context, o certOptions) (tls.Certificate, error)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
 
-// buildCert is armtls.CreateAttestedCert with the validity window and the
+// foreignCALeaf mints a throwaway P-256 CA and a leaf it signs, shaped as a
+// mesh leaf from another cluster would be: both mesh key usages and a
+// well-formed workload-instance extension, so a verifier can refuse it only
+// for the CA it chains to. The chain is leaf then CA.
+func foreignCALeaf() (tls.Certificate, error) {
+	now := time.Now()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	caSerial, err := certutil.GenerateSerial()
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	ca := &x509.Certificate{
+		SerialNumber:          caSerial,
+		Subject:               pkix.Name{CommonName: "armtls-dial foreign mesh CA"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create CA: %w", err)
+	}
+	if ca, err = x509.ParseCertificate(caDER); err != nil {
+		return tls.Certificate{}, err
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	sandbox, err := armtls.MarshalSandboxIDExtension("conformance-foreign-peer")
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	serial, err := certutil.GenerateSerial()
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	template := &x509.Certificate{
+		SerialNumber:    serial,
+		Subject:         pkix.Name{CommonName: "armtls-dial foreign peer"},
+		NotBefore:       now.Add(-time.Minute),
+		NotAfter:        now.Add(time.Hour),
+		KeyUsage:        x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		ExtraExtensions: []pkix.Extension{sandbox},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca, &key.PublicKey, caKey)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create leaf: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der, caDER}, PrivateKey: key, Leaf: leaf}, nil
+}
+
+// buildCert is armtls.CreateAttestedCert, without the evidence extension
+// when att is nil, with the validity window and the
 // issuer under the caller's control: the same extension, key usages and
 // subject, but NotBefore/NotAfter from o and, with issuerDiffers, a parent
 // whose subject differs and whose key is unrelated, so the result is not
 // self-issued yet still carries the evidence extension.
 func buildCert(key *ecdsa.PrivateKey, att *armtls.Attestation, o certOptions) ([]byte, error) {
-	ext, err := armtls.MarshalExtension(att)
-	if err != nil {
-		return nil, err
+	var exts []pkix.Extension
+	if att != nil {
+		ext, err := armtls.MarshalExtension(att)
+		if err != nil {
+			return nil, err
+		}
+		exts = append(exts, ext)
 	}
 	serial, err := certutil.GenerateSerial()
 	if err != nil {
@@ -88,7 +168,7 @@ func buildCert(key *ecdsa.PrivateKey, att *armtls.Attestation, o certOptions) ([
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
-		ExtraExtensions:       []pkix.Extension{ext},
+		ExtraExtensions:       exts,
 	}
 	parent, signer := template, crypto.Signer(key)
 	if o.issuerDiffers {

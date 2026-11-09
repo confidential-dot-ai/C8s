@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -19,38 +20,119 @@ import (
 // Decoding into this rather than the k8s API types keeps the CLI free of a
 // client-go dependency for what is a pure text transformation.
 type podTemplate struct {
-	InitContainers []templateContainer `json:"initContainers"`
-	Containers     []templateContainer `json:"containers"`
+	InitContainers  []templateContainer     `json:"initContainers"`
+	Containers      []templateContainer     `json:"containers"`
+	SecurityContext templateSecurityContext `json:"securityContext"`
+	// annotations are the pod's, from the object or its pod template.
+	annotations map[string]string
+}
+
+type templateSecurityContext struct {
+	RunAsUser    *int64 `json:"runAsUser"`
+	RunAsNonRoot *bool  `json:"runAsNonRoot"`
 }
 
 type templateContainer struct {
-	Name    string   `json:"name"`
-	Image   string   `json:"image"`
-	Command []string `json:"command"`
-	Args    []string `json:"args"`
+	Name            string                  `json:"name"`
+	Image           string                  `json:"image"`
+	Command         []string                `json:"command"`
+	Args            []string                `json:"args"`
+	SecurityContext templateSecurityContext `json:"securityContext"`
+	VolumeMounts    []struct {
+		Name        string `json:"name"`
+		MountPath   string `json:"mountPath"`
+		SubPath     string `json:"subPath"`
+		SubPathExpr string `json:"subPathExpr"`
+	} `json:"volumeMounts"`
+}
+
+// emptyDirMounts are the rules for every mount c declares of an emptyDir
+// volume, or one at fallback when it declares none. A subpath mount is
+// observed as data, so its rule is a data rule, which must sit below
+// allowlist.DataMountPrefix.
+func (c templateContainer) emptyDirMounts(volume, fallback string) ([]allowlist.MountRule, error) {
+	var rules []allowlist.MountRule
+	for _, m := range c.VolumeMounts {
+		if m.Name != volume {
+			continue
+		}
+		kind := allowlist.MountEmptyDir
+		if m.SubPath != "" || m.SubPathExpr != "" {
+			if !strings.HasPrefix(m.MountPath, allowlist.DataMountPrefix) {
+				return nil, fmt.Errorf("container %q mounts %s by subpath at %s: an allowlist can admit a subpath mount only below %s",
+					c.Name, volume, m.MountPath, allowlist.DataMountPrefix)
+			}
+			kind = allowlist.MountData
+		}
+		rules = append(rules, allowlist.MountRule{Destination: m.MountPath, Kind: kind})
+	}
+	if len(rules) == 0 {
+		rules = append(rules, allowlist.MountRule{Destination: fallback, Kind: allowlist.MountEmptyDir})
+	}
+	return rules, nil
+}
+
+func effectiveSecurityContext(pod, ctr templateSecurityContext) templateSecurityContext {
+	out := pod
+	if ctr.RunAsUser != nil {
+		out.RunAsUser = ctr.RunAsUser
+	}
+	if ctr.RunAsNonRoot != nil {
+		out.RunAsNonRoot = ctr.RunAsNonRoot
+	}
+	return out
+}
+
+func statesNonzeroUID(sc templateSecurityContext) bool {
+	if sc.RunAsUser != nil {
+		return *sc.RunAsUser != 0
+	}
+	return sc.RunAsNonRoot != nil && *sc.RunAsNonRoot
+}
+
+func rootUIDWarning(name string) string {
+	return fmt.Sprintf("container %q does not state a nonzero uid, and a C8s node refuses a container that runs as uid 0: "+
+		"set a nonzero runAsUser, or runAsNonRoot: true if its image's USER is a nonzero uid", name)
+}
+
+func rootUIDWarnings(spec podTemplate) []string {
+	var out []string
+	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+		if !statesNonzeroUID(effectiveSecurityContext(spec.SecurityContext, c.SecurityContext)) {
+			out = append(out, rootUIDWarning(c.Name))
+		}
+	}
+	return out
 }
 
 // podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
 // template, so `kubectl get deploy/x -o json` and `kubectl get pod/x -o json`
 // both work without the caller reaching for jq first.
 func podSpecOf(data []byte) (podTemplate, error) {
+	type metadata struct {
+		Annotations map[string]string `json:"annotations"`
+	}
 	var probe struct {
-		Kind string `json:"kind"`
-		Spec struct {
+		Kind     string   `json:"kind"`
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
 			podTemplate
 			Template struct {
-				Spec podTemplate `json:"spec"`
+				Metadata metadata    `json:"metadata"`
+				Spec     podTemplate `json:"spec"`
 			} `json:"template"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return podTemplate{}, fmt.Errorf("parse object: %w", err)
 	}
-	if len(probe.Spec.Template.Spec.Containers) > 0 {
-		return probe.Spec.Template.Spec, nil
+	if spec := probe.Spec.Template.Spec; len(spec.Containers) > 0 {
+		spec.annotations = probe.Spec.Template.Metadata.Annotations
+		return spec, nil
 	}
-	if len(probe.Spec.Containers) > 0 {
-		return probe.Spec.podTemplate, nil
+	if spec := probe.Spec.podTemplate; len(spec.Containers) > 0 {
+		spec.annotations = probe.Metadata.Annotations
+		return spec, nil
 	}
 	kind := probe.Kind
 	if kind == "" {
@@ -72,6 +154,34 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 		out = append(out, c)
 	}
 	return out, dropped
+}
+
+// withInjectedMounts adds the mounts the webhook adds to c to a deny or exact
+// policy: the secrets volume, when the pod requests secrets. The webhook keeps
+// a mount c already declares for the volume, so those destinations win. A rule
+// p already gives for the same destination is kept if its kind matches and
+// refused otherwise, since it would refuse the injected mount. Any is returned
+// unchanged.
+func withInjectedMounts(p allowlist.MountPolicy, annotations map[string]string, c templateContainer) (allowlist.MountPolicy, error) {
+	if p.Policy == allowlist.PolicyAny || len(workloadclaims.SplitList(annotations[workloadclaims.AnnotationSecrets])) == 0 {
+		return p, nil
+	}
+	rules, err := c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)
+	if err != nil {
+		return p, err
+	}
+	out := allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: slices.Clone(p.Rules)}
+	for _, r := range rules {
+		i := slices.IndexFunc(out.Rules, func(have allowlist.MountRule) bool { return have.Destination == r.Destination })
+		switch {
+		case i < 0:
+			out.Rules = append(out.Rules, r)
+		case out.Rules[i].Kind != r.Kind:
+			return p, fmt.Errorf("mount policy for container %q gives %s kind %q, but c8s mounts its %s volume there as %q",
+				c.Name, r.Destination, out.Rules[i].Kind, workloadclaims.SecretsVolumeName, r.Kind)
+		}
+	}
+	return out, nil
 }
 
 // argvPolicy renders one half of a container's argv policy.
@@ -171,11 +281,18 @@ container. Omitting both leaves every container at "deny", which admits platform
 mounts alone. The pod spec cannot prove which sources are node-provided or how
 persistent storage is protected, so exact rules go in --mounts-file.
 
+For a pod that sets confidential.ai/c8s-secrets, derive adds the secrets
+emptyDir the webhook mounts into every container to each deny or exact policy,
+at /run/c8s/secrets or wherever the container already mounts the volume. Other
+volumes, including c8s volumes, go in --mounts-file.
+
 The entry pins argv, so it expires the moment a container command changes:
 re-derive and re-apply whenever the workload is edited.
 
 Containers c8s injects are dropped and named on stderr, so an admitted pod
-derives the same entry as the manifest it was admitted from.`,
+derives the same entry as the manifest it was admitted from. A container whose
+spec does not state a nonzero uid is named on stderr too: a C8s node refuses a
+container that runs as uid 0.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := readFileOrStdin(cmd, args[1])
@@ -192,6 +309,9 @@ derives the same entry as the manifest it was admitted from.`,
 			dropped = append(dropped, mains...)
 			if len(dropped) > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
+			}
+			for _, warning := range rootUIDWarnings(spec) {
+				fmt.Fprintln(cmd.ErrOrStderr(), warning)
 			}
 			requireCrane := sync.OnceValue(crane.Require)
 			resolve := func(image string) ([]string, []string, error) {
@@ -219,8 +339,11 @@ derives the same entry as the manifest it was admitted from.`,
 				return fmt.Errorf("--mounts must be any or deny; use --mounts-file for exact rules")
 			}
 			if mountsMode == "" && mountsFile == "" {
-				fmt.Fprintln(cmd.ErrOrStderr(),
-					`mounts: no policy given; every container is "deny", which admits platform mounts alone`)
+				msg := `mounts: no policy given; every container is "deny", which admits platform mounts alone`
+				if len(workloadclaims.SplitList(spec.annotations[workloadclaims.AnnotationSecrets])) > 0 {
+					msg = `mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone`
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), msg)
 			}
 			var policies map[string]allowlist.EnvPolicy
 			var mountPolicies map[string]allowlist.MountPolicy
@@ -275,6 +398,11 @@ derives the same entry as the manifest it was admitted from.`,
 					case mountsMode != "":
 						part.containers[i].Mounts = allowlist.MountPolicy{Policy: mountsMode}
 					}
+					mounts, err := withInjectedMounts(part.containers[i].Mounts, spec.annotations, c)
+					if err != nil {
+						return err
+					}
+					part.containers[i].Mounts = mounts
 				}
 			}
 			for name := range policies {
