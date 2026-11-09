@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 )
 
 // nodeFixture is a node the NRI installer and its removers run against: /host
@@ -24,9 +26,14 @@ type nodeFixture struct {
 }
 
 const (
-	nodePluginPath     = "/opt/nri/plugins/10-nri-image-policy"
-	nodeBootConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+	nodePluginDir      = "/opt/nri/plugins"
+	nodePluginPath     = nodePluginDir + "/10-nri-image-policy"
+	nodeConfigDir      = "/etc/nri/conf.d"
+	nodeBootConfigPath = nodeConfigDir + "/image-policy.yaml"
 	nodeContainerdTOML = "/etc/containerd/config.toml"
+	// The directory the plugin renders its documents into, which the sweep
+	// removes by the same path.
+	nodeEnforcerDir = nriimagepolicy.EnforcerRuntimeDir
 )
 
 // nodeStubs are the host commands the scripts call. nsenter answers the

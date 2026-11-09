@@ -11,7 +11,7 @@ required selector, it creates one exclusion term. Explicit empty required
 selectors and empty terms retain Kubernetes' no-match behavior. The input is
 never mutated, so repeated callers see the same constraints.
 
-The nri-image-policy installer and its uninstall hook, the attestation API,
-volumed, and the volumed teardown PodSpec helpers use `c8s.hostDaemonAffinity`
-beside their [confidential-node selector](../nodes/README.md). The exclusion applies even when this release's provider is disabled;
+The nri-image-policy installer, the attestation API and volumed use
+`c8s.hostDaemonAffinity` beside their
+[confidential-node selector](../nodes/README.md). The exclusion applies even when this release's provider is disabled;
 another release can own a virtual node in the same cluster.

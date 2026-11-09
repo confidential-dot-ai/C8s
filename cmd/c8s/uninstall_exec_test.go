@@ -158,7 +158,7 @@ func TestUninstallSweepsNodeState(t *testing.T) {
 	wi := lineIndex(calls, "kubectl get pods -n c8s-system -l "+nriInstallerSelector("c8s")+" -o name")
 	hi := lineIndex(calls, "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
 	if ii < 0 || wi < ii || hi < wi {
-		t.Fatalf("the NRI installer must be gone before the hook runs (delete=%d wait=%d helm=%d):\n%s", ii, wi, hi, strings.Join(calls, "\n"))
+		t.Fatalf("the NRI installer must be gone before the release is deleted (delete=%d wait=%d helm=%d):\n%s", ii, wi, hi, strings.Join(calls, "\n"))
 	}
 	ai := lineIndex(calls, "kubectl apply -f -")
 	ri := lineIndex(calls, "kubectl rollout status daemonset/c8s-host-sweep -n c8s-system --timeout=5m")
@@ -181,7 +181,8 @@ func TestUninstallSweepsNodeState(t *testing.T) {
 	}
 }
 
-// --host-sweep=false opts every release shape out of the host sweep.
+// --host-sweep=false runs no pod on any node, so it asks about none and the
+// nodes keep enforcing.
 func TestUninstallHostSweepFalseSkipsSweep(t *testing.T) {
 	values := hostReleaseValuesFile(t)
 	s := newUninstallStubs(t, values, "", false)
@@ -192,6 +193,7 @@ func TestUninstallHostSweepFalseSkipsSweep(t *testing.T) {
 	mustContainLine(t, calls, "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
 	mustNotContainPrefix(t, calls, "kubectl apply")
 	mustNotContainPrefix(t, calls, "kubectl rollout")
+	mustNotContainPrefix(t, calls, "kubectl get nodes")
 }
 
 func TestUninstallSweepRolloutFailureKeepsDaemonSet(t *testing.T) {
@@ -236,8 +238,8 @@ func TestUninstallHelmUninstallFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "helm uninstall failed") {
 		t.Fatalf("want the helm failure surfaced, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "--no-hooks") {
-		t.Fatalf("want the recovery hint (--no-hooks + --host-sweep-only), got %v", err)
+	if !strings.Contains(err.Error(), "--host-sweep-only") {
+		t.Fatalf("want the recovery hint (--host-sweep-only), got %v", err)
 	}
 	calls := s.f.calls(t)
 	mustContainLine(t, calls, "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
@@ -443,8 +445,8 @@ func TestUninstallRefusesWhileVolumePodsRun(t *testing.T) {
 			t.Fatalf("uninstall --force: %v", err)
 		}
 		mustContainLine(t, s.f.calls(t), "helm uninstall c8s --namespace c8s-system --wait --timeout=5m")
-		// The pre-delete hook cannot close what these pods hold, so --force has
-		// to name them here; a failed hook's logs go with the release.
+		// Nothing closes what these pods hold, so --force has to name them
+		// here, while the pods are still listable.
 		var listed bool
 		for _, c := range s.f.calls(t) {
 			if strings.HasPrefix(c, "kubectl get pods --all-namespaces") {
@@ -707,95 +709,25 @@ func TestUninstallSweepReplayNamesAMissingLIOStep(t *testing.T) {
 	}
 }
 
-// A removal pod cannot start on a NotReady node, so the uninstall stops before
-// helm waits on one, and names the node-level recovery. The nodes are the
-// sweep's when it runs, else the hooks'.
-func TestUninstallStopsAtNotReadyRemovalNodes(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		values   map[string]any
-		flags    []string
-		selector string
-	}{
-		{
-			"the sweep's nodes",
-			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
-			nil,
-			linuxNodeSelector(),
-		},
-		{
-			"the hooks' nodes of a release naming its confidential nodes",
-			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
-			[]string{"--host-sweep=false"},
-			"c8s.example/confidential=true",
-		},
-		{
-			"the hooks' nodes of a release naming none",
-			map[string]any{},
-			[]string{"--host-sweep=false"},
-			linuxNodeSelector(),
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newUninstallStubs(t, releaseValuesFile(t, tc.values), `"get nodes -l `+tc.selector+` -o jsonpath"*) /usr/bin/printf 'node-a\tTrue\nnode-b\tUnknown\nnode-c\tFalse\nnode-d\t\n' ;;
+// A sweep pod cannot start on a NotReady node, so the uninstall stops before
+// helm waits on one, and names the node-level recovery.
+func TestUninstallStopsAtNotReadySweepNodes(t *testing.T) {
+	s := newUninstallStubs(t, hostReleaseValuesFile(t), `"get nodes -l `+linuxNodeSelector()+` -o jsonpath"*) /usr/bin/printf 'node-a\tTrue\nnode-b\tUnknown\nnode-c\tFalse\nnode-d\t\n' ;;
 `, false)
-			err := runC8s(t, append([]string{"uninstall"}, tc.flags...)...)
-			if err == nil || !strings.Contains(err.Error(), "nodes node-b (Ready=Unknown), node-c (Ready=False), node-d (no Ready condition) do not report themselves Ready") || !strings.Contains(err.Error(), "delete /opt/nri/plugins/10-nri-image-policy, and run 'systemctl restart containerd'") {
-				t.Fatalf("want a refusal naming the nodes that are not Ready and the recovery, got %v", err)
-			}
-			mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
-		})
+	err := runC8s(t, "uninstall")
+	if err == nil || !strings.Contains(err.Error(), "nodes node-b (Ready=Unknown), node-c (Ready=False), node-d (no Ready condition) do not report themselves Ready") || !strings.Contains(err.Error(), "delete /opt/nri/plugins/10-nri-image-policy, and run 'systemctl restart containerd'") {
+		t.Fatalf("want a refusal naming the nodes that are not Ready and the recovery, got %v", err)
 	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
 }
 
-// A malformed selector and a selector no node matches stop the uninstall
-// rather than check no node.
-func TestUninstallRefusesRemovalNodesItCannotName(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		values map[string]any
-		nodes  string
-		want   string
-	}{
-		{
-			"a malformed confidential-node selector",
-			map[string]any{"confidentialNodeSelector": "c8s.example/confidential"},
-			"",
-			"is not a map of node labels",
-		},
-		{
-			"no node matching",
-			map[string]any{"confidentialNodeSelector": map[string]any{"c8s.example/confidential": "true"}},
-			`"get nodes -l c8s.example/confidential=true -o jsonpath"*) ;;
-`,
-			"no node matches c8s.example/confidential=true",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newUninstallStubs(t, releaseValuesFile(t, tc.values), tc.nodes, false)
-			err := runC8s(t, "uninstall", "--host-sweep=false")
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
-			}
-			mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
-		})
+// A selector no node matches stops the uninstall rather than check no node.
+func TestUninstallRefusesSweepNodesItCannotName(t *testing.T) {
+	s := newUninstallStubs(t, hostReleaseValuesFile(t), `"get nodes -l `+linuxNodeSelector()+` -o jsonpath"*) ;;
+`, false)
+	err := runC8s(t, "uninstall")
+	if err == nil || !strings.Contains(err.Error(), "no node matches "+linuxNodeSelector()) {
+		t.Fatalf("want a refusal naming the selector, got %v", err)
 	}
-}
-
-// releaseValuesFile writes values plus the pinned NRI image every release
-// carries.
-func releaseValuesFile(t *testing.T, values map[string]any) string {
-	t.Helper()
-	values["nriImagePolicy"] = map[string]any{
-		"image": map[string]any{"repository": "ghcr.io/confidential-dot-ai/nri-image-policy", "digest": testDigest},
-	}
-	data, err := json.Marshal(values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "release-values.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	mustNotContainPrefix(t, s.f.calls(t), "helm uninstall")
 }

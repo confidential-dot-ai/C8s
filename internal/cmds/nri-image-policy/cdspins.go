@@ -14,12 +14,16 @@ import (
 // credential clients (renderNodeDocument).
 const renderedCDSPinsName = "cds-pins.json"
 
-// enforcerRuntimeDir is the plugin's own directory on the node, holding the
+// EnforcerRuntimeDir is the plugin's own directory on the node, holding the
 // documents it hands its injected credential clients: no pod can write it, and
 // it sits outside the inventory socket directory the plugin bind-mounts, so
-// each document reaches a pod at the one compiled path its client reads. Tests
+// each document reaches a pod at the one compiled path its client reads. The
+// uninstall host sweep removes this path.
+const EnforcerRuntimeDir = "/run/c8s-enforcer"
+
+// enforcerRuntimeDir is where this process renders those documents. Tests
 // override it to render in a temporary directory.
-var enforcerRuntimeDir = "/run/c8s-enforcer"
+var enforcerRuntimeDir = EnforcerRuntimeDir
 
 // renderNodeDocument writes one document of that directory and returns the
 // path the plugin bind-mounts from.
