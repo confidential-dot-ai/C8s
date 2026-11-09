@@ -67,7 +67,7 @@ jobs:
       - name: Lint workflows
         # Ignores the findings that pre-exist on origin/main so only new ones
         # fail the gate: c8s-image.yml's undeclared workflow_call input, the
-        # loop variables and A && B || C in cvm-e2e.yml, docker.yml's word-wise
+        # loop variables and A && B || C in docker.yml's word-wise
         # read and grype.yml's unquoted expansion.
         run: |
           set -euo pipefail

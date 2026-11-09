@@ -87,7 +87,7 @@ mount enforcement runs in.
 No TEE property is asserted. Hardware verification, measurements that mean
 anything, encrypted volumes (`volumed` needs the node kernel's device mapper),
 and the `c8s verify`, `c8s allowlist` and `c8s routes` CLIs stay on the
-hardware CI lane (`cvm-e2e`): it verifies evidence in process with real
+hardware CI lane: it verifies evidence in process with real
 hardware cryptography, which synthetic evidence cannot pass.
 
 ## Keep the cluster for another driver
