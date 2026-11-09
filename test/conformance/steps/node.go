@@ -163,7 +163,7 @@ func (w *world) noteCDSRestart() {
 	// The restart replaced the document wholesale, so no write of this
 	// process's is waiting to take effect on nodes.
 	lastMutation.at = time.Now()
-	lastMutation.version = ""
+	lastMutation.documentTag = ""
 }
 
 func versionBelowApplied(ctx context.Context, node string) error {
