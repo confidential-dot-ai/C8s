@@ -35,6 +35,11 @@ type SignCSRParams struct {
 	// inventory — SignCSR does not re-match (docs/armtls.md, "Matched
 	// workload").
 	MatchedWorkload *armtls.MatchedWorkload
+
+	// ClientDocumentDigest, when set, is stamped as the client-document-digest
+	// extension (armtls.OIDClientDocumentDigest). The caller MUST have read it
+	// from Pod claims the verified evidence binds.
+	ClientDocumentDigest []byte
 }
 
 // SignCSR returns the signed leaf's PEM, common name, and serial number.
@@ -93,6 +98,13 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, subjectCN string, serial 
 			return nil, "", nil, err
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, workloadExt)
+	}
+	if p.ClientDocumentDigest != nil {
+		ext, err := armtls.MarshalClientDocumentDigestExtension(p.ClientDocumentDigest)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, ext)
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, c.Cert, p.CSR.PublicKey, c.Key)

@@ -1,6 +1,7 @@
 package nodeservices
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,7 +114,11 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 	}
 	mesh["pod"] = map[string]any{"peers": peers, "ingress_ports": ports}
 	// Standalone kubelet appends the guest's original launch name.
-	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
+	pod := map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
+	if len(d.ClientDocument) != 0 {
+		pod["client_document"] = base64.StdEncoding.EncodeToString(d.ClientDocument)
+	}
+	floor["pod"] = pod
 	floor["mesh"] = mesh
 	// The pod profile is an overlay on the worker image, whose floor marks a
 	// worker; the pod plugin's configuration is a pod's alone.

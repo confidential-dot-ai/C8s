@@ -348,9 +348,10 @@ func grantsBind(source, destination string, mounts []allowlist.ObservedMount, gr
 
 // nodeMounts names the sources credentialMounts binds into node credential clients.
 type nodeMounts struct {
-	socketDir  string
-	cdsPins    string
-	cdsAddress string
+	socketDir      string
+	cdsPins        string
+	cdsAddress     string
+	clientDocument string
 }
 
 // takesNodeMount reports whether ctr takes the node's own bind at destination:
@@ -366,6 +367,9 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 		return fetchesRouteManifest(pod, ctr)
 	case workloadclaims.CDSAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	case workloadclaims.ClientDocumentPath:
+		// Only a Pod CVM with a client document has a source for it.
+		return true
 	}
 	return false
 }
@@ -373,10 +377,11 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
 	source := map[string]string{
-		workloadclaims.SidecarSocketDir:  own.socketDir,
-		workloadclaims.CDSPinsPath:       own.cdsPins,
-		workloadclaims.RouterCDSPinsPath: own.cdsPins,
-		workloadclaims.CDSAddressPath:    own.cdsAddress,
+		workloadclaims.SidecarSocketDir:   own.socketDir,
+		workloadclaims.CDSPinsPath:        own.cdsPins,
+		workloadclaims.RouterCDSPinsPath:  own.cdsPins,
+		workloadclaims.CDSAddressPath:     own.cdsAddress,
+		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())
 }

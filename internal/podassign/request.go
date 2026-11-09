@@ -19,9 +19,12 @@ import (
 )
 
 const (
-	NonceSize        = 32
-	MaxBody          = 4 << 20
-	assignmentDomain = "c8s-pod-assign/v1\x00"
+	NonceSize = 32
+	MaxBody   = 4 << 20
+	// MaxClientDocument bounds the opaque client document an assignment
+	// carries.
+	MaxClientDocument = 16 << 10
+	assignmentDomain  = "c8s-pod-assign/v2\x00"
 )
 
 var (
@@ -31,23 +34,26 @@ var (
 
 // Request preserves the exact signed payload bytes. JSON members are base64
 // strings, including entries and meshPeers, whose decoded values are JSON.
+// ClientDocument is opaque and may be empty.
 type Request struct {
-	Nonce     []byte `json:"nonce"`
-	Manifest  []byte `json:"manifest"`
-	Entries   []byte `json:"entries"`
-	MeshPeers []byte `json:"meshPeers"`
-	Signature []byte `json:"signature"`
+	Nonce          []byte `json:"nonce"`
+	Manifest       []byte `json:"manifest"`
+	Entries        []byte `json:"entries"`
+	MeshPeers      []byte `json:"meshPeers"`
+	ClientDocument []byte `json:"clientDocument"`
+	Signature      []byte `json:"signature"`
 }
 
 type wireRequest struct {
-	Nonce     *string `json:"nonce"`
-	Manifest  *string `json:"manifest"`
-	Entries   *string `json:"entries"`
-	MeshPeers *string `json:"meshPeers"`
-	Signature *string `json:"signature"`
+	Nonce          *string `json:"nonce"`
+	Manifest       *string `json:"manifest"`
+	Entries        *string `json:"entries"`
+	MeshPeers      *string `json:"meshPeers"`
+	ClientDocument *string `json:"clientDocument"`
+	Signature      *string `json:"signature"`
 }
 
-// Decode accepts exactly the five required, case-sensitive members. Missing,
+// Decode accepts exactly the six required, case-sensitive members. Missing,
 // null, duplicate, unknown and noncanonical base64 members are refused.
 func Decode(data []byte) (Request, error) {
 	var wire wireRequest
@@ -65,7 +71,7 @@ func Decode(data []byte) (Request, error) {
 	}{
 		{wire.Nonce, &req.Nonce}, {wire.Manifest, &req.Manifest},
 		{wire.Entries, &req.Entries}, {wire.MeshPeers, &req.MeshPeers},
-		{wire.Signature, &req.Signature},
+		{wire.ClientDocument, &req.ClientDocument}, {wire.Signature, &req.Signature},
 	} {
 		if field.src == nil {
 			return Request{}, ErrMalformed
@@ -76,7 +82,7 @@ func Decode(data []byte) (Request, error) {
 		}
 		*field.dst = decoded
 	}
-	if len(req.Nonce) != NonceSize {
+	if len(req.Nonce) != NonceSize || len(req.ClientDocument) > MaxClientDocument {
 		return Request{}, ErrMalformed
 	}
 	return req, nil
@@ -85,15 +91,16 @@ func Decode(data []byte) (Request, error) {
 // Encode emits strings even for empty payloads; payload validity is a separate
 // assignment decision. The nonce and complete encoded body are bounded here.
 func Encode(req Request) ([]byte, error) {
-	if len(req.Nonce) != NonceSize || len(req.Manifest) > MaxBody || len(req.Entries) > MaxBody || len(req.MeshPeers) > MaxBody || len(req.Signature) > MaxBody {
+	if len(req.Nonce) != NonceSize || len(req.Manifest) > MaxBody || len(req.Entries) > MaxBody || len(req.MeshPeers) > MaxBody || len(req.ClientDocument) > MaxClientDocument || len(req.Signature) > MaxBody {
 		return nil, ErrMalformed
 	}
 	nonce := base64.StdEncoding.EncodeToString(req.Nonce)
 	manifest := base64.StdEncoding.EncodeToString(req.Manifest)
 	entries := base64.StdEncoding.EncodeToString(req.Entries)
 	peers := base64.StdEncoding.EncodeToString(req.MeshPeers)
+	clientDocument := base64.StdEncoding.EncodeToString(req.ClientDocument)
 	signature := base64.StdEncoding.EncodeToString(req.Signature)
-	data, err := json.Marshal(wireRequest{&nonce, &manifest, &entries, &peers, &signature})
+	data, err := json.Marshal(wireRequest{&nonce, &manifest, &entries, &peers, &clientDocument, &signature})
 	if err != nil || len(data) > MaxBody {
 		return nil, ErrMalformed
 	}
@@ -157,7 +164,7 @@ func signingMessage(servingKey crypto.PublicKey, req Request) ([]byte, error) {
 	}
 	message := append([]byte(assignmentDomain), spki...)
 	message = append(message, req.Nonce...)
-	for _, payload := range [][]byte{req.Manifest, req.Entries, req.MeshPeers} {
+	for _, payload := range [][]byte{req.Manifest, req.Entries, req.MeshPeers, req.ClientDocument} {
 		digest := sha256.Sum256(payload)
 		message = append(message, digest[:]...)
 	}

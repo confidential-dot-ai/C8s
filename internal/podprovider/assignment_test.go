@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func runToAssignmentAttempt(t *testing.T, r *Reconciler, pod *corev1.Pod, guest *fakeGuest) {
@@ -97,15 +100,15 @@ func TestAmbiguousAssignmentNeverResignsAnotherServingKey(t *testing.T) {
 
 type refusalSession struct {
 	assignmentSession
-	prepare func(context.Context, *ecdsa.PrivateKey, []byte, []byte, []byte) ([]byte, error)
+	prepare func(context.Context, *ecdsa.PrivateKey, []byte, []byte, []byte, []byte) ([]byte, error)
 	send    func(context.Context, []byte) (string, error)
 }
 
-func (s refusalSession) Prepare(ctx context.Context, key *ecdsa.PrivateKey, m, e, p []byte) ([]byte, error) {
+func (s refusalSession) Prepare(ctx context.Context, key *ecdsa.PrivateKey, m, e, p, d []byte) ([]byte, error) {
 	if s.prepare != nil {
-		return s.prepare(ctx, key, m, e, p)
+		return s.prepare(ctx, key, m, e, p, d)
 	}
-	return s.assignmentSession.Prepare(ctx, key, m, e, p)
+	return s.assignmentSession.Prepare(ctx, key, m, e, p, d)
 }
 func (s refusalSession) Send(ctx context.Context, b []byte) (string, error) {
 	if s.send != nil {
@@ -146,11 +149,11 @@ func TestAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
 					r.now = func() time.Time { return *rec.VerificationDeadline }
 				}
 				session := refusalSession{assignmentSession: base}
-				session.prepare = func(ctx context.Context, key *ecdsa.PrivateKey, m, e, peers []byte) ([]byte, error) {
+				session.prepare = func(ctx context.Context, key *ecdsa.PrivateKey, m, e, peers, d []byte) ([]byte, error) {
 					if phase == "nonce-unavailable" {
 						return nil, errors.New("nonce exhaustion")
 					}
-					b, err := base.Prepare(ctx, key, m, e, peers)
+					b, err := base.Prepare(ctx, key, m, e, peers, d)
 					if err != nil {
 						return nil, err
 					}
@@ -347,5 +350,28 @@ func TestUnreadableRecordVersionHoldsThePod(t *testing.T) {
 	}
 	if !controllerutil.ContainsFinalizer(getPod(t, r, pod), finalizer) || cloud.deleteCalls != 0 {
 		t.Fatal("unreadable record released the pod or reached the cloud")
+	}
+}
+
+// The client document is frozen with the pod, leaves the guest manifest, and
+// rides as the signed assignment's own member.
+func TestAssignmentCarriesTheFrozenClientDocument(t *testing.T) {
+	pod := fixturePod()
+	pod.Annotations[workloadclaims.AnnotationClientDocument] = base64.StdEncoding.EncodeToString([]byte("client document"))
+	r, _, guest := fixture(t, pod)
+	runToAssignmentAttempt(t, r, pod, guest)
+	rec := getRecord(t, r, pod)
+	if string(rec.ClientDocument) != "client document" {
+		t.Fatalf("record froze client document %q", rec.ClientDocument)
+	}
+	req, err := podassign.Decode(rec.Assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(req.ClientDocument) != "client document" || bytes.Contains(req.Manifest, []byte(workloadclaims.AnnotationClientDocument)) {
+		t.Fatalf("assignment carried document %q and manifest %s", req.ClientDocument, req.Manifest)
+	}
+	if err := podassign.Verify(&r.cfg.key.PublicKey, &guest.key.PublicKey, req); err != nil {
+		t.Fatalf("signature does not cover the client document: %v", err)
 	}
 }

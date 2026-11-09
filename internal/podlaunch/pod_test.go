@@ -332,7 +332,7 @@ func TestPodSpecIngressPorts(t *testing.T) {
 func TestAssignRefusesInvalidDocument(t *testing.T) {
 	doc, _, _ := testPodDocument(t, "tdx")
 	doc.ClusterID = "Cluster_One"
-	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]")); err == nil || !strings.Contains(err.Error(), "clusterID") {
+	if _, err := Assign(&doc, []byte(testPodManifest("")), []byte(emptyPodEntries), []byte("[]"), nil); err == nil || !strings.Contains(err.Error(), "clusterID") {
 		t.Fatalf("got %v, want the document refused", err)
 	}
 }

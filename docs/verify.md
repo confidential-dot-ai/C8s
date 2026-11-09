@@ -52,7 +52,8 @@ Pass `--mesh-ca` too with `--kind lb` and `--kind workload`: the mesh CA is
 what CDS signs their certificates with, and without it the certificate chains
 to a CA the endpoint committed itself, leaving its deployment and its stamped
 names unproven. CDS's own serving certificate is self-signed, so `--kind cds`
-refuses `--mesh-ca`, `--sandbox-id`, `--workload` and `--allowlist`. Read the
+refuses `--mesh-ca`, `--sandbox-id`, `--workload`, `--client-document` and
+`--allowlist`. Read the
 bundle from CDS:
 
 ```sh

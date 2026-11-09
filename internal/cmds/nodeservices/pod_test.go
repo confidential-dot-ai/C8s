@@ -1,6 +1,7 @@
 package nodeservices
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -96,7 +97,7 @@ func podDocument(t *testing.T) *podlaunch.Document {
 // starts from: the test manifest, the signed entries and no peers.
 func assignedPod(t *testing.T, manifest string) *podlaunch.AssignedPod {
 	t.Helper()
-	assigned, err := podlaunch.Assign(podDocument(t), []byte(manifest), []byte(podWorkloads), []byte("[]"))
+	assigned, err := podlaunch.Assign(podDocument(t), []byte(manifest), []byte(podWorkloads), []byte("[]"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,5 +378,26 @@ func TestRenderPodRuntimeTurnsOffInheritedPolicyMeasurement(t *testing.T) {
 	pull := renderedPolicy(t, runtime)["allowlist"].(map[string]any)["pull"].(map[string]any)
 	if pull["measure_policies"] != false {
 		t.Fatalf("measure_policies = %v, want false", pull["measure_policies"])
+	}
+}
+
+// The client document reaches the plugin's configuration as standard base64,
+// and only when the assignment carried one.
+func TestRenderPodRuntimeCarriesTheClientDocument(t *testing.T) {
+	root := preparePodRoot(t)
+	assigned := assignedPod(t, podManifest)
+	runtime, err := RenderPodRuntime(root, assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := renderedPolicy(t, runtime)["pod"].(map[string]any)["client_document"]; present {
+		t.Fatal("a pod without a client document rendered one")
+	}
+	assigned.ClientDocument = []byte("\x00client document")
+	if runtime, err = RenderPodRuntime(root, assigned); err != nil {
+		t.Fatal(err)
+	}
+	if got := renderedPolicy(t, runtime)["pod"].(map[string]any)["client_document"]; got != base64.StdEncoding.EncodeToString(assigned.ClientDocument) {
+		t.Fatalf("client_document = %v", got)
 	}
 }

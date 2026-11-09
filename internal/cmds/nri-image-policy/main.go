@@ -174,6 +174,9 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	if err := plugin.prepareClientDocument(); err != nil {
+		return fmt.Errorf("prepare the Pod's client document: %w", err)
+	}
 	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
 		return fmt.Errorf("prepare Pod credential broker: %w", err)
 	}

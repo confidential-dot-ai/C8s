@@ -88,7 +88,7 @@ func newAssignmentService(ctx context.Context, doc *podlaunch.Document, store as
 		if err := podassign.Verify(pub, peer, req); err != nil {
 			return nil, fmt.Errorf("assignment record signature: %w", err)
 		}
-		assigned, err := podlaunch.Assign(doc, req.Manifest, req.Entries, req.MeshPeers)
+		assigned, err := podlaunch.Assign(doc, req.Manifest, req.Entries, req.MeshPeers, req.ClientDocument)
 		if err != nil {
 			return nil, fmt.Errorf("assignment record payload: %w", err)
 		}
@@ -172,7 +172,7 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid assignment signature", http.StatusUnauthorized)
 		return
 	}
-	assigned, err := podlaunch.Assign(s.doc, req.Manifest, req.Entries, req.MeshPeers)
+	assigned, err := podlaunch.Assign(s.doc, req.Manifest, req.Entries, req.MeshPeers, req.ClientDocument)
 	if err != nil {
 		http.Error(w, "invalid assignment payload", http.StatusUnprocessableEntity)
 		return

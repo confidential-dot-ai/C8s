@@ -1,6 +1,7 @@
 package podlaunch
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
@@ -134,6 +136,9 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 	if s.Resources != nil {
 		return errors.New("pod CVM resources must be specified per container")
 	}
+	if _, err := ClientDocument(pod); err != nil {
+		return err
+	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
 		if len(c.Resources.Claims) != 0 {
 			return fmt.Errorf("container %q: pod CVM does not resolve resource claims", c.Name)
@@ -141,13 +146,31 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 		for _, e := range c.Env {
 			if e.ValueFrom != nil && e.ValueFrom.FieldRef != nil {
 				field := e.ValueFrom.FieldRef.FieldPath
-				if field == "metadata.annotations" || strings.Contains(field, "confidential.ai/pod-cvm") || strings.Contains(field, "kubernetes.io/config.") {
+				if field == "metadata.annotations" || strings.Contains(field, "confidential.ai/pod-cvm") || strings.Contains(field, workloadclaims.AnnotationClientDocument) || strings.Contains(field, "kubernetes.io/config.") {
 					return fmt.Errorf("container %q: pod CVM does not expose provider or kubelet annotations through FieldRef", c.Name)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// ClientDocument decodes the pod's client document annotation: standard
+// base64 of at most podassign.MaxClientDocument opaque bytes. A pod without
+// the annotation has an empty document.
+func ClientDocument(pod *corev1.Pod) ([]byte, error) {
+	value, present := pod.Annotations[workloadclaims.AnnotationClientDocument]
+	if !present {
+		return nil, nil
+	}
+	document, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("%s annotation must be standard base64", workloadclaims.AnnotationClientDocument)
+	}
+	if len(document) > podassign.MaxClientDocument {
+		return nil, fmt.Errorf("%s annotation exceeds %d bytes", workloadclaims.AnnotationClientDocument, podassign.MaxClientDocument)
+	}
+	return document, nil
 }
 
 // PeerAddresses is the signed set of endpoints this Pod may initiate mesh traffic to.

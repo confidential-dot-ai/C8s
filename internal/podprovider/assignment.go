@@ -14,7 +14,7 @@ import (
 
 type assignmentSession interface {
 	ServingKey() []byte
-	Prepare(context.Context, *ecdsa.PrivateKey, []byte, []byte, []byte) ([]byte, error)
+	Prepare(context.Context, *ecdsa.PrivateKey, []byte, []byte, []byte, []byte) ([]byte, error)
 	Send(context.Context, []byte) (string, error)
 	Close()
 }
@@ -76,7 +76,7 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 		if err != nil {
 			return err
 		}
-		data, err := target.Prepare(ctx, r.cfg.key, manifest, entries, peers)
+		data, err := target.Prepare(ctx, r.cfg.key, manifest, entries, peers, rec.ClientDocument)
 		if err != nil {
 			return guestFailure(ctx, "guest assignment preparation unavailable", err)
 		}

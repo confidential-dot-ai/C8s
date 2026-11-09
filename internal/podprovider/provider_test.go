@@ -174,13 +174,13 @@ func (s *fakeSession) ServingKey() []byte {
 	}
 	return b
 }
-func (s *fakeSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest, entries, peers []byte) ([]byte, error) {
+func (s *fakeSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest, entries, peers, clientDocument []byte) ([]byte, error) {
 	s.guest.prepares++
 	nonce := make([]byte, podassign.NonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	req, err := podassign.Sign(key, &s.guest.key.PublicKey, podassign.Request{Nonce: nonce, Manifest: manifest, Entries: entries, MeshPeers: peers})
+	req, err := podassign.Sign(key, &s.guest.key.PublicKey, podassign.Request{Nonce: nonce, Manifest: manifest, Entries: entries, MeshPeers: peers, ClientDocument: clientDocument})
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +587,7 @@ func TestProviderRejectsUnlaunchableWorkloadsBeforeCloud(t *testing.T) {
 			case "provider-fieldref":
 				pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "ENDPOINTS", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.annotations['" + endpointsAnnotation + "']"}}}}
 			}
-			if _, _, err := r.cfg.launch(pod); err == nil {
+			if _, _, _, err := r.cfg.launch(pod); err == nil {
 				t.Fatal("invalid workload accepted")
 			}
 			if cloud.createCalls != 0 {

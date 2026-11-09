@@ -79,7 +79,7 @@ func (t *AssignmentTarget) ServingKey() []byte { return bytes.Clone(t.spki) }
 func (t *AssignmentTarget) Close() { t.client.CloseIdleConnections() }
 
 // Prepare obtains an unused nonce and signs without sending an assignment.
-func (t *AssignmentTarget) Prepare(ctx context.Context, key *ecdsa.PrivateKey, manifest, entries, meshPeers []byte) ([]byte, error) {
+func (t *AssignmentTarget) Prepare(ctx context.Context, key *ecdsa.PrivateKey, manifest, entries, meshPeers, clientDocument []byte) ([]byte, error) {
 	data, _, _, err := doPeer(ctx, t.client, http.MethodGet, t.base+AssignNoncePath, nil)
 	if err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (t *AssignmentTarget) Prepare(ctx context.Context, key *ecdsa.PrivateKey, m
 	if err != nil || len(strictErrors) != 0 || len(response.Nonce) != podassign.NonceSize {
 		return nil, errors.New("guest returned an invalid assignment nonce")
 	}
-	req, err := podassign.Sign(key, t.peer, podassign.Request{Nonce: response.Nonce, Manifest: manifest, Entries: entries, MeshPeers: meshPeers})
+	req, err := podassign.Sign(key, t.peer, podassign.Request{Nonce: response.Nonce, Manifest: manifest, Entries: entries, MeshPeers: meshPeers, ClientDocument: clientDocument})
 	if err != nil {
 		return nil, err
 	}

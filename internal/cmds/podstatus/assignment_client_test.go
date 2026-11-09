@@ -42,7 +42,7 @@ func assignmentTarget(t *testing.T, s *assignmentService, key *ecdsa.PrivateKey,
 	if len(lastClaimed) != 0 {
 		t.Fatal("assignment target was not verified with an empty measured list")
 	}
-	body, err := target.Prepare(t.Context(), key, assignmentManifest("pod-a"), []byte(assignmentEntries), []byte("[]"))
+	body, err := target.Prepare(t.Context(), key, assignmentManifest("pod-a"), []byte(assignmentEntries), []byte("[]"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestAssignmentTargetRefusesMalformedExchanges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			nonceStatus, nonceBody = tc.status, tc.body
-			data, err := target.Prepare(t.Context(), key, assignmentManifest("pod-a"), []byte(assignmentEntries), []byte("[]"))
+			data, err := target.Prepare(t.Context(), key, assignmentManifest("pod-a"), []byte(assignmentEntries), []byte("[]"), nil)
 			if err == nil || data != nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("prepared %q, %v; want %q", data, err, tc.want)
 			}

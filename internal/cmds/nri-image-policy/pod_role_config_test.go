@@ -25,6 +25,7 @@ import (
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
 func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	root, assigned := podRoleInputs(t)
+	assigned.ClientDocument = []byte("\x00client document")
 	installPodRole(t, root, assigned)
 	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
@@ -36,6 +37,9 @@ func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	}
 	if !cfg.Measure.RTMR3 {
 		t.Fatal("measure.rtmr3 is off on tdx")
+	}
+	if string(cfg.Pod.ClientDocument) != string(assigned.ClientDocument) {
+		t.Fatalf("pod client document = %q, want the assignment's", cfg.Pod.ClientDocument)
 	}
 	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
