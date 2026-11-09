@@ -35,6 +35,7 @@ export PUBLISH_REF_IMAGES_POLL_SECONDS=0 PUBLISH_REF_IMAGES_FIND_ATTEMPTS=2
 #   commit-known      present when the commit exists on the remote
 #   present-tags      one "<repository>:<tag>" per line that exists in ghcr
 #   image-publishes-nothing   the image workflow succeeds without publishing
+#   listing-fails     the registry refuses to list a repository's tags
 #   run-conclusion    success|failure for every watched run
 #   runs              created on dispatch; consumed by `gh run list`
 cat >"$fixture_dir/bin/gh" <<'EOF'
@@ -64,9 +65,9 @@ case "$1 $2" in
       for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$FAKE_STATE/present-tags"; done
     fi
     if [ "$workflow" = c8s-image-manual.yml ] && [ ! -e "$FAKE_STATE/image-publishes-nothing" ]; then
-      for p in tdx snp; do
-        echo "node-guest-base:worker-$p-c7cf2f3" >>"$FAKE_STATE/present-tags"
-        echo "node-guest-base:worker-$p-cdi-c7cf2f3" >>"$FAKE_STATE/present-tags"
+      for tee in tdx sev-snp; do
+        echo "guests/worker:sha-c7cf2f3-$tee" >>"$FAKE_STATE/present-tags"
+        echo "guests/worker:sha-c7cf2f3-$tee-kubevirt" >>"$FAKE_STATE/present-tags"
       done
     fi ;;
   "run list")
@@ -94,6 +95,11 @@ case "$url" in
     repository=${url#*/v2/confidential-dot-ai/}; repository=${repository%%/manifests/*}
     tag=${url##*/manifests/}
     if [ -e "$FAKE_STATE/present-tags" ] && grep -qx "$repository:$tag" "$FAKE_STATE/present-tags"; then echo -n 200; else echo -n 404; fi ;;
+  *"/v2/"*"/tags/list"*)
+    [ ! -e "$FAKE_STATE/listing-fails" ] || exit 22
+    repository=${url#*/v2/confidential-dot-ai/}; repository=${repository%%/tags/list*}
+    tags=$( (grep "^$repository:" "$FAKE_STATE/present-tags" 2>/dev/null || true) | sed "s|^$repository:||" )
+    jq -nc --arg tags "$tags" '{tags: ($tags | split("\n") | map(select(length > 0)))}' ;;
   *) echo "unexpected curl url $url" >&2; exit 1 ;;
 esac
 EOF
@@ -149,8 +155,8 @@ order=$(grep -o 'gh workflow run [a-z0-9.-]*' "$calls" | tr '\n' ' ')
 grep -q 'gh workflow run docker.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3$' "$calls" || fail "docker dispatch did not use the build branch"
 grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3 -f confos_ref=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91$' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
-grep -q 'node-guest-base:worker-tdx-c7cf2f3$' <<<"$out" || fail "artifact tag not printed"
-grep -q 'node-guest-base:worker-snp-cdi-c7cf2f3$' <<<"$out" || fail "CDI tag not printed"
+grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "artifact tag not printed"
+grep -q 'guests/worker:sha-c7cf2f3-sev-snp-kubevirt$' <<<"$out" || fail "KubeVirt tag not printed"
 pass
 
 # --- a successful image run that published nothing is an error ---------------
@@ -159,8 +165,29 @@ reset
 touch "$state/commit-known" "$state/image-publishes-nothing"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
-expect_failure bash "$script" --sha "$sha" | grep -q 'node-guest-base:worker-tdx-c7cf2f3 is not published' \
-  || fail "an unpublished image tag was reported as published"
+expect_failure bash "$script" --sha "$sha" | grep -q 'guests/worker has 0 :sha-c7cf2f3-[*] tags, expected 4' \
+  || fail "a repository without the commit's tags was reported as published"
+pass
+
+# --- an incomplete tag set is an error ---------------------------------------
+
+reset
+touch "$state/commit-known" "$state/image-publishes-nothing"
+printf '%s' "$sha" >"$state/branch-sha"
+for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+echo 'guests/worker:sha-c7cf2f3-tdx' >>"$state/present-tags"
+expect_failure bash "$script" --sha "$sha" | grep -q 'has 1 :sha-c7cf2f3-[*] tags, expected 4' \
+  || fail "a partial tag set was accepted"
+pass
+
+# --- an unreadable package is a listing error, not a missing tag -------------
+
+reset
+touch "$state/commit-known" "$state/listing-fails"
+printf '%s' "$sha" >"$state/branch-sha"
+for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+expect_failure bash "$script" --sha "$sha" | grep -q 'cannot list confidential-dot-ai/guests/worker' \
+  || fail "an unreadable package was not reported as a listing failure"
 pass
 
 # --- components present: only the image build runs ---------------------------
@@ -173,7 +200,7 @@ out=$(bash "$script" --sha "$sha")
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'workflow run docker.yml' "$calls" || fail "docker dispatched although every tag exists"
 grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3$' "$calls" || fail "production image dispatch differs"
-grep -q 'node-guest-base:worker-tdx-c7cf2f3$' <<<"$out" || fail "production artifact tag not printed"
+grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "production artifact tag not printed"
 pass
 
 # --- a failed run fails the script -------------------------------------------

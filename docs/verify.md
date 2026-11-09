@@ -78,18 +78,17 @@ into a measurements config ([measurements.md](measurements.md)). You need
 Fetch the manifest layer of the image you intend to accept:
 
 ```sh
-IMAGE=ghcr.io/confidential-dot-ai/node-guest-base
+IMAGE=ghcr.io/confidential-dot-ai/guests/worker
 mkdir worker-tdx
-LAYER=$(oras manifest fetch "$IMAGE:worker-tdx-<RELEASE_TAG>" | jq -er \
+LAYER=$(oras manifest fetch "$IMAGE:<RELEASE_TAG>-tdx" | jq -er \
   '[.layers[] | select(.annotations["org.opencontainers.image.title"]
      == "manifest.json")][0].digest')
 oras blob fetch "$IMAGE@$LAYER" --output worker-tdx/manifest.json
 ```
 
-`<RELEASE_TAG>` is the release the cluster runs; the platform tag is
-`worker-tdx` or `worker-snp`. The `-cdi` image is the same disk in another
-format, so derive from these tags for it too. Derive the config and read back
-what it pins:
+`<RELEASE_TAG>` is the release the cluster runs; the TEE term of the tag is
+`tdx` or `sev-snp`. The `-kubevirt` image is the same disk in another format, so
+derive from these tags for it too. Derive the config and read back what it pins:
 
 ```sh
 c8s measurements derive --tee tdx --out measurements.json worker-tdx

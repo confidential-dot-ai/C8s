@@ -2,14 +2,16 @@
 # containerd, NRI plugin, attestation-api and NVIDIA stack in the verity
 # rootfs). confos is the build tree (pinned CONFOS_REF); callers select the
 # baked commit and publish policy.
-# Output: ghcr.io/confidential-dot-ai/node-guest-base, one image per TEE:
-# tags :worker-{tdx,snp}-cdi (CDI image) and :worker-{tdx,snp} (oras
-# artifact), each also with a -<sha> suffix. Stable releases receive
-# :worker-{tdx,snp}[-cdi]-vX.Y.Z in c8s-image-publish.yml.
+# Output: ghcr.io/confidential-dot-ai/guests/worker, one image per TEE:
+# every tag reads <ref>-<tee>[-kubevirt], where <ref> is sha-<short-sha> or a
+# release tag and -kubevirt marks the KubeVirt CDI import image (the oras
+# artifact carries no suffix). The floating :{tdx,sev-snp}[-kubevirt] tags track
+# main; c8s-image-publish.yml adds :vX.Y.Z-{tdx,sev-snp}[-kubevirt].
 #
 # The same callers publish the CDS image from images/cds-guest/:
-# ghcr.io/confidential-dot-ai/cds-guest-base, tags :cds[-cdi][-<sha>]. One
-# build serves both TEE families, so it has no platform matrix.
+# ghcr.io/confidential-dot-ai/guests/cds, tags :<ref>[-kubevirt] and the
+# floating :main[-kubevirt]. One build serves both TEE families, so it has no
+# platform matrix.
 
 on:
   workflow_call:
@@ -64,7 +66,7 @@ concurrency:
   # Without the inputs, two c8s_ref rebuilds share a group and queue behind each
   # other (cancel-in-progress is false) despite producing different images.
   # Nothing about them needs serializing: a c8s_ref rebuild pushes only
-  # :<variant>[-cdi]-<ref>, which is distinct per ref. They are empty on the
+  # :<ref>-<tee>[-kubevirt], which is distinct per ref. They are empty on the
   # workflow_run path, so the auto path groups exactly as before.
   group: >-
     ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha
@@ -274,11 +276,28 @@ jobs:
           ref: ${{ steps.pins.outputs.confos }}
           path: confidential-os-builder
 
-      - name: Set image ref and variant
-        # VARIANT drives C8S_NAME (-> output/$VARIANT/) and the push tags.
+      - name: Set image ref, variant, TEE and tag ref
+        # VARIANT names the confos output (output/$VARIANT/), the gate artifacts
+        # and the cache keys; TEE spells the same platform as
+        # images/node-guest/worker/mkosi.sync labels the image with. Every exact
+        # tag is ${TAG_REF}-${TEE}[-kubevirt].
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
-          echo "IMAGE=${REGISTRY}/confidential-dot-ai/node-guest-base" >> "$GITHUB_ENV"
-          echo "VARIANT=worker-${{ matrix.platform }}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          case "$PLATFORM" in
+            snp) tee_name=sev-snp ;;
+            tdx) tee_name=tdx ;;
+            *) echo "::error::unknown platform: $PLATFORM"; exit 1 ;;
+          esac
+          {
+            echo "IMAGE=${REGISTRY}/confidential-dot-ai/guests/worker"
+            echo "VARIANT=worker-${PLATFORM}"
+            echo "TEE=${tee_name}"
+            echo "TAG_REF=sha-${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          } >> "$GITHUB_ENV"
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
@@ -622,9 +641,12 @@ jobs:
 
           # A c8s_ref rebuild compares against that release's own tag, not the
           # floating one it never repoints.
-          tag="${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}"
+          compare_tag="${TEE}"
+          if [ -n "$C8S_REF_INPUT" ]; then
+            compare_tag="${TAG_REF}-${TEE}"
+          fi
           new=$(cat "output/${VARIANT}/roothash" 2>/dev/null || echo new)
-          digest=$(oras manifest fetch "${IMAGE}:${tag}" 2>/dev/null \
+          digest=$(oras manifest fetch "${IMAGE}:${compare_tag}" 2>/dev/null \
                      | jq -r '.layers[] | select(.annotations["org.opencontainers.image.title"] == "roothash") | .digest' \
                      || true)
           pub=none
@@ -641,41 +663,44 @@ jobs:
 
       - name: Push to GHCR
         if: inputs.gate != true
+        id: push
         working-directory: confidential-os-builder
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
           ROOTFS_UNCHANGED: ${{ steps.changed.outputs.skip }}
         run: |
           set -eux
-          SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          # A c8s_ref rebuild repoints only that release's suffixed tags; the
-          # floating tags keep tracking main builds, and only move when the
-          # rootfs changed. A beta build never moves them.
-          CDI_TAGS="${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
-          ORAS_TAGS="${VARIANT},${VARIANT}-${SHORT_SHA}"
+          # The floating tags track main builds: a c8s_ref rebuild, an unchanged
+          # rootfs and a beta build all leave them where they are.
+          move_floating=true
           if [ -n "$C8S_REF_INPUT" ] || [ "$ROOTFS_UNCHANGED" = true ] || [ "$HEAD_BRANCH" = beta ]; then
-            CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
-            ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
+            move_floating=false
           fi
-          # CDI first, oras artifact last: the change-check reads the oras tag,
-          # so a partial failure re-publishes everything next run.
+          kubevirt_tags="${TAG_REF}-${TEE}-kubevirt"
+          oras_tags="${TAG_REF}-${TEE}"
+          if [ "$move_floating" = true ]; then
+            kubevirt_tags="${TEE}-kubevirt,${kubevirt_tags}"
+            oras_tags="${TEE},${oras_tags}"
+          fi
+          # KubeVirt image first, oras artifact last: the change-check reads the
+          # oras tag, so a partial failure re-publishes everything next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "$CDI_TAGS"
+            --tag "$kubevirt_tags"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "$ORAS_TAGS"
+            --tag "$oras_tags"
+          echo "tags=${kubevirt_tags},${oras_tags}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: inputs.gate != true
         env:
-          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+          PUSHED_TAGS: ${{ steps.push.outputs.tags }}
         run: |
           {
-            echo "### ${VARIANT} confidential worker image"
-            echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
-            echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
+            echo "### ${TEE} confidential worker image"
+            tr ',' '\n' <<< "$PUSHED_TAGS" | sed "s|^|- \`${IMAGE}:|; s|\$|\`|"
             echo "- confos ref: \`${CONFOS_REF}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -696,7 +721,7 @@ jobs:
     runs-on: the-machine
     timeout-minutes: 120
     env:
-      IMAGE: ghcr.io/confidential-dot-ai/cds-guest-base
+      IMAGE: ghcr.io/confidential-dot-ai/guests/cds
       # One image for both TEE families: images/cds-guest/build measures the
       # SNP launch digests and the TDX block in a single build.
       VARIANT: cds
@@ -836,30 +861,42 @@ jobs:
           key: ${{ runner.os }}-tools-v2-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**') }}
 
       - name: Push to GHCR
+        id: push
         working-directory: confidential-os-builder
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
           set -eux
-          SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          # CDI first, oras artifact last, as the worker image publishes: a
-          # partial failure re-publishes everything on the next run.
+          tag_ref="sha-${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          # main[-kubevirt] tracks main builds, as the worker's floating tags do.
+          move_floating=true
+          if [ -n "$C8S_REF_INPUT" ] || [ "$HEAD_BRANCH" = beta ]; then
+            move_floating=false
+          fi
+          kubevirt_tags="${tag_ref}-kubevirt"
+          oras_tags="${tag_ref}"
+          if [ "$move_floating" = true ]; then
+            kubevirt_tags="main-kubevirt,${kubevirt_tags}"
+            oras_tags="main,${oras_tags}"
+          fi
+          # KubeVirt image first, oras artifact last, as the worker image
+          # publishes: a partial failure re-publishes everything on the next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
+            --tag "$kubevirt_tags"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "${VARIANT},${VARIANT}-${SHORT_SHA}"
+            --tag "$oras_tags"
+          echo "tags=${kubevirt_tags},${oras_tags}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+          PUSHED_TAGS: ${{ steps.push.outputs.tags }}
         run: |
           {
             echo "### C8s CDS confidential image"
-            echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi-${C8S_REF_INPUT:-${HEAD_SHA::7}}\`"
-            echo "- artifact: \`${IMAGE}:${VARIANT}-${C8S_REF_INPUT:-${HEAD_SHA::7}}\`"
+            tr ',' '\n' <<< "$PUSHED_TAGS" | sed "s|^|- \`${IMAGE}:|; s|\$|\`|"
             echo "- confos ref: \`${{ steps.pins.outputs.confos }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

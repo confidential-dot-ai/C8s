@@ -474,10 +474,10 @@ Per-role image names remain stable, but each image copies the same multi-mode
 `c8s` binary and sets an appropriate entrypoint. See
 [docs/releases.md](docs/releases.md) for the version policy.
 
-The measured `node-guest-base` artifacts follow the same root release with
-platform-qualified exact aliases such as `worker-tdx-v0.1.0` and
-`worker-snp-cdi-v0.1.0`; they intentionally have no ambiguous bare or moving
-SemVer alias.
+The measured guest images follow the same root release with TEE-qualified exact
+aliases such as `guests/worker:v0.1.0-tdx` and
+`guests/worker:v0.1.0-sev-snp-kubevirt`; they intentionally have no ambiguous
+bare or moving SemVer alias.
 
 | Image | Base | Notes |
 |---|---|---|

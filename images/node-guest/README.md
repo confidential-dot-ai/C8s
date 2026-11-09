@@ -1,7 +1,8 @@
 # C8s worker image
 
-The C8s worker image (`node-guest-base`, `worker[-cdi]-*` tags), defined in THIS
-repo and built by [confidential-os-builder] acting purely as a builder.
+The C8s worker image (`guests/worker`, `<version>-<tee>[-kubevirt]` tags),
+defined in THIS repo and built by [confidential-os-builder] acting purely as a
+builder.
 Tracking issue: [#264].
 
 A worker runs a cluster's workloads while the cluster's Kubernetes control
