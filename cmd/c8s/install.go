@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1238,10 +1239,13 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 				return err
 			}
 		}
+		var storedRouteDigest string
 		if upstream != "" {
-			if err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cdsURL, adoptedEntries); err != nil {
+			digest, err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cdsURL, adoptedEntries)
+			if err != nil {
 				return err
 			}
+			storedRouteDigest = digest
 		}
 
 		verifyURL, verifyPin := "https://<cds-address>", "<cds-pin.json>"
@@ -1251,23 +1255,32 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 		if installCDS != nil {
 			verifyPin = installCDS.path
 		}
-		printVerifyHint(os.Stdout, verifyURL, verifyPin)
+		printVerifyHint(os.Stdout, verifyURL, verifyPin, installOperatorKeysFlag(), storedRouteDigest)
 		return nil
 	},
 }
 
 // printVerifyHint names the check a client runs on this cluster's front door.
+// storedRouteDigest is the digest install stored a route manifest under, empty
+// when this run stored none.
 func printVerifyHint(
 	w io.Writer,
 	cdsURL string,
 	cdsPin string,
+	operatorKeys string,
+	storedRouteDigest string,
 ) {
+	routeDigest := cmp.Or(storedRouteDigest, "<ROUTE_DIGEST>")
 	fmt.Fprintln(w, "+ router attestation sidecar enabled; clients verify the front door against the")
-	fmt.Fprintln(w, "  node measurements and the mesh anchor:")
-	fmt.Fprintln(w, "    c8s verify https://<router> --kind lb --mode attest-lb --image-policy-file <node-pins.json> --mesh-ca mesh-ca.pem")
+	fmt.Fprintln(w, "  node measurements, the mesh anchor and the route digest:")
+	fmt.Fprintf(w, "    c8s verify https://<router> --kind lb --mode attest-lb --image-policy-file <node-pins.json> --mesh-ca mesh-ca.pem --route-digest %s\n", routeDigest)
 	fmt.Fprintln(w, "  node-pins.json pins the node images: the nodes of the CDS configuration, or")
 	fmt.Fprintln(w, "  'c8s measurements derive' of a node image build, never what the endpoint reports.")
 	fmt.Fprintf(w, "  Write the anchor with: c8s cds ca --url %s --image-policy-file %s --out mesh-ca.pem\n", cdsURL, cdsPin)
+	if storedRouteDigest == "" {
+		fmt.Fprintf(w, "  Read the route digest with: c8s routes show --url %s --image-policy-file %s --operator-keys %s\n",
+			cdsURL, cdsPin, operatorKeys)
+	}
 }
 
 // applyNamespace creates the install namespace before helm, labelled to allow
