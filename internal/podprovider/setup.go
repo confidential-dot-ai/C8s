@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"sync/atomic"
 	"time"
 
@@ -42,7 +43,7 @@ func Setup(mgr manager.Manager, cfg *Config) error {
 		return err
 	}
 	api := newCloudClient(cfg)
-	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now, recorder: mgr.GetEventRecorder("c8s-pod-cvm-provider")}
+	r := &Reconciler{client: direct, cfg: cfg, cloud: api, guest: readGuest, now: time.Now, jitter: randomJitter, recorder: mgr.GetEventRecorder("c8s-pod-cvm-provider")}
 	// The provider's pods are the ones bound to its node. Watch them through
 	// a cache of its own so the operator caches no other pod for it, and
 	// reconcile through the direct client.
@@ -236,4 +237,11 @@ func (w *orphanWorker) Start(ctx context.Context) error {
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+func randomJitter(n time.Duration) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	return rand.N(n)
 }

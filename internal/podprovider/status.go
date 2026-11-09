@@ -20,6 +20,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
@@ -66,7 +67,7 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 	defer cancel()
 	_, client, err := attest(ctx, cfg)
 	if err != nil {
-		return projection, errors.New("guest status attestation unavailable")
+		return projection, guestFailure(ctx, "guest status attestation unavailable", err)
 	}
 	defer client.CloseIdleConnections()
 	if len(rec.ServingKey) != 0 {
@@ -77,12 +78,19 @@ func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodP
 	}
 	data, err := get(ctx, client, "https://"+address+podstatus.PodPath)
 	if err != nil {
-		return projection, errors.New("guest status unavailable")
+		return projection, guestFailure(ctx, "guest status unavailable", err)
 	}
 	if err := decode(data, &projection); err != nil {
 		return projection, errors.New("guest status projection is invalid")
 	}
 	return projection, nil
+}
+
+// guestFailure logs the detail of a failed guest exchange and returns only
+// msg, which reaches the Pod's status path without endpoint or trust details.
+func guestFailure(ctx context.Context, msg string, err error) error {
+	log.FromContext(ctx).Info(msg, "cause", err.Error())
+	return errors.New(msg)
 }
 
 // pinServingKey returns a client that accepts only connections served with
@@ -296,6 +304,8 @@ var statusMessages = map[string]string{
 	"FrozenPodChanged":         "The Pod specification differs from its launch",
 	"AllocationPending":        "Waiting for a Pod CVM allocation",
 	"CloudUnavailable":         "The cloud API is unavailable",
+	rateLimitedReason:          "Cloud is rate limiting this provider's requests",
+	cloudRejectedReason:        "Cloud rejected the provider's request",
 	"InsufficientCapacity":     "No Cloud host has room for this Pod CVM size",
 	"InstanceStarting":         "The Pod CVM instance is starting",
 	"EndpointsPending":         "Waiting for the Pod CVM endpoints",

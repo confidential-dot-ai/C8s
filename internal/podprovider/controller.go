@@ -16,6 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 )
@@ -27,6 +28,8 @@ const (
 	// instanceDestroyedReason fails a deleted pod whose instance the provider
 	// destroyed before it reported a terminal phase of its own.
 	instanceDestroyedReason = "InstanceDestroyed"
+	// cloudRejectedReason names a request Cloud refused as such (a 4xx).
+	cloudRejectedReason = "CloudRejectedRequest"
 )
 
 // Reconciler owns a single provider's immutable Pod-to-instance records.
@@ -40,7 +43,9 @@ type Reconciler struct {
 	now        func() time.Time
 	ownsNode   func(context.Context) error
 	recorder   events.EventRecorder
-	mu         sync.Mutex
+	// jitter returns a random duration in [0, n); nil adds none.
+	jitter func(n time.Duration) time.Duration
+	mu     sync.Mutex
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -135,8 +140,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
+	if hint, ok := rateLimited(err); ok {
+		return r.rateLimited(ctx, pod, rec, secret, hint, err)
+	}
 	if problemCode(err) == "insufficient_capacity" {
 		return r.unverified(ctx, pod, rec, secret, "InsufficientCapacity", err)
+	}
+	if cloudRejected(err) {
+		// The status carries only the fixed reason; Cloud's code goes to the log.
+		log.FromContext(ctx).Error(err, "cloud rejected the Pod CVM request", "pod", client.ObjectKeyFromObject(pod))
+		// A definitive create refusal proves nothing exists under the frozen
+		// request, which Cloud will refuse again: end the pod now.
+		if createRefused(err) {
+			return r.stop(ctx, pod, rec, secret, cloudRejectedReason)
+		}
+		return r.unverified(ctx, pod, rec, secret, cloudRejectedReason, err)
 	}
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "CloudUnavailable", err)
