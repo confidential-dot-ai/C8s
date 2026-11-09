@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ import (
 const podCVMTestImage = "registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func podCVMConfig() Config {
-	cfg := meshConfig()
+	cfg := confidentialNodeConfig()
 	cfg.PodCVMProviderEnabled = true
 	return cfg
 }
@@ -82,8 +83,9 @@ func TestPodCVMCreateRoutesWithoutHostInjection(t *testing.T) {
 			if mutated.UID != "" || mutated.Spec.NodeName != "" {
 				t.Fatal("CREATE supplied identity or bypassed the Kubernetes scheduler")
 			}
-			if mutated.Spec.NodeSelector[AnnotationPodCVM] != "true" || mutated.Spec.NodeSelector["topology.kubernetes.io/zone"] != "zone-a" {
-				t.Fatal("mutation did not combine the virtual node selector with existing scheduling constraints")
+			wantSelector := map[string]string{AnnotationPodCVM: "true", "topology.kubernetes.io/zone": "zone-a"}
+			if !maps.Equal(mutated.Spec.NodeSelector, wantSelector) {
+				t.Fatalf("nodeSelector = %v, want the virtual node beside the pod's own %v", mutated.Spec.NodeSelector, wantSelector)
 			}
 			if !reflect.DeepEqual(mutated.Spec.Affinity, pod.Spec.Affinity) || len(mutated.Spec.Tolerations) != 2 || mutated.Spec.Tolerations[0] != pod.Spec.Tolerations[0] {
 				t.Fatal("mutation discarded the workload's scheduler constraints")

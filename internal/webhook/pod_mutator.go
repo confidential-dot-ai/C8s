@@ -195,6 +195,12 @@ type Config struct {
 	// values use the default interval.
 	CertRenewInterval time.Duration
 
+	// ConfidentialNodeSelector are the chart's confidentialNodeSelector: the
+	// labels this platform puts on a confidential node, which every node agent
+	// selects. Every injected pod selects them too. Empty leaves placement to
+	// the pod, as on the measured image, where every node is a CVM.
+	ConfidentialNodeSelector map[string]string
+
 	// WorkloadClaimsHostDir, when set (node-CVM), is the host directory holding
 	// the nri-image-policy inventory socket. That plugin bind-mounts the
 	// directory at workloadclaims.SidecarSocketDir into the injected sidecars
@@ -636,9 +642,13 @@ func (cfg Config) rejectUnservedRequests(inj *injection) error {
 // rejectReservedResources refuses a pod in scope that occupies something the
 // injector owns and cannot safely reconcile: a reserved container name, a
 // reserved volume under another shape, a credential mount outside the platform
-// containers, a mesh port, or a container the privilege floor always refuses.
+// containers, a mesh port, a node selector contradicting the cluster's
+// confidential nodes, or a container the privilege floor always refuses.
 func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error {
 	if err := rejectHostNetwork(pod); err != nil {
+		return err
+	}
+	if err := rejectNodeSelectorConflict(pod, cfg.ConfidentialNodeSelector); err != nil {
 		return err
 	}
 	// The injected init containers are rebuilt (injectInitContainers), but a
@@ -833,6 +843,7 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	if *cfg.CertFSGroup >= 0 {
 		ensureFSGroup(pod, *cfg.CertFSGroup)
 	}
+	selectConfidentialNodes(pod, cfg.ConfidentialNodeSelector)
 	ensureVolume(pod, certsVolume(CertVolumeName))
 	if cfg.WorkloadClaimsHostDir != "" {
 		// The inventory socket is group-owned by InventorySocketGID and the non-root

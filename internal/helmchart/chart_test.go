@@ -5183,6 +5183,21 @@ func stockConfidentialNodeSelector(t *testing.T, platform string) map[string]str
 	return values.ConfidentialNodeSelector
 }
 
+// The injector selects the same confidential nodes as the node agents.
+func TestChartGivesTheOperatorTheConfidentialNodeLabels(t *testing.T) {
+	t.Parallel()
+	for _, platform := range cloudPlatforms {
+		out, err := helmTemplatePlatform(t, platform)
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", platform, err, out)
+		}
+		args := renderedOperatorArgs(t, out)
+		for label, value := range stockConfidentialNodeSelector(t, platform) {
+			assertContainerHasArg(t, "operator", args, fmt.Sprintf("--confidential-node-selector=%s=%s", label, value))
+		}
+	}
+}
+
 // The schema requires the labels.
 func TestChartRefusesWithoutConfidentialNodeSelector(t *testing.T) {
 	t.Parallel()

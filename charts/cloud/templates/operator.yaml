@@ -31,6 +31,9 @@ containers:
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
+      {{- range $label, $value := .Values.confidentialNodeSelector }}
+      - --confidential-node-selector={{ $label }}={{ $value }}
+      {{- end }}
       {{- range .Values.controlPlane.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}

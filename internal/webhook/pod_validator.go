@@ -120,6 +120,9 @@ func validateFinalSpec(pod *corev1.Pod, namespace string, cfg Config) error {
 	if err := matchesWorkloadProbes(injected, pod); err != nil {
 		return err
 	}
+	if err := rejectPlainNodePlacement(pod, cfg.ConfidentialNodeSelector); err != nil {
+		return err
+	}
 	return matchesWorkloadMounts(injected.Spec.Containers, pod.Spec.Containers)
 }
 
