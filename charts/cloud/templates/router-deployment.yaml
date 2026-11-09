@@ -2,6 +2,7 @@
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
+terminationGracePeriodSeconds: {{ include "router.terminationGracePeriodSeconds" . }}
 {{- include "c8s.imagePullSecrets" . | nindent 0 }}
 nodeSelector:
   {{- include "c8s.confidentialNodeLabels" . | nindent 2 }}
