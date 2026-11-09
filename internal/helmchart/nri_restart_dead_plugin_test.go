@@ -22,9 +22,10 @@ type deadPluginFixture struct {
 	healthAnswers bool
 }
 
-// restartTailTemplate renders the installer's shared restart tail on its own.
-// The tail's one input is restart_needed, which its callers set before
-// including it, so the fixture takes that from the environment.
+// restartTailTemplate renders the installer's shared restart tail on its own,
+// after the host layout and helpers it relies on. Its decision input is
+// restart_needed, which its callers set before including it, so the fixture
+// takes that from the environment.
 const restartTailTemplate = `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -33,6 +34,9 @@ metadata:
 data:
   tail.sh: |
     set -eu
+    CONTAINERD_DIR=/host{{ include "nri-image-policy.containerdConfigDir" . }}
+    RESTART_COMMAND={{ include "nri-image-policy.restartCommand" . | quote }}
+{{ .Files.Get "files/scripts/nri-containerd-config.sh" | indent 4 }}
     restart_needed=$RESTART_NEEDED
 {{ include "nri-image-policy.restartAndWait" (dict "root" .) | indent 4 }}
 `

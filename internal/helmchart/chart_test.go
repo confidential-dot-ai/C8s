@@ -4974,17 +4974,13 @@ func TestChartSweepMountAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script, err := os.ReadFile(filepath.Join(cloudChartDir, "files", "scripts", "host-sweep.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	idx := seed.BuildIndex()
 	for _, tc := range []struct {
 		name            string
 		argv            []string
 		hostMount, want bool
 	}{
-		{"sweep", []string{"/bin/sh", "-c", strings.TrimRight(string(script), "\n") + "\n"}, true, true},
+		{"sweep", []string{"/bin/sh", "-c", HostSweepScript()}, true, true},
 		{"pause", []string{"/bin/sleep", "2147483647"}, false, true},
 		{"pause with host mount", []string{"/bin/sleep", "2147483647"}, true, false},
 		{"shell pause with host mount", []string{"/bin/sh", "-c", "sleep infinity"}, true, false},

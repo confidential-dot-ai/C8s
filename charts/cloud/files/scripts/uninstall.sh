@@ -1,8 +1,10 @@
-# nri-image-policy uninstaller — run as a privileged pre-delete hook.
+# nri-image-policy uninstaller — run as a privileged pre-delete hook, after
+# the shared nri-containerd-config.sh.
 #
-# Reverses install.sh on a single node: removes our NRI containerd
-# registration (the sentinel-delimited block in config.toml), restarts
-# containerd so the plugin process exits, and deletes the host artifacts
+# Reverses install.sh on a single node: restores the node's own containerd
+# configuration (the sentinel-delimited block gone, the host's NRI tables
+# back), restarts containerd so the plugin process exits, and deletes the
+# host artifacts
 # (binary, configs, cache). Idempotent — safe to re-run after a partial
 # uninstall.
 #
@@ -21,26 +23,24 @@ set -eu
 echo "==> nri-image-policy uninstaller starting"
 
 CONTAINERD_DIR=/host${HOST_CONTAINERD_DIR}
-MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
-MARK_END='# END c8s-nri-image-policy (managed)'
 
 # containerd renders the active config to config.toml.
 main_config="$CONTAINERD_DIR/config.toml"
 
-# 1. Strip our sentinel-delimited block from the containerd config
-#    (idempotent).
+# 1. Put back the config the host wrote, and drop a config the installer
+#    staged but never moved into place (idempotent).
 config_changed=0
-if [ -f "$main_config" ] && grep -qF "$MARK_BEGIN" "$main_config"; then
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    $0==b { skip=1; next }
-    $0==e { skip=0; next }
-    !skip { print }
-  ' "$main_config" > "$main_config.tmp"
-  mv -f "$main_config.tmp" "$main_config"
-  echo "containerd config block removed from $main_config"
-  config_changed=1
-else
-  echo "containerd config block already absent"
+rm -f "$main_config$CANDIDATE_SUFFIX"
+if [ -f "$main_config" ]; then
+  host_containerd_config "$main_config" > "$main_config.tmp"
+  if cmp -s "$main_config.tmp" "$main_config"; then
+    rm -f "$main_config.tmp"
+    echo "containerd config is the host's already"
+  else
+    mv -f "$main_config.tmp" "$main_config"
+    echo "containerd config restored: $main_config"
+    config_changed=1
+  fi
 fi
 
 # 2. Restart containerd if we changed config. After this, NRI no longer

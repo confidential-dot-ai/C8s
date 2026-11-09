@@ -87,8 +87,15 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == pluginReadyVerb {
-		return runPluginReady(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case checkConfigVerb:
+			return runCheckConfig(args[1:])
+		case checkContainerdConfigVerb:
+			return runCheckContainerdConfig(args[1:], os.Stdin)
+		case pluginReadyVerb:
+			return runPluginReady(args[1:])
+		}
 	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to config file")

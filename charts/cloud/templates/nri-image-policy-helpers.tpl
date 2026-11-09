@@ -63,6 +63,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "nri-image-policy.containerdSocket" -}}/run/containerd/containerd.sock{{- end -}}
 {{- define "nri-image-policy.restartCommand" -}}systemctl restart containerd{{- end -}}
 
+{{/* The host's syslog socket: the plugin logs to the host journal through it. */}}
+{{- define "nri-image-policy.syslogSocket" -}}/dev/log{{- end -}}
+
+{{/* The shared containerd-config helpers every remover runs before its own
+     steps (internal/helmchart hostSweepScripts joins the same list for the
+     CLI's sweep). */}}
+{{- define "nri-image-policy.removerPreamble" -}}
+{{ .Files.Get "files/scripts/nri-containerd-config.sh" }}
+{{- end -}}
+
+{{- define "nri-image-policy.uninstallHookScript" -}}
+{{ include "nri-image-policy.removerPreamble" . }}
+{{ .Files.Get "files/scripts/uninstall.sh" }}
+{{- end -}}
+
+{{- define "nri-image-policy.hostSweepScript" -}}
+{{ include "nri-image-policy.removerPreamble" . }}
+{{ .Files.Get "files/scripts/host-sweep.sh" }}
+{{- end -}}
+
 {{/* The "10-" prefix orders the plugin among the node's NRI plugins. */}}
 {{- define "nri-image-policy.hostPluginPath" -}}
 {{ printf "%s/10-nri-image-policy" .Values.nriImagePolicy.hostPaths.pluginDir }}

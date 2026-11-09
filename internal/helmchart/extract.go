@@ -52,14 +52,27 @@ const (
 	RouterHostPort = 443
 )
 
-// HostSweepScript is the uninstall host sweep script, normalized the way the
-// chart's argv pin renders it (trailing newlines collapsed to one).
+// hostSweepScripts are the files the host sweep runs, in order: the shared NRI
+// helpers, then the sweep. A chart test holds this list to the one the chart's
+// own host-sweep remover renders.
+var hostSweepScripts = []string{
+	"nri-containerd-config.sh",
+	"host-sweep.sh",
+}
+
+// HostSweepScript is the uninstall host sweep script, joined as the chart's
+// own host-sweep remover joins it and normalized the way its argv pin renders
+// it (trailing newlines collapsed to one).
 func HostSweepScript() string {
-	b, err := charts.FS.ReadFile(CloudChartFSPath + "/files/scripts/host-sweep.sh")
-	if err != nil {
-		panic(err)
+	parts := make([]string, 0, len(hostSweepScripts))
+	for _, name := range hostSweepScripts {
+		b, err := charts.FS.ReadFile(CloudChartFSPath + "/files/scripts/" + name)
+		if err != nil {
+			panic(err)
+		}
+		parts = append(parts, string(b))
 	}
-	return strings.TrimRight(string(b), "\n") + "\n"
+	return strings.TrimRight(strings.Join(parts, "\n"), "\n") + "\n"
 }
 
 // ExtractTemp writes the embedded charts to a new temporary directory and

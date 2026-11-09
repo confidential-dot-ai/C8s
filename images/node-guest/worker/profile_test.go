@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
@@ -452,5 +453,40 @@ func TestContainerdPassesTheStaticPodMark(t *testing.T) {
 	runc := cfg.Plugins["io.containerd.cri.v1.runtime"].Containerd.Runtimes["runc"]
 	if !slices.Contains(runc.PodAnnotations, "kubernetes.io/config.source") {
 		t.Fatalf("runc pod_annotations = %v, want the kubelet's kubernetes.io/config.source", runc.PodAnnotations)
+	}
+}
+
+// A worker has no window in which a container runs before admission: its
+// containerd requires the plugin from boot, through a drop-in the image bakes,
+// and a container found running at the plugin's first registration powers the
+// node off.
+func TestWorkerRequiresTheImagePolicyPluginFromBoot(t *testing.T) {
+	var dropIn nriimagepolicy.ContainerdNRIConfig
+	data, err := os.ReadFile(baked(t, containerdDropIns+"/nri-image-policy.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := toml.Unmarshal(data, &dropIn); err != nil {
+		t.Fatal(err)
+	}
+	validator := dropIn.Plugins[nriimagepolicy.NRIPluginID].DefaultValidator
+	if !validator.Enable || !slices.Equal(validator.RequiredPlugins, []string{"nri-image-policy"}) {
+		t.Errorf("NRI default_validator = %+v, want enabled and requiring nri-image-policy", validator)
+	}
+
+	var policy struct {
+		Policy struct {
+			FatalExisting bool `json:"fatal_existing"`
+		} `json:"policy"`
+	}
+	data, err = os.ReadFile("image-policy.yaml.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(data, &policy); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Policy.FatalExisting {
+		t.Error("image-policy.yaml.in does not set policy.fatal_existing")
 	}
 }
