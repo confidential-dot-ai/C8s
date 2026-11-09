@@ -75,6 +75,13 @@ func mustNotContainPrefix(t *testing.T, lines []string, prefix string) {
 	}
 }
 
+func mustContainPrefix(t *testing.T, lines []string, prefix string) {
+	t.Helper()
+	if lineIndex(lines, prefix) < 0 {
+		t.Errorf("call log has no %q; got:\n%s", prefix, strings.Join(lines, "\n"))
+	}
+}
+
 // lineIndex returns the index of the first logged line with the prefix, or -1.
 func lineIndex(lines []string, prefix string) int {
 	return slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, prefix) })

@@ -1070,18 +1070,30 @@ Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 			}
 		}
 
-		// A client of this cluster verifies the router under the pin this
-		// install named.
-		verifyPin := "<cds-pin.json>"
+		verifyURL, verifyPin := "https://<cds-address>", "<cds-pin.json>"
+		if url, err := installCDSURL(values); err == nil {
+			verifyURL = url
+		}
 		if installCDS != nil {
 			verifyPin = installCDS.path
 		}
-		fmt.Fprintln(os.Stdout, "+ router attestation sidecar enabled; clients verify with the CDS pin")
-		fmt.Fprintln(os.Stdout, "  and the mesh anchor:")
-		fmt.Fprintf(os.Stdout, "    c8s verify https://<router> --image-policy-file %s --mesh-ca mesh-ca.pem\n", verifyPin)
-		fmt.Fprintln(os.Stdout, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
+		printVerifyHint(os.Stdout, verifyURL, verifyPin)
 		return nil
 	},
+}
+
+// printVerifyHint names the check a client runs on this cluster's front door.
+func printVerifyHint(
+	w io.Writer,
+	cdsURL string,
+	cdsPin string,
+) {
+	fmt.Fprintln(w, "+ router attestation sidecar enabled; clients verify the front door against the")
+	fmt.Fprintln(w, "  node measurements and the mesh anchor:")
+	fmt.Fprintln(w, "    c8s verify https://<router> --kind lb --mode attest-lb --image-policy-file <node-pins.json> --mesh-ca mesh-ca.pem")
+	fmt.Fprintln(w, "  node-pins.json pins the node images: the nodes of the CDS configuration, or")
+	fmt.Fprintln(w, "  'c8s measurements derive' of a node image build, never what the endpoint reports.")
+	fmt.Fprintf(w, "  Write the anchor with: c8s cds ca --url %s --image-policy-file %s --out mesh-ca.pem\n", cdsURL, cdsPin)
 }
 
 // applyNamespace creates the install namespace before helm, labelled to allow
@@ -1825,7 +1837,7 @@ func init() {
 	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address: the VM 'c8s cds config new' wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose port is the only one their packet rules admit outside the cluster")
 	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
 	installCmd.Flags().StringArrayVar(&installPodCIDRs, flagPodCIDR, nil, "a range this cluster assigns pod addresses from, the one 'c8s cds config new --pod-cidr' names; repeatable. The CDS's node subnets are checked against these ranges and the ones the nodes publish, and every pod must answer inside them")
-	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input 'c8s cds config new --allowlist-seed' takes before the CDS this install then names exists")
+	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, changing nothing in the cluster: it reads the cluster's Kubernetes version, so the seed matches the render this install applies. The input 'c8s cds config new --allowlist-seed' takes before the CDS this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; sets cds.operatorKeys. Without it the router uses the keys the pinned CDS serves. CDS's own write keys come from 'c8s cds config new --operator-keys'")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "install despite a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")

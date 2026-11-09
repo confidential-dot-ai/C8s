@@ -25,6 +25,8 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/charts"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -1456,6 +1458,46 @@ func TestExemptedPlatformImages(t *testing.T) {
 	if got := exemptedPlatformImages(pods, nil); len(got) != 0 {
 		t.Errorf("with no exempt namespace, got %#v, want none", got)
 	}
+}
+
+// Every flag the hint names must be a flag of the command it names.
+func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
+	const (
+		cdsURL = "https://cds.example:8443"
+		cdsPin = "/run/c8s/cds-pin.json"
+	)
+	var buf bytes.Buffer
+	printVerifyHint(&buf, cdsURL, cdsPin)
+
+	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
+	if slices.Contains(verifyArgs, cdsPin) {
+		t.Errorf("the front-door check names the CDS pin, which carries no node measurement:\n%s", buf.String())
+	}
+	if err := verify.NewCmd(verify.Defaults{}).ParseFlags(verifyArgs); err != nil {
+		t.Errorf("c8s verify %s: %v", strings.Join(verifyArgs, " "), err)
+	}
+
+	anchorArgs := hintCommandArgs(t, buf.String(), "c8s cds ca")
+	if err := cdsca.NewCmd().ParseFlags(anchorArgs); err != nil {
+		t.Errorf("c8s cds ca %s: %v", strings.Join(anchorArgs, " "), err)
+	}
+	for _, want := range []string{cdsURL, cdsPin} {
+		if !slices.Contains(anchorArgs, want) {
+			t.Errorf("the anchor command omits %q, which this install named:\n%s", want, buf.String())
+		}
+	}
+}
+
+// hintCommandArgs is what the hint passes to the command named by prefix.
+func hintCommandArgs(t *testing.T, hint, prefix string) []string {
+	t.Helper()
+	for line := range strings.SplitSeq(hint, "\n") {
+		if i := strings.Index(line, prefix); i >= 0 {
+			return strings.Fields(line[i+len(prefix):])
+		}
+	}
+	t.Fatalf("the hint names no %q command:\n%s", prefix, hint)
+	return nil
 }
 
 // The report is the audit surface: it must carry every digest (never a

@@ -46,8 +46,7 @@ func TestCheckSeedServed(t *testing.T) {
 	}
 }
 
-// --allowlist-seed-out is the render an operator needs before the CDS exists:
-// it writes the component entries and touches neither the cluster nor helm.
+// --allowlist-seed-out is the render an operator needs before the CDS exists.
 func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
@@ -77,6 +76,7 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 		t.Fatalf("written seed = %v, want the rendered component entries", seed.Workloads)
 	}
 	calls := s.f.calls(t)
+	mustContainPrefix(t, calls, "kubectl version")
 	mustNotContainPrefix(t, calls, "helm upgrade")
 	mustNotContainPrefix(t, calls, "kubectl apply")
 
