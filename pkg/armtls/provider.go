@@ -2,6 +2,7 @@ package armtls
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -37,16 +38,23 @@ type SelfSignedProvider struct {
 	Opts       *CertOptions
 	// MeasuredPolicies is the journal a TDX certificate lists; nil lists none.
 	MeasuredPolicies *Journal
+	// Key, when set, is the key every certificate is issued over. Nil
+	// generates a fresh key per certificate.
+	Key *ecdsa.PrivateKey
 }
 
 var _ CertProvider = (*SelfSignedProvider)(nil)
 
-// Provision generates a key, obtains hardware attestation, and creates a
-// self-signed certificate with the attestation embedded as an X.509 extension.
+// Provision generates a key unless one is configured, obtains hardware
+// attestation over it, and creates a self-signed certificate with the
+// attestation embedded as an X.509 extension.
 func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, time.Duration, error) {
-	key, _, err := GenerateKeyPair()
-	if err != nil {
-		return nil, 0, err
+	key := p.Key
+	if key == nil {
+		var err error
+		if key, _, err = GenerateKeyPair(); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	family, err := teetypes.ParseFamily(p.Platform)

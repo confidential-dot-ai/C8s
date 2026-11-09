@@ -324,6 +324,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return json.Marshal(resp.Envelope())
 		},
 	}
+	// The provider pins the serving key an assignment arrives over, so the
+	// certificate keeps one key for the process: rotation renews the
+	// certificate and its quote, never the key.
+	servingKey, _, err := armtls.GenerateKeyPair()
+	if err != nil {
+		return err
+	}
 	// The certificate's quote binds its own key and lists the journal as its
 	// runtime extensions, so a client can replay the register from the
 	// certificate alone. The attest func reads resp.Platform, so it serves
@@ -331,6 +338,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	return armtls.Serve(ctx, cfg.ListenAddr, h, &armtls.ServerConfig{
 		Platform:             family.String(),
 		AttestFunc:           attestclient.MakeSNPARMTLSAttestFunc(api, cfg.AttestationAPIURL),
+		Key:                  servingKey,
 		Logger:               slog.Default(),
 		MeasuredPoliciesFile: cfg.JournalPath,
 	})
