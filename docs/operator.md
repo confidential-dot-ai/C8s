@@ -246,6 +246,48 @@ detectable only by pinning the route digest or the operator keys.
   with different bytes. A CDS reset lets a lower revision be stored, so write
   above the highest any router accepted.
 
+### Pattern rules
+
+A manifest may also carry `patterns`, a list of rules that route by agent
+identity instead of by a fixed host:
+
+```json
+"patterns": [
+  {"hostSuffix": "agents.example.com", "workload": "opencode", "port": 4096}
+]
+```
+
+A request for `<label>.agents.example.com` goes to a pod CVM whose leaf
+carries the workload `opencode` and a client document digest H with
+`<label>` as its agent label: the lowercase RFC 4648 base32, without
+padding, of the first 16 bytes of H (26 characters). CDS stamps H only on
+the leaf of a pod whose claims it verified
+([certificate extensions](certificate-extensions.md)). Adding an agent
+needs no manifest write. Write the rule with
+`c8s routes add-pattern --host-suffix <suffix> --workload <name> --port <port>`
+and remove it with `c8s routes rm-pattern --host-suffix <suffix>`.
+
+- Each host suffix appears once, and leaves room for the label: at most 226
+  octets. An exact host in `hosts` shadows the pattern; the router's own
+  paths are never routed.
+- The router finds the agent from Kubernetes: it watches pods and indexes each
+  Ready pod that publishes a `confidential.ai/client-document` annotation
+  (its label) and the provider's `confidential.ai/pod-cvm-endpoints`
+  annotation (the host:port published for `app-<port>`). It dials that
+  endpoint directly, with no Service in between. When several pods publish
+  the same document, the oldest one wins.
+- None of that is trusted. The dial is a mesh handshake that requires the
+  workload and the label in the peer's leaf; a wrong or forged annotation
+  costs a 502, never a request at the wrong agent. A label no pod publishes
+  gets 404.
+- The router's upstream identity (`cds-attest`) carries its own TCP out of
+  the router pod uncaptured, wherever it goes: a pod CVM's endpoint lies
+  outside the cluster's ranges, on whatever port its cloud published, and a
+  captured dial would be wrapped in a second mesh handshake. Every
+  connection that identity opens authenticates its peer. nginx and every
+  other container of the pod stay captured.
+- The router's service account may get, list and watch pods cluster-wide.
+
 ### Built-in allowlist route
 
 The chart publishes CDS's `/allowlist` API through the router, as an exact
@@ -394,7 +436,8 @@ port on the same IP is an ordinary destination. To expose an application,
 declare its TCP `containerPort` in the signed manifest and map Cloud's
 external endpoint to that guest port; traffic is mesh-authenticated before it
 reaches the application. Do not map to the internal capture listener or add a
-`hostPort`. Dynamic endpoint discovery is not provided. Other IPv4 TCP/UDP
+`hostPort`. The router discovers a pod CVM's endpoint for a
+[pattern rule](#pattern-rules); nothing else does. Other IPv4 TCP/UDP
 traffic leaves with the CVM's source address; guest-local services and IPv4
 link-local addresses stay blocked for applications and the endpoint alike.
 

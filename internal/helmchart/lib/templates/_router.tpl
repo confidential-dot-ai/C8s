@@ -242,3 +242,43 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
 {{- define "router.allowlistProxyArgs" -}}
 {{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "router.allowlistProxyPort" .root)) (printf "--attestation-api-url=%s" .attestationApiURL) | toJson -}}
 {{- end -}}
+
+{{/* The router's ServiceAccount and its pod reader. The router resolves the
+     agent a pattern route names from the pods the API reports
+     (internal/routing.WatchAgents). It reads pods only: what it reads decides
+     where a dial goes, and the dial checks the agent's leaf. */}}
+{{- define "router.podReader" -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "router.fullname" . }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "router.fullname" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "router.fullname" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "router.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "router.fullname" . }}
+    namespace: {{ include "c8s.routerMeshNamespace" . }}
+{{- end -}}

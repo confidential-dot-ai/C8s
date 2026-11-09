@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
@@ -27,7 +28,7 @@ const (
 	Annotation          = "confidential.ai/pod-cvm"
 	ownerLabel          = "confidential.ai/pod-cvm-provider"
 	finalizer           = "confidential.ai/pod-cvm"
-	endpointsAnnotation = "confidential.ai/pod-cvm-endpoints"
+	endpointsAnnotation = workloadclaims.AnnotationPodCVMEndpoints
 )
 
 // Config is trusted operator configuration. Paths name mounted files, never

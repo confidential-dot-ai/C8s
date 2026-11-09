@@ -741,3 +741,14 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 	}
 	return &out, nil
 }
+
+// AnnotationPodCVMEndpoints is where the pod CVM provider publishes the
+// addresses a pod CVM's ports are reachable at: a JSON list of
+// {"name", "host", "port"}, one per port, named PodCVMAppEndpointPrefix and
+// the application port for an application port. Anyone who may update the
+// pod can rewrite it, so it says where to dial, never who answers.
+const AnnotationPodCVMEndpoints = "confidential.ai/pod-cvm-endpoints"
+
+// PodCVMAppEndpointPrefix prefixes the application port in the name of a
+// pod CVM's ingress rule and published endpoint, as in app-4096.
+const PodCVMAppEndpointPrefix = "app-"

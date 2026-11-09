@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,9 @@ type TransportConfig struct {
 	// Logger reports a router leaf whose stamp does not parse, once per leaf.
 	// nil uses slog.Default.
 	Logger *slog.Logger
+	// Agents is where Retain checks that an agent backend's pool still
+	// reaches the address discovery reports for it. nil keeps none.
+	Agents *AgentIndex
 }
 
 // routerLeaf hands one generation's leaf to a mesh handshake. Renewal is
@@ -78,6 +82,7 @@ type Transports struct {
 // the router digest it was built under.
 type pooled struct {
 	*http.Transport
+	backend      routes.Backend
 	workload     bool
 	routerDigest string
 }
@@ -203,14 +208,16 @@ func (t *Transports) poolForTrackedDigest(b routes.Backend, pinned bool) pooled 
 	if p, ok := t.cache[key]; ok {
 		return p
 	}
-	p := pooled{Transport: t.build(b, key.pinned), workload: b.Workload != "", routerDigest: t.routerDigest}
+	p := pooled{Transport: t.build(b, key.pinned), backend: b, workload: b.Workload != "", routerDigest: t.routerDigest}
 	t.cache[key] = p
 	return p
 }
 
-// Retain drops the transports of backends m does not name and closes their
-// idle connections. A request still routed by the previous manifest rebuilds
-// its transport on demand; the next successful poll drops it again.
+// Retain drops the transports of backends m does not name, and of agent
+// backends no pattern of m gives or discovery no longer reports at their
+// address, and closes their idle connections. A request still routed by the
+// previous manifest rebuilds its transport on demand; the next successful
+// poll drops it again.
 func (t *Transports) Retain(m *routes.Manifest) {
 	keep := map[string]bool{}
 	for _, h := range m.Hosts {
@@ -221,6 +228,11 @@ func (t *Transports) Retain(m *routes.Manifest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, tr := range t.cache {
+		if b := tr.backend; b.AgentLabel != "" {
+			given := slices.ContainsFunc(m.Patterns, func(p routes.Pattern) bool { return p.Workload == b.Workload && p.Port == b.AgentPort })
+			addr, found := t.cfg.Agents.Lookup(b.AgentLabel, b.AgentPort)
+			keep[key.backend] = given && found && addr == b.Address
+		}
 		if !keep[key.backend] {
 			tr.CloseIdleConnections()
 			delete(t.cache, key)
@@ -229,7 +241,7 @@ func (t *Transports) Retain(m *routes.Manifest) {
 }
 
 func backendKey(b routes.Backend) string {
-	return strings.Join([]string{b.Address, b.Workload, b.ServerName, b.CA}, "\x00")
+	return strings.Join([]string{b.Address, b.Workload, b.AgentLabel, b.ServerName, b.CA}, "\x00")
 }
 
 func (t *Transports) build(b routes.Backend, pinned bool) *http.Transport {
@@ -246,7 +258,7 @@ func (t *Transports) build(b routes.Backend, pinned bool) *http.Transport {
 		// headers only when generation ends. The proxy bounds the request.
 	}
 	if b.Workload != "" {
-		transport.DialTLSContext = t.dialWorkload(b.Workload, t.routerDigest, t.routerDigestKnown, pinned, dialer)
+		transport.DialTLSContext = t.dialWorkload(b.Workload, b.AgentLabel, t.routerDigest, t.routerDigestKnown, pinned, dialer)
 		return transport
 	}
 	// A fresh pool, never nil: a nil RootCAs means the system roots.
@@ -269,12 +281,14 @@ func (t *Transports) build(b routes.Backend, pinned bool) *http.Transport {
 // dialWorkload reaches a workload backend as a mesh client of the member
 // behind it: the mesh profile's chain path authenticates the peer against the
 // published mesh CA, and the route's workload name is required of it before
-// any request is written. The pod's ruleset leaves this identity's
-// connections into the cluster uncaptured, so this handshake is the one that
-// crosses the pod boundary. A renewed digest retires the pools; only pinned
+// any request is written, and so is the agent label of a pattern route. The
+// pod's ruleset leaves this identity's connections uncaptured, so this
+// handshake is the one that crosses the pod boundary, to a member pod or to a
+// pod CVM's published endpoint alike. A renewed digest retires the pools; only pinned
 // dials are refused. Unpinned dials complete under the generation they read.
 func (t *Transports) dialWorkload(
 	workload string,
+	agentLabel string,
 	routerDigest string,
 	digestKnown bool,
 	pinned bool,
@@ -284,7 +298,7 @@ func (t *Transports) dialWorkload(
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
 		var stamped []byte
-		dialConfig, dialDigest, err := t.meshClientConfig(workload, &stamped)
+		dialConfig, dialDigest, err := t.meshClientConfig(workload, agentLabel, &stamped)
 		if err != nil {
 			return nil, err
 		}
@@ -323,7 +337,7 @@ func (t *Transports) dialWorkload(
 // trusts and the allowlist digest it checks against are the ones published
 // together. A peer stamped under another digest whose entry is left to compare
 // gets its digest written to stamped.
-func (t *Transports) meshClientConfig(workload string, stamped *[]byte) (*tls.Config, []byte, error) {
+func (t *Transports) meshClientConfig(workload, agentLabel string, stamped *[]byte) (*tls.Config, []byte, error) {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh credential: %w", err)
@@ -339,7 +353,7 @@ func (t *Transports) meshClientConfig(workload string, stamped *[]byte) (*tls.Co
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   t.acceptWorkload(workload, digest, stamped),
+		AcceptPeer:   t.acceptWorkload(workload, agentLabel, digest, stamped),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
@@ -384,11 +398,12 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 // acceptWorkload fails the handshake unless the peer the chain path
 // authenticated is the workload the signed route names (B1), stamped under
 // the router's own allowlist digest (B8). A leaf CDS stamped no workload on
-// names none, and is refused with the rest. With an allowlist history, a peer
+// names none, and is refused with the rest. For a pattern route, agentLabel
+// is set, and the peer's client document digest must have that label. With an allowlist history, a peer
 // stamped under another digest passes the handshake with its digest written to
 // stamped: the dial then compares its entry with the router's, which needs a
 // fetch the handshake callback cannot bound.
-func (t *Transports) acceptWorkload(workload string, routerDigest []byte, stamped *[]byte) func(armtls.Peer) error {
+func (t *Transports) acceptWorkload(workload, agentLabel string, routerDigest []byte, stamped *[]byte) func(armtls.Peer) error {
 	router := "with no router allowlist digest"
 	if routerDigest != nil {
 		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
@@ -399,6 +414,14 @@ func (t *Transports) acceptWorkload(workload string, routerDigest []byte, stampe
 		}
 		if peer.WorkloadName != workload {
 			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q %s", peer.WorkloadName, peer.AllowlistDigest, workload, router)
+		}
+		if agentLabel != "" {
+			if peer.ClientDocumentDigest == nil {
+				return fmt.Errorf("routing: backend leaf carries no client document digest, and this route names agent %s", agentLabel)
+			}
+			if got := armtls.AgentLabel(peer.ClientDocumentDigest); got != agentLabel {
+				return fmt.Errorf("routing: backend leaf names agent %s, and this route names agent %s", got, agentLabel)
+			}
 		}
 		if routerDigest == nil {
 			return nil // B9: an unstamped router binds no policy digest

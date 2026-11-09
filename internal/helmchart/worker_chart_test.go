@@ -89,9 +89,11 @@ func TestWorkerChartRendersItsObjects(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"ClusterRole//c8s-operator",
+		"ClusterRole//c8s-router",
 		"ClusterRole//c8s-worker-cilium",
 		"ClusterRole//c8s-worker-cilium-operator",
 		"ClusterRoleBinding//c8s-operator",
+		"ClusterRoleBinding//c8s-router",
 		"ClusterRoleBinding//c8s-worker-bootstrap",
 		"ClusterRoleBinding//c8s-worker-bootstrap-client-cert",
 		"ClusterRoleBinding//c8s-worker-cilium",
@@ -109,6 +111,7 @@ func TestWorkerChartRendersItsObjects(t *testing.T) {
 		"RoleBinding/kube-system/c8s-worker-cilium-operator-lease",
 		"Service/c8s-router/c8s-router",
 		"Service/kube-system/kube-dns",
+		"ServiceAccount/c8s-router/c8s-router",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
 	}
 	for _, stockFile := range workerStockFiles {
