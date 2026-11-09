@@ -512,7 +512,12 @@ jobs:
           tar -xzf "dist/c8s-cloud-$VERSION.tgz" -C "$RUNNER_TEMP/stamped"
           .github/scripts/chart-stamp.sh check "$RUNNER_TEMP/stamped/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
 
-          chart_tags="$(oras repo tags "$CHART_IMAGE")"
+          # Until the first release pushes it, the registry knows no chart repository.
+          if ! chart_tags="$(oras repo tags "$CHART_IMAGE" 2>"$RUNNER_TEMP/chart-tags.err")"; then
+            grep -q 'name unknown' "$RUNNER_TEMP/chart-tags.err" \
+              || { cat "$RUNNER_TEMP/chart-tags.err" >&2; exit 1; }
+            chart_tags=""
+          fi
           chart_exists=false
           if grep -Fxq -- "$VERSION" <<< "$chart_tags"; then
             chart_exists=true
