@@ -95,24 +95,31 @@ func TestNodeRootMissingNamesCause(t *testing.T) {
 }
 
 func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
+	probes := 0
 	original := nodeRootUnavailableReason
-	nodeRootUnavailableReason = func() (string, bool) { return "root filesystem is not read-only", false }
+	nodeRootUnavailableReason = func() (string, bool) {
+		probes++
+		return "root filesystem is not read-only", false
+	}
 	t.Cleanup(func() { nodeRootUnavailableReason = original })
 	file := filepath.Join(t.TempDir(), "tool")
 	if err := os.WriteFile(file, []byte("bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
-		kind allowlist.MountClass
-		want bool
+		name   string
+		kind   allowlist.MountClass
+		source string
+		want   bool
 	}{
-		{"host rule", allowlist.MountHost, false},
-		{"nodeRootFile rule", allowlist.MountNodeRootFile, true},
+		{"host rule", allowlist.MountHost, "/usr/bin/tool", false},
+		{"nodeRootFile rule naming the bind", allowlist.MountNodeRootFile, file, true},
+		{"nodeRootFile rule naming another file", allowlist.MountNodeRootFile, "/usr/bin/tool", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			probes = 0
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: tc.kind, Source: "/usr/bin/tool", ReadOnly: true}}}
+			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: tc.kind, Source: tc.source, ReadOnly: true}}}
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}
@@ -130,6 +137,9 @@ func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
 			}
 			if got := strings.Contains(logs.String(), "node_root_unavailable"); got != tc.want {
 				t.Fatalf("checkImagePhase(%s) logged node_root_unavailable = %t, want %t: %s", tc.name, got, tc.want, logs.String())
+			}
+			if got := probes > 0; got != tc.want {
+				t.Fatalf("checkImagePhase(%s) probed the root %d times, want probe %t", tc.name, probes, tc.want)
 			}
 		})
 	}

@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -492,7 +494,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			reason := ""
 			if cfg.sandboxObserved() {
 				mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
-				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
+				verdict, reason = p.checkSandbox(cfg, pod, ctr, testFloorImage, p.digestLookup(context.Background(), testFloorImage), p.policy.current(), containerEnv(ctr), mounts)
 			}
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox(%s) = %d %q, want %d", tt.name, verdict, reason, tt.want)
@@ -588,7 +590,7 @@ func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 			ctr.Args = tt.argv
 			ctr.Env = []string{"PATH=/bin"}
 			mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
-			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
+			verdict, reason := p.checkSandbox(cfg, pod, ctr, testFloorImage, p.digestLookup(context.Background(), testFloorImage), p.policy.current(), containerEnv(ctr), mounts)
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
 			}
@@ -828,8 +830,148 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
 	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
 	// fakeContainerd panics on Resolve.
-	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, mounts); verdict != verdictDeny {
+	if verdict, _ := p.checkSandbox(cfg, pod, ctr, "registry/repo:tag", p.digestLookup(context.Background(), "registry/repo:tag"), p.policy.current(), nil, mounts); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(host bind, no allowlist) = %d, want deny", verdict)
+	}
+}
+
+func TestValidationWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
+	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	// On the node's network, which the mesh gate leaves alone.
+	pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool { return ns.Type == "network" })
+	ctr.Annotations = map[string]string{annotationImageName: "registry/repo:tag"}
+	// fakeContainerd panics on Resolve.
+	if err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}); err != nil {
+		t.Fatalf("ValidateContainerAdjustment(no allowlist, no mesh pod) = %v, want the create admitted", err)
+	}
+}
+
+// With no allowlist, admission resolves nothing, and the host-port and
+// capability checks after it still share one lookup.
+func TestPrivilegeChecksShareOneLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxAudit}}
+	p, _ := newCachedPlugin(cfg, &allowlist.Allowlist{Schema: allowlist.Schema})
+	digests := []string{pushDigestB, pushDigestA}
+	resolves := 0
+	p.containerd = &fakeContainerd{
+		resolve: func(context.Context, string) (string, error) {
+			digest := digests[min(resolves, len(digests)-1)]
+			resolves++
+			return digest, nil
+		},
+		network: func(context.Context, string, ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+			return ports(recordedHTTPS), nil
+		},
+		spec: func(context.Context, string) (*specs.Spec, error) {
+			s := workloadSpec()
+			s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_PTRACE")
+			return s, nil
+		},
+	}
+	const imageRef = "registry/repo:tag"
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: imageRef}
+	if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict == verdictDeny {
+		t.Fatalf("checkContainer(sandbox audit) = %d %q, want admitted", verdict, reason)
+	}
+	if resolves != 1 {
+		t.Fatalf("checkContainer resolved the tag %d times, want 1", resolves)
+	}
+}
+
+// The served entry granting the privilege is withdrawn while admission
+// resolves the tag, after the check took its snapshot: every grant must judge
+// the digest and snapshot admission judged.
+func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
+	const source, imageRef = "/usr/bin/nvidia-smi", "registry/repo:tag"
+	base := anyAllowlist(map[string]string{pushDigestB: "tool"})
+	open := base.Workloads["w-"+pushDigestB[len("sha256:"):][:12]]
+	open.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyAny}
+	open.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyAny}
+	if err := base.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		grant   func(*allowlist.Workload)
+		ctr     func(*api.Container)
+		network ctrdresolver.SandboxNetwork
+		spec    func(*specs.Spec)
+	}{
+		{
+			name: "host bind",
+			grant: func(w *allowlist.Workload) {
+				w.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true}}}
+			},
+			ctr: func(ctr *api.Container) {
+				ctr.Mounts = append(slices.DeleteFunc(ctr.Mounts, carriesHostBytes),
+					&api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
+			},
+		},
+		{
+			name:    "host port",
+			grant:   func(w *allowlist.Workload) { w.HostPorts = declaredHTTPS },
+			network: ports(recordedHTTPS),
+		},
+		{
+			name:  "capability",
+			grant: func(w *allowlist.Workload) { w.Containers[0].Capabilities = allowlist.CapabilityList{"SYS_PTRACE"} },
+			spec: func(s *specs.Spec) {
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_PTRACE")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			declared := served.Workloads["w"]
+			declared.Containers[0].Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
+			declared.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+			declared.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
+			tc.grant(&declared)
+			served.Workloads["w"] = declared
+			if err := served.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config{
+				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://cds"}},
+				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+			}
+			p, store := newCachedPlugin(cfg, served)
+			resolves := 0
+			p.containerd = &fakeContainerd{
+				resolve: func(context.Context, string) (string, error) {
+					resolves++
+					store.apply(&allowlist.Allowlist{Schema: allowlist.Schema}, 2)
+					return pushDigestB, nil
+				},
+				network: func(context.Context, string, ctrdresolver.SandboxPod) (ctrdresolver.SandboxNetwork, error) {
+					return tc.network, nil
+				},
+				spec: func(context.Context, string) (*specs.Spec, error) {
+					s := workloadSpec()
+					if tc.spec != nil {
+						tc.spec(s)
+					}
+					return s, nil
+				},
+			}
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Annotations = map[string]string{annotationImageName: imageRef}
+			ctr.Args = []string{"/bin/app"}
+			ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+			if tc.ctr != nil {
+				tc.ctr(ctr)
+			}
+			if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict != verdictAllow {
+				t.Fatalf("checkContainer(%s, policy swapped after admission) = %d %q, want allow", tc.name, verdict, reason)
+			}
+			if resolves != 1 {
+				t.Fatalf("checkContainer(%s) resolved the tag %d times, want 1", tc.name, resolves)
+			}
+		})
 	}
 }
 

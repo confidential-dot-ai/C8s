@@ -155,7 +155,7 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 				if address.Class != allowlist.MountPlatform {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}
-				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, pod, ctr, ctr.Annotations[annotationImageName], launchFinal, containerEnv(ctr), mounts)
+				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, p.policy.current(), pod, ctr, ctr.Annotations[annotationImageName], p.digestLookup(t.Context(), ctr.Annotations[annotationImageName]), launchFinal, containerEnv(ctr), mounts)
 				if verdict != verdictDeny {
 					t.Fatalf("unapproved final launch admission = %v: %s", verdict, reason)
 				}
