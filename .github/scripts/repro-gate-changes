@@ -36,16 +36,22 @@ main() {
   while IFS= read -r -d '' path; do
     case "$path" in
       .github/scripts/pin-manifest.sh | \
-        .github/scripts/repro-gate-changes | \
         .github/scripts/build-gate-images.sh | \
         .github/actions/setup-mkosi/action.yml | \
-        .github/workflows/image-repro-gate.yml)
+        .github/workflows/image-repro-gate.yml | \
+        .github/workflows/c8s-image.yml)
+        # The gate's own build path: pins, core images, mkosi and both legs.
         image=true
         ;;
-      images/node-guest/*/mkosi.extra/* | \
-        internal/helmchart/worker/files/static-pods/*)
+      images/node-guest/worker/mkosi.extra/* | \
+        internal/helmchart/worker/files/static-pods/* | \
+        internal/helmchart/lib/files/router-nginx/*)
         # Copied into the image whole; no exemption below may reach it.
         image=true
+        ;;
+      images/node-guest/pod/*)
+        # The gate builds the worker profile only. The pod profile stacks on
+        # it (images/node-guest/build), never the reverse.
         ;;
       images/node-guest/tests/* | \
         images/node-guest/tools/* | \
@@ -53,9 +59,7 @@ main() {
         images/node-guest/*_test.go)
         # Tests, lint tools and docs beside the image sources; never baked.
         ;;
-      images/node-guest/* | \
-        .github/workflows/c8s-image.yml | \
-        .github/workflows/c8s-image-publish.yml)
+      images/node-guest/*)
         image=true
         ;;
       .github/build-pins.json)
