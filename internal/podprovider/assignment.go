@@ -29,7 +29,7 @@ func verifyAssignmentTarget(ctx context.Context, rec *record, address string) (a
 	defer cleanup()
 	target, err := podstatus.VerifyAssignmentTarget(ctx, cfg)
 	if err != nil {
-		return nil, errors.New("generic guest attestation unavailable")
+		return nil, guestFailure(ctx, "generic guest attestation unavailable", err)
 	}
 	return target, nil
 }
@@ -78,7 +78,7 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 		}
 		data, err := target.Prepare(ctx, r.cfg.key, manifest, entries, peers)
 		if err != nil {
-			return errors.New("guest assignment preparation unavailable")
+			return guestFailure(ctx, "guest assignment preparation unavailable", err)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -113,7 +113,7 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 		return nil
 	}
 	if err != nil {
-		return errors.New("guest assignment outcome is uncertain")
+		return guestFailure(ctx, "guest assignment outcome is uncertain", err)
 	}
 	if uid != string(rec.UID) {
 		return errors.New("guest assignment acknowledged another Pod")

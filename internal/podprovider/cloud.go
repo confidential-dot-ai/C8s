@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -21,11 +23,23 @@ var errCloudNotFound = errors.New("cloud instance not found")
 // problem code Cloud names in its body, if any. The body may contain launch
 // input, so only the status reaches logs.
 type cloudProblem struct {
-	status int
-	code   string
+	status     int
+	code       string
+	retryAfter time.Duration
 }
 
-func (p *cloudProblem) Error() string { return fmt.Sprintf("cloud returned HTTP %d", p.status) }
+// Error names the status and Cloud's problem code when it is a plain code
+// token, never the body.
+func (p *cloudProblem) Error() string {
+	if !problemCodeToken.MatchString(p.code) {
+		return fmt.Sprintf("cloud returned HTTP %d", p.status)
+	}
+	return fmt.Sprintf("cloud returned HTTP %d (%s)", p.status, p.code)
+}
+
+// problemCodeToken is the shape of a Cloud problem code. Anything else came
+// from the body and may carry launch input, so it is not reported.
+var problemCodeToken = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 func (p *cloudProblem) Is(target error) bool {
 	return target == errCloudNotFound && p.status == http.StatusNotFound
@@ -38,6 +52,51 @@ func problemCode(err error) string {
 		return p.code
 	}
 	return ""
+}
+
+// rateLimited reports whether Cloud throttled the request (HTTP 429), and the
+// wait its Retry-After header asks for, zero when it names none.
+func rateLimited(err error) (time.Duration, bool) {
+	var p *cloudProblem
+	if errors.As(err, &p) && p.status == http.StatusTooManyRequests {
+		return p.retryAfter, true
+	}
+	return 0, false
+}
+
+// parseRetryAfter reads delay-seconds or an HTTP-date. Anything else, or a
+// date in the past, is no hint.
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(min(seconds, int64(maxRateLimitBackoff/time.Second))) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return at.Sub(now)
+	}
+	return 0
+}
+
+// cloudRejected reports whether Cloud refused the request itself (a 4xx)
+// rather than its own state: not found, a request timeout, throttling, a
+// create still in flight or a lack of capacity are answers a retry can change.
+func cloudRejected(err error) bool {
+	var p *cloudProblem
+	if !errors.As(err, &p) || p.status < 400 || p.status >= 500 {
+		return false
+	}
+	switch {
+	case p.status == http.StatusNotFound, p.status == http.StatusRequestTimeout, p.status == http.StatusTooManyRequests:
+		return false
+	case p.code == "insufficient_capacity", p.code == "idempotency_in_flight":
+		return false
+	}
+	return true
 }
 
 // createRefused reports whether Cloud refused a create in a way that proves
@@ -232,7 +291,7 @@ func (c *cloudClient) do(ctx context.Context, method, path, key string, in, out 
 			Code string `json:"code"`
 		}
 		_ = json.Unmarshal(data, &problem)
-		return &cloudProblem{status: resp.StatusCode, code: problem.Code}
+		return &cloudProblem{status: resp.StatusCode, code: problem.Code, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {

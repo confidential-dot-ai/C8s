@@ -240,7 +240,14 @@ status projection matching the assigned Pod clears the window. A later failure
 of the guest itself (refused attestation, a status naming another Pod, a reboot,
 an ended or replaced instance) begins another window of the same frozen
 duration. A Cloud API or node outage does not: the Pod keeps its last status
-with readiness unknown until the outage ends. A valid attested `Pending` Pod or
+with readiness unknown until the outage ends. While Cloud throttles the
+provider (HTTP 429), the Pod reports `RateLimited` and the provider waits as
+Cloud's `Retry-After` asks (at most five minutes, or the 10-second poll when it
+names none) plus a few seconds of jitter, never past this window. A request
+Cloud refuses as such (another 4xx, such as `invalid_request`) reports
+`CloudRejectedRequest`, and the provider log names Cloud's problem code; a
+create refusal that proves no VM exists ends the Pod `Failed` at once, any
+other refusal runs this window. A valid attested `Pending` Pod or
 a running Pod whose application is unready does not time out on this basis.
 
 At expiry, the provider persists `Failed` with reason `GuestVerificationTimedOut`,

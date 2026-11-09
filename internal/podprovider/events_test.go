@@ -3,6 +3,7 @@ package podprovider
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -98,5 +99,47 @@ func TestEventsUseOnlyProviderReasonsAndMessages(t *testing.T) {
 				t.Fatalf("%q -> %q: no event, want %q", step.previous, step.reason, step.want)
 			}
 		}
+	}
+}
+
+// A Pod that never got a VM and is deleted leaves with the provider's
+// InstanceDestroyed, which is no verified guest status: no PodCVMVerified.
+func TestDeletingAnUnverifiedPodRecordsNoVerifiedEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cloud func(*fakeCloud)
+	}{
+		{"cloud unavailable", func(f *fakeCloud) {
+			f.find = func(string) (*instance, error) { return nil, errors.New("connection refused") }
+		}},
+		{"cloud rejected", func(f *fakeCloud) {
+			f.find = func(string) (*instance, error) { return nil, nil }
+			f.create = func(string, createRequest) (*instance, error) {
+				return nil, &cloudProblem{status: http.StatusUnauthorized, code: "unauthenticated"}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := fixturePod()
+			r, cloud := fixtureReconciler(t, pod)
+			recorder := events.NewFakeRecorder(20)
+			r.recorder = recorder
+			tc.cloud(cloud)
+			_ = reconcile(t, r, pod)
+			if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+			cloud.find = func(string) (*instance, error) { return nil, nil }
+			cloud.create = func(string, createRequest) (*instance, error) {
+				return nil, &cloudProblem{status: http.StatusBadRequest, code: "invalid_request"}
+			}
+			_ = reconcile(t, r, pod)
+			close(recorder.Events)
+			for got := range recorder.Events {
+				if strings.Contains(got, "PodCVMVerified") {
+					t.Fatalf("unverified Pod recorded %q", got)
+				}
+			}
+		})
 	}
 }
