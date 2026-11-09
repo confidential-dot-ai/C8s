@@ -20,3 +20,12 @@
 {{- fail (printf "VALIDATION_ERROR kind=platform_values: %s is unset: %s" $key $platformHint) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The provider's add-on repositories, which a platform values file names
+       beside the namespace. An exempt namespace without them admits nothing. */ -}}
+{{- $policy := .Values.nriImagePolicy.policy | default dict -}}
+{{- $exemptRepositories := dig "exemptRepositories" dict $policy -}}
+{{- range $namespace := dig "exemptNamespaces" list $policy -}}
+{{- if empty (dig $namespace list $exemptRepositories) -}}
+{{- fail (printf "VALIDATION_ERROR kind=exempt_repositories: nriImagePolicy.policy.exemptRepositories.%s is unset, so the %s exemption admits no image: list the repositories that namespace's images come from, or drop it from nriImagePolicy.policy.exemptNamespaces" $namespace $namespace) -}}
+{{- end -}}
+{{- end -}}

@@ -676,10 +676,10 @@ func TestSandboxRunsOnlyInTheFinalPhase(t *testing.T) {
 }
 
 // A sandbox denial is not downgraded in an exempt namespace, even when the
-// digest is in the namespace's exempt set: the set admits an image, not host
-// privilege.
+// namespace's exempt set names the image's repository: the set admits an
+// image, not host privilege.
 func TestSandboxDenialIsNotNamespaceExempt(t *testing.T) {
-	p := exemptPlugin(t, map[string][]string{"kube-system": {pushDigestA}}, "kube-system")
+	p := exemptPlugin(t, ExemptRepositories{"kube-system": {"docker.io/library/"}}, "kube-system")
 	p.cfg.Policy.Sandbox = SandboxEnforce
 
 	pod := sandboxedPod()

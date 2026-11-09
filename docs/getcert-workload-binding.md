@@ -183,37 +183,51 @@ outright. Even
 then a token CDS accepts must verify under a key fetched from port 1019 inside
 the node bound, so the worst a swap achieves is denying the pod its sandbox ID.
 
-## Corner 8 — exempt namespaces admit on a digest, not the name
+## Corner 8 — exempt namespaces admit on the image's repository, not the name
 
 On the hosted lanes the provider owns the platform pods in `kube-system` —
 kube-proxy, CoreDNS, the CNI, CSI drivers — whose images are not on the C8s
-allowlist, and nothing baked into the node measures them. Admission there needs
-a source of truth for the platform images a node runs that the allowlist cannot
-supply.
+allowlist, and nothing baked into the node measures them. The provider moves
+those pods between nodes and bumps their images without asking, so admission
+there needs a rule that survives both.
 
 `policy.exempt_namespaces` supplies it without keying admission on a namespace
-name, which is metadata the pod's creator chooses. The name selects a digest
-set: `policy.exempt_digests` holds, per listed namespace, the image digests that
-namespace admits, and `c8s install` renders it from the images the cluster
-reports running there — every container of every pod of that namespace on a
-confidential node, an exited init container included, since the next start of
-its pod runs it again. A container there is admitted only if its resolved digest
-is in its namespace's set; anything else is denied and audited
-`exempt_digest_miss`, so drift is alertable from the log, and never killed
-retroactively — stopping a running kube-proxy or CoreDNS can cut the node. The
-exemption only downgrades a denial — the label rules and the allowlist still run
-and still audit — and never a host-privilege refusal
+name, which is metadata the pod's creator chooses. The name selects a set of
+image repositories: `policy.exempt_repositories` holds, per listed namespace,
+the repository prefixes that namespace admits, each ending on a path separator
+so it matches whole path segments. A container there is admitted when its
+image's repository sits under one of them — `mcr.microsoft.com/oss/kubernetes/`
+admits any version of AKS's kube-proxy and nothing beside that path. A prefix
+may open its registry host's first label with `*-`, which stands for that
+label's leading text: `*-artifactregistry.gcr.io/gke-release/gke-release/` names
+GKE's release mirror in whichever region the cluster runs in. Anything
+else is denied and audited `exempt_repository_miss`, so an add-on the prefixes
+do not cover is alertable from the log, and never killed retroactively —
+stopping a running kube-proxy or CoreDNS can cut the node. The exemption only
+downgrades a denial — the label rules and the allowlist still run and still
+audit — and never a host-privilege refusal
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
+
+A repository is a name the pod's creator chooses too, and the bytes behind it
+are whatever containerd resolves that name to inside the CVM: the tag's current
+content at the provider's registry, or an image already in the node's content
+store under that name. What the prefix bounds is the publisher the name can
+come from. The kubelet reports a repository for an image the node image carries
+pre-loaded, where it reports no digest admission can compare: containerd names
+such an image by its node-local config digest, while admission compares the
+content store's manifest digest.
 
 An exempt namespace sits outside the mesh gate too: its pods came up before any
 enforcer connected, so the plugin requires every name in
 `policy.exempt_namespaces` to appear in `mesh.exempt_namespaces`, and the cloud
 chart renders the second list from the first.
 
-The set reaches a node in the boot config the installer writes, so every start
-of the plugin reads the same one, a reboot included — when containerd gates
-every container on the plugin and an image the set omits has nothing to fall
-back on. One set covers the node pool. It claims nothing a measured node claims:
-the images come from a control plane outside the TCB, so the measured node image
-leaves the list empty. An install prints the set for review, and a provider
-image bump reaches the nodes through the next install.
+The prefixes reach a node in the boot config the installer writes, from the
+chart's `values-<platform>.yaml`, so every start of the plugin reads the same
+ones, a reboot included — when containerd gates every container on the plugin
+and an image the set does not cover has nothing to fall back on. Reading
+nothing from the cluster, the config is the same document whoever renders it,
+which is what lets the CDS seed a release publishes match the config its
+install writes. The exemption claims nothing a measured node claims: the
+measured node image leaves the list empty. An install prints the prefixes and
+the images running under them for review.

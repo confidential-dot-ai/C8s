@@ -216,7 +216,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
-// exempt_namespaces and its digest set reach the policy config.
+// exempt_namespaces and its repository set reach the policy config.
 func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 	body := "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + `
   pull:
@@ -225,9 +225,9 @@ func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 policy:
   mode: fail-closed
   exempt_namespaces: [kube-system, local-path-storage]
-  exempt_digests:
-    kube-system: [` + pushDigestA + `]
-    local-path-storage: [` + pushDigestB + `]
+  exempt_repositories:
+    kube-system: [mcr.microsoft.com/oss/kubernetes/]
+    local-path-storage: [docker.io/rancher/]
 ` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -240,20 +240,20 @@ policy:
 	if got, want := cfg.Policy.ExemptNamespaces, []string{"kube-system", "local-path-storage"}; !slices.Equal(got, want) {
 		t.Errorf("ExemptNamespaces = %v, want %v", got, want)
 	}
-	if !cfg.Policy.exemptsDigest("kube-system", pushDigestA) {
-		t.Errorf("exempt_digests = %v, want kube-system to admit %s", cfg.Policy.ExemptDigests, pushDigestA)
+	if !cfg.Policy.ExemptRepositories.Admits("kube-system", "mcr.microsoft.com/oss/kubernetes/coredns:v1.11.3") {
+		t.Errorf("exempt_repositories = %v, want kube-system to admit an AKS add-on image", cfg.Policy.ExemptRepositories)
 	}
-	if cfg.Policy.exemptsDigest("kube-system", pushDigestB) {
-		t.Error("a digest of another namespace's set must not admit")
+	if cfg.Policy.ExemptRepositories.Admits("kube-system", "docker.io/rancher/local-path-provisioner:v0.0.31") {
+		t.Error("a repository of another namespace's set must not admit")
 	}
 }
 
 // bootConfigDocument is an installer's configuration document: the namespaces
-// image admission exempts, each admitting one digest, and the mesh gate's.
+// image admission exempts, each admitting one repository, and the mesh gate's.
 func bootConfigDocument(exempt, meshExempt string) string {
-	digests := ""
+	repositories := ""
 	for _, namespace := range strings.Split(strings.Trim(exempt, "[]"), ",") {
-		digests += fmt.Sprintf("    %s: [%s]\n", strings.TrimSpace(namespace), pushDigestA)
+		repositories += fmt.Sprintf("    %s: [mcr.microsoft.com/oss/kubernetes/]\n", strings.TrimSpace(namespace))
 	}
 	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
   pull:
@@ -262,7 +262,7 @@ func bootConfigDocument(exempt, meshExempt string) string {
 policy:
   mode: fail-closed
   exempt_namespaces: %s
-  exempt_digests:
+  exempt_repositories:
 %smesh:
   exempt_namespaces: %s
   resolver: "10.43.0.10"
@@ -270,7 +270,7 @@ policy:
   roles:
     - name: mesh
       uid: 1337
-`, exempt, digests, meshExempt)
+`, exempt, repositories, meshExempt)
 }
 
 // CheckBootConfig is how a caller validates a config document before a node is
@@ -313,44 +313,69 @@ func TestCheckBootConfig(t *testing.T) {
 	}
 }
 
-// A config that names an exempt namespace without digests, or holds one in a
-// form admission never compares against, is refused.
-func TestValidate_ExemptDigests(t *testing.T) {
+// A config that names an exempt namespace without repositories, or holds a
+// prefix admission could match half a path segment of, or wildcards anything
+// but the start of its registry host, is refused.
+func TestValidate_ExemptRepositories(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		namespaces []string
-		digests    map[string][]string
-		want       string
+		name         string
+		namespaces   []string
+		repositories ExemptRepositories
+		want         string
 	}{
 		{
-			"a digest set per exempt namespace",
+			"a repository set per exempt namespace",
 			[]string{"kube-system"},
-			map[string][]string{"kube-system": {pushDigestA}},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
 			"",
 		},
 		{
-			"exempt namespaces without digests",
+			"exempt namespaces without repositories",
 			[]string{"kube-system"},
 			nil,
-			"requires policy.exempt_digests",
+			"requires policy.exempt_repositories",
 		},
 		{
-			"one of two exempt namespaces without digests",
+			"one of two exempt namespaces without repositories",
 			[]string{"kube-system", "gmp-system"},
-			map[string][]string{"kube-system": {pushDigestA}},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
 			`policy.exempt_namespaces "gmp-system" requires`,
 		},
 		{
-			"a digest that is not the content store's form",
+			"a prefix that does not end on a path boundary",
 			[]string{"kube-system"},
-			map[string][]string{"kube-system": {"registry/repo@" + pushDigestA}},
-			"sha256:<64 lowercase hex>",
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes"}},
+			`policy.exempt_repositories["kube-system"] holds "mcr.microsoft.com/oss/kubernetes"`,
+		},
+		{
+			"a prefix without a registry",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"oss/kubernetes/"}},
+			`policy.exempt_repositories["kube-system"] holds "oss/kubernetes/"`,
+		},
+		{
+			"a wildcard opening the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*-artifactregistry.gcr.io/gke-release/gke-release/"}},
+			"",
+		},
+		{
+			"a wildcard outside the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"gcr.io/*/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "gcr.io/*/gke-release/"`,
+		},
+		{
+			"a wildcard taking a whole host label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*artifactregistry.gcr.io/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "*artifactregistry.gcr.io/gke-release/"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Policy.ExemptNamespaces = tc.namespaces
-			cfg.Policy.ExemptDigests = tc.digests
+			cfg.Policy.ExemptRepositories = tc.repositories
 			cfg.Mesh.ExemptNamespaces = tc.namespaces
 			err := cfg.Validate()
 			switch {

@@ -127,7 +127,9 @@ func TestRenderPodRuntimeRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 // applies with no exempt namespace.
 func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.T) {
 	root := preparePodRoot(t)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
+	withExemption := strings.Replace(podFloor, "  enforce_existing: true\n",
+		"  enforce_existing: true\n  exempt_repositories:\n    kube-system: [mcr.microsoft.com/oss/kubernetes/]\n", 1)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
 	assigned := assignedPod(t, podManifest)
 	runtime, err := RenderPodRuntime(root, assigned)
 	if err != nil {
@@ -186,6 +188,9 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	policy := got["policy"].(map[string]any)
 	if policy["sandbox"] != "enforce" || policy["mode"] != "fail-closed" {
 		t.Fatalf("policy = %v", policy)
+	}
+	if _, exists := policy["exempt_repositories"]; exists {
+		t.Fatal("pod runtime policy kept the node's exempt repositories")
 	}
 	delete(policy, "sandbox")
 	delete(policy, "exempt_namespaces")

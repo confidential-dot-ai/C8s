@@ -62,9 +62,16 @@ policy keeps host namespaces away from tenant pods
   own measured components.
 
 All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
-Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
-by the digests the images running there carried when it read the cluster, and
-`nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
+Two openings are the operator's. A `gke` or `aks` install admits the provider's
+own namespaces by image repository: `kube-system` on `aks`, and `kube-system`,
+`gmp-system` and `gke-managed-cim` on `gke`, where the provider runs its managed
+Prometheus and kube-state-metrics. Any image under the add-on repositories the
+chart's `values-<platform>.yaml` names runs there at any version and with any
+command line, and the node host-privilege policy is off on those lanes. So a
+confidential node trusts the provider for everything it publishes under those
+paths, and trusts anyone who can create a pod in those namespaces to pick one.
+The other opening is `nriImagePolicy.policy.mode: audit`, which logs a denial
+instead of enforcing it.
 
 On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
 plugin registered gets no identity, certificate or secret, even for its later

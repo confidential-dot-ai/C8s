@@ -13,6 +13,20 @@ nriImagePolicy:
     configDir: /home/kubernetes/bin/nri/conf.d
     pluginDir: /home/kubernetes/bin/nri
   platform: snp
+  policy:
+    ## GKE owns kube-system, gmp-system (its managed Prometheus) and
+    ## gke-managed-cim (its managed kube-state-metrics); their images are not on
+    ## the C8s allowlist, and come from the regional release mirror. An add-on
+    ## outside these repositories is denied; `c8s install` names it.
+    exemptNamespaces:
+      - kube-system
+      - gmp-system
+      - gke-managed-cim
+    exemptRepositories:
+      kube-system: &releaseMirror
+        - "*-artifactregistry.gcr.io/gke-release/gke-release/"
+      gmp-system: *releaseMirror
+      gke-managed-cim: *releaseMirror
 router:
   attest:
     platform: snp
