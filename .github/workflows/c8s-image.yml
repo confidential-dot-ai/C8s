@@ -10,8 +10,8 @@
 #
 # The same callers publish the CDS image from images/cds-guest/:
 # ghcr.io/confidential-dot-ai/guests/cds, tags :<ref>[-kubevirt] and the
-# floating :main[-kubevirt]. One build serves both TEE families, so it has no
-# platform matrix.
+# floating :main[-kubevirt]; c8s-image-publish.yml adds :vX.Y.Z[-kubevirt]. One
+# build serves both TEE families, so it has no platform matrix.
 
 on:
   workflow_call:
