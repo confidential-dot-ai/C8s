@@ -129,6 +129,27 @@ func New(cfg Config, store Store) (*Replica, error) {
 
 func (r *Replica) slot() int { return int(r.self.Load()) }
 
+// learnSlot asks every endpoint for its status and takes the slot whose
+// answer names this replica's own member key, a fresh random key no other
+// instance holds. The answer is not authenticated, and need not be: the
+// host routes the endpoints, so it already decides which instance answers
+// at a slot, and a giver hands a slot over only after an attested join at
+// that slot's endpoint. A wrong slot costs availability, never the keys.
+func (r *Replica) learnSlot(ctx context.Context) bool {
+	for slot := range r.cfg.Endpoints {
+		var s Status
+		cctx, cancel := context.WithTimeout(ctx, r.cfg.PeerTimeout)
+		err := Call(cctx, r.cfg.Peer, http.MethodGet, r.url(slot, StatusPath), nil, &s)
+		cancel()
+		if err == nil && s.Member == r.memberPEM {
+			r.self.Store(int64(slot))
+			slog.Info("CDS replica learnt its slot", "slot", slot, "endpoint", r.cfg.Endpoints[slot])
+			return true
+		}
+	}
+	return false
+}
+
 // State is the held state, nil while pending.
 func (r *Replica) State() *cdschain.State {
 	r.mu.Lock()
