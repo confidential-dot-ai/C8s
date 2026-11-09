@@ -89,16 +89,14 @@ var uninstallCmd = &cobra.Command{
 	Long: `Removes the release 'c8s install' deployed and sweeps the host-side
 NRI, mesh and volume-attach artifacts off every node.
 
-'helm uninstall' already unwinds most of the install: the release resources
-(operator, CDS, attestation-api, armtls-mesh, router, webhook
-configuration), the NRI image-policy host plugin (pre-delete hook), and
-the mesh traffic interception (preStop hook).
+'helm uninstall' unwinds the release resources (operator, CDS,
+attestation-api, armtls-mesh, router, webhook configuration) and the mesh
+traffic interception (preStop hook). It leaves every node enforcing: taking
+the NRI image-policy host plugin off a node is the host sweep's job alone.
 
-The host sweep then nukes what that path cannot guarantee. The preStop hook
-is bounded by the pod's termination grace period (and the runtime restart it
-triggers can kill the pod mid-cleanup), the pre-delete hooks only fire on a
-release healthy enough to run them, and none of them knows about the
-c8s-side artifacts. The sweep runs on every uninstall because the host state below is not confined to the release's own
+The preStop hook is bounded by the pod's termination grace period (and the
+runtime restart it triggers can kill the pod mid-cleanup), and it knows
+nothing about the c8s-side artifacts. The sweep runs on every uninstall because the host state below is not confined to the release's own
 shape: a previous install on the same host may have had a different shape,
 and leftovers brick or degrade the next cluster. After the
 release is gone the sweep runs a short-lived privileged DaemonSet on every
@@ -129,21 +127,17 @@ gone (e.g. a previous bare 'helm uninstall' left the hosts dirty), pass
 --host-sweep-only: the helm step is skipped and the sweep uses the embedded
 chart's defaults.
 
-The uninstall stops while a node it runs a removal pod on is not Ready, and
-names the recovery to run on it. It deletes the NRI image-policy installer
-first, so no installer run re-adds the plugin the pre-delete hook removes.
+The uninstall stops while a node the sweep runs on is not Ready, and names
+the recovery to run on it. It deletes the NRI image-policy installer first,
+so no installer run re-adds the plugin the sweep removes.
 
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so
 removing it under a live volume strands the mappings on the node, where they
 keep the backing disk open against the next install. Scale those workloads to
-zero first — volumed tears the volumes down — or pass --force. Whatever is
-still mapped when the release goes is reaped by the chart's volumed pre-delete
-hook, which runs on every node before the daemon is removed. That hook can only
-close a mapping nothing is using: a live consumer keeps the device open through
-its own mount namespace, which the hook's host-side unmount does not reach, so
-under --force the hook fails on those and names them. Whatever it leaves is
-swept by volumed the next time it starts.
+zero first — volumed tears the volumes down — or pass --force, which leaves
+those mappings open and their volumes decrypted on nodes this uninstall stops
+enforcing; reboot those nodes.
 
 Left in place by default: the ConfidentialWorkload CRD (helm never deletes
 crds/; --delete-crds removes it ALONG WITH EVERY ConfidentialWorkload object)
@@ -187,15 +181,11 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 			}
 		}
 		// Sweep host state even if it outlived the release that created it.
-		// Chart pre-delete hooks are the healthy-release first line;
-		// --host-sweep=false opts out of this additional cleanup.
 		sweep := uninstallHostSweep
-		removalNodes, err := removalNodeSelector(values, sweep)
-		if err != nil {
-			return err
-		}
-		if err := refuseNotReadyRemovalNodes(ctx, removalNodes, cfg); err != nil {
-			return err
+		if sweep {
+			if err := refuseNotReadySweepNodes(ctx, cfg); err != nil {
+				return err
+			}
 		}
 
 		// volumed goes with the release and is the only component that unmaps
@@ -223,7 +213,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
 			hc.Stdout = os.Stdout
 			hc.Stderr = os.Stderr
 			if err := hc.Run(); err != nil {
-				return fmt.Errorf("helm uninstall failed: %w — a wedged pre-delete hook blocks the sweep too; recover with 'helm uninstall --no-hooks %s --namespace %s' followed by 'c8s uninstall --host-sweep-only'", err, uninstallRelease, uninstallNamespace)
+				return fmt.Errorf("helm uninstall failed: %w — the nodes are still enforcing; once the release is gone, sweep them with 'c8s uninstall --host-sweep-only --release %s --namespace %s'", err, uninstallRelease, uninstallNamespace)
 			}
 		}
 
@@ -256,7 +246,8 @@ func validateUninstallFlags(hostSweep, hostSweepOnly bool) error {
 	return nil
 }
 
-// The label selecting every linux node: the nodes the host sweep runs on.
+// The label selecting every linux node: the nodes the sweep DaemonSet runs on
+// (hostSweepDaemonSet) and the ones it must find Ready first.
 const (
 	linuxNodeLabel = "kubernetes.io/os"
 	linuxNodeValue = "linux"
@@ -265,10 +256,10 @@ const (
 // notReadyNodesJSONPath dumps one "name\tReady status" line per node.
 const notReadyNodesJSONPath = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
 
-// refuseNotReadyRemovalNodes stops the uninstall before it waits on a removal
-// pod that cannot start: a NotReady node runs none.
-func refuseNotReadyRemovalNodes(ctx context.Context, selector string, cfg hostUninstallConfig) error {
-	nodes, err := notReadyNodes(ctx, selector)
+// refuseNotReadySweepNodes stops the uninstall before it waits on a sweep pod
+// that cannot start: a NotReady node runs none.
+func refuseNotReadySweepNodes(ctx context.Context, cfg hostUninstallConfig) error {
+	nodes, err := notReadyNodes(ctx, linuxNodeSelector())
 	if err != nil {
 		return err
 	}
@@ -276,25 +267,6 @@ func refuseNotReadyRemovalNodes(ctx context.Context, selector string, cfg hostUn
 		return notReadyNodesError(nodes, cfg)
 	}
 	return nil
-}
-
-// removalNodeSelector selects the nodes this uninstall runs a removal pod on:
-// every linux node when the host sweep runs, else the pre-delete hooks' nodes.
-func removalNodeSelector(values map[string]any, hostSweep bool) (string, error) {
-	if hostSweep {
-		return linuxNodeSelector(), nil
-	}
-	return hookNodeSelector(values)
-}
-
-// hookNodeSelector selects the nodes the chart's pre-delete hooks run on: the
-// release's confidential nodes, or every linux node for a release whose chart
-// named none.
-func hookNodeSelector(values map[string]any) (string, error) {
-	if _, named := values[confidentialNodeSelectorKey]; !named {
-		return linuxNodeSelector(), nil
-	}
-	return confidentialNodeSelector(values)
 }
 
 func linuxNodeSelector() string {
@@ -310,7 +282,7 @@ func notReadyNodes(ctx context.Context, selector string) ([]string, error) {
 	}
 	listed := strings.TrimSpace(string(out))
 	if listed == "" {
-		return nil, fmt.Errorf("no node matches %s, the nodes this uninstall runs a removal pod on", selector)
+		return nil, fmt.Errorf("no node matches %s, the nodes this uninstall sweeps", selector)
 	}
 	var nodes []string
 	for line := range strings.SplitSeq(listed, "\n") {
@@ -334,7 +306,7 @@ func unreadyNode(name, ready string) string {
 // notReadyNodesError names the nodes and the node-level recovery, which no pod
 // can run there.
 func notReadyNodesError(nodes []string, cfg hostUninstallConfig) error {
-	return fmt.Errorf("nodes %s do not report themselves Ready, and the uninstall runs a pod on each of them. A confidential node whose containerd cannot load the C8s config, or whose image-policy plugin is down, starts no container, so recover it on the node: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
+	return fmt.Errorf("nodes %s do not report themselves Ready, and the host sweep runs a pod on each of them. A confidential node whose containerd cannot load the C8s config, or whose image-policy plugin is down, starts no container, so recover it on the node: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
 		strings.Join(nodes, ", "),
 		cfg.ContainerdConfigDir,
 		path.Join(cfg.NriPluginDir, cfg.NriPluginFilename),
@@ -348,8 +320,7 @@ func nriInstallerSelector(release string) string {
 }
 
 // removeNriInstaller deletes the release's NRI installer and waits out its
-// pods, so no installer run re-adds the plugin while the pre-delete hook takes
-// it off the nodes.
+// pods, so no installer run re-adds the plugin the sweep takes off the nodes.
 func removeNriInstaller(ctx context.Context, namespace, release string) error {
 	selector := nriInstallerSelector(release)
 	if err := kubectlRun(ctx, "delete", "daemonset", "-n", namespace, "-l", selector, "--ignore-not-found"); err != nil {
@@ -717,11 +688,10 @@ func volumePodsRunningError(pods []string) error {
 		strings.Join(pods, "\n  "))
 }
 
-// forcedVolumePodsWarning is what --force buys: the uninstall proceeds, and the
-// mappings these pods hold stay open on their nodes, because the pre-delete
-// hook cannot close a device a live mount namespace still references.
+// forcedVolumePodsWarning is what --force buys: the uninstall proceeds, and
+// the mappings these pods hold stay open on nodes it stops enforcing.
 func forcedVolumePodsWarning(pods []string) string {
-	return fmt.Sprintf("! --force: these pods still hold c8s encrypted volumes:\n  %s\nthe volumed pre-delete hook will fail to close their dm-crypt/dm-verity mappings, which then hold the backing disks open. Delete these pods and re-run the uninstall to leave the nodes clean; otherwise volumed sweeps the residue the next time it starts, so a reinstall clears it",
+	return fmt.Sprintf("! --force: these pods still hold c8s encrypted volumes:\n  %s\ntheir dm-crypt/dm-verity mappings stay open, holding the volumes decrypted and the backing disks open, on nodes this uninstall stops enforcing. Delete these pods and re-run the uninstall to leave the nodes clean; otherwise reboot those nodes",
 		strings.Join(pods, "\n  "))
 }
 
@@ -911,9 +881,9 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. =false leaves every node enforcing with no CDS to ask, refusing the pods its cached allowlist does not admit, until 'c8s uninstall --host-sweep-only' runs")
 	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults when the release values are unavailable")
-	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
+	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (their mappings stay open, holding the volumes decrypted, on nodes this uninstall stops enforcing; reboot those nodes)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteNamespace, "delete-namespace", false, "also delete the release namespace (and everything left in it, e.g. an operator-created image pull Secret)")
 	rootCmd.AddCommand(uninstallCmd)

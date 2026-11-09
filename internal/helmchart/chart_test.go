@@ -3930,10 +3930,8 @@ func renderedResourceQuotas(t *testing.T, helmOut string) []corev1.ResourceQuota
 func TestChartCriticalPriorityPodsAreCoveredByAQuota(t *testing.T) {
 	t.Parallel()
 	wantPods := []string{
-		"DaemonSet/c8s-nri-image-policy-uninstall",
 		"DaemonSet/c8s-nri-image-policy-worker",
 		"DaemonSet/c8s-volumed",
-		"DaemonSet/c8s-volumed-teardown",
 	}
 	for _, platform := range cloudPlatforms {
 		t.Run(platform, func(t *testing.T) {
@@ -4052,11 +4050,21 @@ func TestChartImagePullSecretReachesEveryPodSpecWithoutCreatingASecret(t *testin
 		}
 		return false
 	})
-	// The default render ships at least the operator and router Deployments
-	// plus the attestation-api, armtls-mesh, and nri-image-policy DaemonSets;
-	// fewer means the decode regressed and the loop below passes vacuously.
-	if len(workloads) < 5 {
-		t.Fatalf("decoded only %d pod-bearing workloads, want >= 5", len(workloads))
+	// The pod-bearing workloads of a default render, so a decode that misses
+	// one cannot leave the loop below passing vacuously.
+	want := []string{
+		"DaemonSet/c8s-attestation-api",
+		"DaemonSet/c8s-nri-image-policy-worker",
+		"Deployment/c8s-operator",
+		"Deployment/c8s-router",
+	}
+	var decoded []string
+	for _, w := range workloads {
+		decoded = append(decoded, w.kind+"/"+w.name)
+	}
+	slices.Sort(decoded)
+	if !slices.Equal(decoded, want) {
+		t.Fatalf("decoded pod-bearing workloads = %v, want %v", decoded, want)
 	}
 
 	for _, w := range workloads {
@@ -4315,27 +4323,6 @@ func TestChartVolumedKubeletRoot(t *testing.T) {
 			if v.HostPath.Path != tc.want {
 				t.Errorf("kubelet-root hostPath = %q, want %q", v.HostPath.Path, tc.want)
 			}
-			// The teardown hook unmounts under the same root; a divergent
-			// path would sweep the wrong tree.
-			hook := renderedDaemonSet(t, out, "c8s-volumed-teardown").Spec.Template.Spec
-			hc, ok := findContainer(hook.InitContainers, "teardown")
-			if !ok {
-				t.Fatal("teardown init container missing")
-			}
-			hm, ok := containerVolumeMount(hc, "kubelet-root")
-			if !ok {
-				t.Fatal("no kubelet-root mount in the teardown hook")
-			}
-			if hm.MountPath != tc.want {
-				t.Errorf("hook kubelet-root mountPath = %q, want %q", hm.MountPath, tc.want)
-			}
-			hv, ok := podVolume(hook, "kubelet-root")
-			if !ok || hv.HostPath == nil {
-				t.Fatal("no kubelet-root hostPath volume in the teardown hook")
-			}
-			if hv.HostPath.Path != tc.want {
-				t.Errorf("hook kubelet-root hostPath = %q, want %q", hv.HostPath.Path, tc.want)
-			}
 		})
 	}
 }
@@ -4495,112 +4482,6 @@ func assertSchemaCovers(t *testing.T, values, node any, path string) {
 			continue
 		}
 		assertSchemaCovers(t, v, child, path+"."+k)
-	}
-}
-
-// volumed is the only component that unmaps a pod's dm-crypt/dm-verity stack,
-// so deleting the release under an open volume strands the mappings: they hold
-// the backing disk and the next install cannot reopen it. The pre-delete hook
-// reaps them while the release still exists — for any chart consumer, not just
-// `c8s uninstall`.
-func TestChartVolumedTeardownHook(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := renderedDaemonSet(t, out, "c8s-volumed-teardown")
-
-	// pre-delete, so it runs while the mounts are still reachable; helm waits
-	// for Ready, which the pause container reaches only once the init
-	// container has swept the node.
-	if got := ds.Annotations["helm.sh/hook"]; got != "pre-delete" {
-		t.Errorf("helm.sh/hook = %q, want pre-delete", got)
-	}
-	if got := ds.Annotations["helm.sh/hook-delete-policy"]; !strings.Contains(got, "hook-succeeded") {
-		t.Errorf("helm.sh/hook-delete-policy = %q, want it to clean up after success", got)
-	}
-	// The nri-image-policy uninstaller restarts containerd, which would kill
-	// this pod mid-sweep, so this hook must sort ahead of it.
-	nriWeight := renderedDaemonSet(t, out, "c8s-nri-image-policy-uninstall").Annotations["helm.sh/hook-weight"]
-	weight, err := strconv.Atoi(ds.Annotations["helm.sh/hook-weight"])
-	if err != nil {
-		t.Fatalf("helm.sh/hook-weight is not an int: %v", err)
-	}
-	if nri, err := strconv.Atoi(nriWeight); err != nil || weight >= nri {
-		t.Errorf("teardown hook-weight = %d, want less than the nri uninstaller's %q", weight, nriWeight)
-	}
-
-	spec := ds.Spec.Template.Spec
-	c, ok := findContainer(spec.InitContainers, "teardown")
-	if !ok {
-		t.Fatalf("teardown init container missing; have %v", containerNames(spec.InitContainers))
-	}
-	// cryptsetup/veritysetup live only in volumed's own debian-slim image.
-	if !strings.Contains(c.Image, "/volumed") {
-		t.Errorf("teardown image = %q, want volumed's own image", c.Image)
-	}
-	if c.SecurityContext == nil || c.SecurityContext.Privileged == nil || !*c.SecurityContext.Privileged {
-		t.Error("teardown is not privileged; closing a dm target and unmounting need it")
-	}
-	if c.SecurityContext == nil || c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 0 {
-		t.Error("teardown must set runAsUser: 0; the nonroot image user has no effective capabilities")
-	}
-	// The image entrypoint is ["/app/c8s", "volumed"]; the hook runs a script.
-	if len(c.Command) == 0 || c.Command[0] != "/bin/sh" {
-		t.Errorf("teardown command = %v, want the shell (the image entrypoint is the daemon)", c.Command)
-	}
-
-	// The unmount happens in this pod's namespace and has to propagate back to
-	// the host, exactly as volumed's own mount does.
-	kubelet, ok := containerVolumeMount(c, "kubelet-root")
-	if !ok {
-		t.Fatal("no kubelet-root mount; the c8s volume mounts are not reachable")
-	}
-	if kubelet.MountPropagation == nil || *kubelet.MountPropagation != corev1.MountPropagationBidirectional {
-		t.Errorf("kubelet-root propagation = %v, want Bidirectional; the unmount would not reach the host", kubelet.MountPropagation)
-	}
-	if _, ok := containerVolumeMount(c, "dev"); !ok {
-		t.Error("missing dev mount; /dev/mapper is where the mappings live")
-	}
-
-	// The script must close both halves of the stack: verity is stacked on the
-	// crypt device, and the crypt device is what holds the disk.
-	script := strings.Join(c.Args, "\n")
-	for _, want := range []string{"c8s-verity-", "c8s-crypt-", "veritysetup", "cryptsetup", "umount"} {
-		if !strings.Contains(script, want) {
-			t.Errorf("teardown script does not mention %q:\n%s", want, script)
-		}
-	}
-}
-
-// The hook targets the nodes volumed ran on: a node selector or toleration
-// that does not track volumed's leaves those nodes' mappings behind.
-func TestChartVolumedTeardownHookTracksVolumedPlacement(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	volumed := renderedDaemonSet(t, out, "c8s-volumed").Spec.Template.Spec
-	teardown := renderedDaemonSet(t, out, "c8s-volumed-teardown").Spec.Template.Spec
-	if !reflect.DeepEqual(volumed.NodeSelector, teardown.NodeSelector) {
-		t.Errorf("teardown nodeSelector = %v, want volumed's %v", teardown.NodeSelector, volumed.NodeSelector)
-	}
-	if !reflect.DeepEqual(volumed.Tolerations, teardown.Tolerations) {
-		t.Errorf("teardown tolerations = %v, want volumed's %v", teardown.Tolerations, volumed.Tolerations)
-	}
-}
-
-// Nothing to reap where the daemon never ran.
-func TestChartVolumedTeardownHookOffWithVolumed(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "DaemonSet", "c8s-volumed-teardown") {
-		t.Error("volumed teardown hook rendered without volumed.enabled")
 	}
 }
 
@@ -5237,14 +5118,12 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 }
 
 // confidentialNodeWorkloads are the cloud chart's pods that must run inside a
-// node's TEE: the node agents, their uninstall hooks, and the router.
+// node's TEE: the node agents and the router.
 var confidentialNodeWorkloads = []string{
 	"c8s-attestation-api",
-	"c8s-nri-image-policy-uninstall",
 	"c8s-nri-image-policy-worker",
 	"c8s-router",
 	"c8s-volumed",
-	"c8s-volumed-teardown",
 }
 
 // Every one of them selects the nodes its stock file marks as confidential.

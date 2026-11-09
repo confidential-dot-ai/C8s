@@ -71,21 +71,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* The host's syslog socket: the plugin logs to the host journal through it. */}}
 {{- define "nri-image-policy.syslogSocket" -}}/dev/log{{- end -}}
 
-{{/* The shared containerd-config and plugin-removal helpers every remover runs
-     before its own steps (internal/helmchart hostSweepScripts joins the same
-     list for the CLI's sweep). */}}
-{{- define "nri-image-policy.removerPreamble" -}}
+{{/* The sweep `c8s uninstall` replays: the shared containerd-config and
+     plugin-removal helpers, then the sweep's own steps (internal/helmchart
+     hostSweepScripts joins the same files in the same order). */}}
+{{- define "nri-image-policy.hostSweepScript" -}}
 {{ .Files.Get "files/scripts/nri-containerd-config.sh" }}
 {{ .Files.Get "files/scripts/nri-plugin-removal.sh" }}
-{{- end -}}
-
-{{- define "nri-image-policy.uninstallHookScript" -}}
-{{ include "nri-image-policy.removerPreamble" . }}
-{{ .Files.Get "files/scripts/uninstall.sh" }}
-{{- end -}}
-
-{{- define "nri-image-policy.hostSweepScript" -}}
-{{ include "nri-image-policy.removerPreamble" . }}
 {{ .Files.Get "files/scripts/host-sweep.sh" }}
 {{- end -}}
 
@@ -142,10 +133,7 @@ limits:
   memory: 256Mi
 {{- end }}
 
-{{/*
-Shared hostPath mounts and volumes used by installer DaemonSets and the
-uninstall hook.
-*/}}
+{{/* The installer DaemonSet's hostPath mounts and volumes. */}}
 {{- define "nri-image-policy.hostVolumeMounts" -}}
 - name: host-plugin-dir
   mountPath: /host{{ .Values.nriImagePolicy.hostPaths.pluginDir }}

@@ -88,7 +88,8 @@ registry login instead.
 `c8s uninstall` deletes the release, then sweeps host state the chart cannot:
 the admission plugin's containerd registration, the `ARMTLS-MESH` chains and
 ipsets, and idle `c8s volume attach` backstores. Each is one set per node, shared by every release, so uninstalling one takes them from
-another.
+another. A bare `helm uninstall` leaves every node enforcing with no CDS to
+ask; `c8s uninstall --host-sweep-only` is what cleans those nodes.
 
 ## The `c8s operator` controller
 

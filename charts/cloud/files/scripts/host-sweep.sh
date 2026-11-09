@@ -7,18 +7,14 @@
 # release's pinned bytes at uninstall, so edits stay admissible across
 # CLI/chart version skew.
 #
-# `helm uninstall` already drives the supported cleanup: the chart's
-# pre-delete hooks remove the NRI plugin and volumed mappings, and the mesh's
-# preStop strips its traffic interception. Every one of those is best-effort:
-# hooks need a release healthy enough to run them, a preStop is bounded by
-# the pod's termination grace period (and the runtime restart it triggers can
-# kill the pod mid-cleanup), the mesh preStop deliberately keeps its
-# fail-closed guard, and none of them knows about the C8s-side artifacts
+# This sweep is the only thing that takes the plugin off a node. `helm
+# uninstall` deletes the release resources, and the mesh's preStop strips its
+# traffic interception within the pod's termination grace period, keeping the
+# fail-closed guard by design. Neither knows about the C8s-side artifacts
 # (a containerd config template an earlier install managed, `c8s volume attach`
-# LIO disks). This sweep is the idempotent last word and
-# runs on every uninstall, whatever the release's shape: leftovers may come
-# from a previous install of a different shape, which this release's values
-# cannot see.
+# LIO disks). It runs on every uninstall, whatever the release's shape:
+# leftovers may come from a previous install of a different shape, which this
+# release's values cannot see.
 #
 # Fatal vs warn: a plugin this sweep cannot take off containerd fails the
 # sweep (the CLI then keeps the DaemonSet so its logs survive), after every
@@ -43,6 +39,16 @@ export PATH
 unset IFS ENV CDPATH
 
 set -eu
+
+# The plugin's own runtime dir, set here rather than read from the environment:
+# an older `c8s uninstall` replaying this script sets no variable for it. A Go
+# test holds it to EnforcerRuntimeDir in internal/cmds/nri-image-policy.
+ENFORCER_RUNTIME_DIR=/run/c8s-enforcer
+
+# Leaves a directory another NRI plugin's file still sits in.
+remove_dir_if_empty() {
+  rmdir "$1" 2>/dev/null || :
+}
 
 echo "==> c8s host sweep starting"
 
@@ -84,6 +90,9 @@ if remove_plugin_from_containerd "/host${NRI_PLUGIN_DIR}"/*-nri-image-policy; th
     */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
     *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
   esac
+  rm -rf "/host${ENFORCER_RUNTIME_DIR}"
+  remove_dir_if_empty "/host${NRI_CONFIG_DIR}"
+  remove_dir_if_empty "/host${NRI_PLUGIN_DIR}"
 else
   echo "ERROR: the NRI image-policy plugin is not off this node; its artifacts stay for the next sweep" >&2
   sweep_failed=1

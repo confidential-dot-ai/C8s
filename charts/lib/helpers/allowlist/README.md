@@ -47,12 +47,9 @@ reaching the base.
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per
 `c8s.generatedShapes` digest, with its containers, followed by
 `c8s.argvPinnedEntries`, the [router entry](#router-entry) and
-`bootstrapAllowlist.workloads`. The volumed entry
-also carries the pre-delete teardown hook's script and pause. A
+`bootstrapAllowlist.workloads`. A
 `bootstrapAllowlist.workloads` override named `c8s.digestWorkloadName`
-replaces a component entry whole, hook
-containers included; an override must declare them too, or the pre-delete hook
-is refused and the uninstall fails. `c8s.generatedShapes` is
+replaces a component entry whole. `c8s.generatedShapes` is
 `c8s.componentShapes` less the argv-pinned digests and the overridden ones,
 and `c8s.baseWorkloads` builds from it too, so an override replaces the
 generated entry in the boot base as well. An override named for an
@@ -84,8 +81,8 @@ the same names.
 ## Component shapes
 
 `c8s.componentPods` renders the pod spec of every component workload its
-`templates` field names (the cloud chart: operator, attestation-api, volumed
-and its teardown hook, router; the worker chart: router) through the same
+`templates` field names (the cloud chart: operator, attestation-api, volumed,
+router; the worker chart: router) through the same
 named templates the workloads use, and
 `c8s.podShapes` turns each container whose image is a component digest into an
 allowlist container:
@@ -97,7 +94,7 @@ allowlist container:
   becomes `$`, and any `$(NAME)` reference fails the render, since the kubelet
   may expand it from env, `envFrom` or a service variable. Escape it as
   `$$(NAME)` and expand it in the binary, as the attestation-api URL does with
-  `HOST_IP`; the volumed teardown script is escaped whole.
+  `HOST_IP`.
 - A container with neither command nor args fails the render: the image's CMD
   would run, which the chart cannot pin.
 - `mounts` is `exact` at one rule per volume mount (`c8s.mountRules`): `host`
@@ -187,13 +184,13 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | always | Install script, optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+| NRI installer | always | Install script, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image
 references are digest-pinned.
 
-Install and uninstall entries explicitly
+The install and host-sweep entries explicitly
 set `mounts: {policy: any}` because these platform scripts require host mounts,
 which exact workload mount rules do not support. Their command/args pins still
 apply. The pause and `plugin-ready` containers have no workload mounts and

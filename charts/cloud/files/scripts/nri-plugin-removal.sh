@@ -1,7 +1,7 @@
 # shellcheck shell=sh
-# NRI image-policy plugin removal, shared by the pre-delete hook and the C8s
-# host sweep, after nri-containerd-config.sh. Every function returns non-zero
-# on failure and leaves what a retry needs.
+# NRI image-policy plugin removal, run by the C8s host sweep after
+# nri-containerd-config.sh. Every function returns non-zero on failure and
+# leaves what a retry needs.
 : "${MARK_BEGIN:?set by nri-containerd-config.sh, which the caller includes first}"
 CONTAINERD_DIR="/host${HOST_CONTAINERD_DIR:?the containerd config directory of this node}"
 RESTART_COMMAND="${RESTART_COMMAND:?the containerd restart command of this node}"
