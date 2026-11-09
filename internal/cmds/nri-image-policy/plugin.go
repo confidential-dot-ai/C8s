@@ -377,7 +377,7 @@ func newPlugin(
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
 	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
 	if !cfg.podRole() {
-		p.deletePod = deleteNodePod
+		p.deletePod = p.deleteNodePod
 	}
 	logger.Info("mesh gate enabled",
 		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),

@@ -2,8 +2,12 @@ package nriimagepolicy
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,10 +56,10 @@ func TestNodeDeleteNamesTheRefusedPodInstance(t *testing.T) {
 
 const nodeAPIServer = "https://10.0.0.1:6443"
 
-func nodeKubeconfigFile(t *testing.T, auth *clientcmdapi.AuthInfo) string {
+func nodeKubeconfigFile(t *testing.T, cluster *clientcmdapi.Cluster, auth *clientcmdapi.AuthInfo) string {
 	t.Helper()
 	document := clientcmdapi.NewConfig()
-	document.Clusters["node"] = &clientcmdapi.Cluster{Server: nodeAPIServer}
+	document.Clusters["node"] = cluster
 	document.AuthInfos["node"] = auth
 	document.Contexts["node"] = &clientcmdapi.Context{Cluster: "node", AuthInfo: "node"}
 	document.CurrentContext = "node"
@@ -72,7 +76,9 @@ func TestNodeCredentialsComeFromTheFileAlone(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.1.1.1")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
 
-	pods, err := nodePodClient(nodeKubeconfigFile(t, &clientcmdapi.AuthInfo{Token: "node"}))
+	cloudNode := &config{}
+
+	pods, err := cloudNode.nodePodClient(nodeKubeconfigFile(t, &clientcmdapi.Cluster{Server: nodeAPIServer}, &clientcmdapi.AuthInfo{Token: "node"}))
 	if err != nil {
 		t.Fatalf("nodePodClient: %v", err)
 	}
@@ -81,17 +87,67 @@ func TestNodeCredentialsComeFromTheFileAlone(t *testing.T) {
 	}
 }
 
-func TestNodeCredentialsRefuseACredentialHelper(t *testing.T) {
+const kubeletHelperToken = "kubelet-helper-token"
+
+// A helper that prints a token, in the exec stanza a gke kubelet's kubeconfig has.
+func kubeletCredentialHelper() *clientcmdapi.AuthInfo {
+	credential := fmt.Sprintf(`{"apiVersion":"client.authentication.k8s.io/v1beta1","kind":"ExecCredential","status":{"token":%q}}`, kubeletHelperToken)
+	return &clientcmdapi.AuthInfo{Exec: &clientcmdapi.ExecConfig{
+		APIVersion: "client.authentication.k8s.io/v1beta1",
+		Command:    "/bin/echo",
+		Args:       []string{credential},
+	}}
+}
+
+type nodeAPIRequest struct {
+	method        string
+	path          string
+	authorization string
+}
+
+// A gke kubelet authenticates through a credential helper.
+func TestANodeRunsTheKubeletsCredentialHelper(t *testing.T) {
+	requests := make(chan nodeAPIRequest, 1)
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- nodeAPIRequest{method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization")}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"Status","status":"Success"}`))
+	}))
+	defer apiServer.Close()
+	node := &clientcmdapi.Cluster{
+		Server:                   apiServer.URL,
+		CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: apiServer.Certificate().Raw}),
+	}
+	refused := meshPod("tenant", "inference-0", testNetNS)
+	refused.Uid = refusedPodUID
+	cloudNode := &config{}
+
+	pods, err := cloudNode.nodePodClient(nodeKubeconfigFile(t, node, kubeletCredentialHelper()))
+	if err != nil {
+		t.Fatalf("nodePodClient: %v", err)
+	}
+	if err := deletePodInstance(context.Background(), pods, refused); err != nil {
+		t.Fatalf("delete the refused pod: %v", err)
+	}
+
+	request := <-requests
+	if request.authorization != "Bearer "+kubeletHelperToken {
+		t.Errorf("the delete carried %q, want the token the kubelet's helper printed", request.authorization)
+	}
+	refusedPodPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", refused.GetNamespace(), refused.GetName())
+	if request.method != http.MethodDelete || request.path != refusedPodPath {
+		t.Errorf("the enforcer sent %s %s, want a delete of %s", request.method, request.path, refusedPodPath)
+	}
+}
+
+func TestAMeasuredWorkerRefusesACredentialHelper(t *testing.T) {
+	worker := &config{Worker: true}
 	for name, auth := range map[string]*clientcmdapi.AuthInfo{
-		"an exec helper": {Exec: &clientcmdapi.ExecConfig{
-			APIVersion:      "client.authentication.k8s.io/v1",
-			Command:         "/usr/local/bin/host-command",
-			InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
-		}},
+		"an exec helper":   kubeletCredentialHelper(),
 		"an auth provider": {AuthProvider: &clientcmdapi.AuthProviderConfig{Name: "host-provider"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := nodePodClient(nodeKubeconfigFile(t, auth))
+			_, err := worker.nodePodClient(nodeKubeconfigFile(t, &clientcmdapi.Cluster{Server: nodeAPIServer}, auth))
 			if err == nil || !strings.Contains(err.Error(), "credential helper") {
 				t.Fatalf("err = %v, want the credential helper refused", err)
 			}
