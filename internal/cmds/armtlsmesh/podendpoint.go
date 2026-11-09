@@ -126,6 +126,7 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 		},
 		own:         own,
 		origDst:     defaultOrigDstFunc,
+		dialPeer:    dialPeerDirectly,
 		logger:      logger,
 		bufPool:     newBufPool(),
 		probes:      probes,
@@ -167,6 +168,9 @@ type podEndpoint struct {
 	credentials *credentials
 	own         podAddresses
 	origDst     origDstFunc
+	// dialPeer opens the transport to a peer; the armTLS handshake runs on it.
+	// Nil dials directly.
+	dialPeer    func(context.Context, netip.AddrPort) (net.Conn, error)
 	logger      *slog.Logger
 	bufPool     *bufPool
 	probes      probeTargets
@@ -340,13 +344,7 @@ func (e *podEndpoint) handleOutbound(ctx context.Context, app net.Conn) {
 		log.Warn("refusing a captured connection", "dst", dst, "error", err)
 		return
 	}
-	peer, err := (&tls.Dialer{
-		Config: g.clientTLS,
-		NetDialer: &net.Dialer{
-			Timeout:   podDialTimeout,
-			KeepAlive: podKeepAlive,
-		},
-	}).DialContext(ctx, "tcp", dst.String())
+	peer, err := e.dialMesh(ctx, g.clientTLS, dst)
 	if err != nil {
 		log.Warn("armTLS dial failed", "dst", dst, "error", err)
 		return
@@ -431,8 +429,10 @@ func (e *podEndpoint) requireDeliverable(dst netip.AddrPort) error {
 	return e.rejectMeshPort(dst)
 }
 
-// requireMeshDestination holds that a captured connection leaves the pod, and
-// enters its peer on an application port rather than a mesh port.
+// requireMeshDestination holds that a captured connection leaves the pod for a
+// peer's application port. The mesh ports are refused before any handshake,
+// since they answer armTLS and never an application; a pod CVM's provider
+// therefore publishes no peer endpoint on one.
 func (e *podEndpoint) requireMeshDestination(dst netip.AddrPort) error {
 	if err := e.rejectOwnAddress(dst.Addr()); err != nil {
 		return err
@@ -596,4 +596,31 @@ func (e *podEndpoint) handleReady(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.Write([]byte("ready\n"))
+}
+
+// dialMesh opens the transport to dst and completes the armTLS handshake on
+// it, both within podDialTimeout.
+func (e *podEndpoint) dialMesh(ctx context.Context, config *tls.Config, dst netip.AddrPort) (*tls.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, podDialTimeout)
+	defer cancel()
+	dial := e.dialPeer
+	if dial == nil {
+		dial = dialPeerDirectly
+	}
+	raw, err := dial(ctx, dst)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// dialPeerDirectly is the endpoint's transport: its own TCP dial, which the
+// pod's packet rules exempt from capture by its socket owner.
+func dialPeerDirectly(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	return (&net.Dialer{KeepAlive: podKeepAlive}).DialContext(ctx, "tcp", dst.String())
 }
