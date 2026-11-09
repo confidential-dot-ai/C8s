@@ -43,6 +43,8 @@ type PodBundleOptions struct {
 	LaunchKeyPath      string
 	CDSAddress         string
 	CDSImagePolicyPath string
+	// CDSChain, "<seq>:<hash>", pins a CDS replica set by an entry of its chain.
+	CDSChain string
 }
 
 // NewPodBundle writes a signed role-pod document. It names no pod: the guest
@@ -56,7 +58,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if err != nil {
 		return fmt.Errorf("--cds-image-policy-file: %w", err)
 	}
-	cds := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy)}
+	cds := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy), Chain: opts.CDSChain}
 	if _, err := cds.Parse(); err != nil {
 		return err
 	}

@@ -72,9 +72,12 @@ TEE are supported. Every generic launch
 document carries this explicit CDS trust. Changing it affects new records only;
 existing Pod records retain their signed bytes.
 
-The provider takes no CDS pin decree: after a CDS image roll, deploy an updated
-`cdsImagePolicyFile`. Existing frozen Pod and assignment records keep their
-original trust.
+For a CDS replica set, `cdsChain` (`<seq>:<hash>` of an entry of its chain,
+[cds-ha.md](cds-ha.md)) is carried in every pod's document. The pod CVM then
+follows the builds the chain accepts, as a worker does, and needs no new
+`cdsImagePolicyFile` after a CDS image roll. Without it, after a roll deploy an
+updated `cdsImagePolicyFile`. Existing frozen Pod and assignment records keep
+their original trust.
 
 `workloadsFile` holds the `c8s.allowlist/v1` entries the provider signs into
 every assignment; its entries may be empty. `meshPeers` lists the static mesh
