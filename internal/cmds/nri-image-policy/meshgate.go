@@ -136,10 +136,13 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 
 // hosts reports a sandbox the enforcer protects: an API pod's own network
 // namespace, in a namespace trusted policy does not exempt. A static pod is
-// the node's own, whatever its namespace.
+// the node's own, whatever its namespace, except on a Pod guest, whose kubelet
+// runs the tenant's workload as its static pod.
 func (g *meshGate) hosts(pod *api.PodSandbox) bool {
-	return !staticPod(pod) &&
-		!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+	if staticPod(pod) && g.policy.Pod == nil {
+		return false
+	}
+	return !slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
 		podNetworkNamespace(pod) != ""
 }
 
@@ -415,7 +418,9 @@ func (g *meshGate) lockStarts(pod *api.PodSandbox) func() {
 // exits are fixed for the pod's life: an allowlist change applies to the next
 // pod.
 func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
-	if !g.hosts(pod) {
+	// A pod CVM's egress is its own ruleset's (ruleset.Policy.Pod): no entry's
+	// exits are granted there, and none hold a container back.
+	if !g.hosts(pod) || g.policy.Pod != nil {
 		return nil
 	}
 	g.mu.Lock()

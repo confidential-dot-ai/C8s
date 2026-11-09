@@ -105,6 +105,52 @@ func workloadBundle() *specs.Spec {
 	}
 }
 
+// Beyond the reserved identities a pod CVM's floor does not constrain the
+// user a container runs as; the reserved ids stay refused.
+func TestPodFloorAdmitsRoot(t *testing.T) {
+	floor := testFloor()
+	floor.PodRole = true
+	for _, tc := range []struct {
+		name  string
+		gid   uint32
+		wants string
+	}{
+		{name: "a root workload", gid: 0},
+		{name: "a root workload in the mesh endpoint's group", gid: testMeshUID, wants: "gid 1337 is reserved for the mesh role"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := workloadBundle()
+			bundle.Process.User = specs.User{UID: 0, GID: tc.gid}
+			err := requireFloor(bundle, "ctr", nil, floor, "")
+			switch {
+			case tc.wants == "" && err != nil:
+				t.Fatalf("the pod floor refused %s: %v", tc.name, err)
+			case tc.wants != "" && (err == nil || !strings.Contains(err.Error(), tc.wants)):
+				t.Fatalf("error = %v, want it to name %q", err, tc.wants)
+			}
+		})
+	}
+}
+
+// A container carrying runtime hooks is refused on a pod CVM, before the
+// sandbox exemption and whichever stage the hook names; an empty hooks object
+// is admitted.
+func TestPodFloorRefusesRuntimeHooks(t *testing.T) {
+	floor := testFloor()
+	floor.PodRole = true
+	spec := workloadBundle()
+	spec.Annotations[annotationContainerType] = containerTypeSandbox
+	spec.Annotations[annotationSandboxID] = "ctr"
+	spec.Hooks = &specs.Hooks{Poststop: []specs.Hook{{Path: "/unadmitted-hook"}}}
+	if err := requireFloor(spec, "ctr", nil, floor, ""); err == nil {
+		t.Fatal("pod hook admitted")
+	}
+	spec.Hooks = &specs.Hooks{}
+	if err := requireFloor(spec, "ctr", nil, floor, ""); err != nil {
+		t.Fatalf("empty hooks denied: %v", err)
+	}
+}
+
 // The floor refuses every privilege a member pod's protection cannot survive,
 // and admits the launch containerd writes for an ordinary container.
 func TestFloorRefusals(t *testing.T) {
@@ -633,14 +679,13 @@ func TestFloorFailsClosedOnTheMeasuredConfig(t *testing.T) {
 	}
 }
 
-// Only the verbs that start a container from a bundle read one: a start or a
-// delete is handed over whatever the bundle says.
+// Cleanup does not require readable policy; starts must establish their role.
 func TestOtherVerbsReadNoBundle(t *testing.T) {
 	rec := &recorder{}
 	stderr := &bytes.Buffer{}
 	w := floorWrapper(rec, stderr, filepath.Join(t.TempDir(), "absent.yaml"))
-	if code := w.Run([]string{"c8s-runc", "start", "ctr"}); !rec.called {
-		t.Fatalf("start was denied by the floor (code %d): %s", code, stderr.String())
+	if code := w.Run([]string{"c8s-runc", "delete", "ctr"}); !rec.called {
+		t.Fatalf("delete was denied by the floor (code %d): %s", code, stderr.String())
 	}
 }
 
