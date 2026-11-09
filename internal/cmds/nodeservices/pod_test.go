@@ -249,6 +249,35 @@ func TestRenderPodRuntimeUsesGuestUpstreamDNS(t *testing.T) {
 	}
 }
 
+// No webhook mutates a pod CVM's pod, so the guest drops the capabilities no
+// entry may declare and sets no_new_privs on the pod's own containers; the mesh
+// endpoint keeps its own context.
+func TestRenderPodRuntimeAppliesThePrivilegeFloor(t *testing.T) {
+	root := preparePodRoot(t)
+	runtime, err := RenderPodRuntime(root, assignedPod(t, podManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := podlaunch.ParsePodManifest(runtime.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range pod.Spec.Containers {
+		sc := c.SecurityContext
+		if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+			t.Errorf("container %q allows privilege escalation: %+v", c.Name, sc)
+			continue
+		}
+		want := []corev1.Capability{"NET_RAW", "SETGID", "SETUID"}
+		if c.Name == workloadclaims.MeshContainerName {
+			want = []corev1.Capability{"ALL"}
+		}
+		if !reflect.DeepEqual(sc.Capabilities.Drop, want) {
+			t.Errorf("container %q drops %v, want %v", c.Name, sc.Capabilities.Drop, want)
+		}
+	}
+}
+
 func TestRenderPodRuntimePinsImagesForInitSidecarsAndApplications(t *testing.T) {
 	root := preparePodRoot(t)
 	initPin := "sha256:" + strings.Repeat("c", 64)

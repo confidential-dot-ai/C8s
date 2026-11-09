@@ -446,6 +446,12 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	if err := requireFloor(static, "ctr", nil, testFloor(), ""); err != nil {
 		t.Fatalf("a static pod's container was refused: %v", err)
 	}
+	// A pod CVM's assigned pod is a static pod and the member the floor covers.
+	podFloor := testFloor()
+	podFloor.PodRole = true
+	if err := requireFloor(static, "ctr", nil, podFloor, ""); err == nil {
+		t.Fatal("a pod CVM's static pod container escaped the floor")
+	}
 	for _, source := range []string{"api", ""} {
 		apiPod := workloadBundle()
 		apiPod.Annotations["kubernetes.io/config.source"] = source

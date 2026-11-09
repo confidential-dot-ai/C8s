@@ -58,6 +58,8 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 		{"host path", testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`), emptyPodEntries, "[]", "only emptyDir"},
 		{"host port", strings.Replace(testPodManifest(""), app, `"name":"app","ports":[{"containerPort":80,"hostPort":80}],"image"`, 1), emptyPodEntries, "[]", "hostPort"},
 		{"privileged", strings.Replace(testPodManifest(""), app, `"name":"app","securityContext":{"privileged":true},"image"`, 1), emptyPodEntries, "[]", "privileged"},
+		{"privilege escalation", strings.Replace(testPodManifest(""), app, `"name":"app","securityContext":{"allowPrivilegeEscalation":true},"image"`, 1), emptyPodEntries, "[]", "allowPrivilegeEscalation"},
+		{"undeclarable capability", strings.Replace(testPodManifest(""), app, `"name":"app","securityContext":{"capabilities":{"add":["NET_RAW"]}},"image"`, 1), emptyPodEntries, "[]", "NET_RAW"},
 		{"invalid workload annotation", strings.Replace(testPodManifest(""), `"metadata":{`, `"metadata":{"annotations":{"confidential.ai/cw":"../other"},`, 1), emptyPodEntries, "[]", "not a valid workload name"},
 	}
 	for _, tc := range cases {

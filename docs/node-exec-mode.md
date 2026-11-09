@@ -79,7 +79,7 @@ A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create, and denies `start` too, on every node, before the wrapper decides
 whether the pod admission below applies. The floor is independent of the exec
 posture above, and leaves the exempt namespaces, the pod's own sandbox
-container and a static pod as the measured policy found them. Attachability is
+container and a worker's static pod as the measured policy found them. Attachability is
 refused for every container the wrapper creates — a terminal, and a create
 carrying the container's standard input — so an attach session has no way in
 even there.
@@ -91,8 +91,12 @@ admission plugin refuses any NRI plugin's edit of that annotation and, on a
 worker, a static pod whose launch no base entry pins.
 
 A pod CVM's measured policy is the node's with the mesh role alone and no exempt
-namespace, so the floor covers every container of its pod; its `mesh.pod`
-section is what marks the policy as a pod CVM's. A pod CVM adds one bound the
+namespace, so the floor covers every container of its pod, which its kubelet
+runs as a static pod; its `mesh.pod` section is what marks the policy as a pod
+CVM's. No webhook mutates a pod CVM's pod, so the guest renders it with the
+defaults the injector sets on a worker: `allowPrivilegeEscalation: false` and
+`NET_RAW`, `SETGID` and `SETUID` dropped where the author leaves them unset. An
+assignment that asks for more than the floor allows is refused. A pod CVM adds one bound the
 node does not: its kubelet applies the runtime's default seccomp profile to
 every container that names none, and the admission plugin refuses a container
 that runs without a filter, which a node judges under its own TCB rules.
