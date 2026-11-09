@@ -73,6 +73,11 @@ func reinjectSweep(ctx context.Context, c client.Client, excluded map[string]str
 // needsReinject reports whether pod opted in to injection but never received
 // it, in a namespace the webhook covers.
 func needsReinject(pod *corev1.Pod, excluded map[string]struct{}) bool {
+	// The measured guest injects these Pods' platform containers after launch,
+	// but only once the webhook routed the Pod to the virtual node.
+	if pod.Annotations[webhook.AnnotationPodCVM] == "true" && pod.Spec.NodeSelector[webhook.AnnotationPodCVM] == "true" {
+		return false
+	}
 	if pod.Annotations[webhook.AnnotationWorkload] == "" {
 		return false
 	}

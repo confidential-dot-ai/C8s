@@ -55,12 +55,21 @@ var (
 	workerImageObjects = []string{
 		"ConfigMap/c8s-system/c8s-allowlist-seed",
 	}
+	// The operator's Pod CVM provider grants, held only with --pod-cvm-provider.
+	workerClusterPodCVMProviderObjects = []string{
+		"ClusterRole//c8s-operator-pod-cvm",
+		"ClusterRoleBinding//c8s-operator-pod-cvm",
+		"Role/c8s-system/c8s-operator-pod-cvm",
+		"RoleBinding/c8s-system/c8s-operator-pod-cvm",
+	}
 )
 
 type workerControlPlaneConfig struct {
 	nodeImageRenderConfig
 	document    string
 	webhookHost string
+	// podCVMProvider grants the operator what its Pod CVM provider needs.
+	podCVMProvider bool
 }
 
 func newWorkerControlPlaneCmd() *cobra.Command {
@@ -74,7 +83,9 @@ the c8s-worker chart's CRD, its cluster templates and its control-plane
 subchart, with the operator's webhooks at https://<--webhook-host>:9443, its
 grants bound to the user c8s-operator, and the kube-dns Service at the
 document's clusterDNS. The image flags must be the worker image build's, so the
-router this renders is the one its floor pins.`,
+router this renders is the one its floor pins. --pod-cvm-provider adds the
+grants the operator's Pod CVM provider needs (run the operator with
+--pod-cvm-provider-config); its records are Secrets in c8s-system.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -92,6 +103,7 @@ router this renders is the one its floor pins.`,
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml (required)")
+	f.BoolVar(&cfg.podCVMProvider, "pod-cvm-provider", false, "grant the operator's Pod CVM provider its nodes, pods/status and c8s-system Secrets")
 	cmd.AddCommand(render, newWorkerCredentialsCmd())
 	return cmd
 }
@@ -116,7 +128,7 @@ func renderWorkerControlPlane(ctx context.Context, cfg workerControlPlaneConfig)
 		return err
 	}
 	defer cleanup()
-	cluster, err := renderWorkerCluster(ctx, render, cfg.webhookHost, doc)
+	cluster, err := renderWorkerCluster(ctx, render, cfg.webhookHost, cfg.podCVMProvider, doc)
 	if err != nil {
 		return err
 	}
@@ -132,6 +144,7 @@ func renderWorkerCluster(
 	ctx context.Context,
 	cfg nodeImageRenderConfig,
 	host string,
+	podCVMProvider bool,
 	doc *worker.Document,
 ) ([]byte, error) {
 	args := []string{
@@ -139,16 +152,21 @@ func renderWorkerCluster(
 		"--set-string", "clusterDNS=" + doc.Kubernetes.ClusterDNS,
 		"--set-string", "controlPlane.webhook.url=" + operatorWebhookBaseURL(host),
 	}
+	held := workerClusterObjects
+	if podCVMProvider {
+		args = append(args, "--set", "operator.podCVMProvider.enabled=true")
+		held = slices.Sorted(slices.Values(slices.Concat(held, workerClusterPodCVMProviderObjects)))
+	}
 	rendered, err := templateWorkerChart(ctx, cfg, args...)
 	if err != nil {
 		return nil, err
 	}
-	return selectWorkerClusterObjects(rendered)
+	return selectWorkerClusterObjects(rendered, held)
 }
 
 // selectWorkerClusterObjects is the render's documents a cluster of workers
-// holds, each as helm wrote it.
-func selectWorkerClusterObjects(rendered []byte) ([]byte, error) {
+// holds, the objects named in want, each as helm wrote it.
+func selectWorkerClusterObjects(rendered []byte, want []string) ([]byte, error) {
 	var out bytes.Buffer
 	var held []string
 	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(rendered)))
@@ -167,14 +185,14 @@ func selectWorkerClusterObjects(rendered []byte) ([]byte, error) {
 		if key == "" || slices.Contains(workerImageObjects, key) {
 			continue
 		}
-		if !slices.Contains(workerClusterObjects, key) {
+		if !slices.Contains(want, key) {
 			return nil, fmt.Errorf("the worker chart renders %s, which a cluster of workers neither holds nor leaves to the image", key)
 		}
 		out.WriteString("---\n")
 		out.Write(document)
 		held = append(held, key)
 	}
-	for _, key := range workerClusterObjects {
+	for _, key := range want {
 		if !slices.Contains(held, key) {
 			return nil, fmt.Errorf("the worker chart rendered no %s", key)
 		}

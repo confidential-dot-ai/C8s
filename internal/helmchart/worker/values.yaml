@@ -28,6 +28,12 @@ router:
 ## clusterDNS: the kube-dns Service's IPv4 address, which `c8s worker
 ## control-plane render` takes from the worker document.
 
+operator:
+  podCVMProvider:
+    ## Grant the operator's Pod CVM provider, bound to the user c8s-operator;
+    ## `c8s worker control-plane render --pod-cvm-provider` sets it.
+    enabled: false
+
 controlPlane:
   webhook:
     ## The operator serves its webhooks beside the workers' API server.
