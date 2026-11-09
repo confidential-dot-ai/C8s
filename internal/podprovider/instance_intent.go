@@ -99,11 +99,15 @@ func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 		// persisted request and key, however old: Cloud keeps the idempotency
 		// record for the instance lifetime, so the replay returns the instance
 		// the lost response named or creates the one to destroy.
+		// A definitive refusal of the replay proves that Cloud holds no create
+		// under the key and made none now: nothing exists to destroy.
 		in, err = api.Create(ctx, intent.Key, intent.Request)
-		if err != nil {
+		switch {
+		case createRefused(err):
+			in = nil
+		case err != nil:
 			return false, err
-		}
-		if in == nil {
+		case in == nil:
 			return false, errors.New("create replay returned no instance")
 		}
 	}

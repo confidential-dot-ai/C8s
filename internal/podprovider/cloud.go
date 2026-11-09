@@ -17,6 +17,51 @@ const cloudTimeout = 20 * time.Second
 
 var errCloudNotFound = errors.New("cloud instance not found")
 
+// cloudProblem is a Cloud response outside 2xx: its HTTP status and the
+// problem code Cloud names in its body, if any. The body may contain launch
+// input, so only the status reaches logs.
+type cloudProblem struct {
+	status int
+	code   string
+}
+
+func (p *cloudProblem) Error() string { return fmt.Sprintf("cloud returned HTTP %d", p.status) }
+
+func (p *cloudProblem) Is(target error) bool {
+	return target == errCloudNotFound && p.status == http.StatusNotFound
+}
+
+// problemCode is the Cloud problem code of err, or "" when it has none.
+func problemCode(err error) string {
+	var p *cloudProblem
+	if errors.As(err, &p) {
+		return p.code
+	}
+	return ""
+}
+
+// createRefused reports whether Cloud refused a create in a way that proves
+// nothing exists under its idempotency key.
+func createRefused(err error) bool {
+	var p *cloudProblem
+	return errors.As(err, &p) && p.status >= 400 && p.status < 500 && createRefusals[p.code]
+}
+
+// createRefusals are the problem codes Cloud answers a create with only after
+// it found the create's idempotency key neither held by a request in flight
+// nor recorded with an earlier success, or that the identical request would
+// have met before. Codes Cloud can answer a recorded key with, such as
+// rate_limited, or that the credential decides, such as unauthenticated, are
+// not among them.
+var createRefusals = map[string]bool{
+	"invalid_request":         true,
+	"not_found":               true,
+	"insufficient_capacity":   true,
+	"unsupported_combination": true,
+	"quota_exceeded":          true,
+	"payment_required":        true,
+}
+
 // These wire types cover the instance subset of Cloud API 2026-10-15.
 type createRequest struct {
 	Image     string            `json:"image"`
@@ -182,12 +227,12 @@ func (c *cloudClient) do(ctx context.Context, method, path, key string, in, out 
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		return errCloudNotFound
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Error details may contain launch input; only the status reaches logs.
-		return fmt.Errorf("cloud returned HTTP %d", resp.StatusCode)
+		var problem struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(data, &problem)
+		return &cloudProblem{status: resp.StatusCode, code: problem.Code}
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
