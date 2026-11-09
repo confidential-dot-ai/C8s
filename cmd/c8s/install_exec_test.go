@@ -1160,6 +1160,32 @@ func TestInstallExemptsTheConfidentialNodesImagesAlone(t *testing.T) {
 	}
 }
 
+// A denied container the cluster survives without — GKE's managed
+// kube-state-metrics, a StatefulSet no exemption names — is not a refusal, so
+// the install must say that registering the plugin stops it and goes on.
+func TestInstallReportsDeniedWorkloads(t *testing.T) {
+	const ksm = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	managed := statefulSetPod("gke-managed-cim", "kube-state-metrics-0", "gke.io/ksm:v2", "gke.io/ksm@"+ksm)
+	managed.Spec.NodeName = "node-a"
+
+	var s *installStubs
+	var err error
+	stdout := captureStdout(t, func() {
+		s = newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, managed))
+		err = runInstall(t, "--platform=aks-snp", "--wait=false")
+	})
+	if err != nil {
+		t.Fatalf("a denied provider add-on is not a refusal: %v", err)
+	}
+	for _, want := range []string{"gke-managed-cim/kube-state-metrics-0", "gke.io/ksm@" + ksm} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install output does not report %q:\n%s", want, stdout)
+		}
+	}
+	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
 // A release that exempts no namespace has nothing to report.
 func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 	var err error
