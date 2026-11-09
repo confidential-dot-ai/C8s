@@ -98,7 +98,7 @@ func run(cfg config) error {
 		"not_after", issuing.CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	nodeImages := back.NodeImages()
+	nodeImages := separatePodAuthorities(back.NodeImages(), cfg.measured.PodImages)
 	logNodeImages(nodeImages.Current())
 
 	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
@@ -197,6 +197,7 @@ func run(cfg config) error {
 			NamedCertTTL:      cfg.namedCertTTL,
 			RouterCertTTL:     cfg.routerCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
+			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    allowlistWrites,
@@ -423,6 +424,9 @@ func validateConfig(cfg config) error {
 	}
 	if len(cfg.measured.OperatorKeys.Keys()) == 0 {
 		return fmt.Errorf("--config: the configuration pins no operator key, so no policy write could ever be authorized")
+	}
+	if err := cfg.measured.ValidatePodAuthorities(); err != nil {
+		return fmt.Errorf("--config: %w", err)
 	}
 	for _, timeout := range []struct {
 		name  string

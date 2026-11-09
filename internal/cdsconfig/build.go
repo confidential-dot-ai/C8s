@@ -19,6 +19,9 @@ type Inputs struct {
 	// Nodes is the measurements document pinning the nodes CDS admits; nil
 	// for a replica set whose Genesis names the first set.
 	Nodes []byte
+	// PodImagePolicy optionally pins Pod identities separately from Nodes.
+	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
+	PodImagePolicy []byte
 	// NodeCIDRs are the subnets CDS may dial a sandbox inventory in;
 	// ClusterCIDRs are the pod and service ranges they may not reach into.
 	NodeCIDRs    []string
@@ -50,6 +53,7 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		OperatorKeys:    in.OperatorKeys,
 		Workloads:       workloads,
 		Nodes:           in.Nodes,
+		PodImagePolicy:  in.PodImagePolicy,
 		NodeCIDRs:       in.NodeCIDRs,
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,

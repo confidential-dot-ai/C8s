@@ -32,6 +32,9 @@ type Document struct {
 	// Nodes is the measurements document pinning the nodes CDS admits; nil
 	// for a replica set whose Genesis names the first set.
 	Nodes []byte
+	// PodImagePolicy optionally pins Pod identities separately from Nodes.
+	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
+	PodImagePolicy []byte
 	// NodeCIDRs are the subnets CDS may call a sandbox inventory on.
 	NodeCIDRs []string
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
@@ -69,6 +72,7 @@ func (d Document) wire() (wire, error) {
 		OperatorPublicKeys: string(d.OperatorKeys.PEM()),
 		Workloads:          string(workloads),
 		Nodes:              string(d.Nodes),
+		PodImagePolicy:     string(d.PodImagePolicy),
 		NodeCIDRs:          d.NodeCIDRs,
 		LeafDNSNames:       d.LeafDNSNames,
 		LeafDNSPatterns:    d.LeafDNSPatterns,
