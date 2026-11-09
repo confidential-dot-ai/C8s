@@ -67,8 +67,9 @@ by the digests those pods ran at the plugin's first connect, and
 `nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
 
 On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
-plugin registered gets no identity, certificate or secret until it is deleted,
-even for its containers that start later. A denied image may run until the
+plugin registered gets no identity, certificate or secret, even for its later
+containers. The plugin deletes such a pod; a controller that owns one replaces
+it with a pod this node admits. A denied image may run until the
 plugin is ready and stops it. That window opens on a reboot, on a fresh node,
 and for as long as the plugin is down on a running node. On COS each boot
 repeats the `kube-system` digest capture, from what ran in that window. The

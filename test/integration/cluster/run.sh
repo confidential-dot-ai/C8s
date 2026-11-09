@@ -374,7 +374,7 @@ kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=30
 kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=300s \
     || fail "c8s-router not Available"
 refusal="$(node_exec journalctl -t nri-image-policy --no-pager --since "@$INSTALL_SINCE" \
-    | grep "delete the pod to give it one" | grep "\"namespace\":\"$ROUTER_NS\"" || true)"
+    | grep "gets no identity" | grep "\"namespace\":\"$ROUTER_NS\"" || true)"
 [ -z "$refusal" ] || fail "the plugin refused a router pod for its life: $refusal"
 pass "operator, CDS and router all Ready after c8s install, the router started after the plugin"
 

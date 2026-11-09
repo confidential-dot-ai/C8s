@@ -299,6 +299,8 @@ type plugin struct {
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
 	mesh *meshGate
+	// deletePod removes a refused pod as this node (refusedpods.go).
+	deletePod func(ctx context.Context, pod *api.PodSandbox) error
 	// measurer extends each started workload into RTMR[3]; nil unless
 	// measure.rtmr3. Pause sandboxes never reach StartContainer.
 	measurer workloadMeasurer
@@ -379,6 +381,9 @@ func newPlugin(
 	}
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
 	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
+	if !cfg.podRole() {
+		p.deletePod = deleteNodePod
+	}
 	logger.Info("mesh gate enabled",
 		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
 		"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
@@ -1405,7 +1410,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			// Already on record means protect() took the pod first; it is
 			// protected, so this is not a failure to recover.
 		default:
-			p.logPodWithoutIdentity(pod, err)
+			p.removePodWithoutIdentity(pod, err)
 		}
 	}
 }
@@ -1415,13 +1420,36 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 // other failure refuses this sandbox's containers.
 func (p *plugin) reportUnprotected(pod *api.PodSandbox, refusal error) {
 	if errors.Is(refusal, errRecoveryRefusedPod) {
-		p.logPodWithoutIdentity(pod, refusal)
+		p.removePodWithoutIdentity(pod, refusal)
 		return
 	}
 	p.logger.Error("cannot protect a pod; every container of it will be refused",
 		"namespace", pod.GetNamespace(),
 		"pod", pod.GetName(),
 		"error", refusal)
+}
+
+// The delete runs off this NRI callback, which containerd allows two seconds.
+func (p *plugin) removePodWithoutIdentity(pod *api.PodSandbox, refusal error) {
+	if !p.holdsNodeIdentity() {
+		p.logPodWithoutIdentity(pod, refusal)
+		return
+	}
+	p.logger.Warn("a pod running before this enforcer connected gets no identity; deleting it so a replacement can get one",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"pod_uid", pod.GetUid(),
+		"error", refusal)
+	go func() {
+		if err := p.deletePod(context.Background(), pod); !refusedPodGone(err) {
+			p.logUndeletedPod(pod, err)
+		}
+	}()
+}
+
+// Only a node enforcer is given this node's delete (newPlugin).
+func (p *plugin) holdsNodeIdentity() bool {
+	return p.deletePod != nil
 }
 
 // logPodWithoutIdentity names the pod an operator deletes to let it get an
@@ -1432,6 +1460,14 @@ func (p *plugin) logPodWithoutIdentity(pod *api.PodSandbox, refusal error) {
 		"pod", pod.GetName(),
 		"pod_uid", pod.GetUid(),
 		"error", refusal)
+}
+
+func (p *plugin) logUndeletedPod(pod *api.PodSandbox, failure error) {
+	p.logger.Error("cannot delete a pod this enforcer refused; delete it to let a replacement get an identity",
+		"namespace", pod.GetNamespace(),
+		"pod", pod.GetName(),
+		"pod_uid", pod.GetUid(),
+		"error", failure)
 }
 
 // recoveredExits reads back the exit grant a running sandbox holds. An
