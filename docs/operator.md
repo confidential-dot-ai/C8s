@@ -137,9 +137,12 @@ node's and CDS's decision
 
 Every pod created in a namespace the injector's selector admits is injected, so
 the excluded set is the whole opt-out: the release namespace, `c8s-router`,
-`kube-system`, `kube-public`, `kube-node-lease`, and
+`kube-system`, `kube-public`, `kube-node-lease`,
+`nriImagePolicy.policy.exemptNamespaces`, and
 `controlPlane.webhook.extraExcluded`, which the chart defaults to
-`local-path-storage`.
+`local-path-storage`. The operator's startup reinjection sweep also skips the
+provider and explicit exclusions. Provider pods remain subject to their image
+repository policy and host-security admission checks.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 
@@ -172,6 +175,30 @@ container name, the credential volume or mount under another shape, host network
 or namespaces, a pinned-mount annotation
 ([secrets.md](secrets.md#fixed-sidecar-mounts)) — and the validator rejects a
 final shape that is not the injected one.
+
+### Recover injected provider pods
+
+After upgrading the chart, recreate affected provider pods through their owning
+controllers to apply the namespace exclusions. With `kubectl` and `jq`, list
+injected pods and their owners in the affected namespace:
+
+```sh
+namespace=gmp-system
+kubectl -n "$namespace" get pods -o json | jq -r '
+  .items[] | select(.metadata.annotations["confidential.ai/c8s-injected"] == "true") |
+  [.metadata.name, (.metadata.ownerReferences[]? | select(.controller) |
+    .kind + "/" + .name)] | @tsv'
+```
+
+For each affected pod with an owning controller, replace `POD_NAME` below with
+its name and delete that pod. Its controller creates a replacement using its
+pod template and the updated admission rules. Recreate a bare pod from its
+source manifest through your normal deployment procedure.
+
+```sh
+kubectl -n "$namespace" delete pod POD_NAME
+kubectl -n "$namespace" get pods -w
+```
 
 ## CDS runs as one VM
 

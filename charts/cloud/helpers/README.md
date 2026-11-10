@@ -13,6 +13,14 @@ live in [the c8s-lib chart](../../lib/helpers/README.md).
 | [Placement](placement/README.md) | [_placement.tpl](../templates/_placement.tpl) | Host daemons kept off Pod CVM virtual nodes |
 | [Router](router/README.md) | [router-helpers.tpl](../templates/router-helpers.tpl) | The cloud front door's identity, nginx files and ports |
 | [Services](services/README.md) | [_services.tpl](../templates/_services.tpl) | Attestation endpoint and socket access |
+| Webhook exclusions | [_webhook.tpl](../templates/_webhook.tpl) | Provider and explicit namespace exclusions |
+
+`c8s.cloudAdditionalExcludedNamespaces` returns the deduplicated union of
+`controlPlane.webhook.extraExcluded` and `nriImagePolicy.policy.exemptNamespaces`.
+Both the operator's sweep arguments and [`webhooks.yaml`](../templates/webhooks.yaml)
+use it. The latter renders the [control-plane definitions](../../control-plane/helpers/README.md)
+with a copied subchart context. The cloud schema requires
+`controlPlane.webhook.render: false` so each webhook configuration renders once.
 
 Keep purpose and invariant comments beside the template; keep longer contracts
 and cross-template coordination notes in these references. Documentation lives

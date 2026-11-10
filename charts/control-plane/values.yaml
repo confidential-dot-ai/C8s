@@ -1,6 +1,8 @@
 ## The admission webhooks that inject and check the pods of confidential
 ## workloads.
 webhook:
+  ## Set false when the parent chart renders the webhook definitions.
+  render: true
   ## Annotations on both webhook configurations.
   annotations: {}
   ## Namespaces the webhooks leave alone besides the release's, the router's

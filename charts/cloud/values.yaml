@@ -42,7 +42,8 @@ imagePullSecret: ""
 ## admission webhooks that inject and check the pods of confidential workloads.
 controlPlane:
   webhook:
-    ## Namespaces the webhooks and the operator's reinject sweep leave alone.
+    render: false
+    ## Additional exclusions alongside the image-policy exempt namespaces.
     extraExcluded:
       - local-path-storage
 

@@ -88,10 +88,7 @@ type Options struct {
 	// webhook.Config).
 	ConfidentialNodeSelector map[string]string
 
-	// ExcludeNamespaces are namespaces the startup reinject sweep and the
-	// workload-service reconciler skip, on top of the release namespace and
-	// the kube-system family. Mirrors controlPlane.webhook.extraExcluded so the
-	// sweep, the reconciler, and the webhook config agree.
+	// ExcludeNamespaces extends the namespaces skipped by the sweep and workload-service reconciler.
 	ExcludeNamespaces []string
 
 	// WorkloadClaimsHostDir, when set (node-CVM), is the nri-image-policy inventory
