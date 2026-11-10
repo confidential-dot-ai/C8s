@@ -87,6 +87,13 @@ Every field, the admission decree and the boot-time staging order are
 [docs/launch-configuration.md](../../docs/launch-configuration.md). Each boot
 registers the worker under a node name derived from its primary IPv4 address.
 
+The worker checks its router eligibility against CDS every 30–36 seconds after
+each attempt. It clears stale eligibility at startup, then publishes
+`confidential.ai/router-eligible=true` after a successful check. A policy mismatch
+removes the label and deletes an unready router waiting for its certificate;
+transient check failures preserve the last known decision. Ready routers retain
+their existing credential lifetime. Router placement requires this label.
+
 Additional optional disks:
 
 - serial `confai-containerd` (or label `containerd`): backs containerd's

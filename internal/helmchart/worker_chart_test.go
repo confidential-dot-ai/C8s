@@ -211,9 +211,8 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 			t.Errorf("%s must be a singleton of %s with Recreate strategy", name, namespace)
 		}
 		assertRouterGracePeriodBelowDefault(t, deployment.Spec.Template.Spec)
-		// The pod runs on any worker, and no worker carries a node role label.
-		if selector := deployment.Spec.Template.Spec.NodeSelector; len(selector) > 0 {
-			t.Errorf("%s selects nodes by %v", name, selector)
+		if selector := deployment.Spec.Template.Spec.NodeSelector; !maps.Equal(selector, map[string]string{"confidential.ai/router-eligible": "true"}) {
+			t.Errorf("%s selects nodes by %v, want current CDS eligibility", name, selector)
 		}
 	}
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")

@@ -88,10 +88,6 @@ func routerDeployment(t *testing.T, objects map[string]unstructured.Unstructured
 	return d
 }
 
-// A cluster of workers holds the worker chart's cluster objects: the operator's
-// grants bound to its user alone, its webhooks at its host, kube-dns at the
-// document's clusterDNS, and a router that pulls its images and runs on any
-// worker.
 func TestWorkerClusterHoldsTheWorkerChartsClusterObjects(t *testing.T) {
 	for _, platform := range []string{"sev-snp", "tdx"} {
 		objects := renderTestWorkerCluster(t, platform)
@@ -121,8 +117,8 @@ func TestWorkerClusterHoldsTheWorkerChartsClusterObjects(t *testing.T) {
 				t.Fatalf("router container %s pulls %s, want IfNotPresent: a worker bakes none of its images", c.Name, c.ImagePullPolicy)
 			}
 		}
-		if len(pod.NodeSelector) > 0 {
-			t.Fatalf("router nodeSelector = %v, which no worker carries", pod.NodeSelector)
+		if !maps.Equal(pod.NodeSelector, map[string]string{"confidential.ai/router-eligible": "true"}) {
+			t.Fatalf("router nodeSelector = %v, want current CDS eligibility", pod.NodeSelector)
 		}
 	}
 }

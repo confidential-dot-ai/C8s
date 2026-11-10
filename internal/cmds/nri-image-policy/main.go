@@ -269,6 +269,13 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	// that misses its registration timeout.
 	plugin.serveAfterFirstDecreeLook(decrees)
 	pollForNewerDecrees(ctx, decrees, logger)
+	if cfg.Worker {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runWorkerRouterPlacement(ctx, cfg, cdsHTTPClient, logger)
+		}()
+	}
 
 	measure := policyMeasurer(cfg, logger)
 	var initialETag string

@@ -84,6 +84,10 @@ C8S_TEST_COUNT ?= -count=1
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=600s work
 
+.PHONY: test-worker-router-api
+test-worker-router-api:
+	C8S_REQUIRE_ENVTEST=1 go test -race -count=1 -run '^TestWorkerRouterPlacementAPI$$' ./internal/cmds/nri-image-policy
+
 # The pod ruleset installs over netlink into a network namespace the test
 # creates, so it needs uid 0 there: the test binary runs under sudo unless this
 # shell is already root. C8S_REQUIRE_NFT=1 turns a namespace it cannot create
