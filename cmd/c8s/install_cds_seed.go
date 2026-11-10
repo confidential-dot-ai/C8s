@@ -314,26 +314,45 @@ func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config, declaredPod
 }
 
 // checkNamedCDS checks what the named CDS serves against what this release needs served, and where its inventory calls may land.
-func checkNamedCDS(ctx context.Context, render seedRender, pin *cdsPin, values map[string]any) (warn string, err error) {
+func checkNamedCDS(
+	ctx context.Context,
+	render seedRender,
+	pin *cdsPin,
+	values map[string]any,
+) (servedDigests map[string]bool, warn string, err error) {
 	if pin == nil {
-		return "", nil
+		return nil, "", nil
 	}
 	seed, err := installSeed(ctx, render)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	cdsURL, err := installCDSURL(values)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	served, err := servedAllowlist(ctx, cdsURL)
 	if err != nil {
+		served = nil
 		warn = fmt.Sprintf("cannot read the allowlist %s serves (%v), so nothing confirms this release's components are admitted: %s", cdsURL, err, publishEntries)
 	} else if err := checkSeedServed(seed, served); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if err := checkNodeSubnets(ctx, pin.config, installPodCIDRs); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return warn, nil
+	return servedImageDigests(served), warn, nil
+}
+
+func servedImageDigests(served *pkgallowlist.Allowlist) map[string]bool {
+	if served == nil {
+		return nil
+	}
+	digests := map[string]bool{}
+	for _, workload := range served.Workloads {
+		for _, digest := range workload.Digests() {
+			digests[digest.String()] = true
+		}
+	}
+	return digests
 }

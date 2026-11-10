@@ -84,8 +84,8 @@ func TestServedAllowlistRefusesAnUnattestedEndpoint(t *testing.T) {
 		fmt.Fprint(w, testSeedDocument(installSeedEntryName))
 	}))
 	t.Cleanup(cds.Close)
-	if al, err := servedAllowlist(context.Background(), cds.URL); err == nil {
-		t.Fatalf("servedAllowlist read %v from an unattested endpoint", al.Workloads)
+	if al, err := servedAllowlist(context.Background(), cds.URL); err == nil || al != nil {
+		t.Fatalf("servedAllowlist = (%v, %v), want no policy from an unattested endpoint", al, err)
 	}
 }
 
@@ -107,6 +107,23 @@ func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
 	}
 	if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
 		t.Fatalf("no helm upgrade logged:\n%s", strings.Join(s.f.calls(t), "\n"))
+	}
+}
+
+func TestCheckNamedCDSReturnsUnknownPolicyWhenUnreadable(t *testing.T) {
+	resetCLIState(t)
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
+	document := cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")
+	config, err := cdsPinConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installCDS = &cdsPin{path: cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"), config: config}
+	values := map[string]any{"cds": map[string]any{"address": installCDSAddressUnreachable}}
+	served, warn, err := checkNamedCDS(context.Background(), seedRender{chart: s.release}, installCDS, values)
+	if err != nil || served != nil || !strings.Contains(warn, "cannot read the allowlist") {
+		t.Fatalf("checkNamedCDS = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
 	}
 }
 

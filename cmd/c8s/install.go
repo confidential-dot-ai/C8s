@@ -379,14 +379,16 @@ The provider's kube-system pods are not on the c8s allowlist, so every
 confidential node admits, in the namespaces nriImagePolicy.policy.exemptNamespaces
 names, the images whose repository nriImagePolicy.policy.exemptRepositories names
 for that namespace — the provider's add-on repositories, which the chart's
-values-<platform>.yaml carries. The install prints them with the images running
-there they admit.
+values-<platform>.yaml carries. The install matches these exemptions against
+the images requested in pod specs and prints the matching images.
 
-The install also refuses, before it touches the cluster, when the resolved
-policy would deny a platform pod the cluster is already running: registering the
-plugin restarts containerd, and a denied control-plane container does not come
-back. --force installs past that one. It prints every other denied container the
-restart stops, which the cluster survives without.
+Before changing the cluster, install checks requested containers on confidential
+nodes against repository exemptions, component and bootstrap digests, and the
+authenticated allowlist fetched from CDS. It refuses resolved platform images
+outside that available policy; --force overrides this guard. Other uncovered
+images and containers without a current digest are reported as warnings.
+This checks image coverage; runtime admission also checks the full workload,
+and a tag may resolve to a different digest when pulled again.
 
 A release build pins each component image to the digest the c8s-cloud chart of
 its own version carries for the same repository
@@ -677,9 +679,11 @@ func preflightCluster(
 	if err != nil {
 		return installPlan{}, err
 	}
-	if warn, err := checkNamedCDS(ctx, release.seedRender(), installCDS, values); err != nil {
+	servedDigests, warn, err := checkNamedCDS(ctx, release.seedRender(), installCDS, values)
+	if err != nil {
 		return installPlan{}, err
-	} else if warn != "" {
+	}
+	if warn != "" {
 		fmt.Fprintln(os.Stderr, "warning: "+warn)
 	}
 	plan := installPlan{values: values}
@@ -688,11 +692,7 @@ func preflightCluster(
 			return installPlan{}, err
 		}
 	}
-	// Fail fast when the policy this install renders would deny the
-	// cluster's own platform pods: registering the plugin restarts
-	// containerd, and a denied control-plane static pod takes the API
-	// server with it. Read-only, so it runs with -f too.
-	if warn, err := preflightImagePolicy(os.Stdout, values, release.chart.components, installNamespace, pods, installForce); err != nil {
+	if warn, err := preflightImagePolicy(os.Stdout, values, release.chart.components, servedDigests, installNamespace, pods, installForce); err != nil {
 		return installPlan{}, err
 	} else if warn != "" {
 		fmt.Fprintln(os.Stderr, "warning: "+warn)
