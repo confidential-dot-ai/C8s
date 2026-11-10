@@ -225,11 +225,23 @@ func TestLivez(t *testing.T) {
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// A wedged serve loop: the kernel queues the connection, nothing answers.
+	wedged := filepath.Join(t.TempDir(), "wedged.sock")
+	wl, err := net.Listen("unix", wedged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = wl.Close() })
 	tests := []struct {
 		name   string
 		socket string
 		want   int
 	}{
+		{
+			name:   "serve loop wedged",
+			socket: wedged,
+			want:   http.StatusServiceUnavailable,
+		},
 		{
 			name:   "listener closed",
 			socket: closed,
@@ -263,7 +275,7 @@ func TestLivez(t *testing.T) {
 }
 
 // /upstream/livez, the attestation-api's liveness, calls the upstream directly,
-// so it needs no socket, and passes on any status the upstream reports.
+// so it needs no socket, and passes on any status a 2xx answer reports.
 func TestUpstreamLivez(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -279,6 +291,13 @@ func TestUpstreamLivez(t *testing.T) {
 			name:     "upstream starting",
 			upstream: startUpstream(t, healthStatus("starting")),
 			want:     http.StatusOK,
+		},
+		{
+			name: "upstream answers 503",
+			upstream: startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, `{"status":"degraded"}`, http.StatusServiceUnavailable)
+			})),
+			want: http.StatusServiceUnavailable,
 		},
 		{
 			name:     "upstream down",

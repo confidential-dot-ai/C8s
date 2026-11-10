@@ -13,12 +13,13 @@
 {{- if not (hasKey .Values.attestationApi "devices") -}}
 {{- fail (printf "VALIDATION_ERROR kind=platform_values: attestationApi.devices is unset: %s" $platformHint) -}}
 {{- end -}}
-{{- /* Each device's volume is its basename with "_" as "-" (attestation-api.yaml). */ -}}
-{{- $deviceVolumes := list -}}
+{{- /* Each device's volume is its basename with "_" as "-", beside the pod's
+       config and socket-dir volumes (attestation-api.yaml). */ -}}
+{{- $deviceVolumes := list "config" "socket-dir" -}}
 {{- range .Values.attestationApi.devices -}}
 {{- $name := base . | replace "_" "-" -}}
 {{- if has $name $deviceVolumes -}}
-{{- fail (printf "VALIDATION_ERROR kind=attestation_devices: attestationApi.devices %s shares the volume name %s with another device" . $name) -}}
+{{- fail (printf "VALIDATION_ERROR kind=attestation_devices: attestationApi.devices %s shares the volume name %s with another volume of the attestation-api pod" . $name) -}}
 {{- end -}}
 {{- $deviceVolumes = append $deviceVolumes $name -}}
 {{- end -}}

@@ -4873,11 +4873,16 @@ func TestChartMountsTheTDXGuestDevice(t *testing.T) {
 		}
 	}
 
-	collide := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
-		[]string{"--set-json", `attestationApi.devices=["/dev/tdx_guest","/dev/tdx-guest"]`})
-	out, err = renderCloudChart(t, cloudChartDir, collide...)
-	if err == nil || !strings.Contains(out, "kind=attestation_devices") {
-		t.Errorf("helm template of two devices named tdx-guest = %v, want a kind=attestation_devices refusal:\n%s", err, out)
+	for _, devices := range []string{
+		`["/dev/tdx_guest","/dev/tdx-guest"]`,
+		`["/dev/config"]`,
+		`["/dev/socket-dir"]`,
+	} {
+		args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+			[]string{"--set-json", "attestationApi.devices=" + devices})
+		if out, err := renderCloudChart(t, cloudChartDir, args...); err == nil || !strings.Contains(out, "kind=attestation_devices") {
+			t.Errorf("helm template of devices %s = %v, want a kind=attestation_devices refusal:\n%s", devices, err, out)
+		}
 	}
 }
 
@@ -4902,6 +4907,8 @@ func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 		{"unknown TEE family", "nriImagePolicy.platform=sev"},
 		{"unknown evidence platform", "router.attest.platform=gcp-snp"},
 		{"a device outside /dev", "attestationApi.devices[0]=/etc/shadow"},
+		{"a device name that starts with a dash", "attestationApi.devices[0]=/dev/-x"},
+		{"a device name that ends with an underscore", "attestationApi.devices[0]=/dev/x_"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out, err := helmTemplate(t, "--set-string", tc.set); err == nil {

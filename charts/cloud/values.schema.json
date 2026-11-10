@@ -229,7 +229,7 @@
         "devices": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^/dev/[a-z0-9_-]+$" }
+          "items": { "type": "string", "pattern": "^/dev/[a-z0-9]([a-z0-9_-]*[a-z0-9])?$" }
         },
         "image": {}
       }
