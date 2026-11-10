@@ -637,13 +637,13 @@ func TestMatchRolloutNamesEveryApplyLog(t *testing.T) {
 	}
 	_, rollout, _ := strings.Cut(string(doc), "To start using\n`match`:")
 	rollout, _, _ = strings.Cut(strings.TrimSpace(rollout), "\n\n")
-	source, err := os.ReadFile("main.go")
+	source, err := os.ReadFile("refresh.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, message := range []string{"initial allowlist pulled from CDS", "pull loop: allowlist refreshed"} {
 		if !strings.Contains(string(source), `"`+message+`"`) {
-			t.Fatalf("main.go no longer logs %q", message)
+			t.Fatalf("refresh.go no longer logs %q", message)
 		}
 		if !strings.Contains(strings.Join(strings.Fields(rollout), " "), message) {
 			t.Errorf("match rollout steps do not name %q", message)

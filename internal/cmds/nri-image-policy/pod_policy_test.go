@@ -7,14 +7,17 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
+// newPodPolicyPlugin is a Pod-role plugin applyPodPolicy installs onto.
+func newPodPolicyPlugin(t *testing.T, registered bool) *plugin {
+	t.Helper()
+	p := newTestPlugin(&config{Pod: &podConfig{}, Policy: policyConfig{Mode: ModeAudit}})
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.podBroker = &podCredentialBroker{changes: make(chan struct{}, 1)}
+	p.podRegistered.Store(registered)
+	return p
+}
+
 func TestApplyPodPolicy(t *testing.T) {
-	newPodPolicyPlugin := func(registered bool) *plugin {
-		p := newTestPlugin(&config{Pod: &podConfig{}, Policy: policyConfig{Mode: ModeAudit}})
-		p.inventory = newAdmissionInventory(t.TempDir())
-		p.podBroker = &podCredentialBroker{changes: make(chan struct{}, 1)}
-		p.podRegistered.Store(registered)
-		return p
-	}
 	doc := &allowlist.Allowlist{}
 
 	for _, tc := range []struct {
@@ -27,7 +30,7 @@ func TestApplyPodPolicy(t *testing.T) {
 		{"unregistered runtime", false, doc, "verified runtime registration"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := newPodPolicyPlugin(tc.registered)
+			p := newPodPolicyPlugin(t, tc.registered)
 			if err := p.applyPodPolicy(t.Context(), tc.pulled, 1); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
@@ -38,7 +41,7 @@ func TestApplyPodPolicy(t *testing.T) {
 	}
 
 	t.Run("apply, repeat and rollback", func(t *testing.T) {
-		p := newPodPolicyPlugin(true)
+		p := newPodPolicyPlugin(t, true)
 		if err := p.applyPodPolicy(t.Context(), doc, 2); err != nil {
 			t.Fatal(err)
 		}

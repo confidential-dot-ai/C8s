@@ -84,13 +84,15 @@ func TestPullLoopStallsOnACDSItCannotReach(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		runPullLoop(ctx, pullLoopArgs{
-			pull:        pull,
-			client:      allowlistclient.NewClientWithHTTP("https://cds.invalid:8443", &http.Client{Timeout: time.Second}),
-			store:       newPolicyStore(nil),
-			interval:    10 * time.Millisecond,
-			timeout:     time.Second,
-			logger:      discardLogger(),
-			killRevoked: func(context.Context) {},
+			pull:     pull,
+			client:   allowlistclient.NewClientWithHTTP("https://cds.invalid:8443", &http.Client{Timeout: time.Second}),
+			interval: 10 * time.Millisecond,
+			timeout:  time.Second,
+			logger:   discardLogger(),
+			target: nodeTarget{
+				store:       newPolicyStore(nil),
+				killRevoked: func(context.Context) {},
+			},
 		})
 		close(done)
 	}()

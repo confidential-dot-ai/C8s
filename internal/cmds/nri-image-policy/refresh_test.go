@@ -243,13 +243,15 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 20 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) { sweeps++ },
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) { sweeps++ },
+			},
 		})
 		close(done)
 	}()
@@ -269,6 +271,89 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 	<-done
 	if sweeps != 2 {
 		t.Fatalf("running containers rechecked %d times, want 2 (once per applied version)", sweeps)
+	}
+}
+
+// The node installs a pulled policy before it rechecks running containers.
+func TestPullLoopInstallsBeforeRecheckingContainers(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{versions: []string{"7"}, bodyByV: map[string][]byte{"7": body}})
+	defer srv.Close()
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	ctx, cancel := context.WithCancel(t.Context())
+	rechecks := 0
+	runPullLoop(ctx, pullLoopArgs{
+		pull:     quietPull(),
+		client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+
+		target: nodeTarget{
+			store: store,
+			killRevoked: func(context.Context) {
+				rechecks++
+				if version := store.current().version; version != 7 || !admitsDigest(store, pushDigestB) {
+					t.Errorf("recheck ran at version %d, want the pulled version 7 installed", version)
+				}
+				cancel()
+			},
+		},
+	})
+
+	if rechecks != 1 {
+		t.Fatalf("running containers rechecked %d times, want 1", rechecks)
+	}
+}
+
+// A Pod guest's pull is installed only once its runtime registered.
+func TestPullLoopInstallsPodPolicyOnARegisteredRuntime(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	for _, tc := range []struct {
+		name        string
+		registered  bool
+		wantVersion uint64
+	}{
+		{name: "registered runtime", registered: true, wantVersion: 2},
+		{name: "unregistered runtime"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &flippingHandler{versions: []string{"2"}, bodyByV: map[string][]byte{"2": body}}
+			ctx, cancel := context.WithCancel(t.Context())
+			var bodies, conditional atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("If-None-Match") == "" {
+					bodies.Add(1)
+				} else {
+					conditional.Add(1)
+				}
+				handler.ServeHTTP(w, r)
+				if handler.hits.Load() >= 3 {
+					cancel()
+				}
+			}))
+			defer srv.Close()
+			p := newPodPolicyPlugin(t, tc.registered)
+			runPullLoop(ctx, pullLoopArgs{
+				pull:     quietPull(),
+				client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+				interval: time.Millisecond,
+				timeout:  time.Second,
+				logger:   discardLogger(),
+				target:   podTarget{plugin: p},
+			})
+
+			applied := p.policy.current().pulled != nil && admitsDigest(p.policy, pushDigestB)
+			if version := p.policy.current().version; applied != tc.registered || version != tc.wantVersion {
+				t.Fatalf("installed %v at version %d, want %v at version %d", applied, version, tc.registered, tc.wantVersion)
+			}
+			if tc.registered && (bodies.Load() != 1 || conditional.Load() == 0) {
+				t.Fatalf("fetched %d bodies and %d conditional polls, want one body then 304s", bodies.Load(), conditional.Load())
+			}
+			if !tc.registered && (bodies.Load() < 2 || conditional.Load() != 0) {
+				t.Fatalf("fetched %d bodies and %d conditional polls, want the document re-fetched under no ETag", bodies.Load(), conditional.Load())
+			}
+		})
 	}
 }
 
@@ -294,13 +379,15 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     servedTag(body),
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) {},
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) {},
+			},
 		})
 		close(done)
 	}()
@@ -339,13 +426,15 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     servedTag(body),
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+			},
 		})
 		close(done)
 	}()
@@ -368,6 +457,59 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 	<-done
 }
 
+// A 304 reaches CDS, so a failure right after it is not yet a stall.
+func TestPullLoop304CountsAsReachingCDS(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	srv := httptest.NewServer(&flippingHandler{
+		versions: []string{"1"},
+		bodyByV:  map[string][]byte{"1": body},
+	})
+	defer srv.Close()
+
+	pull, advance := testPull(discardLogger())
+	advance(pullStallAfter)
+	pull.failed(errors.New("lookup cds.private: no such host"))
+	if pull.stall() == "" {
+		t.Fatal("no stall reported for a CDS the node reached nothing from")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		runPullLoop(ctx, pullLoopArgs{
+			pull:     pull,
+			client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+			interval: 10 * time.Millisecond,
+			timeout:  time.Second,
+			etag:     servedTag(body),
+			logger:   discardLogger(),
+
+			target: nodeTarget{
+				store:       newPolicyStore(anyAllowlist(map[string]string{})),
+				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+			},
+		})
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for pull.stall() != "" {
+		if time.Now().After(deadline) {
+			t.Fatal("a 304 poll did not clear the stall")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	pull.failed(errors.New("read: connection reset by peer"))
+	if stall := pull.stall(); stall != "" {
+		t.Fatalf("stall = %q after a 304 reached CDS, want none", stall)
+	}
+}
+
 func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 	srv := httptest.NewServer(&flippingHandler{statusCode: http.StatusInternalServerError})
 	defer srv.Close()
@@ -385,13 +527,15 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     servedTag(canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))),
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) {},
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) {},
+			},
 		})
 		close(done)
 	}()
@@ -423,13 +567,15 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) {},
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) {},
+			},
 		})
 		close(done)
 	}()
@@ -474,13 +620,15 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     quietPull(),
 			client:   client,
-			store:    store,
 			interval: 15 * time.Millisecond,
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
 
-			killRevoked: func(context.Context) { sweeps++ },
+			target: nodeTarget{
+				store:       store,
+				killRevoked: func(context.Context) { sweeps++ },
+			},
 		})
 		close(done)
 	}()
@@ -537,7 +685,7 @@ func TestPullInitialSucceedsAfterTransientFailures(t *testing.T) {
 	etag, err := pullInitial(ctx, pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     time.Second,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -574,7 +722,7 @@ func TestPullInitialFailsAfterMaxRetries(t *testing.T) {
 	_, err := pullInitial(ctx, pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     200 * time.Millisecond,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -601,7 +749,7 @@ func TestPullInitialPluginDeathWrapsErrPluginDied(t *testing.T) {
 	_, err := pullInitial(context.Background(), pullArgs{
 		pull:        quietPull(),
 		client:      allowlistclient.NewClientWithHTTP("https://unused", &http.Client{}),
-		store:       newPolicyStore(anyAllowlist(map[string]string{})),
+		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}))},
 		timeout:     time.Second,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -635,7 +783,7 @@ func TestPullInitialNotModifiedDoesNotDereferenceNilAllowlist(t *testing.T) {
 	_, err := pullInitial(ctx, pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     200 * time.Millisecond,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -671,7 +819,7 @@ func TestPullInitialCancelledMidRetry(t *testing.T) {
 	etag, err := pullInitial(ctx, pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     200 * time.Millisecond,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -747,7 +895,7 @@ func TestPullInitialMeasuresBeforeApplying(t *testing.T) {
 			_, err := pullInitial(t.Context(), pullArgs{
 				pull:        quietPull(),
 				client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-				store:       store,
+				target:      nodeTarget{store: store},
 				measure:     measure,
 				timeout:     time.Second,
 				pluginErrCh: make(chan error),
@@ -788,13 +936,15 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 	runPullLoop(ctx, pullLoopArgs{
 		pull:     quietPull(),
 		client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		store:    store,
 		measure:  measure,
 		interval: time.Millisecond,
 		timeout:  time.Second,
 		logger:   discardLogger(),
 
-		killRevoked: func(context.Context) {},
+		target: nodeTarget{
+			store:       store,
+			killRevoked: func(context.Context) {},
+		},
 	})
 
 	if want := []string{servedDigest(bodyA), servedDigest(bodyB)}; !slices.Equal(measured, want) {
@@ -1000,7 +1150,6 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 	runPullLoop(ctx, pullLoopArgs{
 		pull:   quietPull(),
 		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		store:  store,
 		measure: func(string) error {
 			measures++
 			return fmt.Errorf("%w: cap reached", errPolicyRefused)
@@ -1009,7 +1158,10 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
-		killRevoked: func(context.Context) {},
+		target: nodeTarget{
+			store:       store,
+			killRevoked: func(context.Context) {},
+		},
 	})
 
 	if measures != 1 || bodies.Load() != 1 {
@@ -1035,7 +1187,6 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 	runPullLoop(ctx, pullLoopArgs{
 		pull:   quietPull(),
 		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		store:  newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"})),
 		measure: func(string) error {
 			if measures++; measures == 3 {
 				cancel()
@@ -1046,7 +1197,10 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
-		killRevoked: func(context.Context) {},
+		target: nodeTarget{
+			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"})),
+			killRevoked: func(context.Context) {},
+		},
 	})
 
 	if measures != 3 {
@@ -1122,7 +1276,6 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 	runPullLoop(ctx, pullLoopArgs{
 		pull:   quietPull(),
 		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		store:  newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"})),
 		measure: func(digest string) error {
 			if measures++; measures == 3 {
 				cancel()
@@ -1136,7 +1289,10 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
-		killRevoked: func(context.Context) {},
+		target: nodeTarget{
+			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"})),
+			killRevoked: func(context.Context) {},
+		},
 	})
 
 	if n := strings.Count(logs.String(), "could not measure"); n != 2 {
@@ -1176,7 +1332,7 @@ func TestPullInitialStopsOnRefusal(t *testing.T) {
 	_, err := pullInitial(t.Context(), pullArgs{
 		pull:        quietPull(),
 		client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		store:       newPolicyStore(anyAllowlist(map[string]string{})),
+		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}))},
 		measure:     func(string) error { return fmt.Errorf("%w: cap reached", errPolicyRefused) },
 		timeout:     time.Second,
 		pluginErrCh: make(chan error),
