@@ -1,329 +1,206 @@
-# A highly available CDS
+# CDS replica sets (stateless HA)
 
-One cluster's CDS can run as several confidential VMs instead of one. The
-replicas share one mesh CA, one allowlist and one secret store, and they agree
-on every change through a replicated log. A client reaches whichever replica
-answers: the certificate it gets, the policy that admits it and the secrets it
-reads are the cluster's, not that replica's.
+A CDS can run as a fixed set of 1, 3 or 5 replicas. The replicas hold no state on disk.
+The policy log is a signed hash chain kept in an untrusted store (the cluster's Kubernetes API, or an etcd).
+The mesh CA key lives only in replica memory and moves replica to replica over attested TLS.
 
-The host is not trusted with any of it. Each replica admits a peer only after
-the peer's certificate proves a CDS image the cluster accepts, booted on the
-same launch file. The operator's instructions arrive as signed decrees through
-an ordinary object store, and the store is never trusted: a replica acts on
-the signature, not on the object.
+The store orders writes with one compare-and-swap. Signatures prove every entry.
+Gossip between the replicas bounds staleness. No replica computes a value the others must agree with:
+a replica only verifies, adopts and relays.
 
-What CDS does for a cluster is unchanged, and this page assumes it:
-[operator.md](operator.md) for running it,
-[measurements.md](measurements.md) for what pins it,
-[armtls.md](armtls.md) for the attested channel.
+## Configuration
 
-The procedures are in [cds-ha-runbooks.md](cds-ha-runbooks.md), the alarms in
-[cds-ha-alerts.md](cds-ha-alerts.md).
+The CDS launch file names the set:
 
-## Versions
-
-A cluster counts the operator commands it has applied. That count is its
-**version**. Every decree an operator signs names the version it applies on
-top of (`--base-version`), so two operators cannot apply conflicting commands
-in either order, and a decree the host replays later applies to nothing. The
-cluster reports its version in `c8s cds ha status`.
-
-A node keeps a **pin floor**: the lowest version at which it takes a decree
-naming the CDS images it trusts. A node launched today never follows a decree
-the operator signed before the set its own launch document carries.
-
-## What the launch file starts and what it fixes
-
-Every replica boots the same `cds-config.yaml`, and clients pin those bytes,
-so no field of it changes while the cluster lives. Some fields only start the
-cluster; the log rules afterwards.
-
-| Field | Role | How it changes |
-|---|---|---|
-| `nodes` | the node images the cluster certifies at its Genesis, if any | a `node-images` decree, which carries the whole set |
-| `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
-| `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
-| `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
-| `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
-
-The CDS images a replica may run are not in the file at all: the Genesis
-decree carries the first set, and a `pins` decree replaces it.
-
-`c8s cds config new --replica ... --voters 3` writes the file. A
-file with no `--replica` runs one CDS, which is the deployment
-[operator.md](operator.md) describes.
-
-## Addresses
-
-| Where | Syntax | Who reads it |
-|---|---|---|
-| `ha.replicas` entry | a DNS name or an IPv4 address, no port | every replica, to find the others |
-| `cds.address` in a node document | `<host>:<port>` | a node's credential clients |
-| `--url`, `--target`, `--cluster` of the `ha` commands | `<host>[:8443]` | the operator's CLI |
-
-A replica entry must resolve to the replicas themselves. One name may resolve
-to several of them, which is how a replica is added without changing the file.
-A name that resolves to a load-balanced address is refused: a replica that
-cannot tell one peer from another cannot hold an election. A replica raises an
-alarm when two members answer at one address.
-
-The ports are fixed. Clients and the operator reach a replica on 8443, and the
-replicas reach each other on 8444.
-
-The `ha` commands reach a name that resolves to one address by that name, so
-the TLS handshake carries it as SNI. Replicas can then sit behind one TLS
-passthrough front door that routes each name to its replica, and the operator
-still tells them apart. armTLS authenticates a replica by its evidence, never
-by the name. A name that resolves to several addresses is reached at each of
-them, as before.
-
-A node names its cluster's CDS by one `cds.address`. Several replicas behind
-that one name, or a load balancer in front of them, is what makes a client's
-request survive the loss of a replica: ordinary DNS resolution and the
-client's own retry do the failover.
-
-A load balancer in front of the replicas must pass TLS through to them
-without terminating it: the TLS session to a replica is the attested channel.
-It must also health-check each replica with an HTTPS `GET /readyz` on 8443. A
-replica that does not serve fails `/readyz` but still accepts connections, so
-a TCP health check keeps it in rotation.
-
-## Decrees
-
-An operator instructs a cluster by signing a decree with a key the launch file
-pins and posting it to a replica over the attested channel:
-
-```sh
-c8s cds ha decree pins --config cds-config.yaml --operator-key operator.key \
-    --base-version 12 --platform sev-snp --vcpus 4 \
-    --image-manifest manifest.json \
-    --to cds-1.example.org --cds-pin cds-pin.json
+```yaml
+ha:
+  endpoints: ["10.0.0.11:8443", "10.0.0.12:8443", "10.0.0.13:8443"]
 ```
 
-The decree's signature is its authority, so the channel only has to reach an
-attested replica of the cluster. A replica hands what it is posted to the
-leader, which applies it through the log and answers with the version it
-produced or the reason the cluster refused it. The record of what the cluster
-applied is `c8s cds ha decrees`, read over the same channel.
+`c8s cds config new --ha-endpoint <host:port> ...` writes it.
+The order is the slot order. All replicas boot the same launch file, so they share one measurement.
 
-`genesis`, `recover` and `admit` are posted to the replica their `--target`
-names, which holds the decree until it acts on it. `--out` writes the signed
-decree to a file as well.
+Replica flags (none of them is measured; a wrong value costs availability, not safety):
 
-| Decree | What it does |
+| flag | meaning |
 |---|---|
-| `genesis` | starts a cluster on one replica that holds none |
-| `pins` | replaces the CDS images a replica of the cluster may run |
-| `node-images` | replaces the node images the cluster certifies |
-| `voters` | names the voter seats the cluster holds |
-| `rotate-key` | mints a new mesh CA key, which forks the mesh |
-| `admit` | lets one unjoined replica admit the cluster's images |
-| `recover` | break-glass: carries one surviving voter on alone |
-| `dismiss-recover` | lifts the doubt a Recover left on the cluster |
+| `--ha-self` | this replica's endpoint. Without it, the replica asks every endpoint for its status and takes the one that names its own member key |
+| `--ha-store-etcd` / `--ha-runtime-dir` | an etcd client file, given directly or as `etcd.yaml` of the runtime disk. Without it, the store is the Kubernetes API of the cluster's control plane, reached with the credential `c8s cds ha store-credential` posts |
+| `--ha-store-memory` | a single replica keeps the chain in its own memory |
+| `--ha-gossip-interval` | T (default 2s) |
+| `--ha-peer-timeout`, `--ha-store-timeout` | per-exchange and per-store-call timeouts |
+| `--ha-chain-warn-entries`, `--ha-chain-warn-bytes` | the chain-size warning thresholds (an ERROR is logged at each multiple; v1 never prunes) |
 
-`--expires-in` (10 minutes by default) bounds how long a cluster may adopt a
-decree. It is not the replay protection: a decree that applies once moves the
-version past it, and a decree for one replica names the member id that process
-minted at its start.
+The Kubernetes store is the control plane the workers join, outside every TEE, and it is trusted for nothing.
+`c8s worker control-plane render` creates its account, `c8s-cds/cds-store`, which may get, create and update the ConfigMaps of `c8s-cds`.
+`c8s worker control-plane credentials` also writes `c8s-cds-store.kubeconfig`, a token of that account, which `c8s cds ha store-credential --file` posts to the replicas.
+Each replica must reach the API server it names.
 
-## Starting a cluster
+## The chain
 
-The replicas boot, find each other, and wait: a cluster exists only once a
-Genesis decree starts it. The operator reads the member id and the mesh CA of
-one replica over the attested channel, signs them into the decree, and posts it
-back to that replica. It mints the mesh CA, seeds the allowlist from the launch file's
-`workloads`, and begins with the image sets the decree carries. The others
-join it. Runbook 1 has the steps.
+An entry is a signed body: `{v, cluster, seq, prev, type, payload}`.
+- The body is signed with `operatorauth.SignDetached`.
+- An entry's hash is SHA-256 over its body alone, so a re-encoded signature does not change it.
 
-A Genesis is refused where the target already holds a cluster, so starting a
-cluster twice takes a deliberate second decree. Starting a cluster again under
-one cluster id is an **availability** step, not a way to change what the
-cluster holds: the new cluster has a new mesh CA, an allowlist seeded from
-`workloads` again, no secrets, and it resumes above the version the operator
-names, so nodes keep taking the newest pin decree. Every leaf issued under the
-old CA stops being trusted.
+Entry types:
 
-## Voter seats
+| type | payload | signed by |
+|---|---|---|
+| `genesis` | endpoints, one member key per slot, operator keys, the mesh CA public key, the accepted builds | an operator key of the launch file |
+| `policy` | a whole canonical allowlist | an operator key |
+| `routes` | the route manifest in the router's envelope | an operator key |
+| `accepted` | the whole set of accepted CDS builds (pin + version); every pin binds the one launch file | an operator key |
+| `operator-keys` | the new writer keys | a current operator key |
+| `member` | slot → member key | a current member key (written by a giver at handoff) or an operator key |
+| `nodes` | the whole set of node images the CDS certifies (a measurements document); every entry binds a launch | an operator key |
 
-A cluster has as many voter seats as its log says: `ha.voters` at Genesis,
-then whatever a `voters` decree names. The first replicas to catch up fill
-the seats; every other replica follows the log without a vote and serves
-reads. Replicas and seats therefore scale apart: five replicas can hold three
-seats.
+Notes on the rules:
+- Raising the build floor means writing an `accepted` set without the old builds. `c8s cds ha raise-floor` does that.
+- Until the first `nodes` entry, a replica certifies the launch file's `nodes`. After one, `/attest`, the sandbox-digests callback and `/measurements` all follow the newest entry.
+- There is no log key. A head is vouched for by the replica that serves it over attested TLS.
+- Gossip is signed with member keys.
 
-A voter keeps its vote while it answers. One that has failed its heartbeats
-long enough to count dead is replaced by a caught-up replica, and the seat
-change itself goes through the log, one seat at a time, so the cluster keeps a
-majority throughout. A process that exits and restarts is a new member of the
-cluster: it rejoins, catches up, and takes over the seat of the member it
-replaced at that address.
+The store holds:
+- the head `{v, cluster, seq, hash}` at `cds-<cluster>-head` (ConfigMap) or `/cds/<cluster>/head` (etcd);
+- each entry at `cds-<cluster>-e-<hash>` (immutable ConfigMap) or `/cds/<cluster>/entries/<hash>`.
 
-## Reading the cluster
+## Reads, writes and gossip
 
-```sh
-c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
-```
+**Read** (every issuance, `/allowlist`, `/routes`, `/ha/chain`):
+1. The replica reads the store head linearizably.
+2. If the store is ahead, the replica walks the prev links (bounded) and adopts the verified entries.
+3. If the store is behind on the replica's chain, the replica writes it forward. This covers rollback and wipe.
+4. If the store is on another branch, the replica halts.
+5. The replica then serves only if all of these hold:
+   - it is the member of its slot;
+   - its own attested build is accepted;
+   - it is not halted;
+   - a majority of the set, counting itself, answered one of its pings sent within T.
 
-One attested client per replica, one line each, then one line per alarm. The
-command exits non-zero when a replica answers nothing, does not serve, serves
-another cluster, or holds another version or mesh CA than the first. Only the
-leader knows the seats and the state digests, so another replica reports those
-as `-`. Every value a replica reports is quoted: the replica is what the
-command audits, not what it certifies.
+**Write** (`POST /ha/entries`):
+1. The replica reads the store head, as for a read, and refuses unless it serves.
+2. It verifies the entry after its head and puts it.
+3. It swaps the head with the store's compare-and-swap.
+4. Only after that swap succeeds does it hold the entry.
+5. It then runs one gossip round. The write is **done (200)** only if a majority, counting the writer, then holds the entry.
 
-`c8s cds ha decrees` reads the record of applied decrees, with every signature
-checked against the keys the launch file pins. `c8s cds ha pin-policy` reads
-the pin decree the cluster applied and writes the pin document it makes, which
-is what a client pins and what `--cds-pin` takes during an image roll.
+Other answers:
+- 202: committed, not confirmed. The write may have been applied.
+- 409: another write won, or the entry does not follow the head. Nothing was applied.
+- 422: the entry is invalid.
+- 503: refused.
 
-`/readyz` answers for one replica: it serves when it holds the cluster,
-follows the log, and holds a read lease its leader confirmed. A replica that
-cannot reach a leader stops serving rather than answering from the state it
-still holds. KubeVirt guests use an HTTPS `/readyz` probe on port 8443.
-The aggregate client Service publishes ready guests on 8443; per-replica
-Services publish unready addresses on 8443 and 8444 for bootstrap, diagnostics
-and peer traffic.
+**Gossip**, every T/2:
+- A ping carries the sender's head. The pong carries the receiver's head and the entries the pinger lacks.
+- Both are signed with member keys.
+- A pong counts toward serving only if it echoes the ping's nonce, and only while that ping was sent within the last T.
+- A newer head is adopted from the peer, and the store is then written forward.
+- Two different entries at one seq halt the replica. A halt is the only alarm that stops service.
 
-The cached readiness lease does not authorize a protected request. Each such
-request also confirms a new watermark through the leader's Raft barrier and
-waits for that watermark to apply locally before reading policy or releasing a
-secret. A revocation acknowledged before the request starts therefore applies
-to its authorization, even on a follower whose readiness lease is still valid.
+## Genesis, joining, handoff
 
-If confirmation fails, the request returns HTTP 503 without reaching its
-handler. This adds a quorum confirmation to protected requests and can increase
-latency or refusals during leader transitions. Health, readiness, metrics and
-`/ha/status`, `/ha/pins`, `/ha/decrees` remain reachable for diagnosis and
-recovery without a fresh confirmation. `/readyz` can briefly remain successful
-while protected requests fail their confirmation.
+1. A replica boots pending, with a fresh member key and a fresh CA key.
+2. `c8s cds ha genesis` collects every pending replica's member key and the first replica's CA key, signs entry 0 and posts it.
+3. That replica writes entry 0 create-if-absent once the store answers.
+4. The other replicas join by handoff. A replica whose store already holds a chain is no genesis candidate.
 
-A replica that observes its clock lagging an authenticated current member
-beyond the configured JWT allowance refuses client requests, CA acquisition
-and new local mutations. Its readiness reason describes the observed lag;
-voting, log application and in-memory state continue. This refusal lasts for
-the process lifetime, even if later clocks agree. Before an observation, a
-request can still fail JWT validation with HTTP 401. Restarting a process
-does not establish that the VM clock is repaired.
+A giver hands the keys to a replica that answers "pending" at a slot's endpoint:
+1. It checks the joiner's attestation against the builds accepted at its head.
+2. It writes the `member` entry, which must be done.
+3. It checks the joiner again, with a new attested connection, under the builds accepted at the new head.
+4. It sends the chain, the CA key, any dropped branches and the store credential.
 
-**roll_safe** is the other gate, and the leader alone answers it: the seats
-are filled by voters that answer, none of them is retiring, and every staying
-voter holds the newest seat change. It is the gate to wait for between the
-replicas of a roll, and `ha status` prints it as `roll_safe=true`. A current
-voter known to be clock-quarantined keeps this gate false. A quarantined
-leader hands authority to a caught-up, clock-eligible voter while retaining
-its vote and replicated state.
+A giver whose own build is no longer accepted still gives (U1). A halted replica gives nothing.
 
-Controlled clock repair requires a serving leader and a working voting
-majority. Keep the serving leader and a majority of current voters available
-throughout repair.
-Repair or recreate one affected VM using the same launch file and address and a
-currently admitted image. Before repairing another, verify its replacement
-has joined, serves, has applied the leader's recorded watermark, and occupies
-a voter seat with the old member ID retired. The ordinary rolling gate stays
-false while a current voter is known quarantined. If no eligible voter can lead,
-preserve the running replicas and their state and escalate for recovery;
-a retained quorum alone does not restore authority.
+## Fork recovery
 
-## The CDS images a replica may run
+Two entries at one seq halt the replicas that see both. `c8s cds ha resolve --seq S --keep H --endpoints ...`:
+- reads every replica's status;
+- refuses if a replica does not answer, unless it is named with `--assume-lost`, which needs `--lost-head`: the highest seq the lost replica may have held;
+- refuses if a replica on the dropped side answered a write done at or after S;
+- refuses if the dropped entry is the CLI's acknowledged head.
 
-The cluster's log holds the set, and all of it is one decree's work:
+Each replica then drops the other branch. A replica holding the kept entry writes it over the store. A replica that held the dropped entry serves again only once it holds the kept one, from the store or a peer: the kept entry may be a done write.
 
-- the replicas admit each other by it;
-- clients and nodes pin CDS by it;
-- an Admit decree hands one unjoined replica the set, so a replica of a new
-  image can reach a leader still running the old one.
+A replica reports a fork at the first seq where it found two entries, which can be above the seq where the branches split. When a replica is still halted after the resolve, the command names the seq to resolve next.
 
-Replacing the VMs therefore goes in four steps: pin both images, replace the
-VMs one at a time behind `roll_safe` with an Admit each, pin the new image
-alone, then write node documents from the new pin document. Runbook 6 has the
-steps. An Admit is bound to one member id, so every restart of a replica
-during the overlap needs a new one.
+Once the set serves again (it waits up to `--settle-timeout`, 30 s), the command writes the kept chain's allowlist again as a policy entry, above every head a replica held before the resolve and above `--lost-head`.
+A node that pulled a dropped branch's allowlist then sees a higher version and fetches the kept one.
+If the kept chain has no policy entry, the command says so; write the allowlist with `c8s allowlist`.
 
-## The node images the cluster certifies
+Every done write prints `committed head N (hash)`.
 
-The cluster certifies the node images its log names, and a `node-images`
-decree replaces that set. Every entry of the set it carries must bind the
-launch of the nodes it certifies (`approver_key`, `launch_file` or
-`launch_file_digest`): `c8s cds ha decree node-images` and the leader it is
-posted to refuse one that binds none. A Genesis carries the nodes it names as
-they are. An upgrade is two decrees with the node relaunches between them:
-first the old and the new image together, then the new image alone. No launch
-file, client pin or CDS VM changes for it. Runbook 5 has the steps.
+## What nodes pin
 
-A launch file may name no nodes. The Genesis of a cluster of workers then
-certifies only the workers of its first worker document (`--worker-document`).
+A worker document names `cds.chain: "<seq>:<hash>"` ([launch-configuration.md](launch-configuration.md)): the genesis, or a later entry as a reboot floor. nri-image-policy then:
+1. reads the chain (the entries verify by signature);
+2. requires the pinned entry and a chain that extends what it verified before;
+3. confirms the head over attested TLS with a replica of a build accepted at that head;
+4. when the accepted builds change, rewrites in place the CDS pins its own clients load and the copy its pods mount, moves its allowlist pull to them, and hands them to its sandbox-digests endpoint. The chain counts as followed only once all of this is done, so a failed step is retried at the next pull.
 
-For a verifier this moves where the set comes from. The launch file's `nodes`
-is only the set the cluster started from, so
-`c8s verify --kind cds --served-policy-file cds-config nodes` fails after the
-first `node-images` decree. The expected set is the node document the operator
-signed into the decree in force, and `c8s cds ha decrees` says which decree
-that is:
+nri-image-policy holds the chain in memory, so after a restart it reads the chain again from genesis. On a long chain the first follow can take a while. Each chain request has the pull timeout; the whole read has none. Until the read finishes, the node uses its launch pins. Checkpoints that let a node start from a later entry are follow-up work.
 
-```sh
-c8s cds ha decrees --config cds-config.yaml --cds-pin cds-pin.json
-c8s verify https://<cds-address> --kind cds --served-policy-file nodes-v13.json ...
-```
+Every CDS client of the node sends the pin in the `C8s-Cds-Genesis` header. A replica names the pin back only when its chain holds that entry. A client refuses any other answer, so a set re-rooted under the same measurement is refused.
+The clients that do this: get-cert, the sidecars, allowlist-proxy, cds-attest and nri-image-policy.
 
-A replica also publishes the set it enforces at `/measurements`, which is what
-`c8s verify` reads and compares. Expecting that same answer proves nothing:
-keep the signed node document.
+## Operator CLI (`c8s cds ha`)
 
-Nodes follow the pin decrees themselves. A node's enforcer reads
-`/ha/pins` from a CDS it already pins, checks the operator signature and the
-launch-file digest, refuses anything below its pin floor, and hands the images
-to its credential clients.
+| command | does |
+|---|---|
+| `status` | every replica's status |
+| `genesis --cluster --version` | signs entry 0 (`--image-policy-file` pins the replicas and is the first accepted build) |
+| `accept-image --new-pin --version [--floor] [--force]` | accepts a build, optionally evicting builds below a version |
+| `raise-floor --to [--force]` | evicts builds below a version |
+| `accept-node --worker-document --worker-image` | admits a worker document: writes a `nodes` entry adding the worker image bound to the document's digest, after you confirm the facts it prints |
+| `store-credential --file` | posts the store kubeconfig (one https server, inline CA, a token, a namespace) to every replica |
+| `resolve --seq --keep [--assume-lost --lost-head] [--settle-timeout]` | settles a fork |
 
-## The mesh CA
+Notes:
+- Every command takes `--endpoints`; a write goes through the first replica that serves. `--url` names one replica instead.
+- A set that a majority of the members' running builds are not in is refused without `--force` (U2).
+- `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
+- `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
+- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis.
+- A write that may have been applied exits 3.
 
-The cluster holds one mesh CA key for its life. Past half the certificate's
-validity the leader signs a new certificate under the same key through the
-log, so every replica serves the same one and running workloads keep their
-trust anchor. Replacing the key is the `rotate-key` decree: every leaf must be
-issued again under the new key, which is why the command asks the operator to
-say so.
+## Deployment and upgrades
 
-## When the cluster stops serving
+- Replicas must reach the node network: at issuance a replica dials the requesting node's sandbox-digests endpoint on port 1019.
+- Routers and nodes reach the set through one endpoint name. Put the replicas behind DNS with a short TTL (for example 60 s) or a health-checked load balancer, and take a dead replica out of the name.
+- A set of more than one replica serves no secrets and keeps no sandbox ledger (see Secrets).
 
-A replicated CDS fails closed. Three reasons are worth telling apart, and
-`ha status` names each:
+Upgrade the CDS build in this order:
+1. `accept-image` the new build.
+2. Roll the replicas to it, one at a time.
+3. Render the operator and system objects again: the operator first, the system objects only once a node with the new image exists.
+4. Replace the nodes.
+5. `raise-floor` to evict the old build.
 
-- **No majority.** Fewer voters answer than a majority. No replica serves,
-  because none can confirm a read. Bring the replicas back; the cluster
-  continues on its own.
-- **Fenced.** The cluster holds the doubt of a Recover decree. Fencing is what
-  keeps a cut-off replica from being recovered into a second cluster beside
-  this one. Bring the member back, or dismiss the Recover. Runbook 7.
-- **Halted.** Every replica stopped at the same log entry, because applying it
-  failed on all of them, or because the store under them stopped answering.
-  The cluster keeps its leader, its membership and its log, and serves
-  nothing. Runbook 8.
+After a `raise-floor`, a new worker needs a fresh worker document: an old one pins the evicted CDS build, and `accept-node` refuses it.
 
-Recover is the break-glass answer to a majority that is gone for good: one
-surviving voter carries the cluster on with the state it holds, and the writes
-the lost voters committed and it never received are gone. The replicas destroy
-nothing by themselves, and the cluster refuses to serve on both sides of a
-split, so the operator's confirmation that the lost VMs are destroyed is what
-the step rests on.
+## Failures
 
-## Replica divergence
+| failure | effect |
+|---|---|
+| one replica (a minority) dies or is cut off | the others serve; a replacement at its endpoint joins by handoff and writes its member entry |
+| fewer than a majority reachable | every replica refuses (503 "unconfirmed") |
+| store unreachable | reads, issuance and writes refuse; no halt |
+| store wiped or rolled back | written forward from replica memory, the head moving every 64 entries so a re-seed cut short keeps its progress; after a failure the next attempt waits (250 ms, doubling to 10 s); no replica serves below what it holds |
+| store withholds from a minority | that replica adopts newer entries from its peers within about T and writes its store forward (a WARN, not a halt). It refuses a write (503) while a member's latest gossip names a head above the store head it read |
+| store withholds from a replica that takes writes before gossip reaches it | its write can take a seq the set already took: at most one write is done, the replicas that see both halt, `resolve`. The host can halt the set this way at any time |
+| store accepts two swaps at one seq | at most one of the writes is done (two majorities intersect); the replicas that see both halt; `resolve` |
+| a store head that does not verify (or claims a huge seq) | refused, bounded work |
+| all replicas lost | the CA key is gone: re-root with a new cluster ID and re-pinned node launch documents |
 
-Every replica keeps a rolling digest of what it applied and records a state
-digest at every checkpoint the leader proposes. The leader compares them:
+Accepted windows and residuals:
+- Under withholding, a replica may serve a stale head for at most T of its own monotonic time.
+- If the host pauses a VM whose clock stops, the window is unbounded in wall time.
+- A host that withholds the store from every replica but the writer, and cuts the writer off, can keep the others stale until an outside check notices (the CLI's acknowledged head).
+- With the vendor co-signature removed, an operator can accept a build of their own, which could read the keys.
+- A member whose build is no longer accepted still counts toward quorums until it is replaced.
+- Pod clients (get-cert, the sidecars, allowlist-proxy, cds-attest routing) read the node's CDS pins on every TLS handshake, so a long-running one keeps reaching CDS after the replica set moves to a new build. A pin file that does not parse, mid-rewrite, fails that one handshake; the next one reads it again.
+- v1 never prunes the chain. Each entry is one ConfigMap in the cluster's etcd, and a re-seed after a wipe takes time linear in its length.
 
-- a replica that differs from a majority of the voters is stopped, and comes
-  back as a new member with the cluster's state;
-- a leader that differs from a majority of the other voters hands the cluster
-  over and leaves;
-- where no majority holds one state, nothing is stopped automatically,
-  because no side can be shown to be right. Runbook 9.
+## Secrets
 
-A replica also recomputes the digests of every snapshot it ships, and a
-snapshot whose content does not match them is refused.
-
-## What a replica keeps
-
-Nothing survives the process. The log, the snapshots and the mesh CA key live
-in memory, and the allowlist database lives on a tmpfs the unit owns. A
-restarted replica is a new member that takes the cluster's state from the
-leader, which is also why losing a majority at once loses the cluster.
+Secrets and the sandbox ledger are served only by a single replica. A set of more than one replica refuses them.
