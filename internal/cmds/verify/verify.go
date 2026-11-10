@@ -836,7 +836,7 @@ func parseInitDataPin(flag string) ([]byte, error) {
 // pins (--rtmr <index>=<hex>). Any non-nil pin against non-TDX evidence is a
 // policy error, never an ignored option.
 //
-// All of them are enforced in one place — applyRTMRPins, against the verified
+// All of them are enforced in one place — enforceRTMRPins, against the verified
 // claims — so a pin cannot be accepted by the CLI and then enforced by nobody.
 // buildPolicy still refuses --rtmr together with --image-manifest, because the
 // two would otherwise pin RTMR[1]/[2] from different sources and a
@@ -1593,10 +1593,22 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 // verifier-side input, so they are enforced here on the signature-verified
 // claims and fail closed.
 func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, verr error, plan *verifyPlan) Outcome {
-	// An image manifest is a measurement pin too — a strictly stronger one
-	// than an allowlist — so a run pinned only by --image-manifest must not
-	// report itself as unpinned.
-	pinned := len(plan.policy.Policy.Measurements) > 0 || plan.pins.image != nil || !plan.refValues.Empty()
+	oc := baseOutcome(cfg, ev, plan)
+	if verr != nil {
+		oc.Error = verr.Error()
+		return oc
+	}
+	oc = withVerifiedClaims(oc, ev, result)
+	if err := enforcePins(&oc, cfg, ev.measured, result, plan); err != nil {
+		oc.Error = err.Error()
+		return oc
+	}
+	oc.Verified = true
+	return oc
+}
+
+// baseOutcome is what the evidence says before the verifier's verdict.
+func baseOutcome(cfg config, ev *evidence, plan *verifyPlan) Outcome {
 	oc := Outcome{
 		Backend:           "attestation-go",
 		VerifiedAt:        time.Now().UTC(),
@@ -1605,7 +1617,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		Binding:           ev.bindingNote,
 		CertSHA256:        ev.certSHA256,
 		ServingLeafSHA256: ev.servingLeafSHA256,
-		Pinned:            pinned,
+		Pinned:            plan.pinsLaunchMeasurement(),
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
@@ -1613,11 +1625,12 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		stamped := err == nil && d != ""
 		oc.LeafStamped = &stamped
 	}
-	if verr != nil {
-		oc.Error = verr.Error()
-		return oc
-	}
-	// Prefer the platform the verifier reported; fall back to what we sent.
+	return oc
+}
+
+// withVerifiedClaims records the signature-verified claims. The platform is
+// the one the verifier reported, else the one the evidence was sent as.
+func withVerifiedClaims(oc Outcome, ev *evidence, result *teetypes.VerificationResult) Outcome {
 	oc.Platform = string(result.Platform)
 	if oc.Platform == "" {
 		oc.Platform = ev.platform
@@ -1626,100 +1639,175 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	oc.CurrentTCB = formatTCB(result.Claims.TCB)
 	oc.ReportData = hex.EncodeToString(result.Claims.ReportData)
 	oc.Debug, oc.SMT = reportFlags(result.Claims)
+	return oc
+}
 
-	// The TDX-only gate runs before any register is compared: on non-TDX
-	// evidence an MRTD/RTMR pin cannot be enforced at all, and reporting a
-	// register mismatch would obscure that the policy was inapplicable.
-	if plan.pins.any() && !isTDX(oc.Platform) {
-		oc.Error = fmt.Sprintf("an RTMR pin (--image-manifest / --expected-rtmr3 / --operator-pkey) is set but the evidence platform is %q: runtime measurement registers exist only on TDX, so this policy cannot be enforced against %q evidence", oc.Platform, oc.Platform)
-		return oc
+// enforcePins holds the verified claims to the run's pins, in this order, and
+// stops at the first one they do not meet. It records on oc what it enforced
+// and the gaps of a passing verdict.
+func enforcePins(
+	oc *Outcome,
+	cfg config,
+	measured []string,
+	result *teetypes.VerificationResult,
+	plan *verifyPlan,
+) error {
+	if err := requireTDXForRegisterPins(oc.Platform, plan.pins); err != nil {
+		return err
 	}
-	if !enforceMinTCB(&oc, cfg, result) {
-		return oc
+	if err := enforceMinTCB(oc.Platform, cfg, result); err != nil {
+		return err
 	}
+	coverage, err := enforceImagePolicy(oc, measured, result, plan)
+	if err != nil {
+		return err
+	}
+	if plan.pinsLaunchMeasurement() {
+		if err := enforceLaunchMeasurement(result, plan); err != nil {
+			return err
+		}
+		if err := enforceTDXImageCoverage(oc, plan.meshCA, coverage.fullImage); err != nil {
+			return err
+		}
+	}
+	if err := enforceRTMRPins(oc, plan.pins, measured, result); err != nil {
+		return err
+	}
+	warnUnreplayedHistory(oc, measured, coverage.historyBound)
+	return nil
+}
 
-	fullImagePinned := plan.pins.image != nil
-	historyBound := plan.pins.anchor != nil
-	if !plan.refValues.Empty() {
-		if plan.refValues.Family != teetypes.NormalizePlatform(oc.Platform).Family() {
-			oc.Error = fmt.Sprintf("--image-policy-file is for %q but the evidence platform is %q", plan.refValues.Family, oc.Platform)
-			return oc
-		}
-		response := remote.VerifyResponse{Result: *result}
-		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
-			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
-			return oc
-		}
-		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured)
-		// A TDX tuple covers the guest only when the matching entry pins both
-		// kernel and rootfs registers. A weak alternative must not borrow the
-		// completeness of an unrelated entry in the same policy.
-		for _, entry := range plan.refValues.Images {
-			if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), ev.measured) == nil {
-				fullImagePinned = true
-				break
-			}
-		}
-	}
+// pinsLaunchMeasurement reports whether the run pins the launch measurement.
+// An image manifest is a measurement pin too — a strictly stronger one than an
+// allowlist — so a run pinned only by --image-manifest must not report itself
+// as unpinned.
+func (p *verifyPlan) pinsLaunchMeasurement() bool {
+	return len(p.policy.Policy.Measurements) > 0 || p.pins.image != nil || !p.refValues.Empty()
+}
 
-	if pinned {
-		launch := strings.ToLower(strings.TrimSpace(result.Claims.LaunchDigest))
-		mb, err := hex.DecodeString(launch)
-		if err != nil || len(mb) == 0 {
-			oc.Error = fmt.Sprintf("cannot enforce the measurement policy: launch_digest is missing or malformed (%q)", result.Claims.LaunchDigest)
-			return oc
-		}
-		// The manifest's MRTD is compared exactly, not merged into the
-		// allowlist: RTMR[1]/[2] are pinned against THIS manifest, so an MRTD
-		// that merely appears somewhere in --measurements would let a launch
-		// digest from a different build satisfy the tuple: one manifest, one
-		// meaning.
-		// buildPolicy now refuses a manifest and an allowlist in the same run,
-		// so the two compares below cannot both fire on a CLI-built plan; the
-		// exact compare stays exact anyway, because widening it is precisely
-		// the bypass this rule exists to close.
-		if plan.pins.image != nil {
-			// A TDX identity has exactly one launch digest, its MRTD;
-			// buildPolicy refuses any other family.
-			mrtd := plan.pins.image.LaunchDigests()[0].Digest
-			if !bytes.Equal(mb, mrtd[:]) {
-				oc.Error = fmt.Sprintf("MRTD mismatch: launch measurement %s does not match the --image-manifest MRTD %s (a different guest firmware/image booted)",
-					launch, hex.EncodeToString(mrtd[:]))
-				return oc
-			}
-		}
-		if len(plan.policy.Policy.Measurements) > 0 && !remote.MeasurementAllowed(mb, plan.policy.Policy.Measurements) {
-			oc.Error = "launch measurement not in --measurements allowlist"
-			return oc
-		}
+// requireTDXForRegisterPins runs before any register is compared: on non-TDX
+// evidence an MRTD/RTMR pin cannot be enforced at all, and reporting a
+// register mismatch would obscure that the policy was inapplicable.
+func requireTDXForRegisterPins(platform string, pins rtmrPins) error {
+	if pins.any() && !isTDX(platform) {
+		return fmt.Errorf("an RTMR pin (--image-manifest / --expected-rtmr3 / --operator-pkey) is set but the evidence platform is %q: runtime measurement registers exist only on TDX, so this policy cannot be enforced against %q evidence", platform, platform)
+	}
+	return nil
+}
 
-		// What decides between rejecting an MRTD-only TDX verdict and warning
-		// about it is whether an operator-pinned CA anchor (--mesh-ca) stands next
-		// to the measurements. Without one the verdict is deployment-class — the
-		// measurement pins are the entire trust anchor — and an incomplete image
-		// policy is a hard failure. A responder-committed CA (attest-pq's derived
-		// anchor) does not downgrade this: chosen by the responder, it anchors
-		// nothing the operator asked about — the same rule the JS verifier applies
-		// to a deployment-class verdict.
-		if isTDX(oc.Platform) && !fullImagePinned {
-			const mrtdOnly = "TDX measurement pin covers MRTD only — MRTD measures the TDVF firmware, so the guest kernel and rootfs are UNMEASURED by this policy; pass --image-manifest to pin the full image tuple"
-			if plan.meshCA == nil {
-				oc.Error = mrtdOnly + " (with no pinned CA anchor this verdict is deployment-class — the measurement pins are the entire trust anchor — so an incomplete measurement policy is rejected; pin --mesh-ca to downgrade this to a warning)"
-				return oc
-			}
-			oc.Warnings = append(oc.Warnings, mrtdOnly)
+// pinCoverage is what the run's pins prove beyond the launch digest.
+type pinCoverage struct {
+	// fullImage is set when the guest kernel and rootfs registers are pinned,
+	// not only MRTD.
+	fullImage bool
+	// historyBound is set when RTMR[3] is checked against the measured policy
+	// history the node reported: by the --operator-pkey pin, or under
+	// --image-policy-file by an anchored image that replays it.
+	historyBound bool
+}
+
+// enforceImagePolicy holds the evidence to --image-policy-file, when set, and
+// records the measured policy history it replays.
+func enforceImagePolicy(
+	oc *Outcome,
+	measured []string,
+	result *teetypes.VerificationResult,
+	plan *verifyPlan,
+) (pinCoverage, error) {
+	coverage := pinCoverage{fullImage: plan.pins.image != nil}
+	if plan.refValues.Empty() {
+		coverage.historyBound = plan.pins.anchor != nil
+		return coverage, nil
+	}
+	platform := teetypes.NormalizePlatform(oc.Platform)
+	if plan.refValues.Family != platform.Family() {
+		return pinCoverage{}, fmt.Errorf("--image-policy-file is for %q but the evidence platform is %q", plan.refValues.Family, oc.Platform)
+	}
+	response := remote.VerifyResponse{Result: *result}
+	if err := armtls.EnforceImages(response, plan.refValues.Images, platform, measured); err != nil {
+		return pinCoverage{}, fmt.Errorf("--image-policy-file: %w", err)
+	}
+	oc.MeasuredPolicies, coverage.historyBound = replayedHistory(response, plan.refValues.Images, platform, measured)
+	if matchesFullImageEntry(response, plan.refValues.Images, platform, measured) {
+		coverage.fullImage = true
+	}
+	return coverage, nil
+}
+
+// matchesFullImageEntry reports whether an entry the evidence matches pins
+// both the kernel and the rootfs registers. A weak alternative must not borrow
+// the completeness of an unrelated entry in the same policy.
+func matchesFullImageEntry(
+	response remote.VerifyResponse,
+	images []remote.ImagePin,
+	platform teetypes.PlatformType,
+	measured []string,
+) bool {
+	for _, entry := range images {
+		if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
+			armtls.EnforceImages(response, []remote.ImagePin{entry}, platform, measured) == nil {
+			return true
 		}
 	}
-	if !applyRTMRPins(&oc, plan.pins, ev.measured, result) {
-		return oc
+	return false
+}
+
+// enforceLaunchMeasurement holds the launch digest to the --image-manifest
+// MRTD and the --measurements allowlist.
+func enforceLaunchMeasurement(result *teetypes.VerificationResult, plan *verifyPlan) error {
+	launch := strings.ToLower(strings.TrimSpace(result.Claims.LaunchDigest))
+	mb, err := hex.DecodeString(launch)
+	if err != nil || len(mb) == 0 {
+		return fmt.Errorf("cannot enforce the measurement policy: launch_digest is missing or malformed (%q)", result.Claims.LaunchDigest)
 	}
-	if len(ev.measured) > 0 && !historyBound && isTDX(oc.Platform) {
+	// The manifest's MRTD is compared exactly, not merged into the
+	// allowlist: RTMR[1]/[2] are pinned against THIS manifest, so an MRTD
+	// that merely appears somewhere in --measurements would let a launch
+	// digest from a different build satisfy the tuple: one manifest, one
+	// meaning.
+	// buildPolicy now refuses a manifest and an allowlist in the same run,
+	// so the two compares below cannot both fire on a CLI-built plan; the
+	// exact compare stays exact anyway, because widening it is precisely
+	// the bypass this rule exists to close.
+	if plan.pins.image != nil {
+		// A TDX identity has exactly one launch digest, its MRTD;
+		// buildPolicy refuses any other family.
+		mrtd := plan.pins.image.LaunchDigests()[0].Digest
+		if !bytes.Equal(mb, mrtd[:]) {
+			return fmt.Errorf("MRTD mismatch: launch measurement %s does not match the --image-manifest MRTD %s (a different guest firmware/image booted)",
+				launch, hex.EncodeToString(mrtd[:]))
+		}
+	}
+	if len(plan.policy.Policy.Measurements) > 0 && !remote.MeasurementAllowed(mb, plan.policy.Policy.Measurements) {
+		return errors.New("launch measurement not in --measurements allowlist")
+	}
+	return nil
+}
+
+// enforceTDXImageCoverage handles a TDX pin that covers MRTD only. Whether that
+// is rejected or warned about depends on whether an operator-pinned CA anchor
+// (--mesh-ca) stands next to the measurements. Without one the verdict is
+// deployment-class — the measurement pins are the entire trust anchor — and an
+// incomplete image policy is a hard failure. A responder-committed CA
+// (attest-pq's derived anchor) does not downgrade this: chosen by the
+// responder, it anchors nothing the operator asked about — the same rule the JS
+// verifier applies to a deployment-class verdict.
+func enforceTDXImageCoverage(oc *Outcome, meshCA *x509.CertPool, fullImage bool) error {
+	if !isTDX(oc.Platform) || fullImage {
+		return nil
+	}
+	const mrtdOnly = "TDX measurement pin covers MRTD only — MRTD measures the TDVF firmware, so the guest kernel and rootfs are UNMEASURED by this policy; pass --image-manifest to pin the full image tuple"
+	if meshCA == nil {
+		return errors.New(mrtdOnly + " (with no pinned CA anchor this verdict is deployment-class — the measurement pins are the entire trust anchor — so an incomplete measurement policy is rejected; pin --mesh-ca to downgrade this to a warning)")
+	}
+	oc.Warnings = append(oc.Warnings, mrtdOnly)
+	return nil
+}
+
+func warnUnreplayedHistory(oc *Outcome, measured []string, historyBound bool) {
+	if len(measured) > 0 && !historyBound && isTDX(oc.Platform) {
 		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey, or an --image-policy-file whose matching image pins an approver_key, to check it against RTMR[3]")
 	}
-	oc.Verified = true
-
-	return oc
 }
 
 // checkMeasuredList bounds the evidence's measured list, which replaying costs
@@ -1772,16 +1860,13 @@ func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, p
 //   - on SNP the floor is re-checked here against the claims rather than
 //     trusted to the engine, because an unenforced floor and a met floor
 //     produce byte-identical output.
-//
-// Returns false with oc.Error set on any failure.
-func enforceMinTCB(oc *Outcome, cfg config, result *teetypes.VerificationResult) bool {
+func enforceMinTCB(platform string, cfg config, result *teetypes.VerificationResult) error {
 	floor := minTCBFromCfg(cfg)
 	if floor == nil {
-		return true
+		return nil
 	}
-	if isTDX(oc.Platform) {
-		oc.Error = fmt.Sprintf("a --min-tcb-* floor is set but the evidence platform is %q: the floor names SEV-SNP TCB components (bootloader/tee/snp/microcode), which TDX evidence does not carry and the TDX verification path does not consume, so this policy cannot be enforced against %q evidence", oc.Platform, oc.Platform)
-		return false
+	if isTDX(platform) {
+		return fmt.Errorf("a --min-tcb-* floor is set but the evidence platform is %q: the floor names SEV-SNP TCB components (bootloader/tee/snp/microcode), which TDX evidence does not carry and the TDX verification path does not consume, so this policy cannot be enforced against %q evidence", platform, platform)
 	}
 	for _, c := range []struct {
 		flag string
@@ -1797,15 +1882,13 @@ func enforceMinTCB(oc *Outcome, cfg config, result *teetypes.VerificationResult)
 			continue // component not floored (0 is "unset", per the flag default)
 		}
 		if c.got == nil {
-			oc.Error = fmt.Sprintf("cannot enforce --min-tcb-%s: the verified claims carry no %s TCB component", c.flag, c.flag)
-			return false
+			return fmt.Errorf("cannot enforce --min-tcb-%s: the verified claims carry no %s TCB component", c.flag, c.flag)
 		}
 		if *c.got < c.want {
-			oc.Error = fmt.Sprintf("TCB component %s is %d, below the --min-tcb-%s floor of %d", c.flag, *c.got, c.flag, c.want)
-			return false
+			return fmt.Errorf("TCB component %s is %d, below the --min-tcb-%s floor of %d", c.flag, *c.got, c.flag, c.want)
 		}
 	}
-	return true
+	return nil
 }
 
 // isTDX reports whether a platform tag names TDX. The tag is chosen by the
@@ -1819,30 +1902,33 @@ func isTDX(platform string) bool {
 	return teetypes.NormalizePlatform(platform).IsTDX()
 }
 
-// applyRTMRPins enforces the --image-manifest RTMR[1]/[2] and the RTMR[3] pin
+// enforceRTMRPins enforces the --image-manifest RTMR[1]/[2] and the RTMR[3] pin
 // on the verified claims, recording what was enforced in RTMRsPinned. With an
 // --operator-pkey seed, RTMR[3] may also be the seed extended by the longest
 // prefix of measured that replays; that prefix becomes MeasuredPolicies.
 // The pins come from the plan resolved once in buildPolicy, and newOutcome has
-// already gated the platform. Returns false (with oc.Error set) on an absent
-// or malformed claim, or a mismatch — never an ignored option.
-func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetypes.VerificationResult) bool {
+// already gated the platform. It fails on an absent or malformed claim, or a
+// mismatch — never an ignored option.
+func enforceRTMRPins(
+	oc *Outcome,
+	pins rtmrPins,
+	measured []string,
+	result *teetypes.VerificationResult,
+) error {
 	if !pins.any() {
-		return true
+		return nil
 	}
 
-	check := func(idx int, meaning string, want []byte) bool {
+	check := func(idx int, meaning string, want []byte) error {
 		got, err := result.Claims.RTMR(idx)
 		if err != nil {
-			oc.Error = fmt.Sprintf("cannot enforce the RTMR[%d] pin: register claim absent or malformed: %v", idx, err)
-			return false
+			return fmt.Errorf("cannot enforce the RTMR[%d] pin: register claim absent or malformed: %v", idx, err)
 		}
 		if !bytes.Equal(got, want) {
-			oc.Error = fmt.Sprintf("RTMR[%d] (%s) is %x, expected %x", idx, meaning, got, want)
-			return false
+			return fmt.Errorf("RTMR[%d] (%s) is %x, expected %x", idx, meaning, got, want)
 		}
 		oc.RTMRsPinned = append(oc.RTMRsPinned, fmt.Sprintf("%d:%s", idx, hex.EncodeToString(want)))
-		return true
+		return nil
 	}
 	if pins.image != nil {
 		regs := pins.image.RTMRs()
@@ -1850,8 +1936,8 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 		// pins below.
 		for _, idx := range slices.Sorted(maps.Keys(regs)) {
 			want := regs[idx]
-			if !check(idx, imageRTMRMeaning(idx), want[:]) {
-				return false
+			if err := check(idx, imageRTMRMeaning(idx), want[:]); err != nil {
+				return err
 			}
 		}
 	}
@@ -1860,29 +1946,28 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 		replay := pins.anchor != nil && len(measured) > 0
 		if replay {
 			if err := checkMeasuredList(measured); err != nil {
-				oc.Error = err.Error()
-				return false
+				return err
 			}
 			if k, err := runtimemeasure.MatchBindingPrefix(result, pins.anchor, measured); err == nil && k > 0 {
 				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), measured[:k])
 				want, oc.MeasuredPolicies = reg[:], slices.Clone(measured[:k])
 			}
 		}
-		if !check(3, "runtime operator-key/workload chain", want) {
-			if _, err := result.Claims.RTMR(3); replay && err == nil {
-				oc.Error += fmt.Sprintf("; no prefix of the %d measured policies the evidence lists replays to it", len(measured))
+		if err := check(3, "runtime operator-key/workload chain", want); err != nil {
+			if _, claimErr := result.Claims.RTMR(3); replay && claimErr == nil {
+				return fmt.Errorf("%w; no prefix of the %d measured policies the evidence lists replays to it", err, len(measured))
 			}
-			return false
+			return err
 		}
 	}
 	// Ascending index, so a target missing several pinned registers always
 	// names the same one first and a failing verdict is reproducible.
 	for _, idx := range slices.Sorted(maps.Keys(pins.manual)) {
-		if !check(idx, rtmrMeaning(idx), pins.manual[idx]) {
-			return false
+		if err := check(idx, rtmrMeaning(idx), pins.manual[idx]); err != nil {
+			return err
 		}
 	}
-	return true
+	return nil
 }
 
 // imageRTMRMeaning labels the registers an image manifest pins. RTMR[2] reads
