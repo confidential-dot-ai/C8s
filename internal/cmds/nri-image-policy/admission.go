@@ -100,29 +100,16 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		"container", check.Container,
 		"image", check.ImageRef,
 	)
+	decide := imageDecision{audit: p.audit, check: check}
 
-	// If no image ref found, deny by default (missing annotation means kubelet was bypassed)
+	// A missing annotation means the kubelet was bypassed.
 	if check.ImageRef == "" {
 		if cfg.Policy.DenyMissingAnnotation {
 			log.Warn("no image reference found in annotations, denying")
-			p.audit.Log(audit.Event{
-				Action:    "deny",
-				Reason:    "no_image_annotation",
-				Namespace: check.Namespace,
-				Pod:       check.PodName,
-				Container: check.Container,
-			})
-			return verdictDeny, "container has no image annotation"
+			return decide.deny("no_image_annotation", "container has no image annotation")
 		}
 		log.Warn("no image reference found in annotations, allowing (deny_missing_annotation disabled)")
-		p.audit.Log(audit.Event{
-			Action:    "allow",
-			Reason:    "no_image_annotation",
-			Namespace: check.Namespace,
-			Pod:       check.PodName,
-			Container: check.Container,
-		})
-		return verdictSkip, ""
+		return decide.skip("no_image_annotation")
 	}
 
 	digest := extractDigest(check.ImageRef)
@@ -131,16 +118,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		resolved, err := p.resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
-			p.audit.Log(audit.Event{
-				Action:    "deny",
-				Reason:    "resolve_failed",
-				Namespace: check.Namespace,
-				Pod:       check.PodName,
-				Container: check.Container,
-				Image:     check.ImageRef,
-				Error:     err.Error(),
-			})
-			return verdictDeny, fmt.Sprintf("cannot resolve digest for %s: %v", check.ImageRef, err)
+			return decide.denyUnresolvedDigest(err)
 		}
 		digest = resolved
 		log.Debug("resolved tag to digest via containerd", "digest", digest)
@@ -149,15 +127,8 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	snap := p.policy.current()
 	if snap == nil || snap.index == nil {
 		log.Error("no allowlist loaded; denying")
-		p.audit.Log(audit.Event{
-			Action:    "deny",
-			Reason:    "no_allowlist_available",
-			Namespace: check.Namespace,
-			Pod:       check.PodName,
-			Container: check.Container,
-			Image:     check.ImageRef,
-		})
-		return verdictDeny, fmt.Sprintf("no allowlist available for %s", check.ImageRef)
+		unavailable := fmt.Sprintf("no allowlist available for %s", check.ImageRef)
+		return decide.deny("no_allowlist_available", unavailable)
 	}
 
 	// The base allowlist admits what its entries admit. Served entries are
@@ -170,63 +141,94 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// would let this check judge one image and the container run another.
 	if !pinned && !p.keepsTag(cfg, baseAdmitted, check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
-		p.audit.Log(audit.Event{
-			Action:    "deny",
-			Reason:    "not_digest_pinned",
-			Namespace: check.Namespace,
-			Pod:       check.PodName,
-			Container: check.Container,
-			Image:     check.ImageRef,
-		})
-		return verdictDeny, fmt.Sprintf("image must be referenced by digest (name@sha256:...): %s", check.ImageRef)
+		unpinned := fmt.Sprintf("image must be referenced by digest (name@sha256:...): %s", check.ImageRef)
+		return decide.deny("not_digest_pinned", unpinned)
 	}
 
-	admitted := snap.index.AdmitsProcess(rc)
-	if phase == launchFinal {
-		admitted = snap.index.AdmitsContainer(rc)
-	}
-	if !baseAdmitted && !admitted {
-		// INVARIANT: the returned reason reaches a namespace-readable kubelet
-		// event, so it names the image, policy fields and at most a variable
-		// name — argv and env values can carry credentials and stay out of it.
-		reason, denial := "not_in_allowlist", fmt.Sprintf("image not in allowlist: %s", check.ImageRef)
-		if listed := snap.index.AdmitsDigest(digest); listed {
-			reason = "launch_not_admitted"
-			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
-			if fields := snap.index.Mismatch(rc, phase == launchFinal); len(fields) > 0 {
-				denial += "; the closest entry differs in " + strings.Join(fields, ", ")
-				if check.EnvErr != nil && slices.Contains(fields, "env") {
-					denial += " (" + check.EnvErr.Error() + ")"
-				}
-			}
-		}
-		attrs := []any{"digest", digest, "image", check.ImageRef, "argv_sha256", argvDigest(check.Argv), "reason", reason}
-		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
-			attrs = append(attrs, "node_root_unavailable", missing)
-		}
-		log.Warn("image not admitted by allowlist", attrs...)
-		p.audit.Log(audit.Event{
-			Action:    "deny",
-			Reason:    reason,
-			Namespace: check.Namespace,
-			Pod:       check.PodName,
-			Container: check.Container,
-			Image:     check.ImageRef,
-		})
-		return verdictDeny, denial
+	servedAdmitted := snap.admits(rc, phase)
+	if !baseAdmitted && !servedAdmitted {
+		reason, denial := launchDenial(snap.index, check, rc, phase)
+		log.Warn("image not admitted by allowlist", p.denialAttrs(check, rc, reason)...)
+		return decide.deny(reason, denial)
 	}
 
-	// All checks passed
 	log.Info("image allowed")
-	p.audit.Log(audit.Event{
-		Action:    "allow",
-		Reason:    "verified",
-		Namespace: check.Namespace,
-		Pod:       check.PodName,
-		Container: check.Container,
-		Image:     check.ImageRef,
-	})
+	return decide.allow("verified")
+}
+
+// Pairs each verdict with the audit event that records it.
+type imageDecision struct {
+	audit *audit.Logger
+	check imageCheck
+}
+
+func (d imageDecision) deny(reason, message string) (imageVerdict, string) {
+	d.audit.Log(d.event("deny", reason))
+	return verdictDeny, message
+}
+
+func (d imageDecision) denyUnresolvedDigest(err error) (imageVerdict, string) {
+	event := d.event("deny", "resolve_failed")
+	event.Error = err.Error()
+	d.audit.Log(event)
+	return verdictDeny, fmt.Sprintf("cannot resolve digest for %s: %v", d.check.ImageRef, err)
+}
+
+// A skipped check is audited as an allow: no rule admitted the container, none denied it.
+func (d imageDecision) skip(reason string) (imageVerdict, string) {
+	d.audit.Log(d.event("allow", reason))
+	return verdictSkip, ""
+}
+
+func (d imageDecision) allow(reason string) (imageVerdict, string) {
+	d.audit.Log(d.event("allow", reason))
 	return verdictAllow, ""
+}
+
+func (d imageDecision) event(action, reason string) audit.Event {
+	return audit.Event{
+		Action:    action,
+		Reason:    reason,
+		Namespace: d.check.Namespace,
+		Pod:       d.check.PodName,
+		Container: d.check.Container,
+		Image:     d.check.ImageRef,
+	}
+}
+
+// launchDenial separates an image no entry lists from one whose launch
+// specification satisfies no entry listing it.
+//
+// INVARIANT: the denial reaches a namespace-readable kubelet event, so it names
+// the image, policy fields and at most a variable name — argv and env values
+// can carry credentials and stay out of it.
+func launchDenial(
+	index *allowlist.Index,
+	check imageCheck,
+	rc allowlist.RunningContainer,
+	phase launchPhase,
+) (reason, denial string) {
+	if !index.AdmitsDigest(rc.Digest) {
+		return "not_in_allowlist", fmt.Sprintf("image not in allowlist: %s", check.ImageRef)
+	}
+	denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
+	if fields := index.Mismatch(rc, phase == launchFinal); len(fields) > 0 {
+		denial += "; the closest entry differs in " + strings.Join(fields, ", ")
+		if check.EnvErr != nil && slices.Contains(fields, "env") {
+			denial += " (" + check.EnvErr.Error() + ")"
+		}
+	}
+	return "launch_not_admitted", denial
+}
+
+// The node-root fault is added only for an entry that declares a node-root
+// mount, where it explains the refusal.
+func (p *plugin) denialAttrs(check imageCheck, rc allowlist.RunningContainer, reason string) []any {
+	attrs := []any{"digest", rc.Digest, "image", check.ImageRef, "argv_sha256", argvDigest(rc.Argv), "reason", reason}
+	if missing := nodeRootMissing(rc.Mounts); missing != "" && p.policy.declaresNodeRoot(rc.Digest) {
+		attrs = append(attrs, "node_root_unavailable", missing)
+	}
+	return attrs
 }
 
 // argvDigest identifies an argv in the node's journal without its values,
