@@ -701,6 +701,13 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	// kubelet-dialable. Readiness covers the evidence path; each liveness
 	// covers only its own container.
 	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
+	health, ok := findContainerPort(proxy, "health")
+	if !ok {
+		t.Fatalf("attest-proxy must name its health port; got %+v", proxy.Ports)
+	}
+	// The API container has no port named "health", so its probes dial the
+	// proxy's port by number.
+	healthPort := intstr.FromInt32(health.ContainerPort)
 	for _, tc := range []struct {
 		name  string
 		probe *corev1.Probe
@@ -723,13 +730,13 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 			name:  "attestation-api startup",
 			probe: api.StartupProbe,
 			path:  "/upstream/livez",
-			port:  intstr.FromInt32(8401),
+			port:  healthPort,
 		},
 		{
 			name:  "attestation-api liveness",
 			probe: api.LivenessProbe,
 			path:  "/upstream/livez",
-			port:  intstr.FromInt32(8401),
+			port:  healthPort,
 		},
 	} {
 		if tc.probe == nil || tc.probe.HTTPGet == nil {
@@ -743,9 +750,6 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 		if tc.probe.TimeoutSeconds != 5 {
 			t.Fatalf("%s probe timeoutSeconds = %d, want 5", tc.name, tc.probe.TimeoutSeconds)
 		}
-	}
-	if _, ok := findContainerPort(proxy, "health"); !ok {
-		t.Fatalf("attest-proxy must name its health port; got %+v", proxy.Ports)
 	}
 	// uid 0 owns the socket (clients reject a foreign owner) and gid 65532 is
 	// the socket's group — the chgrp works by membership, all caps dropped.
