@@ -232,21 +232,21 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 }
 
 // deliverUpstreamRoutes stores the --upstream routes on CDS when an operator
-// key is available. Without one, or when storing fails, it writes them to
-// --routes-out and prints how to store them. The router answers 503 until a
-// manifest is stored.
-func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry) error {
+// key is available and returns the digest a client pins for what it stored.
+// Without a key, or when storing fails, it writes them to --routes-out and
+// prints how to store them. The router answers 503 until a manifest is stored.
+func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry) (string, error) {
 	if installOperatorKeyPath() == "" {
-		return writeUpstreamRoutes(w, u, cdsURL, entries, nil, nil)
+		return "", writeUpstreamRoutes(w, u, cdsURL, entries, nil, nil)
 	}
-	manifest, err := storeUpstreamRoutes(ctx, w, u, cdsURL, entries)
+	manifest, pin, err := storeUpstreamRoutes(ctx, w, u, cdsURL, entries)
 	if err == nil {
-		return nil
+		return pin, nil
 	}
 	if werr := writeUpstreamRoutes(w, u, cdsURL, entries, manifest, err); werr != nil {
-		return fmt.Errorf("store the route manifest: %w; %w", err, werr)
+		return "", fmt.Errorf("store the route manifest: %w; %w", err, werr)
 	}
-	return fmt.Errorf("store the route manifest: %w; after fixing the cause, add the route as printed above, or re-run install", err)
+	return "", fmt.Errorf("store the route manifest: %w; after fixing the cause, add the route as printed above, or re-run install", err)
 }
 
 // storedManifestError is a failure to use the route manifest CDS stores, so
@@ -262,39 +262,41 @@ func (e revisionError) Unwrap() error { return e.error }
 
 // storeUpstreamRoutes dials the CDS, checks that it names the adopted pod
 // after its entry, and stores the routes. It returns the manifest it built,
-// if it got that far.
-func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url string, entries map[string]adoptedEntry) ([]byte, error) {
+// if it got that far, and the digest a client pins for it.
+func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url string, entries map[string]adoptedEntry) ([]byte, string, error) {
 	o := installCDSConn(url)
 	hc, err := o.HTTPClient(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if e, ok := entries[u.workload]; ok {
 		al, _, err := allowlistclient.NewClientWithHTTP(url, hc).List(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("read the served allowlist: %w", err)
+			return nil, "", fmt.Errorf("read the served allowlist: %w", err)
 		}
 		if err := checkServedEntry(al, u.workload, e.pod); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	c, err := routesclient.New(url, hc)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	signer, err := o.Signer()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	return putUpstreamRoutes(ctx, w, c, signer, u)
 }
 
 // putUpstreamRoutes adds the routes to the manifest CDS stores and stores the
-// next revision. It returns the manifest it built, stored or not.
-func putUpstreamRoutes(ctx context.Context, w io.Writer, c routesclient.Client, signer operatorauth.Authorizer, u upstreamRoutes) ([]byte, error) {
+// next revision. It returns the manifest it built, stored or not, and the
+// digest a client pins for it: none while a staged notBefore holds the router
+// on the manifest it applied.
+func putUpstreamRoutes(ctx context.Context, w io.Writer, c routesclient.Client, signer operatorauth.Authorizer, u upstreamRoutes) ([]byte, string, error) {
 	m, ifMatch, err := storedManifest(ctx, c)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	onStored := func(err error) error {
 		if ifMatch == "" {
@@ -305,17 +307,17 @@ func putUpstreamRoutes(ctx context.Context, w io.Writer, c routesclient.Client, 
 	now := time.Now()
 	manifest, err := u.apply(m, now)
 	if err != nil {
-		return nil, onStored(err)
+		return nil, "", onStored(err)
 	}
 	if err := c.Put(ctx, manifest, signer, ifMatch); err != nil {
-		return manifest, onStored(err)
+		return manifest, "", onStored(err)
 	}
-	applies := ""
+	pin, applies := manifestDigest(manifest), ""
 	if m.NotBefore.After(now) {
-		applies = ", applies at " + m.NotBefore.Format(time.RFC3339)
+		pin, applies = "", ", applies at "+m.NotBefore.Format(time.RFC3339)
 	}
 	fmt.Fprintf(w, "+ stored route manifest revision %d on CDS (digest %s): %s%s\n", m.Revision, manifestDigest(manifest), u.describe(), applies)
-	return manifest, nil
+	return manifest, pin, nil
 }
 
 // pinsProcess reports whether some container of w constrains its command,
@@ -452,7 +454,7 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries m
 	if err != nil {
 		return err
 	}
-	operatorKey, operatorKeys := cmp.Or(installOperatorKeyPath(), "<operator-key.pem>"), cmp.Or(installOperatorKeys, "<operator-pub.pem>")
+	operatorKey, operatorKeys := cmp.Or(installOperatorKeyPath(), "<operator-key.pem>"), installOperatorKeysFlag()
 	conn := "--url " + cdsURL + " " + installPinFlags() + " --operator-key " + operatorKey
 	// Printed before the write, so a refused --routes-out still shows them.
 	fmt.Fprintf(w, "+ the router answers 503 until CDS stores a route manifest. Add the route with:\n")
@@ -477,6 +479,12 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries m
 		fmt.Fprintf(w, "    c8s allowlist list --url %s %s\n", cdsURL, installPinFlags())
 	}
 	return nil
+}
+
+// installOperatorKeysFlag is the --operator-keys value a printed command
+// takes: the public bundle this install gives CDS.
+func installOperatorKeysFlag() string {
+	return cmp.Or(installOperatorKeys, "<operator-pub.pem>")
 }
 
 func installPinFlags() string {

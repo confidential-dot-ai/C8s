@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -585,7 +586,7 @@ func TestPutUpstreamRoutesReturnsARefusedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("putUpstreamRoutes() = %v, want the 409", err)
 	}
@@ -623,7 +624,7 @@ func TestPutUpstreamRoutesLostRace(t *testing.T) {
 	installOperatorKeys = pub
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !strings.Contains(err.Error(), "412") || !errors.As(err, new(storedManifestError)) {
 		t.Fatalf("putUpstreamRoutes() = %v, want the 412 as a storedManifestError", err)
 	}
@@ -665,7 +666,7 @@ func TestPutUpstreamRoutesRevisionBelowStored(t *testing.T) {
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	installRoutesRevision = 7
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !errors.As(err, new(storedManifestError)) || !errors.As(err, new(revisionError)) {
 		t.Fatalf("putUpstreamRoutes() = %v, want a stored-manifest revision error", err)
 	}
@@ -687,9 +688,12 @@ func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
 	installOperatorKey = "operator.key"
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	var out bytes.Buffer
-	err := deliverUpstreamRoutes(context.Background(), &out, testUpstream, "https://127.0.0.1:1", nil)
+	digest, err := deliverUpstreamRoutes(context.Background(), &out, testUpstream, "https://127.0.0.1:1", nil)
 	if err == nil || !strings.Contains(err.Error(), "add the route as printed above") {
 		t.Fatalf("deliverUpstreamRoutes() = %v, want the unreachable CDS and the fallback", err)
+	}
+	if digest != "" {
+		t.Errorf("deliverUpstreamRoutes() digest = %q, want none: CDS stores no manifest", digest)
 	}
 	b, err := os.ReadFile(installRoutesOut)
 	if err != nil {
@@ -700,6 +704,70 @@ func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "c8s routes add ") || !strings.Contains(out.String(), "c8s routes put "+installRoutesOut) {
 		t.Fatalf("output lacks the add and put commands:\n%s", out.String())
+	}
+}
+
+// The digest install hands a client names the bytes CDS stored, not another
+// encoding of the same routes.
+func TestPutUpstreamRoutesPinsTheStoredBytes(t *testing.T) {
+	resetCLIState(t)
+	var stored []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		stored, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := routesclient.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
+
+	_, pin, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	if err != nil {
+		t.Fatalf("putUpstreamRoutes() = %v", err)
+	}
+	digest := pkgroutes.Digest(stored)
+	if want := hex.EncodeToString(digest[:]); pin != want {
+		t.Errorf("pin = %q, want the stored bytes' digest %q", pin, want)
+	}
+}
+
+// A revision staged for later leaves the router on the manifest it applied, so
+// install hands a client no digest to pin.
+func TestPutUpstreamRoutesStagedRevisionPinsNothing(t *testing.T) {
+	staged, err := testUpstream.apply(&pkgroutes.Manifest{MaxAge: time.Hour, NotBefore: time.Now().Add(time.Hour)}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, pub := signedEnvelope(t, staged)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(env)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := routesclient.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCLIState(t)
+	installOperatorKeys = pub
+	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
+
+	_, pin, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	if err != nil {
+		t.Fatalf("putUpstreamRoutes() = %v", err)
+	}
+	if pin != "" {
+		t.Errorf("pin = %q, want none while the revision is staged", pin)
 	}
 }
 

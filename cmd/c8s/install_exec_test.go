@@ -1184,6 +1184,31 @@ func TestInstallReportsDeniedWorkloads(t *testing.T) {
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
 
+// An install that stores no route manifest prints a front-door check whose
+// route digest the operator reads from CDS under the operator keys.
+func TestInstallHintReadsTheRouteDigestFromCDS(t *testing.T) {
+	var err error
+	stdout := captureStdout(t, func() {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	verifyArgs := hintCommandArgs(t, stdout, "c8s verify")
+	if i := slices.Index(verifyArgs, "--route-digest"); i < 0 || verifyArgs[i+1] != "<ROUTE_DIGEST>" {
+		t.Errorf("the front-door check names no route digest to fill in:\n%s", stdout)
+	}
+	digestArgs := hintCommandArgs(t, stdout, "c8s routes show")
+	if i := slices.Index(digestArgs, "--operator-keys"); i < 0 || digestArgs[i+1] != "<operator-pub.pem>" {
+		t.Errorf("the digest command names no operator keys to verify it under:\n%s", stdout)
+	}
+	if i := slices.Index(digestArgs, "--url"); i < 0 || digestArgs[i+1] != "https://"+installCDSAddressUnreachable {
+		t.Errorf("the digest command names another CDS than this install:\n%s", stdout)
+	}
+}
+
 // A release that exempts no namespace has nothing to report.
 func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 	var err error

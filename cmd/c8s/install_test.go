@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/charts"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/routes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
@@ -1622,18 +1623,23 @@ func TestExemptNamespaceImages(t *testing.T) {
 	}
 }
 
-// Every flag the hint names must be a flag of the command it names.
+// Every flag the hint names must be a flag of the command it names, and an
+// install that stored no route manifest names the command that reads its
+// digest.
 func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	const (
 		cdsURL = "https://cds.example:8443"
 		cdsPin = "/run/c8s/cds-pin.json"
 	)
 	var buf bytes.Buffer
-	printVerifyHint(&buf, cdsURL, cdsPin)
+	printVerifyHint(&buf, cdsURL, cdsPin, "<operator-pub.pem>", "")
 
 	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
 	if slices.Contains(verifyArgs, cdsPin) {
 		t.Errorf("the front-door check names the CDS pin, which carries no node measurement:\n%s", buf.String())
+	}
+	if !slices.Contains(verifyArgs, "--route-digest") {
+		t.Errorf("the front-door check passes no --route-digest, which attest-lb requires:\n%s", buf.String())
 	}
 	if err := verify.NewCmd(verify.Defaults{}).ParseFlags(verifyArgs); err != nil {
 		t.Errorf("c8s verify %s: %v", strings.Join(verifyArgs, " "), err)
@@ -1647,6 +1653,35 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 		if !slices.Contains(anchorArgs, want) {
 			t.Errorf("the anchor command omits %q, which this install named:\n%s", want, buf.String())
 		}
+	}
+
+	show, _, err := routes.NewCmd().Find([]string{"show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestArgs := hintCommandArgs(t, buf.String(), "c8s routes show")
+	if err := show.ParseFlags(digestArgs); err != nil {
+		t.Errorf("c8s routes show %s: %v", strings.Join(digestArgs, " "), err)
+	}
+	if !slices.Contains(digestArgs, "--operator-keys") {
+		t.Errorf("the digest the hint reads is not verified under the operator keys:\n%s", buf.String())
+	}
+}
+
+// An install that stored a route manifest names its digest, so the check runs
+// as printed.
+func TestVerifyHintNamesTheStoredRouteDigest(t *testing.T) {
+	const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	var buf bytes.Buffer
+	printVerifyHint(&buf, "https://cds.example:8443", "/run/c8s/cds-pin.json", "operator-pub.pem", digest)
+
+	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
+	i := slices.Index(verifyArgs, "--route-digest")
+	if i < 0 || i+1 == len(verifyArgs) || verifyArgs[i+1] != digest {
+		t.Errorf("the front-door check does not pass --route-digest %s:\n%s", digest, buf.String())
+	}
+	if strings.Contains(buf.String(), "c8s routes show") {
+		t.Errorf("the hint names how to read a digest it printed itself:\n%s", buf.String())
 	}
 }
 
