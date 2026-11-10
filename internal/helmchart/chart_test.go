@@ -4872,6 +4872,13 @@ func TestChartMountsTheTDXGuestDevice(t *testing.T) {
 			t.Errorf("rendered chart lacks %s:\n%s", want, out)
 		}
 	}
+
+	collide := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		[]string{"--set-json", `attestationApi.devices=["/dev/tdx_guest","/dev/tdx-guest"]`})
+	out, err = renderCloudChart(t, cloudChartDir, collide...)
+	if err == nil || !strings.Contains(out, "kind=attestation_devices") {
+		t.Errorf("helm template of two devices named tdx-guest = %v, want a kind=attestation_devices refusal:\n%s", err, out)
+	}
 }
 
 // withoutPlatformKey is basePlatformArgs less the pair setting key.
