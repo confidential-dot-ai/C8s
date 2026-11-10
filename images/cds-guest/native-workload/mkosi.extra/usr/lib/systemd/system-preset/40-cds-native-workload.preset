@@ -1,0 +1,2 @@
+disable cds.service
+enable cds-native-workload.service

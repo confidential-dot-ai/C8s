@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -45,25 +46,76 @@ func (f fixedPins) Refresh() error {
 // FollowServerPins holds the server of an armTLS client config to the set src
 // holds at each handshake: a server outside the set makes the client look for
 // a newer one, and the same handshake is then checked against that one.
-// Takes a config from [NewClientTLSConfig], whose own peer check it replaces.
-func FollowServerPins(tlsCfg *tls.Config, src PinSource, attestationApiURL string) {
-	tlsCfg.VerifyPeerCertificate = followPins(src, attestationApiURL, x509.ExtKeyUsageServerAuth)
+// It replaces the entire peer VerifyPolicy installed by [NewClientTLSConfig];
+// constructor options are not inherited. Pass true here to require
+// non-migratable peers on every attempt, even if the constructor required it.
+// Omitting the option leaves migration unchecked.
+func FollowServerPins(
+	tlsCfg *tls.Config,
+	src PinSource,
+	attestationApiURL string,
+	requireNonMigratable ...bool,
+) {
+	tlsCfg.VerifyPeerCertificate = followPins(
+		src,
+		attestationApiURL,
+		x509.ExtKeyUsageServerAuth,
+		slices.Contains(
+			requireNonMigratable,
+			true,
+		),
+	)
 }
 
 // FollowClientPins is FollowServerPins for a server pinning its callers: a
 // client on a newly accepted image is admitted once the set has moved to it.
-// Takes a config from [NewServerTLSConfig] with a ClientPolicy and no CA.
-func FollowClientPins(tlsCfg *tls.Config, src PinSource, attestationApiURL string) {
-	tlsCfg.VerifyPeerCertificate = followPins(src, attestationApiURL, x509.ExtKeyUsageClientAuth)
+// Takes a config from [NewServerTLSConfig] with a ClientPolicy and no CA,
+// replacing that entire policy. Constructor options are not inherited: pass
+// true here to require non-migratable peers on every attempt. Omitting the
+// option leaves migration unchecked, even if the constructor required it.
+func FollowClientPins(
+	tlsCfg *tls.Config,
+	src PinSource,
+	attestationApiURL string,
+	requireNonMigratable ...bool,
+) {
+	tlsCfg.VerifyPeerCertificate = followPins(
+		src,
+		attestationApiURL,
+		x509.ExtKeyUsageClientAuth,
+		slices.Contains(
+			requireNonMigratable,
+			true,
+		),
+	)
 }
 
 // followPins is the peer check of the set src holds now, retried against a
 // newer set where the check failed and the set moved.
-func followPins(src PinSource, attestationApiURL string, purpose x509.ExtKeyUsage) func([][]byte, [][]*x509.Certificate) error {
-	verify := func(raw [][]byte, chains [][]*x509.Certificate) error {
-		return verifyPeerCallback(Pins(src.Current().Policy()).VerifyPolicy(attestationApiURL), purpose)(raw, chains)
+func followPins(
+	src PinSource,
+	attestationApiURL string,
+	purpose x509.ExtKeyUsage,
+	requireNonMigratable bool,
+) func(
+	[][]byte,
+	[][]*x509.Certificate,
+) error {
+	verify := func(
+		raw [][]byte,
+		chains [][]*x509.Certificate,
+	) error {
+		policy := Pins(src.Current().Policy()).VerifyPolicy(attestationApiURL)
+		policy.RequireNonMigratable = requireNonMigratable
+		return verifyPeerCallback(
+			policy,
+			purpose,
+		)(raw, chains)
 	}
-	return func(raw [][]byte, chains [][]*x509.Certificate) error {
+	return func(
+		raw [][]byte,
+		chains [][]*x509.Certificate,
+	) error {
 		checked := src.Generation()
 		err := verify(raw, chains)
 		if err == nil {

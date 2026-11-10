@@ -7,6 +7,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -52,6 +53,13 @@ func write(opts options) error {
 			return fmt.Errorf("--kms-url/--kms-tls-key-sha256: %w", err)
 		}
 	}
+	var objectState *cdsconfig.ObjectState
+	if opts.objectStateFile != "" {
+		objectState, err = readObjectState(opts.objectStateFile)
+		if err != nil {
+			return err
+		}
+	}
 	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.clusterID,
 		OperatorKeys:    operatorKeys,
@@ -65,6 +73,7 @@ func write(opts options) error {
 		LeafDNSPatterns: opts.leafDNSPatterns,
 		HA:              opts.ha,
 		KMS:             kms,
+		ObjectState:     objectState,
 		ManifestPath:    opts.manifest,
 		Family:          family,
 		VCPUs:           opts.vcpus,
@@ -77,6 +86,35 @@ func write(opts options) error {
 		{Name: cdsconfig.ConfigFile, Data: config, Mode: 0o644},
 		{Name: cdsconfig.PinFile, Data: pin, Mode: 0o644},
 	})
+}
+
+func readObjectState(path string) (*cdsconfig.ObjectState, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"--object-state-file: %w",
+			err,
+		)
+	}
+	defer file.Close()
+	data, err := readutil.ReadAll(
+		file,
+		16<<10,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"--object-state-file: %w",
+			err,
+		)
+	}
+	state, err := cdsconfig.ParseObjectState(data)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"--object-state-file: %w",
+			err,
+		)
+	}
+	return state, nil
 }
 
 func readOperatorKeys(path string) (operatorauth.KeyBundle, error) {

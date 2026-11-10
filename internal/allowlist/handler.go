@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
+	"github.com/confidential-dot-ai/c8s/internal/server"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -105,7 +106,13 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
+	server.LogAfterCommit(
+		r.Context(),
+		slog.Default(),
+		"allowlist replaced",
+		"workloads",
+		len(al.Workloads),
+	)
 	w.WriteHeader(http.StatusNoContent)
 }
 

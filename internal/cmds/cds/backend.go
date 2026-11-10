@@ -61,6 +61,9 @@ func (o ownCA) Current() (issuer.CurrentCA, bool) {
 // newBackend picks what this CDS serves from; the configuration's ha block is
 // the whole decision.
 func newBackend(ctx context.Context, cfg config, st stores) (backend, error) {
+	if cfg.measured.ObjectState != nil {
+		return nil, fmt.Errorf("object state requires a private backend for each request")
+	}
 	if cfg.measured.HA == nil {
 		return newSingleton(cfg, st)
 	}

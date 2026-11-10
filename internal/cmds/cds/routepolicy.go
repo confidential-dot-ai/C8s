@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
@@ -90,6 +91,14 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	digest := routes.Digest(body)
-	slog.Info("route manifest stored", "revision", m.Revision, "digest", hex.EncodeToString(digest[:]))
+	server.LogAfterCommit(
+		r.Context(),
+		slog.Default(),
+		"route manifest stored",
+		"revision",
+		m.Revision,
+		"digest",
+		hex.EncodeToString(digest[:]),
+	)
 	w.WriteHeader(http.StatusNoContent)
 }

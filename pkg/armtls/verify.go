@@ -29,6 +29,11 @@ type VerifyPolicy struct {
 	// that disagrees.
 	Policy remote.Policy
 
+	// RequireNonMigratable requires native SNP or TDX peers whose verified
+	// launch policy forbids migration. Missing claims and unsupported platforms
+	// fail closed. When false, migration is not checked.
+	RequireNonMigratable bool
+
 	// Nonce, when set, is verified against the attestation report's REPORTDATA.
 	// REPORTDATA must equal hash(pubkey || nonce). Use when both sides agree on
 	// a pre-shared nonce for additional freshness guarantees. If nil, no nonce
@@ -218,7 +223,12 @@ const defaultAttestationVerifyTimeout = 10 * time.Second
 // C8s ships no in-process quote parser, so every platform is verified there,
 // bare-metal SNP included; an inline VCEK travels in the envelope as
 // collateral.
-func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
+func verifyOnline(
+	att *Attestation,
+	pub crypto.PublicKey,
+	policy *VerifyPolicy,
+	nonce []byte,
+) (*VerifyResult, error) {
 	expectedReportData, err := ReportDataForKey(pub, nonce)
 	if err != nil {
 		return nil, fmt.Errorf("armtls: compute expected REPORTDATA: %w", err)
@@ -237,6 +247,11 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, pins)
 	if err != nil {
 		return nil, mapVerifyError(att.Family, err)
+	}
+	if policy.RequireNonMigratable {
+		if err := EnforceNonMigratable(&resp.Result); err != nil {
+			return nil, err
+		}
 	}
 
 	result := &VerifyResult{

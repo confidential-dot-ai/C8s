@@ -3,8 +3,8 @@
 #
 # Same mechanism as the attest profile's sync (see its header for the oras +
 # layer-extract approach and the mkosi.local staging convention). Stages two
-# artifacts under usr/local/bin: the multi-command c8s binary, and the
-# attestation-api the CDS self-check verifies against. The attest profile
+# artifacts under usr/local/bin: the selected c8s or qualification executable,
+# and the attestation-api used for verification. The attest profile
 # stages its own pinned attestation-api; this hook runs after it (profile
 # order in images/cds-guest/build), so the measured attester is the
 # attestation-api image .github/build-pins.json pins by digest, the same
@@ -90,15 +90,32 @@ stage_published_binary() {
     echo "cds sync: staged $binary from ${repo}@${digest}"
 }
 
-C8S_REF=$(sync_input c8s-ref)
+C8S_REF=$(cat "$SYNC_INPUTS/c8s-ref" 2>/dev/null || true)
+C8S_BINARY_SHA256=$(cat "$SYNC_INPUTS/c8s-binary-sha256" 2>/dev/null || true)
+NATIVE_WORKLOAD_SHA256=$(cat "$SYNC_INPUTS/native-workload-sha256" 2>/dev/null || true)
 ATTESTATION_API_DIGEST=$(sync_input attestation-api-digest)
 
 # `c8s cds` is the service the image runs; its image is this repository's own
 # build at C8S_REF, published by the run that builds this image.
 C8S_OPERATOR_REPO=ghcr.io/confidential-dot-ai/c8s-operator
-stage_published_binary "$C8S_OPERATOR_REPO" \
-    "$(resolve_published "$C8S_OPERATOR_REPO" "$C8S_REF")" \
-    "$STAGE_DIR/usr/local/bin/c8s"
+if [ -n "$NATIVE_WORKLOAD_SHA256" ]; then
+    [[ "$NATIVE_WORKLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]] && [ -z "$C8S_REF$C8S_BINARY_SHA256" ] \
+        || { echo "cds sync: ambiguous qualification binary input" >&2; exit 1; }
+    [ -x "$STAGE_DIR/usr/local/bin/cds-native-workload.test" ] \
+        && [ "$(sha256sum "$STAGE_DIR/usr/local/bin/cds-native-workload.test" | cut -d' ' -f1)" = "$NATIVE_WORKLOAD_SHA256" ] \
+        || { echo "cds sync: staged qualification binary SHA256 mismatch" >&2; exit 1; }
+elif [ -n "$C8S_BINARY_SHA256" ]; then
+    [[ "$C8S_BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]] && [ -z "$C8S_REF" ] \
+        || { echo "cds sync: ambiguous local binary input" >&2; exit 1; }
+    [ -x "$STAGE_DIR/usr/local/bin/c8s" ] \
+        && [ "$(sha256sum "$STAGE_DIR/usr/local/bin/c8s" | cut -d' ' -f1)" = "$C8S_BINARY_SHA256" ] \
+        || { echo "cds sync: staged local binary SHA256 mismatch" >&2; exit 1; }
+else
+    [ -n "$C8S_REF" ] || { echo "cds sync: no c8s source selected" >&2; exit 1; }
+    stage_published_binary "$C8S_OPERATOR_REPO" \
+        "$(resolve_published "$C8S_OPERATOR_REPO" "$C8S_REF")" \
+        "$STAGE_DIR/usr/local/bin/c8s"
+fi
 # The attestation-api is pinned by digest in .github/build-pins.json, so the
 # pin and not the registry decides which bytes are measured; pin-hygiene
 # checks the attestation-rs release still names it.

@@ -15,8 +15,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 # The settings the CDS config does not carry are fixed here, at the values
-# the chart renders today. The store is the runtime directory: an in-memory
-# trust root re-bootstraps its mesh CA on every start anyway.
+# the chart renders today. Local files use the runtime directory; object-state
+# mode recovers its committed CA and policy before reporting Ready.
 ExecStart=/usr/local/bin/c8s cds \
     --host=auto \
     --config=/run/confai/operator-pubkey \

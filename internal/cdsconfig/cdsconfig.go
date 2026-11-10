@@ -41,8 +41,10 @@ type Config struct {
 	// compiled from the document's leaf names and patterns. Empty admits no
 	// DNS SAN, as issuer.CSRPolicy defines.
 	DNSSANPatterns []*regexp.Regexp
-	// HA is the replica set this CDS belongs to; nil runs the singleton.
+	// HA runs a peer replica set. ObjectState instead delegates ordering to storage.
 	HA *HA
+	// ObjectState runs replaceable replicas over an encrypted current-state object.
+	ObjectState *ObjectState
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 }
@@ -51,17 +53,18 @@ type Config struct {
 // their own parsers define, so the documents an operator already holds embed
 // here byte for byte.
 type wire struct {
-	SchemaVersion      string   `yaml:"schemaVersion"`
-	ClusterID          string   `yaml:"clusterID"`
-	OperatorPublicKeys string   `yaml:"operatorPublicKeys"`
-	Workloads          string   `yaml:"workloads"`
-	Nodes              string   `yaml:"nodes,omitempty"`
-	PodImagePolicy     string   `yaml:"podImagePolicy,omitempty"`
-	NodeCIDRs          []string `yaml:"nodeCIDRs"`
-	LeafDNSNames       []string `yaml:"leafDNSNames"`
-	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
-	HA                 *haWire  `yaml:"ha,omitempty"`
-	KMS                *kmsWire `yaml:"kms,omitempty"`
+	SchemaVersion      string           `yaml:"schemaVersion"`
+	ClusterID          string           `yaml:"clusterID"`
+	OperatorPublicKeys string           `yaml:"operatorPublicKeys"`
+	Workloads          string           `yaml:"workloads"`
+	Nodes              string           `yaml:"nodes,omitempty"`
+	PodImagePolicy     string           `yaml:"podImagePolicy,omitempty"`
+	NodeCIDRs          []string         `yaml:"nodeCIDRs"`
+	LeafDNSNames       []string         `yaml:"leafDNSNames"`
+	LeafDNSPatterns    []string         `yaml:"leafDNSPatterns"`
+	HA                 *haWire          `yaml:"ha,omitempty"`
+	KMS                *kmsWire         `yaml:"kms,omitempty"`
+	ObjectState        *objectStateWire `yaml:"objectState,omitempty"`
 }
 
 // Parse validates a CDS configuration document. It authenticates nothing:
@@ -113,6 +116,16 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if w.HA != nil && w.ObjectState != nil {
+		return nil, errors.New("ha and objectState are mutually exclusive")
+	}
+	objectState, err := w.ObjectState.parse()
+	if err != nil {
+		return nil, err
+	}
+	if objectState != nil && nodes.Empty() {
+		return nil, errors.New("objectState requires the fixed node pins in nodes")
+	}
 	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
 		return nil, err
 	}
@@ -133,6 +146,7 @@ func (w wire) parse() (*Config, error) {
 		DNSSANPatterns: patterns,
 		HA:             ha,
 		KMS:            kms,
+		ObjectState:    objectState,
 	}
 	if err := cfg.ValidatePodAuthorities(); err != nil {
 		return nil, fmt.Errorf("podImagePolicy: %w", err)
@@ -163,7 +177,8 @@ func checkSingleCDSNamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
 }
 
 // Cluster is what a client takes from the launch file it pins its CDS to.
-// A file naming a single CDS leaves the other fields empty.
+// Replicated selects signed peer-cluster pin updates. Object-state replicas use
+// fixed launch pins, just as a singleton does, and leave these fields empty.
 type Cluster struct {
 	ClusterID    string
 	OperatorKeys []*ecdsa.PublicKey
@@ -179,6 +194,9 @@ func ReadCluster(launchFile []byte) (Cluster, error) {
 	}
 	if err := checkSchemaVersion(document.SchemaVersion); err != nil {
 		return Cluster{}, err
+	}
+	if document.HA != nil && document.ObjectState != nil {
+		return Cluster{}, errors.New("ha and objectState are mutually exclusive")
 	}
 	if document.HA == nil {
 		return Cluster{}, nil

@@ -17,6 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
+	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
@@ -114,7 +115,12 @@ func (h PodSecretHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer clear(value)
-	slog.Info("pod secret released", logged...)
+	server.LogAfterCommit(
+		r.Context(),
+		slog.Default(),
+		"pod secret released",
+		logged...,
+	)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(secretbroker.PodResponse{Value: value})
 }

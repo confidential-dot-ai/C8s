@@ -10,21 +10,28 @@
 # both TEEs' symbols and the ISO9660 driver the launch disk needs), no GPU
 # staging, no module signing.
 #
-# One image serves both TEE families. Nothing platform-specific is baked, so
+# The ordinary CDS image serves both TEE families. Nothing platform-specific is baked, so
 # a single build measures the SNP launch digests and the TDX block, and the
 # operator picks the platform when launching.
 #
 # Knobs:
-#   C8S_REF=...        REQUIRED. Bake the c8s binary from a specific C8s
+#   C8S_REF=...        Bake the c8s binary from a specific published C8s
 #                      COMMIT (short SHA) or release tag; mkosi.sync resolves
 #                      c8s-operator:<ref> to a digest and has no default. The
 #                      image must be published first (c8s docker.yml on main,
 #                      or workflow_dispatch for a branch).
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of
 #                      this repo's checkout).
+#   C8S_GUEST_ROLE=cds|custody|native-workload selects a fixed measured service.
+#   C8S_BINARY, C8S_BINARY_SHA256, C8S_SOURCE_COMMIT select a clean local build
+#                      instead of C8S_REF. C8S_GO selects its Go inspection tool.
+#   C8S_NATIVE_WORKLOAD_BINARY, C8S_NATIVE_WORKLOAD_SHA256 select the local-only
+#                      qualification binary; C8S_SOURCE_COMMIT still applies.
+#   C8S_KERNEL_REUSE_DIR, C8S_KERNEL_MANIFEST_SHA256 optionally import a trusted
+#                      local kernel manifest and vmlinuz after source validation.
 set -euo pipefail
-[ -n "${C8S_REF:-}" ] \
-    || { echo "images/cds-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+fail() { echo "images/cds-guest/build: $*" >&2; exit 1; }
+[ "$#" -eq 0 ] || fail "extra builder arguments are not accepted"
 IMAGE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # One verifier version for the whole cluster: .github/build-pins.json pins the
 # attestation-api image of the attestation-rs release CI's node images build
@@ -34,15 +41,127 @@ ATTESTATION_API_DIGEST=$(jq -er '.builds["node-image"].attestation_api_digest' "
 CONFOS_DIR=${CONFOS_DIR:-"$IMAGE_DIR/../../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] \
     || { echo "images/cds-guest/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
+CONFOS_DIR=$(cd "$CONFOS_DIR" && pwd)
+extra=()
+source=()
+role=${C8S_GUEST_ROLE:-cds}
+variant=()
+input_binary=${C8S_BINARY:-}
+input_sha256=${C8S_BINARY_SHA256:-}
+binary_name=c8s
+binary_package=github.com/confidential-dot-ai/c8s/cmd/c8s
+digest_field=c8s_sha256
+sync_name=c8s-binary-sha256
+case "$role" in
+    cds) image=cds; platform=both ;;
+    custody)
+        image=cds-custody; platform=snp
+        variant=(--profile-dir "$IMAGE_DIR/custody" --smp 2)
+        ;;
+    native-workload)
+        [ -z "${C8S_REF:-}${C8S_BINARY:-}${C8S_BINARY_SHA256:-}" ] \
+            || fail "native-workload accepts only its explicit local qualification binary"
+        input_binary=${C8S_NATIVE_WORKLOAD_BINARY:-}
+        input_sha256=${C8S_NATIVE_WORKLOAD_SHA256:-}
+        [ -n "$input_binary" ] || fail "native-workload requires C8S_NATIVE_WORKLOAD_BINARY"
+        binary_name=cds-native-workload.test
+        binary_package=github.com/confidential-dot-ai/c8s/internal/cmds/cds.test
+        digest_field=native_workload_sha256
+        sync_name=native-workload-sha256
+        image=cds-native-workload; platform=both
+        variant=(--profile-dir "$IMAGE_DIR/native-workload" --smp 2)
+        ;;
+    *) fail "C8S_GUEST_ROLE must be cds, custody or native-workload" ;;
+esac
+if [ "$role" != native-workload ]; then
+    [ -z "${C8S_NATIVE_WORKLOAD_BINARY:-}${C8S_NATIVE_WORKLOAD_SHA256:-}" ] \
+        || fail "qualification binary inputs require the native-workload role"
+fi
+staging=""
+trap '[ -z "$staging" ] || rm -rf -- "$staging"' EXIT
+if [ -n "$input_binary" ]; then
+    [ -z "${C8S_REF:-}" ] || fail "local binaries and C8S_REF are mutually exclusive"
+    [[ "$input_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "local binary requires an explicit SHA256"
+    [[ "${C8S_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || fail "C8S_SOURCE_COMMIT must be a full commit"
+    [ -f "$input_binary" ] && [ -x "$input_binary" ] || fail "local binary must be an executable regular file"
+    expected_builder=$(jq -er '.builds["node-image"].confos_ref' "$PINS")
+    [ "$(git -C "$CONFOS_DIR" rev-parse HEAD)" = "$expected_builder" ] || fail "local builds require the pinned confos commit"
+    git -C "$CONFOS_DIR" diff --quiet && git -C "$CONFOS_DIR" diff --cached --quiet \
+        || fail "local builds require clean tracked confos sources"
+    # mkosi consumes ignored overlays and local configs; cache stamps do not
+    # authenticate cached executables. Require a fresh checkout, without either.
+    [ -z "$(git -C "$CONFOS_DIR" ls-files --others --directory)" ] \
+        || fail "local builds require a fresh confos checkout without untracked or ignored files, including caches"
+    staging=$(mktemp -d)
+    install -D -m 0755 "$input_binary" "$staging/usr/local/bin/$binary_name"
+    [ "$(sha256sum "$staging/usr/local/bin/$binary_name" | cut -d' ' -f1)" = "$input_sha256" ] \
+        || fail "local binary SHA256 does not match"
+    metadata=$("${C8S_GO:-go}" version -m "$staging/usr/local/bin/$binary_name")
+    build_value() {
+        awk -v key="$1=" '$1 == "build" && index($2, key) == 1 {print substr($2, length(key) + 1)}' <<<"$metadata"
+    }
+    [ "$(awk '$1 == "path" {print $2}' <<<"$metadata")" = "$binary_package" ] \
+        || fail "local binary must be the $binary_package package"
+    [ "$(build_value GOOS)" = linux ] && [ "$(build_value GOARCH)" = amd64 ] \
+        && [ "$(build_value CGO_ENABLED)" = 0 ] && [ "$(build_value vcs)" = git ] \
+        && [ "$(build_value vcs.revision)" = "$C8S_SOURCE_COMMIT" ] \
+        && [ "$(build_value vcs.modified)" = false ] \
+        || fail "local binary must record a clean matching commit and static linux/amd64 build"
+    mkdir -p "$staging/usr/lib/cds"
+    jq -n --arg commit "$C8S_SOURCE_COMMIT" --arg binary "$input_sha256" \
+        --arg builder "$expected_builder" --arg digest_field "$digest_field" \
+        '{source_commit: $commit, ($digest_field): $binary, confos_commit: $builder}' \
+        > "$staging/usr/lib/cds/build.json"
+    chmod 0644 "$staging/usr/lib/cds/build.json"
+    if [ -n "${C8S_KERNEL_REUSE_DIR:-}${C8S_KERNEL_MANIFEST_SHA256:-}" ]; then
+        [[ "${C8S_KERNEL_MANIFEST_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] \
+            || fail "kernel reuse requires an explicit manifest SHA256"
+        reuse=${C8S_KERNEL_REUSE_DIR:-}
+        [ -d "$reuse" ] && [ ! -L "$reuse" ] \
+            || fail "kernel reuse requires a regular directory"
+        [ "$(find "$reuse" -mindepth 1 -maxdepth 1 -printf x)" = xx ] \
+            || fail "kernel reuse accepts only manifest.json and vmlinuz"
+        mkdir "$staging/kernel"
+        for file in manifest.json vmlinuz; do
+            [ -f "$reuse/$file" ] && [ ! -L "$reuse/$file" ] \
+                || fail "kernel reuse files must be regular and not symlinks"
+            install -m 0644 "$reuse/$file" "$staging/kernel/$file"
+        done
+        [ "$(sha256sum "$staging/kernel/manifest.json" | cut -d' ' -f1)" = "$C8S_KERNEL_MANIFEST_SHA256" ] \
+            || fail "kernel reuse manifest SHA256 does not match"
+        kernel_sha256=$(jq -er 'select(.version == 1) | .outputs.vmlinuz_sha256' "$staging/kernel/manifest.json")
+        [[ "$kernel_sha256" =~ ^[0-9a-f]{64}$ ]] \
+            && [ "$(sha256sum "$staging/kernel/vmlinuz" | cut -d' ' -f1)" = "$kernel_sha256" ] \
+            || fail "kernel reuse artifact SHA256 does not match"
+        [ ! -e "$CONFOS_DIR/output/kernel" ] && [ ! -L "$CONFOS_DIR/output/kernel" ] \
+            || fail "kernel output already exists"
+        mkdir -p "$CONFOS_DIR/output/kernel"
+        install -m 0644 "$staging/kernel/manifest.json" "$staging/kernel/vmlinuz" "$CONFOS_DIR/output/kernel/"
+        # The pinned builder recomputes every kernel input fingerprint before
+        # accepting this cache; initrd and guest builds still run normally.
+        rm -rf "$staging/kernel"
+    fi
+    extra=(--extra "$staging")
+    source=(--sync-input "$sync_name=$input_sha256")
+else
+    [ -z "${C8S_KERNEL_REUSE_DIR:-}${C8S_KERNEL_MANIFEST_SHA256:-}" ] \
+        || fail "kernel reuse requires an explicit local binary"
+    [ -z "${C8S_BINARY_SHA256:-}${C8S_SOURCE_COMMIT:-}" ] || fail "local provenance requires C8S_BINARY"
+    [ -n "${C8S_REF:-}" ] || fail "C8S_REF or an explicit local binary is required"
+    source=(--sync-input "c8s-ref=$C8S_REF")
+fi
 cd "$CONFOS_DIR"
 # A profile dir is enabled under its basename, so ./cds must keep that name.
 # attest before cds: profile order is mkosi's config-merge order, so ./cds's
 # sync hook runs last and its attestation-api is the one measured.
-exec bin/confos build cds \
+bin/confos build "$image" \
     --profile attest \
     --profile cds \
     --profile-dir "$IMAGE_DIR/cds" \
-    --sync-input "c8s-ref=${C8S_REF}" \
+    "${variant[@]}" "${extra[@]}" "${source[@]}" \
     --sync-input "attestation-api-digest=${ATTESTATION_API_DIGEST}" \
-    --platform both \
+    --platform "$platform" \
     --memory 4G
+if [ -n "$staging" ]; then
+    install -m 0644 "$staging/usr/lib/cds/build.json" "output/$image/c8s-source.json"
+fi

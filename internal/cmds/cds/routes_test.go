@@ -408,6 +408,7 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
+		allowlistDB:                ":memory:",
 		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
 		maxHeaderBytes:             1,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,

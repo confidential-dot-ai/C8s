@@ -7,3 +7,67 @@ config="$BUILDROOT/etc/attestation-api/config.toml"
 grep -qx 'bind = "0.0.0.0:8400"' "$config"
 sed -i 's/^bind = "0.0.0.0:8400"$/bind = "127.0.0.1:8400"/' "$config"
 grep -qx 'bind = "127.0.0.1:8400"' "$config"
+
+# Both CDS and custody hold recovery material. The measured image must not
+# offer the host a login, command runner, or credential-created unit override.
+for unit in getty@.service serial-getty@.service console-getty.service container-getty@.service \
+    rescue.service emergency.service debug-shell.service ssh.service sshd.service \
+    qemu-guest-agent.service systemd-sysext.service systemd-confext.service; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+mkdir -p "$BUILDROOT/etc/systemd/system-generators"
+for generator in systemd-debug-generator systemd-run-generator systemd-getty-generator; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system-generators/$generator"
+done
+grep -q '^root:!:' "$BUILDROOT/etc/shadow"
+test -f "$BUILDROOT/etc/cloud/cloud-init.disabled"
+
+# Download proxy trust belongs to the build tools. The guest may trust only
+# the public roots selected from its signed distribution package, never a
+# copied workspace CA or a local certificate added by a build environment.
+if [ -d "$BUILDROOT/usr/local/share/ca-certificates" ]; then
+    local_roots=$(find "$BUILDROOT/usr/local/share/ca-certificates" \( -type f -o -type l \) -print -quit)
+    test -z "$local_roots"
+fi
+expected=$(mktemp)
+selected=$(mktemp)
+trap 'rm -f "$expected" "$selected"' EXIT
+while IFS= read -r certificate || [ -n "$certificate" ]; do
+    case "$certificate" in ''|'#'*|'!'*) continue ;; esac
+    # Distribution names include Unicode and '='. Constrain the path to one
+    # filename, rather than assuming an ASCII alphabet for a public CA name.
+    [[ "$certificate" =~ ^mozilla/[^/[:cntrl:]]+\.crt$ ]] \
+        || { echo "cds image: non-distribution CA selection" >&2; exit 1; }
+    test -f "$BUILDROOT/usr/share/ca-certificates/$certificate" \
+        && test ! -L "$BUILDROOT/usr/share/ca-certificates/$certificate" \
+        || { echo "cds image: certificate source must be a regular file" >&2; exit 1; }
+    sed -e '$a\' "$BUILDROOT/usr/share/ca-certificates/$certificate" >> "$expected"
+    printf '%s\n' "/usr/share/ca-certificates/$certificate" >> "$selected"
+done < "$BUILDROOT/etc/ca-certificates.conf"
+test -s "$expected"
+cmp "$expected" "$BUILDROOT/etc/ssl/certs/ca-certificates.crt"
+# Go also scans certificate directories after reading the bundle. Reject an
+# extra PEM or hashed link even if somebody left the public bundle untouched.
+shopt -s dotglob
+read_target() {
+    IFS= read -r -d '' target < <(readlink --zero -- "$1")
+    [[ ! "$target" =~ [[:cntrl:]] ]] \
+        || { echo "cds image: control character in certificate link" >&2; exit 1; }
+}
+for certificate in "$BUILDROOT/etc/ssl/certs/"*; do
+    [ "${certificate##*/}" != ca-certificates.crt ] || continue
+    [ -L "$certificate" ] || { echo "cds image: unexpected certificate directory entry" >&2; exit 1; }
+    read_target "$certificate"
+    if [[ "$target" =~ ^[^/[:cntrl:]]+\.pem$ ]]; then
+        read_target "$BUILDROOT/etc/ssl/certs/$target"
+    fi
+    grep -Fxq -- "$target" "$selected" \
+        || { echo "cds image: non-distribution certificate directory entry" >&2; exit 1; }
+done
+test ! -e "$BUILDROOT/etc/pki/tls/certs" && test ! -L "$BUILDROOT/etc/pki/tls/certs" \
+    || { echo "cds image: alternate certificate directory is not allowed" >&2; exit 1; }
+
+# Git does not preserve public read modes. networkd reads this after dropping
+# privileges, so a private source checkout must not make DHCP fail at boot.
+chmod 0644 "$BUILDROOT/etc/systemd/network/80-dhcp.network" \
+    "$BUILDROOT/etc/systemd/system/cds.service" "$config"

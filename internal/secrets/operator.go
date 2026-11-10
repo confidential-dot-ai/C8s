@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
+	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -109,7 +110,15 @@ func (h OperatorHandler) create(w http.ResponseWriter, r *http.Request, path str
 		writeResult(w, http.StatusConflict, PutResponse{Path: path, Existing: held.Origin})
 		return
 	}
-	h.logger().Info("operator secret created", "path", path, "bytes", len(value))
+	server.LogAfterCommit(
+		r.Context(),
+		h.logger(),
+		"operator secret created",
+		"path",
+		path,
+		"bytes",
+		len(value),
+	)
 	writeResult(w, http.StatusCreated, PutResponse{Path: path, Created: true})
 }
 
@@ -119,11 +128,29 @@ func (h OperatorHandler) replace(w http.ResponseWriter, r *http.Request, path st
 		return
 	}
 	if !held.Exists {
-		h.logger().Info("operator secret created", "path", path, "bytes", len(value))
+		server.LogAfterCommit(
+			r.Context(),
+			h.logger(),
+			"operator secret created",
+			"path",
+			path,
+			"bytes",
+			len(value),
+		)
 		writeResult(w, http.StatusCreated, PutResponse{Path: path, Created: true})
 		return
 	}
-	h.logger().Info("operator secret replaced", "path", path, "bytes", len(value), "existing", held.Origin)
+	server.LogAfterCommit(
+		r.Context(),
+		h.logger(),
+		"operator secret replaced",
+		"path",
+		path,
+		"bytes",
+		len(value),
+		"existing",
+		held.Origin,
+	)
 	writeResult(w, http.StatusOK, PutResponse{Path: path, Existing: held.Origin})
 }
 

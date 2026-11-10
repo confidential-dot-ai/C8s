@@ -64,7 +64,12 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.allowedCNPattern, "allowed-cn-pattern", "", "regex the CSR Subject CN must match in full (empty disables)")
 	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "how often /readyz probes the attestation-api health; must be positive")
 	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
-	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
+	flags.StringVar(
+		&cfg.allowlistDB,
+		"allowlist-db",
+		"",
+		"path to the local allowlist database (required unless the measured configuration selects objectState)",
+	)
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
@@ -83,7 +88,6 @@ func NewCmd() *cobra.Command {
 	for _, name := range []string{
 		"config",
 		"attestation-api-url",
-		"allowlist-db",
 	} {
 		_ = cmd.MarkFlagRequired(name)
 	}
@@ -106,6 +110,7 @@ func NewCmd() *cobra.Command {
 	cmd.AddCommand(cdsca.NewCmd())
 	cmd.AddCommand(cdslaunch.NewCmd())
 	cmd.AddCommand(newHACmd())
+	cmd.AddCommand(newObjectCustodyCmd())
 
 	return cmd
 }

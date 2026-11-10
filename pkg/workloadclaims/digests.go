@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -171,21 +172,43 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 //
 // cdsPins follows the node's own pins, so a replica relaunched on a newly
 // decreed CDS image reaches the endpoint.
-func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
+// An optional true also requires every authenticated CDS peer to forbid migration.
+func DigestsServerTLSConfig(
+	platform string,
+	attestFunc func(
+		ctx context.Context,
+		customData string,
+	) (string, error),
+	attestationApiURL string,
+	cdsPins armtls.PinSource,
+	certTTL time.Duration,
+	measuredPolicies string,
+	requireNonMigratable ...bool,
+) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
 	}
+	policy := armtls.Pins(cdsPins.Current().Policy()).VerifyPolicy(attestationApiURL)
+	policy.RequireNonMigratable = slices.Contains(
+		requireNonMigratable,
+		true,
+	)
 	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
 		Platform:             platform,
 		AttestFunc:           attestFunc,
 		CertTTL:              certTTL,
-		ClientPolicy:         armtls.Pins(cdsPins.Current().Policy()).VerifyPolicy(attestationApiURL),
+		ClientPolicy:         policy,
 		MeasuredPoliciesFile: measuredPolicies,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	armtls.FollowClientPins(tlsCfg, cdsPins, attestationApiURL)
+	armtls.FollowClientPins(
+		tlsCfg,
+		cdsPins,
+		attestationApiURL,
+		policy.RequireNonMigratable,
+	)
 	return tlsCfg, certMgr, nil
 }
 
@@ -202,14 +225,37 @@ func requireAttestationApi(url string) error {
 
 // StartDigestsEndpoint binds DigestsPort and serves the identity and digests
 // routes for the node's NRI inventory.
+// An optional true requires authenticated CDS peers to forbid migration.
 //
 // The listener is bound before the certificate warm-up so a token never names a
 // port nothing is listening on, and so a port conflict surfaces immediately
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, measuredPolicies string) error {
-	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
+func StartDigestsEndpoint(
+	ctx context.Context,
+	logger *slog.Logger,
+	resolver SandboxResolver,
+	identity []byte,
+	platform string,
+	attestFunc func(
+		ctx context.Context,
+		customData string,
+	) (string, error),
+	attestationApiURL string,
+	cdsPins armtls.PinSource,
+	measuredPolicies string,
+	requireNonMigratable ...bool,
+) error {
+	tlsCfg, certMgr, err := DigestsServerTLSConfig(
+		platform,
+		attestFunc,
+		attestationApiURL,
+		cdsPins,
+		0,
+		measuredPolicies,
+		requireNonMigratable...,
+	)
 	if err != nil {
 		return err
 	}
@@ -244,13 +290,19 @@ type DigestsClient struct {
 
 // DigestsClientConfig configures [NewDigestsClient].
 type DigestsClientConfig struct {
-	Platform          string
-	AttestFunc        func(ctx context.Context, customData string) (string, error)
+	Platform   string
+	AttestFunc func(
+		ctx context.Context,
+		customData string,
+	) (string, error)
 	AttestationAPIURL string
 	// NodeImages are the node images an inventory may run — the set CDS
 	// certifies its nodes by. A set that names no guest is refused
 	// ([armtls.ErrUnpinned]).
 	NodeImages armtls.PinSource
+	// RequireNonMigratable requires native SNP or TDX inventory peers whose
+	// authenticated launch policy forbids migration, including after pin refresh.
+	RequireNonMigratable bool
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
 	// MeasuredPoliciesFile is the node's measured-policy journal its TDX client
@@ -259,8 +311,10 @@ type DigestsClientConfig struct {
 }
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
+	policy := armtls.Pins(c.NodeImages.Current().Policy()).VerifyPolicy(c.AttestationAPIURL)
+	policy.RequireNonMigratable = c.RequireNonMigratable
 	return &armtls.ClientConfig{
-		Policy:               armtls.Pins(c.NodeImages.Current().Policy()).VerifyPolicy(c.AttestationAPIURL),
+		Policy:               policy,
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
@@ -273,7 +327,10 @@ func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 // It warms its own armTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first
 // pod's issuance deadline.
-func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsClient, error) {
+func NewDigestsClient(
+	ctx context.Context,
+	cfg DigestsClientConfig,
+) (*DigestsClient, error) {
 	if err := requireAttestationApi(cfg.AttestationAPIURL); err != nil {
 		return nil, err
 	}
@@ -285,7 +342,12 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 		return nil, fmt.Errorf("workloadclaims: build sandbox-digests client: %w", err)
 	}
 	// An inventory relaunched on a newly certified image needs no restart.
-	armtls.FollowServerPins(tlsCfg, cfg.NodeImages, cfg.AttestationAPIURL)
+	armtls.FollowServerPins(
+		tlsCfg,
+		cfg.NodeImages,
+		cfg.AttestationAPIURL,
+		cfg.RequireNonMigratable,
+	)
 	warmupCtx, cancel := context.WithTimeout(ctx, warmUpBudget)
 	defer cancel()
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {

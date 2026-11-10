@@ -50,6 +50,9 @@ func run(cfg config) error {
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
+	if cfg.measured.ObjectState != nil {
+		return runObjectCDS(ctx, cfg)
+	}
 
 	challengeLimiter, err := issuer.NewIPRateLimiter(rate.Limit(cfg.rateLimit), cfg.rateBurst, cfg.rateLimiterMax)
 	if err != nil {
@@ -66,10 +69,6 @@ func run(cfg config) error {
 	operatorKeysHash, err := operatorauth.KeySetHash(operatorKeys.Keys())
 	if err != nil {
 		return fmt.Errorf("hash operator public keys: %w", err)
-	}
-	verifier := operatorauth.Verifier{
-		Keys:      operatorKeys.Keys(),
-		ClockSkew: time.Duration(cfg.jwtClockSkew) * time.Second,
 	}
 	slog.Info("operator write authorization enabled (pinned operator keys)", "count", len(operatorKeys.Keys()), "key_set_hash", operatorKeysHash)
 
@@ -102,15 +101,14 @@ func run(cfg config) error {
 	nodeImages := separatePodAuthorities(back.NodeImages(), cfg.measured.PodImages)
 	logNodeImages(nodeImages.Current())
 
-	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
-	if err != nil {
+	if _, err := compilePattern(
+		"--allowed-cn-pattern",
+		cfg.allowedCNPattern,
+	); err != nil {
 		return err
 	}
 
 	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
-	// A pool of its own for /secrets: sharing one would make a nonce minted
-	// for issuance redeemable against a secret, and vice versa.
-	challengeStore, secretsChallenges := back.Challenges()
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
@@ -131,111 +129,39 @@ func run(cfg config) error {
 	if err := allowlistWrites.StartJournal(); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
-	operatorAuthorizer := singleUse(verifier.AuthorizeIssuedAt, allowlistWrites, back.TokenFloor, time.Duration(cfg.jwtClockSkew)*time.Second)
-
-	policy := issuer.CSRPolicy{
-		DNSSANPatterns:   cfg.measured.DNSSANPatterns,
-		AllowedCNPattern: cnPattern,
-	}
-
-	// The sandbox-digests callback: at issuance CDS asks the inventory that
-	// admitted a pod what the pod is running (docs/armtls.md, "Sandbox
-	// identity"). Pins the same node identities as /attest, so the inventory
-	// answering is held to the standard its armTLS certificate already met.
-	inventoryHosts := cfg.measured.NodeCIDRs
-	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodeImages))
+	app, err := newApplication(
+		ctx,
+		cfg,
+		back,
+		&checker,
+		rateLimiter,
+		challengeLimiter,
+	)
 	if err != nil {
 		return err
 	}
-	sandboxBindings := back.Bindings()
-
-	var (
-		secretsHandler  *secrets.Handler
-		secretsOperator *secrets.OperatorHandler
-		secretsExplain  *secrets.ExplainHandler
-	)
-	if enabled, why := secretsEnabled(nodeImages.Current().Images, inventoryHosts); enabled {
-		// One store behind both handlers: an operator write and a workload read
-		// are two doors onto the same paths.
-		store := back.Secrets()
-		policy := secrets.NewCachedPolicy(allowlistWrites)
-		secretsHandler = &secrets.Handler{
-			Store:          store,
-			Challenges:     secretsChallenges,
-			Inventory:      sandboxDigests,
-			Bindings:       sandboxBindings,
-			Policy:         policy,
-			InventoryHosts: inventoryHosts,
-			Logger:         slog.Default(),
-		}
-		secretsOperator = &secrets.OperatorHandler{
-			Store:        store,
-			Authorize:    operatorAuthorizer,
-			MaxBodyBytes: allowlistWriteBodyCap,
-			Logger:       slog.Default(),
-		}
-		// The same inventory, binding and policy the release path reads, so the
-		// diagnostic answers about the decision rather than about a copy of it.
-		secretsExplain = &secrets.ExplainHandler{
-			Inventory:      sandboxDigests,
-			Bindings:       sandboxBindings,
-			Policy:         policy,
-			InventoryHosts: inventoryHosts,
-			Authorize:      operatorAuthorizer,
-			Logger:         slog.Default(),
-		}
+	deps, err := app.dependencies(back)
+	if err != nil {
+		return err
+	}
+	if enabled, why := secretsEnabled(
+		nodeImages.Current().Images,
+		cfg.measured.NodeCIDRs,
+	); enabled {
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
 	} else {
-		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
-	}
-
-	deps := dependencies{
-		AttestHandler: AttestHandler{
-			Challenges:        challengeStore,
-			AttestationClient: asClient,
-			MeshCA:            mesh,
-			CertTTL:           cfg.certTTL,
-			NamedCertTTL:      cfg.namedCertTTL,
-			RouterCertTTL:     cfg.routerCertTTL,
-			RequestTimeout:    cfg.requestTimeout,
-			PodImages:         cfg.measured.PodImages,
-			SANValidation:     cfg.sanValidation,
-			Policy:            policy,
-			AllowlistStore:    allowlistWrites,
-			PolicySnapshots:   &policySnapshotCache{},
-			SandboxDigests:    sandboxDigests,
-			InventoryHosts:    inventoryHosts,
-			SandboxBindings:   sandboxBindings,
-		},
-		AllowlistHandler: allowlist.Handler{
-			Allowlist:         allowlistWrites,
-			WriteAuthorizer:   operatorAuthorizer,
-			MaxWriteBodyBytes: allowlistWriteBodyCap,
-		},
-		Routes: routeHandler{
-			Allowlist: allowlistWrites,
-			Authorize: operatorAuthorizer,
-		},
-		ReadyFn:           readinessFn(checker.Ready, back, cfg.minCAValidity),
-		MeshCA:            mesh,
-		ClusterRoutes:     back.ClusterRoutes(),
-		OperatorKeysPEM:   operatorKeys.PEM(),
-		NodeImages:        nodeImages,
-		RateLimiter:       rateLimiter,
-		ChallengeLimiter:  challengeLimiter,
-		MaxRequestSize:    cfg.maxRequestSize,
-		SecretsHandler:    secretsHandler,
-		SecretsChallenges: secretsChallenges,
-		SecretsOperator:   secretsOperator,
-		SecretsExplain:    secretsExplain,
+		slog.Warn(
+			"NOT serving /secrets: any workload depending on a secret will fail to start",
+			"reason",
+			why,
+		)
 	}
 	if kms := cfg.measured.KMS; kms != nil {
-		broker, err := newSecretBroker(mesh)
-		if err != nil {
-			return err
-		}
-		deps.PodSecrets = &PodSecretHandler{Broker: broker, KMS: newKMSClient(kms)}
-		slog.Info("serving "+secretbroker.PodRoute+"; pod secret release is brokered to the configured KMS", "kms_url", kms.URL)
+		slog.Info(
+			"serving "+secretbroker.PodRoute+"; pod secret release is brokered to the configured KMS",
+			"kms_url",
+			kms.URL,
+		)
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
@@ -338,6 +264,7 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 // certifies, so the two follow one set.
 func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims.DigestsClientConfig {
 	return workloadclaims.DigestsClientConfig{
+		RequireNonMigratable: cfg.measured != nil && cfg.measured.ObjectState != nil,
 		Platform:             cfg.armtlsPlatform.String(),
 		AttestFunc:           armtlsAttestFunc(cfg),
 		AttestationAPIURL:    cfg.attestationApiURL,
@@ -430,6 +357,9 @@ func imagesWithoutRegisters(images []remote.ImagePin) []string {
 func validateConfig(cfg config) error {
 	if cfg.measured == nil {
 		return fmt.Errorf("--config: CDS serves one cluster's measured configuration and was given none")
+	}
+	if cfg.measured.ObjectState == nil && cfg.allowlistDB == "" {
+		return errors.New("--allowlist-db is required without objectState")
 	}
 	if len(cfg.measured.OperatorKeys.Keys()) == 0 {
 		return fmt.Errorf("--config: the configuration pins no operator key, so no policy write could ever be authorized")

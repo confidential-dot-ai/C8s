@@ -23,9 +23,10 @@ if [ "${profiles[*]}" != "attest cds" ]; then
   echo "::error::$build must enable the attest and cds profiles in that order, got: ${profiles[*]:-none}"
   exit 1
 fi
-profile_dir=$(grep -oE -- '--profile-dir "[^"]+"' "$build" | sed 's/.*"\(.*\)"$/\1/')
-if [ "${profile_dir##*/}" != cds ]; then
-  echo "::error::$build must stage a profile dir named cds, which is the name confos enables it under; got: ${profile_dir:-none}"
+mapfile -t profile_dirs < <(grep -oE -- '--profile-dir "[^"]+"' "$build" | sed 's/.*"\(.*\)"$/\1/' | sort)
+if [ "${#profile_dirs[@]}" -ne 3 ] || [ "${profile_dirs[0]##*/}" != cds ] \
+   || [ "${profile_dirs[1]##*/}" != custody ] || [ "${profile_dirs[2]##*/}" != native-workload ]; then
+  echo "::error::$build may stage only the fixed cds, custody and native-workload profiles"
   exit 1
 fi
 if grep -qF -- '"$@"' "$build"; then
@@ -45,6 +46,10 @@ fi
 # without this flag every SNP self-report fails and the CDS never listens.
 if ! grep -qE '^KernelCommandLine=.*snp_measurement_registers=off' "$profile/mkosi.conf"; then
   echo "::error::$profile/mkosi.conf must put snp_measurement_registers=off on the kernel command line"
+  exit 1
+fi
+if ! grep -qE '^KernelCommandLine=.*systemd.import_credentials=no' "$profile/mkosi.conf"; then
+  echo "::error::$profile/mkosi.conf must disable host credential imports"
   exit 1
 fi
 units=$(find "$profile/mkosi.extra" -name '*.service' -printf '%f\n' | sort | tr '\n' ' ')
@@ -99,10 +104,10 @@ fi
 
 # A host-reachable arbitrary-REPORTDATA API would let the host borrow this
 # VM's attestation for its own keys. confos copies each profile dir into its
-# own tree, which rejects a link out of it, so both images carry the same
-# finalize hook rather than sharing one file.
-if [ ! -x "$finalize" ] || ! cmp -s "$finalize" "$worker_finalize"; then
-  echo "::error::$finalize must be executable and byte-identical to $worker_finalize, whose content the worker gate checks"
+# own tree, which rejects a link out of it. CDS retains the same loopback
+# prefix and then applies its custody and storage trust hardening.
+if [ ! -x "$finalize" ] || ! cmp -s -n "$(wc -c < "$worker_finalize")" "$finalize" "$worker_finalize"; then
+  echo "::error::$finalize must retain the worker hook's checked loopback prefix"
   exit 1
 fi
 if ! grep -qF -- '--attestation-api-url=http://127.0.0.1:8400' "$unit"; then
@@ -120,7 +125,7 @@ if ! grep -qF -- "--config=$staged" "$unit"; then
   echo "::error::$unit must read the CDS config from the staged launch file ($staged)"
   exit 1
 fi
-if ! grep -qF "cp /opkey/pubkey /sysroot$staged" confos/mkosi/initrd/mkosi.extra/init; then
+if ! grep -qF "cp /opkey/pubkey /sysroot$staged" "${CONFOS_DIR:-confos}/mkosi/initrd/mkosi.extra/init"; then
   echo "::error::confos initrd no longer stages the launch file at $staged; cds.service reads that path — update both together"
   exit 1
 fi

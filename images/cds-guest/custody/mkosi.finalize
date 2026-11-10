@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+ln -sf /dev/null "$BUILDROOT/etc/systemd/system/cds.service"
+chmod 0644 "$BUILDROOT/etc/systemd/system/cds-custody.service"

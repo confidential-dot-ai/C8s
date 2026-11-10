@@ -1,0 +1,40 @@
+[Unit]
+Description=C8s protected CDS recovery custody
+ConditionPathExists=/run/confai/operator-pubkey
+Requires=attestation-api.service
+After=attestation-api.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt SSL_CERT_DIR=/etc/ssl/certs
+ExecStart=/usr/local/bin/c8s cds custody serve \
+    --config=/run/confai/operator-pubkey \
+    --attestation-api-url=http://127.0.0.1:8400 \
+    --listen=:8443
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/sev-guest rw
+TasksMax=256
+MemoryMax=3G
+
+[Install]
+WantedBy=multi-user.target

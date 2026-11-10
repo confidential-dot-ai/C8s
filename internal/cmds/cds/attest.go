@@ -25,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -48,6 +49,10 @@ type AttestHandler struct {
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
+
+	// RequireNonMigratable refuses native guests whose authenticated launch
+	// policy could authorize migration. Object-state mode fixes it on.
+	RequireNonMigratable bool
 
 	// NodeImages are the node images permitted to obtain a signed leaf, each
 	// matched as one entry: its launch digest with the registers measured from
@@ -248,6 +253,18 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.RequireNonMigratable {
+		if err := armtls.EnforceNonMigratable(&verifyResp.Result); err != nil {
+			attestation.WriteError(
+				w,
+				http.StatusForbidden,
+				types.ErrorCodeMeasurementDenied,
+				"non-migratable native guest required",
+			)
+			return
+		}
+	}
+
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
 	if pod != nil {
 		if err := enforcePodImages(verifyResp, h.PodImages, req.Evidence.Platform, pod.RuntimeExtensions); err != nil {
@@ -394,7 +411,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if clientDocument != nil {
 		issued = append(issued, "client_document_digest", pod.ClientDocumentDigest)
 	}
-	slog.Info("certificate issued (in-process)", issued...)
+	server.LogAfterCommit(
+		r.Context(),
+		slog.Default(),
+		"certificate issued (in-process)",
+		issued...,
+	)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }

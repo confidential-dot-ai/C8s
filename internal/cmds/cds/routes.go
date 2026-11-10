@@ -21,6 +21,8 @@ import (
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
+	// DeferRequestLog is set when an outer transaction decides the final status.
+	DeferRequestLog   bool
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
@@ -66,7 +68,9 @@ func newRouter(deps dependencies) http.Handler {
 	// set /measurements publishes.
 	deps.AttestHandler.NodeImages = deps.NodeImages
 	r := chi.NewRouter()
-	r.Use(server.RequestLogger)
+	if !deps.DeferRequestLog {
+		r.Use(server.RequestLogger)
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

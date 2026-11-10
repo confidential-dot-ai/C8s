@@ -44,6 +44,8 @@ type Document struct {
 	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
+	// ObjectState selects encrypted object-backed HA instead of the HA peer set.
+	ObjectState *ObjectState
 }
 
 // Format renders doc as a CDS launch file under the schema version this
@@ -80,6 +82,7 @@ func (d Document) wire() (wire, error) {
 		LeafDNSPatterns:    d.LeafDNSPatterns,
 		HA:                 d.HA.wire(),
 		KMS:                d.KMS.wire(),
+		ObjectState:        d.ObjectState.wire(),
 	}, nil
 }
 

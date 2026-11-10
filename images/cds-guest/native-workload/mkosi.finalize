@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+test -x "$BUILDROOT/usr/local/bin/cds-native-workload.test"
+test ! -e "$BUILDROOT/usr/local/bin/c8s"
+ln -sf /dev/null "$BUILDROOT/etc/systemd/system/cds.service"
+chmod 0644 "$BUILDROOT/etc/systemd/system/cds-native-workload.service"

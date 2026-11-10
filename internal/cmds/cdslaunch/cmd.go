@@ -31,8 +31,8 @@ type options struct {
 	vcpus           []int
 	kmsURL          string
 	kmsTLSKey       string
-	// ha is the replica set the cluster's CDS runs as, empty for a cluster
-	// whose CDS is a singleton.
+	objectStateFile string
+	// ha selects peer coordination; singleton and object-backed CDS leave it empty.
 	ha cdsconfig.HA
 }
 
@@ -58,13 +58,20 @@ func newNewCmd() *cobra.Command {
 Each pin entry binds the configuration exactly; on SEV-SNP there is one entry
 per --vcpus count the VM may boot with.
 
-Every replica of a highly available CDS boots these same bytes: --replica and
---voters describe the cluster, and nothing in the file names one replica.
+Every replica of a highly available CDS boots these same bytes. For peer HA,
+--replica and --voters describe the cluster without naming one replica.
 docs/cds-ha.md says which of its fields the replicas only start from and which
-fix the cluster for its life.`,
+fix the cluster for its life.
+
+For encrypted object-backed state, use --object-state-file instead of --replica
+and --voters. This YAML file contains the objectState fields without the enclosing
+key and carries public settings only. See docs/cds-object-state.md.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("object-state-file") && opts.objectStateFile == "" {
+				return fmt.Errorf("--object-state-file requires a nonempty path")
+			}
 			if !cmd.Flags().Changed("leaf-dns-pattern") {
 				opts.leafDNSPatterns = []string{cmdsutil.ServiceDNSSANPattern}
 			}
@@ -92,6 +99,12 @@ fix the cluster for its life.`,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
 	f.StringVar(&opts.kmsURL, "kms-url", "", "optional https URL of the key management service CDS brokers pod secret release to (docs/pod-secrets.md); needs --pod-image-policy-file")
 	f.StringVar(&opts.kmsTLSKey, "kms-tls-key-sha256", "", "lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the KMS's TLS certificate; required with --kms-url")
+	f.StringVar(
+		&opts.objectStateFile,
+		"object-state-file",
+		"",
+		"YAML file of public objectState settings for encrypted object-backed HA (docs/cds-object-state.md); mutually exclusive with --replica/--voters",
+	)
 	cdsconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
