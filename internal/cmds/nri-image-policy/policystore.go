@@ -70,6 +70,14 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// admits applies the launch phases of baseAdmits to the served entries.
+func (s *policySnapshot) admits(r allowlist.RunningContainer, phase launchPhase) bool {
+	if phase == launchPreliminary {
+		return s.index.AdmitsProcess(r)
+	}
+	return s.index.AdmitsContainer(r)
+}
+
 // baseAdmitsPinned is the final baseAdmits restricted to entries that pin the
 // launch (allowlist.Container.LaunchPinned).
 func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
