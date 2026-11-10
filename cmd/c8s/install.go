@@ -438,229 +438,337 @@ the stored one plus one and the current Unix time in seconds, or
 
 Requires the 'helm' and 'kubectl' CLIs on PATH, and 'crane' for a
 --workload-ref image named by tag.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validatePlatform(installPlatform); err != nil {
-			return err
-		}
-		// Substitute any "-f -" before anything reads installValues, so the
-		// preflights and helm all see the piped values at a real path.
-		substituted, stdinCleanup, err := materializeStdinValues(installValues, cmd.InOrStdin())
-		if err != nil {
-			return err
-		}
-		defer stdinCleanup()
-		installValues = substituted
-
-		adoptions, err := collectWorkloadAdoptions(installWorkloadRefs)
-		if err != nil {
-			return err
-		}
-		if err := validateWorkloadAdoptionFlags(installNamespace, adoptions, installWait); err != nil {
-			return err
-		}
-		upstream, err := upstreamAddress(installUpstream, adoptions)
-		if err != nil {
-			return err
-		}
-		pin, removePin, err := resolveCDSPin(installValues)
-		if err != nil {
-			return err
-		}
-		defer removePin()
-		installCDS = pin
-		installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
-		if err := preflightUpstreamRoutes(); err != nil {
-			return err
-		}
-		if err := preflightRoutesOut(); err != nil {
-			return err
-		}
-		seedOnly := installSeedOut != ""
-		if seedOnly {
-			if installCDSAddress != "" || installCDSPin != "" {
-				return fmt.Errorf("--%s writes the seed the CDS is configured with, so it runs before --%s and --%s name one", flagSeedOut, flagCDSAddress, flagCDSPin)
-			}
-		} else if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err != nil {
-			return err
-		}
-		if _, err := exec.LookPath("helm"); err != nil {
-			return fmt.Errorf("helm CLI not found on PATH: %w", err)
-		}
-		if _, err := exec.LookPath("kubectl"); err != nil {
-			return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
-		}
-		adopted := make([]adoptedWorkload, 0, len(adoptions))
-		for _, adoption := range adoptions {
-			template, err := adoptedWorkloadTemplate(cmd.Context(), adoption.ref)
-			if err != nil {
-				return err
-			}
-			reportAdoptedImages(adoption, podTemplateImages(template).all())
-			adopted = append(adopted, adoptedWorkload{workloadAdoption: adoption, template: template})
-		}
-
-		// The cluster before the registry: an install that cannot reach the
-		// cluster it is for says so without first pulling a chart.
-		kubeVersion, err := clusterKubeVersion(cmd.Context())
-		if err != nil {
-			return err
-		}
-		work, err := os.MkdirTemp("", "c8s-install-*")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(work)
-		chart, err := installChart(cmd.Context(), work)
-		if err != nil {
-			return err
-		}
-		valuesFiles := orderedValuesFiles(chart.path, installPlatform, installValues)
-		// The computed values reach helm as the last -f, so they win over the
-		// operator's files on the keys they set.
-		valueArgs, err := buildValueArgs(chart.imagePins)
-		if err != nil {
-			return err
-		}
-		setArgs, adoptedEntries, err := appendResolvedWorkloadImageArgs(cmd.Context(), valueArgs, adopted, installUpstream)
-		if err != nil {
-			return err
-		}
-		render := seedRender{
-			chart:       chart.path,
-			release:     installRelease,
-			namespace:   installNamespace,
-			kubeVersion: kubeVersion,
-			valueFiles:  valuesFiles,
-		}
-		if seedOnly {
-			if render.computed, err = writeComputedValues(setArgs); err != nil {
-				return err
-			}
-			defer os.Remove(render.computed)
-			return writeInstallSeed(cmd.Context(), render, installSeedOut)
-		}
-
-		if installImagePullSecret != "" {
-			if err := preflightImagePullSecret(cmd.Context(), installNamespace, installImagePullSecret); err != nil {
-				return err
-			}
-		}
-
-		// The values the release will actually render with (chart defaults + -f
-		// + computed), read once and shared by the checks below.
-		values, err := effectiveValues(cmd.Context(), chart.path, valuesFiles, setArgs)
-		if err != nil {
-			return err
-		}
-		// The nodes this release runs on: the chart places every node agent
-		// and the router on the confidential ones, and the checks below read
-		// those nodes alone.
-		nodeSelector, err := confidentialNodeSelector(values)
-		if err != nil {
-			return err
-		}
-		nodes, err := confidentialNodes(cmd.Context(), nodeSelector)
-		if err != nil {
-			return err
-		}
-
-		// Fail fast when router's host port is already taken on every
-		// confidential node (e.g. an existing ingress owns 443), which would
-		// otherwise wedge `--wait`.
-		if err := preflightRouterHostPort(cmd.Context(), nodes); err != nil {
-			return err
-		}
-
-		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
-			return err
-		}
-
-		pods, err := confidentialNodePods(cmd.Context(), nodes)
-		if err != nil {
-			return err
-		}
-		if render.computed, err = writeComputedValues(setArgs); err != nil {
-			return err
-		}
-		defer os.Remove(render.computed)
-		helmArgs := buildInstallHelmArgs(chart.path, render.computed, valuesFiles, installWait)
-
-		if warn, err := checkNamedCDS(cmd.Context(), render, installCDS, values); err != nil {
-			return err
-		} else if warn != "" {
-			fmt.Fprintln(os.Stderr, "warning: "+warn)
-		}
-		var routes upstreamRoutes
-		var cdsURL string
-		if upstream != "" {
-			hosts, skipped := routeHosts(values, installRelease)
-			for _, san := range skipped {
-				fmt.Fprintf(os.Stderr, "warning: router.san entry %q cannot be a route manifest host, so --%s routes no requests for it\n", san, flagUpstream)
-			}
-			if len(hosts) == 0 {
-				return fmt.Errorf("--%s needs a DNS name in router.san to route requests for: a route manifest host cannot be a wildcard, an IP address or end in a numeric label", flagUpstream)
-			}
-			routes = upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}
-			if cdsURL, err = installCDSURL(values); err != nil {
-				return err
-			}
-		}
-
-		// Fail fast when the policy this install renders would deny the
-		// cluster's own platform pods: registering the plugin restarts
-		// containerd, and a denied control-plane static pod takes the API
-		// server with it. Read-only, so it runs with -f too.
-		if warn, err := preflightImagePolicy(os.Stdout, values, chart.components, installNamespace, pods, installForce); err != nil {
-			return err
-		} else if warn != "" {
-			fmt.Fprintln(os.Stderr, "warning: "+warn)
-		}
-
-		if err := preflightUpstreamContainerd(cmd.Context(), nodeSelector); err != nil {
-			return err
-		}
-
-		if err := preflightContainerdVersion(cmd.Context(), nodeSelector); err != nil {
-			return err
-		}
-
-		// The install ships privileged pods (nri-image-policy and
-		// attestation-api), so the namespace is labelled privileged: a
-		// CIS-hardened cluster would otherwise reject them at admission.
-		if err := applyNamespace(cmd.Context(), installNamespace); err != nil {
-			return err
-		}
-
-		fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
-		hc := exec.CommandContext(cmd.Context(), "helm", helmArgs...)
-		hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
-		if err := hc.Run(); err != nil {
-			return fmt.Errorf("helm install failed: %w", err)
-		}
-		for _, adoption := range adoptions {
-			if err := patchAdoptedWorkload(cmd.Context(), adoption.ref, adoption.cwID); err != nil {
-				return err
-			}
-		}
-		var storedRouteDigest string
-		if upstream != "" {
-			digest, err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cdsURL, adoptedEntries)
-			if err != nil {
-				return err
-			}
-			storedRouteDigest = digest
-		}
-
-		verifyURL, verifyPin := "https://<cds-address>", "<cds-pin.json>"
-		if url, err := installCDSURL(values); err == nil {
-			verifyURL = url
-		}
-		if installCDS != nil {
-			verifyPin = installCDS.path
-		}
-		printVerifyHint(os.Stdout, verifyURL, verifyPin, installOperatorKeysFlag(), storedRouteDigest)
-		return nil
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return installC8s(cmd)
 	},
+}
+
+// installC8s and the steps it calls read the flags' package globals; only
+// installC8s sets any of them.
+func installC8s(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	seedOnly := installSeedOut != ""
+	if err := validatePlatform(installPlatform); err != nil {
+		return err
+	}
+	// Substitute any "-f -" before anything reads installValues, so the
+	// preflights and helm all see the piped values at a real path.
+	substituted, stdinCleanup, err := materializeStdinValues(installValues, cmd.InOrStdin())
+	if err != nil {
+		return err
+	}
+	defer stdinCleanup()
+	installValues = substituted
+
+	adoptions, upstream, err := resolveWorkloadAdoptions()
+	if err != nil {
+		return err
+	}
+	pin, removePin, err := resolveCDSPin(installValues)
+	if err != nil {
+		return err
+	}
+	defer removePin()
+	installCDS = pin
+	installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
+	if err := checkInstallFlags(seedOnly); err != nil {
+		return err
+	}
+	adopted, err := readAdoptedWorkloads(ctx, adoptions)
+	if err != nil {
+		return err
+	}
+
+	// The cluster before the registry: an install that cannot reach the
+	// cluster it is for says so without first pulling a chart.
+	kubeVersion, err := clusterKubeVersion(ctx)
+	if err != nil {
+		return err
+	}
+	work, err := os.MkdirTemp("", "c8s-install-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	release, removeComputed, err := renderRelease(ctx, work, kubeVersion, adopted)
+	if err != nil {
+		return err
+	}
+	defer removeComputed()
+	if seedOnly {
+		return writeInstallSeed(ctx, release.seedRender(), installSeedOut)
+	}
+
+	plan, err := preflightCluster(ctx, release, upstream)
+	if err != nil {
+		return err
+	}
+	return applyRelease(ctx, release, plan, adoptions)
+}
+
+func resolveWorkloadAdoptions() (adoptions []workloadAdoption, upstream string, err error) {
+	adoptions, err = collectWorkloadAdoptions(installWorkloadRefs)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := validateWorkloadAdoptionFlags(installNamespace, adoptions, installWait); err != nil {
+		return nil, "", err
+	}
+	upstream, err = upstreamAddress(installUpstream, adoptions)
+	if err != nil {
+		return nil, "", err
+	}
+	return adoptions, upstream, nil
+}
+
+func checkInstallFlags(seedOnly bool) error {
+	if err := preflightUpstreamRoutes(); err != nil {
+		return err
+	}
+	if err := preflightRoutesOut(); err != nil {
+		return err
+	}
+	if seedOnly {
+		if installCDSAddress != "" || installCDSPin != "" {
+			return fmt.Errorf("--%s writes the seed the CDS is configured with, so it runs before --%s and --%s name one", flagSeedOut, flagCDSAddress, flagCDSPin)
+		}
+	} else if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("helm"); err != nil {
+		return fmt.Errorf("helm CLI not found on PATH: %w", err)
+	}
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
+	}
+	return nil
+}
+
+func readAdoptedWorkloads(
+	ctx context.Context,
+	adoptions []workloadAdoption,
+) ([]adoptedWorkload, error) {
+	adopted := make([]adoptedWorkload, 0, len(adoptions))
+	for _, adoption := range adoptions {
+		template, err := adoptedWorkloadTemplate(ctx, adoption.ref)
+		if err != nil {
+			return nil, err
+		}
+		reportAdoptedImages(adoption, podTemplateImages(template).all())
+		adopted = append(adopted, adoptedWorkload{workloadAdoption: adoption, template: template})
+	}
+	return adopted, nil
+}
+
+type releaseRender struct {
+	chart       renderChart
+	kubeVersion string
+	valuesFiles []string
+	setArgs     []string
+	// computed is the file setArgs are written to, the last -f helm reads.
+	computed string
+	// adoptedEntries are the allowlist entries written for adopted workloads.
+	adoptedEntries map[string]adoptedEntry
+}
+
+func (r releaseRender) seedRender() seedRender {
+	return seedRender{
+		chart:       r.chart.path,
+		release:     installRelease,
+		namespace:   installNamespace,
+		kubeVersion: r.kubeVersion,
+		valueFiles:  r.valuesFiles,
+		computed:    r.computed,
+	}
+}
+
+// renderRelease writes the computed values file, which the returned func
+// removes.
+func renderRelease(
+	ctx context.Context,
+	work string,
+	kubeVersion string,
+	adopted []adoptedWorkload,
+) (releaseRender, func(), error) {
+	chart, err := installChart(ctx, work)
+	if err != nil {
+		return releaseRender{}, nil, err
+	}
+	valuesFiles := orderedValuesFiles(chart.path, installPlatform, installValues)
+	// The computed values reach helm as the last -f, so they win over the
+	// operator's files on the keys they set.
+	valueArgs, err := buildValueArgs(chart.imagePins)
+	if err != nil {
+		return releaseRender{}, nil, err
+	}
+	setArgs, adoptedEntries, err := appendResolvedWorkloadImageArgs(ctx, valueArgs, adopted, installUpstream)
+	if err != nil {
+		return releaseRender{}, nil, err
+	}
+	computed, err := writeComputedValues(setArgs)
+	if err != nil {
+		return releaseRender{}, nil, err
+	}
+	release := releaseRender{
+		chart:          chart,
+		kubeVersion:    kubeVersion,
+		valuesFiles:    valuesFiles,
+		setArgs:        setArgs,
+		computed:       computed,
+		adoptedEntries: adoptedEntries,
+	}
+	removeComputed := func() {
+		os.Remove(computed)
+	}
+	return release, removeComputed, nil
+}
+
+type installPlan struct {
+	values map[string]any
+	// routes and cdsURL are set only with --upstream.
+	routes upstreamRoutes
+	cdsURL string
+}
+
+func (p installPlan) routesUpstream() bool {
+	return p.routes.address != ""
+}
+
+// preflightCluster runs, in this order, every check that reads the cluster
+// before the install changes it, and plans the --upstream routes; what they
+// print follows the same order.
+func preflightCluster(
+	ctx context.Context,
+	release releaseRender,
+	upstream string,
+) (installPlan, error) {
+	if installImagePullSecret != "" {
+		if err := preflightImagePullSecret(ctx, installNamespace, installImagePullSecret); err != nil {
+			return installPlan{}, err
+		}
+	}
+	// The values the release will actually render with (chart defaults + -f
+	// + computed), read once and shared by the checks below.
+	values, err := effectiveValues(ctx, release.chart.path, release.valuesFiles, release.setArgs)
+	if err != nil {
+		return installPlan{}, err
+	}
+	// The nodes this release runs on: the chart places every node agent
+	// and the router on the confidential ones, and the checks below read
+	// those nodes alone.
+	nodeSelector, err := confidentialNodeSelector(values)
+	if err != nil {
+		return installPlan{}, err
+	}
+	nodes, err := confidentialNodes(ctx, nodeSelector)
+	if err != nil {
+		return installPlan{}, err
+	}
+	// Fail fast when router's host port is already taken on every
+	// confidential node (e.g. an existing ingress owns 443), which would
+	// otherwise wedge `--wait`.
+	if err := preflightRouterHostPort(ctx, nodes); err != nil {
+		return installPlan{}, err
+	}
+	if err := checkAdoptedEntries(release.adoptedEntries, values); err != nil {
+		return installPlan{}, err
+	}
+	pods, err := confidentialNodePods(ctx, nodes)
+	if err != nil {
+		return installPlan{}, err
+	}
+	if warn, err := checkNamedCDS(ctx, release.seedRender(), installCDS, values); err != nil {
+		return installPlan{}, err
+	} else if warn != "" {
+		fmt.Fprintln(os.Stderr, "warning: "+warn)
+	}
+	plan := installPlan{values: values}
+	if upstream != "" {
+		if plan.routes, plan.cdsURL, err = planUpstreamRoutes(values, upstream); err != nil {
+			return installPlan{}, err
+		}
+	}
+	// Fail fast when the policy this install renders would deny the
+	// cluster's own platform pods: registering the plugin restarts
+	// containerd, and a denied control-plane static pod takes the API
+	// server with it. Read-only, so it runs with -f too.
+	if warn, err := preflightImagePolicy(os.Stdout, values, release.chart.components, installNamespace, pods, installForce); err != nil {
+		return installPlan{}, err
+	} else if warn != "" {
+		fmt.Fprintln(os.Stderr, "warning: "+warn)
+	}
+	if err := preflightUpstreamContainerd(ctx, nodeSelector); err != nil {
+		return installPlan{}, err
+	}
+	if err := preflightContainerdVersion(ctx, nodeSelector); err != nil {
+		return installPlan{}, err
+	}
+	return plan, nil
+}
+
+// planUpstreamRoutes is the route manifest --upstream needs: every router.san
+// DNS name routes to the upstream workload.
+func planUpstreamRoutes(values map[string]any, upstream string) (upstreamRoutes, string, error) {
+	hosts, skipped := routeHosts(values, installRelease)
+	for _, san := range skipped {
+		fmt.Fprintf(os.Stderr, "warning: router.san entry %q cannot be a route manifest host, so --%s routes no requests for it\n", san, flagUpstream)
+	}
+	if len(hosts) == 0 {
+		return upstreamRoutes{}, "", fmt.Errorf("--%s needs a DNS name in router.san to route requests for: a route manifest host cannot be a wildcard, an IP address or end in a numeric label", flagUpstream)
+	}
+	cdsURL, err := installCDSURL(values)
+	if err != nil {
+		return upstreamRoutes{}, "", err
+	}
+	return upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}, cdsURL, nil
+}
+
+// applyRelease is the only step that changes the cluster.
+func applyRelease(
+	ctx context.Context,
+	release releaseRender,
+	plan installPlan,
+	adoptions []workloadAdoption,
+) error {
+	// The install ships privileged pods (nri-image-policy and
+	// attestation-api), so the namespace is labelled privileged: a
+	// CIS-hardened cluster would otherwise reject them at admission.
+	if err := applyNamespace(ctx, installNamespace); err != nil {
+		return err
+	}
+	helmArgs := buildInstallHelmArgs(release.chart.path, release.computed, release.valuesFiles, installWait)
+	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
+	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
+	if err := hc.Run(); err != nil {
+		return fmt.Errorf("helm install failed: %w", err)
+	}
+	for _, adoption := range adoptions {
+		if err := patchAdoptedWorkload(ctx, adoption.ref, adoption.cwID); err != nil {
+			return err
+		}
+	}
+	var storedRouteDigest string
+	if plan.routesUpstream() {
+		digest, err := deliverUpstreamRoutes(ctx, os.Stdout, plan.routes, plan.cdsURL, release.adoptedEntries)
+		if err != nil {
+			return err
+		}
+		storedRouteDigest = digest
+	}
+	printInstallVerifyHint(plan.values, storedRouteDigest)
+	return nil
+}
+
+func printInstallVerifyHint(values map[string]any, storedRouteDigest string) {
+	verifyURL, verifyPin := "https://<cds-address>", "<cds-pin.json>"
+	if url, err := installCDSURL(values); err == nil {
+		verifyURL = url
+	}
+	if installCDS != nil {
+		verifyPin = installCDS.path
+	}
+	printVerifyHint(os.Stdout, verifyURL, verifyPin, installOperatorKeysFlag(), storedRouteDigest)
 }
 
 // printVerifyHint names the check a client runs on this cluster's front door.
