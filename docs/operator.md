@@ -322,6 +322,9 @@ detectable only by pinning the route digest or the operator keys.
   router still serving advertises it before it takes effect. A write replaced
   before it takes effect never does. When its certificate expires the router
   retires every backend pool and dials nothing until it renews.
+  After withdrawing expired credentials, get-cert retries issuance with jittered
+  exponential backoff from `--initial-retry-interval` (2s by default). A successful
+  issuance resets that backoff; CDS refusals use their separate backoff.
   Its nginx supervisor checks credentials every five seconds, stops nginx on
   withdrawal, and starts it again when all served credentials are readable.
   Readiness fails while nginx is stopped. An unexpected nginx exit terminates
