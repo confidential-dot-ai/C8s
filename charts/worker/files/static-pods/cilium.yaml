@@ -108,7 +108,8 @@ spec:
         - {name: brief, value: 'true'}
       failureThreshold: 300
       periodSeconds: 2
-    # Liveness window >= startup window (kubernetes/kubernetes#141155).
+    # Liveness window >= startup window (kubernetes/kubernetes#141155), so a
+    # hung agent takes up to 600s to restart.
     livenessProbe:
       httpGet:
         host: 127.0.0.1

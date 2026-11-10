@@ -293,6 +293,13 @@ func TestUpstreamLivez(t *testing.T) {
 			want:     http.StatusOK,
 		},
 		{
+			name: "upstream answers 200 without JSON",
+			upstream: startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, "not json")
+			})),
+			want: http.StatusServiceUnavailable,
+		},
+		{
 			name: "upstream answers 503",
 			upstream: startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				http.Error(w, `{"status":"degraded"}`, http.StatusServiceUnavailable)
