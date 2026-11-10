@@ -4909,6 +4909,7 @@ func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 		{"a device outside /dev", "attestationApi.devices[0]=/etc/shadow"},
 		{"a device name that starts with a dash", "attestationApi.devices[0]=/dev/-x"},
 		{"a device name that ends with an underscore", "attestationApi.devices[0]=/dev/x_"},
+		{"a device name longer than a DNS label", "attestationApi.devices[0]=/dev/" + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out, err := helmTemplate(t, "--set-string", tc.set); err == nil {

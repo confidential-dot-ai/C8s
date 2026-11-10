@@ -180,9 +180,16 @@ func healthHandler(
 ) http.Handler {
 	socketClient := remote.NewClient("unix://" + socket)
 	upstreamClient := remote.NewClient(upstream)
+	// No keep-alive: each probe must be a fresh accept by the serve loop.
+	livezClient := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		},
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
-		if err := pingProxy(r.Context(), socket); err != nil {
+		if err := pingProxy(r.Context(), livezClient); err != nil {
 			slog.Warn("attestation proxy does not answer on its socket", "socket", socket, "error", err)
 			http.Error(w, "proxy does not answer", http.StatusServiceUnavailable)
 			return
@@ -234,19 +241,13 @@ func fetchHealth(
 	return client.Health(ctx)
 }
 
-// pingProxy GETs proxyLivezPath over the Unix socket within healthcheckTimeout.
+// pingProxy GETs proxyLivezPath through client within healthcheckTimeout.
 func pingProxy(
 	ctx context.Context,
-	socket string,
+	client *http.Client,
 ) error {
 	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
 	defer cancel()
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		},
-	}}
-	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://attest-proxy"+proxyLivezPath, nil)
 	if err != nil {
 		return err
