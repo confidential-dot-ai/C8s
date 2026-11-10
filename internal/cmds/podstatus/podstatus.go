@@ -329,7 +329,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// certificate and its quote, never the key.
 	servingKey, _, err := armtls.GenerateKeyPair()
 	if err != nil {
-		return err
+		return fmt.Errorf("generate serving key: %w", err)
 	}
 	// The certificate's quote binds its own key and lists the journal as its
 	// runtime extensions, so a client can replay the register from the
