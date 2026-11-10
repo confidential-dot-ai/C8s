@@ -176,7 +176,10 @@ final shape that is not the injected one.
 ## CDS runs as one VM
 
 CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
-configuration and the pin for. A cluster may also run its CDS as several VMs
+configuration and the pin for. On an AKS or GKE cluster that VM runs on
+hardware you hold rather than on the cloud, and
+[cloud-cds.md](cloud-cds.md) covers its placement, its flows and its node
+pins. A cluster may also run its CDS as several VMs
 that share one mesh CA and one store, where a replica that restarts takes the
 cluster's state back from the others ([cds-ha.md](cds-ha.md)). Everything
 below is the one-VM deployment. Its state is in that VM: the mesh CA key is

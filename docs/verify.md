@@ -69,9 +69,11 @@ replaces the bundle.
 ## Derive the pins yourself
 
 An operator can hand you the measurements; you do not have to take their word
-for what a published node image measures. Every node image publishes the
+for what a published node image measures. Every C8s node image publishes the
 `manifest.json` its build recorded, and `c8s measurements derive` turns that
-into a measurements config ([measurements.md](measurements.md)). You need
+into a measurements config ([measurements.md](measurements.md)). An AKS or GKE
+node image is the provider's and publishes none, so its pins are read from a
+node instead ([cloud-cds.md](cloud-cds.md#node-pins-on-aks-and-gke)). You need
 `oras`, `jq`, outbound HTTPS to `ghcr.io`, and the release tag the cluster runs
 ([releases.md](releases.md)).
 

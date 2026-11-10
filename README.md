@@ -178,7 +178,9 @@ guides is at
   the admission inventory's `SO_PEERPIDFD` checks.
 - An external CDS CVM, or capacity to launch one before installing. Its measured
   configuration must pin your operator public key; installation needs its
-  address and `cds-pin.json` (see [operator docs](docs/operator.md)).
+  address and `cds-pin.json` (see [operator docs](docs/operator.md)). On AKS and
+  GKE it runs on SEV-SNP or TDX hardware you hold, beside the cluster
+  ([a cloud cluster's CDS](docs/cloud-cds.md)).
 - Helm 3, `kubectl`, and `crane` on PATH.
 - Go 1.27.3 or later to build the CLI (or automatic Go toolchain selection).
 
@@ -234,7 +236,9 @@ allowlist seed, node measurement pins, node/pod/Service CIDRs, the CDS image's
 `manifest.json`, and TEE platform (`sev-snp` or `tdx`). For SEV-SNP, also supply
 the allowed vCPU counts. The [bootstrap policy](docs/allowlist-and-capabilities.md#bootstrap)
 describes how to produce the component seed; [pin derivation](docs/verify.md#derive-the-pins-yourself)
-covers node measurements. Launch the external CVM with the resulting configuration, following the
+covers node measurements, and
+[a cloud cluster's CDS](docs/cloud-cds.md#node-pins-on-aks-and-gke) covers them
+on AKS and GKE. Launch the external CVM with the resulting configuration, following the
 [CDS launch requirements](images/cds-guest/README.md#launch-requirements),
 then continue with its address and the generated `cds-pin.json`.
 
