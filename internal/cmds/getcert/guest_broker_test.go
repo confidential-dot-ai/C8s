@@ -382,3 +382,48 @@ func TestGuestRenewalLoopFollowsChanges(t *testing.T) {
 		t.Fatalf("a change during the retry backoff re-requested: %d attempts", n)
 	}
 }
+
+// In a guest, a pod change after a successful renewal renews again.
+func TestRenewLoopRenewsOnEachGuestPodChange(t *testing.T) {
+	attempts := stubObtainCert(t, newTestCA(t), func(int) (time.Duration, error) {
+		return time.Hour, nil
+	})
+	changes := make(chan struct{})
+	cfg := config{
+		RenewInterval:        time.Hour,
+		InitialRetryInterval: time.Hour,
+		guest:                &GuestConfig{Changes: changes},
+	}
+	startRenewLoop(t, cfg, "", &credentials{volume: testVolume(t), instanceID: testInstanceID})
+
+	changes <- struct{}{}
+	waitForAttempts(t, attempts, 1)
+	changes <- struct{}{}
+	waitForAttempts(t, attempts, 2)
+}
+
+// A closed guest change channel is not a pod change.
+func TestRenewLoopIgnoresClosedGuestChanges(t *testing.T) {
+	ca := newTestCA(t)
+	creds := publishedCredentials(t, ca, time.Hour)
+	named, err := issueNamedFor(ca, creds, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := creds.publish(named, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	attempts := stubObtainCertFailing(t)
+	changes := make(chan struct{})
+	close(changes)
+	cfg := config{
+		RenewInterval: time.Hour,
+		guest:         &GuestConfig{Changes: changes},
+	}
+	startRenewLoop(t, cfg, "", creds)
+
+	time.Sleep(100 * time.Millisecond)
+	if n := len(attempts()); n != 0 {
+		t.Fatalf("%d renewals after the change channel closed, want 0", n)
+	}
+}
