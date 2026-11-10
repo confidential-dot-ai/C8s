@@ -698,18 +698,50 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec it was not granted), against
 	// the proxy's own health listener: the API's loopback bind is not
-	// kubelet-dialable, and this is the evidence path's only liveness signal.
-	for name, probe := range map[string]*corev1.Probe{"readiness": proxy.ReadinessProbe, "liveness": proxy.LivenessProbe} {
-		if probe == nil || probe.HTTPGet == nil {
-			t.Fatalf("attest-proxy must carry an HTTP %s probe; got %+v", name, probe)
+	// kubelet-dialable. Readiness covers the evidence path; each liveness
+	// covers only its own container.
+	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
+	for _, tc := range []struct {
+		name  string
+		probe *corev1.Probe
+		path  string
+		port  intstr.IntOrString
+	}{
+		{
+			name:  "attest-proxy readiness",
+			probe: proxy.ReadinessProbe,
+			path:  "/healthz",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attest-proxy liveness",
+			probe: proxy.LivenessProbe,
+			path:  "/livez",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attestation-api startup",
+			probe: api.StartupProbe,
+			path:  "/upstream/livez",
+			port:  intstr.FromInt32(8401),
+		},
+		{
+			name:  "attestation-api liveness",
+			probe: api.LivenessProbe,
+			path:  "/upstream/livez",
+			port:  intstr.FromInt32(8401),
+		},
+	} {
+		if tc.probe == nil || tc.probe.HTTPGet == nil {
+			t.Fatalf("%s must be an HTTP probe; got %+v", tc.name, tc.probe)
 		}
-		if probe.HTTPGet.Path != "/healthz" || probe.HTTPGet.Port.StrVal != "health" {
-			t.Fatalf("attest-proxy %s probe = %+v, want GET /healthz on the health port", name, probe.HTTPGet)
+		if tc.probe.HTTPGet.Path != tc.path || tc.probe.HTTPGet.Port != tc.port {
+			t.Fatalf("%s probe = %+v, want GET %s on %s", tc.name, tc.probe.HTTPGet, tc.path, tc.port.String())
 		}
-		// Kubelet's 1s default probe timeout would flap the healthcheck's 3s
+		// Kubelet's 1s default probe timeout would flap the handlers' 3s
 		// internal budget.
-		if probe.TimeoutSeconds != 5 {
-			t.Fatalf("attest-proxy %s probe timeoutSeconds = %d, want 5", name, probe.TimeoutSeconds)
+		if tc.probe.TimeoutSeconds != 5 {
+			t.Fatalf("%s probe timeoutSeconds = %d, want 5", tc.name, tc.probe.TimeoutSeconds)
 		}
 	}
 	if _, ok := findContainerPort(proxy, "health"); !ok {
@@ -727,11 +759,9 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Fatalf("attest-proxy must mount its root filesystem read-only; got %+v", sc.ReadOnlyRootFilesystem)
 	}
-	// An httpGet probe would never pass against the loopback bind, so the
-	// proxy's exec probe is the only health signal.
-	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
-	if api.ReadinessProbe != nil || api.LivenessProbe != nil {
-		t.Fatalf("attestation-api container must not carry kubelet probes against its loopback bind; got %+v / %+v", api.ReadinessProbe, api.LivenessProbe)
+	// The proxy's readiness already covers the API end to end.
+	if api.ReadinessProbe != nil {
+		t.Fatalf("attestation-api container must leave readiness to attest-proxy; got %+v", api.ReadinessProbe)
 	}
 }
 

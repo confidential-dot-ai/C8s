@@ -24,8 +24,23 @@ containers:
       readOnlyRootFilesystem: true
       seccompProfile:
         type: RuntimeDefault
-    # The API's health signal is the attest-proxy's HTTP probe: the API
-    # binds pod loopback, which kubelet cannot dial.
+    # The API binds pod loopback, which kubelet cannot dial: its probes go
+    # through attest-proxy's health port, which GETs the API's /health.
+    # Liveness window >= startup window (kubernetes/kubernetes#141155).
+    startupProbe:
+      httpGet:
+        path: /upstream/livez
+        port: {{ include "c8s.attestProxyHealthPort" . }}
+      # Above the handler's 3s upstream budget.
+      timeoutSeconds: 5
+      failureThreshold: 12
+    livenessProbe:
+      httpGet:
+        path: /upstream/livez
+        port: {{ include "c8s.attestProxyHealthPort" . }}
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 4
     volumeMounts:
       - name: config
         mountPath: /mnt/c8s-data/attestation-api
@@ -70,10 +85,10 @@ containers:
       seccompProfile:
         type: RuntimeDefault
     # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
-    # exec probe can never pass there (c8s internal/cmds/c8srunc). The
-    # handler runs the same check the `attest-proxy healthcheck`
-    # subcommand does — a /health round-trip over the proxy's own socket —
-    # so one probe still covers socket, proxy and upstream.
+    # exec probe can never pass there (c8s internal/cmds/c8srunc). Readiness
+    # runs the `attest-proxy healthcheck` round-trip over the proxy's own
+    # socket; liveness checks only that the proxy serves and its socket exists,
+    # so a hung API never restarts the proxy.
     readinessProbe:
       httpGet:
         path: /healthz
@@ -83,7 +98,7 @@ containers:
       timeoutSeconds: 5
     livenessProbe:
       httpGet:
-        path: /healthz
+        path: /livez
         port: health
       periodSeconds: 30
       timeoutSeconds: 5

@@ -20,6 +20,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// deadUpstream is an upstream URL nothing listens on.
+const deadUpstream = "http://127.0.0.1:1"
+
 // startUpstream returns a running fake attestation-api and its URL.
 func startUpstream(t *testing.T, handler http.Handler) string {
 	t.Helper()
@@ -124,9 +127,8 @@ func TestNewProxyRejectsBadConfig(t *testing.T) {
 	}
 }
 
-// The healthcheck subcommand is the DaemonSet's only liveness signal: it
-// must succeed against a live proxied upstream and fail against a missing
-// socket.
+// The healthcheck subcommand must succeed against a live proxied upstream and
+// fail against a missing socket.
 func TestHealthcheckCmd(t *testing.T) {
 	upstream := startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -147,9 +149,8 @@ func TestHealthcheckCmd(t *testing.T) {
 	}
 }
 
-// The node-CVM DaemonSet probes over HTTP because a locked node image denies
-// exec: /healthz must answer for a live upstream and fail for a dead one,
-// matching the healthcheck subcommand it replaces.
+// /healthz, the readiness probe, must answer for a live upstream and fail for a
+// dead one, matching the healthcheck subcommand.
 func TestHealthEndpoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -172,10 +173,11 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sock := serveProxy(t, config{upstream: startUpstream(t, tt.upstream), socketGID: 0})
+			upstream := startUpstream(t, tt.upstream)
+			sock := serveProxy(t, config{upstream: upstream, socketGID: 0})
 
 			rec := httptest.NewRecorder()
-			healthHandler(sock).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			healthHandler(sock, upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 			if rec.Code != tt.want {
 				t.Errorf("GET /healthz = %d, want %d", rec.Code, tt.want)
@@ -187,9 +189,108 @@ func TestHealthEndpoint(t *testing.T) {
 // A probe against a proxy whose socket is gone must fail, not hang.
 func TestHealthEndpointWithoutSocket(t *testing.T) {
 	rec := httptest.NewRecorder()
-	healthHandler(filepath.Join(t.TempDir(), "gone.sock")).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	healthHandler(filepath.Join(t.TempDir(), "gone.sock"), deadUpstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("GET /healthz with no socket = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// attest-proxy's liveness reports only its own state: a dead upstream keeps it
+// live, a missing socket does not.
+func TestLivez(t *testing.T) {
+	sock := serveProxy(t, config{upstream: deadUpstream, socketGID: 0})
+	notSocket := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notSocket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		socket string
+		want   int
+	}{
+		{
+			name:   "upstream down",
+			socket: sock,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "socket gone",
+			socket: filepath.Join(t.TempDir(), "gone.sock"),
+			want:   http.StatusServiceUnavailable,
+		},
+		{
+			name:   "socket replaced by a file",
+			socket: notSocket,
+			want:   http.StatusServiceUnavailable,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			healthHandler(tt.socket, deadUpstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+			if rec.Code != tt.want {
+				t.Errorf("GET /livez = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+// /upstream/livez, the attestation-api's liveness, calls the upstream directly,
+// so it needs no socket.
+func TestUpstreamLivez(t *testing.T) {
+	healthy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	tests := []struct {
+		name     string
+		upstream string
+		want     int
+	}{
+		{
+			name:     "upstream up",
+			upstream: startUpstream(t, healthy),
+			want:     http.StatusOK,
+		},
+		{
+			name:     "upstream down",
+			upstream: deadUpstream,
+			want:     http.StatusServiceUnavailable,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			healthHandler(filepath.Join(t.TempDir(), "gone.sock"), tt.upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/upstream/livez", nil))
+			if rec.Code != tt.want {
+				t.Errorf("GET /upstream/livez = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+// A hung upstream fails /upstream/livez within the probe's deadline.
+func TestUpstreamLivezTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	upstream := startUpstream(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release) })
+
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	healthHandler("/nonexistent.sock", upstream).ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/upstream/livez", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET /upstream/livez against a hung upstream = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if elapsed := time.Since(start); elapsed > healthcheckTimeout {
+		t.Errorf("GET /upstream/livez took %s, want under %s", elapsed, healthcheckTimeout)
 	}
 }
 
