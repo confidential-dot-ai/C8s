@@ -2,6 +2,7 @@ package armtls
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -50,6 +51,12 @@ type ServerConfig struct {
 	// CertTTL is the certificate lifetime. Default: 24h.
 	// The certificate is rotated automatically at 50% of TTL.
 	CertTTL time.Duration
+
+	// Key, when set, is the self-signed certificate's key for the server's
+	// lifetime: rotation renews the certificate and its evidence but keeps
+	// the key, so a client that pinned it keeps connecting. Nil generates a
+	// fresh key for every certificate. Ignored when CertProvider is set.
+	Key *ecdsa.PrivateKey
 
 	// MeasuredPoliciesFile is the node's measured-policy journal
 	// ([NodeJournal] on the node) a self-signed TDX certificate lists. Empty
@@ -671,6 +678,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 			Platform:         cfg.Platform,
 			AttestFunc:       cfg.AttestFunc,
 			MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
+			Key:              cfg.Key,
 			Opts: &CertOptions{
 				Subject:  cfg.Subject,
 				TTL:      cfg.CertTTL,

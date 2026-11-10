@@ -179,8 +179,10 @@ Once the instance runs and reports its endpoints, the provider verifies fresh
 guest evidence and an empty measured list, fetches an assignment nonce on that
 verified connection, signs the assignment over the connection's serving key and
 saves the exact assignment bytes and serving key in the record before POSTing
-them. Readiness still comes only from verified Pod status; until the guest
-reports the assigned Pod the status reason is `AssignmentPending`.
+them. The guest status service keeps one serving key while it runs: certificate
+renewal refreshes the certificate and its evidence, not the key. Readiness
+still comes only from verified Pod status; until the guest reports the assigned
+Pod the status reason is `AssignmentPending`.
 
 A lost assignment reply keeps the same VM and record. The provider replays the
 saved bytes to the same serving key and recovers through matching attested

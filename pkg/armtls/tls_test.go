@@ -542,6 +542,61 @@ func TestCertRotationTiming(t *testing.T) {
 	}
 }
 
+// A configured Key survives rotation: the renewed certificate carries fresh
+// evidence over the same key, so a client pinning the key keeps connecting.
+// Without one, every certificate gets a fresh key.
+func TestCertRotationKey(t *testing.T) {
+	fixed, _, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]*ecdsa.PrivateKey{"configured": fixed, "default": nil} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var attests atomic.Int32
+			cfg := testServerConfig()
+			cfg.CertTTL = 4 * time.Second // whole seconds, see TestCertRotationTiming
+			cfg.Key = key
+			cfg.AttestFunc = func(ctx context.Context, customData string) (string, error) {
+				attests.Add(1)
+				return fakeAttestFunc(ctx, customData)
+			}
+			tlsCfg, _, err := NewServerTLSConfig(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := tlsCfg.GetCertificate(&tls.ClientHelloInfo{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2100 * time.Millisecond)
+			renewed := first
+			for deadline := time.Now().Add(2 * time.Second); renewed == first; time.Sleep(5 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for rotation")
+				}
+				if renewed, err = tlsCfg.GetCertificate(&tls.ClientHelloInfo{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if attests.Load() != 2 {
+				t.Fatalf("attestations = %d, want a fresh one for the renewed certificate", attests.Load())
+			}
+			sameKey := renewed.Leaf.PublicKey.(*ecdsa.PublicKey).Equal(first.Leaf.PublicKey)
+			if sameKey != (key != nil) {
+				t.Fatalf("renewed certificate kept the key = %v, want %v", sameKey, key != nil)
+			}
+			if key != nil && !key.PublicKey.Equal(renewed.Leaf.PublicKey) {
+				t.Fatal("renewed certificate is not over the configured key")
+			}
+			verifier := pinnedStub(t)
+			if _, err := VerifyCert(renewed.Leaf, pinnedPolicy(verifier.URL()), nil); err != nil {
+				t.Fatalf("renewed certificate failed attestation verification: %v", err)
+			}
+		})
+	}
+}
+
 func TestBackgroundRotationNonBlocking(t *testing.T) {
 	var callCount atomic.Int32
 	cfg := testServerConfig()
