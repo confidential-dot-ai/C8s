@@ -1311,6 +1311,7 @@ func TestImageDigest(t *testing.T) {
 		{"falls back to a pinned spec image", []string{"", "nginx@" + digest}, digest},
 		{"tag only carries no digest", []string{"", "nginx:1.27"}, ""},
 		{"nothing to read", []string{"", ""}, ""},
+		{"malformed digest", []string{"sha256:invalid"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := imageDigest(tc.refs...); got != tc.want {
@@ -1320,7 +1321,7 @@ func TestImageDigest(t *testing.T) {
 	}
 }
 
-func TestAdmissibleDigests(t *testing.T) {
+func TestAvailableImageDigests(t *testing.T) {
 	const (
 		componentDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		bootDigest      = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -1339,10 +1340,10 @@ func TestAdmissibleDigests(t *testing.T) {
 			},
 		}},
 	}
-	got := admissibleDigests(values, []c8sComponent{{valuesPath: "cds.image"}, {valuesPath: "volumed.image"}})
+	got := availableImageDigests(values, []c8sComponent{{valuesPath: "cds.image"}, {valuesPath: "volumed.image"}}, nil)
 	want := map[string]bool{componentDigest: true, bootDigest: true, workloadDigest: true, initDigest: true}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("admissibleDigests = %v, want %v", got, want)
+		t.Errorf("availableImageDigests = %v, want %v", got, want)
 	}
 }
 
@@ -1378,7 +1379,7 @@ func statefulSetPod(ns, name, image, imageID string) corev1.Pod {
 	return p
 }
 
-func TestDeniedPlatformImages(t *testing.T) {
+func TestUncoveredPlatformImages(t *testing.T) {
 	const (
 		etcd    = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		cni     = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -1400,13 +1401,17 @@ func TestDeniedPlatformImages(t *testing.T) {
 	}
 	admitted := map[string]bool{pinned: true}
 
-	got := deniedPlatformImages(pods, release, nil, admitted)
+	got := uncoveredPlatformImages(pods, release, nil, admitted)
 	want := []string{
 		"calico-system/calico-node-a  docker.io/calico/node@" + cni,
 		"kube-system/etcd-node-a  docker.io/rancher/hardened-etcd@" + etcd,
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("deniedPlatformImages = %#v, want %#v", got, want)
+		t.Errorf("uncoveredPlatformImages = %#v, want %#v", got, want)
+	}
+	slices.Reverse(pods)
+	if got := uncoveredPlatformImages(pods, release, nil, admitted); !slices.Equal(got, want) {
+		t.Errorf("reordered pods changed the report: %v, want %v", got, want)
 	}
 
 	// An exemption admits the repositories it names in the namespaces it names.
@@ -1414,7 +1419,7 @@ func TestDeniedPlatformImages(t *testing.T) {
 		"kube-system":   {"docker.io/rancher/"},
 		"calico-system": {"docker.io/calico/"},
 	}
-	got = deniedPlatformImages(pods, release, exempt, admitted)
+	got = uncoveredPlatformImages(pods, release, exempt, admitted)
 	if len(got) != 0 {
 		t.Errorf("with both namespaces exempt, denied = %#v, want none", got)
 	}
@@ -1423,34 +1428,35 @@ func TestDeniedPlatformImages(t *testing.T) {
 // A provider image pre-loaded on the node reports a bare image ID — the
 // node-local config digest — and names its repository on the spec reference
 // alone, which is what the exemption matches.
-func TestDeniedPlatformImagesAdmitsAPreloadedProviderImage(t *testing.T) {
+func TestUncoveredPlatformImagesAdmitsAPreloadedProviderImage(t *testing.T) {
 	const localID = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
 	pods := []corev1.Pod{daemonSetPod("kube-system", "kube-proxy-a", "gke.gcr.io/kube-proxy:v1.31.0-gke.1", localID)}
 	exempt := nriimagepolicy.ExemptRepositories{"kube-system": {"gke.gcr.io/"}}
-	if got := deniedPlatformImages(pods, "c8s-system", exempt, nil); len(got) != 0 {
+	if got := uncoveredPlatformImages(pods, "c8s-system", exempt, nil); len(got) != 0 {
 		t.Errorf("denied = %#v, want none for a pre-loaded image the exemption names", got)
 	}
-	if got := deniedPlatformImages(pods, "c8s-system", nil, nil); len(got) != 1 {
+	if got := uncoveredPlatformImages(pods, "c8s-system", nil, nil); len(got) != 1 {
 		t.Errorf("denied = %#v, want the image reported without the exemption", got)
 	}
 }
 
 // A container that has not pulled reports no digest, so there is nothing to
 // evaluate — it must not be reported as denied on a guess.
-func TestDeniedPlatformImagesSkipsUnpulledContainers(t *testing.T) {
+func TestUncoveredPlatformImagesSkipsUnpulledContainers(t *testing.T) {
 	pod := daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "")
-	if got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
+	if got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
 		t.Errorf("denied = %#v, want none for a container with no resolved imageID", got)
 	}
 }
 
 // Init containers are admitted by the same policy as the main ones, so a
 // denied init image wedges the pod just as hard.
-func TestDeniedPlatformImagesCoversInitContainers(t *testing.T) {
+func TestUncoveredPlatformImagesCoversInitContainers(t *testing.T) {
 	const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	pod := daemonSetPod("kube-system", "cni-install-a", "main:v1", "")
-	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Image: "install-cni:v3", ImageID: "install-cni@" + digest}}
-	got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil)
+	pod.Spec.InitContainers = []corev1.Container{{Name: "install", Image: "install-cni:v3"}}
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "install", Image: "install-cni:v3", ImageID: "install-cni@" + digest}}
+	got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil)
 	want := []string{"kube-system/cni-install-a  docker.io/library/install-cni@" + digest}
 	if !slices.Equal(got, want) {
 		t.Errorf("denied = %#v, want %#v", got, want)
@@ -1461,7 +1467,7 @@ func TestDeniedPlatformImagesCoversInitContainers(t *testing.T) {
 // tenant Deployment — is stopped by the containerd restart and refused after
 // it. The install reports those rather than refusing: the cluster survives
 // without them, and a tenant workload is denied by design.
-func TestDeniedWorkloadImages(t *testing.T) {
+func TestUncoveredWorkloadImages(t *testing.T) {
 	const (
 		metrics = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		vllm    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -1481,26 +1487,26 @@ func TestDeniedWorkloadImages(t *testing.T) {
 		deploymentPod("kube-system", "coredns-abc", "coredns:1.11", "coredns@"+exempt),
 	}
 	kubeSystem := nriimagepolicy.ExemptRepositories{"kube-system": {"docker.io/library/"}}
-	got := deniedWorkloadImages(pods, release, kubeSystem, nil)
+	got := uncoveredWorkloadImages(pods, release, kubeSystem, nil)
 	want := []string{
 		"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@" + metrics,
 		"tenant/infer-abc  example.test/vllm@" + vllm,
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("deniedWorkloadImages = %#v, want %#v", got, want)
+		t.Errorf("uncoveredWorkloadImages = %#v, want %#v", got, want)
 	}
 
 	admitted := map[string]bool{metrics: true, vllm: true}
-	if got := deniedWorkloadImages(pods, release, kubeSystem, admitted); len(got) != 0 {
+	if got := uncoveredWorkloadImages(pods, release, kubeSystem, admitted); len(got) != 0 {
 		t.Errorf("with both digests admitted, denied = %#v, want none", got)
 	}
 }
 
 // The report names what will be stopped and both ways to admit it, and prints
 // nothing when the policy denies nothing.
-func TestReportDeniedWorkloads(t *testing.T) {
+func TestReportUncoveredWorkloads(t *testing.T) {
 	var buf bytes.Buffer
-	reportDeniedWorkloads(&buf, []string{"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@sha256:" + strings.Repeat("1", 64)})
+	reportUncoveredWorkloads(&buf, []string{"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@sha256:" + strings.Repeat("1", 64)})
 	out := buf.String()
 	for _, want := range []string{"gke-managed-cim/kube-state-metrics-0", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {
 		if !strings.Contains(out, want) {
@@ -1509,7 +1515,7 @@ func TestReportDeniedWorkloads(t *testing.T) {
 	}
 
 	buf.Reset()
-	reportDeniedWorkloads(&buf, nil)
+	reportUncoveredWorkloads(&buf, nil)
 	if buf.Len() != 0 {
 		t.Errorf("nothing denied must print nothing, got:\n%s", buf.String())
 	}
@@ -1517,36 +1523,34 @@ func TestReportDeniedWorkloads(t *testing.T) {
 
 // A pod the kubelet has finished with has no container left for the containerd
 // restart to recreate, so its images are not the policy's to admit.
-func TestDeniedPlatformImagesSkipsTerminalPods(t *testing.T) {
+func TestUncoveredPlatformImagesSkipsTerminalPods(t *testing.T) {
 	const digest = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
 	for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
 		pod := daemonSetPod("kube-system", "cni-migrate-a", "migrate:v1", "migrate@"+digest)
 		pod.Status.Phase = phase
-		if got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
+		if got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
 			t.Errorf("phase %s: denied = %#v, want none", phase, got)
 		}
 	}
 }
 
-// The repository is reported for pasting into the floor, so a status that
-// carries the reference only on imageID must still name one.
-func TestImageReferenceFallsBackToImageID(t *testing.T) {
+func TestImageReferenceUsesRequestedRepository(t *testing.T) {
 	const digest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
-	if got, want := imageReference("", "docker-pullable://calico/node@"+digest, digest), "docker.io/calico/node@"+digest; got != want {
+	if got, want := imageReference("calico/node:v3", digest), "docker.io/calico/node@"+digest; got != want {
 		t.Errorf("imageReference = %q, want %q", got, want)
 	}
-	if got := imageReference("", "", digest); got != digest {
-		t.Errorf("imageReference with nothing parseable = %q, want %q", got, digest)
+	if got := imageReference(digest, digest); got != digest {
+		t.Errorf("imageReference with a bare digest = %q, want %q", got, digest)
 	}
 }
 
-func TestRunningImagesNameABareDigestAlone(t *testing.T) {
+func TestPodImagesNameABareDigestAlone(t *testing.T) {
 	const digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
 	pods := []corev1.Pod{daemonSetPod("kube-system", "fluentbit-a", digest, digest)}
-	got := imageLines(runningImages(pods, func(corev1.Pod, runningImage) bool { return true }))
+	got := imageLines(collectPodImages(pods, func(corev1.Pod, podImage) bool { return true }))
 	want := []string{"kube-system/fluentbit-a  " + digest}
 	if !slices.Equal(got, want) {
-		t.Errorf("runningImages = %#v, want %#v", got, want)
+		t.Errorf("podImages = %#v, want %#v", got, want)
 	}
 }
 
@@ -1618,7 +1622,7 @@ func TestExemptNamespaceImages(t *testing.T) {
 	}
 
 	denied := "kube-system/fluentbit-a  example.test/fluentbit@" + fluent
-	if got := deniedPlatformImages(pods, "c8s-system", exempt, nil); !slices.Contains(got, denied) {
+	if got := uncoveredPlatformImages(pods, "c8s-system", exempt, nil); !slices.Contains(got, denied) {
 		t.Errorf("denied platform images = %#v, want %q among them", got, denied)
 	}
 }
@@ -1734,10 +1738,10 @@ func TestEveryPlatformExemptionReachesThePreflight(t *testing.T) {
 // admits on, carry every image they admit (never a truncated list) and name
 // the alternative posture.
 func TestReportExemptedImages(t *testing.T) {
-	images := make([]runningImage, 0, deniedImagesListed+5)
+	images := make([]podImage, 0, uncoveredImagesListed+5)
 	for i := range cap(images) {
 		digest := fmt.Sprintf("sha256:%064d", i)
-		images = append(images, runningImage{
+		images = append(images, podImage{
 			namespace: "kube-system",
 			pod:       fmt.Sprintf("pod-%02d", i),
 			reference: fmt.Sprintf("example.test/img%02d@%s", i, digest),

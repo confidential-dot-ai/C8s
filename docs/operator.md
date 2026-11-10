@@ -42,8 +42,14 @@ refuses to render without them. The address is `<host>:<port>`: a DNS name
 this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
 the router verifies route manifests under; without it the router uses the keys
 the pinned CDS serves. CDS takes its own write keys from
-`c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
-policy that would deny the platform's own pods.
+`c8s cds config new --operator-keys`. With a fail-closed policy, `--force`
+overrides the guard for resolved platform images outside the available image policy.
+
+Image preflight checks pod spec repositories, component and bootstrap digests,
+and the authenticated allowlist fetched from CDS. It reports containers without
+a current digest as unknown, including containers that have not started. An
+unreachable CDS leaves served coverage unknown. Image coverage is advisory:
+runtime admission checks the full workload, and tags can change on the next pull.
 
 Two more inputs describe this cluster's own network, which no
 `values-<platform>.yaml` can set, so they go in a `-f` file.

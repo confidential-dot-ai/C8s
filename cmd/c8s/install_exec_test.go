@@ -1127,6 +1127,29 @@ func TestInstallAdmitsAPreloadedProviderImage(t *testing.T) {
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
 
+func TestInstallGKEAdmitsRequestedRepositoryDespiteRuntimeAlias(t *testing.T) {
+	pod := daemonSetPod("kube-system", "gke-proxy", "us-artifactregistry.gcr.io/gke-release/gke-release/kube-proxy:v1", kubeProxyDigest)
+	pod.Spec.NodeName = "node-a"
+	pod.Status.ContainerStatuses[0].Image = "gke.gcr.io/kube-proxy:v1"
+	data, err := json.Marshal(corev1.PodList{Items: []corev1.Pod{pod, podInNodeRange()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	podsFile := filepath.Join(t.TempDir(), "pods.json")
+	if err := os.WriteFile(podsFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `"get pods --all-namespaces -o json") /bin/cat '`+podsFile+`' ;;
+`))
+	if err := runInstall(t, "--platform=gke-snp", "--wait=false"); err != nil {
+		t.Fatalf("install without --force: %v", err)
+	}
+	if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
+		t.Fatalf("install did not reach helm upgrade: %v", s.f.calls(t))
+	}
+}
+
 // An add-on no prefix covers is refused by name, with the value that admits it.
 func TestInstallRefusesAProviderImageUnderNoPrefix(t *testing.T) {
 	const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
