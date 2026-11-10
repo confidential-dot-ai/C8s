@@ -543,7 +543,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 	_, err := pullInitial(context.Background(), pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     time.Second,
 		pluginErrCh: make(chan error, 1),
 		logger:      discardLogger(),

@@ -36,7 +36,6 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -211,10 +210,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		clear(plugin.podStarts)
 		plugin.podMu.Unlock()
 	}()
-	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
-	if cfg.podRole() {
-		applyPolicy = plugin.applyPodPolicy
-	}
+	target := policyTargetFor(cfg, plugin)
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(cdsPins); err != nil {
@@ -279,8 +275,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	if cfg.PullEnabled() {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
-			store:       store,
-			apply:       applyPolicy,
+			target:      target,
 			measure:     measure,
 			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
@@ -321,16 +316,13 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 			defer workers.Done()
 			runPullLoop(ctx, pullLoopArgs{
 				client:   wlClient,
-				store:    store,
-				apply:    applyPolicy,
+				target:   target,
 				measure:  measure,
 				pull:     pull,
 				interval: cfg.Allowlist.Pull.Interval,
 				timeout:  cfg.Allowlist.Pull.Timeout,
 				etag:     initialETag,
 				logger:   logger,
-
-				killRevoked: plugin.KillRevoked,
 			})
 		}()
 	}
@@ -432,205 +424,6 @@ func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS net
 		Timeout:   cfg.Timeout,
 		Transport: transport,
 	}, nil
-}
-
-type pullArgs struct {
-	apply       func(context.Context, *allowlist.Allowlist, uint64) error
-	client      allowlistclient.Client
-	store       *policyStore
-	measure     func(digest string) error // nil measures nothing
-	pull        *allowlistPull
-	timeout     time.Duration
-	pluginErrCh <-chan error
-	logger      *slog.Logger
-}
-
-// pullInitial fetches the startup allowlist with bounded retries and
-// returns the response ETag for the steady-state poll loop.
-//
-// INVARIANT: a nil error return means args.store holds the pulled document.
-// Context cancellation surfaces as ctx.Err(); callers must not mark the
-// plugin ready on that path.
-func pullInitial(ctx context.Context, args pullArgs) (string, error) {
-	delay := allowlistApiInitialDelay
-	for attempt := 1; attempt <= allowlistApiMaxRetries; attempt++ {
-		select {
-		case err := <-args.pluginErrCh:
-			return "", fmt.Errorf("%w: %w", errPluginDied, err)
-		case <-ctx.Done():
-			args.logger.Info("shutdown requested during allowlist init")
-			return "", ctx.Err()
-		default:
-		}
-
-		reqCtx, reqCancel := context.WithTimeout(ctx, args.timeout)
-		args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
-		served, notModified, err := args.client.FetchServed(reqCtx, "")
-		wl, etag := served.Allowlist, served.ETag
-		reqCancel()
-		if err == nil {
-			if notModified {
-				err = errInitialAllowlistNotModified
-			} else if wl == nil {
-				err = errInitialAllowlistNil
-			} else if err = measureWith(args.measure, served.Digest); err == nil {
-				version := parseVersion(served.Version)
-				if args.apply != nil {
-					err = args.apply(ctx, wl, version)
-				} else {
-					args.store.apply(wl, version)
-				}
-				if err == nil {
-					args.pull.reached()
-					args.logger.Info("initial allowlist pulled from CDS",
-						"workloads", len(wl.Workloads),
-						"version", version,
-						"etag", etag,
-						"digest", served.Digest,
-					)
-					return etag, nil
-				}
-			}
-		}
-
-		args.pull.failed(err)
-		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
-		if errors.Is(err, errPolicyRefused) {
-			return "", err // retrying cannot succeed
-		}
-		if attempt >= allowlistApiMaxRetries {
-			return "", fmt.Errorf("allowlist fetch failed after %d attempts: %w", allowlistApiMaxRetries, err)
-		}
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			args.logger.Info("shutdown requested during allowlist init")
-			return "", ctx.Err()
-		}
-		delay *= 2
-	}
-	return "", nil
-}
-
-type pullLoopArgs struct {
-	apply    func(context.Context, *allowlist.Allowlist, uint64) error
-	client   allowlistclient.Client
-	store    *policyStore
-	measure  func(digest string) error // nil measures nothing
-	pull     *allowlistPull
-	interval time.Duration
-	timeout  time.Duration
-	etag     string
-	logger   *slog.Logger
-
-	// killRevoked runs after each applied document.
-	killRevoked func(context.Context)
-}
-
-// runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
-// pulled document, advances the ETag and kills the running containers it no
-// longer admits — unless the pulled version is below the applied
-// one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 raises the applied version to the one CDS
-// serves the document at; it and errors leave the index untouched. A
-// version the measurer refuses for good also advances the ETag and is logged
-// once per digest.
-func runPullLoop(ctx context.Context, args pullLoopArgs) {
-	ticker := time.NewTicker(args.interval)
-	defer ticker.Stop()
-
-	etag := args.etag
-	var refused, failing string // digests last logged as refused or unmeasured
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		reqCtx, cancel := context.WithTimeout(ctx, args.timeout)
-		served, notModified, err := args.client.FetchServed(reqCtx, etag)
-		wl, newETag := served.Allowlist, served.ETag
-		cancel()
-		if err != nil {
-			args.pull.failed(err)
-			args.logger.Warn("pull loop fetch failed", "error", err)
-			continue
-		}
-		if notModified {
-			args.store.raiseAppliedVersion(parseVersion(served.Version))
-			args.pull.reached()
-			args.logger.Debug("pull loop: not modified", "etag", etag, "version", served.Version)
-			continue
-		}
-		if wl == nil {
-			args.logger.Warn("pull loop fetch returned nil allowlist")
-			continue
-		}
-		version := parseVersion(served.Version)
-		// A rolled-back document is never enforced, so it is not measured.
-		if args.store.rolledBack(version) {
-			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
-				"pulled_version", version, "etag", newETag)
-			continue
-		}
-		if err := measureWith(args.measure, served.Digest); err != nil {
-			if !errors.Is(err, errPolicyRefused) {
-				// Retried every tick; logged at Error once per digest.
-				level := slog.LevelError
-				if served.Digest == failing {
-					level = slog.LevelDebug
-				}
-				failing = served.Digest
-				args.pull.failed(err)
-				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
-					"digest", served.Digest, "error", err)
-				continue
-			}
-			// Advance past the refused version so later ticks get 304
-			// instead of downloading it again.
-			etag = newETag
-			failing = "" // a later failure is news again
-			args.pull.failed(err)
-			if served.Digest != refused {
-				refused = served.Digest
-				args.logger.Error("pull loop: allowlist refused; keeping current policy",
-					"digest", served.Digest, "etag", etag, "error", err)
-			}
-			continue
-		}
-		if args.apply != nil {
-			if err := args.apply(ctx, wl, version); err != nil {
-				args.pull.failed(err)
-				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
-				continue
-			}
-		} else {
-			args.store.apply(wl, version)
-		}
-		args.pull.reached()
-		etag, failing = newETag, ""
-		args.logger.Info("pull loop: allowlist refreshed",
-			"workloads", len(wl.Workloads),
-			"version", version,
-			"etag", etag,
-			"digest", served.Digest,
-		)
-		if args.apply == nil {
-			args.killRevoked(ctx)
-		}
-	}
-}
-
-// parseVersion reads the CDS mutation counter a pull was served at, used for
-// epoch anti-rollback. An unparseable version yields 0, which can only be
-// rejected as a rollback once a real version has been applied.
-func parseVersion(version string) uint64 {
-	n, err := strconv.ParseUint(version, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
 }
 
 type healthServerConfig struct {
