@@ -763,6 +763,14 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	if api.ReadinessProbe != nil {
 		t.Fatalf("attestation-api container must leave readiness to attest-proxy; got %+v", api.ReadinessProbe)
 	}
+	// The API's probes fail whenever attest-proxy is down, so one attest-proxy
+	// restart at the kubelet's 300s maximum backoff must not restart the API.
+	const maxRestartBackoff = 300
+	for name, probe := range map[string]*corev1.Probe{"startup": api.StartupProbe, "liveness": api.LivenessProbe} {
+		if window := probeWindow(probe); window <= maxRestartBackoff {
+			t.Errorf("attestation-api %s window = %ds, want over %ds", name, window, maxRestartBackoff)
+		}
+	}
 }
 
 // assertNoLegacyAttestationStrings keeps the routable shapes the hardening
@@ -958,8 +966,9 @@ func TestChartAttestationApiPrivileged(t *testing.T) {
 
 // TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
 // startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
-// bootstrap before /healthz is served, so without it liveness can kill the operator mid-startup and, via failurePolicy=Fail,
-// block every pod admission while it restarts.
+// bootstrap before /healthz is served, so without it liveness can kill the
+// operator mid-startup and, via failurePolicy=Fail, block every pod admission
+// while it restarts.
 func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)

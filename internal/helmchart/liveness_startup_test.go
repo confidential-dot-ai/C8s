@@ -46,10 +46,11 @@ func TestLivenessWindowCoversStartupWindow(t *testing.T) {
 
 	for name, spec := range pods {
 		for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+			// Without a startup probe, liveness already runs from the start.
 			if c.StartupProbe == nil || c.LivenessProbe == nil {
 				continue
 			}
-			startup := probeWindow(c.StartupProbe)
+			startup := probeWindow(c.StartupProbe) + c.StartupProbe.InitialDelaySeconds
 			liveness := probeWindow(c.LivenessProbe) + c.LivenessProbe.InitialDelaySeconds
 			if liveness < startup {
 				t.Errorf("%s container %s: liveness window %ds < startup window %ds", name, c.Name, liveness, startup)

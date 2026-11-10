@@ -269,8 +269,10 @@ func TestUpstreamLivez(t *testing.T) {
 	}
 }
 
-// A hung upstream fails /upstream/livez within the probe's deadline.
+// A hung upstream fails /upstream/livez on the handler's own budget, inside
+// the probe's 5s timeoutSeconds.
 func TestUpstreamLivezTimesOut(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	upstream := startUpstream(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
@@ -280,17 +282,16 @@ func TestUpstreamLivezTimesOut(t *testing.T) {
 	}))
 	t.Cleanup(func() { close(release) })
 
-	const deadline = 200 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
+	const probeTimeout = 5 * time.Second
 	start := time.Now()
 	rec := httptest.NewRecorder()
-	healthHandler("/nonexistent.sock", upstream).ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/upstream/livez", nil))
+	healthHandler("/nonexistent.sock", upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/upstream/livez", nil))
+	elapsed := time.Since(start)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("GET /upstream/livez against a hung upstream = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
-	if elapsed := time.Since(start); elapsed > healthcheckTimeout {
-		t.Errorf("GET /upstream/livez took %s, want under %s", elapsed, healthcheckTimeout)
+	if elapsed < healthcheckTimeout || elapsed >= probeTimeout {
+		t.Errorf("GET /upstream/livez took %s, want between %s and %s", elapsed, healthcheckTimeout, probeTimeout)
 	}
 }
 

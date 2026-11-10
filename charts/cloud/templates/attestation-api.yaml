@@ -25,7 +25,10 @@ containers:
       seccompProfile:
         type: RuntimeDefault
     # The API binds pod loopback, which kubelet cannot dial: its probes go
-    # through attest-proxy's health port, which GETs the API's /health.
+    # through attest-proxy's health port, which GETs the API's /health. Both
+    # windows outlast the kubelet's 300s maximum restart backoff, so one
+    # attest-proxy restart or a slow attest-proxy image pull does not restart
+    # the API; an attest-proxy crash loop still does, every ~6 minutes.
     # Liveness window >= startup window (kubernetes/kubernetes#141155).
     startupProbe:
       httpGet:
@@ -33,14 +36,14 @@ containers:
         port: {{ include "c8s.attestProxyHealthPort" . }}
       # Above the handler's 3s upstream budget.
       timeoutSeconds: 5
-      failureThreshold: 12
+      failureThreshold: 36
     livenessProbe:
       httpGet:
         path: /upstream/livez
         port: {{ include "c8s.attestProxyHealthPort" . }}
       periodSeconds: 30
       timeoutSeconds: 5
-      failureThreshold: 4
+      failureThreshold: 12
     volumeMounts:
       - name: config
         mountPath: /mnt/c8s-data/attestation-api
@@ -87,8 +90,8 @@ containers:
     # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
     # exec probe can never pass there (c8s internal/cmds/c8srunc). Readiness
     # runs the `attest-proxy healthcheck` round-trip over the proxy's own
-    # socket; liveness checks only that the proxy serves and its socket exists,
-    # so a hung API never restarts the proxy.
+    # socket; liveness checks only that the health server answers and the
+    # socket file exists, so a hung API never restarts the proxy.
     readinessProbe:
       httpGet:
         path: /healthz
