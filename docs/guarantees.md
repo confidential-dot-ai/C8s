@@ -54,7 +54,8 @@ policy keeps host namespaces away from tenant pods
 - **Admission plugin** (`nri-image-policy`): checks every container at
   creation, adjustment validation, and start, and the runtime starts no
   container while it is disconnected: on the measured node image from boot, on
-  `gke` and `aks` once the installer has run on that boot.
+  `aks` from boot once an install has staged the node, and on `gke` once the
+  installer has run on that boot.
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
@@ -80,15 +81,19 @@ it with a pod this node admits. That delete goes as the node, under the
 credential the kubelet's kubeconfig names — on `gke` a credential helper the
 plugin runs. A helper that fails leaves the pod named in the plugin's log for an
 operator to delete; a helper that never returns holds that node's deletes with
-no such line. A denied image may run until the
-plugin is ready and stops it. That window opens on a fresh node, for as long as
-the plugin is down on a running node, and on `aks` on a reboot. A `gke` reboot
-keeps it shut: containerd launches the plugin before it serves its first
-container, from the binary and the config the node keeps across a boot. Until
-the installer has run on that boot the node's own containerd configuration does
-not require the plugin, so a plugin that fails to start there leaves containers
-unchecked. The measured node image has no boot window: its CNI needs the plugin
-before any pod sandbox gets a network.
+no such line. A denied image may run until the plugin is
+ready and stops it. That window opens on a fresh node, for as long as the
+plugin is down on a running node, and on every `gke` reboot: a `gke` node
+rebuilds its containerd configuration in tmpfs `/etc` at boot, so until the
+installer has run on that boot nothing launches the plugin and nothing
+requires it. An `aks` node keeps that configuration, so after a boot
+containerd starts no container until the plugin registers, while a sandbox
+created before it registered still loses its identity. The host chooses when a
+node boots and how soon the installer runs. An install on a provider's stock
+node image is for test and evaluation: the files that name the plugin and its
+policy are the host's, under no measurement. Production runs the measured node
+image — on bare metal, or as a custom VM image on GKE — which has no boot
+window: its CNI needs the plugin before any pod sandbox gets a network.
 
 ## Identity comes from hardware evidence
 
