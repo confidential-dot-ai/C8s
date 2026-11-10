@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -151,7 +152,7 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewRefreshingHTTPClient(resolved.pins, cfg.attestationAPIURL)
+	httpClient, err := cdspins.NewRefreshingHTTPClient(resolved.pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}

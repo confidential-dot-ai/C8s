@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -166,7 +165,7 @@ type objectAcceptance struct {
 	leaf        *x509.Certificate
 	leafKey     *ecdsa.PrivateKey
 	root        *x509.Certificate
-	attestation remote.Client
+	attestation evidenceVerifier
 }
 
 func newObjectAcceptance(t *testing.T) *objectAcceptance {
@@ -210,6 +209,7 @@ func newObjectAcceptanceForCluster(
 		"recoveryAuthority":   base64.StdEncoding.EncodeToString(authority),
 		"workers":             2,
 		"queueCapacity":       16,
+		"snpMinTCB":           map[string]uint8{"bootloader": 12, "tee": 0, "snp": 28, "microcode": 28},
 	}
 	document, err = yaml.Marshal(wire)
 	if err != nil {
@@ -1610,42 +1610,26 @@ func TestObjectAcceptanceIssuesUnderRecoveredCAAndRejectsChallengeReplay(t *test
 	csr, key := generateCSR(t)
 	var expected []byte
 	var verifications atomic.Int64
-	h.attestation = remote.NewClientWithHTTP(
-		"http://fixture.invalid",
-		&http.Client{
-			Timeout: time.Second,
-			Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				var verify remote.VerifyRequest
-				if err := json.NewDecoder(request.Body).Decode(&verify); err != nil {
-					return nil, err
-				}
-				if verify.Params == nil || !bytes.Equal(
-					verify.Params.ExpectedReportData,
-					expected,
-				) {
-					return nil, errors.New("issuance did not bind the CSR key and challenge")
-				}
-				verifications.Add(1)
-				body, err := json.Marshal(remote.VerifyResponse{Result: teetypes.VerificationResult{
-					Platform:        teetypes.PlatformTDX,
-					SignatureValid:  true,
-					ReportDataMatch: teetypes.Ptr(true),
-					Claims: teetypes.Claims{
-						LaunchDigest: nodeMRTD,
-						PlatformData: map[string]any{"td_attributes": "0000000000000000"},
-					},
-				}})
-				if err != nil {
-					return nil, err
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     make(http.Header),
-					Body:       io.NopCloser(bytes.NewReader(body)),
-				}, nil
-			}),
-		},
-	)
+	var err error
+	h.attestation, err = armtls.NewNativeVerifierWithEngine(h.cfg.measured.ObjectState.SNPMinTCB, func(
+		_ context.Context,
+		envelope teetypes.AttestationEvidence,
+		params teetypes.VerifyParams,
+		options teeverify.Options,
+	) (*teetypes.VerificationResult, error) {
+		if envelope.Platform != teetypes.PlatformTDX || !bytes.Equal(params.ExpectedReportData, expected) || !options.TDX.CheckRevocations || !options.TDX.GetCollateral || len(options.TDX.AcceptedTCBStatuses) != 1 || options.TDX.AcceptedTCBStatuses[0] != teetypes.TdxUpToDate {
+			return nil, errors.New("issuance lost its native verification or CSR/challenge binding")
+		}
+		verifications.Add(1)
+		return &teetypes.VerificationResult{
+			Platform: teetypes.PlatformTDX, SignatureValid: true, CollateralVerified: true, ReportDataMatch: teetypes.Ptr(true),
+			TCBStatus: &teetypes.DcapVerificationStatus{TCBStatus: teetypes.TdxUpToDate},
+			Claims:    teetypes.Claims{LaunchDigest: nodeMRTD, PlatformData: map[string]any{"td_attributes": "0000000000000000"}},
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	makeBody := func(nonce []byte) []byte {
 		reportData, err := armtls.ReportDataForKey(
 			&key.PublicKey,

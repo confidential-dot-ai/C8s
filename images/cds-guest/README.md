@@ -109,11 +109,18 @@ download-proxy trust stays in the build tools, while S3 TLS terminates inside
 the guest using distribution public roots.
 
 The shared image finalizer sets `require_crl = true` in the measured attester's
-`[certs]` table. SNP verification then rejects unavailable or unverifiable CRL
-evidence. This applies to CDS, custody and the native workload fixture;
-certificate prefetch and startup deadlines remain unchanged.
-The current pin still lacks ASK/ASVK serial revocation and correct VLEK CRL
-selection; a qualified verifier update is required before production.
+`[certs]` table. This applies to CDS, custody and the native workload fixture;
+certificate prefetch and startup deadlines remain unchanged. That setting alone
+does not qualify the pinned attester's verification endpoint: its issuer
+revocation and VLEK handling are insufficient for object-mode authorization.
+
+Object mode instead uses the shared native Go verifier for startup and every
+peer authorization. The attester supplies hardware evidence and health only.
+The verifier requires fresh signed collateral and the measured SNP firmware
+floor, and rejects unsupported VLEK/FMC and TDX collateral profiles. See
+[the supported native policy](../../docs/cds-object-state.md#recovery-and-custody).
+Rebuilt images and end-to-end SNP and TDX recovery runs are still required;
+earlier image inspection receipts do not qualify this changed runtime.
 
 Run `python3 images/cds-guest/test_inputs.py` for local source-selection and
 trust-root rejection checks. These use a stub builder and never create an

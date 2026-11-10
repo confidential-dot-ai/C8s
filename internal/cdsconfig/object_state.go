@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
 )
 
@@ -28,18 +29,28 @@ type ObjectState struct {
 	MaxBytes            int64
 	Workers             int
 	QueueCapacity       int
+	SNPMinTCB           teetypes.SnpTcb
 }
 
 type objectStateWire struct {
-	Bucket              string `yaml:"bucket"`
-	Key                 string `yaml:"key"`
-	Region              string `yaml:"region"`
-	Endpoint            string `yaml:"endpoint,omitempty"`
-	ExpectedBucketOwner string `yaml:"expectedBucketOwner"`
-	RecoveryAuthority   string `yaml:"recoveryAuthority"`
-	MaxBytes            int64  `yaml:"maxBytes,omitempty"`
-	Workers             int    `yaml:"workers,omitempty"`
-	QueueCapacity       int    `yaml:"queueCapacity,omitempty"`
+	Bucket              string      `yaml:"bucket"`
+	Key                 string      `yaml:"key"`
+	Region              string      `yaml:"region"`
+	Endpoint            string      `yaml:"endpoint,omitempty"`
+	ExpectedBucketOwner string      `yaml:"expectedBucketOwner"`
+	RecoveryAuthority   string      `yaml:"recoveryAuthority"`
+	MaxBytes            int64       `yaml:"maxBytes,omitempty"`
+	Workers             int         `yaml:"workers,omitempty"`
+	QueueCapacity       int         `yaml:"queueCapacity,omitempty"`
+	SNPMinTCB           *snpTCBWire `yaml:"snpMinTCB"`
+}
+
+type snpTCBWire struct {
+	FMC        *uint8 `yaml:"fmc,omitempty"`
+	Bootloader *uint8 `yaml:"bootloader"`
+	Tee        *uint8 `yaml:"tee"`
+	Snp        *uint8 `yaml:"snp"`
+	Microcode  *uint8 `yaml:"microcode"`
 }
 
 var (
@@ -64,6 +75,13 @@ func ParseObjectState(data []byte) (*ObjectState, error) {
 func (w *objectStateWire) parse() (*ObjectState, error) {
 	if w == nil {
 		return nil, nil
+	}
+	if w.SNPMinTCB == nil || w.SNPMinTCB.FMC != nil || w.SNPMinTCB.Bootloader == nil || w.SNPMinTCB.Tee == nil || w.SNPMinTCB.Snp == nil || w.SNPMinTCB.Microcode == nil {
+		return nil, errors.New("objectState.snpMinTCB requires all four approved SNP firmware components")
+	}
+	floor := teetypes.SnpTcb{Bootloader: *w.SNPMinTCB.Bootloader, Tee: *w.SNPMinTCB.Tee, Snp: *w.SNPMinTCB.Snp, Microcode: *w.SNPMinTCB.Microcode}
+	if floor == (teetypes.SnpTcb{}) {
+		return nil, errors.New("objectState.snpMinTCB must be an explicitly approved nonzero floor")
 	}
 	if !validObjectBucket(w.Bucket) {
 		return nil, errors.New("objectState.bucket must name a general-purpose DNS bucket")
@@ -94,6 +112,7 @@ func (w *objectStateWire) parse() (*ObjectState, error) {
 		MaxBytes:            w.MaxBytes,
 		Workers:             w.Workers,
 		QueueCapacity:       w.QueueCapacity,
+		SNPMinTCB:           floor,
 	}
 	state.setDefaults()
 	if state.MaxBytes < 1<<20 || state.MaxBytes > 64<<20 {
@@ -214,6 +233,10 @@ func (s *ObjectState) wire() *objectStateWire {
 		MaxBytes:            s.MaxBytes,
 		Workers:             s.Workers,
 		QueueCapacity:       s.QueueCapacity,
+		SNPMinTCB: &snpTCBWire{
+			FMC:        s.SNPMinTCB.FMC,
+			Bootloader: teetypes.Ptr(s.SNPMinTCB.Bootloader), Tee: teetypes.Ptr(s.SNPMinTCB.Tee), Snp: teetypes.Ptr(s.SNPMinTCB.Snp), Microcode: teetypes.Ptr(s.SNPMinTCB.Microcode),
+		},
 	}
 }
 

@@ -81,6 +81,14 @@ var (
 // image identity. LoadMeasuredIdentity answers both
 // from one report so the guest attests once.
 func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetypes.VerificationResult, error) {
+	return readSelfReport(ctx, attestationAPIURL, nil)
+}
+
+func readSelfReport(
+	ctx context.Context,
+	attestationAPIURL string,
+	native *armtls.NativeVerifier,
+) (*teetypes.VerificationResult, error) {
 	client := armtls.NewAttestationClient(attestationAPIURL)
 	readyCtx, cancelReady := context.WithTimeout(ctx, attestationReadyTimeout)
 	err := client.WaitHealthy(readyCtx, attestationReadyInterval)
@@ -101,12 +109,38 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 	if err != nil {
 		return nil, fmt.Errorf("attest self: %w", err)
 	}
-	verified, err := client.VerifyEvidence(ctx,
-		resp.Envelope(), remote.Policy{ExpectedReportData: reportData[:sha512.Size384]})
+	policy := remote.Policy{ExpectedReportData: reportData[:sha512.Size384]}
+	var verified remote.VerifyResponse
+	if native != nil {
+		verified, err = native.VerifyEvidence(ctx, resp.Envelope(), policy)
+	} else {
+		verified, err = client.VerifyEvidence(ctx, resp.Envelope(), policy)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("verify self-report: %w", err)
 	}
 	return &verified.Result, nil
+}
+
+// VerifyNativeMeasuredLaunchFile authenticates generated evidence locally,
+// retaining the fresh nonce and exact launch binding before trusting settings.
+func VerifyNativeMeasuredLaunchFile(
+	ctx context.Context,
+	attestationAPIURL string,
+	launchFile []byte,
+	native *armtls.NativeVerifier,
+) (teetypes.Family, error) {
+	if native == nil {
+		return teetypes.FamilyUnknown, errors.New("native launch verifier required")
+	}
+	report, err := readSelfReport(ctx, attestationAPIURL, native)
+	if err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	if err := runtimemeasure.VerifyBinding(report, launchFile, nil); err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	return report.Platform.Family(), nil
 }
 
 // VerifyMeasuredLaunchFile confirms this guest's launch bound launchFile byte

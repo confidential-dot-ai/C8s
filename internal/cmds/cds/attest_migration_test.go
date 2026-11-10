@@ -1,13 +1,26 @@
 package cds
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
+
+func TestNativeAttestationAvailabilityRemainsRetryable(t *testing.T) {
+	for _, sentinel := range []error{armtls.ErrNativeVerifierBusy, armtls.ErrNativeCollateralUnavailable} {
+		status, code, _ := classifyVerifyError(fmt.Errorf("verify: %w", sentinel))
+		if status != http.StatusServiceUnavailable || code != types.ErrorCodeAttestationApiUnreachable {
+			t.Fatalf("native availability was classified as rejected evidence: %d %s", status, code)
+		}
+	}
+}
 
 func TestAttestNonMigratableNativeAdmission(t *testing.T) {
 	for _, test := range []struct {
@@ -126,7 +139,7 @@ func TestObjectModeRequiresNonMigratableIssuanceAndInventory(t *testing.T) {
 			"http://127.0.0.1:1",
 		)
 		if protected {
-			cfg.measured.ObjectState = &cdsconfig.ObjectState{}
+			cfg.measured.ObjectState = &cdsconfig.ObjectState{SNPMinTCB: teetypes.SnpTcb{Bootloader: 12, Snp: 28, Microcode: 28}}
 		}
 		view, err := initialObjectView(cfg)
 		if err != nil {
@@ -141,10 +154,14 @@ func TestObjectModeRequiresNonMigratableIssuanceAndInventory(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if deps.AttestHandler.RequireNonMigratable != protected || digestsClientConfig(
+		inventory, err := digestsClientConfig(
 			cfg,
 			view.NodeImages(),
-		).RequireNonMigratable != protected {
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deps.AttestHandler.RequireNonMigratable != protected || inventory.RequireNonMigratable != protected || (inventory.Native != nil) != protected {
 			t.Fatal("object mode lost its fixed issuance or inventory migration guard, or legacy changed")
 		}
 	}

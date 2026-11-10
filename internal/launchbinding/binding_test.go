@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -145,6 +146,51 @@ func TestSelfReportBindsAFreshNonce(t *testing.T) {
 	var zero [64]byte
 	if string(sent) == string(zero[:len(sent)]) {
 		t.Fatal("expected report data is all zero, so it is not a fresh nonce")
+	}
+}
+
+// This qualifies local verifier wiring and exact bindings; the engine is an
+// explicit per-instance fixture, not a hardware signature test.
+func TestNativeSelfReportKeepsFreshNonceAndExactLaunchWithoutRemoteVerdicts(t *testing.T) {
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformTDX)
+	var nonces [][]byte
+	var failure error
+	native, err := armtls.NewNativeVerifierWithEngine(teetypes.SnpTcb{Bootloader: 12, Snp: 28, Microcode: 28}, func(_ context.Context, evidence teetypes.AttestationEvidence, params teetypes.VerifyParams, options teeverify.Options) (*teetypes.VerificationResult, error) {
+		requests := stub.AttestRequests()
+		if evidence.Platform != teetypes.PlatformTDX || len(params.ExpectedReportData) != 48 || len(requests) == 0 || !bytes.Equal(params.ExpectedReportData, requests[len(requests)-1].ReportData) || !options.TDX.CheckRevocations || !options.TDX.GetCollateral {
+			t.Fatal("native self-report lost nonce, platform or collateral policy")
+		}
+		nonces = append(nonces, bytes.Clone(params.ExpectedReportData))
+		if failure != nil {
+			return nil, failure
+		}
+		return &teetypes.VerificationResult{
+			Platform: teetypes.PlatformTDX, SignatureValid: true, CollateralVerified: true,
+			ReportDataMatch: teetypes.Ptr(true), TCBStatus: &teetypes.DcapVerificationStatus{TCBStatus: teetypes.TdxUpToDate},
+			Claims: teetypes.Claims{PlatformData: map[string]any{"td_attributes": "0000000000000000", "rtmr_3": hex.EncodeToString(tdxBinding(launchFile))}},
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if family, err := VerifyNativeMeasuredLaunchFile(t.Context(), stub.URL(), launchFile, native); err != nil || family != teetypes.FamilyTDX {
+			t.Fatalf("native measured launch: %v, %v", family, err)
+		}
+	}
+	if bytes.Equal(nonces[0], nonces[1]) || bytes.Equal(nonces[0], make([]byte, 48)) {
+		t.Fatal("self-report reused an old or constant challenge")
+	}
+	if _, err := VerifyNativeMeasuredLaunchFile(t.Context(), stub.URL(), append(bytes.Clone(launchFile), '\n'), native); err == nil {
+		t.Fatal("native self-report accepted different launch bytes")
+	}
+	failure = errors.New("synthetic invalid quote")
+	if _, err := VerifyNativeMeasuredLaunchFile(t.Context(), stub.URL(), launchFile, native); !errors.Is(err, failure) {
+		t.Fatalf("native rejection was replaced by remote success: %v", err)
+	}
+	if len(stub.VerifyRequests()) != 0 {
+		t.Fatal("native startup consulted a remote verification verdict")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -31,7 +32,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/objectcustody"
 	"github.com/confidential-dot-ai/c8s/internal/objectstate"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/google/go-sev-guest/verify/trust"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +64,7 @@ func newOwnerFixture(t *testing.T) *ownerFixture {
 		"region":              "us-east-2",
 		"expectedBucketOwner": "123456789012",
 		"recoveryAuthority":   objectcustody.AuthorityPlaceholder,
+		"snpMinTCB":           map[string]uint8{"bootloader": 12, "tee": 0, "snp": 28, "microcode": 28},
 	}
 	launch, err := yaml.Marshal(template)
 	if err != nil {
@@ -569,7 +570,7 @@ func TestObjectCustodyOwnerTLSBindsNativeImageConfigAndOwner(t *testing.T) {
 		) || params.AllowDebug || len(params.Measurements) != 1 || !bytes.Equal(
 			params.Measurements[0],
 			digest,
-		) || params.MinTCB == nil || params.MinTCB.Microcode != 2 || params.MinTCB.Snp != 1 {
+		) || params.MinTCB == nil || params.MinTCB.Microcode != 28 || params.MinTCB.Snp != 28 || params.MinTCB.Bootloader != 12 {
 			t.Fatal("custody verification omitted a native hardware, key, image, config or TCB constraint")
 		}
 		if _, bounded := ctx.Deadline(); !bounded {
@@ -681,7 +682,7 @@ func TestObjectCustodyOwnerRequiresRevocationVerdict(t *testing.T) {
 				[]byte,
 				32,
 			),
-			MinTCB: &teetypes.SnpTcb{Snp: 1},
+			MinTCB: &teetypes.SnpTcb{Bootloader: 12, Snp: 28, Microcode: 28},
 		},
 		Measurements: [][]byte{digest},
 	}
@@ -698,14 +699,14 @@ func TestObjectCustodyOwnerRequiresRevocationVerdict(t *testing.T) {
 		},
 	}
 	var failure error
-	verifier := objectCustodyNativeVerifier(func(
-		_ context.Context,
+	verifier, err := objectCustodyNativeVerifier(*params.MinTCB, func(
+		ctx context.Context,
 		envelope teetypes.AttestationEvidence,
 		policy teetypes.VerifyParams,
 		options teeverify.Options,
 	) (*teetypes.VerificationResult, error) {
-		getter, ok := options.SNP.Getter.(*trust.RetryHTTPSGetter)
-		if envelope.Platform != teetypes.PlatformSNP || !options.SNP.CheckRevocations || !ok || getter.Timeout != 20*time.Second || getter.MaxRetryDelay != 2*time.Second || !reflect.DeepEqual(
+		_, bounded := ctx.Deadline()
+		if envelope.Platform != teetypes.PlatformSNP || !options.SNP.CheckRevocations || options.SNP.Getter == nil || !bounded || !reflect.DeepEqual(
 			policy,
 			params.VerifyParams,
 		) {
@@ -713,11 +714,16 @@ func TestObjectCustodyOwnerRequiresRevocationVerdict(t *testing.T) {
 		}
 		return result, failure
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	check := func() error {
+		report := make([]byte, armtls.SNPReportSize)
+		report[0x1f0], report[0x1f1], report[0x1f6], report[0x1f7] = 255, 255, 255, 255
 		_, err := verifier(
 			context.Background(),
 			string(teetypes.PlatformSNP),
-			json.RawMessage(`{}`),
+			json.RawMessage(`{"attestation_report":"`+base64.StdEncoding.EncodeToString(report)+`"}`),
 			params,
 		)
 		return err

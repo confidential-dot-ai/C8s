@@ -749,9 +749,8 @@ func certPoolOf(ca *x509.Certificate) *x509.CertPool {
 // The returned CertManager is non-nil only when mTLS is configured. Use it
 // for eager provisioning and readiness checks.
 //
-// Evidence verification requires Policy.AttestationApiURL and fails closed with
-// [ErrInvalidReport] when it is empty. For construction-time URL validation,
-// use [NewVerifyingHTTPClient].
+// Evidence verification requires Policy.Native or Policy.AttestationApiURL and
+// fails closed with [ErrInvalidReport] when neither is configured.
 func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 	if cfg == nil {
 		cfg = &ClientConfig{}

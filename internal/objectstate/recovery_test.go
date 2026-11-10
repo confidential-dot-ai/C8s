@@ -17,8 +17,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -59,27 +60,40 @@ func TestRecoveryRecipientRequiresNonMigratableAttestedPeer(t *testing.T) {
 			map[string]any{"migrate_ma": "false"},
 			false,
 		},
+		{"invalid signature", map[string]any{"migrate_ma": false}, false},
+		{"missing collateral", map[string]any{"migrate_ma": false}, false},
 	} {
 		t.Run(
 			test.name,
 			func(t *testing.T) {
-				stub := mockapi.New(t)
-				verdict := mockapi.PassingVerdict(hex.EncodeToString(digest))
-				verdict.Claims.InitData = launchHash[:]
+				verdict := teetypes.VerificationResult{
+					Platform: teetypes.PlatformSNP, SignatureValid: true, CollateralVerified: true,
+					ReportDataMatch: teetypes.Ptr(true), InitDataMatch: teetypes.Ptr(true),
+					Claims: teetypes.Claims{LaunchDigest: hex.EncodeToString(digest), InitData: launchHash[:]},
+				}
 				verdict.Claims.PlatformData = map[string]any{"policy": test.policy}
-				stub.SetVerdict(verdict)
+				verdict.SignatureValid = test.name != "invalid signature"
+				verdict.CollateralVerified = test.name != "missing collateral"
+				native, err := armtls.NewNativeVerifierWithEngine(teetypes.SnpTcb{Bootloader: 12, Snp: 28, Microcode: 28}, func(_ context.Context, _ teetypes.AttestationEvidence, params teetypes.VerifyParams, options teeverify.Options) (*teetypes.VerificationResult, error) {
+					if len(params.ExpectedReportData) != 48 || !options.SNP.CheckRevocations || params.MinTCB == nil {
+						t.Fatal("recipient lost strict native gates")
+					}
+					return &verdict, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 				key, _, err := armtls.GenerateKeyPair()
 				if err != nil {
 					t.Fatal(err)
 				}
+				report := make([]byte, armtls.SNPReportSize)
+				report[0x1f0], report[0x1f1], report[0x1f6], report[0x1f7] = 255, 255, 255, 255
 				cert, err := armtls.CreateAttestedCert(
 					key,
 					&armtls.Attestation{
 						Family: armtls.TEETypeSEVSNP,
-						Report: make(
-							[]byte,
-							armtls.SNPReportSize,
-						),
+						Report: report,
 					},
 					nil,
 				)
@@ -111,7 +125,8 @@ func TestRecoveryRecipientRequiresNonMigratableAttestedPeer(t *testing.T) {
 					identity,
 					server.URL,
 					RecoveryPolicy{
-						AttestationURL: stub.URL(),
+						AttestationURL: "http://127.0.0.1:1",
+						Native:         native,
 						Images: []remote.ImagePin{{
 							Name:       "recipient",
 							Digest:     digest,
@@ -504,7 +519,9 @@ func testRecoveryPolicy(identity *RecoveryIdentity) RecoveryPolicy {
 	launch := []byte("measured object-state launch")
 	hash := sha256.Sum256(launch)
 	identity.ConfigSHA256 = hex.EncodeToString(hash[:])
+	native, _ := armtls.NewNativeVerifier(teetypes.SnpTcb{Bootloader: 12, Snp: 28, Microcode: 28})
 	return RecoveryPolicy{
+		Native:   native,
 		Revision: "policy-one",
 		Images: []remote.ImagePin{
 			{

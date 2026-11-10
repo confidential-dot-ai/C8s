@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
@@ -133,7 +134,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewRefreshingHTTPClient(pins, cfg.attestationAPIURL)
+	httpClient, err := cdspins.NewRefreshingHTTPClient(pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}

@@ -80,6 +80,7 @@ type objectCustodian struct {
 	cfg       config
 	images    []remote.ImagePin
 	owner     *x509.CertPool
+	native    *armtls.NativeVerifier
 	material  *objectcustody.Material
 	info      objectCustodyInfo
 	ctx       context.Context
@@ -116,11 +117,16 @@ func newObjectCustodian(
 	) {
 		return nil, errors.New("object custody: independent owner and matching hardware material required")
 	}
+	native, err := armtls.NewNativeVerifier(cfg.measured.ObjectState.SNPMinTCB)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	c := &objectCustodian{
 		cfg:      cfg,
 		images:   cloneObjectRecoveryImages(images),
 		owner:    x509.NewCertPool(),
+		native:   native,
 		material: material,
 		info: objectCustodyInfo{
 			Launch:   bytes.Clone(cfg.measuredFile),
@@ -244,6 +250,8 @@ func (c *objectCustodian) execute(job objectCustodyJob) (objectCustodyResult, er
 	if err != nil {
 		return objectCustodyResult{}, err
 	}
+	// All recipient checks and provision requests share this actor's verifier.
+	policy.policy.Native = c.native
 	// Check current state before delivering even a storage session. Neither
 	// missing state nor a stale custodian can turn renewal into initialization.
 	if _, err := policy.Current(job.ctx); err != nil {
@@ -323,6 +331,7 @@ func (c *objectCustodian) provisionReplica(
 	}
 	verification := armtls.Pins{Images: c.images}.VerifyPolicy(c.cfg.attestationApiURL)
 	verification.RequireNonMigratable = true
+	verification.Native = c.native
 	tlsConfig, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: verification})
 	if err != nil {
 		return err
@@ -677,10 +686,15 @@ func runObjectCustody(
 	if err != nil {
 		return err
 	}
-	platform, err := launchbinding.VerifyMeasuredLaunchFile(
+	native, err := armtls.NewNativeVerifier(document.SNPMinTCB())
+	if err != nil {
+		return err
+	}
+	platform, err := launchbinding.VerifyNativeMeasuredLaunchFile(
 		ctx,
 		verifier,
 		raw,
+		native,
 	)
 	if err != nil || platform != teetypes.FamilySNP {
 		return errors.New("object custody: verified SNP launch required")

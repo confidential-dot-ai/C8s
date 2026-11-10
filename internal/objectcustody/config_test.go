@@ -71,6 +71,7 @@ func testWire(t *testing.T) wire {
 			"region":              "us-east-2",
 			"expectedBucketOwner": "123456789012",
 			"recoveryAuthority":   AuthorityPlaceholder,
+			"snpMinTCB":           map[string]uint8{"bootloader": 12, "tee": 0, "snp": 28, "microcode": 28},
 		},
 	})
 	if err != nil {

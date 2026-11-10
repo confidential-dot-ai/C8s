@@ -50,10 +50,23 @@ func nativeWorkloadArgv() []string {
 }
 
 type nativeWorkloadLaunch struct {
-	Schema           string `yaml:"schemaVersion" json:"schemaVersion"`
-	RunID            string `yaml:"runID" json:"runID"`
-	ExecutableSHA256 string `yaml:"executableSHA256" json:"executableSHA256"`
-	OwnerClientCA    string `yaml:"ownerClientCA" json:"ownerClientCA"`
+	Schema           string            `yaml:"schemaVersion" json:"schemaVersion"`
+	RunID            string            `yaml:"runID" json:"runID"`
+	ExecutableSHA256 string            `yaml:"executableSHA256" json:"executableSHA256"`
+	OwnerClientCA    string            `yaml:"ownerClientCA" json:"ownerClientCA"`
+	SNPMinTCB        map[string]*uint8 `yaml:"snpMinTCB" json:"snpMinTCB"`
+}
+
+func (l nativeWorkloadLaunch) nativeVerifier() (*armtls.NativeVerifier, error) {
+	if len(l.SNPMinTCB) != 4 {
+		return nil, errors.New("native workload: four explicit approved SNP floor components required")
+	}
+	for _, key := range []string{"bootloader", "tee", "snp", "microcode"} {
+		if l.SNPMinTCB[key] == nil {
+			return nil, errors.New("native workload: missing approved SNP floor component")
+		}
+	}
+	return armtls.NewNativeVerifier(teetypes.SnpTcb{Bootloader: *l.SNPMinTCB["bootloader"], Tee: *l.SNPMinTCB["tee"], Snp: *l.SNPMinTCB["snp"], Microcode: *l.SNPMinTCB["microcode"]})
 }
 
 func parseNativeWorkloadLaunch(raw []byte) (nativeWorkloadLaunch, *x509.Certificate, error) {
@@ -66,6 +79,9 @@ func parseNativeWorkloadLaunch(raw []byte) (nativeWorkloadLaunch, *x509.Certific
 	}
 	if launch.Schema != nativeWorkloadSchema || len(launch.RunID) != 32 {
 		return launch, nil, errors.New("native workload: fixed schema and 16-byte hexadecimal run ID required")
+	}
+	if _, err := launch.nativeVerifier(); err != nil {
+		return launch, nil, err
 	}
 	for _, value := range []string{
 		launch.RunID,
@@ -149,10 +165,15 @@ func runNativeWorkloadGuest(ctx context.Context) error {
 	if err != nil || n > 256<<20 || hex.EncodeToString(digest.Sum(nil)) != launch.ExecutableSHA256 {
 		return errors.New("native workload: executable differs from measured fixture declaration")
 	}
-	family, err := launchbinding.VerifyMeasuredLaunchFile(
+	native, err := launch.nativeVerifier()
+	if err != nil {
+		return err
+	}
+	family, err := launchbinding.VerifyNativeMeasuredLaunchFile(
 		ctx,
 		nativeWorkloadAPI,
 		raw,
+		native,
 	)
 	if err != nil || (family != teetypes.FamilySNP && family != teetypes.FamilyTDX) {
 		return errors.New("native workload: native SNP or TDX measured launch required")
@@ -258,7 +279,11 @@ func (i nativeWorkloadInventory) DigestsForSandbox(id string) ([]string, []workl
 }
 
 func (f *nativeWorkload) startInventory(pins refvalues.ReferenceValues) error {
-	return workloadclaims.StartDigestsEndpoint(
+	native, err := f.launch.nativeVerifier()
+	if err != nil {
+		return err
+	}
+	return workloadclaims.StartNativeDigestsEndpoint(
 		f.ctx,
 		slog.New(slog.NewTextHandler(
 			io.Discard,
@@ -274,14 +299,15 @@ func (f *nativeWorkload) startInventory(pins refvalues.ReferenceValues) error {
 		nativeWorkloadAPI,
 		armtls.FixedPins(pins),
 		"",
-		true,
+		native,
 	)
 }
 
 func TestNativeWorkloadLaunchAndInventory(t *testing.T) {
 	ca, _, _ := ownerClientIdentity(t)
 	launch := nativeWorkloadLaunch{
-		Schema: nativeWorkloadSchema,
+		SNPMinTCB: map[string]*uint8{"bootloader": teetypes.Ptr(uint8(12)), "tee": teetypes.Ptr(uint8(0)), "snp": teetypes.Ptr(uint8(28)), "microcode": teetypes.Ptr(uint8(28))},
+		Schema:    nativeWorkloadSchema,
 		RunID: strings.Repeat(
 			"a",
 			32,
@@ -305,6 +331,8 @@ func TestNativeWorkloadLaunchAndInventory(t *testing.T) {
 		)
 	}
 	for _, bad := range [][]byte{
+		bytes.Replace(raw, []byte(`"tee":0`), []byte(`"tee":null`), 1),
+		bytes.Replace(raw, []byte(`,"tee":0`), nil, 1),
 		bytes.Replace(
 			raw,
 			[]byte(`"schemaVersion"`),

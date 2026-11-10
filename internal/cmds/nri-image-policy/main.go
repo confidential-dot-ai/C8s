@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
@@ -364,7 +365,12 @@ func cdsPinSource(cfg *config, logger *slog.Logger) (armtls.PinSource, *followed
 	if !cfg.PullEnabled() {
 		return nil, nil, nil
 	}
-	return cfg.Allowlist.Pull.cdsPinSource(logger)
+	source, decrees, err := cfg.Allowlist.Pull.cdsPinSource(logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	source, err = cdspins.WithNativeVerification(source)
+	return source, decrees, err
 }
 
 // holdContainersForFirstDecree refuses every container the node's CDS pins
@@ -417,9 +423,13 @@ func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS n
 // cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
 // set, as its TLS client certificate.
 func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
+	pins, err := cdspins.WithNativeVerification(pins)
+	if err != nil {
+		return nil, err
+	}
 	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
 	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
-		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
+		built, err := cdspins.ClientTransport(pins, set, cfg.AttestationApiURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1034,6 +1044,16 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
+	native, err := cdspins.NativeVerifierFor(cdsPins)
+	if err != nil {
+		return err
+	}
+	if native != nil {
+		return workloadclaims.StartNativeDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
+			cfg.NormalizedPlatform(),
+			attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
+			attestationApiURL, cdsPins, journal, native)
+	}
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),

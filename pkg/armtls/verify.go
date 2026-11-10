@@ -1,10 +1,12 @@
 package armtls
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
@@ -21,7 +23,10 @@ import (
 
 // VerifyPolicy defines what attestation claims are acceptable.
 type VerifyPolicy struct {
-	// Policy is the evidence policy the attestation-api enforces: image pins,
+	// Native verifies evidence locally under a fixed native policy. When set,
+	// AttestationApiURL is never consulted for verification.
+	Native *NativeVerifier
+	// Policy is the evidence policy the selected verifier enforces: image pins,
 	// launch-measurement reference values, TDX runtime registers, the SEV-SNP
 	// TCB floor and the debug rule. It must carry a launch measurement or an
 	// image pin ([ErrUnpinned]). Leave ExpectedReportData unset — the
@@ -44,10 +49,9 @@ type VerifyPolicy struct {
 	// means [OIDARMTLSAttestation].
 	ExtensionOID asn1.ObjectIdentifier
 
-	// AttestationApiURL is the attestation-api whose /verify endpoint performs
-	// all evidence verification: hardware signature chain, REPORTDATA key
-	// binding, debug policy, and minimum TCB. Required: there is no
-	// in-process verification path; verification without it fails closed.
+	// AttestationApiURL selects the legacy /verify service when Native is nil.
+	// Native mode ignores this URL for verification and authenticates evidence
+	// and collateral locally. One of these explicit verifier paths is required.
 	//
 	// SECURITY: the /verify response is currently not signed; the verifier
 	// trusts whatever this URL returns. Operators MUST point this at an
@@ -56,7 +60,7 @@ type VerifyPolicy struct {
 	// A response-signing scheme would lift this constraint.
 	AttestationApiURL string
 
-	// AttestationVerifyTimeout bounds online attestation-api verification.
+	// AttestationVerifyTimeout bounds peer evidence verification.
 	// If unset, a conservative default is used.
 	AttestationVerifyTimeout time.Duration
 }
@@ -65,33 +69,25 @@ type VerifyPolicy struct {
 type VerifyResult struct {
 	// TEEType is the platform type.
 	TEEType TEEType
-	// ReportData is the 64-byte expected REPORTDATA that the attestation-api
-	// confirmed the report is bound to (the api returns only a match verdict,
+	// ReportData is the 64-byte expected REPORTDATA that the verifier
+	// confirmed the report is bound to (the result carries a match verdict,
 	// not the report bytes, so this echoes the verified expectation).
 	ReportData [64]byte
-	// Measurement is the 48-byte launch measurement reported by the
-	// attestation-api: LAUNCH_DIGEST for SNP or MRTD for TDX.
+	// Measurement is the verified 48-byte launch measurement:
+	// LAUNCH_DIGEST for SNP or MRTD for TDX.
 	Measurement [48]byte
-	// PlatformInfo contains platform-specific metadata from the
-	// attestation-api response. Only set on the SNP path.
+	// PlatformInfo contains verified platform metadata. Only set on SNP.
 	PlatformInfo []byte
-	// Verified is the attestation-api's response, which carries the platform
+	// Verified is the selected verifier's result, which carries the platform
 	// it verified and the claims it read. A caller holding it can enforce a
-	// later policy against the same verdict without a second round-trip.
+	// later policy against the same verdict without repeating verification.
 	Verified remote.VerifyResponse
 }
 
-// VerifyAttestation verifies a raw attestation report against a public key by
-// forwarding the evidence to the attestation-api /verify endpoint
-// (policy.AttestationApiURL, required):
-//  1. The attestation-api verifies the hardware signature chain and that
-//     REPORTDATA == hash(pub || nonce), proving the key was generated inside
-//     the TEE (and the report is fresh if nonce is set), plus the debug and
-//     minimum-TCB policy.
-//  2. The launch measurement it returns is checked against policy.Policy here,
-//     by the same enforcement every attestation-go caller gets.
-//
-// A policy that names no guest fails with [ErrUnpinned] before any request.
+// VerifyAttestation authenticates a report's signature, collateral, debug and
+// TCB policy through Native when configured, otherwise the legacy /verify API.
+// It binds REPORTDATA to hash(pub || nonce) and enforces the caller's image pins.
+// A policy that names no guest fails with [ErrUnpinned] before verification.
 func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
@@ -180,10 +176,9 @@ func (p *VerifyPolicy) extensionOID() asn1.ObjectIdentifier {
 	return p.ExtensionOID
 }
 
-// requireAttestationApi enforces the attestation-api URL every evidence path
-// needs: there is no in-process verification path here.
+// requireAttestationApi requires an explicit native verifier or legacy URL.
 func (p *VerifyPolicy) requireAttestationApi() error {
-	if p.AttestationApiURL == "" {
+	if p.Native == nil && p.AttestationApiURL == "" {
 		return fmt.Errorf("%w: attestation-api URL is required", ErrInvalidReport)
 	}
 	return nil
@@ -215,14 +210,9 @@ func CheckSandboxPin(cert *x509.Certificate, expectedID string) error {
 
 const defaultAttestationVerifyTimeout = 10 * time.Second
 
-// verifyOnline hands the evidence to the attestation-api through
-// [agarmtls.VerifyWithService], which derives the REPORTDATA anchor from pub
-// and nonce, fails closed on the verdict, and then enforces policy.Policy,
-// whose anchored pins accept a replaying runtime list as [EnforceImages] does.
-//
-// C8s ships no in-process quote parser, so every platform is verified there,
-// bare-metal SNP included; an inline VCEK travels in the envelope as
-// collateral.
+// verifyOnline binds evidence to pub and nonce through the selected verifier,
+// then enforces the caller's pins, including the anchored runtime replay rules.
+// Native failures never fall back to the remote service.
 func verifyOnline(
 	att *Attestation,
 	pub crypto.PublicKey,
@@ -241,10 +231,23 @@ func verifyOnline(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	svc := NewAttestationClient(policy.AttestationApiURL)
 	pins := policy.Policy
 	pins.Images = acceptReplayed(pins.Images)
-	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, pins)
+	var resp remote.VerifyResponse
+	if policy.Native != nil {
+		anchor := expectedReportData[:sha512.Size384]
+		if len(pins.ExpectedReportData) > 0 && !bytes.Equal(pins.ExpectedReportData, anchor) {
+			return nil, fmt.Errorf("%w: configured report data does not bind the key", ErrInvalidReport)
+		}
+		pins.ExpectedReportData = anchor
+		envelope, envelopeErr := att.Envelope()
+		if envelopeErr != nil {
+			return nil, envelopeErr
+		}
+		resp, err = policy.Native.VerifyEvidenceWithRuntimeLog(ctx, envelope, pins, att.RuntimeExtensions)
+	} else {
+		resp, err = agarmtls.VerifyWithService(ctx, NewAttestationClient(policy.AttestationApiURL), att, pub, nonce, pins)
+	}
 	if err != nil {
 		return nil, mapVerifyError(att.Family, err)
 	}

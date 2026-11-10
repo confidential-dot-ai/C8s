@@ -298,6 +298,7 @@ type RecoveryPolicy struct {
 	Revision       string
 	Images         []remote.ImagePin
 	AttestationURL string
+	Native         *armtls.NativeVerifier
 }
 
 // RecoveryPolicySource freshly authenticates the same current object CDS serves.
@@ -433,6 +434,9 @@ func authorizeRecoveryRecipient(
 // Check requires bounded image pins for the exact measured launch and a
 // verifier local to the trusted custodian. It does not authenticate the policy.
 func (policy RecoveryPolicy) Check(expected RecoveryIdentity) error {
+	if policy.Native == nil {
+		return errors.New("object state recovery: native verifier required")
+	}
 	if policy.Revision == "" || len(policy.Revision) > 1024 ||
 		len(policy.Images) == 0 || len(policy.Images) > 64 {
 		return errors.New("object state recovery: bounded current image policy required")
@@ -470,8 +474,12 @@ func fetchRecoveryRecipient(
 	origin string,
 	policy RecoveryPolicy,
 ) (RecoveryRequest, error) {
+	if policy.Native == nil {
+		return RecoveryRequest{}, errors.New("object state recovery: native recipient verifier required")
+	}
 	verification := armtls.Pins{Images: policy.Images}.VerifyPolicy(policy.AttestationURL)
 	verification.RequireNonMigratable = true
+	verification.Native = policy.Native
 	tlsConfig, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: verification})
 	if err != nil {
 		return RecoveryRequest{}, err

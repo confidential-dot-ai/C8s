@@ -19,10 +19,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/objectcustody"
@@ -273,6 +273,10 @@ func loadObjectCustodyOwner(options objectCustodyOwnerOptions) (*objectCustodyOw
 	}); err != nil {
 		return nil, errors.New("object custody: client identity is not authorized by the measured owner CA")
 	}
+	native, err := objectCustodyNativeVerifier(document.SNPMinTCB(), teeverify.VerifyEnvelope)
+	if err != nil {
+		return nil, err
+	}
 	owner := &objectCustodyOwner{
 		options:  options,
 		document: document,
@@ -283,7 +287,7 @@ func loadObjectCustodyOwner(options objectCustodyOwnerOptions) (*objectCustodyOw
 				document,
 				images.Digests(),
 				certificate,
-				objectCustodyNativeVerifier(teeverify.VerifyEnvelope),
+				native,
 			), nil
 		},
 		newIssuer: func(
@@ -314,13 +318,18 @@ func loadObjectCustodyOwner(options objectCustodyOwnerOptions) (*objectCustodyOw
 // Retain the shared TLS certificate checks, but require native SNP collateral
 // revocation checks before the owner sends either scoped storage session.
 func objectCustodyNativeVerifier(
+	floor teetypes.SnpTcb,
 	verify func(
 		context.Context,
 		teetypes.AttestationEvidence,
 		teetypes.VerifyParams,
 		teeverify.Options,
 	) (*teetypes.VerificationResult, error),
-) localverify.VerifyFunc {
+) (localverify.VerifyFunc, error) {
+	native, err := armtls.NewNativeVerifierWithEngine(floor, verify)
+	if err != nil {
+		return nil, err
+	}
 	return func(
 		ctx context.Context,
 		platform string,
@@ -331,26 +340,16 @@ func objectCustodyNativeVerifier(
 			len(params.ExpectedReportData) != 48 || len(params.ExpectedInitDataHash) != 32 || params.AllowDebug || params.MinTCB == nil {
 			return nil, errors.New("object custody: complete native custody verification policy required")
 		}
-		result, err := verify(
-			ctx,
-			teetypes.AttestationEvidence{
-				Platform: teetypes.PlatformSNP,
-				Evidence: evidence,
-			},
-			params.VerifyParams,
-			teeverify.Options{
-				SNP: snp.Options{
-					CheckRevocations: true,
-					Getter: snp.DefaultKDSGetter(
-						20*time.Second,
-						2*time.Second,
-					),
-				},
-			},
-		)
+		response, err := native.VerifyEvidence(ctx, teetypes.AttestationEvidence{Platform: teetypes.PlatformSNP, Evidence: evidence}, remote.Policy{
+			ExpectedReportData:   params.ExpectedReportData,
+			ExpectedInitDataHash: params.ExpectedInitDataHash,
+			Measurements:         params.Measurements,
+			MinTcb:               params.MinTCB,
+		})
 		if err != nil {
 			return nil, err
 		}
+		result := &response.Result
 		if result == nil || !result.SignatureValid || result.Platform != teetypes.PlatformSNP || !result.CollateralVerified ||
 			result.ReportDataMatch == nil || !*result.ReportDataMatch || result.InitDataMatch == nil || !*result.InitDataMatch {
 			return nil, errors.New("object custody: native binding or revocation verdict missing")
@@ -364,7 +363,7 @@ func objectCustodyNativeVerifier(
 			}
 		}
 		return nil, errors.New("object custody: unapproved custody image")
-	}
+	}, nil
 }
 
 func objectCustodyOwnerClient(
@@ -405,6 +404,11 @@ func objectCustodyOwnerClient(
 				Snp:        tcb.SnpSpl,
 				Microcode:  tcb.UcodeSpl,
 			}
+			floor := document.SNPMinTCB()
+			params.MinTCB.Bootloader = max(params.MinTCB.Bootloader, floor.Bootloader)
+			params.MinTCB.Tee = max(params.MinTCB.Tee, floor.Tee)
+			params.MinTCB.Snp = max(params.MinTCB.Snp, floor.Snp)
+			params.MinTCB.Microcode = max(params.MinTCB.Microcode, floor.Microcode)
 			return verify(
 				ctx,
 				platform,

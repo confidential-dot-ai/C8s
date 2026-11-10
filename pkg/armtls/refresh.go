@@ -64,6 +64,7 @@ func FollowServerPins(
 			requireNonMigratable,
 			true,
 		),
+		nil,
 	)
 }
 
@@ -87,7 +88,26 @@ func FollowClientPins(
 			requireNonMigratable,
 			true,
 		),
+		nil,
 	)
+}
+
+// FollowNativeServerPins preserves native verification across pin refreshes.
+func FollowNativeServerPins(
+	tlsCfg *tls.Config,
+	src PinSource,
+	native *NativeVerifier,
+) {
+	tlsCfg.VerifyPeerCertificate = followPins(src, "", x509.ExtKeyUsageServerAuth, true, native)
+}
+
+// FollowNativeClientPins is the native inventory listener's peer policy.
+func FollowNativeClientPins(
+	tlsCfg *tls.Config,
+	src PinSource,
+	native *NativeVerifier,
+) {
+	tlsCfg.VerifyPeerCertificate = followPins(src, "", x509.ExtKeyUsageClientAuth, true, native)
 }
 
 // followPins is the peer check of the set src holds now, retried against a
@@ -97,6 +117,7 @@ func followPins(
 	attestationApiURL string,
 	purpose x509.ExtKeyUsage,
 	requireNonMigratable bool,
+	native *NativeVerifier,
 ) func(
 	[][]byte,
 	[][]*x509.Certificate,
@@ -107,6 +128,7 @@ func followPins(
 	) error {
 		policy := Pins(src.Current().Policy()).VerifyPolicy(attestationApiURL)
 		policy.RequireNonMigratable = requireNonMigratable
+		policy.Native = native
 		return verifyPeerCallback(
 			policy,
 			purpose,
@@ -166,6 +188,25 @@ func ClientTransport(pins Pins, attestationApiURL string) (*http.Transport, erro
 	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
 		Policy: pins.VerifyPolicy(attestationApiURL),
 	})
+	if err != nil {
+		return nil, fmt.Errorf("armtls client config: %w", err)
+	}
+	return standardTransport(tlsCfg)
+}
+
+// NativeClientTransport retains one verifier and its admission bound for every
+// connection in this transport. Its policy never consults a remote verdict.
+func NativeClientTransport(
+	pins Pins,
+	native *NativeVerifier,
+) (*http.Transport, error) {
+	if native == nil {
+		return nil, fmt.Errorf("armtls client config: native verifier required")
+	}
+	policy := pins.VerifyPolicy("")
+	policy.Native = native
+	policy.RequireNonMigratable = true
+	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{Policy: policy})
 	if err != nil {
 		return nil, fmt.Errorf("armtls client config: %w", err)
 	}

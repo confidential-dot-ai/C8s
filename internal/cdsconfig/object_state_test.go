@@ -24,6 +24,7 @@ func testObjectStateWire(t *testing.T) *objectStateWire {
 		Region:              "us-east-2",
 		ExpectedBucketOwner: "123456789012",
 		RecoveryAuthority:   base64.StdEncoding.EncodeToString(public),
+		SNPMinTCB:           &snpTCBWire{Bootloader: teetypes.Ptr(uint8(12)), Tee: teetypes.Ptr(uint8(0)), Snp: teetypes.Ptr(uint8(28)), Microcode: teetypes.Ptr(uint8(28))},
 	}
 }
 
@@ -78,6 +79,10 @@ func TestObjectStateRidesTheMeasuredConfiguration(t *testing.T) {
 	) {
 		t.Fatal("Format changed the storage identity, recovery signer or admission bounds")
 	}
+	state.SNPMinTCB.FMC = teetypes.Ptr(uint8(1))
+	if _, err := Format(rendered); err == nil {
+		t.Fatal("Format silently discarded the unsupported FMC floor")
+	}
 }
 
 func TestObjectStateStorageAndCustodyAreBoundByTheLaunchPin(t *testing.T) {
@@ -131,21 +136,23 @@ func TestObjectStateStorageAndCustodyAreBoundByTheLaunchPin(t *testing.T) {
 
 func TestObjectStateRefusesUnsafeLaunchSettings(t *testing.T) {
 	changes := map[string]func(*objectStateWire){
-		"bucket missing":     func(w *objectStateWire) { w.Bucket = "" },
-		"bucket ARN":         func(w *objectStateWire) { w.Bucket = "arn:aws:s3:::example" },
-		"bucket address":     func(w *objectStateWire) { w.Bucket = "127.0.0.1" },
-		"bucket empty label": func(w *objectStateWire) { w.Bucket = "cds..state" },
-		"access point alias": func(w *objectStateWire) { w.Bucket = "other-s3alias" },
-		"directory bucket":   func(w *objectStateWire) { w.Bucket = "other--x-s3" },
-		"key missing":        func(w *objectStateWire) { w.Key = "" },
-		"key root":           func(w *objectStateWire) { w.Key = "/current" },
-		"key directory":      func(w *objectStateWire) { w.Key = "current/" },
-		"key traversal":      func(w *objectStateWire) { w.Key = "cluster/../current" },
-		"key dot":            func(w *objectStateWire) { w.Key = "cluster/./current" },
-		"key repeated slash": func(w *objectStateWire) { w.Key = "cluster//current" },
-		"key backslash":      func(w *objectStateWire) { w.Key = `cluster\current` },
-		"key control":        func(w *objectStateWire) { w.Key = "cluster\x00current" },
-		"key malformed UTF8": func(w *objectStateWire) { w.Key = "cluster\xffcurrent" },
+		"floor missing":           func(w *objectStateWire) { w.SNPMinTCB = nil },
+		"floor component omitted": func(w *objectStateWire) { w.SNPMinTCB.Tee = nil },
+		"bucket missing":          func(w *objectStateWire) { w.Bucket = "" },
+		"bucket ARN":              func(w *objectStateWire) { w.Bucket = "arn:aws:s3:::example" },
+		"bucket address":          func(w *objectStateWire) { w.Bucket = "127.0.0.1" },
+		"bucket empty label":      func(w *objectStateWire) { w.Bucket = "cds..state" },
+		"access point alias":      func(w *objectStateWire) { w.Bucket = "other-s3alias" },
+		"directory bucket":        func(w *objectStateWire) { w.Bucket = "other--x-s3" },
+		"key missing":             func(w *objectStateWire) { w.Key = "" },
+		"key root":                func(w *objectStateWire) { w.Key = "/current" },
+		"key directory":           func(w *objectStateWire) { w.Key = "current/" },
+		"key traversal":           func(w *objectStateWire) { w.Key = "cluster/../current" },
+		"key dot":                 func(w *objectStateWire) { w.Key = "cluster/./current" },
+		"key repeated slash":      func(w *objectStateWire) { w.Key = "cluster//current" },
+		"key backslash":           func(w *objectStateWire) { w.Key = `cluster\current` },
+		"key control":             func(w *objectStateWire) { w.Key = "cluster\x00current" },
+		"key malformed UTF8":      func(w *objectStateWire) { w.Key = "cluster\xffcurrent" },
 		"key oversized": func(w *objectStateWire) {
 			w.Key = strings.Repeat(
 				"a",

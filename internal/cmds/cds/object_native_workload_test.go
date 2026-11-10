@@ -521,6 +521,10 @@ func (f *nativeWorkload) prepare(
 	}
 	verification := armtls.Pins(pins.Policy()).VerifyPolicy(nativeWorkloadAPI)
 	verification.RequireNonMigratable = true
+	verification.Native, err = f.launch.nativeVerifier()
+	if err != nil {
+		return err
+	}
 	publicTLS, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: verification})
 	if err != nil {
 		return err

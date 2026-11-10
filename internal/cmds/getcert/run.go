@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -214,7 +215,7 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := cdspins.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}

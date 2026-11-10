@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
@@ -21,7 +20,7 @@ type application struct {
 	cfg              config
 	verifier         operatorauth.Verifier
 	policy           issuer.CSRPolicy
-	attestation      remote.Client
+	attestation      evidenceVerifier
 	inventory        sandboxDigestSource
 	kms              kmsReleaser
 	checker          *readiness.Checker
@@ -48,13 +47,11 @@ func newApplication(
 		back.NodeImages(),
 		cfg.measured.PodImages,
 	)
-	inventory, err := workloadclaims.NewDigestsClient(
-		ctx,
-		digestsClientConfig(
-			cfg,
-			nodeImages,
-		),
-	)
+	inventoryConfig, err := digestsClientConfig(cfg, nodeImages)
+	if err != nil {
+		return nil, err
+	}
+	inventory, err := workloadclaims.NewDigestsClient(ctx, inventoryConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +70,10 @@ func newApplication(
 		checker:          checker,
 		rateLimiter:      rateLimiter,
 		challengeLimiter: challengeLimiter,
+	}
+	if cfg.measured.ObjectState != nil {
+		// Issuance and inventory handshakes share one cluster admission bound.
+		app.attestation = inventoryConfig.Native
 	}
 	if kms := cfg.measured.KMS; kms != nil {
 		app.kms = newKMSClient(kms)

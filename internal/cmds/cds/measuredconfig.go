@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // runMeasuredConfig runs CDS on the configuration document its VM was launched
@@ -26,7 +27,22 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err := requireLoopbackAttestationAPI(cfg.attestationApiURL); err != nil {
 		return err
 	}
-	platform, err := launchbinding.VerifyMeasuredLaunchFile(ctx, cfg.attestationApiURL, document)
+	// Parse only to select the verifier; no configuration becomes trusted until
+	// that verifier binds these exact bytes to this guest's fresh self-report.
+	parsed, err := cdsconfig.Parse(document)
+	if err != nil {
+		return err
+	}
+	var platform teetypes.Family
+	if parsed.ObjectState != nil {
+		native, nativeErr := armtls.NewNativeVerifier(parsed.ObjectState.SNPMinTCB)
+		if nativeErr != nil {
+			return nativeErr
+		}
+		platform, err = launchbinding.VerifyNativeMeasuredLaunchFile(ctx, cfg.attestationApiURL, document, native)
+	} else {
+		platform, err = launchbinding.VerifyMeasuredLaunchFile(ctx, cfg.attestationApiURL, document)
+	}
 	if err != nil {
 		return fmt.Errorf("--config %s is not the document this VM was launched with: %w", cfg.configPath, err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/objectstate"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // objectRecoveryPolicySource combines immutable approved images with a fresh
@@ -55,6 +56,10 @@ func newObjectRecoveryPolicySource(
 		Revision:       "fixed",
 		Images:         images,
 		AttestationURL: cfg.attestationApiURL,
+	}
+	policy.Native, err = armtls.NewNativeVerifier(measured.ObjectState.SNPMinTCB)
+	if err != nil {
+		return nil, err
 	}
 	if err := policy.Check(objectRecoveryIdentity(cfg)); err != nil {
 		return nil, err

@@ -262,8 +262,8 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 // digestsClientConfig is the client CDS calls node inventories back with for
 // a sandbox's container digests. It holds an inventory to the node images CDS
 // certifies, so the two follow one set.
-func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims.DigestsClientConfig {
-	return workloadclaims.DigestsClientConfig{
+func digestsClientConfig(cfg config, nodeImages armtls.PinSource) (workloadclaims.DigestsClientConfig, error) {
+	result := workloadclaims.DigestsClientConfig{
 		RequireNonMigratable: cfg.measured != nil && cfg.measured.ObjectState != nil,
 		Platform:             cfg.armtlsPlatform.String(),
 		AttestFunc:           armtlsAttestFunc(cfg),
@@ -272,6 +272,14 @@ func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims
 		Timeout:              cfg.requestTimeout,
 		MeasuredPoliciesFile: "",
 	}
+	if cfg.measured != nil && cfg.measured.ObjectState != nil {
+		native, err := armtls.NewNativeVerifier(cfg.measured.ObjectState.SNPMinTCB)
+		if err != nil {
+			return result, err
+		}
+		result.Native = native
+	}
+	return result, nil
 }
 
 func normalizeHTTPServerConfig(cfg config) config {

@@ -37,6 +37,7 @@ type Config struct {
 	images     []remote.ImagePin
 	ownerDER   []byte
 	parameters Parameters
+	snpMinTCB  teetypes.SnpTcb
 }
 
 type wire struct {
@@ -83,10 +84,11 @@ func Parse(document []byte) (*Config, error) {
 		return nil, err
 	}
 	return &Config{
-		document: bytes.Clone(document),
-		template: template,
-		images:   images,
-		ownerDER: bytes.Clone(owner.Raw),
+		document:  bytes.Clone(document),
+		template:  template,
+		images:    images,
+		ownerDER:  bytes.Clone(owner.Raw),
+		snpMinTCB: cds.ObjectState.SNPMinTCB,
 		parameters: Parameters{
 			GuestSVN: *input.Derivation.GuestSVN,
 			TCB:      *input.Derivation.TCB,
@@ -160,8 +162,9 @@ func parseOwnerCA(document []byte) (*x509.Certificate, error) {
 	return cert, nil
 }
 
-func (c *Config) Document() []byte       { return bytes.Clone(c.document) }
-func (c *Config) Parameters() Parameters { return c.parameters }
+func (c *Config) Document() []byte           { return bytes.Clone(c.document) }
+func (c *Config) Parameters() Parameters     { return c.parameters }
+func (c *Config) SNPMinTCB() teetypes.SnpTcb { return c.snpMinTCB }
 
 func (c *Config) OwnerCA() *x509.Certificate {
 	cert, _ := x509.ParseCertificate(bytes.Clone(c.ownerDER))

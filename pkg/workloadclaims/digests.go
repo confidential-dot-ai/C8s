@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/netutil"
+
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -247,6 +249,41 @@ func StartDigestsEndpoint(
 	measuredPolicies string,
 	requireNonMigratable ...bool,
 ) error {
+	return startDigestsEndpoint(ctx, logger, resolver, identity, platform, attestFunc, attestationApiURL, cdsPins, measuredPolicies, slices.Contains(requireNonMigratable, true), nil)
+}
+
+// StartNativeDigestsEndpoint serves inventory only to locally verified native CDS peers.
+func StartNativeDigestsEndpoint(
+	ctx context.Context,
+	logger *slog.Logger,
+	resolver SandboxResolver,
+	identity []byte,
+	platform string,
+	attestFunc func(context.Context, string) (string, error),
+	attestationApiURL string,
+	cdsPins armtls.PinSource,
+	measuredPolicies string,
+	native *armtls.NativeVerifier,
+) error {
+	if native == nil {
+		return fmt.Errorf("workloadclaims: native verifier required")
+	}
+	return startDigestsEndpoint(ctx, logger, resolver, identity, platform, attestFunc, attestationApiURL, cdsPins, measuredPolicies, true, native)
+}
+
+func startDigestsEndpoint(
+	ctx context.Context,
+	logger *slog.Logger,
+	resolver SandboxResolver,
+	identity []byte,
+	platform string,
+	attestFunc func(context.Context, string) (string, error),
+	attestationApiURL string,
+	cdsPins armtls.PinSource,
+	measuredPolicies string,
+	requireNonMigratable bool,
+	native *armtls.NativeVerifier,
+) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(
 		platform,
 		attestFunc,
@@ -254,13 +291,16 @@ func StartDigestsEndpoint(
 		cdsPins,
 		0,
 		measuredPolicies,
-		requireNonMigratable...,
+		requireNonMigratable,
 	)
 	if err != nil {
 		return err
 	}
+	if native != nil {
+		armtls.FollowNativeClientPins(tlsCfg, cdsPins, native)
+	}
 	addr := net.JoinHostPort("", strconv.Itoa(listenPort))
-	l, err := tls.Listen("tcp", addr, tlsCfg)
+	l, err := listenDigests(addr, tlsCfg, native != nil)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
@@ -280,6 +320,24 @@ func StartDigestsEndpoint(
 	return nil
 }
 
+func listenDigests(
+	address string,
+	config *tls.Config,
+	bounded bool,
+) (net.Listener, error) {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	if bounded {
+		// Bound TLS sockets as well as the verifier's expensive work slots.
+		listener = netutil.LimitListener(listener, 64)
+	}
+	// Keep *tls.Conn visible to net/http so it performs the handshake and sets
+	// Request.TLS. A connection-limit wrapper must sit below this TLS listener.
+	return tls.NewListener(listener, config), nil
+}
+
 // DigestsClient is CDS's side of the callback: an armTLS client that verifies
 // the inventory's attestation — pinning its launch measurement when one is
 // configured — and presents CDS's own armTLS certificate, so the inventory can
@@ -290,6 +348,8 @@ type DigestsClient struct {
 
 // DigestsClientConfig configures [NewDigestsClient].
 type DigestsClientConfig struct {
+	// Native is fixed by object mode and survives refreshed server pins.
+	Native     *armtls.NativeVerifier
 	Platform   string
 	AttestFunc func(
 		ctx context.Context,
@@ -313,6 +373,7 @@ type DigestsClientConfig struct {
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	policy := armtls.Pins(c.NodeImages.Current().Policy()).VerifyPolicy(c.AttestationAPIURL)
 	policy.RequireNonMigratable = c.RequireNonMigratable
+	policy.Native = c.Native
 	return &armtls.ClientConfig{
 		Policy:               policy,
 		Platform:             c.Platform,
@@ -348,6 +409,9 @@ func NewDigestsClient(
 		cfg.AttestationAPIURL,
 		cfg.RequireNonMigratable,
 	)
+	if cfg.Native != nil {
+		armtls.FollowNativeServerPins(tlsCfg, cfg.NodeImages, cfg.Native)
+	}
 	warmupCtx, cancel := context.WithTimeout(ctx, warmUpBudget)
 	defer cancel()
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {

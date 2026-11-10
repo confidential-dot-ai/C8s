@@ -101,6 +101,11 @@ key: clusters/YOUR_CLUSTER/current
 region: us-east-2
 expectedBucketOwner: "YOUR_12_DIGIT_PROJECT_ID"
 recoveryAuthority: YOUR_BASE64_ED25519_PUBLIC_KEY
+snpMinTCB:
+  bootloader: 12
+  tee: 0
+  snp: 28
+  microcode: 28
 maxBytes: 16777216
 workers: 4
 queueCapacity: 64
@@ -112,6 +117,13 @@ and image-manifest arguments. The generator embeds an `objectState` block and
 generates a launch pin covering it. An optional `endpoint` must be an HTTPS
 origin. `ha` and `objectState` are mutually exclusive. Credentials and encryption
 keys are forbidden in this public launch document.
+
+The `snpMinTCB` values above illustrate a firmware floor; choose values approved
+for the actual SNP hardware before generating the measured launch. All four
+components are required, including an explicit zero where appropriate, and the
+combined floor must be nonzero. This peer-verification floor is independent of
+the custodian's fixed hardware-key derivation TCB. Raising one must not silently
+change the other.
 
 Running the generated configuration selects this backend before opening legacy
 stores or creating a local CA. Object mode requires no `--allowlist-db` and
@@ -164,11 +176,24 @@ approval, original configuration or selected derivation parameters changes the
 root and needs a protected transition that is not implemented. Owner CA expiry
 therefore bounds this fixed configuration's usable lifetime.
 
-Object-mode recovery, issuance and inventory verification require native SNP or
-TDX guests whose authenticated policy forbids migration. Image pins alone do
-not establish that property: SNP `MIGRATE_MA` and TDX `TD_ATTRIBUTES.MIGRATABLE`
-are checked separately, including after a pin refresh. Missing or malformed
-policy claims fail closed.
+Object-mode startup, recovery, issuance and inventory verification use the same
+local native verifier. The attestation API supplies evidence and health; its
+remote verification response does not authorize an object-mode peer. Native SNP
+requires the measured floor for reported, current and launch firmware TCBs,
+plus fresh signed revocation data. Native
+TDX requires fresh authenticated collateral and `UpToDate` platform, module and
+quoting-enclave status. Missing, future-dated or expired collateral fails closed.
+These validity windows use the verifier's wall clock; they do not establish a
+hardware-trusted clock or prove that the collateral is the latest publication.
+
+Guests must also forbid debug and migration. Image pins alone do not establish
+these properties: SNP `MIGRATE_MA` and TDX `TD_ATTRIBUTES.MIGRATABLE` are checked
+separately, including after a pin refresh. Missing or malformed policy claims
+fail closed. The current verifier supports VCEK SNP on the qualified processor
+generations; VLEK and Turin/FMC evidence remain rejected pending verifier
+qualification. TDX collateral profiles that the pinned SDK cannot fully
+validate are rejected. These restrictions apply to the object backend; they do
+not silently change legacy attestation behavior.
 
 The owner uses mutual TLS and freshly verifies the custodian's native SNP
 measurement, launch document, minimum TCB and revocation collateral. Its identity

@@ -42,7 +42,7 @@ import (
 // that names no image admits nobody.
 type AttestHandler struct {
 	Challenges        attestation.Challenges
-	AttestationClient remote.Client
+	AttestationClient evidenceVerifier
 	MeshCA            meshCA
 	CertTTL           time.Duration
 
@@ -114,6 +114,10 @@ type AttestHandler struct {
 	// later decision about that sandbox asks the same one rather than one the
 	// requester names (internal/sandboxledger). nil records nothing.
 	SandboxBindings sandboxBinder
+}
+
+type evidenceVerifier interface {
+	VerifyEnforced(context.Context, remote.VerifyRequest) (remote.VerifyResponse, error)
 }
 
 // sandboxBinder records the inventory that vouched for a sandbox. Record
@@ -670,6 +674,12 @@ func (h AttestHandler) recordSandboxBinding(sandbox workloadclaims.VerifiedSandb
 // conditions, not evidence rejections, so they classify as unreachable too.
 func classifyVerifyError(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, armtls.ErrNativeVerifierBusy):
+		return http.StatusServiceUnavailable, types.ErrorCodeAttestationApiUnreachable, "native attestation verification is busy"
+	case errors.Is(err, armtls.ErrNativeCollateralUnavailable):
+		return http.StatusServiceUnavailable, types.ErrorCodeAttestationApiUnreachable, "native attestation collateral is unavailable"
+	case errors.Is(err, armtls.ErrInvalidReport), errors.Is(err, armtls.ErrPolicyViolation), errors.Is(err, remote.ErrUnsupportedPlatform), errors.Is(err, remote.ErrMinTcbNotAllowed):
+		return http.StatusUnauthorized, types.ErrorCodeVerificationFailed, "native attestation evidence rejected"
 	case errors.Is(err, remote.ErrSignatureInvalid):
 		return http.StatusUnauthorized, types.ErrorCodeVerificationFailed, "attestation signature invalid"
 	case errors.Is(err, remote.ErrReportDataMismatch):
