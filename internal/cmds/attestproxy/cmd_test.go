@@ -208,11 +208,21 @@ func TestHealthEndpointWithoutSocket(t *testing.T) {
 }
 
 // attest-proxy's liveness reports only its own state: a dead upstream keeps it
-// live, a missing socket does not.
+// live, a socket that does not accept does not.
 func TestLivez(t *testing.T) {
 	sock := serveProxy(t, config{upstream: deadUpstream, socketGID: 0})
 	notSocket := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(notSocket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A listener closed without unlinking leaves a socket file nothing accepts on.
+	closed := filepath.Join(t.TempDir(), "closed.sock")
+	l, err := net.Listen("unix", closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -220,6 +230,11 @@ func TestLivez(t *testing.T) {
 		socket string
 		want   int
 	}{
+		{
+			name:   "listener closed",
+			socket: closed,
+			want:   http.StatusServiceUnavailable,
+		},
 		{
 			name:   "upstream down",
 			socket: sock,
@@ -248,7 +263,7 @@ func TestLivez(t *testing.T) {
 }
 
 // /upstream/livez, the attestation-api's liveness, calls the upstream directly,
-// so it needs no socket.
+// so it needs no socket, and passes on any status the upstream reports.
 func TestUpstreamLivez(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -263,7 +278,7 @@ func TestUpstreamLivez(t *testing.T) {
 		{
 			name:     "upstream starting",
 			upstream: startUpstream(t, healthStatus("starting")),
-			want:     http.StatusServiceUnavailable,
+			want:     http.StatusOK,
 		},
 		{
 			name:     "upstream down",

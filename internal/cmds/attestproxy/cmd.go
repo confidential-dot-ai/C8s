@@ -11,9 +11,7 @@ package attestproxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -166,11 +164,14 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 // healthHandler serves the kubelet's HTTP probes. The bodies carry no
 // evidence, so exposing them on the pod IP adds no reachable surface beyond
 // "is this DaemonSet serving".
-//   - /livez: attest-proxy's liveness; fails only when its socket is gone.
+//   - /livez: attest-proxy's liveness; a dial of its socket, no upstream call.
+//     A serve loop that stops accepting passes until the listen backlog fills.
 //   - /healthz: readiness; a GET /health round-trip over the proxy's socket,
 //     as the healthcheck subcommand runs it.
 //   - /upstream/livez: the attestation-api's liveness, which the kubelet cannot
-//     probe on pod loopback; a GET /health on upstream directly.
+//     probe on pod loopback; a GET /health on upstream directly. Any decoded
+//     answer passes: a status other than "ok" is the API's state to report,
+//     not one a restart fixes.
 func healthHandler(
 	socket string,
 	upstream string,
@@ -178,9 +179,10 @@ func healthHandler(
 	socketClient := remote.NewClient("unix://" + socket)
 	upstreamClient := remote.NewClient(upstream)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
-		if socketGone(socket) {
-			http.Error(w, "socket gone", http.StatusServiceUnavailable)
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		if err := dialSocket(r.Context(), socket); err != nil {
+			slog.Warn("attestation proxy socket does not accept", "socket", socket, "error", err)
+			http.Error(w, "socket does not accept", http.StatusServiceUnavailable)
 			return
 		}
 		fmt.Fprintln(w, "ok")
@@ -194,7 +196,7 @@ func healthHandler(
 		fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("GET /upstream/livez", func(w http.ResponseWriter, r *http.Request) {
-		if err := checkHealth(r.Context(), upstreamClient); err != nil {
+		if _, err := fetchHealth(r.Context(), upstreamClient); err != nil {
 			slog.Warn("attestation-api healthcheck failed", "upstream", upstream, "error", err)
 			http.Error(w, "attestation-api unavailable", http.StatusServiceUnavailable)
 			return
@@ -204,15 +206,13 @@ func healthHandler(
 	return mux
 }
 
-// checkHealth runs GET /health within healthcheckTimeout and, like
-// remote.WaitHealthy, counts only status "ok" as healthy.
+// checkHealth runs fetchHealth and, like remote.WaitHealthy, counts only
+// status "ok" as healthy.
 func checkHealth(
 	ctx context.Context,
 	client remote.Client,
 ) error {
-	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
-	defer cancel()
-	health, err := client.Health(ctx)
+	health, err := fetchHealth(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -222,15 +222,28 @@ func checkHealth(
 	return nil
 }
 
-// socketGone reports whether nothing, or something other than a socket, is at
-// path. Any other stat error counts as present: liveness fails only when a
-// restart, which binds the socket afresh, would help.
-func socketGone(path string) bool {
-	fi, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return true
+// fetchHealth runs GET /health within healthcheckTimeout.
+func fetchHealth(
+	ctx context.Context,
+	client remote.Client,
+) (remote.HealthResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
+	defer cancel()
+	return client.Health(ctx)
+}
+
+// dialSocket connects to the Unix socket within healthcheckTimeout.
+func dialSocket(
+	ctx context.Context,
+	socket string,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	if err != nil {
+		return err
 	}
-	return err == nil && fi.Mode()&os.ModeSocket == 0
+	return conn.Close()
 }
 
 func newProxy(cfg config) (http.Handler, error) {
