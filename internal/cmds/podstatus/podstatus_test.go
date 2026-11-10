@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,9 +149,9 @@ var (
 
 // attestFixture serves a fake pod CVM: registered is what its quote's
 // RTMR[3] replays, journal what it lists, relayKey a serving key other than
-// the connection's (a relayed quote), and wrap optional middleware around
-// the guest handler.
-func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.PublicKey, wrap ...func(http.Handler) http.Handler) AttestConfig {
+// the connection's (a relayed quote), and opts optional adjustments to the
+// guest server before it starts.
+func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.PublicKey, opts ...func(*httptest.Server)) AttestConfig {
 	t.Helper()
 	dir := t.TempDir()
 	pub := []byte("pod launch key")
@@ -177,11 +178,11 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	var guest http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(armtls.WithServingKey(r.Context(), servingKey)))
 	})
-	for _, w := range wrap {
-		guest = w(guest)
-	}
 	srv := httptest.NewUnstartedServer(guest)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	for _, opt := range opts {
+		opt(srv)
+	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	servingKey = srv.Certificate().PublicKey
@@ -215,6 +216,11 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 		return res, nil
 	}
 	return AttestConfig{Node: strings.TrimPrefix(srv.URL, "https://"), LaunchKeyPubPath: pubPath, ImageManifestPath: manifestPath, Timeout: 5 * time.Second}
+}
+
+// wrapGuest puts middleware around the fake guest's handler.
+func wrapGuest(mw func(http.Handler) http.Handler) func(*httptest.Server) {
+	return func(srv *httptest.Server) { srv.Config.Handler = mw(srv.Config.Handler) }
 }
 
 // lastClaimed is the measured list the fixture's verifier was last asked to
@@ -258,6 +264,15 @@ func TestAttestBindsMeasuredDigests(t *testing.T) {
 	}
 	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
 		t.Fatalf("get: %s %v", body, err)
+	}
+}
+
+// An empty expected set means no containers, unlike no expected set.
+func TestAttestRefusesDigestsWhenNoneAreExpected(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	cfg.ExpectDigests = []string{}
+	if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("a measured container passed an empty expected set: %v", err)
 	}
 }
 
@@ -435,6 +450,33 @@ func TestAttestPinsTheServingKey(t *testing.T) {
 	}
 }
 
+// rotateServingKeyAfter presents another certificate from handshake n+1 on.
+func rotateServingKeyAfter(t *testing.T, n int) func(*httptest.Server) {
+	return func(srv *httptest.Server) {
+		rotated := &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+		var handshakes atomic.Int64
+		srv.TLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			if handshakes.Add(1) > int64(n) {
+				return rotated, nil
+			}
+			return nil, nil
+		}
+		srv.Config.SetKeepAlivesEnabled(false)
+	}
+}
+
+// The quote and the digest read after it travel over the pinned channel.
+func TestAttestReadsEvidenceAndDigestsOverThePinnedChannel(t *testing.T) {
+	for name, served := range map[string]int{"quote": 1, "second digest read": 2} {
+		t.Run(name, func(t *testing.T) {
+			cfg := attestFixture(t, []string{dA}, []string{dA}, nil, rotateServingKeyAfter(t, served))
+			if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+				t.Fatalf("another guest answered the %s: %v", name, err)
+			}
+		})
+	}
+}
+
 // The kubelet's self-signed serving certificate is pinned by its bytes:
 // the certificate kubelet wrote is accepted, any other is refused, and the
 // pin follows the file.
@@ -472,7 +514,7 @@ func TestKubeletPodsPinsTheServingCertificate(t *testing.T) {
 // convention; the client refuses rather than failing on a REPORT_DATA
 // mismatch it cannot explain.
 func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
-	cfg := attestFixture(t, []string{dA}, []string{dA}, nil, func(next http.Handler) http.Handler {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil, wrapGuest(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != EvidencePath {
 				next.ServeHTTP(w, r)
@@ -481,7 +523,7 @@ func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
 			w.Header().Set(BindingHeader, "armtls-key-nonce/v0")
 			_, _ = w.Write([]byte(`{}`))
 		})
-	})
+	}))
 	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `needs "armtls-key-nonce/v1"`) {
 		t.Fatalf("got %v", err)
 	}
@@ -599,6 +641,21 @@ func TestPinServingKeyKeepsTheClientChecks(t *testing.T) {
 	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{{PublicKey: key}}}
 	if err := checked.Transport.(*http.Transport).TLSClientConfig.VerifyConnection(cs); !errors.Is(err, refused) {
 		t.Fatalf("client check dropped by the pin: %v", err)
+	}
+}
+
+// tlsOnlyTransport serves over TLS but is not an *http.Transport, so the
+// serving key cannot be pinned.
+type tlsOnlyTransport struct{ http.RoundTripper }
+
+func TestAttestReportsAnUnpinnableClient(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	newClient = func(guestverify.Policy, time.Duration) *http.Client {
+		transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test fixture
+		return &http.Client{Transport: tlsOnlyTransport{transport}}
+	}
+	if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "no TLS transport") {
+		t.Fatalf("unpinnable client: %v", err)
 	}
 }
 
