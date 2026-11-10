@@ -190,46 +190,102 @@ const historyTimeouts = 4
 // serving leaf would only fail on a different replica. It reports whether the
 // verdict failed because the target could not be reached.
 func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) (unreachable bool) {
-	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
+	if !policyHistoryRequested(cfg) || (!oc.Verified && !oc.Partial) {
 		return false
 	}
-	fail := func(format string, args ...any) {
+	var err error
+	if cfg.trustOperator {
+		err = checkSignedHistory(ctx, oc, cfg, ev, keys)
+	} else {
+		err = savePolicyHistory(ctx, oc, cfg)
+	}
+	if err != nil {
 		oc.Verified, oc.Partial = false, false
-		oc.Error = fmt.Sprintf(format, args...)
+		oc.Error = err.Error()
+		return isConnectError(err)
 	}
-	code := "allowlist_fetch_failed"
-	if cfg.trustOperator {
-		code = "policy_history_unsigned"
-	}
+	return false
+}
+
+func policyHistoryRequested(cfg config) bool {
+	return cfg.trustOperator || cfg.fetchAllowlists != ""
+}
+
+// savePolicyHistory is --fetch-allowlists without --trust-operator.
+func savePolicyHistory(ctx context.Context, oc *Outcome, cfg config) error {
 	if len(oc.MeasuredPolicies) == 0 {
-		if cfg.trustOperator {
-			fail("policy_history_absent: %s", noHistory)
-			return false
-		}
 		oc.Warnings = append(oc.Warnings, "--fetch-allowlists saved nothing: "+noHistory)
-		return false
+		return nil
 	}
-	digests := oc.MeasuredPolicies
-	unstamped, stamped := false, false
-	if cfg.trustOperator {
-		d, err := leafPolicy(ev)
-		unstamped, stamped = errors.Is(err, errLeafUnstamped), d != ""
-		if err != nil && !unstamped {
-			fail("policy_history_unsigned: %v", err)
-			return false
-		}
-		if d != "" && !slices.Contains(digests, d) {
-			digests = append(slices.Clone(digests), d)
-		}
+	return checkHistoryPolicies(ctx, cfg, oc.MeasuredPolicies, historyCheck{failureCode: "allowlist_fetch_failed"})
+}
+
+// checkSignedHistory also requires a signature on the policy the leaf was
+// issued under.
+func checkSignedHistory(
+	ctx context.Context,
+	oc *Outcome,
+	cfg config,
+	ev *evidence,
+	keys []*ecdsa.PublicKey,
+) error {
+	if len(oc.MeasuredPolicies) == 0 {
+		return fmt.Errorf("policy_history_absent: %s", noHistory)
 	}
+	leaf, err := leafPolicy(ev)
+	unstamped := errors.Is(err, errLeafUnstamped)
+	if err != nil && !unstamped {
+		return fmt.Errorf("policy_history_unsigned: %v", err)
+	}
+	signed := historyCheck{
+		failureCode:       "policy_history_unsigned",
+		requireSignatures: true,
+		signedBy:          keys,
+	}
+	if err := checkHistoryPolicies(ctx, cfg, withPolicy(oc.MeasuredPolicies, leaf), signed); err != nil {
+		return err
+	}
+	switch {
+	case unstamped:
+		demoteUnstamped(oc, "signed")
+	case leaf != "":
+		demoteUnvouchedStamp(oc, cfg, "signed")
+	}
+	demoteStaleHistory(oc, ev, "signed")
+	return nil
+}
+
+// withPolicy is a copy of digests with policy added when it is not among them.
+func withPolicy(digests []string, policy string) []string {
+	out := slices.Clone(digests)
+	if policy != "" && !slices.Contains(out, policy) {
+		out = append(out, policy)
+	}
+	return out
+}
+
+type historyCheck struct {
+	// failureCode prefixes an error that names no code of its own.
+	failureCode string
+	// With requireSignatures set and no keys in signedBy, every policy fails.
+	requireSignatures bool
+	signedBy          []*ecdsa.PublicKey
+}
+
+// Only a failed fetch wraps its cause, so isConnectError tells an unreachable
+// target from a failed check.
+func checkHistoryPolicies(
+	ctx context.Context,
+	cfg config,
+	digests []string,
+	check historyCheck,
+) error {
 	if cfg.url == "" {
-		fail("%s: fetching the policy history needs a target URL", code)
-		return false
+		return fmt.Errorf("%s: fetching the policy history needs a target URL", check.failureCode)
 	}
 	_, baseURL, err := normalizeTarget(cfg.url, defaultPort(cfg))
 	if err != nil {
-		fail("%s: %v", code, err)
-		return false
+		return fmt.Errorf("%s: %v", check.failureCode, err)
 	}
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc
@@ -238,57 +294,53 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	}
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
-			fail("allowlist_fetch_failed: %v", err)
-			return false
+			return fmt.Errorf("allowlist_fetch_failed: %v", err)
 		}
 	}
 	for _, digest := range digests {
 		hexDigest, ok := strings.CutPrefix(digest, "sha256:")
 		if !ok || !policyDigestRE.MatchString(digest) {
-			fail("%s: malformed digest %q in the node's policy history", code, digest)
-			return false
+			return fmt.Errorf("%s: malformed digest %q in the node's policy history", check.failureCode, digest)
 		}
 		object := baseURL + "/allowlist/objects/sha256/" + hexDigest
 		body, err := fetchPolicy(ctx, object, cfg.server, cfg.timeout)
 		if err != nil {
-			fail("%s: fetch %s: %v", code, digest, err)
-			return isConnectError(err)
+			return fmt.Errorf("%s: fetch %s: %w", check.failureCode, digest, err)
 		}
 		if sum := sha256.Sum256(body); hex.EncodeToString(sum[:]) != hexDigest {
-			fail("allowlist_digest_mismatch: the target served bytes for %s that hash to sha256:%x", digest, sum)
-			return false
+			return fmt.Errorf("allowlist_digest_mismatch: the target served bytes for %s that hash to sha256:%x", digest, sum)
 		}
 		if cfg.fetchAllowlists != "" {
 			if err := os.WriteFile(filepath.Join(cfg.fetchAllowlists, hexDigest+".json"), body, 0o644); err != nil {
-				fail("allowlist_fetch_failed: %v", err)
-				return false
+				return fmt.Errorf("allowlist_fetch_failed: %v", err)
 			}
 		}
-		if !cfg.trustOperator {
-			continue
-		}
-		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
-		if errors.Is(err, errNotFound) {
-			fail("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
-			return false
-		}
-		if err != nil {
-			fail("policy_history_unsigned: fetch the signature of %s: %v", digest, err)
-			return isConnectError(err)
-		}
-		if err := operatorauth.VerifyStored(keys, strings.TrimSpace(string(token)), http.MethodPut, "/allowlist", body); err != nil {
-			fail("policy_history_unsigned: policy %s: %v", digest, err)
-			return false
+		if check.requireSignatures {
+			if err := verifyOperatorSignature(ctx, cfg, check.signedBy, digest, object, body); err != nil {
+				return err
+			}
 		}
 	}
-	switch {
-	case unstamped:
-		demoteUnstamped(oc, "signed")
-	case stamped:
-		demoteUnvouchedStamp(oc, cfg, "signed")
+	return nil
+}
+
+func verifyOperatorSignature(
+	ctx context.Context,
+	cfg config,
+	keys []*ecdsa.PublicKey,
+	digest string,
+	object string,
+	body []byte,
+) error {
+	token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
+	if errors.Is(err, errNotFound) {
+		return fmt.Errorf("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
 	}
-	if cfg.trustOperator {
-		demoteStaleHistory(oc, ev, "signed")
+	if err != nil {
+		return fmt.Errorf("policy_history_unsigned: fetch the signature of %s: %w", digest, err)
 	}
-	return false
+	if err := operatorauth.VerifyStored(keys, strings.TrimSpace(string(token)), http.MethodPut, "/allowlist", body); err != nil {
+		return fmt.Errorf("policy_history_unsigned: policy %s: %v", digest, err)
+	}
+	return nil
 }
