@@ -180,6 +180,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "render": {
+              "type": "boolean",
+              "enum": [false]
+            },
             "annotations": {
               "type": "object",
               "additionalProperties": {

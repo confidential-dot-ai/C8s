@@ -1,0 +1,5 @@
+{{- $controlPlane := deepCopy .Subcharts.controlPlane -}}
+{{- $_ := set $controlPlane.Values.webhook "extraExcluded" (include "c8s.cloudAdditionalExcludedNamespaces" . | fromYamlArray) -}}
+{{ include "c8s.podInjectorWebhook" $controlPlane }}
+---
+{{ include "c8s.podValidatorWebhook" $controlPlane }}
