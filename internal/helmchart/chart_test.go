@@ -4854,6 +4854,26 @@ func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 	}
 }
 
+// A volume name is a DNS label, so the TDX guest device's underscore becomes a
+// dash there while the mount and host paths keep it.
+func TestChartMountsTheTDXGuestDevice(t *testing.T) {
+	t.Parallel()
+	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		[]string{"--set-string", "attestationApi.devices[0]=/dev/tdx_guest"})
+	out, err := renderCloudChart(t, cloudChartDir, args...)
+	if err != nil {
+		t.Fatalf("helm template refused /dev/tdx_guest: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		`- name: tdx-guest\s+mountPath: /dev/tdx_guest\n`,
+		`- name: tdx-guest\s+hostPath:\s+path: /dev/tdx_guest\n`,
+	} {
+		if !regexp.MustCompile(want).MatchString(out) {
+			t.Errorf("rendered chart lacks %s:\n%s", want, out)
+		}
+	}
+}
+
 // withoutPlatformKey is basePlatformArgs less the pair setting key.
 func withoutPlatformKey(key string) []string {
 	var args []string

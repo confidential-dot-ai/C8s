@@ -52,7 +52,7 @@ containers:
         mountPath: /mnt/c8s-data/attestation-api
         readOnly: true
       {{- range .Values.attestationApi.devices }}
-      - name: {{ base . }}
+      - name: {{ base . | replace "_" "-" }}
         mountPath: {{ . }}
       {{- end }}
     resources:
@@ -130,7 +130,7 @@ volumes:
   # CharDevice fails the pod on a node that lacks the device, rather than
   # mounting an empty file the API would read bogus evidence from.
   {{- range .Values.attestationApi.devices }}
-  - name: {{ base . }}
+  - name: {{ base . | replace "_" "-" }}
     hostPath:
       path: {{ . }}
       type: CharDevice
