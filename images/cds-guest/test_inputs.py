@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -292,7 +293,13 @@ else:
     def root(self, certificate_name="Public_Root", directory="root"):
         root = self.directory / directory
         files = {
-            "etc/attestation-api/config.toml": 'bind = "0.0.0.0:8400"\n',
+            "etc/attestation-api/config.toml": (
+                '[server]\nbind = "0.0.0.0:8400"\n[server.tls]\nenabled = false\n'
+                '[auth]\napi_keys = []\n[certs]\ncache_max_entries = 1024\n'
+                'prefetch_chains = ["milan", "genoa"]\ncrl_refresh_hours = 6\n'
+                '[token]\nenabled = false\n[attestation]\nenabled = true\n'
+                'platforms = ["snp", "tdx"]\n'
+            ),
             "etc/shadow": "root:!:19800:0:99999:7:::\n",
             "etc/cloud/cloud-init.disabled": "",
             "etc/systemd/network/80-dhcp.network": "[Network]\nDHCP=yes\n",
@@ -323,6 +330,35 @@ else:
         for generator in ("systemd-debug-generator", "systemd-run-generator", "systemd-getty-generator"):
             self.assertEqual(os.readlink(root / "etc/systemd/system-generators" / generator), "/dev/null")
         self.assertEqual((root / "etc/systemd/network/80-dhcp.network").stat().st_mode & 0o777, 0o644)
+
+    def test_attester_requires_crls_and_preserves_other_parsed_options(self):
+        for existing in ("", "require_crl = true\n"):
+            with self.subTest(existing=existing):
+                root = self.root(directory="crl-" + str(bool(existing)))
+                config = root / "etc/attestation-api/config.toml"
+                config.write_text(config.read_text().replace("[certs]\n", "[certs]\n" + existing))
+                expected = tomllib.loads(config.read_text())
+                expected["server"]["bind"] = "127.0.0.1:8400"
+                expected["certs"]["require_crl"] = True
+                self.finalize(root, True)
+                self.assertEqual(tomllib.loads(config.read_text()), expected)
+                self.assertIs(tomllib.loads(config.read_text())["certs"]["require_crl"], True)
+
+    def test_attester_rejects_missing_ambiguous_or_disabled_crl_configuration(self):
+        for index, certs in enumerate((
+            "", '[other]\nrequire_crl = true\n',
+            '[certs.other]\nrequire_crl = true\n',
+            '[certs]\nrequire_crl = false\n',
+            '[certs]\nrequire_crl = "true"\n',
+            '[certs]\nrequire_crl = 1\n',
+            '[certs]\nrequire_crl = true\nrequire_crl = false\n',
+            '[certs]\n[certs]\nrequire_crl = true\n',
+        )):
+            with self.subTest(certs=certs):
+                root = self.root(directory=f"invalid-crl-{index}")
+                (root / "etc/attestation-api/config.toml").write_text(
+                    '[server]\nbind = "0.0.0.0:8400"\n' + certs)
+                self.finalize(root, False)
 
     def test_distribution_certificate_name_with_unicode_and_equals(self):
         root = self.root("NetLock_Arany_=Class_Gold=_Főtanúsítvány")

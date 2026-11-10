@@ -8,6 +8,31 @@ grep -qx 'bind = "0.0.0.0:8400"' "$config"
 sed -i 's/^bind = "0.0.0.0:8400"$/bind = "127.0.0.1:8400"/' "$config"
 grep -qx 'bind = "127.0.0.1:8400"' "$config"
 
+# The pinned attester otherwise accepts unavailable SNP revocation evidence.
+python3 - "$config" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+
+path = Path(sys.argv[1])
+source = path.read_text()
+expected = tomllib.loads(source)
+if expected.get("server", {}).get("bind") != "127.0.0.1:8400":
+    raise SystemExit("cds image: attester must bind only to loopback")
+certs = expected.get("certs")
+if not isinstance(certs, dict):
+    raise SystemExit("cds image: attester requires a certs table")
+if "require_crl" in certs:
+    if certs["require_crl"] is not True:
+        raise SystemExit("cds image: attester must require CRLs")
+else:
+    source = source.replace("[certs]\n", "[certs]\nrequire_crl = true\n", 1)
+certs["require_crl"] = True
+if tomllib.loads(source) != expected:
+    raise SystemExit("cds image: cannot set the attester CRL requirement safely")
+path.write_text(source)
+PY
+
 # Both CDS and custody hold recovery material. The measured image must not
 # offer the host a login, command runner, or credential-created unit override.
 for unit in getty@.service serial-getty@.service console-getty.service container-getty@.service \

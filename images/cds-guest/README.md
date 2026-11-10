@@ -108,6 +108,13 @@ rejects extra CA roots in both the TLS bundle and certificate directory:
 download-proxy trust stays in the build tools, while S3 TLS terminates inside
 the guest using distribution public roots.
 
+The shared image finalizer sets `require_crl = true` in the measured attester's
+`[certs]` table. SNP verification then rejects unavailable or unverifiable CRL
+evidence. This applies to CDS, custody and the native workload fixture;
+certificate prefetch and startup deadlines remain unchanged.
+The current pin still lacks ASK/ASVK serial revocation and correct VLEK CRL
+selection; a qualified verifier update is required before production.
+
 Run `python3 images/cds-guest/test_inputs.py` for local source-selection and
 trust-root rejection checks. These use a stub builder and never create an
 image, publish an artifact, or access a cluster.
