@@ -85,7 +85,8 @@ func (g *bootGate) check(ctx context.Context, p *plugin, pods []*api.PodSandbox,
 		// Not stopped: each has already run on a node whose measurement claims
 		// nothing ran before admission, so stopping it would prove nothing. Only
 		// the node image sets policy.fatal_existing; a hosted cluster re-checks
-		// what it finds against the allowlist and stops what fails (plugin.go).
+		// what it finds against the allowlist and stops what fails
+		// (existingcontainers.go).
 		for _, attrs := range containerAttrs(ctx, p, pods, ctrs) {
 			g.logger.LogAttrs(ctx, slog.LevelError, "container running before admission was in place", attrs...)
 		}
