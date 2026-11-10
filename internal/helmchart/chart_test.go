@@ -958,8 +958,7 @@ func TestChartAttestationApiPrivileged(t *testing.T) {
 
 // TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
 // startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
-// bootstrap before /healthz is served, so without it liveness (~90s at the
-// defaults) can kill the operator mid-startup and, via failurePolicy=Fail,
+// bootstrap before /healthz is served, so without it liveness can kill the operator mid-startup and, via failurePolicy=Fail,
 // block every pod admission while it restarts.
 func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
 	t.Parallel()

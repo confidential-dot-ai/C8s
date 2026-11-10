@@ -67,9 +67,11 @@ containers:
     readinessProbe:
       httpGet: { path: /readyz, port: health }
       initialDelaySeconds: 3
+    # Liveness window >= startup window (kubernetes/kubernetes#141155).
     livenessProbe:
       httpGet: { path: /healthz, port: health }
       periodSeconds: 30
+      failureThreshold: 10
     resources:
       requests:
         cpu: 100m

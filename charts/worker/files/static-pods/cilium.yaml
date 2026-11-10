@@ -108,6 +108,7 @@ spec:
         - {name: brief, value: 'true'}
       failureThreshold: 300
       periodSeconds: 2
+    # Liveness window >= startup window (kubernetes/kubernetes#141155).
     livenessProbe:
       httpGet:
         host: 127.0.0.1
@@ -117,7 +118,7 @@ spec:
         - {name: brief, value: 'true'}
         - {name: require-k8s-connectivity, value: 'false'}
       periodSeconds: 30
-      failureThreshold: 10
+      failureThreshold: 20
       timeoutSeconds: 5
     readinessProbe:
       httpGet:
