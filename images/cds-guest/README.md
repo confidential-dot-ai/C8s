@@ -92,15 +92,18 @@ and runs only `/usr/local/bin/cds-native-workload.test`
 `-test.run=^TestObjectNativeWorkloadGuest$ -test.timeout=0` with
 `C8S_OBJECT_NATIVE_WORKLOAD=1`. The launch document uses
 `c8s-cds-native-workload/v1`; the fixture exposes its owner API on 8443 and
-attested inventory on 1019. It has only `CAP_NET_BIND_SERVICE`, talks to the
-local attester on 8400, cannot access a guest hardware device directly, and
-powers off on exit or after its 75-minute service lifetime. It never restarts.
+attested inventory on 1019. Its unit retains only `CAP_NET_BIND_SERVICE`,
+and its code obtains attestation through the local attester on 8400. It powers
+off on exit or after its 75-minute service lifetime and never restarts.
 This image is for native qualification only and is never a production CDS role.
 
 All variants disable systemd credential imports in the measured command line
 and mask console logins, recovery shells, guest command agents and generators
-that create units from host inputs. The custody service has no Linux
-capabilities and can access only its SNP guest device. The image finalizer
+that create units from host inputs. The custody unit drops Linux capabilities
+and requests hardware device access restricted to its SNP guest device. Device
+ACLs require kernel support: the pinned kernel disables `CONFIG_BPF_SYSCALL`,
+so cgroup v2 device isolation must not be assumed from the unit settings alone.
+Native enforcement remains unqualified. The image finalizer
 rejects extra CA roots in both the TLS bundle and certificate directory:
 download-proxy trust stays in the build tools, while S3 TLS terminates inside
 the guest using distribution public roots.
