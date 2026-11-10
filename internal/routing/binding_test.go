@@ -232,15 +232,15 @@ func TestTransportUnderAnotherDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
-	bound := f.bound(t)
-	if _, ok := f.proxy.transport(route, &HeldBinding{Binding: bound}); !ok {
+	held := &HeldBinding{Binding: f.bound(t)}
+	if _, ok := (boundConnection{proxy: f.proxy, binding: held}).transport(route); !ok {
 		t.Fatal("transport(bound to the tracked digest) refused, want it")
 	}
-	bound.RouterDigest = string(digestOf(0x44))
-	if _, ok := f.proxy.transport(route, &HeldBinding{Binding: bound}); ok {
+	held.RouterDigest = string(digestOf(0x44))
+	if _, ok := (boundConnection{proxy: f.proxy, binding: held}).transport(route); ok {
 		t.Fatal("transport(bound to another digest) taken, want it refused")
 	}
-	if _, ok := f.proxy.transport(route, nil); !ok {
+	if _, ok := (unboundRequest{proxy: f.proxy}).transport(route); !ok {
 		t.Fatal("transport(unbound) refused, want it")
 	}
 }
