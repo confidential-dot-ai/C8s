@@ -22,7 +22,7 @@ import (
 // assign, and returns the target with the bytes Prepare kept.
 func assignmentTarget(t *testing.T, s *assignmentService, key *ecdsa.PrivateKey, assign http.HandlerFunc) (*AssignmentTarget, []byte) {
 	t.Helper()
-	cfg := attestFixture(t, nil, nil, nil, func(next http.Handler) http.Handler {
+	cfg := attestFixture(t, nil, nil, nil, wrapGuest(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case AssignNoncePath:
@@ -33,7 +33,7 @@ func assignmentTarget(t *testing.T, s *assignmentService, key *ecdsa.PrivateKey,
 				next.ServeHTTP(w, r)
 			}
 		})
-	})
+	}))
 	target, err := VerifyAssignmentTarget(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
