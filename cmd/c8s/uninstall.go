@@ -145,97 +145,150 @@ crds/; --delete-crds removes it ALONG WITH EVERY ConfidentialWorkload object)
 and the release namespace (--delete-namespace).
 
 Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateUninstallFlags(uninstallHostSweep, uninstallHostSweepOnly); err != nil {
-			return err
-		}
-		if _, err := exec.LookPath("helm"); err != nil {
-			return fmt.Errorf("helm CLI not found on PATH: %w", err)
-		}
-		if _, err := exec.LookPath("kubectl"); err != nil {
-			return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
-		}
-
-		ctx := cmd.Context()
-		values, found, err := releaseValues(ctx, uninstallRelease, uninstallNamespace)
-		if err != nil {
-			return err
-		}
-		if !found && !uninstallHostSweepOnly {
-			return fmt.Errorf("helm release %q not found in namespace %q — nothing to uninstall. If a previous uninstall already deleted the release but left host artifacts on the nodes, re-run with --host-sweep-only", uninstallRelease, uninstallNamespace)
-		}
-
-		var cfg hostUninstallConfig
-		if found {
-			cfg, err = hostConfigFromValues(values)
-			if err != nil {
-				return fmt.Errorf("read host config from release values: %w", err)
-			}
-			if uninstallHostSweep {
-				cfg.SweepArgv, cfg.PauseArgv = resolveSweepArgvs(ctx, uninstallNamespace, uninstallRelease, cfg)
-			}
-		} else {
-			fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults\n", uninstallRelease)
-			cfg, err = chartDefaultHostConfig(ctx)
-			if err != nil {
-				return err
-			}
-		}
-		// Sweep host state even if it outlived the release that created it.
-		sweep := uninstallHostSweep
-		if sweep {
-			if err := refuseNodelessSweep(ctx); err != nil {
-				return err
-			}
-		}
-
-		// volumed goes with the release and is the only component that unmaps
-		// a pod's volume devices, so the teardown order is load-bearing.
-		if boolAtPath(values, "volumed.enabled") {
-			pods, err := listVolumePods(ctx)
-			if err != nil {
-				return err
-			}
-			if len(pods) > 0 {
-				if !uninstallForce {
-					return volumePodsRunningError(pods)
-				}
-				fmt.Fprintf(os.Stdout, "%s\n", forcedVolumePodsWarning(pods))
-			}
-		}
-
-		if !uninstallHostSweepOnly {
-			if err := removeNriInstaller(ctx, uninstallNamespace, uninstallRelease); err != nil {
-				return err
-			}
-			helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
-			fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
-			hc := exec.CommandContext(ctx, "helm", helmArgs...)
-			hc.Stdout = os.Stdout
-			hc.Stderr = os.Stderr
-			if err := hc.Run(); err != nil {
-				return fmt.Errorf("helm uninstall failed: %w — the nodes are still enforcing; once the release is gone, sweep them with 'c8s uninstall --host-sweep-only --release %s --namespace %s'", err, uninstallRelease, uninstallNamespace)
-			}
-		}
-
-		if sweep {
-			if err := runHostSweep(ctx, uninstallNamespace, uninstallRelease, cfg); err != nil {
-				return err
-			}
-		}
-
-		if uninstallDeleteCRDs {
-			if err := kubectlRun(ctx, "delete", "crd", confidentialWorkloadCRD, "--ignore-not-found"); err != nil {
-				return err
-			}
-		}
-		if uninstallDeleteNamespace {
-			if err := kubectlRun(ctx, "delete", "namespace", uninstallNamespace, "--ignore-not-found"); err != nil {
-				return err
-			}
-		}
-		return nil
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return uninstallC8s(cmd)
 	},
+}
+
+// The phases before removeC8s only read: the release's computed values and the
+// allowlist seed the sweep replays are gone once the release is deleted.
+func uninstallC8s(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	if err := checkUninstallFlags(); err != nil {
+		return err
+	}
+	plan, err := planUninstall(ctx)
+	if err != nil {
+		return err
+	}
+	if err := preflightUninstall(ctx, plan); err != nil {
+		return err
+	}
+	return removeC8s(ctx, plan)
+}
+
+func checkUninstallFlags() error {
+	if err := validateUninstallFlags(uninstallHostSweep, uninstallHostSweepOnly); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("helm"); err != nil {
+		return fmt.Errorf("helm CLI not found on PATH: %w", err)
+	}
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
+	}
+	return nil
+}
+
+type uninstallPlan struct {
+	// values are the release's computed values, nil where the release is gone.
+	values map[string]any
+	host   hostUninstallConfig
+}
+
+// A release that is gone, and one that never deployed volumed, hold no volume
+// mapping the uninstall could strand.
+func (p uninstallPlan) deployedVolumed() bool {
+	return boolAtPath(p.values, "volumed.enabled")
+}
+
+func planUninstall(ctx context.Context) (uninstallPlan, error) {
+	values, found, err := releaseValues(ctx, uninstallRelease, uninstallNamespace)
+	if err != nil {
+		return uninstallPlan{}, err
+	}
+	if !found && !uninstallHostSweepOnly {
+		return uninstallPlan{}, fmt.Errorf("helm release %q not found in namespace %q — nothing to uninstall. If a previous uninstall already deleted the release but left host artifacts on the nodes, re-run with --host-sweep-only", uninstallRelease, uninstallNamespace)
+	}
+	host, err := sweepHostConfig(ctx, values, found)
+	if err != nil {
+		return uninstallPlan{}, err
+	}
+	return uninstallPlan{values: values, host: host}, nil
+}
+
+// The sweep's host paths and argv come from the release's own computed values,
+// or — for host state that outlived the release that created it — the embedded
+// chart's defaults.
+func sweepHostConfig(ctx context.Context, values map[string]any, found bool) (hostUninstallConfig, error) {
+	if !found {
+		fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults\n", uninstallRelease)
+		return chartDefaultHostConfig(ctx)
+	}
+	cfg, err := hostConfigFromValues(values)
+	if err != nil {
+		return hostUninstallConfig{}, fmt.Errorf("read host config from release values: %w", err)
+	}
+	if uninstallHostSweep {
+		cfg.SweepArgv, cfg.PauseArgv = resolveSweepArgvs(ctx, uninstallNamespace, uninstallRelease, cfg)
+	}
+	return cfg, nil
+}
+
+func preflightUninstall(ctx context.Context, plan uninstallPlan) error {
+	if uninstallHostSweep {
+		if err := refuseNodelessSweep(ctx); err != nil {
+			return err
+		}
+	}
+	if plan.deployedVolumed() {
+		return refuseLiveVolumePods(ctx)
+	}
+	return nil
+}
+
+// volumed goes with the release and is the only component that unmaps a pod's
+// volume devices, so the teardown order is load-bearing.
+func refuseLiveVolumePods(ctx context.Context) error {
+	pods, err := listVolumePods(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pods) == 0 {
+		return nil
+	}
+	if !uninstallForce {
+		return volumePodsRunningError(pods)
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", forcedVolumePodsWarning(pods))
+	return nil
+}
+
+// removeC8s is the only phase that changes the cluster.
+func removeC8s(ctx context.Context, plan uninstallPlan) error {
+	if !uninstallHostSweepOnly {
+		if err := deleteRelease(ctx); err != nil {
+			return err
+		}
+	}
+	if uninstallHostSweep {
+		if err := runHostSweep(ctx, uninstallNamespace, uninstallRelease, plan.host); err != nil {
+			return err
+		}
+	}
+	if uninstallDeleteCRDs {
+		if err := kubectlRun(ctx, "delete", "crd", confidentialWorkloadCRD, "--ignore-not-found"); err != nil {
+			return err
+		}
+	}
+	if uninstallDeleteNamespace {
+		return kubectlRun(ctx, "delete", "namespace", uninstallNamespace, "--ignore-not-found")
+	}
+	return nil
+}
+
+func deleteRelease(ctx context.Context) error {
+	if err := removeNriInstaller(ctx, uninstallNamespace, uninstallRelease); err != nil {
+		return err
+	}
+	helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
+	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
+	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
+	if err := hc.Run(); err != nil {
+		return fmt.Errorf("helm uninstall failed: %w — the nodes are still enforcing; once the release is gone, sweep them with 'c8s uninstall --host-sweep-only --release %s --namespace %s'", err, uninstallRelease, uninstallNamespace)
+	}
+	return nil
 }
 
 // validateUninstallFlags rejects --host-sweep-only with --host-sweep=false:
