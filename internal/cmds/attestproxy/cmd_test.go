@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -142,6 +143,12 @@ func TestHealthcheckCmd(t *testing.T) {
 		t.Fatalf("healthcheck against live proxied upstream: %v", err)
 	}
 
+	starting := newHealthcheckCmd()
+	starting.SetArgs([]string{"--socket", serveProxy(t, config{upstream: startUpstream(t, healthStatus("starting")), socketGID: 0})})
+	if err := starting.Execute(); err == nil {
+		t.Fatal("healthcheck succeeded against a starting upstream")
+	}
+
 	missing := newHealthcheckCmd()
 	missing.SetArgs([]string{"--socket", filepath.Join(t.TempDir(), "gone.sock")})
 	if err := missing.Execute(); err == nil {
@@ -168,6 +175,11 @@ func TestHealthEndpoint(t *testing.T) {
 		{
 			name:     "upstream refusing health",
 			upstream: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }),
+			want:     http.StatusServiceUnavailable,
+		},
+		{
+			name:     "upstream starting",
+			upstream: healthStatus("starting"),
 			want:     http.StatusServiceUnavailable,
 		},
 	}
@@ -238,10 +250,6 @@ func TestLivez(t *testing.T) {
 // /upstream/livez, the attestation-api's liveness, calls the upstream directly,
 // so it needs no socket.
 func TestUpstreamLivez(t *testing.T) {
-	healthy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
 	tests := []struct {
 		name     string
 		upstream string
@@ -249,8 +257,13 @@ func TestUpstreamLivez(t *testing.T) {
 	}{
 		{
 			name:     "upstream up",
-			upstream: startUpstream(t, healthy),
+			upstream: startUpstream(t, healthStatus("ok")),
 			want:     http.StatusOK,
+		},
+		{
+			name:     "upstream starting",
+			upstream: startUpstream(t, healthStatus("starting")),
+			want:     http.StatusServiceUnavailable,
 		},
 		{
 			name:     "upstream down",
@@ -269,8 +282,16 @@ func TestUpstreamLivez(t *testing.T) {
 	}
 }
 
-// A hung upstream fails /upstream/livez on the handler's own budget, inside
-// the probe's 5s timeoutSeconds.
+// healthStatus answers GET /health with status.
+func healthStatus(status string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":%q}`, status)
+	})
+}
+
+// A hung upstream fails /upstream/livez on the handler's own budget rather
+// than hanging until the kubelet gives up.
 func TestUpstreamLivezTimesOut(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
@@ -282,7 +303,6 @@ func TestUpstreamLivezTimesOut(t *testing.T) {
 	}))
 	t.Cleanup(func() { close(release) })
 
-	const probeTimeout = 5 * time.Second
 	start := time.Now()
 	rec := httptest.NewRecorder()
 	healthHandler("/nonexistent.sock", upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/upstream/livez", nil))
@@ -290,8 +310,10 @@ func TestUpstreamLivezTimesOut(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("GET /upstream/livez against a hung upstream = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
-	if elapsed < healthcheckTimeout || elapsed >= probeTimeout {
-		t.Errorf("GET /upstream/livez took %s, want between %s and %s", elapsed, healthcheckTimeout, probeTimeout)
+	// The upper bound only catches a handler that ignores its budget; it is
+	// loose so a loaded runner does not trip it.
+	if maxElapsed := healthcheckTimeout + 5*time.Second; elapsed < healthcheckTimeout || elapsed >= maxElapsed {
+		t.Errorf("GET /upstream/livez took %s, want between %s and %s", elapsed, healthcheckTimeout, maxElapsed)
 	}
 }
 

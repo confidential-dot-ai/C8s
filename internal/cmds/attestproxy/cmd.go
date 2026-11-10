@@ -104,9 +104,7 @@ func newHealthcheckCmd() *cobra.Command {
 			if socket == "" {
 				return fmt.Errorf("--socket is required")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), healthcheckTimeout)
-			defer cancel()
-			if _, err := remote.NewClient("unix://" + socket).Health(ctx); err != nil {
+			if err := checkHealth(context.Background(), remote.NewClient("unix://"+socket)); err != nil {
 				return fmt.Errorf("healthcheck over %s: %w", socket, err)
 			}
 			return nil
@@ -188,9 +186,7 @@ func healthHandler(
 		fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), healthcheckTimeout)
-		defer cancel()
-		if _, err := socketClient.Health(ctx); err != nil {
+		if err := checkHealth(r.Context(), socketClient); err != nil {
 			slog.Warn("attestation proxy healthcheck failed", "socket", socket, "error", err)
 			http.Error(w, "attestation-api unavailable", http.StatusServiceUnavailable)
 			return
@@ -198,9 +194,7 @@ func healthHandler(
 		fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("GET /upstream/livez", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), healthcheckTimeout)
-		defer cancel()
-		if _, err := upstreamClient.Health(ctx); err != nil {
+		if err := checkHealth(r.Context(), upstreamClient); err != nil {
 			slog.Warn("attestation-api healthcheck failed", "upstream", upstream, "error", err)
 			http.Error(w, "attestation-api unavailable", http.StatusServiceUnavailable)
 			return
@@ -208,6 +202,24 @@ func healthHandler(
 		fmt.Fprintln(w, "ok")
 	})
 	return mux
+}
+
+// checkHealth runs GET /health within healthcheckTimeout and, like
+// remote.WaitHealthy, counts only status "ok" as healthy.
+func checkHealth(
+	ctx context.Context,
+	client remote.Client,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
+	defer cancel()
+	health, err := client.Health(ctx)
+	if err != nil {
+		return err
+	}
+	if health.Status != "ok" {
+		return fmt.Errorf("health status %q, want \"ok\"", health.Status)
+	}
+	return nil
 }
 
 // socketGone reports whether nothing, or something other than a socket, is at
