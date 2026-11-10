@@ -57,10 +57,7 @@ type renewer struct {
 	renewTimer *time.Timer
 	renewDue   time.Time
 
-	// initialRetry paces requests while nothing is published: the
-	// credential-wait gate holds the workload until the first generation
-	// (docs/getcert-workload-binding.md).
-	initialRetry *backoff.ExponentialBackOff
+	unpublishedRetry *backoff.ExponentialBackOff
 	// unnamedRuns counts consecutive renewals that came back without a
 	// matched-workload stamp.
 	unnamedRuns int
@@ -84,12 +81,12 @@ func newRenewer(
 	creds *credentials,
 ) *renewer {
 	r := &renewer{
-		cfg:             cfg,
-		client:          client,
-		policyClient:    policyClient,
-		creds:           creds,
-		initialRetry:    newInitialRetryBackoff(cfg),
-		warnedWorkloads: map[string]bool{},
+		cfg:              cfg,
+		client:           client,
+		policyClient:     policyClient,
+		creds:            creds,
+		unpublishedRetry: newUnpublishedRetryBackoff(cfg),
+		warnedWorkloads:  map[string]bool{},
 	}
 	if cfg.guest != nil {
 		r.podChanges = cfg.guest.Changes
@@ -109,9 +106,9 @@ func newRenewer(
 	return r
 }
 
-func newInitialRetryBackoff(cfg config) *backoff.ExponentialBackOff {
+func newUnpublishedRetryBackoff(cfg config) *backoff.ExponentialBackOff {
 	b := backoff.NewExponentialBackOff()
-	b.MaxInterval = maxInitialRetryInterval
+	b.MaxInterval = maxUnpublishedRetryInterval
 	if cfg.InitialRetryInterval > 0 {
 		b.InitialInterval = cfg.InitialRetryInterval
 	}
@@ -122,7 +119,7 @@ func newInitialRetryBackoff(cfg config) *backoff.ExponentialBackOff {
 // published.
 func (r *renewer) takeFirstRequestDelay() time.Duration {
 	if !r.hasPublished() {
-		return r.initialRetry.NextBackOff()
+		return r.unpublishedRetry.NextBackOff()
 	}
 	return renewalInterval(r.cfg, r.creds.current, r.unnamedRuns)
 }
@@ -255,24 +252,29 @@ func logPolicyChange(
 // renew requests the next generation and schedules the request after it.
 func (r *renewer) renew(ctx context.Context) error {
 	r.policyRenewalPending = false
-	wasPublished := r.hasPublished()
 	err := obtainCertFn(ctx, r.cfg, r.client, r.creds)
 	if errors.Is(err, errFailClosed) {
 		return err
+	}
+	if err != nil {
+		if withdrawalErr := r.creds.withdrawUnusable(time.Now()); withdrawalErr != nil {
+			return withdrawalErr
+		}
 	}
 	r.refusals = consecutiveRefusals(r.refusals, err)
 	switch {
 	case err == nil:
 		r.scheduleAfterSuccess()
-	case !wasPublished:
-		r.retryFirstIssuance(err)
+	case r.hasPublished():
+		r.retryRenewal(err)
 	default:
-		return r.retryRenewal(err)
+		r.retryWithoutCredentials(err)
 	}
 	return nil
 }
 
 func (r *renewer) scheduleAfterSuccess() {
+	r.unpublishedRetry.Reset()
 	r.renewalFailures = 0
 	r.retryPending = false
 	warnUnexpectedWorkload(r.cfg, publishedLeaf(r.creds.current), r.warnedWorkloads)
@@ -284,10 +286,8 @@ func (r *renewer) scheduleAfterSuccess() {
 	r.scheduleRenewal(renewalInterval(r.cfg, r.creds.current, r.unnamedRuns))
 }
 
-// retryFirstIssuance backs off on the initial-retry backoff, which advances on
-// every failed attempt, refusals included.
-func (r *renewer) retryFirstIssuance(requestErr error) {
-	retry := r.initialRetry.NextBackOff()
+func (r *renewer) retryWithoutCredentials(requestErr error) {
+	retry := r.unpublishedRetry.NextBackOff()
 	if r.refusals > 0 {
 		retry = refusedRetryInterval(r.cfg, r.refusals)
 	}
@@ -296,20 +296,12 @@ func (r *renewer) retryFirstIssuance(requestErr error) {
 	r.scheduleRenewal(retry)
 }
 
-// retryRenewal keeps the published generation only while it still validates,
-// then retries on a short backoff, not a full interval: the timer fires around
-// half the generation's remaining lifetime, so it is already close to expiry.
-func (r *renewer) retryRenewal(requestErr error) error {
-	// Withdraw first: the retry is paced off what remains published.
-	if err := r.creds.withdrawUnusable(time.Now()); err != nil {
-		return err
-	}
+func (r *renewer) retryRenewal(requestErr error) {
 	r.renewalFailures++
 	retry := renewalRetryInterval(r.cfg, r.creds.current, r.renewalFailures, r.refusals)
 	slog.Error("certificate renewal failed, retrying", "error", requestErr, "retry_in", retry, "failures", r.renewalFailures, "published", r.hasPublished())
 	r.retryPending = true
 	r.scheduleRenewal(retry)
-	return nil
 }
 
 func (r *renewer) scheduleRenewal(in time.Duration) {
@@ -327,9 +319,7 @@ const (
 	// never raises a delay above --renew-interval, which the operator chose.
 	minRenewalDelay = 5 * time.Second
 
-	// maxInitialRetryInterval caps the backoff between attempts at the first
-	// certificate.
-	maxInitialRetryInterval = time.Minute
+	maxUnpublishedRetryInterval = time.Minute
 
 	defaultInitialRetryInterval = 2 * time.Second
 
