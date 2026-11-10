@@ -44,6 +44,14 @@ func refusedPodGone(err error) bool {
 }
 
 func (c *config) nodePodClient(kubeconfig string) (coreclient.CoreV1Interface, error) {
+	nodeAPI, err := c.nodeAPIConfig(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	return coreclient.NewForConfig(nodeAPI)
+}
+
+func (c *config) nodeAPIConfig(kubeconfig string) (*rest.Config, error) {
 	credentials := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
 	document, err := credentials.Load()
 	if err != nil {
@@ -56,7 +64,7 @@ func (c *config) nodePodClient(kubeconfig string) (coreclient.CoreV1Interface, e
 	if c.refusesACredentialHelper() && namesACredentialHelper(nodeAPI) {
 		return nil, fmt.Errorf("this node's API credentials at %s name a credential helper to run", kubeconfig)
 	}
-	return coreclient.NewForConfig(nodeAPI)
+	return nodeAPI, nil
 }
 
 // A measured worker's kubelet writes that kubeconfig itself, naming certificate
