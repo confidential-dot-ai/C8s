@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,6 +137,43 @@ func TestParseECPrivateKeyErrors(t *testing.T) {
 			t.Fatal("expected error for invalid key bytes")
 		}
 	})
+}
+
+func TestParseECPrivateKeyNamesAPEMThatHoldsNoPrivateKey(t *testing.T) {
+	key := newKey(t)
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	for _, c := range []struct {
+		block *pem.Block
+		says  string
+	}{
+		{
+			block: &pem.Block{
+				Type:  "PUBLIC KEY",
+				Bytes: der,
+			},
+			says: "this is a public key",
+		},
+		{
+			block: &pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: der,
+			},
+			says: `the PEM block is "CERTIFICATE"`,
+		},
+	} {
+		t.Run(c.block.Type, func(t *testing.T) {
+			_, err := ParseECPrivateKey(pem.EncodeToMemory(c.block))
+			if err == nil {
+				t.Fatalf("a %s PEM parsed as a private key", c.block.Type)
+			}
+			if !strings.Contains(err.Error(), c.says) {
+				t.Errorf("ParseECPrivateKey = %q, want it to say %q", err, c.says)
+			}
+		})
+	}
 }
 
 func TestLoadECPrivateKeyFile(t *testing.T) {

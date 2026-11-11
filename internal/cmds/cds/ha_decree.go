@@ -21,7 +21,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // defaultDecreeValidity is how long a cluster may adopt a decree for. A
@@ -132,7 +131,7 @@ func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decr
 	if o.expiresIn <= 0 {
 		return cdsdecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
 	}
-	key, err := certutil.LoadECPrivateKeyFile(o.operatorKey)
+	key, err := cmdsutil.LoadOperatorKey(o.operatorKey)
 	if err != nil {
 		return cdsdecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
 	}

@@ -11,11 +11,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -162,10 +164,25 @@ func ParseECPrivateKey(data []byte) (*ecdsa.PrivateKey, error) {
 		return nil, fmt.Errorf("pkcs8 key is not ECDSA")
 	}
 	ec, err2 := x509.ParseECPrivateKey(block.Bytes)
-	if err2 != nil {
-		return nil, fmt.Errorf("parse key: PKCS8: %w; EC: %w", err, err2)
+	if err2 == nil {
+		return ec, nil
 	}
-	return ec, nil
+	if notAPrivateKey := holdsNoPrivateKey(block.Type); notAPrivateKey != nil {
+		return nil, notAPrivateKey
+	}
+	return nil, fmt.Errorf("parse key: PKCS8: %w; EC: %w", err, err2)
+}
+
+// holdsNoPrivateKey names what a PEM block holds where a private key belongs.
+// A private-key block that failed to parse is nil: its own error says more.
+func holdsNoPrivateKey(blockType string) error {
+	switch {
+	case blockType == "PUBLIC KEY":
+		return errors.New("this is a public key, where a private key is needed")
+	case !strings.Contains(blockType, "PRIVATE KEY"):
+		return fmt.Errorf("the PEM block is %q, where a private key is needed", blockType)
+	}
+	return nil
 }
 
 // LoadECPrivateKeyFile reads a PEM file and parses the EC private key.
