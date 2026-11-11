@@ -55,13 +55,10 @@ func attestConfig(address, launchKey string, manifest []byte) (podstatus.AttestC
 // readGuest attests the instance with the record's frozen launch key and
 // manifest, then reads the pod status only from the serving key the
 // assignment was signed over: every guest launched from the same document
-// passes the attestation, the key tells this pod's guest from another. A
-// record without that key has no guest to read from.
+// passes the attestation, the key tells this pod's guest from another. No
+// certificate matches an empty key.
 func readGuest(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
 	var projection podstatus.PodProjection
-	if len(rec.ServingKey) == 0 {
-		return projection, errNoServingKey
-	}
 	cfg, cleanup, err := attestConfig(address, rec.Request.Trust.LaunchKey, rec.Manifest)
 	if err != nil {
 		return projection, err

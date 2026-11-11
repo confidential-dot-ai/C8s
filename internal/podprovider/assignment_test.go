@@ -245,7 +245,11 @@ func TestStatusCannotInventAnUnpublishedAssignment(t *testing.T) {
 }
 
 func TestGuestStatusNeedsTheSavedServingKey(t *testing.T) {
-	if _, err := readGuest(t.Context(), &record{}, "192.0.2.1"); !errors.Is(err, errNoServingKey) {
+	r := &Reconciler{guest: func(context.Context, *record, string) (podstatus.PodProjection, error) {
+		t.Error("a guest was read without a saved serving key")
+		return podstatus.PodProjection{}, nil
+	}}
+	if _, err := r.guestStatus(t.Context(), &record{}, "192.0.2.1"); !errors.Is(err, errNoServingKey) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -421,17 +425,15 @@ func TestAssignmentRereadsTheLivePodBeforeSigningAndSending(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name               string
-		change             func(*testing.T, *Reconciler, *corev1.Pod)
-		beforeSigning      bool
-		wantPrepares       int
-		wantSavedAssigment bool
+		name          string
+		change        func(*testing.T, *Reconciler, *corev1.Pod)
+		beforeSigning bool
 	}{
-		{"deleted before signing", deletePod, true, 0, false},
-		{"edited before signing", editSpec, true, 0, false},
-		{"pod rules broken before signing", spoilAnnotation, true, 0, false},
-		{"deleted before sending", deletePod, false, 1, true},
-		{"edited before sending", editSpec, false, 1, true},
+		{"deleted before signing", deletePod, true},
+		{"edited before signing", editSpec, true},
+		{"pod rules broken before signing", spoilAnnotation, true},
+		{"deleted before sending", deletePod, false},
+		{"edited before sending", editSpec, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := fixturePod()
@@ -462,9 +464,14 @@ func TestAssignmentRereadsTheLivePodBeforeSigningAndSending(t *testing.T) {
 			if !changed {
 				t.Fatal("the provider never reached the guest")
 			}
-			rec := getRecord(t, r, pod)
-			if guest.prepares != tc.wantPrepares || guest.sends != 0 || (len(rec.Assignment) != 0) != tc.wantSavedAssigment {
-				t.Fatalf("prepares %d sends %d saved assignment %t", guest.prepares, guest.sends, len(rec.Assignment) != 0)
+			// A change before signing leaves nothing prepared or saved; one
+			// after it leaves the saved assignment unsent.
+			saved, wantPrepares := len(getRecord(t, r, pod).Assignment) != 0, 1
+			if tc.beforeSigning {
+				wantPrepares = 0
+			}
+			if guest.prepares != wantPrepares || guest.sends != 0 || saved == tc.beforeSigning {
+				t.Fatalf("prepares %d sends %d saved assignment %t", guest.prepares, guest.sends, saved)
 			}
 		})
 	}

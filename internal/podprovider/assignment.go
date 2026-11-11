@@ -53,8 +53,8 @@ func (r *Reconciler) livePod(ctx context.Context, rec *record) (*corev1.Pod, err
 	if err := r.client.Get(ctx, client.ObjectKey{Namespace: rec.Namespace, Name: rec.Name}, pod); err != nil {
 		return nil, err
 	}
-	if pod.UID != rec.UID || pod.DeletionTimestamp != nil {
-		return nil, errors.New("the Pod was deleted or replaced before its assignment")
+	if pod.DeletionTimestamp != nil {
+		return nil, errors.New("the Pod is being deleted")
 	}
 	return pod, matchesPod(rec, pod)
 }

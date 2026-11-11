@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -147,7 +146,7 @@ func TestStatusReadIsPinnedToTheAssignedServingKey(t *testing.T) {
 		t.Fatalf("assigned serving key refused: %+v, %v", projection, err)
 	}
 	rec.ServingKey = nil
-	if _, err := readGuest(t.Context(), rec, address); !errors.Is(err, errNoServingKey) {
+	if _, err := readGuest(t.Context(), rec, address); err == nil || err.Error() != "guest status unavailable" {
 		t.Fatalf("status was read without a saved serving key: %v", err)
 	}
 	rec.ServingKey = assigned
