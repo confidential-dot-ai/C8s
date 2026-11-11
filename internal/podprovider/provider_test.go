@@ -126,7 +126,7 @@ func (f *fakeCloud) Delete(_ context.Context, id string) error {
 	f.deleteCalls++
 	f.deleted = append(f.deleted, id)
 	if f.in == nil || f.in.ID != id {
-		return errCloudNotFound
+		return nil // as cloudClient.Delete answers an instance already gone
 	}
 	f.in.Status = "terminating"
 	return nil

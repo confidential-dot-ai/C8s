@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,10 +19,27 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+const (
+	// providerLabel and allocationLabel are the labels every instance the
+	// provider creates carries: its provider ID, and its record's key without
+	// recordPrefix.
+	providerLabel   = "podcvm-provider"
+	allocationLabel = "podcvm-uid"
+	recordPrefix    = "podcvm-"
+	// allocationBytes is the length of the digest a record key carries.
+	allocationBytes = 20
+)
+
+// allocationValue is the shape of an allocation label: identityKey's digest.
+var allocationValue = regexp.MustCompile(fmt.Sprintf("^[0-9a-f]{%d}$", 2*allocationBytes))
+
 func identityKey(provider, uid string) string {
 	sum := sha256.Sum256([]byte(provider + "\x00" + uid))
-	return recordPrefix + hex.EncodeToString(sum[:20])
+	return recordPrefix + hex.EncodeToString(sum[:allocationBytes])
 }
+
+// allocationOf is the allocation label of the record key.
+func allocationOf(key string) string { return strings.TrimPrefix(key, recordPrefix) }
 
 // launch freezes the pod and its client document and builds the create request for its generic
 // instance: the signed generic document and the pod's own ingress rules. The
@@ -102,7 +120,7 @@ func (c *Config) signedRequest(doc podlaunch.Document, ports []uint16) (createRe
 	name := doc.Node.Name
 	return createRequest{
 		Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1,
-		Labels:  map[string]string{providerLabel: c.ProviderID, allocationLabel: strings.TrimPrefix(name, recordPrefix)},
+		Labels:  map[string]string{providerLabel: c.ProviderID, allocationLabel: allocationOf(name)},
 		Network: networkSpec{PublicIP: c.PublicIP, Ingress: rules}, Readiness: readinessSpec{TCPPorts: []int{}},
 		Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: podlaunch.SchemaVersion, Document: data, Signature: []byte(sig)}},
 	}, nil

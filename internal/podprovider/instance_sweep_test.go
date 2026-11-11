@@ -21,7 +21,7 @@ import (
 // labelled is a running instance carrying the provider and allocation labels
 // of the record key.
 func labelled(id, provider, key string) instance {
-	return instance{ID: id, Status: "running", Labels: map[string]string{providerLabel: provider, allocationLabel: strings.TrimPrefix(key, recordPrefix)}}
+	return instance{ID: id, Status: "running", Labels: map[string]string{providerLabel: provider, allocationLabel: allocationOf(key)}}
 }
 
 func TestInstanceSweepLeavesALaunchedPodsInstance(t *testing.T) {
@@ -41,7 +41,7 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 	orphan := identityKey(provider, "a pod whose record is gone")
 	for name, tc := range map[string]struct {
 		in      instance
-		prepare func(*testing.T, *Reconciler, string)
+		prepare func(*testing.T, *Reconciler)
 		deleted bool
 		fails   bool
 	}{
@@ -52,10 +52,10 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 		"terminated":                  {in: instance{ID: "i-ended", Status: "terminated", Labels: labelled("", provider, orphan).Labels}},
 		"no identity":                 {in: labelled("", provider, orphan)},
 		"record naming no instance":   {in: labelled("i-unrecorded", provider, identityKey(provider, string(fixturePod().UID))), prepare: writeRecord},
-		"unreadable record":           {in: labelled("i-unreadable", provider, orphan), prepare: writeUnreadableRecord, fails: true},
-		"failed record read":          {in: labelled("i-unread", provider, orphan), prepare: failRecordReads, fails: true},
-		"bare 404 on the record read": {in: labelled("i-proxied", provider, orphan), prepare: answerRecordReadsWithABare404, fails: true},
-		"record of another version":   {in: labelled("i-versioned", provider, orphan), prepare: writeOtherVersionRecord, fails: true},
+		"unreadable record":           {in: labelled("i-unreadable", provider, orphan), prepare: writeRawRecord(orphan, "{"), fails: true},
+		"failed record read":          {in: labelled("i-unread", provider, orphan), prepare: failRecordReads(errors.New("api server unavailable")), fails: true},
+		"bare 404 on the record read": {in: labelled("i-proxied", provider, orphan), prepare: failRecordReads(&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusNotFound}}), fails: true},
+		"record of another version":   {in: labelled("i-versioned", provider, orphan), prepare: writeRawRecord(orphan, `{"version":2}`), fails: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pod := fixturePod()
@@ -64,7 +64,7 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 			// reads records only afterwards.
 			cloud.list = func() ([]instance, error) {
 				if tc.prepare != nil {
-					tc.prepare(t, r, orphan)
+					tc.prepare(t, r)
 				}
 				return []instance{tc.in}, nil
 			}
@@ -79,7 +79,7 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 	}
 }
 
-func writeRecord(t *testing.T, r *Reconciler, _ string) {
+func writeRecord(t *testing.T, r *Reconciler) {
 	t.Helper()
 	rec, _, err := r.ensureRecord(t.Context(), fixturePod())
 	if err != nil || rec.InstanceID != "" {
@@ -87,34 +87,48 @@ func writeRecord(t *testing.T, r *Reconciler, _ string) {
 	}
 }
 
-func writeUnreadableRecord(t *testing.T, r *Reconciler, key string) {
-	t.Helper()
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace}, Data: map[string][]byte{"state.json": []byte("{")}}
-	if err := r.client.Create(t.Context(), secret); err != nil {
-		t.Fatal(err)
+// writeRawRecord stores state as the record under key, unparsed.
+func writeRawRecord(key, state string) func(*testing.T, *Reconciler) {
+	return func(t *testing.T, r *Reconciler) {
+		t.Helper()
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace}, Data: map[string][]byte{"state.json": []byte(state)}}
+		if err := r.client.Create(t.Context(), secret); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-func writeOtherVersionRecord(t *testing.T, r *Reconciler, key string) {
-	t.Helper()
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace}, Data: map[string][]byte{"state.json": []byte(`{"version":2}`)}}
-	if err := r.client.Create(t.Context(), secret); err != nil {
-		t.Fatal(err)
+// failRecordReads answers every record read with err.
+func failRecordReads(err error) func(*testing.T, *Reconciler) {
+	return func(_ *testing.T, r *Reconciler) {
+		r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return err
+		}})
 	}
 }
 
-func answerRecordReadsWithABare404(t *testing.T, r *Reconciler, _ string) {
-	t.Helper()
-	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
-		return &apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusNotFound}}
+// A record written after the sweep first found none still protects its
+// instance: absence is decided again under the reconciler's lock.
+func TestInstanceSweepReadsTheRecordAgainUnderTheLock(t *testing.T) {
+	r, cloud := fixtureReconciler(t, fixturePod())
+	key := identityKey(r.cfg.ProviderID, "a pod whose record arrives late")
+	cloud.list = func() ([]instance, error) { return []instance{labelled("i-late", r.cfg.ProviderID, key)}, nil }
+	inner, reads := r.client, 0
+	r.client = interceptor.NewClient(inner.(client.WithWatch), interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		err := c.Get(ctx, k, obj, opts...)
+		if reads++; reads == 1 {
+			if r.mu.TryLock() {
+				r.mu.Unlock()
+			} else {
+				t.Error("the first record read held the lock")
+			}
+			writeRawRecord(key, "{")(t, &Reconciler{client: inner, cfg: r.cfg})
+		}
+		return err
 	}})
-}
-
-func failRecordReads(t *testing.T, r *Reconciler, _ string) {
-	t.Helper()
-	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
-		return errors.New("api server unavailable")
-	}})
+	if err := r.sweepInstances(t.Context()); err == nil || reads != 2 || len(cloud.deleted) != 0 {
+		t.Fatalf("error %v, record reads %d, deleted %v", err, reads, cloud.deleted)
+	}
 }
 
 func TestInstanceSweepWaitsForTheProvidersNode(t *testing.T) {
@@ -159,7 +173,7 @@ func TestInstanceSweepNeedsAProviderID(t *testing.T) {
 func TestInstanceSweepContinuesPastAnInstanceItCannotJudge(t *testing.T) {
 	r, cloud := fixtureReconciler(t, fixturePod())
 	unreadable := identityKey(r.cfg.ProviderID, "unreadable")
-	writeUnreadableRecord(t, r, unreadable)
+	writeRawRecord(unreadable, "{")(t, r)
 	cloud.list = func() ([]instance, error) {
 		return []instance{labelled("i-held", r.cfg.ProviderID, unreadable), labelled("i-orphan", r.cfg.ProviderID, identityKey(r.cfg.ProviderID, "gone"))}, nil
 	}
