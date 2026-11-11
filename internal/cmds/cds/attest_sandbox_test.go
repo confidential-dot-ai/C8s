@@ -302,12 +302,13 @@ func TestAttest_SandboxToken_RejectsMalformedEnvelope(t *testing.T) {
 	}
 }
 
-// A token carrying an ID ValidateSandboxID rejects is refused at token
-// verification — before the evidence round-trip and before any ledger write —
-// so a garbage ID can never be bound to an inventory or stamped on a leaf.
+// A token carrying an ID ValidateSandboxID rejects, or one with the prefix
+// reserved for Pod CVM issuance, is refused at token verification — before the
+// evidence round-trip and before any ledger write — so neither can be bound to
+// an inventory or stamped on a leaf.
 // (A non-IA5 ID like "sandbox-🙂" is unrepresentable: the token's IA5String
 // marshal refuses it. ValidateSandboxID's own test pins that case.)
-func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
+func TestAttest_SandboxToken_RejectsSandboxID(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		id   string
@@ -317,11 +318,12 @@ func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
 		{"embedded slash", "a/b"},
 		{"embedded space", "sandbox id"},
 		{"over 128 chars", strings.Repeat("a", 129)},
+		{"reserved Pod CVM prefix", workloadclaims.PodInstancePrefix + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := newStubAttestationApi(t, testLaunchDigest)
 			h, signer := newSandboxTestEnv(t, stub.URL())
-			// The inventory answers for the malformed ID, so the ID check is
+			// The inventory answers for the rejected ID, so the ID check is
 			// the only thing between this token and issuance.
 			h.SandboxDigests = fakeDigests{
 				digests: map[string][]string{tc.id: {wlDigestA}},
