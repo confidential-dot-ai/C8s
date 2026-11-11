@@ -73,9 +73,11 @@ The replicas are booted and none of them holds a cluster.
    started for as long as `--jwt-clock-skew` (30 seconds by default): wait
    that long after Genesis, then write.
 
-A one-replica cluster is the only case that needs `--alone`: without another
-replica to ask, a Genesis is refused. Do not pass it with more replicas
-booted, because a host that hides the others would get a cluster beside them.
+A one-replica cluster is the only case that needs `--alone`: its replica has
+no second replica to ask, so it would hold the Genesis forever, and the
+command refuses to sign one for a launch file that names a single replica
+filling a single voter seat. Do not pass it with more replicas booted, because
+a host that hides the others would get a cluster beside them.
 
 ## 2. Replace a replica VM
 
