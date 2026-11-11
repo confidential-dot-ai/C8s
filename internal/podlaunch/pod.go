@@ -139,6 +139,9 @@ func ValidateProviderPod(pod *corev1.Pod) error {
 	if _, err := ClientDocument(pod); err != nil {
 		return err
 	}
+	if err := workloadclaims.ValidateWorkloadLabel(pod); err != nil {
+		return err
+	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
 		if len(c.Resources.Claims) != 0 {
 			return fmt.Errorf("container %q: pod CVM does not resolve resource claims", c.Name)

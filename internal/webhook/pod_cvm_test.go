@@ -149,6 +149,9 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		{"toleration conflict", func(p *corev1.Pod) { p.Spec.Tolerations[0].Value = "false" }, "exact NoSchedule"},
 		{"host injection", func(p *corev1.Pod) { p.Annotations[AnnotationInjected] = "true" }, "host-side injection"},
 		{"host secret request", func(p *corev1.Pod) { p.Annotations[AnnotationSecrets] = "TOKEN=/workload/token" }, "host-side injection"},
+		{"exec probe", func(p *corev1.Pod) {
+			p.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+		}, "exec probe"},
 		{"platform container", func(p *corev1.Pod) { p.Spec.Containers[0].Name = workloadclaims.MeshContainerName }, "reserved"},
 		{"foreign namespace", func(p *corev1.Pod) { p.Namespace = "other" }, "namespace"},
 		{"client document not base64", func(p *corev1.Pod) { p.Annotations[workloadclaims.AnnotationClientDocument] = "not base64!" }, "standard base64"},

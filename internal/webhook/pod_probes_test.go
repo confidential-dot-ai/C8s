@@ -223,11 +223,6 @@ func TestInjectionLeavesOtherProbesAlone(t *testing.T) {
 			},
 		},
 	}
-	app.LivenessProbe = &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			Exec: &corev1.ExecAction{Command: []string{"/bin/true"}},
-		},
-	}
 
 	mutated := admit(t, m, pod, "tenant")
 
