@@ -203,8 +203,9 @@ func (k *kmsClient) Release(ctx context.Context, release secretbroker.ReleaseReq
 	}
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		// A release names its value: an answer without one is no release.
 		var answer secretbroker.ReleaseResponse
-		if err := json.Unmarshal(raw, &answer); err != nil || answer.Version != secretbroker.ReleaseVersion || len(answer.Value) > secretbroker.MaxValue {
+		if err := json.Unmarshal(raw, &answer); err != nil || answer.Version != secretbroker.ReleaseVersion || answer.Value == nil || len(answer.Value) > secretbroker.MaxValue {
 			clear(raw)
 			return nil, errors.New("malformed KMS release response")
 		}

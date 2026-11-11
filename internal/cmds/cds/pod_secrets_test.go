@@ -410,6 +410,9 @@ func TestKMSClientRelease(t *testing.T) {
 		{name: "malformed", handler: func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode(secretbroker.ReleaseResponse{Version: "v0", Value: []byte("v")})
 		}, want: "malformed KMS release response"},
+		{name: "no value", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"version":"` + secretbroker.ReleaseVersion + `"}`))
+		}, want: "malformed KMS release response"},
 		{name: "server error", handler: func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}, want: "KMS answered 500"},
