@@ -242,8 +242,8 @@ func TestAssignedGuestIssuesNoNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, service := range map[string]*assignmentService{"assigned": s, "restarted": restarted} {
-		if rec := serve(Handler{assignment: service}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusConflict {
-			t.Fatalf("%s guest answered a nonce request with %d", name, rec.Code)
+		if rec := serve(Handler{assignment: service}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusConflict || heldUID(t, rec) != "pod-a" {
+			t.Fatalf("%s guest answered a nonce request with %d %s", name, rec.Code, rec.Body)
 		}
 		if len(service.nonces) != 0 || len(service.issued) != 0 {
 			t.Fatalf("%s guest kept a nonce", name)
