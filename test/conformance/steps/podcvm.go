@@ -43,6 +43,8 @@ func registerPodCVM(sc *godog.ScenarioContext) {
 	sc.Step(`^the virtual node is labelled and tainted with the opt-in key$`, virtualNodeCarriesOptIn)
 	sc.Step(`^the virtual node has a pod capacity of max-pods$`, virtualNodeCapacity)
 	sc.Step(`^the provider renews the heartbeat of the virtual node$`, heartbeatRenewed)
+
+	registerPodCVMCloud(sc)
 }
 
 const (
@@ -59,7 +61,8 @@ const (
 
 // podCVMState is what the scenario shaped and what admission last answered.
 type podCVMState struct {
-	specs map[string]*cvmSpec
+	specs     map[string]*cvmSpec
+	behaviour map[string]any
 	// refusal is admission's answer to the last create or update, empty when
 	// it admitted the request.
 	refusal string
@@ -111,15 +114,19 @@ func carriesOptIn(ctx context.Context, name, value string) error {
 	return shapes(func(s *cvmSpec) { s.optIn = value })(ctx, name)
 }
 
-// tidy puts the provider back after the scenario: no pod of the scenario
-// left, and no record left counting against the provider's pod budget for
-// the next one.
+// tidy puts the cloud API and the provider back after the scenario: the
+// default answers, no pod of the scenario left, and no record left counting
+// against the provider's pod budget for the next one.
 func (w *world) tidy() {
 	if w.podCVM.cleanup {
 		return
 	}
 	w.podCVM.cleanup = true
 	w.onUndo(func() error {
+		outage := w.podCVM.behaviour["outage"] == true
+		if _, err := w.be.call("cloud_behaviour", "{}"); err != nil {
+			return err
+		}
 		var errs []error
 		for name, s := range w.podCVM.specs {
 			if s.uid == "" {
@@ -135,6 +142,9 @@ func (w *world) tidy() {
 				err = fmt.Errorf("the provider still holds the record of %q", name)
 			}
 			errs = append(errs, err)
+		}
+		if outage {
+			errs = append(errs, w.awaitVirtualNodeReady())
 		}
 		return errors.Join(errs...)
 	})

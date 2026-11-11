@@ -184,15 +184,24 @@
 #   pod_cvm_node                     the node the Pod CVM provider registered, or
 #                                    unsupported where the cluster runs no provider
 #   pod_cvm_max_pods                 the provider's pod budget
+#   pod_cvm_deadline                 the provider's verification deadline, in seconds
 #   pod_cvm_oversize_memory          a memory quantity one pod CVM cannot hold
 #                                    and the provider's node can
 #   pod_cvm_allocation <uid>         the allocation identity the provider derives
 #                                    for the pod with that UID
+#   pod_cvm_labels <allocation>      the labels the provider puts on the instance
+#                                    of that allocation, as a JSON object
 #   pod_cvm_record <allocation>      yes/no: the provider holds a record for it
+#   cloud_behaviour <json>           replace how the provider's cloud API answers
+#                                    (test/mock-cloud, behaviour; {} is the
+#                                    default), or unsupported where the cloud is
+#                                    not the harness's to script
+#   cloud_calls                      every call that cloud API received, as JSON
+#   cloud_instances                  every instance it holds, as JSON
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
 # cds_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
-# pod_cvm_node and pod_cvm_max_pods answer the same for a whole run;
-# callers may cache them. The
+# pod_cvm_node, pod_cvm_max_pods and pod_cvm_deadline answer the same for a
+# whole run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
@@ -722,12 +731,18 @@ api_service_name() { echo kubernetes.default.svc.cluster.local; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 
-# The Pod CVM provider: unsupported unless the backend's cluster runs one.
+# The Pod CVM provider and the cloud API it launches into: unsupported unless
+# the backend runs a provider against a cloud API it can script.
 pod_cvm_node() { return "$UNSUPPORTED"; }
 pod_cvm_max_pods() { return "$UNSUPPORTED"; }
+pod_cvm_deadline() { return "$UNSUPPORTED"; }
 pod_cvm_oversize_memory() { return "$UNSUPPORTED"; }
 pod_cvm_allocation() { return "$UNSUPPORTED"; }
+pod_cvm_labels() { return "$UNSUPPORTED"; }
 pod_cvm_record() { return "$UNSUPPORTED"; }
+cloud_behaviour() { return "$UNSUPPORTED"; }
+cloud_calls() { return "$UNSUPPORTED"; }
+cloud_instances() { return "$UNSUPPORTED"; }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
 dispatch() {

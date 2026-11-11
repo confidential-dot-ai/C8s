@@ -188,10 +188,12 @@ revision. A workload backend is a pod of `tenant-app` running
 which holds the pod's leaf and terminates the router's armTLS: it answers
 every request with the request target and headers it received.
 
-The Pod CVM sentences judge admission and the operator's provider. The steps
-create these pods themselves, without `pod_manifest`, which pins a pod to a
-node. On kind the provider's cloud API is [`test/mock-cloud`](../mock-cloud),
-which starts no VM, so every scenario ends before a guest is verified.
+The Pod CVM sentences drive the operator's provider against a cloud API the
+backend scripts: `cloud_behaviour` sets how it answers, and `cloud_calls` and
+`cloud_instances` are what the steps judge the provider by. The steps create
+these pods themselves, without `pod_manifest`, which pins a pod to a node. On
+kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
+so every scenario ends before a guest is verified.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
