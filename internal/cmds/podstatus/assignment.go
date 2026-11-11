@@ -108,6 +108,12 @@ func (s *assignmentService) assignedUID() string { s.mu.Lock(); defer s.mu.Unloc
 func (s *assignmentService) serveNonce(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// An assigned guest accepts no further assignment, so a nonce from it would
+	// only let a launcher mistake it for an unassigned one.
+	if s.uid != "" {
+		http.Error(w, "guest already holds a Pod", http.StatusConflict)
+		return
+	}
 	if len(s.issued) >= maxAssignmentNonces {
 		delete(s.nonces, s.issued[0])
 		s.issued = s.issued[1:]

@@ -230,6 +230,27 @@ func TestAssignmentStorageFailureCanRetryButRestartForgetsNonce(t *testing.T) {
 	}
 }
 
+// A guest that holds a Pod issues no nonce, in the boot that accepted the
+// assignment and after a restart that restores it.
+func TestAssignedGuestIssuesNoNonce(t *testing.T) {
+	s, key, peer, store := assignmentFixture(t)
+	if rec := postAssignment(s, peer, encodeAssignment(t, issuedAssignment(t, s, key, peer, "pod-a"))); rec.Code != http.StatusOK {
+		t.Fatalf("assignment: %d", rec.Code)
+	}
+	restarted, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, service := range map[string]*assignmentService{"assigned": s, "restarted": restarted} {
+		if rec := serve(Handler{assignment: service}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusConflict {
+			t.Fatalf("%s guest answered a nonce request with %d", name, rec.Code)
+		}
+		if len(service.nonces) != 0 || len(service.issued) != 0 {
+			t.Fatalf("%s guest kept a nonce", name)
+		}
+	}
+}
+
 // A nonce discarded at the bound is refused like one never issued.
 func TestAssignmentNonceBoundDiscardsTheOldestUnusedNonce(t *testing.T) {
 	s, key, peer, _ := assignmentFixture(t)
@@ -300,10 +321,12 @@ func TestAssignmentCarriesTheSignedClientDocument(t *testing.T) {
 	if rec := postAssignment(s, peer, encodeAssignment(t, tampered)); rec.Code != http.StatusUnauthorized || len(rendered) != 0 {
 		t.Fatalf("altered client document: code=%d rendered=%d", rec.Code, len(rendered))
 	}
+	// Signed while the guest is unassigned: it issues no nonce afterwards.
+	second := encodeAssignment(t, withDocument("pod-a", "another document"))
 	if rec := postAssignment(s, peer, encodeAssignment(t, withDocument("pod-a", "client document"))); rec.Code != http.StatusOK {
 		t.Fatalf("assignment: %d %s", rec.Code, rec.Body)
 	}
-	if rec := postAssignment(s, peer, encodeAssignment(t, withDocument("pod-a", "another document"))); rec.Code != http.StatusConflict {
+	if rec := postAssignment(s, peer, second); rec.Code != http.StatusConflict {
 		t.Fatalf("second assignment: %d", rec.Code)
 	}
 	if _, err := newAssignmentService(t.Context(), s.doc, store, s.boundKey, s.render, s.available, s.apply); err != nil {

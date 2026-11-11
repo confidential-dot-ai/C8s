@@ -469,6 +469,7 @@ status. Allocate a new Pod CVM. While it runs, the plugin keeps the last
 authenticated CDS policy during an outage and refuses older policy versions.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
+A guest that holds a Pod issues none: `GET /v1/assign/nonce` answers 409.
 The service keeps at most 256 unused nonces, oldest first; issuing one more
 discards the oldest, and an assignment under a discarded nonce is refused as
 not issued. A launcher that loses its nonce this way obtains a fresh one. The
