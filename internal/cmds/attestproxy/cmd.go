@@ -174,8 +174,9 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 //     as the healthcheck subcommand runs it.
 //   - /upstream/livez: the attestation-api's liveness, which the kubelet cannot
 //     probe on pod loopback; a GET /health on upstream directly. Any 2xx answer
-//     passes whatever its status: that is the API's state to report, not one
-//     a restart fixes. The API answers /health with 200 alone.
+//     with a JSON health body passes whatever its status: that is the API's
+//     state to report, not one a restart fixes. The API answers /health with
+//     200 alone.
 func healthHandler(
 	socket string,
 	upstream string,
