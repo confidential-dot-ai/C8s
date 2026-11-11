@@ -21,7 +21,7 @@ Read the cluster before and after every step:
 c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
 ```
 
-`version=` in that line is what the next decree's `--base-version` names. A
+The `VERSION` column is what the next decree's `--base-version` names. A
 decree that names another version does nothing, which is the point: two
 operators cannot apply conflicting commands.
 
@@ -35,9 +35,9 @@ The replicas are booted and none of them holds a cluster.
    c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
    ```
 
-   Every line reads `joined=false serving=false`. A replica that answers
-   nothing has no route, no launch file, or a launch binding its own attester
-   refuses: read its VM's console before going on.
+   Every row reads `does not serve: "this replica holds no cluster"`. A
+   replica that answers nothing has no route, no launch file, or a launch
+   binding its own attester refuses: read its VM's console before going on.
 
 2. Sign the Genesis decree for one of them. The command reads that replica's
    member id and mesh CA over the attested channel and signs them in:
@@ -65,8 +65,8 @@ The replicas are booted and none of them holds a cluster.
    c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
    ```
 
-   Every line reads `joined=true serving=true` with one `state="Leader"`, one
-   `version=1`, and one `ca=` for all of them.
+   Every row reads `serving`, and the last line reads
+   `the replicas agree: leader ..., <n> voter seats, version 1`.
 
 4. Apply the policy and the secrets the cluster is to hold. A cluster whose
    allowlist does not persist refuses an operator token issued before it
@@ -90,12 +90,12 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      replaced:
 
      ```sh
-     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json | grep roll_safe=true
+     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json --json |
+         jq -e 'any(.[]; .status.roll_safe.ok)'
      ```
 
-     The one line that can say it is the leader's; every other replica reports
-     `roll_safe=-`, because only the leader knows the seats. Destroy the old
-     VM, then continue to step 2.
+     Only the leader answers the gate, because only the leader knows the
+     seats. Destroy the old VM, then continue to step 2.
 
    - **VM already removed:** read the surviving leader, replacing
      `cds-2.example.org` with its address:
@@ -104,9 +104,9 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json --url cds-2.example.org
      ```
 
-     Require a successful exit and its line to read
-     `state="Leader" joined=true serving=true`, then continue to step 2
-     without waiting for `roll_safe=true`. Do not remove another VM.
+     Require a successful exit and its row to read `leader` and `serving`,
+     then continue to step 2 without waiting for the roll gate. Do not remove
+     another VM.
 
    Failure to answer alone does not authorize removing a VM or invoking
    Recover.
@@ -116,9 +116,8 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
    rather than alternate between the old and new processes.
 
 3. The new VM is a new member. It joins, catches up, and takes the seat of the
-   member it replaced once that one has counted as dead. Wait for
-   `joined=true serving=true` on its line and `roll_safe=true` on the leader's
-   before removing any other VM.
+   member it replaced once that one has counted as dead. Wait for `serving`
+   on its row and for the leader's roll gate before removing any other VM.
 
 A process that only restarts needs none of this: its unit restarts it, and it
 rejoins the same way.
@@ -131,8 +130,8 @@ replica behind a name they already carry needs no new launch file.
 1. Boot the VM with the same launch file.
 2. Add its address to the DNS name a replica entry names, so the name resolves
    to it as well as to the replicas already running.
-3. Wait for its line to read `joined=true serving=true`. It serves reads
-   without a vote: the voter seats are a count, and the seats are full.
+3. Wait for its row to read `serving`. It serves reads without a vote: the
+   voter seats are a count, and the seats are full.
 
 Give the seats to the new replicas with runbook 4 where the cluster is to
 tolerate more loss. A replica entry that resolves to a load-balanced address
@@ -151,10 +150,10 @@ c8s cds ha decree voters \
 ```
 
 The replicas fill or give up one seat at a time, so the cluster keeps a
-majority throughout and keeps taking writes. Watch `voters=` in `ha status`
-until it reads the new count. A count the replicas cannot fill leaves the
-cluster without a majority for its own seat changes: name no more seats than
-there are replicas.
+majority throughout and keeps taking writes. Watch the voter seats the
+cluster line names until they read the new count. A count the replicas cannot
+fill leaves the cluster without a majority for its own seat changes: name no
+more seats than there are replicas.
 
 ## 5. Upgrade the node images the cluster certifies
 
@@ -171,8 +170,8 @@ client pin changes.
        --to cds-1.example.org --cds-pin cds-pin.json
    ```
 
-   Wait until `node_images_version=` in `ha status` names the version this
-   decree produced.
+   Wait until `ha status --json` reports `node_images_version` as the version
+   this decree produced.
 
 2. Relaunch the nodes on the new image, as any node upgrade does
    ([upgrade.md](upgrade.md)). Each node's certificate is issued because the
@@ -196,7 +195,7 @@ Every replica VM is replaced with one running the new CDS image. During the
 roll the cluster accepts both images, so a new replica reaches a leader still
 running the old one.
 
-1. Check `roll_safe=true`.
+1. Check the leader's roll gate (runbook 2, step 1).
 
 2. Decree both images:
 
@@ -233,9 +232,8 @@ running the old one.
    its start: **every restart of that VM before it joins needs a new Admit**,
    and so does the next VM of the roll.
 
-4. Wait for the new replica's line to read `joined=true serving=true` and for
-   `roll_safe=true`, then repeat step 3 for the next VM. Replace the leader
-   last.
+4. Wait for the new replica's row to read `serving` and for the leader's roll
+   gate, then repeat step 3 for the next VM. Replace the leader last.
 
 5. Decree the new image alone:
 
@@ -267,8 +265,9 @@ the recovered one.
    cloud console, the hypervisor, the power state. From inside the cluster a
    live majority that is cut off looks exactly like a lost one.
 
-2. Read the survivor and keep its `version=`. Name a surviving voter: a
-   replica that held no vote may be missing writes the cluster committed.
+2. Read the survivor and keep the version its row names. Name a surviving
+   voter: a replica that held no vote may be missing writes the cluster
+   committed.
 
 3. Sign the Recover and post it to the survivor:
 
@@ -300,10 +299,10 @@ c8s cds ha decree dismiss-recover \
 
 ## 8. A halted cluster
 
-Every replica stopped at the same log entry: `ha status` shows `serving=false`
-with the same reason on every line, and each replica logs it every minute. The
-cluster keeps its leader and its membership and serves nothing. No committed
-write is lost while the VMs run.
+Every replica stopped at the same log entry: `ha status` shows the same
+`does not serve:` reason on every row, and each replica logs it every minute.
+The cluster keeps its leader and its membership and serves nothing. No
+committed write is lost while the VMs run.
 
 **Keep the VMs running.** The log lives in memory, so restarting them all is
 what loses the cluster, not the halt.
@@ -317,10 +316,10 @@ what loses the cluster, not the halt.
    - *cannot apply a committed log entry*: applying it failed on every
      replica running this CDS image, and it will fail again on a restart.
 
-2. For the second kind, capture the reason, the leader's `applied=` index and
-   the alarm lines, and escalate. Only a CDS image that applies the entry gets
-   the cluster out, and a halted cluster applies no decree, so it cannot
-   accept that image by itself.
+2. For the second kind, capture the reason, the leader's `applied_index` from
+   `ha status --json` and the alarm lines, and escalate. Only a CDS image that
+   applies the entry gets the cluster out, and a halted cluster applies no
+   decree, so it cannot accept that image by itself.
 
 A single replica that stops while the others serve is not this: it stops
 serving and exits, and its restart rejoins with the cluster's state.
@@ -337,8 +336,8 @@ The leader compares what the replicas applied at every checkpoint.
 - **`no majority of the voters holds one state`**: nothing is stopped, because
   no side can be shown to be right. Do this:
 
-  1. Read `checkpoint=` from every replica. It is `<index>:<digest>`, and
-     replicas that agree report the same digest at the same index.
+  1. Read `checkpoint` from `ha status --json` for every replica. Replicas
+     that agree report the same state digest at the same index.
   2. Decide which state is the cluster's from outside the cluster: the replica
      whose history you trust, usually the one that led while the writes were
      taken.
