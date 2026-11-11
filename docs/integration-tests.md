@@ -70,6 +70,15 @@ boots on (`HOST_DATA` = SHA-256 of that file). That is what the pin the install
 carries names, so every client holds it to the configuration it serves, exactly
 as it holds a CDS VM to its launch file.
 
+The operator runs the optional [Pod CVM provider](pod-cvm-provider.md) against
+`test/mock-cloud`, a fake of the Cloud instance API in a third container of
+the kind network. The provider registers its node, writes a record and creates
+an instance for a pod bound to that node, and destroys the instance when the
+pod ends; the mock starts no VM, so no pod is ever verified, assigned or
+running. `/control` on the mock sets how the API answers and lists the calls
+it received. The provider's configuration is generated per run, with a
+placeholder image manifest and CDS launch file that nothing verifies.
+
 The rest is real: the admission webhook and validating admission policies in a
 real API server, the admission plugin registered against the node's containerd,
 certificate issuance with sandbox identity, the armTLS mesh, workload adoption,
@@ -84,7 +93,9 @@ mount enforcement runs in.
 
 ## What it does not cover
 
-No TEE property is asserted. Hardware verification, measurements that mean
+No TEE property is asserted, and no pod CVM boots: guest verification, the
+assignment, verified status and everything inside a pod CVM stay on real TDX.
+Hardware verification, measurements that mean
 anything, encrypted volumes (`volumed` needs the node kernel's device mapper),
 and the `c8s verify`, `c8s allowlist` and `c8s routes` CLIs stay on the
 hardware CI lane: it verifies evidence in process with real
@@ -105,8 +116,9 @@ cluster whatever kubectl's current context is. Source
 `test/integration/cluster/lib.sh` and then that file to drive the cluster with
 the harness's own helpers (`cds_write`, `cds_get`, `node_exec`, `run_pod`, and
 the rest). They address the CDS at `$C8S_IT_WORKDIR/cds-address`, which the run
-wrote. Delete the cluster with `kind delete cluster --name c8s-it`, and the CDS
-with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
+wrote, and the mock Cloud at `$C8S_IT_WORKDIR/cloud-address`. Delete the
+cluster with `kind delete cluster --name c8s-it`, and the CDS and the mock
+Cloud with `docker rm -f c8s-it-cds c8s-it-cds-attestation c8s-it-cloud`.
 
 ## When a run fails
 
