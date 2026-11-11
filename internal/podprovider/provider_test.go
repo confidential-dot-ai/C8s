@@ -84,6 +84,7 @@ type fakeCloud struct {
 	find        func(string) (*instance, error)
 	list        func() ([]instance, error)
 	deleted     []string
+	listed      []string
 	get         func(string) (*instance, error)
 	ping        func() error
 }
@@ -102,7 +103,8 @@ func (f *fakeCloud) Find(_ context.Context, key string) (*instance, error) {
 	}
 	return f.in, nil
 }
-func (f *fakeCloud) List(context.Context, string) ([]instance, error) {
+func (f *fakeCloud) List(_ context.Context, provider string) ([]instance, error) {
+	f.listed = append(f.listed, provider)
 	if f.list != nil {
 		return f.list()
 	}

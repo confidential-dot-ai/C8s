@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -28,6 +29,10 @@ var allocationValue = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // owns. The record sweep cannot find them: it starts from the records. It
 // creates nothing, and it runs only while the provider owns its node.
 func (r *Reconciler) sweepInstances(ctx context.Context) error {
+	// An empty ID would match an instance that carries no provider label.
+	if r.cfg.ProviderID == "" {
+		return errors.New("the provider has no ID to list instances by")
+	}
 	if r.ownsNode != nil {
 		if err := r.ownsNode(ctx); err != nil {
 			return fmt.Errorf("provider node: %w", err)
@@ -59,7 +64,9 @@ func (r *Reconciler) sweepInstance(ctx context.Context, in *instance) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, _, err := r.loadRecord(ctx, recordPrefix+allocation)
-	if !apierrors.IsNotFound(err) {
+	// Only the API server's own not-found answer is absence: a bare 404 from
+	// something in front of it is a failed read.
+	if apierrors.ReasonForError(err) != metav1.StatusReasonNotFound {
 		return err
 	}
 	if err := r.cloud.Delete(ctx, in.ID); err != nil && !errors.Is(err, errCloudNotFound) {

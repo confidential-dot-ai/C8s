@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -43,15 +45,17 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 		deleted bool
 		fails   bool
 	}{
-		"no record":                 {in: labelled("i-orphan", provider, orphan), deleted: true},
-		"another provider":          {in: labelled("i-other", "other-provider", orphan)},
-		"no allocation label":       {in: instance{ID: "i-bare", Status: "running", Labels: map[string]string{providerLabel: provider}}},
-		"malformed allocation":      {in: instance{ID: "i-odd", Status: "running", Labels: map[string]string{providerLabel: provider, allocationLabel: "../" + strings.Repeat("a", 37)}}},
-		"terminated":                {in: instance{ID: "i-ended", Status: "terminated", Labels: labelled("", provider, orphan).Labels}},
-		"no identity":               {in: labelled("", provider, orphan)},
-		"record naming no instance": {in: labelled("i-unrecorded", provider, identityKey(provider, string(fixturePod().UID))), prepare: writeRecord},
-		"unreadable record":         {in: labelled("i-unreadable", provider, orphan), prepare: writeUnreadableRecord, fails: true},
-		"failed record read":        {in: labelled("i-unread", provider, orphan), prepare: failRecordReads, fails: true},
+		"no record":                   {in: labelled("i-orphan", provider, orphan), deleted: true},
+		"another provider":            {in: labelled("i-other", "other-provider", orphan)},
+		"no allocation label":         {in: instance{ID: "i-bare", Status: "running", Labels: map[string]string{providerLabel: provider}}},
+		"malformed allocation":        {in: instance{ID: "i-odd", Status: "running", Labels: map[string]string{providerLabel: provider, allocationLabel: "../" + strings.Repeat("a", 37)}}},
+		"terminated":                  {in: instance{ID: "i-ended", Status: "terminated", Labels: labelled("", provider, orphan).Labels}},
+		"no identity":                 {in: labelled("", provider, orphan)},
+		"record naming no instance":   {in: labelled("i-unrecorded", provider, identityKey(provider, string(fixturePod().UID))), prepare: writeRecord},
+		"unreadable record":           {in: labelled("i-unreadable", provider, orphan), prepare: writeUnreadableRecord, fails: true},
+		"failed record read":          {in: labelled("i-unread", provider, orphan), prepare: failRecordReads, fails: true},
+		"bare 404 on the record read": {in: labelled("i-proxied", provider, orphan), prepare: answerRecordReadsWithABare404, fails: true},
+		"record of another version":   {in: labelled("i-versioned", provider, orphan), prepare: writeOtherVersionRecord, fails: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pod := fixturePod()
@@ -91,6 +95,21 @@ func writeUnreadableRecord(t *testing.T, r *Reconciler, key string) {
 	}
 }
 
+func writeOtherVersionRecord(t *testing.T, r *Reconciler, key string) {
+	t.Helper()
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key, Namespace: r.cfg.Namespace}, Data: map[string][]byte{"state.json": []byte(`{"version":2}`)}}
+	if err := r.client.Create(t.Context(), secret); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func answerRecordReadsWithABare404(t *testing.T, r *Reconciler, _ string) {
+	t.Helper()
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+		return &apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusNotFound}}
+	}})
+}
+
 func failRecordReads(t *testing.T, r *Reconciler, _ string) {
 	t.Helper()
 	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
@@ -124,8 +143,28 @@ func TestInstanceSweepRetriesAnOrphanUntilItIsGone(t *testing.T) {
 	if err := r.sweepInstances(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(cloud.deleted, []string{"i-orphan", "i-orphan"}) {
-		t.Fatalf("deleted %v", cloud.deleted)
+	if !slices.Equal(cloud.deleted, []string{"i-orphan", "i-orphan"}) || !slices.Equal(cloud.listed, slices.Repeat([]string{r.cfg.ProviderID}, 3)) {
+		t.Fatalf("deleted %v, listed %v", cloud.deleted, cloud.listed)
+	}
+}
+
+func TestInstanceSweepNeedsAProviderID(t *testing.T) {
+	r, cloud := fixtureReconciler(t, fixturePod())
+	r.cfg.ProviderID = ""
+	if err := r.sweepInstances(t.Context()); err == nil || len(cloud.listed) != 0 {
+		t.Fatalf("error %v, listed %v", err, cloud.listed)
+	}
+}
+
+func TestInstanceSweepContinuesPastAnInstanceItCannotJudge(t *testing.T) {
+	r, cloud := fixtureReconciler(t, fixturePod())
+	unreadable := identityKey(r.cfg.ProviderID, "unreadable")
+	writeUnreadableRecord(t, r, unreadable)
+	cloud.list = func() ([]instance, error) {
+		return []instance{labelled("i-held", r.cfg.ProviderID, unreadable), labelled("i-orphan", r.cfg.ProviderID, identityKey(r.cfg.ProviderID, "gone"))}, nil
+	}
+	if err := r.sweepInstances(t.Context()); err == nil || !slices.Equal(cloud.deleted, []string{"i-orphan"}) {
+		t.Fatalf("error %v, deleted %v", err, cloud.deleted)
 	}
 }
 
@@ -155,5 +194,19 @@ func TestCloudListFollowsEveryPageOfTheProvidersInstances(t *testing.T) {
 	pages["two"] = `{`
 	if got, err := c.List(t.Context(), "a provider&id"); err == nil || got != nil {
 		t.Fatalf("a failed page returned %v", got)
+	}
+}
+
+func TestCloudListBoundsItsPages(t *testing.T) {
+	var calls int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, `{"items":[],"nextPageToken":"`+strconv.Itoa(calls)+`"}`)
+	}))
+	defer srv.Close()
+	c := newCloudClient(&Config{CloudURL: srv.URL, token: "test"})
+	c.http.Transport = srv.Client().Transport
+	if _, err := c.List(t.Context(), "provider"); err == nil || calls != maxListPages {
+		t.Fatalf("error %v after %d pages", err, calls)
 	}
 }

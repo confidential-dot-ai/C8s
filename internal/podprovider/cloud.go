@@ -17,6 +17,9 @@ import (
 
 const cloudTimeout = 20 * time.Second
 
+// maxListPages bounds one listing of the provider's instances.
+const maxListPages = 1000
+
 var errCloudNotFound = errors.New("cloud instance not found")
 
 // cloudProblem is a Cloud response outside 2xx: its HTTP status and the
@@ -241,7 +244,7 @@ func (c *cloudClient) List(ctx context.Context, provider string) ([]instance, er
 	query := url.Values{"label": {providerLabel + "=" + provider}}
 	seen := map[string]bool{}
 	var all []instance
-	for {
+	for range maxListPages {
 		var out struct {
 			Items         []instance `json:"items"`
 			NextPageToken string     `json:"nextPageToken"`
@@ -259,6 +262,7 @@ func (c *cloudClient) List(ctx context.Context, provider string) ([]instance, er
 		seen[out.NextPageToken] = true
 		query.Set("pageToken", out.NextPageToken)
 	}
+	return nil, errors.New("cloud instance listing has too many pages")
 }
 
 func (c *cloudClient) Get(ctx context.Context, id string) (*instance, error) {
