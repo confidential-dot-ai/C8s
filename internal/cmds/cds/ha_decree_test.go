@@ -315,6 +315,34 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 	}
 }
 
+// The public half is the file an operator has at hand, and the flag takes the
+// private one.
+func TestSigningNamesAPublicKeyGivenAsTheOperatorKey(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	o.operatorKey = filepath.Join(t.TempDir(), "operator.pub")
+	writeTestFile(t, o.operatorKey, c.operatorPEM)
+
+	err := signing(t, func(cmd *cobra.Command) error {
+		return pinsOptions{
+			decreeOptions: o,
+			pins: pinFlags{
+				platform:  "sev-snp",
+				vcpus:     []int{2},
+				manifests: []string{snpManifest(t, smp2Digest)},
+			},
+		}.run(cmd)
+	})
+	if err == nil {
+		t.Fatal("a decree was signed with the operator's public key")
+	}
+	for _, says := range []string{"--operator-key", "this is a public key", "c8s keys new --out"} {
+		if !strings.Contains(err.Error(), says) {
+			t.Errorf("signing with the public key = %q, want it to say %q", err, says)
+		}
+	}
+}
+
 // Only a key the configuration pins can sign for the cluster, so a key it does
 // not pin fails here rather than on the board.
 func TestSigningRefusesAKeyTheClusterDoesNotPin(t *testing.T) {
