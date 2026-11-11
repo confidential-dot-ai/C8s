@@ -208,24 +208,15 @@ func TestHealthEndpointWithoutSocket(t *testing.T) {
 }
 
 // attest-proxy's liveness reports only its own state: a dead upstream keeps it
-// live, a socket that does not accept does not.
+// live, and so does a wedged serve loop; a missing socket does not.
 func TestLivez(t *testing.T) {
 	sock := serveProxy(t, config{upstream: deadUpstream, socketGID: 0})
 	notSocket := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(notSocket, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A listener closed without unlinking leaves a socket file nothing accepts on.
-	closed := filepath.Join(t.TempDir(), "closed.sock")
-	l, err := net.Listen("unix", closed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.(*net.UnixListener).SetUnlinkOnClose(false)
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// A wedged serve loop: the kernel queues the connection, nothing answers.
+	// A wedged serve loop: the kernel queues connections, nothing answers.
+	// /livez never dials, so it passes; readiness is what catches this.
 	wedged := filepath.Join(t.TempDir(), "wedged.sock")
 	wl, err := net.Listen("unix", wedged)
 	if err != nil {
@@ -240,12 +231,7 @@ func TestLivez(t *testing.T) {
 		{
 			name:   "serve loop wedged",
 			socket: wedged,
-			want:   http.StatusServiceUnavailable,
-		},
-		{
-			name:   "listener closed",
-			socket: closed,
-			want:   http.StatusServiceUnavailable,
+			want:   http.StatusOK,
 		},
 		{
 			name:   "upstream down",

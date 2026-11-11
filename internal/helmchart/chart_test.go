@@ -908,7 +908,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		var obj struct {
 			docMeta
 			Spec struct {
-				Template corev1.PodTemplateSpec `json:"template"`
+				Template    corev1.PodTemplateSpec `json:"template"`
+				JobTemplate struct {
+					Spec struct {
+						Template corev1.PodTemplateSpec `json:"template"`
+					} `json:"spec"`
+				} `json:"jobTemplate"`
 			} `json:"spec"`
 		}
 		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
@@ -917,6 +922,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		switch obj.Kind {
 		case "Deployment", "DaemonSet", "StatefulSet", "Job":
 			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.Template.Spec})
+		case "CronJob":
+			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.JobTemplate.Spec.Template.Spec})
+		default:
+			if len(obj.Spec.Template.Spec.Containers) > 0 {
+				t.Fatalf("renderedPodSpecs: %s %s carries a pod template this helper does not collect", obj.Kind, obj.Metadata.Name)
+			}
 		}
 		return false
 	})

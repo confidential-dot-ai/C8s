@@ -93,8 +93,8 @@ containers:
     # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
     # exec probe can never pass there (c8s internal/cmds/c8srunc). Readiness
     # runs the `attest-proxy healthcheck` round-trip over the proxy's own
-    # socket; liveness dials only that socket, so a hung API never restarts the
-    # proxy.
+    # socket; liveness checks only that the health server answers and the
+    # socket file exists, so a hung API never restarts the proxy.
     readinessProbe:
       httpGet:
         path: /healthz

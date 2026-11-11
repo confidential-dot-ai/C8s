@@ -11,7 +11,9 @@ package attestproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -46,8 +48,6 @@ const (
 	// maxConcurrentConns caps accepted sockets and upstream connections alike,
 	// well above the node's consumers (CDS, ratls-mesh, sidecars, NRI).
 	maxConcurrentConns = 256
-	// proxyLivezPath is the one path the proxy answers on its socket itself.
-	proxyLivezPath = "/attest-proxy/livez"
 )
 
 type config struct {
@@ -137,7 +137,7 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	defer listener.Close()
 
 	srv := &http.Server{
-		Handler:           answerLivez(proxy),
+		Handler:           proxy,
 		ReadHeaderTimeout: cfg.readHeaderTimeout,
 		ReadTimeout:       cfg.readTimeout,
 		WriteTimeout:      cfg.writeTimeout,
@@ -166,8 +166,10 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 // healthHandler serves the kubelet's HTTP probes. The bodies carry no
 // evidence, so exposing them on the pod IP adds no reachable surface beyond
 // "is this DaemonSet serving".
-//   - /livez: attest-proxy's liveness; a GET of proxyLivezPath over its socket,
-//     which the proxy answers itself without calling upstream.
+//   - /livez: attest-proxy's liveness; the health server answers and the
+//     socket file is still a socket. It never dials the socket, whose
+//     connection cap a hung API can fill. A wedged serve loop passes; readiness
+//     catches it, and a Serve that returns exits the process.
 //   - /healthz: readiness; a GET /health round-trip over the proxy's socket,
 //     as the healthcheck subcommand runs it.
 //   - /upstream/livez: the attestation-api's liveness, which the kubelet cannot
@@ -180,18 +182,10 @@ func healthHandler(
 ) http.Handler {
 	socketClient := remote.NewClient("unix://" + socket)
 	upstreamClient := remote.NewClient(upstream)
-	// No keep-alive: each probe must be a fresh accept by the serve loop.
-	livezClient := &http.Client{Transport: &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		},
-	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
-		if err := pingProxy(r.Context(), livezClient); err != nil {
-			slog.Warn("attestation proxy does not answer on its socket", "socket", socket, "error", err)
-			http.Error(w, "proxy does not answer", http.StatusServiceUnavailable)
+		if socketGone(socket) {
+			http.Error(w, "socket gone", http.StatusServiceUnavailable)
 			return
 		}
 		fmt.Fprintln(w, "ok")
@@ -241,26 +235,15 @@ func fetchHealth(
 	return client.Health(ctx)
 }
 
-// pingProxy GETs proxyLivezPath through client within healthcheckTimeout.
-func pingProxy(
-	ctx context.Context,
-	client *http.Client,
-) error {
-	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://attest-proxy"+proxyLivezPath, nil)
-	if err != nil {
-		return err
+// socketGone reports whether nothing, or something other than a socket, is at
+// path. Any other stat error counts as present: liveness fails only when a
+// restart, which binds the socket afresh, would help.
+func socketGone(path string) bool {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", proxyLivezPath, resp.Status)
-	}
-	return nil
+	return err == nil && fi.Mode()&os.ModeSocket == 0
 }
 
 func newProxy(cfg config) (http.Handler, error) {
@@ -303,16 +286,4 @@ func newProxy(cfg config) (http.Handler, error) {
 		},
 	}
 	return proxy, nil
-}
-
-// answerLivez answers proxyLivezPath itself and hands every other request to
-// proxy, so /livez proves the socket's serve loop without calling upstream.
-func answerLivez(proxy http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == proxyLivezPath {
-			fmt.Fprintln(w, "ok")
-			return
-		}
-		proxy.ServeHTTP(w, r)
-	})
 }
