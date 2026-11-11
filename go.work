@@ -6,7 +6,7 @@ use (
 	./test/conformance/steps
 	./test/conformance/tools/armtls-dial
 	./test/mock-attestation
-	./test/mock-cloud
 	./test/mock-cds
+	./test/mock-cloud
 	./test/mock-inventory
 )
