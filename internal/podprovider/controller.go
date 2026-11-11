@@ -233,9 +233,6 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
-	if len(rec.Assignment) == 0 {
-		return r.stop(ctx, pod, rec, secret, "UnexpectedAssignedGuest")
-	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
 		rec.TerminalStatus = &status
 		if err := r.save(ctx, rec, secret); err != nil {

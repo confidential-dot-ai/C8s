@@ -327,7 +327,6 @@ var statusMessages = map[string]string{
 	"InstanceGone":             "The Pod CVM instance no longer exists",
 	"InstanceIdentityMismatch": "The cloud instance differs from the launch",
 	"GuestRebooted":            "The Pod CVM rebooted",
-	"UnexpectedAssignedGuest":  "The Pod CVM reports a Pod it was not assigned",
 	verificationTimeoutReason:  "The Pod CVM was not verified in time",
 }
 

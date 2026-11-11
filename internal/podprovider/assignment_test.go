@@ -496,3 +496,30 @@ func TestReplayRereadsTheLivePod(t *testing.T) {
 		t.Fatalf("sends %d prepares %d: the assignment was replayed for a pod being deleted", guest.sends, guest.prepares)
 	}
 }
+
+// Status is read from the serving key, so a record that kept the key and lost
+// its assignment, or the reverse, is not a record to act on.
+func TestRecordHoldsAnAssignmentAndItsServingKeyTogether(t *testing.T) {
+	for name, strip := range map[string]func(*record){
+		"key without assignment": func(rec *record) { rec.Assignment = nil },
+		"assignment without key": func(rec *record) { rec.ServingKey = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := fixturePod()
+			r, _, _ := fixture(t, pod)
+			runToRunning(t, r, pod)
+			key := identityKey(r.cfg.ProviderID, string(pod.UID))
+			rec, secret, err := r.loadRecord(t.Context(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			strip(rec)
+			if err := r.save(t.Context(), rec, secret); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.loadRecord(t.Context(), key); err == nil {
+				t.Fatal("a record holding half of its assignment was read")
+			}
+		})
+	}
+}
