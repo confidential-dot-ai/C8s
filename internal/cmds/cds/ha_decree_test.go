@@ -343,6 +343,39 @@ func TestSigningRefusesAKeyTheClusterDoesNotPin(t *testing.T) {
 
 // A Genesis names the process it starts the cluster on, the address it was
 // reached at, and the mesh CA that process would install.
+// A one-replica cluster's replica waits for a second replica to answer, so a
+// Genesis it would hold forever is refused before it is signed.
+func TestGenesisOfAOneReplicaClusterNeedsAlone(t *testing.T) {
+	c := newReplicatedCluster(t)
+	o := c.options(t)
+	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
+	genesis := func(alone bool) error {
+		return signing(t, func(cmd *cobra.Command) error {
+			return genesisOptions{
+				decreeOptions: o,
+				pins: pinFlags{
+					platform:  "sev-snp",
+					vcpus:     []int{2},
+					manifests: []string{snpManifest(t, smp2Digest)},
+				},
+				target: target,
+				alone:  alone,
+			}.run(cmd)
+		})
+	}
+
+	err := genesis(false)
+	if err == nil {
+		t.Fatal("a Genesis the one replica would hold forever was signed")
+	}
+	if !strings.Contains(err.Error(), "--alone") {
+		t.Errorf("the refusal is %q, want it to name --alone", err)
+	}
+	if err := genesis(true); err != nil {
+		t.Fatalf("the same Genesis with --alone: %v", err)
+	}
+}
+
 func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	c := newOperatorCluster(t)
 	o := c.options(t)
