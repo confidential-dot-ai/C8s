@@ -20,7 +20,7 @@ import (
 
 func identityKey(provider, uid string) string {
 	sum := sha256.Sum256([]byte(provider + "\x00" + uid))
-	return "podcvm-" + hex.EncodeToString(sum[:20])
+	return recordPrefix + hex.EncodeToString(sum[:20])
 }
 
 // launch freezes the pod and its client document and builds the create request for its generic
@@ -102,7 +102,7 @@ func (c *Config) signedRequest(doc podlaunch.Document, ports []uint16) (createRe
 	name := doc.Node.Name
 	return createRequest{
 		Image: c.Image, Size: c.Size, Location: c.Location, Tee: c.tee(), Name: name, Count: 1,
-		Labels:  map[string]string{"podcvm-provider": c.ProviderID, "podcvm-uid": strings.TrimPrefix(name, "podcvm-")},
+		Labels:  map[string]string{providerLabel: c.ProviderID, allocationLabel: strings.TrimPrefix(name, recordPrefix)},
 		Network: networkSpec{PublicIP: c.PublicIP, Ingress: rules}, Readiness: readinessSpec{TCPPorts: []int{}},
 		Trust: trustSpec{LaunchKey: c.pub, InitData: initData{Format: podlaunch.SchemaVersion, Document: data, Signature: []byte(sig)}},
 	}, nil

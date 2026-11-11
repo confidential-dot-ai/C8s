@@ -350,6 +350,16 @@ outright, for example for lack of capacity, shows that nothing exists under the
 key, and the Pod is released without an instance. Cleanup therefore never waits
 on an unresolved create.
 
+Independently of its records, the provider lists the Cloud instances labelled
+with its provider ID once a minute and destroys each one whose record is
+absent, so an instance whose record was removed is still cleaned up. An
+instance whose record exists or cannot be read is left alone, and this sweep
+never creates an instance. The provider ID and the record namespace are
+therefore an ownership boundary. Two providers sharing a provider ID on one
+Cloud account, or a provider whose `namespace` changes while its instances
+exist, find no record for the other's instances and destroy them: give every
+provider its own ID, and drain before changing `namespace`.
+
 Existing records retain their original launch inputs when configuration changes.
 Records key on the provider ID and the Pod UID, not on the Cloud credential, so
 the credential can be rotated while records exist; the new credential must reach

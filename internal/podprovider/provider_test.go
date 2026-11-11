@@ -82,6 +82,8 @@ type fakeCloud struct {
 	deleteCalls int
 	create      func(string, createRequest) (*instance, error)
 	find        func(string) (*instance, error)
+	list        func() ([]instance, error)
+	deleted     []string
 	get         func(string) (*instance, error)
 	ping        func() error
 }
@@ -100,6 +102,15 @@ func (f *fakeCloud) Find(_ context.Context, key string) (*instance, error) {
 	}
 	return f.in, nil
 }
+func (f *fakeCloud) List(context.Context, string) ([]instance, error) {
+	if f.list != nil {
+		return f.list()
+	}
+	if f.in == nil {
+		return nil, nil
+	}
+	return []instance{*f.in}, nil
+}
 func (f *fakeCloud) Get(_ context.Context, id string) (*instance, error) {
 	if f.get != nil {
 		return f.get(id)
@@ -111,6 +122,7 @@ func (f *fakeCloud) Get(_ context.Context, id string) (*instance, error) {
 }
 func (f *fakeCloud) Delete(_ context.Context, id string) error {
 	f.deleteCalls++
+	f.deleted = append(f.deleted, id)
 	if f.in == nil || f.in.ID != id {
 		return errCloudNotFound
 	}
