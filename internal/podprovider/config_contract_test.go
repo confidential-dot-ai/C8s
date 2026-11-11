@@ -80,4 +80,9 @@ func TestConfigurationBoundsAndDefaults(t *testing.T) {
 	if base.ReservedMemoryMiB != 1024 || base.PublicIP != "shared" || strings.HasSuffix(base.CloudURL, "/") {
 		t.Fatal("documented defaults not applied")
 	}
+	unnamed := fixtureConfig(t)
+	unnamed.ProviderID = ""
+	if err := unnamed.validate(); err == nil {
+		t.Fatal("a provider without an ID was accepted")
+	}
 }

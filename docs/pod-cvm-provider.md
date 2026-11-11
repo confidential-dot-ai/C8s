@@ -60,6 +60,9 @@ and size placeholders with compatible Cloud values:
 }
 ```
 
+`providerID` is required. It names this provider's records, its Node and its
+Cloud instances, and the provider refuses to start without one.
+
 `cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
 the generated policy binding every admitted CDS image to the same exact measured
 CDS configuration. Both are required. A DNS host and a different CDS image or

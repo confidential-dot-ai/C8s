@@ -102,6 +102,11 @@ func (c *Config) validate() error {
 		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
 	}
 	c.CloudURL = strings.TrimRight(c.CloudURL, "/")
+	// The ID names this provider's records, Node and Cloud instances; an empty
+	// one would claim objects that carry no provider label.
+	if c.ProviderID == "" {
+		return errors.New("providerID is required")
+	}
 	if c.Size == "" || c.Location == "" || c.ClusterID == "" {
 		return errors.New("size, location and clusterID are required")
 	}
