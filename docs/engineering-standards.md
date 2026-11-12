@@ -126,8 +126,9 @@ description; code and user documentation describe the resulting behavior.
 - Keep a Go function or method signature on one line, however long. Put its
   parameters one per line, with a trailing comma, only when there are more than
   five. Run `gofmt`.
-- Spread struct literals, calls and test-table rows with several fields or
-  arguments across lines, one per line.
+- Spread struct and map literals, calls and test-table rows with several fields or
+  arguments across lines, one per line. Give each nested map literal its own lines
+  and indent level.
 - Comments state non-obvious contracts, invariants or constraints. Delete comments
   that restate descriptive names, narrate the code or repeat enforced policy.
   Preserve required API documentation, safety annotations and tool directives.
