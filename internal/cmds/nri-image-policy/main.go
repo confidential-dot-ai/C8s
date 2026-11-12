@@ -473,7 +473,7 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
 			AllowlistStall:   cfg.allowlistStall(),
 		}
-		if cfg.plugin.cfg.Pod != nil {
+		if cfg.plugin.cfg.podRole() {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
 			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
 			body.PodEnded = cfg.plugin.podEnded.Load()

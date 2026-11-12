@@ -388,7 +388,7 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			own := nodeMounts{
+			own := enforcerMounts{
 				socketDir:  tt.ownSocket,
 				cdsPins:    tt.ownPins,
 				cdsAddress: tt.ownAddress,
@@ -490,7 +490,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			verdict := verdictAllow
 			reason := ""
 			if cfg.sandboxObserved() {
-				mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
+				mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
 				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
 			}
 			if verdict != tt.want {
@@ -586,7 +586,7 @@ func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 			ctr.Annotations = map[string]string{annotationImageName: testFloorImage}
 			ctr.Args = tt.argv
 			ctr.Env = []string{"PATH=/bin"}
-			mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
+			mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
 			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
@@ -732,7 +732,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 					mounts = append(mounts, allowlist.ObservedMount{Source: m.Source, Destination: m.Destination})
 				}
 			}
-			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, nodeRootGrant{}, cdiExpansion{}).HostBinds
+			got := observeSandbox(pod, ctr, enforcerMounts{}, mounts, nodeRootGrant{}, cdiExpansion{}).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
 			}
@@ -836,10 +836,10 @@ func TestGrantsBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	verified := allowlist.ObservedMount{Source: source, Destination: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
 	// Evidence order differs from the container's mount order.
 	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, nodeRootGrant{}, cdiExpansion{}).HostBinds; len(got) != 0 {
+	if got := observeSandbox(pod, ctr, enforcerMounts{}, mounts, nodeRootGrant{}, cdiExpansion{}).HostBinds; len(got) != 0 {
 		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
 	}
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], nodeRootGrant{}, cdiExpansion{}).HostBinds; len(got) != 1 {
+	if got := observeSandbox(pod, ctr, enforcerMounts{}, mounts[1:], nodeRootGrant{}, cdiExpansion{}).HostBinds; len(got) != 1 {
 		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
 	}
 }
@@ -862,7 +862,7 @@ func TestPodRoleRefusesUnfilteredSeccomp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctr := sandboxedContainer()
 			ctr.Linux.SeccompPolicy = tt.seccomp
-			got := observeSandbox(sandboxedPod(), ctr, nodeMounts{}, nil, noBindGrant{}, cdiExpansion{}).violations(tt.podRole)
+			got := observeSandbox(sandboxedPod(), ctr, enforcerMounts{}, nil, noBindGrant{}, cdiExpansion{}).violations(tt.podRole)
 			if slices.Contains(got, "unfiltered seccomp") != tt.want {
 				t.Fatalf("violations(podRole=%v) = %v, want unfiltered seccomp: %v", tt.podRole, got, tt.want)
 			}

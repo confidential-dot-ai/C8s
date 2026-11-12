@@ -235,7 +235,7 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 			if tt.env != "" {
 				ctr.Env = []string{tt.env}
 			}
-			mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
+			mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
 			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)

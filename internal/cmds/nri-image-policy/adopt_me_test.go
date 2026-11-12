@@ -33,7 +33,7 @@ func TestAdoptMeEntryDescribesTheInjectedPod(t *testing.T) {
 		{Source: sandboxDir + "/shm", Destination: "/dev/shm", Options: []string{"rbind"}},
 		{Source: podDir + "/volumes/" + projectedPlugin + "/kube-api-access-x7k2p", Destination: serviceAccountDestination, Options: []string{"rbind", "ro"}},
 	}}
-	observer := newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{})
+	observer := newMountObserver(fixedStorage(allowlist.MountMemory), enforcerMounts{})
 	running := func() []allowlist.RunningContainer {
 		return []allowlist.RunningContainer{{Digest: entry.Containers[0].Digest.String(), Argv: app.Args, Mounts: observer.Observe(pod, app)}}
 	}

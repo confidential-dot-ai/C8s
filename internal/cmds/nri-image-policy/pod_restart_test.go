@@ -75,3 +75,37 @@ func TestPodPluginRestartStopsTheRunningContainers(t *testing.T) {
 		t.Fatalf("a container created before the restart started under the ended identity: %v", err)
 	}
 }
+
+// A Pod guest's first registration finds no runtime, so one that does is refused.
+func TestFreshPodRegistrationRefusesAnExistingRuntime(t *testing.T) {
+	pod := makePod("tenant", "assigned")
+	pod.Uid = "runtime-uid"
+	ctr := makeCtrWithImage(pod.Id, "app", "image@"+pushDigestA)
+	ctr.State = api.ContainerState_CONTAINER_RUNNING
+
+	guest := podCVMPlugin(t, pod)
+	if _, err := guest.Synchronize(t.Context(), []*api.PodSandbox{pod}, []*api.Container{ctr}); err == nil ||
+		!strings.Contains(err.Error(), "fresh Pod registration found an existing runtime") {
+		t.Fatalf("a fresh Pod registration accepted an existing runtime: %v", err)
+	}
+	if guest.podRegistered.Load() {
+		t.Fatal("a refused registration registered the Pod")
+	}
+
+	clean := podCVMPlugin(t, pod)
+	if _, err := clean.Synchronize(t.Context(), nil, nil); err != nil {
+		t.Fatalf("an empty first registration: %v", err)
+	}
+	if !clean.podRegistered.Load() {
+		t.Fatal("the assigned first registration did not register the Pod")
+	}
+
+	node := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	node.inventory = newAdmissionInventory(t.TempDir())
+	if _, err := node.Synchronize(t.Context(), []*api.PodSandbox{pod}, []*api.Container{ctr}); err != nil {
+		t.Fatalf("a node refused the containers it was given: %v", err)
+	}
+	if node.podRegistered.Load() {
+		t.Fatal("a node registered a Pod")
+	}
+}

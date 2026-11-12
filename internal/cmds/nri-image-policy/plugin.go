@@ -266,7 +266,7 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 // exited in its sandbox's record (inventory.stop). A stop of a created
 // container ends nothing: a start already past StartContainer still runs it.
 func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	delete(p.podStarts, ctr.GetId())
 	if wasStarted(ctr) {
 		p.running.remove(ctr.GetId())
@@ -284,7 +284,7 @@ func wasStarted(ctr *api.Container) bool {
 // RemoveContainer drops a removed container from the running set and from
 // caller resolution; the sandbox's record keeps it (inventory.remove).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	delete(p.podStarts, ctr.GetId())
 	p.running.remove(ctr.GetId())
 	p.execGrants.remove(ctr.GetId())
@@ -304,8 +304,8 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	if err := p.admitSandboxHostPorts(ctx, p.cfg, pod); err != nil {
 		return err
 	}
-	defer p.lockPodAdmission()()
-	if err := p.assignedPodSandbox(pod); err != nil {
+	defer p.cvm().lockAdmission()()
+	if err := p.cvm().admitSandbox(pod); err != nil {
 		return p.denyContainer(pod.GetId(), err)
 	}
 	if p.inventory != nil {
@@ -313,21 +313,7 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	}
 	if err := p.mesh.protect(pod); err != nil {
 		p.reportUnprotected(pod, err)
-		if p.cfg.podRole() {
-			return p.denyContainer(pod.GetId(), err)
-		}
-	}
-	return nil
-}
-
-// assignedPodSandbox refuses a sandbox on a Pod guest that is not the
-// assigned Pod's.
-func (p *plugin) assignedPodSandbox(pod *api.PodSandbox) error {
-	if !p.cfg.podRole() {
-		return nil
-	}
-	if pod.GetUid() == "" || pod.GetId() == "" || pod.GetName() != p.cfg.Pod.Name || pod.GetNamespace() != p.cfg.Pod.Namespace {
-		return errors.New("pod sandbox does not match its assignment")
+		return p.cvm().admitUnprotected(pod, err)
 	}
 	return nil
 }
@@ -335,7 +321,7 @@ func (p *plugin) assignedPodSandbox(pod *api.PodSandbox) error {
 // RemovePodSandbox evicts a removed pod sandbox (and its containers) from the
 // inventory and the mesh gate.
 func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) error {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	p.endPodIdentity(errors.New("pod sandbox removed; its boot history cannot be reused for a new identity"))
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
@@ -384,9 +370,7 @@ func (p *plugin) DigestsForSandbox(sandboxID string) ([]string, []workloadclaims
 // INVARIANT: every refusal a hook returns in enforcing mode passes through
 // here, so the sandbox it belongs to asserts no identity.
 func (p *plugin) denyContainer(sandboxID string, refusal error) error {
-	if p.cfg.podRole() {
-		p.endPodIdentity(refusal)
-	}
+	p.cvm().endIdentity(refusal)
 	if p.inventory != nil {
 		p.inventory.recordDenial(sandboxID, refusal)
 	}
@@ -449,24 +433,11 @@ func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest st
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
-// nodeMounts grants no node-service exception to a measured Pod workload;
-// its one guest bind is the client document.
-func (p *plugin) nodeMounts() nodeMounts {
-	if p.cfg.podRole() {
-		return nodeMounts{clientDocument: p.clientDocument}
-	}
-	return nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}
-}
-
 func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, p.nodeMounts()).Observe(pod, ctr)
+	return newMountObserver(p.mountStorage, p.cvm().enforcerMounts()).Observe(pod, ctr)
 }
 
 // imageDigest returns imageRef's digest, resolving a tag through containerd.
