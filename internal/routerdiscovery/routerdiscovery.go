@@ -109,7 +109,7 @@ type frontDoor struct {
 // verifyConnection), and returns a transport whose connections all present
 // the attested leaf, and the leaf.
 func (f *frontDoor) attest(ctx context.Context) (*http.Transport, *x509.Certificate, error) {
-	conn, err := dialFrontDoor(ctx, f.url.Host)
+	conn, err := DialFrontDoor(ctx, withDefaultPort(f.url.Host), "", frontDoorDialTimeout)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: dial %s: %v", ErrNoDiscovery, f.url.Host, err)
 	}
@@ -155,29 +155,35 @@ func (f *frontDoor) verifyConnection(ctx context.Context, conn *tls.Conn, transp
 	return cert, nil
 }
 
-// dialFrontDoor opens a TLS connection to the front door. PKI is
-// intentionally not verified — the trust anchor is the attestation in the
-// discovery document, which frontDoor.attest binds to the connection's leaf
-// after the fetch.
-func dialFrontDoor(ctx context.Context, host string) (*tls.Conn, error) {
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		host = net.JoinHostPort(host, "443")
-	}
+// DialFrontDoor returns a TLS 1.3 connection whose peer is not yet
+// authenticated: the caller must bind an attested leaf to its
+// PeerCertificates[0]. An empty serverName leaves SNI to crypto/tls.
+func DialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
 	d := tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: 5 * time.Second},
+		NetDialer: &net.Dialer{Timeout: timeout},
 		Config: &tls.Config{
 			// No ClientSessionCache: a resumed TLS 1.3 handshake carries no
 			// CertificateVerify, so every redial must be a full handshake.
 			MinVersion:         tls.VersionTLS13,
-			InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer; see dialFrontDoor doc
+			InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer; see DialFrontDoor doc
+			ServerName:         serverName,
 		},
 	}
-	conn, err := d.DialContext(ctx, "tcp", host)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 	return conn.(*tls.Conn), nil
 }
+
+func withDefaultPort(host string) string {
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		return net.JoinHostPort(host, "443")
+	}
+	return host
+}
+
+const frontDoorDialTimeout = 5 * time.Second
 
 // fetchDocument GETs the discovery document through the connection-bound
 // client. Fetch failures wrap [ErrNoDiscovery].
@@ -299,7 +305,7 @@ func (d *attestedDialer) dial(ctx context.Context, _, _ string) (net.Conn, error
 	if d.leaf == nil {
 		return nil, errors.New("routerdiscovery: the connection was lost before the discovery document was verified; re-run the command")
 	}
-	conn, err := dialFrontDoor(ctx, d.host)
+	conn, err := DialFrontDoor(ctx, withDefaultPort(d.host), "", frontDoorDialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("routerdiscovery: redial %s: %w", d.host, err)
 	}
@@ -330,9 +336,7 @@ func (e *unattestedLeafError) Error() string {
 
 // newAttestedTransport returns a transport that dials through d
 // (MaxConnsPerHost=1 serializes requests over one connection). Timeout knobs
-// mirror armtls.NewVerifyingHTTPClient. dialFrontDoor + attestedDialer are a
-// sibling of the verify CLI's dialFrontDoor + singleConnClient
-// (internal/cmds/verify/discovery.go) — port fixes both ways.
+// mirror armtls.NewVerifyingHTTPClient.
 func newAttestedTransport(d *attestedDialer) *http.Transport {
 	return &http.Transport{
 		DialTLSContext:        d.dial,
