@@ -123,9 +123,9 @@ description; code and user documentation describe the resulting behavior.
 - When behavior varies by kind, select the implementation at construction time.
   Repeated branching on the same kind is a signal to review that boundary. Add
   interfaces for actual variants, not hypothetical future implementations.
-- Write multi-parameter Go function definitions with one parameter per line and a
-  trailing comma, then run `gofmt`. Short zero- or one-parameter signatures can
-  remain on one line.
+- Keep a Go function or method signature on one line, however long. Put its
+  parameters one per line, with a trailing comma, only when there are more than
+  five. Run `gofmt`.
 - Spread struct literals, calls and test-table rows with several fields or
   arguments across lines, one per line.
 - Comments state non-obvious contracts, invariants or constraints. Delete comments
