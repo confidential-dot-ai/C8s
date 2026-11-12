@@ -136,35 +136,8 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
-	// The route's capBody bounds the body; a body over that bound is a size
-	// error, not malformed JSON.
-	var req types.AttestRequestBody
-	raw, readErr := io.ReadAll(r.Body)
-	var tooLarge *http.MaxBytesError
-	if errors.As(readErr, &tooLarge) {
-		attestation.WriteError(w, http.StatusRequestEntityTooLarge, types.ErrorCodeInvalidRequest, "attestation request exceeds the request size limit")
-		return
-	}
-	if readErr != nil || strictjson.Validate(raw) != nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
-		return
-	}
-	// fields tells an absent runtime_extensions from an explicit null below;
-	// the strict decode that follows rejects any field the body does not name.
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
-		return
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
-		return
-	}
-	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
-			"runtime_extensions requires evidence from a platform with runtime measurement registers")
+	req, fields, ok := decodeAttestRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -299,34 +272,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
-	// (see issuer.SignCSR): the client embeds evidence bound to
-	// SHA-384(pubkey) with no nonce, which is the only form downstream
-	// armtls-mode verifiers (secret-inventory --peer-verify=armtls) can re-verify.
-	// The challenge-bound evidence verified above proves freshness at
-	// issuance but is NOT embeddable — its REPORTDATA includes the consumed
-	// challenge, so re-verification against the bare key would always fail.
-	// A named leaf gets the shorter named-leaf TTL: it can outlive its match
-	// by at most its remaining lifetime, and that bound is a documented part
-	// of the stamp's contract (docs/armtls.md, "Matched workload").
-	//
-	// issuer.MaxNamedLeafTTL is a ceiling, not a default: NamedCertTTL can only
-	// shorten it. A configuration that raised it would silently extend how long
-	// a leaf keeps asserting a name its sandbox no longer matches, which is the
-	// one bound the stamp's contract rests on. A non-positive NamedCertTTL —
-	// rejected by the CLI, still reachable for a handler built in-process —
-	// lands on the ceiling rather than disabling the cap.
-	ttl := issuer.CapTTL(h.CertTTL, issuer.MaxLeafTTL)
-	if matched != nil {
-		namedTTL := issuer.MaxNamedLeafTTL
-		if h.NamedCertTTL > 0 && h.NamedCertTTL < namedTTL {
-			namedTTL = h.NamedCertTTL
-		}
-		ttl = issuer.CapTTL(ttl, namedTTL)
-	}
-	if router && h.RouterCertTTL > 0 {
-		ttl = min(ttl, h.RouterCertTTL)
-	}
+	ttl := h.leafTTL(matched, router)
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing, issuing := h.MeshCA.Current()
 	if !issuing {
@@ -340,6 +286,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if pod != nil && pod.ClientDocumentDigest != "" {
 		clientDocument, _ = hex.DecodeString(pod.ClientDocumentDigest)
 	}
+	// The evidence verified above is bound to the consumed challenge and so is
+	// not embeddable; the leaf carries the CSR's own key-bound armTLS extension
+	// instead (issuer.SignCSR copies it).
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:                  csr,
 		TTL:                  ttl,
@@ -364,16 +313,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		h.recordSandboxBinding(sandbox)
 	}
 
-	// The issuance record is the audit-relevant event: a mesh identity is only
-	// as accountable as what was written down when it was granted, and a leaf
-	// obtained through a forged verdict still reconstructs from this line alone.
-	// serial names the certificate, the SANs name the identity it carries (the
-	// CN does not — the mesh matches on SANs), launch_digest names what attested
-	// for it, and remote_addr says where the request came from — rejections
-	// above carry it too, so a run of denials and the issuance that follows
-	// correlate. A named leaf additionally records the workload, the policy
-	// version it matched under, and the sandbox that vouched, so a disputed
-	// name reconstructs from the log alone.
+	// The issuance record is the audit event for a granted mesh identity: the
+	// serial names the leaf, the SANs the identity it carries, launch_digest what
+	// attested for it, and a named leaf adds its workload, policy and sandbox.
 	issued := []any{
 		"cn", leafCN,
 		"sans", csr.DNSNames,
@@ -397,6 +339,60 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
+}
+
+// decodeAttestRequest strictly decodes the request body, or writes the
+// refusal and reports false.
+func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRequestBody, map[string]json.RawMessage, bool) {
+	// The route's capBody bounds the body; a body over that bound is a size
+	// error, not malformed JSON.
+	var req types.AttestRequestBody
+	raw, readErr := io.ReadAll(r.Body)
+	var tooLarge *http.MaxBytesError
+	if errors.As(readErr, &tooLarge) {
+		attestation.WriteError(w, http.StatusRequestEntityTooLarge, types.ErrorCodeInvalidRequest, "attestation request exceeds the request size limit")
+		return req, nil, false
+	}
+	if readErr != nil || strictjson.Validate(raw) != nil {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		return req, nil, false
+	}
+	// fields tells an absent runtime_extensions from an explicit null;
+	// the strict decode that follows rejects any field the body does not name.
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		return req, nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
+		return req, nil, false
+	}
+	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
+			"runtime_extensions requires evidence from a platform with runtime measurement registers")
+		return req, nil, false
+	}
+	return req, fields, true
+}
+
+// leafTTL is an issued leaf's lifetime. issuer.MaxNamedLeafTTL is a ceiling
+// NamedCertTTL can only lower; a non-positive NamedCertTTL lands on it.
+func (h AttestHandler) leafTTL(matched *armtls.MatchedWorkload, router bool) time.Duration {
+	ttl := issuer.CapTTL(h.CertTTL, issuer.MaxLeafTTL)
+	if matched != nil {
+		namedTTL := issuer.MaxNamedLeafTTL
+		if h.NamedCertTTL > 0 && h.NamedCertTTL < namedTTL {
+			namedTTL = h.NamedCertTTL
+		}
+		ttl = issuer.CapTTL(ttl, namedTTL)
+	}
+	if router && h.RouterCertTTL > 0 {
+		ttl = min(ttl, h.RouterCertTTL)
+	}
+	return ttl
 }
 
 // matchPinnedNodeImage holds the verified evidence to one node image this CDS
