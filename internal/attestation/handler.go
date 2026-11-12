@@ -5,10 +5,10 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 
+	"github.com/confidential-dot-ai/c8s/internal/csr"
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -31,18 +31,7 @@ func HandleAuthenticate(challenges Challenges) http.HandlerFunc {
 
 // ParseAndVerifyCSR decodes a PEM CSR and verifies its self-signature.
 func ParseAndVerifyCSR(csrPEM string) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR signature invalid: %w", err)
-	}
-	return csr, nil
+	return csr.ParseAndVerify(csrPEM)
 }
 
 // ECDSAPublicKeyFromCSR returns the CSR's ECDSA public key or an error if
