@@ -163,24 +163,15 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	return nil
 }
 
-// healthHandler serves the kubelet's HTTP probes. The bodies carry no
-// evidence, so exposing them on the pod IP adds no reachable surface beyond
-// "is this DaemonSet serving".
-//   - /livez: attest-proxy's liveness; the health server answers and the
-//     socket file is still a socket. It never dials the socket, whose
-//     connection cap a hung API can fill. A wedged serve loop passes; readiness
-//     catches it, and a Serve that returns exits the process.
-//   - /healthz: readiness; a GET /health round-trip over the proxy's socket,
-//     as the healthcheck subcommand runs it.
-//   - /upstream/livez: the attestation-api's liveness, which the kubelet cannot
-//     probe on pod loopback; a GET /health on upstream directly. Any 2xx answer
-//     with a JSON health body passes whatever its status: that is the API's
-//     state to report, not one a restart fixes. The API answers /health with
-//     200 alone.
-func healthHandler(
-	socket string,
-	upstream string,
-) http.Handler {
+// healthHandler serves the kubelet's probes; the bodies carry no evidence.
+//   - /livez: attest-proxy liveness; fails only when no socket is at the path.
+//     It never dials the socket, whose connection cap a hung API can fill, so
+//     a wedged serve loop passes and only readiness catches it.
+//   - /healthz: readiness, the healthcheck round-trip over the socket.
+//   - /upstream/livez: attestation-api liveness, which the kubelet cannot
+//     reach on pod loopback. Any 2xx JSON health body passes: its status is
+//     not something a restart fixes.
+func healthHandler(socket, upstream string) http.Handler {
 	socketClient := remote.NewClient("unix://" + socket)
 	upstreamClient := remote.NewClient(upstream)
 	mux := http.NewServeMux()
@@ -212,10 +203,7 @@ func healthHandler(
 
 // checkHealth runs fetchHealth and, like remote.WaitHealthy, counts only
 // status "ok" as healthy.
-func checkHealth(
-	ctx context.Context,
-	client remote.Client,
-) error {
+func checkHealth(ctx context.Context, client remote.Client) error {
 	health, err := fetchHealth(ctx, client)
 	if err != nil {
 		return err
@@ -227,10 +215,7 @@ func checkHealth(
 }
 
 // fetchHealth runs GET /health within healthcheckTimeout.
-func fetchHealth(
-	ctx context.Context,
-	client remote.Client,
-) (remote.HealthResponse, error) {
+func fetchHealth(ctx context.Context, client remote.Client) (remote.HealthResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
 	defer cancel()
 	return client.Health(ctx)
