@@ -11,7 +11,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -121,40 +121,35 @@ func TestCDSPinRefusesWhatNoClientCouldHold(t *testing.T) {
 	}
 }
 
-// helm resolves --set-file itself, so the pin path must not depend on the
-// directory the install ran from, and the address must be the literal endpoint
-// a client's packet rules admit.
+// The release carries the pin document itself, and the address must be the
+// literal endpoint a client's packet rules admit.
 func TestCDSInstallArgs(t *testing.T) {
 	pin := cdsPinFile(t, []string{"app"}, "192.0.2.0/24")
-	args, err := cdsInstallArgs("10.9.9.9:8443", pin)
+	document, err := os.ReadFile(pin)
 	if err != nil {
-		t.Fatalf("cdsInstallArgs: %v", err)
+		t.Fatal(err)
 	}
-	if !slices.Contains(args, "cds.address=10.9.9.9:8443") || !slices.Contains(args, "cds.measurementsConfig="+pin) {
-		t.Fatalf("args = %v, want the address and the pin file", args)
-	}
-	t.Chdir(filepath.Dir(pin))
-	args, err = cdsInstallArgs("10.9.9.9:8443", filepath.Base(pin))
+	values, err := cdsInstallValues("10.9.9.9:8443", pin)
 	if err != nil {
-		t.Fatalf("cdsInstallArgs with a relative pin: %v", err)
+		t.Fatalf("cdsInstallValues: %v", err)
 	}
-	i := slices.IndexFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "cds.measurementsConfig=") })
-	if i < 0 {
-		t.Fatalf("args = %v, want the pin file", args)
-	}
-	if _, path, _ := strings.Cut(args[i], "="); !filepath.IsAbs(path) {
-		t.Errorf("pin path %q is not absolute", path)
+	want := map[string]any{"cds": map[string]any{
+		"address":            "10.9.9.9:8443",
+		"measurementsConfig": string(document),
+	}}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("values = %#v, want the address and the pin document, %#v", values, want)
 	}
 
 	// A node-image render names no CDS: the image runs its own.
-	if args, err := cdsInstallArgs("", ""); err != nil || args != nil {
-		t.Fatalf("cdsInstallArgs() = %v, %v, want no arguments", args, err)
+	if values, err := cdsInstallValues("", ""); err != nil || values != nil {
+		t.Fatalf("cdsInstallValues() = %v, %v, want no values", values, err)
 	}
 
 	// A name is this cluster's CDS as much as an address is: its clients
 	// resolve it, and their packet rules admit the port.
-	if _, err := cdsInstallArgs("cds.example.com:8443", pin); err != nil {
-		t.Fatalf("cdsInstallArgs with a named CDS: %v", err)
+	if _, err := cdsInstallValues("cds.example.com:8443", pin); err != nil {
+		t.Fatalf("cdsInstallValues with a named CDS: %v", err)
 	}
 
 	for _, tc := range []struct{ name, address, pin string }{
@@ -165,7 +160,7 @@ func TestCDSInstallArgs(t *testing.T) {
 		{name: "a pin that is not there", address: "10.9.9.9:8443", pin: filepath.Join(t.TempDir(), "absent.json")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := cdsInstallArgs(tc.address, tc.pin); err == nil {
+			if _, err := cdsInstallValues(tc.address, tc.pin); err == nil {
 				t.Fatal("accepted a CDS no client could reach or hold")
 			}
 		})

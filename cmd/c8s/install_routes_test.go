@@ -494,7 +494,7 @@ func webEntry(t *testing.T, digest string) (pkgallowlist.Workload, []pkgallowlis
 // images are pinned by digest.
 func adoptedEntryFor(t *testing.T, tmpl corev1.PodTemplateSpec) adoptedEntry {
 	t.Helper()
-	_, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	_, entries, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

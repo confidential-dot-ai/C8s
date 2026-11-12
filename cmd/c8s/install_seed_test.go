@@ -22,16 +22,11 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// chartCDSArgs point a rendered release at a placeholder CDS outside the
+// chartCDSValues point a rendered release at a placeholder CDS outside the
 // cluster: the chart refuses a release that names none.
-func chartCDSArgs(t *testing.T) []string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+func chartCDSValues() map[string]any {
 	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
-	if err := os.WriteFile(path, []byte(pin), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return []string{"--set-string", "cds.address=10.9.9.9:8443", "--set-file", "cds.measurementsConfig=" + path}
+	return map[string]any{"cds": map[string]any{"address": "10.9.9.9:8443", "measurementsConfig": pin}}
 }
 
 // TestSeedWorkloadsMatchesTheChart: the seed install checks adoptions
@@ -68,7 +63,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 			{Name: "tools", Image: "busybox@sha256:" + strings.Repeat("b", 64)},
 		},
 	}}
-	adoptArgs, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{
+	adoptValues, entries, err := buildWorkloadImageValues([]adoptedWorkload{{
 		workloadAdoption: workloadAdoption{cwID: "web", ref: workloadRef{kind: "deployment", name: "web", namespace: "ws"}},
 		template:         tmpl,
 	}}, "", io.Discard, nil)
@@ -76,17 +71,19 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	set := []string{
-		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
-		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+	computed := map[string]any{
+		"nriImagePolicy": map[string]any{"mesh": map[string]any{
+			"resolver":      "10.43.0.10",
+			"clusterRanges": []any{"10.42.0.0/16"},
+		}},
 	}
 	for i, c := range components {
-		set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuesPath, i+1))
+		helmchart.MergeValues(computed, valuesAtPath(c.valuesPath+".digest", fmt.Sprintf("sha256:%064x", i+1)))
 	}
-	valuesFiles := orderedValuesFiles(chart, "aks-snp", nil)
-	set = append(set, chartCDSArgs(t)...)
-	set = append(set, adoptArgs...)
-	values, err := effectiveValues(ctx, chart, valuesFiles, set)
+	helmchart.MergeValues(computed, chartCDSValues())
+	helmchart.MergeValues(computed, adoptValues)
+	valuesFiles := append(orderedValuesFiles(chart, "aks-snp", nil), computedValuesFile(t, computed))
+	values, err := effectiveValues(ctx, chart, valuesFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +91,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered := renderedSeed(t, chart, append([]string{"-f", valuesFiles[0]}, set...))
+	rendered := renderedSeed(t, chart, "-f", valuesFiles[0], "-f", valuesFiles[1])
 	checkSeedModel(t, model, rendered)
 	if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
 		t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)
@@ -129,7 +126,7 @@ func checkSeedModel(t *testing.T, model map[string]pkgallowlist.Workload, render
 }
 
 // renderedSeed is the allowlist seed the chart renders with set.
-func renderedSeed(t *testing.T, chart string, set []string) *pkgallowlist.Allowlist {
+func renderedSeed(t *testing.T, chart string, set ...string) *pkgallowlist.Allowlist {
 	t.Helper()
 	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system"}, set...)
 	out := helmRenderOnly(t, args...)

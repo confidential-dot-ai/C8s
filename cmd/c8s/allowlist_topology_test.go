@@ -66,7 +66,7 @@ func renderedTopologyAllowlist(t *testing.T, platform string) pkgallowlist.Allow
 		"-f", filepath.Join(chart, "values-"+platform+".yaml"),
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
-	args = append(args, chartCDSArgs(t)...)
+	args = append(args, "-f", computedValuesFile(t, chartCDSValues()))
 	for i, path := range []string{"image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
 	}

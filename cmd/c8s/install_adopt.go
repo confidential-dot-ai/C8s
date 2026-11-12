@@ -356,8 +356,8 @@ type adoptedEntry struct {
 	pod      []pkgallowlist.RunningContainer
 }
 
-func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, workloads []adoptedWorkload, upstream string) ([]string, map[string]adoptedEntry, error) {
-	return buildWorkloadImageArgs(helmArgs, workloads, upstream, os.Stderr, func(ref string) (string, error) {
+func resolvedWorkloadImageValues(ctx context.Context, workloads []adoptedWorkload, upstream string) (map[string]any, map[string]adoptedEntry, error) {
+	return buildWorkloadImageValues(workloads, upstream, os.Stderr, func(ref string) (string, error) {
 		digest, err := crane.Digest(ctx, ref)
 		if err != nil {
 			return "", err
@@ -366,7 +366,7 @@ func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, wor
 	})
 }
 
-// buildWorkloadImageArgs renders one bootstrapAllowlist.workloads entry per
+// buildWorkloadImageValues renders one bootstrapAllowlist.workloads entry per
 // adopted workload, named after its cw id and declaring every container of its
 // pod template, in its own role, under any command, args and env. Mounts are
 // exact: each container may mount only what the injected pod mounts
@@ -380,12 +380,18 @@ func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, wor
 // A workload whose mounts cannot be modelled exactly is refused when it is the
 // upstream cw id; any other gets an entry admitting any mounts, a warning on
 // warn, and no entry in the returned map.
-func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upstream string, warn io.Writer, resolve func(ref string) (string, error)) ([]string, map[string]adoptedEntry, error) {
+func buildWorkloadImageValues(
+	workloads []adoptedWorkload,
+	upstream string,
+	warn io.Writer,
+	resolve func(ref string) (string, error),
+) (map[string]any, map[string]adoptedEntry, error) {
 	entries := map[string]adoptedEntry{}
+	adopted := map[string]any{}
 	for _, w := range workloads {
-		prefix := "nriImagePolicy.bootstrapAllowlist.workloads." + w.cwID + "."
 		label := w.ref.namespace + "/" + w.ref.kind + "/" + w.ref.name
-		helmArgs = append(helmArgs, "--set-string", prefix+"label="+label)
+		entry := map[string]any{"label": label}
+		containerLists := map[string][]any{}
 		e := adoptedEntry{workload: pkgallowlist.Workload{Label: label}}
 		containers := slices.Concat(w.template.Spec.Containers, w.template.Spec.InitContainers)
 		mounts := make([][]string, len(containers))
@@ -428,14 +434,24 @@ func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upst
 			if init {
 				field, list = "initContainers", &e.workload.InitContainers
 			}
-			helmArgs = append(helmArgs, containerArgs(fmt.Sprintf("%s%s[%d].", prefix, field, len(*list)), declared)...)
+			containerLists[field] = append(containerLists[field], containerValues(declared))
 			*list = append(*list, declared)
 		}
+		for field, list := range containerLists {
+			entry[field] = list
+		}
+		adopted[w.cwID] = entry
 		if exact {
 			entries[w.cwID] = e
 		}
 	}
-	return helmArgs, entries, nil
+	// A release adopting nothing writes no workloads key.
+	if len(adopted) == 0 {
+		return nil, entries, nil
+	}
+	return map[string]any{
+		"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": adopted}},
+	}, entries, nil
 }
 
 // adoptedContainer declares digest under any command, args and env. With
@@ -473,22 +489,26 @@ func observedContainer(digest types.Digest, dests []string) pkgallowlist.Running
 	return pkgallowlist.RunningContainer{Digest: digest.String(), Argv: []string{}, Mounts: mounts}
 }
 
-func containerArgs(key string, c pkgallowlist.Container) []string {
-	args := []string{
-		"--set-string", key + "digest=" + c.Digest.String(),
-		"--set-string", key + "image=" + c.Image,
-		"--set-string", key + "command.policy=any",
-		"--set-string", key + "args.policy=any",
-		"--set-string", key + "env.policy=any",
+func containerValues(c pkgallowlist.Container) map[string]any {
+	values := map[string]any{
+		"digest":  c.Digest.String(),
+		"image":   c.Image,
+		"command": map[string]any{"policy": "any"},
+		"args":    map[string]any{"policy": "any"},
+		"env":     map[string]any{"policy": "any"},
 	}
 	if c.Mounts.Policy != "" {
-		args = append(args, "--set-string", key+"mounts.policy="+c.Mounts.Policy)
+		mounts := map[string]any{"policy": string(c.Mounts.Policy)}
+		if len(c.Mounts.Rules) > 0 {
+			rules := make([]any, 0, len(c.Mounts.Rules))
+			for _, r := range c.Mounts.Rules {
+				rules = append(rules, map[string]any{"destination": r.Destination, "kind": string(r.Kind)})
+			}
+			mounts["rules"] = rules
+		}
+		values["mounts"] = mounts
 	}
-	for i, r := range c.Mounts.Rules {
-		rule := fmt.Sprintf("%smounts.rules[%d].", key, i)
-		args = append(args, "--set-string", rule+"destination="+r.Destination, "--set-string", rule+"kind="+string(r.Kind))
-	}
-	return args
+	return values
 }
 
 // describers returns, sorted, the entries that describe pod once their
