@@ -57,7 +57,7 @@ env:
 jobs:
   # Per-image jobs run only when the component's own cmd/<X> or
   # internal/cmds/<X> changed (this applies to both PR events and
-  # pushes to main). Shared code (pkg/**, root internal/** minus
+  # pushes to main). Shared code (api/**, pkg/**, root internal/** minus
   # cmds/helmchart, go.mod/sum, Makefile, this workflow) fans out to
   # every image. The final release job rebuilds the complete component set from
   # this exact revision before applying its SemVer aliases.
@@ -118,7 +118,7 @@ jobs:
           predicate-quantifier: every
           filters: |
             shared-core:
-              - '{pkg/**,internal/**}'
+              - '{api/**,pkg/**,internal/**}'
               - '!internal/cmds/**'
               - '!internal/helmchart/**'
               - '!**/*_test.go'
