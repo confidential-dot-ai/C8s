@@ -67,6 +67,20 @@ func TestDiscoveryPublicTLSModeParsing(t *testing.T) {
 	}
 }
 
+// acme is classification only here, where routerdiscovery refuses it.
+func TestDiscoveryPublicTLSModeAcceptsACME(t *testing.T) {
+	certPEM, _ := selfSignedCertPEM(t)
+	evidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
+
+	ev, err := evidenceFromDiscovery(discoveryDocWithPublicTLS(t, "acme", certPEM, []byte("issuance-challenge"), evidence), "test", leafTrust{}, nil)
+	if err != nil {
+		t.Fatalf("evidenceFromDiscovery: %v", err)
+	}
+	if ev.frontDoor != frontDoorUnobserved {
+		t.Errorf("frontDoor = %v, want unobserved (no handshake was made)", ev.frontDoor)
+	}
+}
+
 // snpVerifiedOutcome builds a passing SNP verdict for ev the way
 // verifyEvidence does: newOutcome plus the full ordered policy sequence.
 func snpVerifiedOutcome(t *testing.T, cfg config, ev *evidence) Outcome {

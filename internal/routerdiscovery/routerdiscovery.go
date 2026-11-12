@@ -221,10 +221,10 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	// else fails closed here rather than returning a client whose handshakes
 	// can never match the attested cert.
 	switch d.PublicTLS.Mode {
-	case "", "cds":
-	case "webpki":
+	case "", types.FrontDoorModeCDS:
+	case types.FrontDoorModeWebPKI:
 		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a cds-mode front door or port-forward CDS directly")
-	case "acme":
+	case types.FrontDoorModeACME:
 		return nil, fmt.Errorf("front door public_tls.mode=acme is not supported: it serves an in-guest ACME certificate the issuance evidence does not bind; use a cds-mode front door or port-forward CDS directly")
 	default:
 		return nil, fmt.Errorf("unknown public_tls.mode %q in discovery document", d.PublicTLS.Mode)

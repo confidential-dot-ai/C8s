@@ -560,7 +560,7 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.DiscoveryOutPath != "" {
 		switch discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) {
-		case "cds", "webpki", "acme":
+		case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 		default:
 			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
@@ -847,7 +847,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	}
 	names := strings.Fields(string(data))
 	if len(names) == 0 {
-		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != "cds" {
+		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeCDS {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: public TLS mode requires a hostname")
 		}
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
@@ -858,7 +858,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
 		}
 	}
-	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == "cds" {
+	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeCDS {
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
 	} else {
 		cfg.DiscoveryPublicTLSHostname = names[0]
@@ -866,9 +866,9 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	return nil
 }
 
-func discoveryPublicTLSMode(mode string) string {
+func discoveryPublicTLSMode(mode string) types.FrontDoorMode {
 	if mode == "" {
-		return "cds"
+		return types.FrontDoorModeCDS
 	}
-	return mode
+	return types.FrontDoorMode(mode)
 }
