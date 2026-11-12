@@ -347,9 +347,7 @@ func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRe
 		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return req, nil, false
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := strictjson.Unmarshal(raw, &req); err != nil {
 		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
 		return req, nil, false
 	}

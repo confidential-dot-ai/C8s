@@ -198,10 +198,8 @@ func DecodePodClaims(raw []byte) (PodClaims, error) {
 	if len(raw) > MaxPodClaimsBytes || strictjson.Validate(raw) != nil {
 		return p, fmt.Errorf("invalid Pod claims JSON")
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var wire podClaimsWire
-	if err := dec.Decode(&wire); err != nil {
+	if err := strictjson.Unmarshal(raw, &wire); err != nil {
 		return PodClaims{}, fmt.Errorf("invalid Pod claims fields")
 	}
 	p = wire.claims()

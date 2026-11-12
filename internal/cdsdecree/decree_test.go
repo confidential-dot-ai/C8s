@@ -136,6 +136,27 @@ func everyKind() []Kind {
 	}
 }
 
+// What the cluster checks is everything the board object says, so the object
+// carries no key the decree does not define and nothing encoding/json would
+// reinterpret.
+func TestParseRefusesWhatADecreeDoesNotDefine(t *testing.T) {
+	if _, err := Parse([]byte(`{"decree":{},"signature":"AA=="}`)); err != nil {
+		t.Fatalf("Parse(a minimal object) = %v, want nil", err)
+	}
+	for name, object := range map[string]string{
+		"a key the decree does not define":      `{"decree":{},"signature":"AA==","surprise":1}`,
+		"a key the decree body does not define": `{"decree":{"surprise":1},"signature":"AA=="}`,
+		"a duplicate key":                       `{"decree":{},"signature":"AA==","signature":"AA=="}`,
+		"a second document":                     `{"decree":{},"signature":"AA=="} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if signed, err := Parse([]byte(object)); err == nil {
+				t.Errorf("Parse(%s) = %+v, want an error", object, signed)
+			}
+		})
+	}
+}
+
 // A decree reaches the cluster as an object on a board the host controls, so
 // what the cluster checks is what it decodes from those bytes.
 func TestASignedDecreeVerifiesAfterItsBoardObject(t *testing.T) {
