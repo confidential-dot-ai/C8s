@@ -18,8 +18,8 @@ import (
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
 func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
-	defer p.lockPodAdmission()()
-	if err := p.refuseDisconnectedPod(); err != nil {
+	defer p.cvm().lockAdmission()()
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
 	}
 	if req.GetContainer() == nil || req.GetPod() == nil {
@@ -29,7 +29,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	imageRef, err := p.containerImage(req.GetPod(), ctr)
+	imageRef, err := p.cvm().imageOf(req.GetPod(), ctr)
 	if err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
@@ -109,17 +109,9 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	// binds this enforcer adds (credentialMounts), which no declaration names.
 	declared := launch
 	declared.Mounts = p.observedMounts(pod, req.GetContainer())
-	role := p.roleOf(declared)
-	if p.cfg.podRole() {
-		// The Pod endpoint receives no node mounts. Its final adjusted mounts
-		// must retain the exact private RAM volume, even under an any policy.
-		role = p.roleOf(launch)
-		if _, err := p.podCredentialSource(pod, ctr, role, mounts); err != nil {
-			return err
-		}
-		if err := p.podSecretReader(pod, ctr, role, mounts); err != nil {
-			return err
-		}
+	role, err := p.cvm().adjustmentRole(pod, ctr, launch, declared, mounts)
+	if err != nil {
+		return err
 	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,

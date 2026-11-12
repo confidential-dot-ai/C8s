@@ -39,6 +39,20 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 }
 
+// podCVMPlugin is a Pod-guest enforcer assigned to pod, whose broker's terminal error is the ended identity.
+func podCVMPlugin(t *testing.T, pod *api.PodSandbox) *plugin {
+	t.Helper()
+	p := newTestPlugin(&config{
+		Pod:    &podConfig{UID: "signed-uid", Namespace: pod.GetNamespace(), Name: pod.GetName()},
+		Policy: policyConfig{Mode: ModeFailClosed},
+	})
+	p.inventory = newAdmissionInventory(t.TempDir())
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, pod: pod}
+	return p
+}
+
 func TestCredentialMountRefusalBlocksIdentityUntilSameNameAdmission(t *testing.T) {
 	for _, ready := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ready=%v", ready), func(t *testing.T) {

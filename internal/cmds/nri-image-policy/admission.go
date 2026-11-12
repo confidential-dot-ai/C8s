@@ -362,7 +362,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
 			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
 	}
-	own := p.nodeMounts()
+	own := p.cvm().enforcerMounts()
 	obs := observeSandbox(pod, ctr, own, mounts, noBindGrant{}, cdi)
 	violations := obs.violations(cfg.podRole())
 	if len(violations) == 0 {

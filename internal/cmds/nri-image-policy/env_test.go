@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -12,8 +13,10 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Exercise containerd's create/start lifecycle for older admission tests.
@@ -648,5 +651,65 @@ func TestMatchRolloutNamesEveryApplyLog(t *testing.T) {
 		if !strings.Contains(strings.Join(strings.Fields(rollout), " "), message) {
 			t.Errorf("match rollout steps do not name %q", message)
 		}
+	}
+}
+
+// The Pod endpoint's role comes from the mount set it finally launches with.
+func TestPodAdjustmentRoleComesFromTheFinalMountSet(t *testing.T) {
+	pod := meshPod("default", "pod", testNetNS)
+	pod.Uid = "runtime-uid"
+	source := kubeletRoot + "/pods/" + pod.Uid + "/volumes/" + emptyDirPlugin + "/" + podmesh.CertVolumeName
+	declared := &api.Container{
+		Id:           "mesh-id",
+		PodSandboxId: pod.Id,
+		Name:         workloadclaims.MeshContainerName,
+		Args:         []string{"/c8s", "mesh"},
+		Mounts:       []*api.Mount{readOnlyBind(source, podmesh.CertDir)},
+	}
+	// The declaration pins the mount set its role is bound to.
+	base := roleBase(t, pushDigestB, meshRole, []string{"/c8s", "mesh"})
+	entry := base.Workloads["role-entry"].Containers[0]
+	entry.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{
+		Destination: podmesh.CertDir,
+		Kind:        allowlist.MountEmptyDir,
+		ReadOnly:    true,
+	}}}
+	base.Workloads["role-entry"] = allowlist.Workload{Containers: []allowlist.Container{entry}}
+
+	gate := func(p *plugin, adjust *api.ContainerAdjustment) error {
+		p.mountStorage = fixedStorage(allowlist.MountMemory)
+		p.mesh = newMeshGate(*meshRoles(), discardLogger())
+		req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: declared, Adjust: adjust}
+		ctr, env := adjustedLaunchContainer(req)
+		mounts := p.adjustedMounts(req, ctr)
+		return p.gateMesh(t.Context(), req, ctr, "registry/repo@"+pushDigestB, env, mounts)
+	}
+	moved := &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(source, "/tenant/certs")}}
+
+	newGuest := func() *plugin {
+		p, _ := newCachedPlugin(&config{
+			Pod:       &podConfig{UID: "signed-uid", Namespace: pod.Namespace, Name: pod.Name},
+			Allowlist: allowlistConfig{Base: base},
+			Policy:    policyConfig{Mode: ModeFailClosed},
+		}, anyAllowlist(map[string]string{pushDigestB: "mesh"}))
+		p.logger = slog.Default()
+		return p
+	}
+	err := gate(newGuest(), moved)
+	if err == nil || !strings.Contains(err.Error(), "private credential volume") {
+		t.Fatalf("a Pod guest judged the role on the declared mounts: %v", err)
+	}
+
+	node, _ := newCachedPlugin(&config{
+		Allowlist: allowlistConfig{Base: base},
+		Policy:    policyConfig{Mode: ModeFailClosed},
+	}, anyAllowlist(map[string]string{pushDigestB: "mesh"}))
+	node.logger = slog.Default()
+	if err := gate(node, moved); err != nil && strings.Contains(err.Error(), "credential volume") {
+		t.Fatalf("a node applied the Pod credential boundary: %v", err)
+	}
+	// Unedited, the Pod guest's final mount set still carries its role.
+	if err := gate(newGuest(), nil); err != nil && strings.Contains(err.Error(), "private credential volume") {
+		t.Fatalf("the unedited mount set lost the credential volume: %v", err)
 	}
 }

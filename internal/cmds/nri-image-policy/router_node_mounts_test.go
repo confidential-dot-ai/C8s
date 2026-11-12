@@ -234,7 +234,7 @@ func routerNodeMountContainer(pod *api.PodSandbox, name string, uid uint32, decl
 }
 
 func routerNodeMountObserver(p *plugin) mountObserver {
-	return newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{
+	return newMountObserver(fixedStorage(allowlist.MountMemory), enforcerMounts{
 		socketDir:  p.cfg.WorkloadClaims.SocketDir,
 		cdsPins:    p.cdsPins,
 		cdsAddress: p.cdsAddress,
