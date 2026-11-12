@@ -18,7 +18,7 @@ func cdsNamed(address string, pin string) bool {
 	return address != "" && pin != ""
 }
 
-func cdsInstallArgs(address string, pin string) ([]string, error) {
+func cdsInstallValues(address string, pin string) (map[string]any, error) {
 	if !cdsNamed(address, pin) {
 		if address == "" && pin == "" {
 			// A node-image render names no CDS: the image runs its own.
@@ -29,18 +29,15 @@ func cdsInstallArgs(address string, pin string) ([]string, error) {
 	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
 		return nil, fmt.Errorf("--%s %w", flagCDSAddress, err)
 	}
-	if _, err := os.Stat(pin); err != nil {
-		return nil, fmt.Errorf("--%s: %w", flagCDSPin, err)
-	}
-	// helm reads the path itself, so hand it one that does not depend on the
-	// working directory the install happened to run from.
-	path, err := filepath.Abs(pin)
+	document, err := os.ReadFile(pin)
 	if err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagCDSPin, err)
 	}
-	return []string{
-		"--set-string", "cds.address=" + address,
-		"--set-file", "cds.measurementsConfig=" + path,
+	return map[string]any{
+		"cds": map[string]any{
+			"address":            address,
+			"measurementsConfig": string(document),
+		},
 	}, nil
 }
 
