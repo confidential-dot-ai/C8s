@@ -87,6 +87,65 @@ func TestResolveCDSAddress(t *testing.T) {
 	}
 }
 
+// A client dials the node's endpoint where the node mounts one, and the URL it
+// was given, unchanged, where it does not.
+func TestResolveCDSURLPrefersTheNodesEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mounted  string
+		supplied string
+		want     string
+		wantNode bool
+		wants    string
+	}{
+		{
+			name:     "the node's endpoint",
+			mounted:  "10.1.2.3:30808\n",
+			want:     "https://10.1.2.3:30808",
+			wantNode: true,
+		},
+		{
+			name:     "no mount, the argument as it was given",
+			supplied: "https://cds.c8s-system.svc:8443/",
+			want:     "https://cds.c8s-system.svc:8443/",
+		},
+		{
+			name: "no mount, no argument",
+		},
+		{
+			name:     "an argument beside the node's endpoint",
+			mounted:  "10.1.2.3:30808\n",
+			supplied: "https://attacker.svc:8443",
+			wants:    "remove --cds-url",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cds-address")
+			if tc.mounted != "" {
+				if err := os.WriteFile(path, []byte(tc.mounted), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			url, fromNode, err := ResolveCDSURL(path, tc.supplied)
+			if tc.wants != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wants) {
+					t.Fatalf("error = %v, want it to name %q", err, tc.wants)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveCDSURL: %v", err)
+			}
+			if url != tc.want {
+				t.Fatalf("url = %q, want %q", url, tc.want)
+			}
+			if fromNode != tc.wantNode {
+				t.Fatalf("fromNode = %v, want %v", fromNode, tc.wantNode)
+			}
+		})
+	}
+}
+
 // Where this cluster's CDS serves is one host and one port: the host a name
 // a client resolves or an address it dials as it stands, so a node's packet
 // rules can admit the port and nothing wider.
