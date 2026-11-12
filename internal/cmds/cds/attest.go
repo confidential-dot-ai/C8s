@@ -23,10 +23,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -167,17 +169,17 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 
 	challengeBytes, err := base64.StdEncoding.DecodeString(req.Challenge)
 	if err != nil {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge, "invalid or expired challenge")
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge, "invalid or expired challenge")
 		return
 	}
 	if !h.Challenges.Consume(challengeBytes) {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge, "invalid or expired challenge")
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge, "invalid or expired challenge")
 		return
 	}
 
-	csr, err := attestation.ParseAndVerifyCSR(req.CSR)
+	csr, err := certutil.ParseCSRPEM([]byte(req.CSR))
 	if err != nil {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
 	}
 	var profile issuanceProfile = nodeIssuance{
@@ -189,7 +191,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		claims, claimErr := workloadclaims.DecodePodClaims(req.PodClaims)
 		if cause := h.podProfileRefusal(req, fields, csr, claimErr); cause != "" {
 			slog.Warn("Pod attestation profile refused", "reason", cause, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
+			httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
 			return
 		}
 		profile = podIssuance{
@@ -201,7 +203,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	csrPubKey, err := attestation.ECDSAPublicKeyFromCSR(csr)
 	if err != nil {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
 	}
 	// challengeBytes was consumed above, so this binding is fresh for exactly
@@ -213,7 +215,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 
 	evidenceJSON, err := json.Marshal(req.Evidence)
 	if err != nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
+		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
 			fmt.Sprintf("invalid evidence: %s", err))
 		return
 	}
@@ -225,7 +227,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, code, msg := classifyVerifyError(err)
 		slog.Warn("attestation verification failed", "status", status, "error", err, "remote_addr", r.RemoteAddr)
-		attestation.WriteError(w, status, code, msg)
+		httputil.WriteError(w, status, code, msg)
 		return
 	}
 
@@ -240,7 +242,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issuer.ValidateCSR(csr, policy); err != nil {
 		slog.Warn("CSR validation failed", "error", err, "remote_addr", r.RemoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
 		return
 	}
 
@@ -252,12 +254,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("sandbox workload rejected",
 			"sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost, "error", err,
 			"remote_addr", r.RemoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "sandbox workload not authorized")
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "sandbox workload not authorized")
 		return
 	}
 
 	if ctx.Err() != nil {
-		attestation.WriteError(w, http.StatusGatewayTimeout, types.ErrorCodeTimeout, "request timeout")
+		httputil.WriteError(w, http.StatusGatewayTimeout, types.ErrorCodeTimeout, "request timeout")
 		return
 	}
 
@@ -266,7 +268,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	signing, issuing := h.MeshCA.Current()
 	if !issuing {
 		// A replica that stopped serving between the gate and the signature.
-		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		httputil.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
 		return
 	}
 	clientDocument, clientDocumentDigest := profile.clientDocument()
@@ -283,12 +285,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
 		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
 		return
 	}
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
-		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
 		return
 	}
 
@@ -331,28 +333,28 @@ func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRe
 	raw, readErr := io.ReadAll(r.Body)
 	var tooLarge *http.MaxBytesError
 	if errors.As(readErr, &tooLarge) {
-		attestation.WriteError(w, http.StatusRequestEntityTooLarge, types.ErrorCodeInvalidRequest, "attestation request exceeds the request size limit")
+		httputil.WriteError(w, http.StatusRequestEntityTooLarge, types.ErrorCodeInvalidRequest, "attestation request exceeds the request size limit")
 		return req, nil, false
 	}
 	if readErr != nil || strictjson.Validate(raw) != nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return req, nil, false
 	}
 	// fields tells an absent runtime_extensions from an explicit null;
 	// the strict decode that follows rejects any field the body does not name.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return req, nil, false
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
+		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
 		return req, nil, false
 	}
 	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
-		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
+		httputil.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
 			"runtime_extensions requires evidence from a platform with runtime measurement registers")
 		return req, nil, false
 	}

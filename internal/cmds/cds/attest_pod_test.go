@@ -16,9 +16,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -104,7 +104,7 @@ func TestPodAttestIssuesBoundNamedLeafWithoutNodeAuthority(t *testing.T) {
 	if len(binder.calls) != 0 {
 		t.Fatal("Pod profile gained node callback ledger authority")
 	}
-	csr, err := attestation.ParseAndVerifyCSR(req.CSR)
+	csr, err := certutil.ParseCSRPEM([]byte(req.CSR))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
 	tampered.ClientDocumentDigest = hex.EncodeToString(other[:])
 	forged := quoted
 	forged.PodClaims, _ = tampered.Canonical()
-	csr, err := attestation.ParseAndVerifyCSR(quoted.CSR)
+	csr, err := certutil.ParseCSRPEM([]byte(quoted.CSR))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -103,13 +103,13 @@ type podIssuance struct {
 func (p podIssuance) bind(ctx context.Context, w http.ResponseWriter, csrPub *ecdsa.PublicKey, challenge []byte) ([64]byte, workloadclaims.VerifiedSandbox, bool) {
 	sandbox := workloadclaims.VerifiedSandbox{SandboxID: p.claims.InstanceID()}
 	if _, err := armtls.ReportDataForKey(csrPub, challenge); err != nil {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return [64]byte{}, sandbox, false
 	}
 	bound, err := workloadclaims.PodReportData(csrPub, challenge, p.req.PodClaims)
 	if err != nil {
 		slog.Warn("Pod attestation profile refused", "reason", err, "remote_addr", p.remoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
 		return [64]byte{}, sandbox, false
 	}
 	var reportData [64]byte
@@ -120,7 +120,7 @@ func (p podIssuance) bind(ctx context.Context, w http.ResponseWriter, csrPub *ec
 func (p podIssuance) admitImage(w http.ResponseWriter, verified remote.VerifyResponse, launchDigest string) bool {
 	if err := enforcePodImages(verified, p.h.PodImages, p.req.Evidence.Platform, p.claims.RuntimeExtensions); err != nil {
 		slog.Warn("Pod identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", p.remoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "Pod identity not allowed")
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "Pod identity not allowed")
 		return false
 	}
 	return true

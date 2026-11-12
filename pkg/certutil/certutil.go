@@ -204,6 +204,23 @@ func ParseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
+// ParseCSRPEM decodes a PEM certificate request and checks its self-signature,
+// so the key a certificate binds is one the requester holds.
+func ParseCSRPEM(csrPEM []byte) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CSR: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("CSR signature invalid: %w", err)
+	}
+	return csr, nil
+}
+
 // LoadCertificateFile reads a PEM file and parses the first certificate.
 func LoadCertificateFile(path string) (*x509.Certificate, error) {
 	data, err := os.ReadFile(path)

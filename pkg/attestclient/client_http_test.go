@@ -15,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -388,12 +389,12 @@ func TestAttestBadRequestURL(t *testing.T) {
 }
 
 func TestParseCSRBadPEM(t *testing.T) {
-	if _, err := parseCSR("garbage"); err == nil {
+	if _, err := certutil.ParseCSRPEM([]byte("garbage")); err == nil {
 		t.Fatal("expected error for non-PEM input")
 	}
 	// Wrong PEM type.
 	wrongType := "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
-	if _, err := parseCSR(wrongType); err == nil {
+	if _, err := certutil.ParseCSRPEM([]byte(wrongType)); err == nil {
 		t.Fatal("expected error for wrong PEM type")
 	}
 }

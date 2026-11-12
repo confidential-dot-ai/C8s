@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -31,14 +31,14 @@ func (n nodeIssuance) bind(ctx context.Context, w http.ResponseWriter, csrPub *e
 		verified, err := n.h.verifySandboxToken(ctx, n.req.SandboxToken, csrPub, challenge)
 		if err != nil {
 			slog.Warn("sandbox token rejected", "error", err, "remote_addr", n.remoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+			httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
 			return [64]byte{}, sandbox, false
 		}
 		sandbox = verified
 	}
 	reportData, err := armtls.ReportDataForKey(csrPub, challenge)
 	if err != nil {
-		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return [64]byte{}, sandbox, false
 	}
 	return reportData, sandbox, true
@@ -47,7 +47,7 @@ func (n nodeIssuance) bind(ctx context.Context, w http.ResponseWriter, csrPub *e
 func (n nodeIssuance) admitImage(w http.ResponseWriter, verified remote.VerifyResponse, launchDigest string) bool {
 	if err := n.h.matchPinnedNodeImage(verified, n.req.Evidence.Platform, n.req.RuntimeExtensions); err != nil {
 		slog.Warn("node identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", n.remoteAddr)
-		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
 		return false
 	}
 	return true
