@@ -4,22 +4,6 @@
 name: pin hygiene
 on:
   pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/actions/**"
-      - ".github/build-pins.json"
-      - ".github/scripts/pin-manifest.sh"
-      - ".github/scripts/release-pin.sh"
-      - ".github/scripts/confos-mkosi-pin.sh"
-      - ".github/scripts/ghcr-digest.sh"
-      - ".github/scripts/chart-attestation-api-digest.sh"
-      - ".github/scripts/chart-image-pins.sh"
-      - ".github/scripts/image-config-verdict.jq"
-      - "charts/cloud/values.yaml"
-      - "charts/lib/files/components.yaml"
-      - "images/node-guest/worker/mkosi.sync"
-      - "**/Dockerfile"
-      - "**/go.mod"
   merge_group:
     types: [checks_requested]
     branches: [main]
@@ -29,8 +13,43 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/relevant-changes
+        with:
+          filters: |
+            relevant:
+              - ".github/workflows/**"
+              - ".github/actions/**"
+              - ".github/build-pins.json"
+              - ".github/scripts/pin-manifest.sh"
+              - ".github/scripts/release-pin.sh"
+              - ".github/scripts/confos-mkosi-pin.sh"
+              - ".github/scripts/ghcr-digest.sh"
+              - ".github/scripts/chart-attestation-api-digest.sh"
+              - ".github/scripts/chart-image-pins.sh"
+              - ".github/scripts/image-config-verdict.jq"
+              - "charts/cloud/values.yaml"
+              - "charts/lib/files/components.yaml"
+              - "images/node-guest/worker/mkosi.sync"
+              - "**/Dockerfile"
+              - "**/go.mod"
+
   pins:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-crane
@@ -155,3 +174,18 @@ jobs:
             fail=1
           fi
           exit $fail
+
+  result:
+    name: pin hygiene result
+    runs-on: ubuntu-latest
+    needs: [changes, pins]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

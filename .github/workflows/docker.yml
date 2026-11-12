@@ -18,23 +18,11 @@ on:
   # The protected beta branch runs the same chain and publishes prereleases.
   push:
     branches: [main, beta]
-  # PRs stay path-gated: a PR run builds and scans but publishes nothing (see the
-  # push/dispatch gates on the login and build-push steps), so a docs-only PR has
-  # nothing to gain from it. The list is inlined because the YAML anchor it used
-  # to alias (&docker-paths) lived on the push trigger above.
+  # A pull request run builds and scans but publishes nothing (see the
+  # push/dispatch gates on the login and build-push steps). The per-component
+  # filter in `changes` below decides what it builds.
   pull_request:
     branches: [main, beta]
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "cmd/**/Dockerfile"
-      - "cmd/nri-image-policy/enable-nri.sh"
-      - "charts/**"
-      - "Makefile"
-      - ".github/workflows/docker.yml"
   # Queued commits get the PR run's build and scan; publication stays on push.
   merge_group:
     types: [checks_requested]
@@ -49,7 +37,6 @@ on:
 permissions:
   contents: read
   packages: write
-  pull-requests: read   # dorny/paths-filter calls the PR files API on PR events
 
 env:
   REGISTRY: ghcr.io
@@ -69,6 +56,10 @@ jobs:
   changes:
     name: Detect changed components
     runs-on: ubuntu-latest
+    # dorny/paths-filter reads a pull request's files from the API.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       matrix: ${{ steps.docker-matrix.outputs.matrix }}
       has_images: ${{ steps.docker-matrix.outputs.has_images }}
@@ -383,3 +374,20 @@ jobs:
       packages: write # Alias component images and publish the Helm chart.
     with:
       target-sha: ${{ github.sha }}
+
+  result:
+    name: Docker result
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [changes, go-modules, images, retag-unchanged, release-tag]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

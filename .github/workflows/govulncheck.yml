@@ -7,15 +7,7 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    paths: &go-paths
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - ".github/workflows/govulncheck.yml"
   pull_request:
-    paths: *go-paths
   merge_group:
     types: [checks_requested]
     branches: [main]
@@ -28,12 +20,54 @@ permissions:
   contents: read
 
 jobs:
+    changes:
+      name: Relevant changes
+      runs-on: ubuntu-latest
+      permissions:
+        contents: read
+        pull-requests: read
+      outputs:
+        relevant: ${{ steps.changes.outputs.relevant }}
+      steps:
+        - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          with:
+            persist-credentials: false
+        - id: changes
+          uses: ./.github/actions/relevant-changes
+          with:
+            filters: |
+              relevant:
+                - ".github/actions/relevant-changes/**"
+                - "**.go"
+                - "go.mod"
+                - "go.sum"
+                - "go.work"
+                - "go.work.sum"
+                - ".github/workflows/govulncheck.yml"
+
     govulncheck_job:
       runs-on: ubuntu-latest
       name: Run govulncheck
+      needs: changes
+      if: needs.changes.outputs.relevant == 'true'
       steps:
         - id: govulncheck
           uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
           with:
              go-version-file: 'go.mod'
              go-package: ./...
+
+    result:
+      name: govulncheck result
+      runs-on: ubuntu-latest
+      needs: [changes, govulncheck_job]
+      if: always()
+      steps:
+        # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+        - name: Require every job to have succeeded or skipped
+          if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+          env:
+            RESULTS: ${{ toJSON(needs) }}
+          run: |
+            echo "$RESULTS"
+            exit 1
