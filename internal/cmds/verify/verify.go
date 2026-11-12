@@ -441,14 +441,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	// The history check gets its own --timeout budget, not what the
 	// verification left of it.
 	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
-	// The route note describes a check that passed, so a failed verdict
-	// carries none.
-	if ev.route != nil && oc.Error == "" {
-		oc.RouteDigest = hex.EncodeToString(ev.route.digest)
-		oc.RouteRevision = ev.route.revision
-		oc.RouteNote = ev.route.note
-	}
-	applyInitDataNote(&oc, result, plan)
+	applyFinalNotes(&oc, ev, result, plan)
 	render(cfg, oc, out)
 	if unreachable {
 		return exitNoEvidence
@@ -528,8 +521,9 @@ func demoteToPartial(oc *Outcome, notProven string) {
 
 // frontDoorAttestedNote states a verified discovery verdict's basis: the
 // live handshake presented the attested serving certificate. It is appended
-// only to a passing verdict — on a refusal the gather-time fact must not
-// read as the verdict's basis.
+// only to a passing verdict, and applyFinalNotes strips it from one a later
+// policy fails — on a refusal the gather-time fact must not read as the
+// verdict's basis.
 const frontDoorAttestedNote = "; the live handshake presented the attested serving certificate"
 
 // frontDoorScopeWarning bounds an attested front door to the observation made.
@@ -583,16 +577,49 @@ func applyChainAnchorPolicy(oc *Outcome, cfg config, ev *evidence) {
 	demoteToPartial(oc, "the mesh chain anchor: the leaf chains to a CA the responder committed into its own attestation transcript — the evidence binds those CA bytes, but the anchor is responder-chosen, so which deployment this endpoint belongs to is not proven (pass --mesh-ca to pin it)")
 }
 
-// applyInitDataNote records what the init-data digest was compared against, on
-// the FINAL verdict: it runs after applyVerdictPolicies (which can fail the
-// verdict past newOutcome) and skips a hard failure (oc.Error set) — the gate
-// renderText also applies. On az-* the pin binds vTPM PCR[8], not
-// result.Claims.InitData (the inner report's HOST_DATA), so a pinned az verdict
-// reports the enforced pin without presenting that field.
-func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *verifyPlan) {
+// applyFinalNotes settles every note on the FINAL verdict, after every policy
+// that can fail it (applyVerdictPolicies, checkPolicyHistory). A policy writes
+// its note when its own check passes, and a later one can still fail the
+// verdict, so on a hard failure (oc.Error set, the gate renderText applies)
+// only the notes saying what was NOT checked survive: JSON and text then agree
+// that a refusal asserts no passed check.
+func applyFinalNotes(oc *Outcome, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) {
 	if oc.Error != "" {
+		// A value never appears without the note qualifying it.
+		// buildPolicy refuses --sandbox-id without --mesh-ca, so the CLI never
+		// appends the pin clause to the unverified note; trim it regardless.
+		if strings.HasPrefix(oc.SandboxIDNote, sandboxIDUnverifiedNote) {
+			oc.SandboxIDNote = sandboxIDUnverifiedNote
+		} else {
+			oc.SandboxID, oc.SandboxIDNote = "", ""
+		}
+		if oc.WorkloadNote != workloadUnverifiedNote {
+			oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest, oc.WorkloadNote = "", "", "", ""
+		}
+		if oc.OperatorKeysNote == "" || oc.OperatorKeysNote == operatorKeysMatchedNote {
+			oc.OperatorKeys, oc.OperatorKeysNote = nil, ""
+		}
+		oc.ChainAnchor = ""
+		// A replayed history is a passed check too; cert_body stays, as a
+		// description of how the leaf's body was authenticated.
+		oc.MeasuredPolicies = nil
+		oc.Binding = strings.TrimSuffix(oc.Binding, frontDoorAttestedNote)
+		oc.Warnings = slices.DeleteFunc(oc.Warnings, func(w string) bool { return w == frontDoorScopeWarning })
 		return
 	}
+	if ev.route != nil {
+		oc.RouteDigest = hex.EncodeToString(ev.route.digest)
+		oc.RouteRevision = ev.route.revision
+		oc.RouteNote = ev.route.note
+	}
+	applyInitDataNote(oc, result, plan)
+}
+
+// applyInitDataNote records what the init-data digest was compared against.
+// On az-* the pin binds vTPM PCR[8], not result.Claims.InitData (the inner
+// report's HOST_DATA), so a pinned az verdict reports the enforced pin without
+// presenting that field.
+func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *verifyPlan) {
 	switch {
 	case oc.Platform == string(teetypes.PlatformAzSNP) || oc.Platform == string(teetypes.PlatformAzTDX):
 		if plan.initDataHash != nil {
@@ -1360,6 +1387,14 @@ type Outcome struct {
 	LeafStamped *bool `json:"leaf_stamped,omitempty"`
 }
 
+// The notes applyFinalNotes recognises: the unverified ones survive a failed
+// verdict, the matched one does not.
+const (
+	sandboxIDUnverifiedNote = "not verified: CDS's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
+	workloadUnverifiedNote  = "not verified: CDS's signature on the leaf vouches for this name; pass --mesh-ca to check it"
+	operatorKeysMatchedNote = "matched: the set served over the attested cert equals --operator-keys"
+)
+
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
 // --operator-keys. It only ever demotes Verified — nothing here can rescue a
 // failed hardware verification (docs/armtls.md).
@@ -1402,7 +1437,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	if oc.Verified && ev.sandboxID != "" {
 		oc.SandboxID = ev.sandboxID
 		if cfg.meshCA == "" {
-			oc.SandboxIDNote = "not verified: CDS's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
+			oc.SandboxIDNote = sandboxIDUnverifiedNote
 		} else {
 			oc.SandboxIDNote = "verified: the leaf chains to the supplied mesh CA"
 		}
@@ -1465,7 +1500,7 @@ func checkServedOperatorKeys(oc *Outcome, cfg config, opKeys operatorKeysReport,
 		return
 	}
 	if oc.Verified {
-		oc.OperatorKeysNote = "matched: the set served over the attested cert equals --operator-keys"
+		oc.OperatorKeysNote = operatorKeysMatchedNote
 	}
 }
 
@@ -1549,7 +1584,7 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 		oc.WorkloadAllowlistVersion = ev.workload.AllowlistVersion
 		oc.WorkloadAllowlistDigest = hex.EncodeToString(ev.workload.AllowlistDigest)
 		if cfg.meshCA == "" {
-			oc.WorkloadNote = "not verified: CDS's signature on the leaf vouches for this name; pass --mesh-ca to check it"
+			oc.WorkloadNote = workloadUnverifiedNote
 		} else {
 			oc.WorkloadNote = "ca-vouched: the leaf chains to the supplied mesh CA"
 		}
