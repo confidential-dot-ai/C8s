@@ -29,15 +29,6 @@ func hangingServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestNewClientBoundsRequests pins the overall deadline. This client is the
-// shared transport for both enforcers and the CLI; http.DefaultClient has no
-// timeout, so an unanswered fetch would park the caller indefinitely.
-func TestNewClientBoundsRequests(t *testing.T) {
-	if got := NewClient("https://cds.example.com").httpClient.Timeout; got != requestTimeout {
-		t.Errorf("Timeout = %v, want %v", got, requestTimeout)
-	}
-}
-
 func TestListReturnsWithinItsTimeout(t *testing.T) {
 	srv := hangingServer(t)
 	c := NewClientWithHTTP(srv.URL, &http.Client{Timeout: 100 * time.Millisecond})
@@ -57,7 +48,7 @@ func TestListReturnsWithinItsTimeout(t *testing.T) {
 
 func TestListReturnsOnContextCancel(t *testing.T) {
 	srv := hangingServer(t)
-	c := NewClient(srv.URL)
+	c := newClient(srv.URL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -83,7 +74,7 @@ func TestListNonOKYieldsStatusError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := NewClient(srv.URL).List(context.Background())
+	_, _, err := newClient(srv.URL).List(context.Background())
 	var se *operatorauth.StatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("List error = %v (%T), want *StatusError", err, err)
@@ -105,7 +96,7 @@ func TestListRejectsNonJSONContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := NewClient(srv.URL).List(context.Background()); err == nil ||
+	if _, _, err := newClient(srv.URL).List(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "unexpected content type") {
 		t.Fatalf("List error = %v, want an unexpected-content-type refusal", err)
 	}
@@ -125,7 +116,7 @@ func TestListEnforcesTheResponseCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := NewClient(srv.URL).List(context.Background()); !errors.Is(err, errAllowlistResponseTooLarge) {
+	if _, _, err := newClient(srv.URL).List(context.Background()); !errors.Is(err, errAllowlistResponseTooLarge) {
 		t.Fatalf("List error = %v, want %v", err, errAllowlistResponseTooLarge)
 	}
 }

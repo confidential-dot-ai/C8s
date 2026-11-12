@@ -36,12 +36,6 @@ type ServerConfig struct {
 	// the TLS handshake and should be used for cancellation/timeouts.
 	AttestFunc func(ctx context.Context, customData string) (string, error)
 
-	// CertProvider, when set, is used instead of Platform/AttestFunc for
-	// certificate provisioning. This enables pluggable certificate sources
-	// (e.g., CDS-issued certificates). When nil, a SelfSignedProvider is
-	// constructed from Platform and AttestFunc.
-	CertProvider CertProvider
-
 	// DNSNames for the server certificate.
 	DNSNames []string
 
@@ -55,7 +49,7 @@ type ServerConfig struct {
 	// Key, when set, is the self-signed certificate's key for the server's
 	// lifetime: rotation renews the certificate and its evidence but keeps
 	// the key, so a client that pinned it keeps connecting. Nil generates a
-	// fresh key for every certificate. Ignored when CertProvider is set.
+	// fresh key for every certificate.
 	Key *ecdsa.PrivateKey
 
 	// MeasuredPoliciesFile is the node's measured-policy journal
@@ -655,36 +649,28 @@ func (m *CertManager) UpdateClientCA(ca *x509.Certificate) {
 // their armTLS attestation (mTLS): a self-issued leaf carrying key-bound
 // evidence. ClientCA verifies a chain instead, and the two are exclusive.
 //
-// If CertProvider is set, it is used for certificate provisioning instead of
-// Platform/AttestFunc. When CertProvider is nil, Platform and AttestFunc are
-// required and a SelfSignedProvider is created internally.
-//
 // The returned CertManager can be used to eagerly provision the certificate
 // (WarmUp) and check readiness (CertReady).
 func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
-	provider := cfg.CertProvider
-	if provider == nil {
-		// Fall back to self-signed: require Platform + AttestFunc.
-		if cfg.Platform == "" {
-			return nil, nil, fmt.Errorf("armtls: Platform is required")
-		}
-		if _, err := teetypes.ParseFamily(cfg.Platform); err != nil {
-			return nil, nil, fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
-		}
-		if cfg.AttestFunc == nil {
-			return nil, nil, fmt.Errorf("armtls: AttestFunc is required")
-		}
-		provider = &SelfSignedProvider{
-			Platform:         cfg.Platform,
-			AttestFunc:       cfg.AttestFunc,
-			MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
-			Key:              cfg.Key,
-			Opts: &CertOptions{
-				Subject:  cfg.Subject,
-				TTL:      cfg.CertTTL,
-				DNSNames: cfg.DNSNames,
-			},
-		}
+	if cfg.Platform == "" {
+		return nil, nil, fmt.Errorf("armtls: Platform is required")
+	}
+	if _, err := teetypes.ParseFamily(cfg.Platform); err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
+	}
+	if cfg.AttestFunc == nil {
+		return nil, nil, fmt.Errorf("armtls: AttestFunc is required")
+	}
+	provider := &SelfSignedProvider{
+		Platform:         cfg.Platform,
+		AttestFunc:       cfg.AttestFunc,
+		MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
+		Key:              cfg.Key,
+		Opts: &CertOptions{
+			Subject:  cfg.Subject,
+			TTL:      cfg.CertTTL,
+			DNSNames: cfg.DNSNames,
+		},
 	}
 
 	state := &certState{
