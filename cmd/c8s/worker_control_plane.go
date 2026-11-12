@@ -51,6 +51,7 @@ var (
 		"Role/kube-system/c8s-worker-cilium-operator-lease",
 		"RoleBinding/kube-system/c8s-worker-cilium-operator-lease",
 		"Service/c8s-router/c8s-router",
+		"Service/kube-system/dcgm-exporter",
 		"Service/kube-system/kube-dns",
 		"ServiceAccount/c8s-router/c8s-router",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
