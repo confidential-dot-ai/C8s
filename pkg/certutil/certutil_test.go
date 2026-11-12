@@ -1,6 +1,7 @@
 package certutil
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -321,6 +322,17 @@ func TestParsePEMCertificates(t *testing.T) {
 	if _, err := ParsePEMCertificates([]byte("no blocks here")); err == nil {
 		t.Fatal("expected error for no CERTIFICATE blocks")
 	}
+
+	t.Run("leading non-certificate block", func(t *testing.T) {
+		keyFirst := append(other, EncodeCertPEM(der1)...)
+		certs, err := ParsePEMCertificates(keyFirst)
+		if err != nil {
+			t.Fatalf("ParsePEMCertificates: %v", err)
+		}
+		if len(certs) != 1 || !bytes.Equal(certs[0].Raw, der1) {
+			t.Fatalf("got %d certs, want the one behind the PRIVATE KEY block", len(certs))
+		}
+	})
 
 	t.Run("bad cert bytes", func(t *testing.T) {
 		bad := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})

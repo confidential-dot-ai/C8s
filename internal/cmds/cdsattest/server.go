@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +40,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -874,10 +874,11 @@ func (l *servedLeaves) findLocked(hash [sha256.Size]byte) (servedLeaf, bool) {
 }
 
 // servingLeaf reads the acme serving-leaf PEM nginx serves new connections:
-// the leaf first, then the rest of its chain. It is read per request so a
-// renewal is picked up without restarting the sidecar. Exactly one
-// leaf is committed; per-SNI or multi-certificate serving is unsupported and
-// fails the client's exact-DER comparison closed.
+// the first CERTIFICATE block, then the rest of its chain, as
+// ssl_certificate reads the same file. It is read per request so a renewal is
+// picked up without restarting the sidecar. Exactly one leaf is committed;
+// per-SNI or multi-certificate serving is unsupported and fails the client's
+// exact-DER comparison closed.
 func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if s.cfg.ServingCertFile == "" {
 		return nil, servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
@@ -886,26 +887,12 @@ func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if err != nil {
 		return nil, servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
 	}
-	block, rest := pem.Decode(pemBytes)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	certs, err := certutil.ParsePEMCertificates(pemBytes)
 	if err != nil {
-		return nil, servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("serving cert %q: %w", s.cfg.ServingCertFile, err)
 	}
-	var chain []*x509.Certificate
-	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
-		issuer, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
-		}
-		chain = append(chain, issuer)
-	}
-	return cert, servedLeaf{der: cert.Raw, expires: chainExpiry(cert, chain...)}, nil
+	leaf, chain := certs[0], certs[1:]
+	return leaf, servedLeaf{der: leaf.Raw, expires: chainExpiry(leaf, chain...)}, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer
