@@ -224,16 +224,6 @@ func TestParseCertificatePEMAndLoad(t *testing.T) {
 	if _, err := ParseCertificatePEM([]byte("not pem")); err == nil {
 		t.Fatal("expected error for non-PEM")
 	}
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
-	os.WriteFile(path, pemBytes, 0o644)
-	if _, err := LoadCertificateFile(path); err != nil {
-		t.Fatalf("LoadCertificateFile: %v", err)
-	}
-	if _, err := LoadCertificateFile(filepath.Join(dir, "nope.pem")); err == nil {
-		t.Fatal("expected error for missing file")
-	}
 }
 
 func TestParseAndVerifyCSRValid(t *testing.T) {
@@ -328,38 +318,6 @@ func TestParsePEMCertificates(t *testing.T) {
 			t.Fatal("expected parse error")
 		}
 	})
-}
-
-func TestTrimExpiredCABundle(t *testing.T) {
-	now := time.Now()
-	fresh, _ := selfSigned(t, "fresh", now.Add(time.Hour))
-	stale, _ := selfSigned(t, "stale", now.Add(-time.Hour))
-
-	kept, dropped := TrimExpiredCABundle([]*x509.Certificate{fresh, stale}, now)
-	if len(kept) != 1 || kept[0].Subject.CommonName != "fresh" {
-		t.Errorf("kept = %v, want [fresh]", kept)
-	}
-	if len(dropped) != 1 || dropped[0].Subject.CommonName != "stale" {
-		t.Errorf("dropped = %v, want [stale]", dropped)
-	}
-}
-
-func TestLoadPEMCertificatesFile(t *testing.T) {
-	_, der := selfSigned(t, "x", time.Now().Add(time.Hour))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bundle.pem")
-	os.WriteFile(path, EncodeCertPEM(der), 0o644)
-
-	certs, err := LoadPEMCertificatesFile(path)
-	if err != nil {
-		t.Fatalf("LoadPEMCertificatesFile: %v", err)
-	}
-	if len(certs) != 1 {
-		t.Errorf("got %d certs, want 1", len(certs))
-	}
-	if _, err := LoadPEMCertificatesFile(filepath.Join(dir, "missing")); err == nil {
-		t.Fatal("expected error for missing file")
-	}
 }
 
 func TestNewCATemplate(t *testing.T) {

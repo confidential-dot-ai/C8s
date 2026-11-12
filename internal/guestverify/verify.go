@@ -99,11 +99,6 @@ func (l *policyList) current() []string {
 	return l.list
 }
 
-// Family is the TEE family the manifest pins.
-func (exp Policy) Family() teetypes.Family {
-	return exp.identity.Family()
-}
-
 // WithMeasuredPolicies returns exp tracking the node's measured allowlist
 // policies, starting from list. Copies of the result share the list, so a
 // verified armTLS leaf records its runtime extensions for later checks.
