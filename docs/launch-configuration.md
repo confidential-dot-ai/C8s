@@ -169,8 +169,14 @@ restarts the static pods.
 ## A worker's control plane
 
 The worker image's static pods are the Cilium agent, kube-proxy and CoreDNS,
-pulled by digest at boot. They reach the API server with the kubelet's
-credentials, and Cilium reads its configuration from the image
+and, on a worker with an NVIDIA GPU, the NVIDIA device plugin and
+dcgm-exporter, pulled by digest at boot. Stage leaves out a template annotated
+`confidential.ai/gpu-only: "true"` when no PCI function has NVIDIA's vendor ID.
+The device plugin advertises the GPUs as `nvidia.com/gpu` and hands each
+allocation to the container as `k8s.device-plugin.nvidia.com/gpu` CDI devices;
+dcgm-exporter serves GPU metrics on port 9400 of its pod. Neither reaches the
+API server. The other three reach it with the kubelet's credentials, and
+Cilium reads its configuration from the image
 (`/usr/lib/c8s/worker/cilium/config.yaml`), not from the API. c8s's operator
 and the Cilium operator run beside the control plane, outside the workers:
 the operator's own pod would wait on a worker for the mesh endpoint its webhook
@@ -192,7 +198,10 @@ workers:
   certificate and of each rotation of it, so no admin approves a worker by hand;
 - the Cilium operator's grants, bound to the user `c8s-cilium-operator`;
 - the `kube-dns` Service, at `kubernetes.clusterDNS`, which sends each lookup
-  to its own node's CoreDNS.
+  to its own node's CoreDNS;
+- the `kube-system/dcgm-exporter` Service, port 9400, in front of every GPU
+  worker's dcgm-exporter. Whoever reaches it reads each GPU's utilisation,
+  memory and power.
 
 `c8s worker control-plane credentials --kubeconfig admin.kubeconfig
 --output-dir DIR` writes `DIR/c8s-operator.kubeconfig` and

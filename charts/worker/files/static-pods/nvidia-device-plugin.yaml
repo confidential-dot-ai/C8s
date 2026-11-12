@@ -1,0 +1,64 @@
+# The NVIDIA device plugin, on a worker with an NVIDIA GPU alone (stage skips
+# a confidential.ai/gpu-only template elsewhere: with no driver the CDI spec
+# fails and the pod would crash-loop). It advertises the GPUs as
+# nvidia.com/gpu and writes its own CDI spec (k8s.device-plugin.nvidia.com/gpu)
+# to /var/run/cdi; each allocation reaches the container as cdi.k8s.io
+# annotations, which containerd injects and nri-image-policy re-expands
+# (cdiTrustedKinds). No nvidia-container-runtime anywhere.
+#
+# The plugin finds NVML and the CDI hooks under the measured /usr and /etc,
+# mounted at /driver-root. It MUST NOT put the node's lib dir on
+# LD_LIBRARY_PATH: the node's libc there would shadow the container's and
+# crash the Go runtime. The driver root is /usr and /etc alone, with no
+# usrmerge /lib symlink, and firmware_class.path=/usr/lib/firmware (mkosi.conf)
+# keeps the GSP firmware mounts on real files. No IPC discoverer, so the spec
+# names no persistenced or fabric-manager socket.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nvidia-device-plugin
+  namespace: kube-system
+  labels: {app.kubernetes.io/name: nvidia-device-plugin}
+  annotations: {confidential.ai/gpu-only: "true"}
+spec:
+  dnsPolicy: Default
+  enableServiceLinks: false
+  priorityClassName: system-node-critical
+  containers:
+  - name: nvidia-device-plugin
+    image: nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075
+    command: [nvidia-device-plugin]
+    env:
+    # The image's.
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox'}
+    - {name: SSL_CERT_FILE, value: /etc/ssl/certs/ca-certificates.crt}
+    - {name: OPENSSL_CONF, value: /etc/ssl/openssl-nofips.cnf}
+    - {name: OPENSSL_MODULES, value: /usr/lib/x86_64-linux-gnu/ossl-modules/}
+    - {name: LD_LIBRARY_PATH, value: /lib/distroless/}
+    - {name: NVIDIA_DISABLE_REQUIRE, value: 'true'}
+    - {name: NVIDIA_DRIVER_CAPABILITIES, value: 'compute,utility'}
+    - {name: NVIDIA_VISIBLE_DEVICES, value: all}
+    - {name: FAIL_ON_INIT_ERROR, value: 'false'}
+    - {name: DEVICE_LIST_STRATEGY, value: cdi-annotations}
+    - {name: DEVICE_ID_STRATEGY, value: uuid}
+    - {name: NVIDIA_DRIVER_ROOT, value: /}
+    - {name: CONTAINER_DRIVER_ROOT, value: /driver-root}
+    - {name: CDI_FEATURE_FLAGS, value: disable-ipc-discoverer}
+    securityContext: {privileged: true}
+    volumeMounts:
+    - {name: device-plugin, mountPath: /var/lib/kubelet/device-plugins}
+    - {name: cdi-dir, mountPath: /var/run/cdi}
+    - {name: driver-root-usr, mountPath: /driver-root/usr, readOnly: true}
+    - {name: driver-root-etc, mountPath: /driver-root/etc, readOnly: true}
+    - {name: dev, mountPath: /dev}
+  volumes:
+  - name: device-plugin
+    hostPath: {path: /var/lib/kubelet/device-plugins}
+  - name: cdi-dir
+    hostPath: {path: /var/run/cdi, type: DirectoryOrCreate}
+  - name: driver-root-usr
+    hostPath: {path: /usr}
+  - name: driver-root-etc
+    hostPath: {path: /etc}
+  - name: dev
+    hostPath: {path: /dev}
