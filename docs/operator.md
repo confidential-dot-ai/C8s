@@ -554,8 +554,10 @@ still need working PMTUD.
 
 Use HTTP probes of the application's own path and port; the guest rewrites them
 through the endpoint's health listener. TCP and gRPC probes, HTTP probes with a
-custom host or headers, HTTPS probes and HTTP lifecycle hooks are refused, and a
-locked image refuses exec probes in the runtime wrapper.
+custom host or headers, HTTPS probes and HTTP lifecycle hooks are refused, as
+on a node. Exec probes and exec lifecycle hooks are refused for every mesh pod,
+on a node or in a pod CVM: neither starts a process in a running container
+([node-exec-mode.md](node-exec-mode.md)).
 
 ## Existing workload adoption
 

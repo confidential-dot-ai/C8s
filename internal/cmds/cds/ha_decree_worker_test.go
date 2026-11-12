@@ -115,6 +115,8 @@ func workerGenesis(t *testing.T, c operatorCluster, worker workerFlags) genesisO
 		pins:          pinFlags{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, smp2Digest)}},
 		worker:        worker,
 		target:        c.replicaServing(t, map[string]any{statusPath: c.unjoined()}),
+		// The fixture's launch file names one replica.
+		alone: true,
 	}
 }
 

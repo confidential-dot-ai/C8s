@@ -315,6 +315,34 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 	}
 }
 
+// The public half is the file an operator has at hand, and the flag takes the
+// private one.
+func TestSigningNamesAPublicKeyGivenAsTheOperatorKey(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	o.operatorKey = filepath.Join(t.TempDir(), "operator.pub")
+	writeTestFile(t, o.operatorKey, c.operatorPEM)
+
+	err := signing(t, func(cmd *cobra.Command) error {
+		return pinsOptions{
+			decreeOptions: o,
+			pins: pinFlags{
+				platform:  "sev-snp",
+				vcpus:     []int{2},
+				manifests: []string{snpManifest(t, smp2Digest)},
+			},
+		}.run(cmd)
+	})
+	if err == nil {
+		t.Fatal("a decree was signed with the operator's public key")
+	}
+	for _, says := range []string{"--operator-key", "this is a public key", "c8s keys new --out"} {
+		if !strings.Contains(err.Error(), says) {
+			t.Errorf("signing with the public key = %q, want it to say %q", err, says)
+		}
+	}
+}
+
 // Only a key the configuration pins can sign for the cluster, so a key it does
 // not pin fails here rather than on the board.
 func TestSigningRefusesAKeyTheClusterDoesNotPin(t *testing.T) {
@@ -343,6 +371,39 @@ func TestSigningRefusesAKeyTheClusterDoesNotPin(t *testing.T) {
 
 // A Genesis names the process it starts the cluster on, the address it was
 // reached at, and the mesh CA that process would install.
+// A one-replica cluster's replica waits for a second replica to answer, so a
+// Genesis it would hold forever is refused before it is signed.
+func TestGenesisOfAOneReplicaClusterNeedsAlone(t *testing.T) {
+	c := newReplicatedCluster(t)
+	o := c.options(t)
+	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
+	genesis := func(alone bool) error {
+		return signing(t, func(cmd *cobra.Command) error {
+			return genesisOptions{
+				decreeOptions: o,
+				pins: pinFlags{
+					platform:  "sev-snp",
+					vcpus:     []int{2},
+					manifests: []string{snpManifest(t, smp2Digest)},
+				},
+				target: target,
+				alone:  alone,
+			}.run(cmd)
+		})
+	}
+
+	err := genesis(false)
+	if err == nil {
+		t.Fatal("a Genesis the one replica would hold forever was signed")
+	}
+	if !strings.Contains(err.Error(), "--alone") {
+		t.Errorf("the refusal is %q, want it to name --alone", err)
+	}
+	if err := genesis(true); err != nil {
+		t.Fatalf("the same Genesis with --alone: %v", err)
+	}
+}
+
 func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	c := newOperatorCluster(t)
 	o := c.options(t)

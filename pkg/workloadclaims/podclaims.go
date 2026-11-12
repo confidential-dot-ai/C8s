@@ -149,7 +149,8 @@ func (w podClaimsWire) claims() PodClaims {
 }
 
 // PodInstancePrefix starts every Pod CVM instance ID, the sandbox ID a Pod
-// CVM leaf names.
+// CVM leaf names. It is reserved: only InstanceID produces it, and CDS refuses
+// a node sandbox token that carries it.
 const PodInstancePrefix = "pcvm-"
 
 // InstanceID names one guest boot and runtime sandbox. Its framing is JSON,

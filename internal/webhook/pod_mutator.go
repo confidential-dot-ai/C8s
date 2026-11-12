@@ -816,26 +816,6 @@ func workloadSAN(cwID, namespace string) string {
 	return cwID
 }
 
-// validateWorkloadLabel rejects pods that set the confidential.ai/cw label
-// out of band. The webhook stamps this label during injection and the
-// operator-managed headless Services select on it, so a pod carrying it must
-// also carry the matching opt-in annotation — otherwise an un-injected,
-// un-attested pod could join a confidential workload's Service endpoints.
-//
-// It runs on every operation the validator sees, so a post-create label
-// mutation is judged by the same rule as the CREATE.
-func validateWorkloadLabel(pod *corev1.Pod) error {
-	label, ok := pod.Labels[LabelWorkload]
-	if !ok {
-		return nil
-	}
-	if pod.Annotations[AnnotationWorkload] != label {
-		return fmt.Errorf("%w: pod label %s=%q must match the %s annotation (the webhook stamps this label during injection)",
-			errInvalidInjectionAnnotation, LabelWorkload, label, AnnotationWorkload)
-	}
-	return nil
-}
-
 // mutatePod is pure — easy to unit test.
 func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	cfg = cfg.withDefaults()

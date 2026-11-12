@@ -99,7 +99,7 @@ func TestInitialMutationRejectsRenderedProbes(t *testing.T) {
 func TestAdmissionRejectsUnsupportedMemberProbeShapes(t *testing.T) {
 	for _, nativeInit := range []bool{false, true} {
 		for _, rendered := range []bool{false, true} {
-			for _, kind := range []string{"tcpSocket", "grpc", "postStart", "preStop", "httpHeaders", "timeoutSeconds", "scheme"} {
+			for _, kind := range []string{"tcpSocket", "grpc", "postStart", "preStop", "exec probe", "exec lifecycle hook postStart", "exec lifecycle hook preStop", "httpHeaders", "timeoutSeconds", "scheme"} {
 				t.Run(fmt.Sprintf("init=%v/rendered=%v/%s", nativeInit, rendered, kind), func(t *testing.T) {
 					m, v := meshHandlers(t, meshConfig())
 					pod := podWithProbedApp()
@@ -127,6 +127,16 @@ func TestAdmissionRejectsUnsupportedMemberProbeShapes(t *testing.T) {
 						hook := &corev1.LifecycleHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt32(8080)}}
 						c.Lifecycle = &corev1.Lifecycle{}
 						if kind == "postStart" {
+							c.Lifecycle.PostStart = hook
+						} else {
+							c.Lifecycle.PreStop = hook
+						}
+					case "exec probe":
+						c.ReadinessProbe.ProbeHandler = corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}
+					case "exec lifecycle hook postStart", "exec lifecycle hook preStop":
+						hook := &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}
+						c.Lifecycle = &corev1.Lifecycle{}
+						if strings.HasSuffix(kind, "postStart") {
 							c.Lifecycle.PostStart = hook
 						} else {
 							c.Lifecycle.PreStop = hook

@@ -21,7 +21,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // defaultDecreeValidity is how long a cluster may adopt a decree for. A
@@ -132,7 +131,7 @@ func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decr
 	if o.expiresIn <= 0 {
 		return cdsdecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
 	}
-	key, err := certutil.LoadECPrivateKeyFile(o.operatorKey)
+	key, err := cmdsutil.LoadOperatorKey(o.operatorKey)
 	if err != nil {
 		return cdsdecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
 	}
@@ -397,6 +396,9 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := o.checkAloneNamesTheOneReplica(c); err != nil {
+		return err
+	}
 	cdsPins, err := o.pins.document(c.launchFile)
 	if err != nil {
 		return err
@@ -425,6 +427,20 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 		ResumeVersion: o.resumeVersion,
 		Alone:         o.alone,
 	})
+}
+
+// checkAloneNamesTheOneReplica requires --alone of a cluster that has no
+// second replica to answer: without it, the replica holds the Genesis until
+// another replica of its cluster answers it, which never happens.
+func (o genesisOptions) checkAloneNamesTheOneReplica(c decreeConfig) error {
+	if o.alone || !namesOneReplicaFillingOneSeat(c.parsed.HA) {
+		return nil
+	}
+	return errors.New("the configuration names one replica filling one voter seat, and a replica starts a cluster only once another replica of it answers: pass --alone for a one-replica cluster")
+}
+
+func namesOneReplicaFillingOneSeat(ha *cdsconfig.HA) bool {
+	return ha != nil && len(ha.Replicas) == 1 && ha.Voters == 1
 }
 
 // confirmedNodePins are the node images the cluster starts out certifying:

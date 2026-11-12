@@ -160,7 +160,8 @@ A KMS must refuse the request unless all of these hold
 ### Response
 
 - `200` with `{"version": "c8s-secret-release/v1", "value": "<base64>"}`. The
-  value is at most 64 KiB.
+  value is at most 64 KiB. CDS does not relay a `200` with another `version`,
+  no `value` or a larger value: the pod gets `502 kms_unavailable`.
 - Any `4xx` with `{"error": "<reason>"}` is a refusal. CDS relays the reason,
   cut to 256 bytes, to the pod.
 - Anything else means the KMS is unavailable.

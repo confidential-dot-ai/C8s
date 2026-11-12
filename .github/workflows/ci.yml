@@ -4,26 +4,11 @@ on:
   push:
     branches: [main, beta, "feat/**"]
     tags: ["v*"]
-    paths: &go-paths
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "Makefile"
-      - ".golangci.yml"
-      - "charts/**"
-      # The integration harness (test/integration) and its mocks
-      # (test/mock-*) gate PRs via the Integration job below.
-      - "test/**"
-      - "scripts/coverage-gate.sh"
-      - "scripts/shipped-deps-guard.sh"
-      - "scripts/mutation-check.sh"
-      - ".gremlins.yaml"
-      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, beta, "feat/**"]
-    paths: *go-paths
+  merge_group:
+    types: [checks_requested]
+    branches: [main, beta, "feat/**"]
 
 concurrency:
   group: ci-${{ github.ref }}-tests
@@ -32,10 +17,51 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The commit coverage is compared against; empty on push.
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/relevant-changes
+        with:
+          filters: |
+            relevant:
+              - ".github/actions/relevant-changes/**"
+              - "**.go"
+              - "go.mod"
+              - "go.sum"
+              - "go.work"
+              - "go.work.sum"
+              - "Makefile"
+              - ".golangci.yml"
+              - "charts/**"
+              # The integration harness (test/integration) and its mocks
+              # (test/mock-*) gate PRs via the Integration job below.
+              - "test/**"
+              - "scripts/coverage-gate.sh"
+              - "scripts/shipped-deps-guard.sh"
+              - "scripts/mutation-check.sh"
+              - ".gremlins.yaml"
+              - ".github/workflows/ci.yml"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -74,6 +100,8 @@ jobs:
   test:
     name: Build & Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     permissions:
       contents: read
       # Cache pruning (the step after the save) deletes this job's own
@@ -81,6 +109,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-go-c8s
         with:
@@ -179,6 +209,8 @@ jobs:
   integration:
     name: Integration
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -191,6 +223,8 @@ jobs:
   integration-cluster:
     name: Integration (cluster)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -205,6 +239,8 @@ jobs:
   coverage:
     name: Coverage gate
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -244,24 +280,24 @@ jobs:
           key: coverage-total-v4-${{ github.sha }}
 
       - name: Restore baseline total
-        if: github.event_name == 'pull_request'
+        if: env.BASE_SHA != ''
         id: baseline
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          key: coverage-total-v4-${{ github.event.pull_request.base.sha }}
+          key: coverage-total-v4-${{ env.BASE_SHA }}
 
       # Fallback when the base commit's total is not cached (e.g. cache
       # evicted, or main's coverage run predates this workflow).
       - name: Checkout base branch
-        if: github.event_name == 'pull_request' && steps.baseline.outputs.cache-hit != 'true'
+        if: env.BASE_SHA != '' && steps.baseline.outputs.cache-hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ env.BASE_SHA }}
           path: base
 
       - name: Measure base coverage
-        if: github.event_name == 'pull_request' && steps.baseline.outputs.cache-hit != 'true'
+        if: env.BASE_SHA != '' && steps.baseline.outputs.cache-hit != 'true'
         working-directory: base
         run: |
           ../scripts/coverage-gate.sh run base.out
@@ -269,7 +305,7 @@ jobs:
           ../scripts/coverage-gate.sh total base.out > ../base-total.txt
 
       - name: Enforce non-decreasing total coverage
-        if: github.event_name == 'pull_request'
+        if: env.BASE_SHA != ''
         run: |
           head=$(./scripts/coverage-gate.sh total head.out)
           base=$(cat base-total.txt)
@@ -293,8 +329,9 @@ jobs:
   mutation:
     name: Mutation (advisory)
     runs-on: ubuntu-latest
-    # Diff-based vs the PR base; no meaningful base ref on push.
-    if: github.event_name == 'pull_request'
+    needs: changes
+    # Diff-based vs the base branch; no meaningful base ref on push.
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     timeout-minutes: 20
     # Advisory: never blocks the PR, even if the tool itself breaks.
     continue-on-error: true
@@ -313,10 +350,11 @@ jobs:
 
       - name: Mutation testing vs base
         env:
-          BASE_REF: ${{ github.base_ref }}
+          # merge_group names the base branch as a full ref; pull_request does not.
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           # Leave time for reporting and cleanup before the 20-minute job limit.
-          if timeout --kill-after=30s 12m ./scripts/mutation-check.sh run "origin/$BASE_REF"; then
+          if timeout --kill-after=30s 12m ./scripts/mutation-check.sh run "origin/${BASE_REF#refs/heads/}"; then
             :
           else
             status=$?
@@ -324,3 +362,18 @@ jobs:
             echo "Mutation testing incomplete (exit $status; advisory)." >> "$GITHUB_STEP_SUMMARY"
           fi
           ./scripts/mutation-check.sh summary >> "$GITHUB_STEP_SUMMARY"
+
+  result:
+    name: CI result
+    runs-on: ubuntu-latest
+    needs: [changes, lint, test, integration, integration-cluster, coverage]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

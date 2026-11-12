@@ -178,6 +178,83 @@ cds_stop() {
     docker rm -f "$CDS_CONTAINER" "$CDS_ATTESTATION_CONTAINER" >/dev/null 2>&1 || true
 }
 
+# --- Pod CVM provider ---
+
+# The Cloud the operator's Pod CVM provider launches into is test/mock-cloud,
+# a container of the kind network like the CDS. It starts no VM, so a pod
+# bound to the provider's node gets a record and an instance and never a
+# verified guest. The provider's identity, its node and its pod budget are
+# what pod_cvm_secret configures.
+CLOUD_CONTAINER="${C8S_IT_CLOUD:-c8s-it-cloud}"
+POD_CVM_PROVIDER=c8s-it
+POD_CVM_NODE=c8s-it-pod-cvm
+POD_CVM_SECRET=pod-cvm-provider
+POD_CVM_MAX_PODS=2
+POD_CVM_MEMORY_MIB=8192
+# The shortest deadline the provider accepts is 30; a minute leaves a pod's
+# earlier reasons time to be read before the deadline replaces them.
+POD_CVM_VERIFICATION_SECONDS=60
+cloud_url() { echo "http://$(cat "$WORKDIR/cloud-address")"; }
+
+cloud_start() {
+    local ip
+    cloud_stop
+    docker run -d --name "$CLOUD_CONTAINER" --network "$KIND_NETWORK" \
+        "ghcr.io/confidential-dot-ai/mock-cloud:$IMAGE_TAG" >/dev/null \
+        || fail "could not start the mock Cloud"
+    ip=$(docker inspect "$CLOUD_CONTAINER" \
+        -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    [ -n "$ip" ] || fail "the mock Cloud has no address on the $KIND_NETWORK network"
+    echo "$ip:8080" > "$WORKDIR/cloud-address"
+    for _ in $(seq 1 30); do
+        curl -fsS "$(cloud_url)/healthz" >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    fail "the mock Cloud never answered at $(cloud_url)"
+}
+
+cloud_stop() {
+    docker rm -f "$CLOUD_CONTAINER" >/dev/null 2>&1 || true
+}
+
+# pod_cvm_secret: write the provider's trusted configuration and the files it
+# names (docs/pod-cvm-provider.md) into the Secret the chart mounts. The launch
+# key is generated here; the image manifest holds placeholder TDX registers,
+# which nothing verifies while no guest answers. The CDS policy is this
+# cluster's pin with a placeholder launch file: the pin's own carries the
+# whole floor, and the launch document that embeds the policy may not exceed
+# the Cloud's 64 KiB. No guest boots to dial that CDS.
+pod_cvm_secret() {
+    local dir="$WORKDIR/pod-cvm" register
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
+    echo c8s-it-cloud-token > "$dir/cloud-token"
+    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
+        "$WORKDIR/cds/cds-pin.json" > "$dir/cds.json"
+    register="$(printf '%096d' 0)"
+    jq -n --arg r "$register" \
+        '{version: 1, build: {platform: "tdx"}, tdx: {mrtd: $r, rtmr1: $r, rtmr2: $r}}' > "$dir/manifest.json"
+    jq -n --arg digest "sha256:${WORKLOAD_IMAGE##*@sha256:}" \
+        '{schema: "c8s.allowlist/v1", workloads: {app: {containers: [{digest: $digest, command: {policy: "any"}, args: {policy: "any"}}]}}}' \
+        > "$dir/workloads.json"
+    jq -n --arg provider "$POD_CVM_PROVIDER" --arg node "$POD_CVM_NODE" --arg ns "$NS" \
+        --arg cloud "$(cloud_url)" --arg cds "$(cds_address)" --arg cluster "$CLUSTER" \
+        --argjson pods "$POD_CVM_MAX_PODS" --argjson deadline "$POD_CVM_VERIFICATION_SECONDS" \
+        --argjson memory "$POD_CVM_MEMORY_MIB" \
+        '{providerID: $provider, nodeName: $node, namespace: $ns, cloudURL: $cloud,
+          cloudTokenFile: "cloud-token", image: "c8s-pod@it", imageManifestFile: "manifest.json",
+          launchKeyFile: "pod.key", cdsAddress: $cds, cdsImagePolicyFile: "cds.json",
+          workloadsFile: "workloads.json", clusterID: $cluster, size: "it", location: "it",
+          vCPUs: 4, memoryMiB: $memory, maxPods: $pods, verificationTimeoutSeconds: $deadline}' \
+        > "$dir/config.json"
+    kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+        || fail "could not create the release namespace for the provider Secret"
+    kubectl -n "$NS" create secret generic "$POD_CVM_SECRET" --from-file="$dir" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+        || fail "could not write the Pod CVM provider Secret"
+}
+
 # any_workload <digest> <image>: print a workload entry that admits the digest
 # under any command line and mounts, one entry of the allowlist document.
 any_workload() {

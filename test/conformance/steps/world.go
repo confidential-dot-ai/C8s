@@ -31,6 +31,7 @@ type world struct {
 	cds        cdsState
 	issuance   issuanceState
 	podMesh    podMeshState
+	podCVM     podCVMState
 	peerVerify peerVerifyState
 	secrets    secretsState
 	router     routerState
@@ -158,6 +159,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerRequester(sc)
 		registerNode(sc)
 		registerPodMesh(sc)
+		registerPodCVM(sc)
 		registerPeerVerify(sc)
 		registerSecrets(sc)
 		registerRouter(sc)

@@ -108,7 +108,7 @@ func TestValidationRecordsTheCapabilityGrant(t *testing.T) {
 	p := capabilityPlugin(t, SandboxEnforce)
 	p.SetReady()
 	dir := t.TempDir()
-	p.capGrants = &capabilityGrants{dir: dir}
+	p.capGrants = newCapabilityGrantRecords(dir)
 	// A mesh-exempt namespace: the gate's own record is a node fixture.
 	pod := sandboxedPod()
 	pod.Namespace = "kube-system"
@@ -307,7 +307,7 @@ func gpuCapabilityPlugin(t *testing.T) (*plugin, string) {
 	p.SetReady()
 	p.cdiSpecDirs = writeCDISpecs(t, map[string]string{"gpu.json": gpuSpec})
 	dir := t.TempDir()
-	p.capGrants = &capabilityGrants{dir: dir}
+	p.capGrants = newCapabilityGrantRecords(dir)
 	return p, dir
 }
 

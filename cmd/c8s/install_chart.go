@@ -26,11 +26,11 @@ const releaseChartDir = "release-chart"
 var releaseVersion = regexp.MustCompile(`^v(\d+\.\d+\.\d+(?:-beta\.\d+)?)$`)
 
 // renderChart is the chart an install renders, its component table, and the
-// value args pinning those components' images.
+// values pinning those components' images.
 type renderChart struct {
 	path       string
 	components []c8sComponent
-	imagePins  []string
+	imagePins  map[string]any
 }
 
 // installChart is the --chart directory with the images its values set, or
@@ -89,23 +89,23 @@ func bundledChartWithReleaseDigests(ctx context.Context, chartVersion, work stri
 // releaseImagePins pins each component to its repository at the digest the
 // release chart at releasePath stamps for it. Only those two fields are read
 // from the release chart.
-func releaseImagePins(components []c8sComponent, releasePath string) ([]string, error) {
+func releaseImagePins(components []c8sComponent, releasePath string) (map[string]any, error) {
 	stamped, err := decodeValuesFile(filepath.Join(releasePath, "values.yaml"))
 	if err != nil {
 		return nil, err
 	}
-	var args []string
+	pins := map[string]any{}
 	for _, c := range components {
 		digest, err := releaseDigest(stamped, c)
 		if err != nil {
 			return nil, err
 		}
-		args = append(args,
-			"--set-string", c.valuesPath+".repository="+c.repository,
-			"--set-string", c.valuesPath+".digest="+digest,
-		)
+		helmchart.MergeValues(pins, valuesAtPath(c.valuesPath, map[string]any{
+			"repository": c.repository,
+			"digest":     digest,
+		}))
 	}
-	return args, nil
+	return pins, nil
 }
 
 // releaseDigest is the digest the release chart stamps for c, under the
