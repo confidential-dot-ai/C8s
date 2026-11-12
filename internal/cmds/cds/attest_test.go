@@ -799,6 +799,22 @@ func TestClassifyVerifyErrorDoesNotEchoUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestAttest_RejectsMalformedRequestJSON(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+
+	for name, body := range map[string]string{
+		"duplicate key": `{"challenge":"AA==","challenge":"AA=="}`,
+		"null body":     `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(body))))
+			wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
+		})
+	}
+}
+
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)

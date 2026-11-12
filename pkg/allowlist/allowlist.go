@@ -344,13 +344,8 @@ func (a *Allowlist) Normalize() error {
 // of a document, as `c8s allowlist apply` and `edit` read it — applying the
 // same normalization as ParseJSON so a written entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
-	if err := strictjson.Validate(data); err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var w Workload
-	if err := dec.Decode(&w); err != nil {
+	if err := strictjson.Unmarshal(data, &w); err != nil {
 		return nil, fmt.Errorf("decode workload: %w", err)
 	}
 	if err := w.refuseVolumeBindings(); err != nil {
