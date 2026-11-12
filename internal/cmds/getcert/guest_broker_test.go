@@ -125,7 +125,7 @@ func TestGuestVolumeRefusesUnverifiedRoot(t *testing.T) {
 	if err := requireGuestRoot(root); err == nil {
 		t.Fatal("a user-owned disk directory was accepted as a guest volume")
 	}
-	if binding, err := GuestIssuerBinding(root); err == nil || binding != "" {
+	if binding, err := guestIssuerBinding(root); err == nil || binding != "" {
 		t.Fatalf("unverified volume yielded a binding: %q, %v", binding, err)
 	}
 	creds := &credentials{volume: guestRootVolume(root), instanceID: testInstanceID}
@@ -155,8 +155,8 @@ func TestGuestVolumeRefusesUserOwnedTmpfs(t *testing.T) {
 	if err := requireGuestRoot(root); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("requireGuestRoot = %v, want %q", err, want)
 	}
-	if _, err := GuestIssuerBinding(root); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("GuestIssuerBinding = %v, want %q", err, want)
+	if _, err := guestIssuerBinding(root); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("guestIssuerBinding = %v, want %q", err, want)
 	}
 }
 
@@ -187,7 +187,7 @@ func systemGuestRoot(t *testing.T) *os.Root {
 // nothing, and stops cleanly on cancellation.
 func TestRunGuestRetriesWithoutEvidenceUntilCancelled(t *testing.T) {
 	root := systemGuestRoot(t)
-	if binding, err := GuestIssuerBinding(root); err != nil || binding != "" {
+	if binding, err := guestIssuerBinding(root); err != nil || binding != "" {
 		t.Fatalf("never-issued volume binding = %q, %v", binding, err)
 	}
 	claims := guestTestClaims(t)

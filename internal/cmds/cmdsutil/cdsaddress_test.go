@@ -234,13 +234,13 @@ func TestValidateHostnameTakesALowercaseDNSNameOnly(t *testing.T) {
 // A node reads addresses it may not publish; a mapped IPv6 literal is not one.
 func TestValidateIPv4TakesIPv4Text(t *testing.T) {
 	for _, raw := range []string{"192.0.2.10", "127.0.0.1", "0.0.0.0", "224.0.0.1"} {
-		if err := ValidateIPv4(raw); err != nil {
-			t.Errorf("ValidateIPv4(%q) = %v", raw, err)
+		if _, err := parseIPv4(raw); err != nil {
+			t.Errorf("parseIPv4(%q) = %v", raw, err)
 		}
 	}
 	for _, raw := range []string{"2001:db8::1", "::ffff:192.0.2.1", "not-an-ip", ""} {
-		if err := ValidateIPv4(raw); !errors.Is(err, ErrNotIPv4) {
-			t.Errorf("ValidateIPv4(%q) = %v, want %v", raw, err, ErrNotIPv4)
+		if _, err := parseIPv4(raw); !errors.Is(err, ErrNotIPv4) {
+			t.Errorf("parseIPv4(%q) = %v, want %v", raw, err, ErrNotIPv4)
 		}
 	}
 }

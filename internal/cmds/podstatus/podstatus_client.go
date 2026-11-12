@@ -339,11 +339,6 @@ func fetchDigests(ctx context.Context, client *http.Client, base string) ([]stri
 	return m.Digests, peer, nil
 }
 
-func do(ctx context.Context, client *http.Client, method, url string, body []byte) ([]byte, error) {
-	data, _, _, err := doPeer(ctx, client, method, url, body)
-	return data, err
-}
-
 func postEvidence(ctx context.Context, client *http.Client, base string, reqBody []byte) ([]byte, crypto.PublicKey, error) {
 	body, peer, binding, err := doPeer(ctx, client, http.MethodPost, base+EvidencePath, reqBody)
 	if err != nil {
@@ -387,18 +382,6 @@ func doPeer(ctx context.Context, client *http.Client, method, url string, body [
 		return nil, nil, "", errors.New("response did not arrive over TLS")
 	}
 	return data, resp.TLS.PeerCertificates[0].PublicKey, resp.Header.Get(BindingHeader), nil
-}
-
-// Get attests the pod CVM, then returns its /v1/pod body.
-func Get(ctx context.Context, cfg AttestConfig) ([]byte, error) {
-	_, client, err := Attest(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer client.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-	return do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
 }
 
 func hostPort(node string) string {

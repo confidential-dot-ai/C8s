@@ -174,12 +174,6 @@ func ValidateHostname(name string) error {
 	return nil
 }
 
-// ValidateIPv4 accepts an IPv4 address, routable or not.
-func ValidateIPv4(raw string) error {
-	_, err := parseIPv4(raw)
-	return err
-}
-
 // ValidateRoutableIPv4 accepts a global-unicast IPv4 address, one a node can
 // publish or dial.
 func ValidateRoutableIPv4(raw string) error {
