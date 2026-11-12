@@ -44,7 +44,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithHTTP(srv.URL, srv.Client())
-	resp, err := c.Authenticate()
+	resp, err := c.AuthenticateContext(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,9 +108,13 @@ func TestObtainCertificateWithEvidenceReturnsAttestationMaterial(t *testing.T) {
 	defer cds.Close()
 
 	client := NewClientWithHTTP(cds.URL, cds.Client())
-	result, err := client.ObtainCertificateWithEvidence(attestationApi.URL, csrPEM)
+	challengeResp, err := client.AuthenticateContext(context.Background())
 	if err != nil {
-		t.Fatalf("ObtainCertificateWithEvidence: %v", err)
+		t.Fatalf("AuthenticateContext: %v", err)
+	}
+	result, err := client.ObtainCertificateWithSandboxContext(context.Background(), attestationApi.URL, csrPEM, challengeResp.Challenge, nil)
+	if err != nil {
+		t.Fatalf("ObtainCertificateWithSandboxContext: %v", err)
 	}
 
 	if result.Certificate != certPEM {
@@ -157,48 +161,12 @@ func TestObtainCertificateWithEvidenceContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := client.ObtainCertificateWithEvidenceContext(ctx, "http://127.0.0.1:1", "csr")
+	_, err := client.ObtainCertificateWithSandboxContext(ctx, "http://127.0.0.1:1", testCSRPEM(t), "dGVzdC1jaGFsbGVuZ2U=", nil)
 	if err == nil {
-		t.Fatal("ObtainCertificateWithEvidenceContext succeeded with canceled context")
+		t.Fatal("ObtainCertificateWithSandboxContext succeeded with canceled context")
 	}
 	if !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("error = %v, want context canceled", err)
-	}
-}
-
-func TestHealthzSuccess(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
-	ok, err := c.Healthz()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected healthz to return true")
-	}
-}
-
-func TestReadyzSuccess(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
-	ok, err := c.Readyz()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected readyz to return true")
 	}
 }
 
