@@ -162,9 +162,7 @@ consumers that read that volume.`,
 
 	flags.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", workloadclaims.MeasuredPoliciesJournal, "The node's journal of allowlist policies extended into TDX RTMR[3], as mounted into this sidecar; a TDX CSR and attest request list it. Empty lists none")
 
-	for _, name := range []string{"attestation-api-url", "cert-path", "key-path", "ca-path"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "attestation-api-url", "cert-path", "key-path", "ca-path")
 	cmd.MarkFlagsOneRequired("san", "san-file", "no-san")
 	cmd.MarkFlagsMutuallyExclusive("san", "san-file", "no-san")
 

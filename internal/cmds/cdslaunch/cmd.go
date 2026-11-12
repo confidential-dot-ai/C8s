@@ -96,7 +96,7 @@ fix the cluster for its life.`,
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
-	for _, name := range []string{
+	cmdsutil.RequireFlags(cmd,
 		"out",
 		"cluster-id",
 		"operator-keys",
@@ -106,8 +106,6 @@ fix the cluster for its life.`,
 		"service-cidr",
 		"image-manifest",
 		"platform",
-	} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	)
 	return cmd
 }
