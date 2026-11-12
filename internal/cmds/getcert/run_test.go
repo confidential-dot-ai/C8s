@@ -147,6 +147,21 @@ func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	}
 }
 
+// get-cert reports acme in discovery, where the webhook's annotation refuses
+// it.
+func TestValidateConfigAcceptsACMEDiscoveryPublicTLSMode(t *testing.T) {
+	err := validateConfig(config{
+		CDSURL:                 "http://cds:8443",
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "confidential-gke.confidential.ai",
+		DiscoveryOutPath:       "/tmp/discovery.json",
+		DiscoveryPublicTLSMode: "acme",
+	})
+	if err != nil {
+		t.Fatalf("validateConfig = %v, want acme accepted", err)
+	}
+}
+
 func TestResolveDiscoveryPublicTLSModeFile(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, data string) string {

@@ -69,7 +69,7 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 	doc, err := json.Marshal(types.DiscoveryDocument{
 		Version: "1",
 		PublicTLS: types.PublicTLSDiscovery{
-			Mode: mode,
+			Mode: types.FrontDoorMode(mode),
 		},
 		CDSTLS: types.CDSTLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})),

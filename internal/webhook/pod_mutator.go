@@ -36,6 +36,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -107,8 +108,6 @@ const defaultCertFSGroup int64 = 65532
 // there and its NotBefore is not backdated, so an equal interval would only
 // renew once the installed leaf had already expired.
 const defaultCertRenewInterval = 2 * time.Hour
-const discoveryPublicTLSModeCDS = "cds"
-const discoveryPublicTLSModeWebPKI = "webpki"
 
 // reservedSecretContainerName is the injected secret fetcher. Reserved like
 // the cert containers: a pod that declared the name itself would have the
@@ -520,11 +519,11 @@ func (d discoverySpec) validate() error {
 			errInvalidInjectionAnnotation, AnnotationDiscoveryOut, d.Out, discoveryMountPath)
 	}
 
-	switch d.PublicTLSMode {
-	case discoveryPublicTLSModeCDS, discoveryPublicTLSModeWebPKI:
+	switch types.FrontDoorMode(d.PublicTLSMode) {
+	case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI:
 		return nil
 	default:
-		return fmt.Errorf("%w: %s must be %q or %q, got %q", errInvalidInjectionAnnotation, AnnotationDiscoveryPublicTLSMode, discoveryPublicTLSModeCDS, discoveryPublicTLSModeWebPKI, d.PublicTLSMode)
+		return fmt.Errorf("%w: %s must be %q or %q, got %q", errInvalidInjectionAnnotation, AnnotationDiscoveryPublicTLSMode, types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, d.PublicTLSMode)
 	}
 }
 
