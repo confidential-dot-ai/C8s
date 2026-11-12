@@ -11,7 +11,9 @@ package attestproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -81,7 +83,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.socket, "socket", "", "Unix socket path to serve on (absolute; created 0660, chgrp'd to --socket-gid)")
 	f.IntVar(&cfg.socketGID, "socket-gid", workloadclaims.InventorySocketGID, "group that may connect to the socket (0 = keep the process group)")
 	f.StringVar(&cfg.upstream, "upstream", defaultUpstream, "attestation-api base URL (the pod-loopback listener in the same pod)")
-	f.StringVar(&cfg.healthAddr, "health-addr", "", "TCP address serving GET /healthz for the kubelet's probes (empty disables it)")
+	f.StringVar(&cfg.healthAddr, "health-addr", "", "TCP address serving the kubelet's probes: /livez, /healthz and /upstream/livez (empty disables it)")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout on the socket listener")
 	cmd.AddCommand(newHealthcheckCmd())
 	return cmd
@@ -102,9 +104,7 @@ func newHealthcheckCmd() *cobra.Command {
 			if socket == "" {
 				return fmt.Errorf("--socket is required")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), healthcheckTimeout)
-			defer cancel()
-			if _, err := remote.NewClient("unix://" + socket).Health(ctx); err != nil {
+			if err := checkHealth(context.Background(), remote.NewClient("unix://"+socket)); err != nil {
 				return fmt.Errorf("healthcheck over %s: %w", socket, err)
 			}
 			return nil
@@ -149,7 +149,7 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	// Started after the socket is bound so a probe never passes before the
 	// front door is up.
 	if cfg.healthAddr != "" {
-		addr, err := cmdsutil.ServeInBackground(ctx, cfg.healthAddr, healthHandler(cfg.socket), slog.Default())
+		addr, err := cmdsutil.ServeInBackground(ctx, cfg.healthAddr, healthHandler(cfg.socket, cfg.upstream), slog.Default())
 		if err != nil {
 			return fmt.Errorf("--health-addr: %w", err)
 		}
@@ -163,24 +163,73 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	return nil
 }
 
-// healthHandler answers the kubelet's HTTP probe by running the healthcheck
-// subcommand's check in process: a GET /health round-trip over the proxy's own
-// socket, which covers socket, proxy and upstream at once. The response body
-// carries no evidence, so exposing it on the pod IP adds no reachable surface
-// beyond "is this DaemonSet serving".
-func healthHandler(socket string) http.Handler {
+// healthHandler serves the kubelet's probes; the bodies carry no evidence.
+//   - /livez: attest-proxy liveness; fails only when no socket is at the path.
+//     It never dials the socket, whose connection cap a hung API can fill, so
+//     a wedged serve loop passes and only readiness catches it.
+//   - /healthz: readiness, the healthcheck round-trip over the socket.
+//   - /upstream/livez: attestation-api liveness, which the kubelet cannot
+//     reach on pod loopback. Any 2xx JSON health body passes: its status is
+//     not something a restart fixes.
+func healthHandler(socket, upstream string) http.Handler {
+	socketClient := remote.NewClient("unix://" + socket)
+	upstreamClient := remote.NewClient(upstream)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		if socketGone(socket) {
+			http.Error(w, "socket gone", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintln(w, "ok")
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), healthcheckTimeout)
-		defer cancel()
-		if _, err := remote.NewClient("unix://" + socket).Health(ctx); err != nil {
+		if err := checkHealth(r.Context(), socketClient); err != nil {
 			slog.Warn("attestation proxy healthcheck failed", "socket", socket, "error", err)
 			http.Error(w, "attestation-api unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		fmt.Fprintln(w, "ok")
 	})
+	mux.HandleFunc("GET /upstream/livez", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fetchHealth(r.Context(), upstreamClient); err != nil {
+			slog.Warn("attestation-api healthcheck failed", "upstream", upstream, "error", err)
+			http.Error(w, "attestation-api unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintln(w, "ok")
+	})
 	return mux
+}
+
+// checkHealth runs fetchHealth and, like remote.WaitHealthy, counts only
+// status "ok" as healthy.
+func checkHealth(ctx context.Context, client remote.Client) error {
+	health, err := fetchHealth(ctx, client)
+	if err != nil {
+		return err
+	}
+	if health.Status != "ok" {
+		return fmt.Errorf("health status %q, want \"ok\"", health.Status)
+	}
+	return nil
+}
+
+// fetchHealth runs GET /health within healthcheckTimeout.
+func fetchHealth(ctx context.Context, client remote.Client) (remote.HealthResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
+	defer cancel()
+	return client.Health(ctx)
+}
+
+// socketGone reports whether nothing, or something other than a socket, is at
+// path. Any other stat error counts as present: liveness fails only when a
+// restart, which binds the socket afresh, would help.
+func socketGone(path string) bool {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	return err == nil && fi.Mode()&os.ModeSocket == 0
 }
 
 func newProxy(cfg config) (http.Handler, error) {
