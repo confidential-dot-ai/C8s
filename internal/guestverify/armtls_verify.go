@@ -61,7 +61,7 @@ func armTLSVerifiedConfig(exp Policy) *tls.Config {
 // verifies it in-process with attestation-go (HW chain + report_data
 // binding), and enforces the full measured-identity policy — identical to the
 // attest gate. Fails closed on any missing piece.
-func verifyServerCert(leaf *x509.Certificate, exp platformVerifier) error {
+func verifyServerCert(leaf *x509.Certificate, exp Policy) error {
 	// This leaf is self-signed by construction (NewClient's doc comment:
 	// there is no CA on this path at all), so the classification must come
 	// back BodySelfSigned. Assert it rather than discard it: a CA-vouched
@@ -75,24 +75,10 @@ func verifyServerCert(leaf *x509.Certificate, exp platformVerifier) error {
 	if body != certutil.BodySelfSigned {
 		return fmt.Errorf("armtls: cred-release serving cert is not self-signed (issuer != subject), so its body is authenticated by nothing this flow checks; the armTLS leaf must carry its own signature under the attested key")
 	}
-	return exp.verifyCertificate(leaf)
+	return exp.gate.verifyCertificate(exp, leaf)
 }
 
-// verifyCertificate routes to the arm the manifest's family names. An unknown
-// family cannot reach here — PolicyFor refuses one — but the default fails
-// closed rather than falling through to another family's rules.
-func (exp Policy) verifyCertificate(leaf *x509.Certificate) error {
-	switch exp.identity.Family() {
-	case teetypes.FamilySNP:
-		return exp.verifySNPCertificate(leaf)
-	case teetypes.FamilyTDX:
-		return exp.verifyTDXCertificate(leaf)
-	default:
-		return fmt.Errorf("armtls: --image-manifest pins TEE family %q, which this flow has no gate for", exp.identity.Family())
-	}
-}
-
-func (exp Policy) verifyTDXCertificate(leaf *x509.Certificate) error {
+func (tdxGate) verifyCertificate(exp Policy, leaf *x509.Certificate) error {
 	att, err := armtls.ExtractAttestation(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
@@ -144,7 +130,7 @@ var VerifySNP localverify.VerifyFunc = localverify.Verify
 // (VCEK from AMD KDS) crosses the network. VerifyConnection has no context.
 const snpARMTLSTimeout = 30 * time.Second
 
-// verifySNPCertificate verifies an SNP serving certificate: it enforces the SAME two
+// verifyCertificate verifies an SNP serving certificate: it enforces the SAME two
 // pins as the attest gate — the launch digest must be one of the manifest's
 // per-SMP variants, and HOSTDATA must equal the operator-key binding — over
 // evidence extracted from a bare-metal SNP armTLS cert (a raw report, no
@@ -152,7 +138,7 @@ const snpARMTLSTimeout = 30 * time.Second
 //
 // The REPORTDATA anchor is the cert's own key hash, so a captured quote from
 // another guest cannot be replayed onto this channel.
-func (exp Policy) verifySNPCertificate(leaf *x509.Certificate) error {
+func (snpGate) verifyCertificate(exp Policy, leaf *x509.Certificate) error {
 	platform, evidence, params, err := localverify.CertEnvelope(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)

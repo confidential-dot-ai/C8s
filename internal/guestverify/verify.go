@@ -30,14 +30,35 @@ import (
 // verdict.
 var VerifyEnvelope = teeverify.Verify
 
-// platformVerifier is what the checks common to every platform hand a
-// validated envelope or an authenticated certificate body to. [Policy]
-// is the only production implementation; tests stub it to assert those common
-// checks run first.
-type platformVerifier interface {
-	platform() teetypes.PlatformType
-	verifyEvidence(env teetypes.AttestationEvidence, envelopeJSON, expectedReportData []byte) (*teetypes.VerificationResult, error)
-	verifyCertificate(*x509.Certificate) error
+// familyGate is the half of the trust gate that is specific to one TEE family:
+// what the checks common to every platform hand a validated envelope or an
+// authenticated certificate body to, and whether the family measures runtime
+// extends at all. PolicyFor picks the implementation from the manifest, so
+// nothing after construction asks the family again.
+type familyGate interface {
+	verifyEvidence(exp Policy, env teetypes.AttestationEvidence, envelopeJSON, expectedReportData []byte) (*teetypes.VerificationResult, error)
+	verifyCertificate(exp Policy, leaf *x509.Certificate) error
+	hasRuntimeRegister() bool
+}
+
+type snpGate struct{}
+
+type tdxGate struct{}
+
+func (snpGate) hasRuntimeRegister() bool { return false }
+
+func (tdxGate) hasRuntimeRegister() bool { return true }
+
+// gateFor is the gate for the family the manifest pins, or nil for a family
+// this flow verifies nothing for.
+func gateFor(family teetypes.Family) familyGate {
+	switch family {
+	case teetypes.FamilySNP:
+		return snpGate{}
+	case teetypes.FamilyTDX:
+		return tdxGate{}
+	}
+	return nil
 }
 
 // Policy is the trust gate for one manifest: the pinned image, the
@@ -47,6 +68,7 @@ type platformVerifier interface {
 // string.
 type Policy struct {
 	identity        runtimemeasure.ImageIdentity
+	gate            familyGate // set by PolicyFor, the only constructor
 	operatorPubPEM  []byte
 	workloadDigests []string
 	// policies are the allowlist policies the node measured after the
@@ -121,26 +143,30 @@ func PolicyFor(manifestPath string, operatorPubPEM []byte, workloadImages []stri
 	if err != nil {
 		return Policy{}, fmt.Errorf("--image-manifest: %w", err)
 	}
-	if p := identity.Family().DefaultPlatform(); p == "" {
+	gate := gateFor(identity.Family())
+	if gate == nil {
 		return Policy{}, fmt.Errorf("--image-manifest: %s carries an image pin this flow has no gate for (family %q)", manifestPath, identity.Family())
 	}
-	digests, err := workloadChain(identity.Family(), workloadImages)
+	if len(workloadImages) > 0 && !gate.hasRuntimeRegister() {
+		return Policy{}, fmt.Errorf("--workload-image requires a TDX node: SEV-SNP has no runtime measurement register, so workload extends cannot be verified; rerun without it")
+	}
+	digests, err := workloadChain(workloadImages)
 	if err != nil {
 		return Policy{}, err
 	}
-	return Policy{identity: identity, operatorPubPEM: operatorPubPEM, workloadDigests: digests}, nil
+	return Policy{
+		identity:        identity,
+		gate:            gate,
+		operatorPubPEM:  operatorPubPEM,
+		workloadDigests: digests,
+	}, nil
 }
 
 // workloadChain canonicalizes --workload-image into the deduped, ordered
 // digest set VerifyBinding folds onto the operator-key seed.
-func workloadChain(family teetypes.Family, workloadImages []string) ([]string, error) {
+func workloadChain(workloadImages []string) ([]string, error) {
 	if len(workloadImages) == 0 {
 		return nil, nil
-	}
-	// Accepting --workload-image off TDX would report an enforcement that
-	// cannot exist, so refuse the flag instead of ignoring it.
-	if family != teetypes.FamilyTDX {
-		return nil, fmt.Errorf("--workload-image requires a TDX node: SEV-SNP has no runtime measurement register, so workload extends cannot be verified; rerun without it")
 	}
 	digests := make([]string, 0, len(workloadImages))
 	seen := make(map[string]string, len(workloadImages))
@@ -245,7 +271,7 @@ func VerifyEvidence(envelopeJSON, expectedReportData []byte, exp Policy) (*teety
 // caller's nonce on the attest gate, the cert-key hash on the armTLS dial.
 // Both paths funnel through here so the two gates cannot diverge. Fails
 // closed on any missing piece.
-func verifyEvidence(envelopeJSON, expectedReportData []byte, exp platformVerifier) (*teetypes.VerificationResult, error) {
+func verifyEvidence(envelopeJSON, expectedReportData []byte, exp Policy) (*teetypes.VerificationResult, error) {
 	var env teetypes.AttestationEvidence
 	if err := json.Unmarshal(envelopeJSON, &env); err != nil {
 		return nil, fmt.Errorf("parse evidence envelope: %w", err)
@@ -270,24 +296,10 @@ func verifyEvidence(envelopeJSON, expectedReportData []byte, exp platformVerifie
 		return nil, fmt.Errorf("evidence envelope is double-wrapped ({platform,evidence} inside evidence); the envelope must wrap the platform evidence object exactly once")
 	}
 
-	return exp.verifyEvidence(env, envelopeJSON, expectedReportData)
+	return exp.gate.verifyEvidence(exp, env, envelopeJSON, expectedReportData)
 }
 
-// verifyEvidence routes to the arm the manifest's family names. An unknown
-// family cannot reach here — PolicyFor refuses one — but the default fails
-// closed rather than falling through to another family's rules.
-func (exp Policy) verifyEvidence(env teetypes.AttestationEvidence, envelopeJSON, expectedReportData []byte) (*teetypes.VerificationResult, error) {
-	switch exp.identity.Family() {
-	case teetypes.FamilySNP:
-		return exp.verifySNPEvidence(env, expectedReportData)
-	case teetypes.FamilyTDX:
-		return exp.verifyTDXEvidence(envelopeJSON, expectedReportData)
-	default:
-		return nil, fmt.Errorf("--image-manifest pins TEE family %q, which this flow has no gate for", exp.identity.Family())
-	}
-}
-
-func (exp Policy) verifyTDXEvidence(envelopeJSON, expectedReportData []byte) (*teetypes.VerificationResult, error) {
+func (tdxGate) verifyEvidence(exp Policy, _ teetypes.AttestationEvidence, envelopeJSON, expectedReportData []byte) (*teetypes.VerificationResult, error) {
 	res, err := VerifyEnvelope(envelopeJSON, teetypes.VerifyParams{
 		ExpectedReportData: expectedReportData,
 	})
@@ -312,7 +324,7 @@ func (exp Policy) verifyTDXEvidence(envelopeJSON, expectedReportData []byte) (*t
 // (VCEK from AMD KDS) crosses the network.
 const snpAttestTimeout = 30 * time.Second
 
-// verifySNPEvidence verifies a bare-metal SNP envelope through localverify —
+// verifyEvidence verifies a bare-metal SNP envelope through localverify —
 // which accepts the raw-report shape and pulls the VCEK from AMD KDS, rather
 // than requiring the guest to have volunteered it inline — then enforces the
 // same measured identity the armTLS dial does.
@@ -320,7 +332,7 @@ const snpAttestTimeout = 30 * time.Second
 // The engine already enforces both pins (Measurements, ExpectedInitDataHash);
 // checkIdentity re-checks them over the returned claims so a
 // success the claims contradict is never accepted.
-func (exp Policy) verifySNPEvidence(env teetypes.AttestationEvidence, expectedReportData []byte) (*teetypes.VerificationResult, error) {
+func (snpGate) verifyEvidence(exp Policy, env teetypes.AttestationEvidence, _, expectedReportData []byte) (*teetypes.VerificationResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), snpAttestTimeout)
 	defer cancel()
 	res, err := VerifySNP(ctx, string(env.Platform), env.Evidence, exp.verificationParams(expectedReportData))
