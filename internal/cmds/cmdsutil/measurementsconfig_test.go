@@ -3,6 +3,7 @@ package cmdsutil
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -255,6 +256,52 @@ func TestResolveCDSPinsFallsBackToTheArgument(t *testing.T) {
 	}
 	if fromNode {
 		t.Fatal("a node that mounts no policy decided")
+	}
+}
+
+// A credential client says which set it resolved and who decided it, so a
+// pod's log names the CDS image it will accept.
+func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
+	document := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	mounted := filepath.Join(t.TempDir(), "cds-pins.json")
+	if err := os.WriteFile(mounted, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		nodePolicy string
+		source     ImagePolicySource
+		want       string
+	}{
+		{
+			name:       "the node's policy",
+			nodePolicy: mounted,
+			want:       "from_node=true",
+		},
+		{
+			name:       "the caller's own document",
+			nodePolicy: filepath.Join(t.TempDir(), "absent.json"),
+			source:     ImagePolicySource{JSON: document},
+			want:       "from_node=false",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			pins, err := ClientCDSPins(t.Context(), tc.nodePolicy, tc.source)
+			if err != nil {
+				t.Fatalf("ClientCDSPins: %v", err)
+			}
+			if images := pins.Current().Images; len(images) != 1 {
+				t.Fatalf("policy images = %+v, want the one pinned image", images)
+			}
+			line := logged.String()
+			if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, tc.want) {
+				t.Fatalf("logged %q, want the resolved line with %s", line, tc.want)
+			}
+		})
 	}
 }
 

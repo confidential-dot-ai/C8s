@@ -112,6 +112,21 @@ func ResolveCDSAddress(path, suppliedURL string) (string, bool, error) {
 	return resolveNodePolicy(path, supplied, ParseCDSAddress)
 }
 
+// ResolveCDSURL is the base URL a client dials: the endpoint the node mounts
+// at path, otherwise suppliedURL as it was given, and whether the node
+// decided. An empty answer names no CDS, which each client refuses in its own
+// words.
+func ResolveCDSURL(path, suppliedURL string) (string, bool, error) {
+	address, fromNode, err := ResolveCDSAddress(path, suppliedURL)
+	if err != nil {
+		return "", false, err
+	}
+	if fromNode {
+		return CDSURL(address), true, nil
+	}
+	return suppliedURL, false, nil
+}
+
 // resolveNodePolicy returns what the node mounts at path, parsed, and whether
 // there is a mount at all. The mount answer holds even when parsing or the
 // caller's own arguments fail it, so a caller can say which source was short.

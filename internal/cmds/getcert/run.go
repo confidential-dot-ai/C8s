@@ -220,16 +220,11 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 }
 
 func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
 		})
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return pins, nil
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
@@ -247,13 +242,11 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
-	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(address)
-	}
+	cfg.CDSURL = cdsURL
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
 	}
