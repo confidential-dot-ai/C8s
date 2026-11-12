@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"net"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -8,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -29,7 +29,8 @@ func freePort(t *testing.T) int {
 
 // TestRunIssuesAndInstalls drives the real run(): bootstrap placeholder, the
 // challenge listener, ACME issuance against the fake directory, the installed
-// key's mode, and shutdown on SIGTERM. nginx reads it per TLS handshake.
+// key's mode, and shutdown when its context is cancelled. nginx reads it per
+// TLS handshake.
 func TestRunIssuesAndInstalls(t *testing.T) {
 	ca := newTestCA(t)
 	port := freePort(t)
@@ -56,8 +57,9 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 		keyDir:        keyDir,
 		logLevel:      "debug",
 	}
+	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- runWith(cfg, testPublicProbeClient(t, frontDoor.URL)) }()
+	go func() { done <- runWith(ctx, cfg, testPublicProbeClient(t, frontDoor.URL)) }()
 
 	// The install lands a CA-issued (non-self-issued) leaf.
 	deadline := time.Now().Add(30 * time.Second)
@@ -84,16 +86,14 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 		t.Fatalf("key mode = %v, want %v", info.Mode().Perm(), os.FileMode(keyMode))
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("run did not stop on SIGTERM")
+		t.Fatal("run did not stop when its context was cancelled")
 	}
 }
 
@@ -101,7 +101,7 @@ func TestRunValidatesConfig(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.logLevel = "info"
 	cfg.domains = []string{"-bad-"}
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("run accepted an invalid domain")
 	}
 }

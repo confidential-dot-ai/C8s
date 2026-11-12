@@ -17,10 +17,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
@@ -66,13 +64,10 @@ func parseSecretSpec(spec string) (secretRequest, error) {
 	return secretRequest{Name: name, Path: canonical}, nil
 }
 
-func run(cfg config) error {
+func run(ctx context.Context, cfg config) error {
 	if err := validate(&cfg); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	pins, err := cfg.ParsePins(ctx)
 	if err != nil {
 		return err

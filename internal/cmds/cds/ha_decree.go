@@ -350,7 +350,7 @@ func confirmedSet(cmd *cobra.Command, a worker.Admission) ([]byte, error) {
 	if err := a.Report(cmd.ErrOrStderr()); err != nil {
 		return nil, err
 	}
-	if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
+	if !cmdsutil.Confirm(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
 		return nil, errors.New("not signed: the worker document's facts were not confirmed")
 	}
 	return a.Nodes, nil

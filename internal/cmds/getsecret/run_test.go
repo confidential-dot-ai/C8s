@@ -340,7 +340,7 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}
 }
