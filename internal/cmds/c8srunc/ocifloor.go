@@ -33,14 +33,6 @@ const (
 	containerTypeSandbox       = "sandbox"
 )
 
-// kernelFSTypes are the filesystem types a privileged container is given
-// writable (containerd pkg/oci, WithWriteableSysfs and WithWriteableCgroupfs).
-var kernelFSTypes = []string{
-	"cgroup",
-	"cgroup2",
-	"sysfs",
-}
-
 // requireFloor refuses a bundle that would start a container of a member pod
 // with privileges the pod's protection cannot survive. Attachability is
 // refused for every container the wrapper creates, whether or not the floor
@@ -308,7 +300,7 @@ func requireUnprivileged(spec *specs.Spec) error {
 		return errors.New("the bundle masks no kernel paths of /proc")
 	}
 	for _, mount := range spec.Mounts {
-		if slices.Contains(kernelFSTypes, mount.Type) && writable(mount.Options) {
+		if nriimagepolicy.IsKernelFS(mount.Type) && writable(mount.Options) {
 			return fmt.Errorf("%s is mounted writable at %s", mount.Type, mount.Destination)
 		}
 	}

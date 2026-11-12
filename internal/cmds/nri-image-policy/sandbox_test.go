@@ -280,6 +280,41 @@ func TestSandboxViolations(t *testing.T) {
 			want: "writable sysfs or cgroupfs",
 		},
 		{
+			name: "privileged: writable cgroup",
+			ctr: func(c *api.Container) {
+				c.Mounts[2] = &api.Mount{
+					Destination: "/sys/fs/cgroup",
+					Type:        "cgroup",
+					Source:      "cgroup",
+					Options:     []string{"nosuid", "noexec", "nodev", "relatime", "rw"},
+				}
+			},
+			want: "writable sysfs or cgroupfs",
+		},
+		{
+			name: "privileged: writable cgroup2",
+			ctr: func(c *api.Container) {
+				c.Mounts[2] = &api.Mount{
+					Destination: "/sys/fs/cgroup",
+					Type:        "cgroup2",
+					Source:      "cgroup2",
+					Options:     []string{"nosuid", "noexec", "nodev", "relatime", "rw"},
+				}
+			},
+			want: "writable sysfs or cgroupfs",
+		},
+		{
+			name: "read-only cgroup2",
+			ctr: func(c *api.Container) {
+				c.Mounts[2] = &api.Mount{
+					Destination: "/sys/fs/cgroup",
+					Type:        "cgroup2",
+					Source:      "cgroup2",
+					Options:     []string{"nosuid", "noexec", "nodev", "relatime", "ro"},
+				}
+			},
+		},
+		{
 			name: "privileged: host devices",
 			ctr: func(c *api.Container) {
 				c.Linux.Devices = []*api.LinuxDevice{{Path: "/dev/sda", Type: "b"}}

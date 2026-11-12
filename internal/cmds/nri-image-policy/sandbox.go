@@ -109,10 +109,15 @@ const networkNamespace = "network"
 // this and writable sysfs/cgroupfs are the evidence there is.
 const cgroupNamespace = "cgroup"
 
-// kernelFSTypes are the filesystem types oci.WithPrivileged rewrites from ro to
-// rw (containerd pkg/oci/spec_opts.go, WithWriteableSysfs and
-// WithWriteableCgroupfs).
-var kernelFSTypes = []string{"sysfs", "cgroup"}
+// IsKernelFS reports whether fsType names sysfs or cgroupfs, v1 or v2: the
+// kernel filesystems containerd's oci.WithPrivileged makes writable.
+func IsKernelFS(fsType string) bool {
+	switch fsType {
+	case "sysfs", "cgroup", "cgroup2":
+		return true
+	}
+	return false
+}
 
 // sandboxObservation is the host-privilege surface of one container as NRI
 // reports it on the persisted OCI spec. A denial logs the whole struct, so a reviewer
@@ -410,7 +415,7 @@ func endsReadOnly(m *api.Mount) bool {
 func writableKernelFS(ctr *api.Container) []string {
 	var out []string
 	for _, m := range ctr.GetMounts() {
-		if !slices.Contains(kernelFSTypes, m.GetType()) {
+		if !IsKernelFS(m.GetType()) {
 			continue
 		}
 		if !endsReadOnly(m) {
