@@ -53,3 +53,38 @@ func TestForeignCreateResultBeforeIdentityIsRecordedIsUnavailable(t *testing.T) 
 		t.Fatalf("pod is %s with reason %q, want Pending with CloudUnavailable", status.Phase, status.Reason)
 	}
 }
+
+// An answer that names no instance, such as an empty body from something in
+// front of the cloud API, shows nothing about the recorded instance: the pod
+// keeps its phase and the read is retried as unavailable. Another identity
+// under the recorded one ends the pod.
+func TestAnswerNamingNoInstanceIsRetriedAndAnotherIdentityEndsThePod(t *testing.T) {
+	pod := fixturePod()
+	r, cloud := fixtureReconciler(t, pod)
+	cloud.create = func(_ string, req createRequest) (*instance, error) {
+		cloud.in = instanceFor(req)
+		cloud.in.Status = "running"
+		return cloud.in, nil
+	}
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	cloud.get = func(string) (*instance, error) { return &instance{}, nil }
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if status := getPod(t, r, pod).Status; status.Phase == corev1.PodFailed || status.Reason != "CloudUnavailable" {
+		t.Fatalf("pod is %s with reason %q, want it held with CloudUnavailable", status.Phase, status.Reason)
+	}
+	cloud.get = func(string) (*instance, error) {
+		other := *cloud.in
+		other.ID = "i-another"
+		return &other, nil
+	}
+	if err := reconcile(t, r, pod); err == nil {
+		t.Fatal("an instance under another identity was destroyed or released")
+	}
+	if status := getPod(t, r, pod).Status; status.Phase != corev1.PodFailed || status.Reason != "InstanceIdentityMismatch" || cloud.deleteCalls != 0 {
+		t.Fatalf("pod is %s with reason %q after %d deletes, want Failed with InstanceIdentityMismatch and none", status.Phase, status.Reason, cloud.deleteCalls)
+	}
+}

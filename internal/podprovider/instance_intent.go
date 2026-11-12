@@ -26,15 +26,19 @@ type instanceIntent struct {
 }
 
 // errForeignInstance reports an instance the cloud returned under the
-// record's key or identity that the record did not create: another or no
-// identity, or labels that differ from the frozen create. Before the record
-// holds an instance identity the reconciler retries it as unavailable; after,
-// it ends the pod with InstanceIdentityMismatch.
+// record's key or identity that the record did not create: another identity,
+// or labels that differ from the frozen create. An answer naming no instance
+// is not one: it shows nothing about the instance and is retried. Before the
+// record holds an instance identity the reconciler retries a foreign instance
+// as unavailable; after, it ends the pod with InstanceIdentityMismatch.
 var errForeignInstance = errors.New("cloud instance is not the one the record created")
 
 func (in *instanceIntent) owns(got *instance) error {
-	if got == nil || got.ID == "" || (in.InstanceID != "" && got.ID != in.InstanceID) {
-		return fmt.Errorf("%w: another or missing instance identity", errForeignInstance)
+	if got == nil || got.ID == "" {
+		return errors.New("cloud returned no instance identity")
+	}
+	if in.InstanceID != "" && got.ID != in.InstanceID {
+		return fmt.Errorf("%w: another instance identity", errForeignInstance)
 	}
 	for k, value := range in.Request.Labels {
 		if got.Labels[k] != value {
