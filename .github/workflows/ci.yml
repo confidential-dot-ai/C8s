@@ -4,26 +4,8 @@ on:
   push:
     branches: [main, beta, "feat/**"]
     tags: ["v*"]
-    paths: &go-paths
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "Makefile"
-      - ".golangci.yml"
-      - "charts/**"
-      # The integration harness (test/integration) and its mocks
-      # (test/mock-*) gate PRs via the Integration job below.
-      - "test/**"
-      - "scripts/coverage-gate.sh"
-      - "scripts/shipped-deps-guard.sh"
-      - "scripts/mutation-check.sh"
-      - ".gremlins.yaml"
-      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, beta, "feat/**"]
-    paths: *go-paths
   merge_group:
     types: [checks_requested]
     branches: [main, beta, "feat/**"]
@@ -40,9 +22,46 @@ env:
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
 
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/relevant-changes
+        with:
+          filters: |
+            relevant:
+              - ".github/actions/relevant-changes/**"
+              - "**.go"
+              - "go.mod"
+              - "go.sum"
+              - "go.work"
+              - "go.work.sum"
+              - "Makefile"
+              - ".golangci.yml"
+              - "charts/**"
+              # The integration harness (test/integration) and its mocks
+              # (test/mock-*) gate PRs via the Integration job below.
+              - "test/**"
+              - "scripts/coverage-gate.sh"
+              - "scripts/shipped-deps-guard.sh"
+              - "scripts/mutation-check.sh"
+              - ".gremlins.yaml"
+              - ".github/workflows/ci.yml"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -81,6 +100,8 @@ jobs:
   test:
     name: Build & Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     permissions:
       contents: read
       # Cache pruning (the step after the save) deletes this job's own
@@ -188,6 +209,8 @@ jobs:
   integration:
     name: Integration
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +223,8 @@ jobs:
   integration-cluster:
     name: Integration (cluster)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,6 +239,8 @@ jobs:
   coverage:
     name: Coverage gate
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -302,8 +329,9 @@ jobs:
   mutation:
     name: Mutation (advisory)
     runs-on: ubuntu-latest
+    needs: changes
     # Diff-based vs the base branch; no meaningful base ref on push.
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     timeout-minutes: 20
     # Advisory: never blocks the PR, even if the tool itself breaks.
     continue-on-error: true
@@ -334,3 +362,18 @@ jobs:
             echo "Mutation testing incomplete (exit $status; advisory)." >> "$GITHUB_STEP_SUMMARY"
           fi
           ./scripts/mutation-check.sh summary >> "$GITHUB_STEP_SUMMARY"
+
+  result:
+    name: CI result
+    runs-on: ubuntu-latest
+    needs: [changes, lint, test, integration, integration-cluster, coverage]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1
