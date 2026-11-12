@@ -113,32 +113,8 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 			return p.denyContainer(pod.GetId(), err)
 		}
 	}
-	if !p.Ready() {
-		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
-			return p.transientRefusal(pod, err)
-		}
-		if err := p.measureStarted(ctx, imageRef); err != nil {
-			return p.transientRefusal(pod, err)
-		}
-		unlock := p.mesh.lockStarts(pod)
-		defer unlock()
-		if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
-			return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
-		}
-		// INVARIANT: the gate holds a member pod whether or not the first
-		// pull has settled, so the start that opens it is recorded on both
-		// paths. A role comes from the base alone, which is loaded at boot.
-		// The record resolves the digest here too: an unresolved one closes
-		// the sandbox's inventory answer for its life (internal/admissionhistory),
-		// and the pod that starts in this window is the one a fresh install
-		// brings up with CDS.
-		p.noteMeshStarted(ctx, pod, ctr, imageRef)
-		p.recordForInventory(ctx, pod, ctr, imageRef)
-		return p.finishPodStart(ctx, pod, ctr, credentialSource)
-	}
-	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
-	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
-		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
+	if err := p.admitContainer(ctx, cfg, pod, ctr, imageRef); err != nil {
+		return err
 	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
 		return p.transientRefusal(pod, err)
@@ -148,9 +124,32 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 	if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
 	}
+	// INVARIANT: recorded whether or not the first pull has settled; an
+	// unresolved digest closes the sandbox's inventory answer for its life.
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
 	return p.finishPodStart(ctx, pod, ctr, credentialSource)
+}
+
+// admitContainer refuses a start the image policy denies.
+func (p *plugin) admitContainer(
+	ctx context.Context,
+	cfg *config,
+	pod *api.PodSandbox,
+	ctr *api.Container,
+	imageRef string,
+) error {
+	if !p.Ready() {
+		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
+			return p.transientRefusal(pod, err)
+		}
+		return nil
+	}
+	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
+	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
+		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
+	}
+	return nil
 }
 
 // transientRefusal returns a start refusal a node does not record, so a
