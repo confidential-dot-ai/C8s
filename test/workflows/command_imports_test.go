@@ -18,10 +18,12 @@ import (
 
 const (
 	repoPathPrefix = "github.com/confidential-dot-ai/c8s/"
+	cobraPath      = "github.com/spf13/cobra"
 	rulesFile      = "test/workflows/command_imports_test.go"
 
 	outsideImportRule = "packages under internal/cmds/ are commands (flags, config and wiring), and outside tests only cmd/ and internal/cmds/ import them"
 	mountImportRule   = "outside tests, a package under internal/cmds/ imports a command only to mount it as a subcommand"
+	cobraImportRule   = "outside tests, only cmd/ and internal/cmds/ import " + cobraPath + ", so every command is filed under internal/cmds/"
 )
 
 // importRules is the command import rule and the imports it lets through.
@@ -51,6 +53,7 @@ var commandImportRules = importRules{
 		"internal/cdsdecree imports internal/cmds/cmdsutil",
 		"internal/cdspins imports internal/cmds/cmdsutil",
 		"internal/controller imports internal/cmds/cmdsutil",
+		"internal/podlaunch imports github.com/spf13/cobra",
 		"internal/podlaunch imports internal/cmds/cmdsutil",
 		"internal/podprovider imports internal/cmds/cmdsutil",
 		"internal/podprovider imports internal/cmds/podstatus",
@@ -113,12 +116,18 @@ func (r importRules) brokenRule(i packageImport) string {
 		return fmt.Sprintf("%s: %s. Move what %s uses into a package outside internal/cmds/ and import that.", i, outsideImportRule, i.importer)
 	case r.importsCommandWithoutMounting(i):
 		return fmt.Sprintf("%s: %s. Move what %s uses into a package outside internal/cmds/ and import that; if it mounts %s, add this import to subcommandMounts in %s.", i, mountImportRule, i.importer, i.imported, rulesFile)
+	case importsCobraFromOutside(i):
+		return fmt.Sprintf("%s: %s. Move the command into a package under internal/cmds/ named after its verb, leave %s a library, and mount the command from cmd/.", i, cobraImportRule, i.importer)
 	}
 	return ""
 }
 
 func importsCmdsFromOutside(i packageImport) bool {
 	return underCmds(i.imported) && !underCmds(i.importer) && !isBinaryMain(i.importer)
+}
+
+func importsCobraFromOutside(i packageImport) bool {
+	return i.imported == cobraPath && !underCmds(i.importer) && !isBinaryMain(i.importer)
 }
 
 func (r importRules) importsCommandWithoutMounting(i packageImport) bool {
@@ -181,8 +190,8 @@ func importsIn(graph map[string][]string) []packageImport {
 	return imports
 }
 
-// nonTestImports maps each package in the go.work modules to the repo
-// packages its non-test Linux build imports, by repo-relative path.
+// nonTestImports maps each package in the go.work modules to the imports of
+// its non-test Linux build that the rules check.
 func nonTestImports(t *testing.T) map[string][]string {
 	t.Helper()
 	const repoRoot = "../.."
@@ -214,7 +223,7 @@ func nonTestImports(t *testing.T) map[string][]string {
 		if !inRepo {
 			t.Fatalf("go.work module package %s is outside %s", pkg.ImportPath, repoPathPrefix)
 		}
-		graph[importer] = repoPackages(pkg.Imports)
+		graph[importer] = checkedImports(pkg.Imports)
 	}
 }
 
@@ -234,14 +243,18 @@ func rerunWhenCheckoutChanges(t *testing.T, root string) {
 	}
 }
 
-func repoPackages(importPaths []string) []string {
-	var packages []string
+// checkedImports keeps repo packages, by repo-relative path, and cobra.
+func checkedImports(importPaths []string) []string {
+	var checked []string
 	for _, path := range importPaths {
 		if relative, inRepo := strings.CutPrefix(path, repoPathPrefix); inRepo {
-			packages = append(packages, relative)
+			checked = append(checked, relative)
+		}
+		if path == cobraPath {
+			checked = append(checked, path)
 		}
 	}
-	return packages
+	return checked
 }
 
 type importRulesFixture struct {
@@ -252,10 +265,10 @@ type importRulesFixture struct {
 func conformingImportRulesFixture() importRulesFixture {
 	return importRulesFixture{
 		graph: map[string][]string{
-			"cmd/c8s":              {"internal/cmds/parent", "internal/cmds/lib"},
-			"internal/cmds/parent": {"internal/cmds/child", "pkg/shared"},
-			"internal/cmds/child":  {"internal/cmds/lib"},
-			"internal/cmds/lib":    {"pkg/shared"},
+			"cmd/c8s":              {"internal/cmds/parent", "internal/cmds/lib", cobraPath},
+			"internal/cmds/parent": {"internal/cmds/child", "pkg/shared", cobraPath},
+			"internal/cmds/child":  {"internal/cmds/lib", cobraPath},
+			"internal/cmds/lib":    {"pkg/shared", cobraPath},
 			"internal/old":         {"internal/cmds/parent"},
 			"pkg/shared":           nil,
 		},
@@ -313,6 +326,21 @@ func TestCommandImportRulesRefuse(t *testing.T) {
 			want:   "internal/cmds/lib imports internal/cmds/child: " + mountImportRule,
 		},
 		{
+			name:   "a package outside cmd/ and internal/cmds/ importing cobra",
+			change: func(f *importRulesFixture) { f.graph["pkg/shared"] = []string{cobraPath} },
+			want:   "pkg/shared imports " + cobraPath + ": " + cobraImportRule,
+		},
+		{
+			name:   "a package named like cmd/ importing cobra",
+			change: func(f *importRulesFixture) { f.graph["cmdline"] = []string{cobraPath} },
+			want:   "cmdline imports " + cobraPath + ": " + cobraImportRule,
+		},
+		{
+			name:   "a package named like internal/cmds/ importing cobra",
+			change: func(f *importRulesFixture) { f.graph["internal/cmdsutil"] = []string{cobraPath} },
+			want:   "internal/cmdsutil imports " + cobraPath + ": " + cobraImportRule,
+		},
+		{
 			name:   "a known-debt import the tree no longer has",
 			change: func(f *importRulesFixture) { f.graph["internal/old"] = nil },
 			want:   `knownDebt lists "internal/old imports internal/cmds/parent"`,
@@ -353,5 +381,19 @@ func TestCommandImportRulesRefuse(t *testing.T) {
 				t.Errorf("want one problem starting %q, got %q", c.want, problems)
 			}
 		})
+	}
+}
+
+func TestCheckedImportsKeepRepoPackagesAndCobra(t *testing.T) {
+	got := checkedImports([]string{
+		repoPathPrefix + "internal/cmds/child",
+		cobraPath,
+		cobraPath + "/doc",
+		"github.com/spf13/pflag",
+		"fmt",
+	})
+	want := []string{"internal/cmds/child", cobraPath}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
