@@ -16,6 +16,9 @@ on:
       - ".github/workflows/govulncheck.yml"
   pull_request:
     paths: *go-paths
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}-govulncheck
