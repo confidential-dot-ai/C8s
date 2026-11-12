@@ -14,10 +14,10 @@ import (
 )
 
 // An attestation-api with a certificate the system roots trust verifies even
-// though the client reaches CDS over armTLS, as cdsclient and get-cert build
-// it: the CDS verification refuses any ordinary certificate. The system roots
-// are read once per process, so the check runs in a child whose SSL_CERT_FILE
-// holds the test server's CA; httptest serves the same certificate in both.
+// though the client reaches CDS over armTLS, as get-cert builds it: the CDS
+// verification refuses any ordinary certificate. The system roots are read
+// once per process, so the check runs in a child whose SSL_CERT_FILE holds the
+// test server's CA; httptest serves the same certificate in both.
 func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
