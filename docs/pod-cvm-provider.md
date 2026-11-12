@@ -60,8 +60,10 @@ and size placeholders with compatible Cloud values:
 }
 ```
 
-`providerID` is required. It names this provider's records, its Node and its
-Cloud instances, and the provider refuses to start without one.
+`providerID` is required and must be a valid Kubernetes label value: at most 63
+characters, letters, digits, `-`, `_` and `.`, starting and ending with a letter
+or digit. It names this provider's records, its Node and its Cloud instances,
+and the provider refuses to start without a valid one.
 
 `cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
 the generated policy binding every admitted CDS image to the same exact measured

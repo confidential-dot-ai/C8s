@@ -21,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -106,6 +107,9 @@ func (c *Config) validate() error {
 	// one would claim objects that carry no provider label.
 	if c.ProviderID == "" {
 		return errors.New("providerID is required")
+	}
+	if errs := validation.IsValidLabelValue(c.ProviderID); len(errs) != 0 {
+		return fmt.Errorf("providerID must be a valid label value: %s", strings.Join(errs, "; "))
 	}
 	if c.Size == "" || c.Location == "" || c.ClusterID == "" {
 		return errors.New("size, location and clusterID are required")
