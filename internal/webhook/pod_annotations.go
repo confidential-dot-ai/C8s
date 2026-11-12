@@ -57,6 +57,14 @@ type discoverySpec struct {
 	PublicTLSMode string
 }
 
+// pinnedDestinations are the annotations that used to move a sidecar mount.
+// Each is refused unless it names the fixed destination.
+var pinnedDestinations = []struct{ annotation, path string }{
+	{AnnotationCertDir, CertDir},
+	{AnnotationSecretDir, defaultSecretDir},
+	{AnnotationDiscoveryMountPath, discoveryMountPath},
+}
+
 // parseAnnotations reads the pod's injection request. Both webhooks derive the
 // injected shape from it, so the same pod yields the same shape in each.
 func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
@@ -319,4 +327,9 @@ func (d discoverySpec) configured() bool {
 		d.CDSCertURL != "" ||
 		d.MeshCAURL != "" ||
 		d.PublicTLSMode != ""
+}
+
+// below reports whether path names a file strictly inside dir.
+func below(path, dir string) bool {
+	return filepath.IsAbs(path) && strings.HasPrefix(filepath.Clean(path), dir+"/")
 }
