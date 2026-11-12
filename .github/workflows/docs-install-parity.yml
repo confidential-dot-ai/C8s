@@ -10,6 +10,9 @@ on:
       - "internal/helmchart/**"
       - "scripts/check-doc-install-commands.sh"
       - ".github/workflows/docs-install-parity.yml"
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   push:
     branches: [main, "feat/**"]
     paths: *parity-paths

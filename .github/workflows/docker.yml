@@ -35,6 +35,10 @@ on:
       - "charts/**"
       - "Makefile"
       - ".github/workflows/docker.yml"
+  # Queued commits get the PR run's build and scan; publication stays on push.
+  merge_group:
+    types: [checks_requested]
+    branches: [main, beta]
   # Manual rebuild escape hatch, for a rebuild with NO new commit behind it: a
   # base-image refresh or a registry re-push. workflow_dispatch publishes EVERY
   # component image at this commit's tags (the matrix fans out to all of them,
@@ -76,6 +80,8 @@ jobs:
       has_retag: ${{ steps.docker-matrix.outputs.has_retag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # A component filter that names a directory which does not exist matches
       # NOTHING, so paths-filter reports that component unchanged, the build is
       # skipped, and retag-unchanged aliases :main onto the new sha anyway. The
@@ -104,6 +110,7 @@ jobs:
       # this step skipped its outputs read empty downstream, which the matrix
       # script correctly sees as "no per-component filter" before falling through
       # to the fan-out.
+      # v4 reads a merge group's base from the event; an older pin would not.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -163,6 +170,8 @@ jobs:
     if: needs.changes.outputs.has_images == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-go-c8s
       - name: Download Go modules
         run: go mod download
@@ -179,6 +188,8 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-go-c8s
 

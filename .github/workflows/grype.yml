@@ -19,6 +19,9 @@ on:
       - "charts/lib/files/components.yaml"
       - ".github/workflows/grype.yml"
       - ".grype.yaml"
+  merge_group:
+    types: [checks_requested]
+    branches: [main, beta]
 
 permissions:
   contents: read

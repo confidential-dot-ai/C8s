@@ -27,6 +27,9 @@ on:
       - ".github/workflows/c8s-image.yml"
       - ".github/workflows/c8s-image-publish.yml"
       - ".github/workflows/c8s-image-manual.yml"
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

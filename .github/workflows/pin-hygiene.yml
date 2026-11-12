@@ -20,6 +20,9 @@ on:
       - "images/node-guest/worker/mkosi.sync"
       - "**/Dockerfile"
       - "**/go.mod"
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
