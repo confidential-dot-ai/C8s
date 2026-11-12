@@ -7,10 +7,10 @@ metadata:
   name: dcgm-exporter
   namespace: kube-system
   labels:
-    app.kubernetes.io/name: dcgm-exporter
+    k8s-app: dcgm-exporter
 spec:
   selector:
-    app.kubernetes.io/name: dcgm-exporter
+    k8s-app: dcgm-exporter
   ports:
   - name: metrics
     port: 9400

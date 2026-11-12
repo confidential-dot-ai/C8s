@@ -18,7 +18,7 @@ kind: Pod
 metadata:
   name: nvidia-device-plugin
   namespace: kube-system
-  labels: {app.kubernetes.io/name: nvidia-device-plugin}
+  labels: {k8s-app: nvidia-device-plugin}
   annotations: {confidential.ai/gpu-only: "true"}
 spec:
   dnsPolicy: Default

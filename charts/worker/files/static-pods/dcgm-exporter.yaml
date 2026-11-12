@@ -13,12 +13,11 @@ kind: Pod
 metadata:
   name: dcgm-exporter
   namespace: kube-system
-  labels: {app.kubernetes.io/name: dcgm-exporter}
+  labels: {k8s-app: dcgm-exporter}
   annotations: {confidential.ai/gpu-only: "true"}
 spec:
   dnsPolicy: Default
   enableServiceLinks: false
-  priorityClassName: system-node-critical
   containers:
   - name: dcgm-exporter
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.6.1-4.8.4@sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003
