@@ -30,8 +30,9 @@ func (n nodeIssuance) bind(ctx context.Context, w http.ResponseWriter, csrPub *e
 	if len(n.req.SandboxToken) > 0 {
 		verified, err := n.h.verifySandboxToken(ctx, n.req.SandboxToken, csrPub, challenge)
 		if err != nil {
+			// The caller names the host CDS dials, so the detail stays in the log.
 			slog.Warn("sandbox token rejected", "error", err, "remote_addr", n.remoteAddr)
-			httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+			httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "sandbox token rejected")
 			return [64]byte{}, sandbox, false
 		}
 		sandbox = verified
