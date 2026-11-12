@@ -22,10 +22,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -129,7 +127,7 @@ consumers that read that volume.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setupLogging(cfg.Verbose)
 			applyCDSWatchDefault(&cfg, cmd.Flags())
-			return run(cfg)
+			return run(cmd.Context(), cfg)
 		},
 		SilenceUsage: true,
 	}
@@ -230,7 +228,7 @@ func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
 var obtainCertFn = obtainCert
 
-func run(cfg config) error {
+func run(ctx context.Context, cfg config) error {
 	san, err := resolveSAN(cfg)
 	if err != nil {
 		return err
@@ -277,8 +275,6 @@ func run(cfg config) error {
 	}
 	slog.Debug("credential volume validated")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
 	client, policyClient, err := newCDSClient(ctx, cfg)

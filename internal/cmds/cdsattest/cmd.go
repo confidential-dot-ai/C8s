@@ -7,10 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -67,9 +65,7 @@ func NewCmd() *cobra.Command {
 		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.attestOff = !attestEndpoints
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return run(ctx, cfg)
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()

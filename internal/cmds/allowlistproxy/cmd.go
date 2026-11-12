@@ -13,10 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -64,8 +61,8 @@ func NewCmd() *cobra.Command {
 		Short:        "Proxy router allowlist requests to an armTLS-verified CDS",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return run(cfg)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()
@@ -79,9 +76,7 @@ func NewCmd() *cobra.Command {
 	return cmd
 }
 
-func run(cfg config) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func run(ctx context.Context, cfg config) error {
 	return runContext(ctx, cfg, net.Listen)
 }
 

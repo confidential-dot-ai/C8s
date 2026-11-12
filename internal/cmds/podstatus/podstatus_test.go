@@ -328,6 +328,44 @@ func TestServeExitsWhenTheLaunchKeyIsNotConfirmed(t *testing.T) {
 	}
 }
 
+// `pod-status serve` runs Serve under the context it is executed with:
+// cancelling it stops a Serve still waiting for its launch key.
+func TestServeCommandStopsWithItsContext(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "config.json")
+	doc, err := json.Marshal(stagedPodDocument(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := loadMeasuredLaunchKey
+	t.Cleanup(func() { loadMeasuredLaunchKey = old })
+	loading := make(chan struct{})
+	loadMeasuredLaunchKey = func(ctx context.Context, _, _ string) ([]byte, error) {
+		close(loading)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := NewCmd()
+	cmd.SetArgs([]string{"serve", "--platform=tdx", "--staged=" + staged})
+	cmd.SetErr(io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	<-loading
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serve = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop after its context was cancelled")
+	}
+}
+
 // stagedPodDocument is the generic pod document Serve reads before anything
 // else.
 func stagedPodDocument(t *testing.T) *podlaunch.Document {

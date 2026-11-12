@@ -19,7 +19,7 @@ import (
 
 func TestRunMainSuccess(t *testing.T) {
 	called := false
-	RunMain(func(args []string) error {
+	RunMain(func(context.Context, []string) error {
 		called = true
 		return nil
 	})
@@ -30,7 +30,7 @@ func TestRunMainSuccess(t *testing.T) {
 
 func TestRunMainHelpDoesNotExit(t *testing.T) {
 	// flag.ErrHelp must be swallowed (return, not os.Exit).
-	RunMain(func(args []string) error {
+	RunMain(func(context.Context, []string) error {
 		return flag.ErrHelp
 	})
 }
@@ -272,13 +272,24 @@ func TestExpandNodeIP(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
+// An interrupted prompt is a no, though nothing was typed.
+func TestConfirmRefusesOnceItsContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	terminal, typing := io.Pipe()
+	defer typing.Close()
+	if Confirm(ctx, terminal, io.Discard, "sign it?") {
+		t.Fatal("Confirm accepted after its context ended")
+	}
+}
+
 func TestConfirmAcceptsOnlyYes(t *testing.T) {
 	for answer, want := range map[string]bool{
 		"y\n": true, "yes\n": true, " YES \n": true, "Y": true,
 		"n\n": false, "\n": false, "": false, "yes please\n": false, "sure\n": false,
 	} {
 		var prompt strings.Builder
-		if got := Confirm(strings.NewReader(answer), &prompt, "sign it?"); got != want {
+		if got := Confirm(t.Context(), strings.NewReader(answer), &prompt, "sign it?"); got != want {
 			t.Errorf("Confirm(%q) = %v, want %v", answer, got, want)
 		}
 		if prompt.String() != "sign it? [y/N] " {

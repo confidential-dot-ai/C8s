@@ -49,7 +49,9 @@ func main() {
 		os.Exit(c8srunc.Main(os.Args))
 	}
 	normalizeArgvAlias()
-	if err := rootCmd.Execute(); err != nil {
+	ctx, stop := cmdsutil.SignalContext()
+	defer stop()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(cmdsutil.ExitStatus(err))
 	}

@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -83,9 +82,9 @@ func startupSourceMode(cfg *config) string {
 	return strings.Join(sources, "+")
 }
 
-// Run executes the nri-image-policy binary. args is the slice of CLI args
-// after the program name.
-func Run(args []string) error {
+// Run executes the nri-image-policy binary under ctx. args is the slice of
+// CLI args after the program name.
+func Run(ctx context.Context, args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
 		case checkConfigVerb:
@@ -93,7 +92,7 @@ func Run(args []string) error {
 		case checkContainerdConfigVerb:
 			return runCheckContainerdConfig(args[1:], os.Stdin)
 		case pluginReadyVerb:
-			return runPluginReady(args[1:])
+			return runPluginReady(ctx, args[1:])
 		case pluginRunningVerb:
 			return runPluginRunning(args[1:])
 		}
@@ -128,8 +127,6 @@ func Run(args []string) error {
 		"mode", startupSourceMode(cfg),
 	)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	return runConfigured(ctx, cfg, logger, healthServerConfig{
 		addr:         *healthAddr,
 		readTimeout:  *readTimeout,

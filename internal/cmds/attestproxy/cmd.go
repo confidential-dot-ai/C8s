@@ -20,9 +20,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/signal"
 	"path"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -75,8 +73,8 @@ func NewCmd() *cobra.Command {
 		Short:        "Serve the pod-local attestation-api on a node-local Unix socket",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return run(cfg)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runContext(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()
@@ -100,11 +98,11 @@ func newHealthcheckCmd() *cobra.Command {
 		Short:        "Exit 0 iff GET /health over the socket succeeds",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if socket == "" {
 				return fmt.Errorf("--socket is required")
 			}
-			if err := checkHealth(context.Background(), remote.NewClient("unix://"+socket)); err != nil {
+			if err := checkHealth(cmd.Context(), remote.NewClient("unix://"+socket)); err != nil {
 				return fmt.Errorf("healthcheck over %s: %w", socket, err)
 			}
 			return nil
@@ -112,12 +110,6 @@ func newHealthcheckCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&socket, "socket", "", "Unix socket path to probe")
 	return cmd
-}
-
-func run(cfg config) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return runContext(ctx, cfg)
 }
 
 func runContext(ctx context.Context, cfg config) error {

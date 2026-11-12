@@ -29,7 +29,7 @@ A path the store does not hold yet is created, so the first pod of a workload
 to ask is the one that defines the value. The value is generated inside CDS and
 does not survive a CDS restart; nothing durable may be keyed on it.`,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := cfg.ResolveCDSEndpoint(); err != nil {
 				return err
 			}
@@ -40,7 +40,7 @@ does not survive a CDS restart; nothing durable may be keyed on it.`,
 				}
 				cfg.Secrets = append(cfg.Secrets, s)
 			}
-			return run(cfg)
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()

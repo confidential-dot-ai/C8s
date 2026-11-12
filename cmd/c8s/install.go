@@ -722,6 +722,12 @@ func planUpstreamRoutes(values map[string]any, upstream string) (upstreamRoutes,
 	return upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}, cdsURL, nil
 }
 
+// interruptOnCancel stops helm with SIGINT when hc's context ends, as a
+// Ctrl-C would, so helm can wind down its release operation itself.
+func interruptOnCancel(hc *exec.Cmd) {
+	hc.Cancel = func() error { return hc.Process.Signal(os.Interrupt) }
+}
+
 // applyRelease is the only step that changes the cluster.
 func applyRelease(
 	ctx context.Context,
@@ -738,6 +744,7 @@ func applyRelease(
 	helmArgs := buildInstallHelmArgs(release.chart.path, release.computed, release.valuesFiles, installWait)
 	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
 	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	interruptOnCancel(hc)
 	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
 	if err := hc.Run(); err != nil {
 		return fmt.Errorf("helm install failed: %w", err)

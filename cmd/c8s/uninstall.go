@@ -284,6 +284,7 @@ func deleteRelease(ctx context.Context) error {
 	helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
 	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
 	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	interruptOnCancel(hc)
 	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
 	if err := hc.Run(); err != nil {
 		return fmt.Errorf("helm uninstall failed: %w — the nodes are still enforcing; once the release is gone, sweep them with 'c8s uninstall --host-sweep-only --release %s --namespace %s'", err, uninstallRelease, uninstallNamespace)

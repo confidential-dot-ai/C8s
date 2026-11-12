@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1305,5 +1308,31 @@ func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 	}
 	if !slices.Equal(reads, want) {
 		t.Errorf("install read nodes as:\n%s\nwant:\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Cancelling a helm run interrupts helm rather than killing it, so helm's own
+// SIGINT handling runs.
+func TestInterruptOnCancelSendsSIGINT(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	helm := exec.CommandContext(ctx, "/bin/sh", "-c", `trap 'echo interrupted; exit 0' INT; echo ready; while :; do sleep 0.01; done`)
+	interruptOnCancel(helm)
+	stdout, err := helm.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	output := bufio.NewReader(stdout)
+	if _, err := output.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	rest, _ := io.ReadAll(output)
+	_ = helm.Wait() // reports the cancellation, whatever helm did with it
+	if !strings.Contains(string(rest), "interrupted") {
+		t.Fatalf("helm output after cancel = %q, want its SIGINT trap to run", rest)
 	}
 }
