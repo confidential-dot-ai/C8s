@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha512"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -154,7 +153,7 @@ func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attesta
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("invalid base64 in challenge: %w", err)
 	}
-	csr, err := parseCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
 		return CertificateResult{}, err
 	}
@@ -258,23 +257,6 @@ func contextOrBackground(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
-}
-
-// parseCSR decodes a PEM certificate request and checks its self-signature,
-// so the key a profile binds is one the requester holds.
-func parseCSR(csrPEM string) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR signature invalid: %w", err)
-	}
-	return csr, nil
 }
 
 // nodeReportData is the node profile's binding, armtls.ReportDataForKey over

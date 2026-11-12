@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -99,7 +99,7 @@ func newSandboxTestEnv(t *testing.T, stubURL string) (AttestHandler, *workloadcl
 // (CDS re-checks the token nonce against the challenge it consumes).
 func signedSandboxToken(t *testing.T, signer *workloadclaims.SandboxTokenSigner, csrPEM, challenge, sandboxID string) json.RawMessage {
 	t.Helper()
-	csr, err := attestation.ParseAndVerifyCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -59,9 +60,9 @@ func TestObtainCertificateWithEvidenceReturnsAttestationMaterial(t *testing.T) {
 
 	csrPEM := testCSRPEM(t)
 	challengeBytes := []byte("test-challenge")
-	csr, err := parseCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
-		t.Fatalf("parseCSR: %v", err)
+		t.Fatalf("parse CSR: %v", err)
 	}
 	expectedReportData, err := nodeReportData(csr.PublicKey, challengeBytes)
 	if err != nil {

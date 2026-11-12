@@ -44,6 +44,17 @@ func selfSigned(t *testing.T, cn string, notAfter time.Time) (*x509.Certificate,
 	return cert, der
 }
 
+func ecdsaCSRPEM(t *testing.T) []byte {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "test"},
+	}, newKey(t))
+	if err != nil {
+		t.Fatalf("create CSR: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+}
+
 func TestGenerateSerialWithinBound(t *testing.T) {
 	seen := map[string]bool{}
 	for range 100 {
@@ -222,6 +233,60 @@ func TestParseCertificatePEMAndLoad(t *testing.T) {
 	}
 	if _, err := LoadCertificateFile(filepath.Join(dir, "nope.pem")); err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestParseAndVerifyCSRValid(t *testing.T) {
+	csr, err := ParseCSRPEM(ecdsaCSRPEM(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if csr == nil {
+		t.Fatal("expected non-nil CSR")
+	}
+	if csr.Subject.CommonName != "test" {
+		t.Fatalf("CN = %q, want test", csr.Subject.CommonName)
+	}
+}
+
+func TestParseAndVerifyCSRNotPEM(t *testing.T) {
+	if _, err := ParseCSRPEM([]byte("not a pem block")); err == nil {
+		t.Fatal("expected error for non-PEM input")
+	}
+}
+
+func TestParseAndVerifyCSRWrongPEMType(t *testing.T) {
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("xx")})
+	if _, err := ParseCSRPEM(block); err == nil {
+		t.Fatal("expected error for wrong PEM type")
+	}
+}
+
+func TestParseAndVerifyCSRMalformedBody(t *testing.T) {
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("garbage")})
+	if _, err := ParseCSRPEM(block); err == nil {
+		t.Fatal("expected error for malformed CSR body")
+	}
+}
+
+func TestParseAndVerifyCSRBadSignature(t *testing.T) {
+	// Take a valid CSR and tamper with the signed CertificationRequestInfo
+	// (TBS) region so the self-signature no longer verifies. ParseCertificate-
+	// Request still succeeds structurally, but CheckSignature fails.
+	block, _ := pem.Decode(ecdsaCSRPEM(t))
+	raw := make([]byte, len(block.Bytes))
+	copy(raw, block.Bytes)
+
+	// Mutate a byte well inside the TBS portion (the subject/key region near the
+	// front) rather than the trailing signature, so ParseCertificateRequest
+	// still accepts the structure but the signature check fails.
+	raw[40] ^= 0xff
+	corrupted := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
+
+	// Either parsing fails outright or the signature check fails; both are
+	// error returns from ParseCSRPEM, which is what we assert.
+	if _, err := ParseCSRPEM(corrupted); err == nil {
+		t.Fatal("expected error for corrupted CSR")
 	}
 }
 
