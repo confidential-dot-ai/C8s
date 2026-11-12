@@ -6,6 +6,7 @@ on:
     # The packages and lane scripts these jobs run.
     paths: &cdsha-paths
       - "internal/cdsha/**"
+      - "internal/cmds/cds/ha_*.go"
       - "test/integration/cdsha/**"
   push:
     branches: [main]
@@ -32,6 +33,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: ./.github/actions/setup-go-c8s
+
+      # The c8s_dev build the harness drives the operator CLI through.
+      - name: Test the c8s_dev operator commands
+        run: go test -tags c8s_dev -count=1 ./internal/cmds/cds/...
 
       - name: Run the -short subset
         if: github.event_name == 'pull_request' && hashFiles('test/integration/cdsha/run.sh') != ''

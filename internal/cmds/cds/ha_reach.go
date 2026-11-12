@@ -22,12 +22,15 @@ import (
 )
 
 type clusterReach struct {
-	config string
-	urls   []string
-	cdsPin string
+	config   string
+	urls     []string
+	cdsPin   string
+	verifier cdsconn.PinVerifier
 }
 
 func bindReachFlags(cmd *cobra.Command, reach *clusterReach) {
+	reach.verifier = cdsconn.LocalVerifier{}
+	bindAttestationAPIFlag(cmd, &reach.verifier)
 	f := cmd.Flags()
 	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED); its replica entries name the replicas to read")
 	f.StringArrayVar(&reach.urls, "url", nil, "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica to read instead of the configuration's replica entries; repeatable")
@@ -53,7 +56,7 @@ func (reach clusterReach) cluster(ctx context.Context) (decreeConfig, []replica,
 		replicas = append(replicas, replica{
 			address:  address,
 			cdsPin:   reach.cdsPin,
-			verifier: cdsconn.LocalVerifier{},
+			verifier: reach.verifier,
 		})
 	}
 	return c, replicas, nil

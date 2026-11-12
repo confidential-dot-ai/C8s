@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// devTag turns on the CDS replica set, which a release serves as the
-// singleton instead. A shipped binary that carried the tag would run as a
-// replica on a cluster nobody has rolled out yet.
+// devTag shortens the CDS replica timers and lets `c8s cds ha` take an
+// attestation-api's verdict on a replica. A shipped binary that carried it
+// would run test timers, or accept a replica no hardware root vouches for.
 const devTag = "c8s_dev"
 
 // shippedBuilds are the recipes that build a binary a CDS VM or a node
-// measures: the Makefile's binaries, the images that carry them, and the
-// workflows that publish them.
+// measures, or an operator runs: the Makefile's binaries, the images that
+// carry them, and the workflows that publish and release them.
 var shippedBuilds = []string{
 	"../../Makefile",
 	"../../cmd/c8s/Dockerfile",
@@ -24,6 +24,7 @@ var shippedBuilds = []string{
 	"../../.github/workflows/docker.yml",
 	"../../.github/workflows/c8s-image.yml",
 	"../../.github/workflows/c8s-image-publish.yml",
+	"../../.github/workflows/semver-tag.yml",
 }
 
 // No release build and no build the CDS image bakes carries the c8s_dev tag.
