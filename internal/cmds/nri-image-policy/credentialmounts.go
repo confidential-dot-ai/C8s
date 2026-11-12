@@ -137,7 +137,7 @@ func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api
 	if err != nil {
 		return ""
 	}
-	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
+	return p.roleOf(p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef)))
 }
 
 func readOnlyBind(source, destination string) *api.Mount {

@@ -138,7 +138,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !p.mesh.hosts(pod) {
 		return
 	}
-	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr))
+	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
 	if p.roleOf(launch) == meshRole {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}

@@ -228,11 +228,12 @@ func TestCheckSandboxAdmitsTrustedCDIInjection(t *testing.T) {
 	pod := sandboxedPod()
 
 	ctr := cdiGPUContainer()
-	if verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, nil); verdict != verdictAllow {
+	gpu := observedContainer{pod: pod, ctr: ctr, imageRef: "registry/repo:tag"}
+	if verdict, reason := p.checkSandbox(context.Background(), cfg, gpu); verdict != verdictAllow {
 		t.Fatalf("checkSandbox(GPU container) = %d %q, want allow", verdict, reason)
 	}
 	ctr.Linux.Devices = append(ctr.Linux.Devices, &api.LinuxDevice{Path: "/dev/mem"})
-	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, nil); verdict != verdictDeny {
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, gpu); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(GPU container + /dev/mem) = %d, want deny", verdict)
 	}
 }

@@ -238,6 +238,39 @@ func argvDigest(argv []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// observedContainer is the container as observed at admission: the image
+// identity admission judges it by, and the launch evidence read for the phase.
+type observedContainer struct {
+	pod      *api.PodSandbox
+	ctr      *api.Container
+	imageRef string
+	env      *allowlist.EnvObservation
+	mounts   []allowlist.ObservedMount
+}
+
+// observeContainer reads the launch evidence of a container from the spec the
+// runtime reports for it, mounts classified as the final check classifies them.
+func (p *plugin) observeContainer(pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
+	return observedContainer{
+		pod:      pod,
+		ctr:      ctr,
+		imageRef: imageRef,
+		env:      containerEnv(ctr),
+		mounts:   p.observedMounts(pod, ctr),
+	}
+}
+
+// launch is the observation an allowlist entry is matched against, under a
+// digest the caller has resolved.
+func (o observedContainer) launch(digest string) allowlist.RunningContainer {
+	return allowlist.RunningContainer{
+		Digest: digest,
+		Argv:   o.ctr.GetArgs(),
+		Env:    o.env,
+		Mounts: o.mounts,
+	}
+}
+
 // checkContainer runs the label rules and the image allowlist over a
 // container. Only the image digest (answered by the containerd content
 // store) admits; label rules can only deny.
@@ -259,22 +292,21 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 // excuses neither a host port nor a capability (hostports.go,
 // capabilities.go).
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
-	var mounts []allowlist.ObservedMount
+	observed := observedContainer{pod: pod, ctr: ctr, imageRef: imageRef, env: containerEnv(ctr)}
 	if phase == launchFinal {
-		mounts = p.observedMounts(pod, ctr)
+		observed.mounts = p.observedMounts(pod, ctr)
 	}
-	env := containerEnv(ctr)
-	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, env, mounts)
+	verdict, reason := p.checkContainerObserved(ctx, cfg, observed, phase)
 	if verdict == verdictDeny || !sandboxPolicyApplies(cfg, phase) {
 		return verdict, reason
 	}
-	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, env, mounts); v == verdictDeny {
+	if v, r := p.checkSandbox(ctx, cfg, observed); v == verdictDeny {
 		return v, r
 	}
-	if refusal := p.hostPortRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
+	if refusal := p.hostPortRefusal(ctx, cfg, observed); refusal != "" {
 		return verdictDeny, refusal
 	}
-	if refusal := p.capabilityRefusal(ctx, cfg, pod, ctr, imageRef, env, mounts); refusal != "" {
+	if refusal := p.capabilityRefusal(ctx, cfg, observed); refusal != "" {
 		return verdictDeny, refusal
 	}
 	return verdict, reason
@@ -286,35 +318,35 @@ func sandboxPolicyApplies(cfg *config, phase launchPhase) bool {
 	return phase == launchFinal && cfg.sandboxObserved()
 }
 
-func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	namespace, podName, ctrName := pod.GetNamespace(), pod.GetName(), ctr.GetName()
+func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, observed observedContainer, phase launchPhase) (imageVerdict, string) {
+	namespace, podName, ctrName := observed.pod.GetNamespace(), observed.pod.GetName(), observed.ctr.GetName()
 
-	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, pod.GetLabels())
+	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, observed.pod.GetLabels())
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
 		verdict, reason = p.checkImagePhase(ctx, cfg, imageCheck{
 			Namespace: namespace,
 			PodName:   podName,
 			Container: ctrName,
-			ImageRef:  imageRef,
-			Argv:      ctr.GetArgs(),
-			Env:       env,
-			EnvErr:    envError(ctr, env),
-			Mounts:    mounts,
+			ImageRef:  observed.imageRef,
+			Argv:      observed.ctr.GetArgs(),
+			Env:       observed.env,
+			EnvErr:    envError(observed.ctr, observed.env),
+			Mounts:    observed.mounts,
 		}, phase)
 	}
-	return p.exemptNamespace(cfg, pod, ctr, imageRef, verdict, reason)
+	return p.exemptNamespace(cfg, observed, verdict, reason)
 }
 
 // Runs last and only downgrades, keyed on the image's repository.
-func (p *plugin) exemptNamespace(cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, verdict imageVerdict, reason string) (imageVerdict, string) {
-	namespace, podName, ctrName := pod.GetNamespace(), pod.GetName(), ctr.GetName()
+func (p *plugin) exemptNamespace(cfg *config, observed observedContainer, verdict imageVerdict, reason string) (imageVerdict, string) {
+	namespace, podName, ctrName := observed.pod.GetNamespace(), observed.pod.GetName(), observed.ctr.GetName()
 	if verdict != verdictDeny || !slices.Contains(cfg.Policy.ExemptNamespaces, namespace) {
 		return verdict, reason
 	}
 
-	if cfg.Policy.ExemptRepositories.Admits(namespace, imageRef) {
+	if cfg.Policy.ExemptRepositories.Admits(namespace, observed.imageRef) {
 		p.logger.Info("exempt namespace: admitting a container whose image repository the namespace's exempt set names",
-			"namespace", namespace, "pod", podName, "container", ctrName, "image", imageRef, "denial", reason)
+			"namespace", namespace, "pod", podName, "container", ctrName, "image", observed.imageRef, "denial", reason)
 		p.audit.Log(audit.Event{
 			Action:    "allow",
 			Reason:    "namespace_exempt",
@@ -322,7 +354,7 @@ func (p *plugin) exemptNamespace(cfg *config, pod *api.PodSandbox, ctr *api.Cont
 			Namespace: namespace,
 			Pod:       podName,
 			Container: ctrName,
-			Image:     imageRef,
+			Image:     observed.imageRef,
 		})
 		return verdictSkip, ""
 	}
@@ -333,7 +365,7 @@ func (p *plugin) exemptNamespace(cfg *config, pod *api.PodSandbox, ctr *api.Cont
 		Namespace: namespace,
 		Pod:       podName,
 		Container: ctrName,
-		Image:     imageRef,
+		Image:     observed.imageRef,
 	})
 	return verdict, reason
 }
@@ -356,33 +388,33 @@ func (p *plugin) exemptNamespace(cfg *config, pod *api.PodSandbox, ctr *api.Cont
 //
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
-func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
+func (p *plugin) checkSandbox(ctx context.Context, cfg *config, observed observedContainer) (imageVerdict, string) {
+	pod, ctr := observed.pod, observed.ctr
 	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
 	if err != nil {
 		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
 			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
 	}
 	own := p.cvm().enforcerMounts()
-	obs := observeSandbox(pod, ctr, own, mounts, noBindGrant{}, cdi)
+	obs := observeSandbox(pod, ctr, own, observed.mounts, noBindGrant{}, cdi)
 	violations := obs.violations(cfg.podRole())
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
 	digest := ""
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
-		digest = p.resolveDigest(ctx, imageRef)
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs.HostBinds = hostBinds(pod, ctr, own, mounts, declaredBindGrant{policy: p.policy, launch: rc}, cdi)
+		digest = p.resolveDigest(ctx, observed.imageRef)
+		grant := declaredBindGrant{policy: p.policy, launch: observed.launch(digest)}
+		obs.HostBinds = hostBinds(pod, ctr, own, observed.mounts, grant, cdi)
 		if violations = obs.violations(cfg.podRole()); len(violations) == 0 {
 			return verdictAllow, ""
 		}
 	}
 	if cfg.Allowlist.NodeTCB {
 		if digest == "" {
-			digest = p.resolveDigest(ctx, imageRef)
+			digest = p.resolveDigest(ctx, observed.imageRef)
 		}
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.nodeTCBExempt(pod, rc) {
+		if p.nodeTCBExempt(pod, observed.launch(digest)) {
 			return verdictAllow, ""
 		}
 	}
@@ -395,7 +427,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 	p.logger.Warn("container holds host privilege outside the node TCB",
 		append([]any{
 			"namespace", namespace, "pod", podName, "container", ctrName,
-			"image", imageRef, "digest", digest,
+			"image", observed.imageRef, "digest", digest,
 			"violations", violations, "sandbox", cfg.sandboxMode(),
 		}, obs.logAttrs()...)...)
 	if cfg.sandboxMode() == SandboxAudit {
@@ -406,7 +438,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			Namespace: namespace,
 			Pod:       podName,
 			Container: ctrName,
-			Image:     imageRef,
+			Image:     observed.imageRef,
 		})
 		return verdictAllow, ""
 	}
@@ -417,7 +449,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		Namespace: namespace,
 		Pod:       podName,
 		Container: ctrName,
-		Image:     imageRef,
+		Image:     observed.imageRef,
 	})
 	return verdictDeny, fmt.Sprintf("container is not part of the node TCB and requests host privilege: %s", strings.Join(violations, ", "))
 }

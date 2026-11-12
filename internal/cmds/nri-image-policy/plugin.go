@@ -525,13 +525,15 @@ func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string)
 }
 
 // observedLaunch is the container as a role lookup reads it.
-func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) allowlist.RunningContainer {
-	return allowlist.RunningContainer{
-		Digest: p.resolveDigest(ctx, imageRef),
-		Argv:   ctr.GetArgs(),
-		Env:    env,
-		Mounts: mounts,
-	}
+func (p *plugin) observedLaunch(ctx context.Context, observed observedContainer) allowlist.RunningContainer {
+	return observed.launch(p.resolveDigest(ctx, observed.imageRef))
+}
+
+// annotatedLaunch is the launch under the image the kubelet named for the
+// container, which is the identity a base pin is read against.
+func (p *plugin) annotatedLaunch(ctx context.Context, observed observedContainer) allowlist.RunningContainer {
+	observed.imageRef = observed.ctr.GetAnnotations()[annotationImageName]
+	return p.observedLaunch(ctx, observed)
 }
 
 // extractDigest returns the canonical "sha256:<64hex>" digest from an image

@@ -39,6 +39,11 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 }
 
+// observedContainerOf is the admission observation of a container whose mounts the test classified itself.
+func observedContainerOf(pod *api.PodSandbox, ctr *api.Container, imageRef string, mounts []allowlist.ObservedMount) observedContainer {
+	return observedContainer{pod: pod, ctr: ctr, imageRef: imageRef, env: containerEnv(ctr), mounts: mounts}
+}
+
 // podCVMPlugin is a Pod-guest enforcer assigned to pod, whose broker's terminal error is the ended identity.
 func podCVMPlugin(t *testing.T, pod *api.PodSandbox) *plugin {
 	t.Helper()
