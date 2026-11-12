@@ -39,6 +39,10 @@ import (
 // canonical form.
 const Schema = "c8s.allowlist/v1"
 
+// ProcessNamespaceSchema prevents older consumers from ignoring namespace
+// sharing declarations in a policy they cannot enforce.
+const ProcessNamespaceSchema = "c8s.allowlist/v2"
+
 // Policy values. Argv policies use Deny/Any/Exact; secrets grants use
 // Deny/Allow — never Any (normalizeSecrets).
 const (
@@ -169,6 +173,9 @@ type Container struct {
 	Env     EnvPolicy   `json:"env" yaml:"env,omitempty"`
 	// Capabilities are what these bytes may hold beyond the node's default set.
 	Capabilities CapabilityList `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// ShareProcessNamespace joins the application's signed process-access group.
+	ShareProcessNamespace  bool `json:"shareProcessNamespace,omitempty" yaml:"shareProcessNamespace,omitempty"`
+	processNamespacePolicy string
 }
 
 // CapabilityList decodes each name strictly; an undecodable value becomes the
@@ -391,6 +398,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := w.pinnedForCapabilities(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
 	}
+	if err := w.validateProcessNamespace(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
@@ -427,6 +437,9 @@ func (c Container) AnyArgv() bool {
 // to the host. Absent mounts normalize to Deny; absent environment normalizes
 // to Any.
 func (c Container) IsUnconstrained() bool {
+	if c.ShareProcessNamespace {
+		return false
+	}
 	for _, constraint := range c.constraints() {
 		if !constraint.isUnconstrained() {
 			return false
@@ -627,8 +640,8 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 // break every allowlist pull in the cluster over one legacy name — so an
 // over-long entry is dropped instead. See docs/allowlist-and-capabilities.md.
 func (a *Allowlist) normalize(strict bool) error {
-	if a.Schema != Schema {
-		return fmt.Errorf("allowlist: unknown schema %q (expected %q)", a.Schema, Schema)
+	if a.Schema != Schema && a.Schema != ProcessNamespaceSchema {
+		return fmt.Errorf("allowlist: unknown schema %q (expected %q or %q)", a.Schema, Schema, ProcessNamespaceSchema)
 	}
 	for name, w := range a.Workloads {
 		// The grammar is not negotiable on either path: the name is used
@@ -712,6 +725,12 @@ func (a *Allowlist) normalize(strict bool) error {
 		}
 		if w.StaticPod && w.declaresHostPortsOrCapabilities() {
 			return fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
+		}
+		if err := w.validateProcessNamespace(); err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
+		}
+		if w.SharesProcessNamespace() && a.Schema != ProcessNamespaceSchema {
+			return fmt.Errorf("workload %q: shareProcessNamespace requires schema %q", name, ProcessNamespaceSchema)
 		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
@@ -1151,6 +1170,6 @@ func sortContainers(cs []Container) {
 func policyKey(c Container) string {
 	caps := slices.Clone(c.Capabilities)
 	slices.Sort(caps)
-	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env, caps})
+	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env, caps, c.ShareProcessNamespace})
 	return string(b)
 }

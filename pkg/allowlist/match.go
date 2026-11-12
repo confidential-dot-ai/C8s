@@ -12,6 +12,9 @@ import (
 type RunningContainer struct {
 	Digest string
 	Argv   []string
+	// ProcessNamespacePolicy identifies the signed entry whose applications
+	// share a namespace. Empty means the container has a private namespace.
+	ProcessNamespacePolicy string
 	// Mounts is nil when evidence is unavailable. A non-nil empty slice proves
 	// that the final OCI spec contained no bind mounts.
 	Mounts []ObservedMount
@@ -109,9 +112,7 @@ func (d EntryDiff) Describes() bool { return len(d.Foreign) == 0 && len(d.Missin
 // Diff().Describes(), so a diagnostic built on this cannot disagree with what
 // CDS actually did.
 func (w Workload) Diff(running []RunningContainer) EntryDiff {
-	declared := make([]Container, 0, len(w.Containers)+len(w.InitContainers))
-	declared = append(declared, w.Containers...)
-	declared = append(declared, w.InitContainers...)
+	declared := w.processNamespaceContainers()
 
 	var d EntryDiff
 	for _, r := range running {
@@ -119,7 +120,7 @@ func (w Workload) Diff(running []RunningContainer) EntryDiff {
 			d.Foreign = append(d.Foreign, r)
 		}
 	}
-	for _, c := range w.Containers {
+	for _, c := range declared[len(w.InitContainers):] {
 		if !anyRunning(running, c) {
 			d.MissingMains = append(d.MissingMains, c)
 		}
@@ -154,6 +155,17 @@ func anyRunning(running []RunningContainer, c Container) bool {
 
 // admits reports whether this declared container permits the running one.
 func (c Container) admits(r RunningContainer) bool {
+	if c.ShareProcessNamespace {
+		if c.processNamespacePolicy == "" || r.ProcessNamespacePolicy != c.processNamespacePolicy {
+			return false
+		}
+	} else if r.ProcessNamespacePolicy != "" {
+		return false
+	}
+	return c.admitsLaunch(r)
+}
+
+func (c Container) admitsLaunch(r RunningContainer) bool {
 	if c.Digest.String() != r.Digest {
 		return false
 	}
