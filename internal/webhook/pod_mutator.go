@@ -557,7 +557,7 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	if err := m.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	if response, handled := handlePodCVM(req, pod, m.decoder, m.cfg, true); handled {
+	if response, handled := handlePodCVM(req, pod, m.decoder, m.cfg, mutatingPodCVM{}); handled {
 		return response
 	}
 
