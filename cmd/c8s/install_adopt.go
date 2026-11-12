@@ -356,7 +356,14 @@ type adoptedEntry struct {
 	pod      []pkgallowlist.RunningContainer
 }
 
-func resolvedWorkloadImageValues(ctx context.Context, workloads []adoptedWorkload, upstream string) (map[string]any, map[string]adoptedEntry, error) {
+// adoptedAllowlist is what install writes for its adopted workloads: the chart
+// values declaring them, and the entries of those it models exactly, by cw id.
+type adoptedAllowlist struct {
+	values  map[string]any
+	entries map[string]adoptedEntry
+}
+
+func resolvedWorkloadImageValues(ctx context.Context, workloads []adoptedWorkload, upstream string) (adoptedAllowlist, error) {
 	return buildWorkloadImageValues(workloads, upstream, os.Stderr, func(ref string) (string, error) {
 		digest, err := crane.Digest(ctx, ref)
 		if err != nil {
@@ -378,14 +385,9 @@ func resolvedWorkloadImageValues(ctx context.Context, workloads []adoptedWorkloa
 // backend requires (route policy B1).
 //
 // A workload whose mounts cannot be modelled exactly is refused when it is the
-// upstream cw id; any other gets an entry admitting any mounts, a warning on
-// warn, and no entry in the returned map.
-func buildWorkloadImageValues(
-	workloads []adoptedWorkload,
-	upstream string,
-	warn io.Writer,
-	resolve func(ref string) (string, error),
-) (map[string]any, map[string]adoptedEntry, error) {
+// upstream cw id; any other gets an entry admitting any mounts and a warning on
+// warn, and is left out of the returned entries.
+func buildWorkloadImageValues(workloads []adoptedWorkload, upstream string, warn io.Writer, resolve func(ref string) (string, error)) (adoptedAllowlist, error) {
 	entries := map[string]adoptedEntry{}
 	adopted := map[string]any{}
 	for _, w := range workloads {
@@ -403,7 +405,7 @@ func buildWorkloadImageValues(
 			var err error
 			if mounts[i], err = injectedMountRules(w.template, c); err != nil {
 				if w.cwID == upstream {
-					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist)", w.cwID, err, w.cwID)
+					return adoptedAllowlist{}, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist)", w.cwID, err, w.cwID)
 				}
 				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so a route to it trusts those mounts\n", w.cwID, err)
 				exact = false
@@ -417,7 +419,7 @@ func buildWorkloadImageValues(
 			}
 			digest, ref, err := workloadImageAllowlistEntry(c.Image, resolve)
 			if err != nil {
-				return nil, nil, err
+				return adoptedAllowlist{}, err
 			}
 			declared := adoptedContainer(digest, ref, mounts[i], exact)
 			init := i >= mains
@@ -447,11 +449,16 @@ func buildWorkloadImageValues(
 	}
 	// A release adopting nothing writes no workloads key.
 	if len(adopted) == 0 {
-		return nil, entries, nil
+		return adoptedAllowlist{entries: entries}, nil
 	}
-	return map[string]any{
-		"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": adopted}},
-	}, entries, nil
+	values := map[string]any{
+		"nriImagePolicy": map[string]any{
+			"bootstrapAllowlist": map[string]any{
+				"workloads": adopted,
+			},
+		},
+	}
+	return adoptedAllowlist{values: values, entries: entries}, nil
 }
 
 // adoptedContainer declares digest under any command, args and env. With

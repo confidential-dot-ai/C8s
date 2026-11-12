@@ -220,7 +220,11 @@ func TestEffectiveValuesExec(t *testing.T) {
 	t.Run("the computed values beat the chart default", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		computed := computedValuesFile(t, map[string]any{"attestationApi": map[string]any{"enabled": false}})
+		computed := computedValuesFile(t, map[string]any{
+			"attestationApi": map[string]any{
+				"enabled": false,
+			},
+		})
 		tree, err := effectiveValues(context.Background(), writeChart(t, values), []string{computed})
 		if err != nil {
 			t.Fatalf("effectiveValues: %v", err)
@@ -260,7 +264,13 @@ func TestEffectiveValuesReplacesLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	resetCLIState(t)
-	computed := computedValuesFile(t, map[string]any{"w": map[string]any{"containers": []any{map[string]any{"digest": "b"}}}})
+	computed := computedValuesFile(t, map[string]any{
+		"w": map[string]any{
+			"containers": []any{
+				map[string]any{"digest": "b"},
+			},
+		},
+	})
 	tree, err := effectiveValues(context.Background(), writeChart(t, "{}\n"), []string{values, computed})
 	if err != nil {
 		t.Fatalf("effectiveValues: %v", err)
@@ -409,26 +419,35 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	t.Run("resolves and pins the allowlist entry", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", fakeCrane(testDigest))
-		got, _, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{
+		written, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template:         templateRunning("ghcr.io/acme/vllm:v1"),
 		}}, "")
+		got := written.values
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := map[string]any{"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": map[string]any{
-			"infer": map[string]any{
-				"label": "ws/deployment/vllm",
-				"containers": []any{map[string]any{
-					"digest":  testDigest,
-					"image":   "ghcr.io/acme/vllm@" + testDigest,
-					"command": map[string]any{"policy": "any"},
-					"args":    map[string]any{"policy": "any"},
-					"env":     map[string]any{"policy": "any"},
-					"mounts":  map[string]any{"policy": "deny"},
-				}},
+		want := map[string]any{
+			"nriImagePolicy": map[string]any{
+				"bootstrapAllowlist": map[string]any{
+					"workloads": map[string]any{
+						"infer": map[string]any{
+							"label": "ws/deployment/vllm",
+							"containers": []any{
+								map[string]any{
+									"digest":  testDigest,
+									"image":   "ghcr.io/acme/vllm@" + testDigest,
+									"command": map[string]any{"policy": "any"},
+									"args":    map[string]any{"policy": "any"},
+									"env":     map[string]any{"policy": "any"},
+									"mounts":  map[string]any{"policy": "deny"},
+								},
+							},
+						},
+					},
+				},
 			},
-		}}}}
+		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("resolvedWorkloadImageValues() = %#v, want %#v", got, want)
 		}
@@ -438,7 +457,7 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	t.Run("resolver failure aborts", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if _, _, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
+		if _, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
 			t.Fatal("want error when crane fails")
 		}
 	})

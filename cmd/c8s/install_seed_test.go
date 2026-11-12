@@ -26,7 +26,12 @@ import (
 // cluster: the chart refuses a release that names none.
 func chartCDSValues() map[string]any {
 	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
-	return map[string]any{"cds": map[string]any{"address": "10.9.9.9:8443", "measurementsConfig": pin}}
+	return map[string]any{
+		"cds": map[string]any{
+			"address":            "10.9.9.9:8443",
+			"measurementsConfig": pin,
+		},
+	}
 }
 
 // TestSeedWorkloadsMatchesTheChart: the seed install checks adoptions
@@ -63,19 +68,22 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 			{Name: "tools", Image: "busybox@sha256:" + strings.Repeat("b", 64)},
 		},
 	}}
-	adoptValues, entries, err := buildWorkloadImageValues([]adoptedWorkload{{
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{
 		workloadAdoption: workloadAdoption{cwID: "web", ref: workloadRef{kind: "deployment", name: "web", namespace: "ws"}},
 		template:         tmpl,
 	}}, "", io.Discard, nil)
+	adoptValues, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	computed := map[string]any{
-		"nriImagePolicy": map[string]any{"mesh": map[string]any{
-			"resolver":      "10.43.0.10",
-			"clusterRanges": []any{"10.42.0.0/16"},
-		}},
+		"nriImagePolicy": map[string]any{
+			"mesh": map[string]any{
+				"resolver":      "10.43.0.10",
+				"clusterRanges": []any{"10.42.0.0/16"},
+			},
+		},
 	}
 	for i, c := range components {
 		helmchart.MergeValues(computed, valuesAtPath(c.valuesPath+".digest", fmt.Sprintf("sha256:%064x", i+1)))

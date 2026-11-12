@@ -36,7 +36,11 @@ func buildComputedValues(imagePins map[string]any) (map[string]any, error) {
 	helmchart.MergeValues(values, cds)
 	if installVolumes {
 		// volumed opens a pod's encrypted volumes (docs/volumes.md).
-		helmchart.MergeValues(values, map[string]any{"volumed": map[string]any{"enabled": true}})
+		helmchart.MergeValues(values, map[string]any{
+			"volumed": map[string]any{
+				"enabled": true,
+			},
+		})
 	}
 	if installImagePullSecret != "" {
 		values["imagePullSecret"] = installImagePullSecret
@@ -46,7 +50,11 @@ func buildComputedValues(imagePins map[string]any) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		helmchart.MergeValues(values, map[string]any{"cds": map[string]any{"operatorKeys": string(keys)}})
+		helmchart.MergeValues(values, map[string]any{
+			"cds": map[string]any{
+				"operatorKeys": string(keys),
+			},
+		})
 	}
 	return values, nil
 }

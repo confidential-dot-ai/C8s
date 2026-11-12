@@ -133,10 +133,12 @@ func TestCDSInstallArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cdsInstallValues: %v", err)
 	}
-	want := map[string]any{"cds": map[string]any{
-		"address":            "10.9.9.9:8443",
-		"measurementsConfig": string(document),
-	}}
+	want := map[string]any{
+		"cds": map[string]any{
+			"address":            "10.9.9.9:8443",
+			"measurementsConfig": string(document),
+		},
+	}
 	if !reflect.DeepEqual(values, want) {
 		t.Fatalf("values = %#v, want the address and the pin document, %#v", values, want)
 	}

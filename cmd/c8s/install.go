@@ -603,11 +603,11 @@ func renderRelease(
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
-	adoptValues, adoptedEntries, err := resolvedWorkloadImageValues(ctx, adopted, installUpstream)
+	adoption, err := resolvedWorkloadImageValues(ctx, adopted, installUpstream)
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
-	computed, err := writeComputedValues(helmchart.MergeValues(values, adoptValues))
+	computed, err := writeComputedValues(helmchart.MergeValues(values, adoption.values))
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
@@ -616,7 +616,7 @@ func renderRelease(
 		kubeVersion:    kubeVersion,
 		valuesFiles:    valuesFiles,
 		computed:       computed,
-		adoptedEntries: adoptedEntries,
+		adoptedEntries: adoption.entries,
 	}
 	removeComputed := func() {
 		os.Remove(computed)

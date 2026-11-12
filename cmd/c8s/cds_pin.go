@@ -33,10 +33,12 @@ func cdsInstallValues(address string, pin string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagCDSPin, err)
 	}
-	return map[string]any{"cds": map[string]any{
-		"address":            address,
-		"measurementsConfig": string(document),
-	}}, nil
+	return map[string]any{
+		"cds": map[string]any{
+			"address":            address,
+			"measurementsConfig": string(document),
+		},
+	}, nil
 }
 
 // cdsPinConfig is the configuration a CDS pin binds its VM to. One pin binds

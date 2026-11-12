@@ -550,7 +550,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		return "", nil
 	}
 	scratch := corev1.VolumeMount{Name: "scratch", MountPath: "/scratch/"}
-	got, entries, err := buildWorkloadImageValues([]adoptedWorkload{
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{
 		{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
@@ -565,6 +565,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 			}},
 		},
 	}, "", io.Discard, resolve)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
 		t.Fatalf("buildWorkloadImageValues: %v", err)
 	}
@@ -586,16 +587,22 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		}
 		return c
 	}
-	want := map[string]any{"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": map[string]any{
-		"infer": map[string]any{
-			"label": "ws/deployment/vllm",
-			"containers": []any{
-				container(dB, "ghcr.io/acme/router@"+dB),
-				container(dA, "ghcr.io/acme/engine@"+dA, "/scratch"),
+	want := map[string]any{
+		"nriImagePolicy": map[string]any{
+			"bootstrapAllowlist": map[string]any{
+				"workloads": map[string]any{
+					"infer": map[string]any{
+						"label": "ws/deployment/vllm",
+						"containers": []any{
+							container(dB, "ghcr.io/acme/router@"+dB),
+							container(dA, "ghcr.io/acme/engine@"+dA, "/scratch"),
+						},
+						"initContainers": []any{container(dC, "docker.io/library/busybox@"+dC)},
+					},
+				},
 			},
-			"initContainers": []any{container(dC, "docker.io/library/busybox@"+dC)},
 		},
-	}}}}
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildWorkloadImageValues() = %#v, want %#v", got, want)
 	}
@@ -649,7 +656,8 @@ func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
 		},
 		Containers: []corev1.Container{{Name: "app", Image: busybox}},
 	}}
-	_, entries, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	entries := workloadAllowlist.entries
 	if err != nil {
 		t.Fatalf("buildWorkloadImageValues() = %v, want an entry", err)
 	}
@@ -693,7 +701,7 @@ func TestBuildWorkloadImageArgsRefusesUnmodelledMounts(t *testing.T) {
 		"secrets":                 secrets,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
+			_, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
 			if err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
 				t.Fatalf("buildWorkloadImageValues() = %v, want the refusal", err)
 			}
@@ -714,7 +722,8 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 		{workloadAdoption: workloadAdoption{cwID: "infer"}, template: templateRunning("example/infer@sha256:" + strings.Repeat("d", 64))},
 	}
 	var warn bytes.Buffer
-	values, entries, err := buildWorkloadImageValues(adopted, "infer", &warn, nil)
+	workloadAllowlist, err := buildWorkloadImageValues(adopted, "infer", &warn, nil)
+	values, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
 		t.Fatalf("buildWorkloadImageValues(upstream infer) = %v, want nil", err)
 	}
@@ -733,7 +742,7 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	if container["digest"] != "sha256:"+strings.Repeat("c", 64) || !reflect.DeepEqual(container["mounts"], map[string]any{"policy": "any"}) {
 		t.Fatalf("values = %#v, want a web container admitting any mounts", values)
 	}
-	if _, _, err := buildWorkloadImageValues(adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
+	if _, err := buildWorkloadImageValues(adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
 		t.Fatalf("buildWorkloadImageValues(upstream web) = %v, want the refusal", err)
 	}
 }
@@ -763,7 +772,8 @@ func TestAdoptMeFixtureGetsAnEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	adoption := workloadAdoption{cwID: "web", ref: workloadRef{namespace: "adopted", kind: "deployment", name: "web"}}
-	got, entries, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
 		t.Fatalf("buildWorkloadImageValues(adopt-me) = %v", err)
 	}
@@ -856,7 +866,8 @@ func TestCheckAdoptedEntries(t *testing.T) {
 			for _, id := range slices.Sorted(maps.Keys(tc.adopt)) {
 				adopted = append(adopted, adoptedWorkload{workloadAdoption: workloadAdoption{cwID: id}, template: tc.adopt[id]})
 			}
-			computed, entries, err := buildWorkloadImageValues(adopted, "", io.Discard, nil)
+			workloadAllowlist, err := buildWorkloadImageValues(adopted, "", io.Discard, nil)
+			computed, entries := workloadAllowlist.values, workloadAllowlist.entries
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -875,7 +886,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 }
 
 func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
-	_, _, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
 		return "", errTestResolve
 	})
 	if err == nil {
@@ -888,7 +899,7 @@ func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
 // since the NRI allowlist keys on sha256 only.
 func TestBuildWorkloadImageArgsRejectsNonSHA256Digest(t *testing.T) {
 	sha512Image := "busybox@sha512:ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff"
-	_, _, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
 		t.Fatal("resolve must not run for an already-digested image")
 		return "", nil
 	})
