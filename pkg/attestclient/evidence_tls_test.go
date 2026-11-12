@@ -1,6 +1,7 @@
 package attestclient
 
 import (
+	"context"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 		t.Fatal("the armTLS client accepted an ordinary certificate; the test proves nothing")
 	}
 	c := NewClientWithHTTP("https://cds.invalid", cds)
-	if _, err := c.GenerateEvidence(srv.URL, []byte("report-data")); err != nil {
-		t.Fatalf("GenerateEvidence beside an armTLS CDS client: %v", err)
+	if _, err := c.GenerateEvidenceContext(context.Background(), srv.URL, []byte("report-data")); err != nil {
+		t.Fatalf("GenerateEvidenceContext beside an armTLS CDS client: %v", err)
 	}
 }
