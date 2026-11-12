@@ -61,11 +61,11 @@ type plugin struct {
 	inventory *admissionInventory
 	// execGrants records the started containers the measured base grants execs,
 	// for the runtime wrapper (execgrants.go). nil where the base grants none.
-	execGrants *execGrants
+	execGrants *grantRecords
 	// capGrants records the capabilities the allowlists declare for each
 	// container admission clears, for the runtime wrapper
 	// (capabilitygrants.go).
-	capGrants *capabilityGrants
+	capGrants *grantRecords
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -172,11 +172,11 @@ func newPlugin(
 		p.inventory.needsVariableEvidence = store.needsVariableEvidence
 	}
 	if grantsExecs(cfg.Allowlist.Base) {
-		p.execGrants = &execGrants{dir: ExecGrantDir}
+		p.execGrants = newExecGrantRecords(ExecGrantDir)
 	}
 	// A served allowlist can declare capabilities the base does not, so the
 	// records are kept whatever the base declares.
-	p.capGrants = &capabilityGrants{dir: CapabilityGrantDir}
+	p.capGrants = newCapabilityGrantRecords(CapabilityGrantDir)
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""

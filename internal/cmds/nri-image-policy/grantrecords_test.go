@@ -20,13 +20,13 @@ var grantStores = []struct {
 }{
 	{
 		name:   "execs",
-		open:   func(dir string) grantStore { return &execGrants{dir: dir} },
+		open:   func(dir string) grantStore { return newExecGrantRecords(dir) },
 		grants: [][]string{{"kubectl"}},
 		record: `{"execs":[["kubectl"]]}`,
 	},
 	{
 		name:   "capabilities",
-		open:   func(dir string) grantStore { return &capabilityGrants{dir: dir} },
+		open:   func(dir string) grantStore { return newCapabilityGrantRecords(dir) },
 		grants: [][]string{{"SYS_PTRACE"}},
 		record: `{"capabilities":[["SYS_PTRACE"]]}`,
 	},
