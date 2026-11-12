@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -385,6 +386,84 @@ func TestNewAttestedTransportConfig(t *testing.T) {
 	}
 	if tr.MaxIdleConns != 1 || tr.MaxConnsPerHost != 1 {
 		t.Errorf("MaxIdleConns/MaxConnsPerHost = %d/%d, want 1/1", tr.MaxIdleConns, tr.MaxConnsPerHost)
+	}
+}
+
+// recordingFrontDoor reports the server name each ClientHello carried.
+func recordingFrontDoor(t *testing.T, servingCert tls.Certificate) (*httptest.Server, <-chan string) {
+	t.Helper()
+	hello := make(chan string, 1)
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{servingCert},
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			hello <- info.ServerName
+			return nil, nil
+		},
+	}
+	return lbServer(t, cfg, http.NotFoundHandler()), hello
+}
+
+func TestDialFrontDoorRefusesTLS12(t *testing.T) {
+	servingCert, _ := plainServingCert(t)
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{servingCert},
+		MaxVersion:   tls.VersionTLS12,
+	}
+	srv := lbServer(t, cfg, http.NotFoundHandler())
+
+	conn, err := DialFrontDoor(context.Background(), srv.Listener.Addr().String(), "", frontDoorDialTimeout)
+	if err == nil {
+		conn.Close()
+		t.Fatal("a TLS 1.2-only front door must be refused")
+	}
+}
+
+// What the front door sees in the ClientHello: the caller's server name, or
+// the hostname in addr when the caller names none.
+func TestDialFrontDoorServerName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		host       string
+		serverName string
+		want       string
+	}{
+		{name: "the caller's server name", host: "127.0.0.1", serverName: "lb.example.com", want: "lb.example.com"},
+		{name: "the hostname in addr", host: "localhost", serverName: "", want: "localhost"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			servingCert, _ := plainServingCert(t)
+			srv, hello := recordingFrontDoor(t, servingCert)
+			_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			conn, err := DialFrontDoor(context.Background(), net.JoinHostPort(tc.host, port), tc.serverName, frontDoorDialTimeout)
+			if err != nil {
+				t.Fatalf("DialFrontDoor: %v", err)
+			}
+			defer conn.Close()
+			if got := <-hello; got != tc.want {
+				t.Fatalf("ClientHello server name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDialFrontDoorDefaultsToTheRouterPort(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{host: "lb.example.com", want: "lb.example.com:443"},
+		{host: "lb.example.com:8443", want: "lb.example.com:8443"},
+		{host: "::1", want: "[::1]:443"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := withDefaultPort(tc.host); got != tc.want {
+				t.Fatalf("withDefaultPort(%q) = %q, want %q", tc.host, got, tc.want)
+			}
+		})
 	}
 }
 

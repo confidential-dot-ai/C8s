@@ -18,12 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
-
-// defaultDiscoveryPath is the path the router serves its discovery document on.
-const defaultDiscoveryPath = "/v1/discovery"
 
 // frontDoorObservation is what a discovery gather's live TLS handshake showed
 // about the serving key the front door actually speaks.
@@ -65,9 +63,9 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 	client := insecureClient(serverName, timeout)
 	var conn *tls.Conn
 	if u.Scheme == "https" {
-		conn, err = dialFrontDoor(ctx, u.Host, serverName, timeout)
+		conn, err = routerdiscovery.DialFrontDoor(ctx, u.Host, serverName, timeout)
 		if err != nil {
-			return nil, err
+			return nil, &connectError{err: fmt.Errorf("dial %s: %w", u.Host, err)}
 		}
 		defer conn.Close()
 		client = singleConnClient(conn, timeout)
@@ -85,31 +83,11 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 	return evidenceFromDiscovery(data, src, trust, observed)
 }
 
-// dialFrontDoor opens the TLS connection the discovery document is fetched
-// over. PKI is intentionally not verified — the trust anchor is the
-// attestation in the document, checked downstream, and the handshake leaf is
-// compared against the document's attested certificate after the fetch.
-func dialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, &connectError{err: fmt.Errorf("dial %s: %w", addr, err)}
-	}
-	// tls.Dialer.DialContext always returns a *tls.Conn.
-	return conn.(*tls.Conn), nil
-}
-
 // singleConnClient serves requests over the one dialed connection and never
 // redials: the handshake leaf the gather compares is this connection's, so a
 // second dial could reach a different router replica serving a different cert.
 // Redirects are not followed for the same reason — a non-200, including a
 // redirect, is a fetch failure (connectError).
-// dialFrontDoor + this guard are a sibling of internal/routerdiscovery's
-// dialFrontDoor + attestedDialer — port fixes both ways. This one makes a
-// single request, so it never needs the redial the library performs.
 func singleConnClient(conn *tls.Conn, timeout time.Duration) *http.Client {
 	var dialed atomic.Bool
 	return &http.Client{
@@ -130,7 +108,7 @@ func singleConnClient(conn *tls.Conn, timeout time.Duration) *http.Client {
 // raw bytes plus a human-readable source string.
 func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, path string) ([]byte, string, error) {
 	if path == "" {
-		path = defaultDiscoveryPath
+		path = routerdiscovery.DefaultPath
 	}
 	u := *base
 	u.Path = path
