@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -21,7 +23,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
-	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
