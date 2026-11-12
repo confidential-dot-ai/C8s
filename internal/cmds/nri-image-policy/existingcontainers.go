@@ -117,7 +117,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		if pod == nil || !p.mesh.hosts(pod) {
 			continue
 		}
-		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
+		launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, ctr.GetAnnotations()[annotationImageName]))
 		role := p.roleOf(launch)
 		// Liveness is the running set, not the registration snapshot: a container
 		// that started in the deferral window is not CONTAINER_RUNNING in the

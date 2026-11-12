@@ -58,7 +58,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 			if err := p.StartContainer(t.Context(), pod, final); err != nil {
 				t.Fatalf("start chart container: %v", err)
 			}
-			launch := p.observedLaunch(t.Context(), final, final.Annotations[annotationImageName], containerEnv(final), mounts)
+			launch := p.observedLaunch(t.Context(), observedContainerOf(pod, final, final.Annotations[annotationImageName], mounts))
 			if role := p.roleOf(launch); role != client.role {
 				t.Fatalf("final measured role = %q, want %q", role, client.role)
 			}
@@ -155,7 +155,8 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 				if address.Class != allowlist.MountPlatform {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}
-				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, pod, ctr, ctr.Annotations[annotationImageName], launchFinal, containerEnv(ctr), mounts)
+				observed := observedContainerOf(pod, ctr, ctr.Annotations[annotationImageName], mounts)
+				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, observed, launchFinal)
 				if verdict != verdictDeny {
 					t.Fatalf("unapproved final launch admission = %v: %s", verdict, reason)
 				}

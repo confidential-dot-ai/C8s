@@ -150,14 +150,14 @@ func (c podCVM) gateStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Con
 	if err := p.containerd.VerifyContainerImage(ctx, ctr.GetId(), pod.GetId(), imageRef); err != nil {
 		return "", fmt.Errorf("verify selected Pod image: %w", err)
 	}
-	mounts := p.observedMounts(pod, ctr)
-	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), mounts)
+	observed := p.observeContainer(pod, ctr, imageRef)
+	launch := p.observedLaunch(ctx, observed)
 	role := p.roleOf(launch)
-	source, err := p.podCredentialSource(pod, ctr, role, mounts)
+	source, err := p.podCredentialSource(pod, ctr, role, observed.mounts)
 	if err != nil {
 		return "", err
 	}
-	if err := p.podSecretReader(pod, ctr, role, mounts); err != nil {
+	if err := p.podSecretReader(pod, ctr, role, observed.mounts); err != nil {
 		return "", err
 	}
 	if err := p.mesh.admit(pod, ctr, gatedContainer{

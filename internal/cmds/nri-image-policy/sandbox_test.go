@@ -526,7 +526,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			reason := ""
 			if cfg.sandboxObserved() {
 				mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
-				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
+				verdict, reason = p.checkSandbox(context.Background(), cfg, observedContainerOf(pod, ctr, testFloorImage, mounts))
 			}
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox(%s) = %d %q, want %d", tt.name, verdict, reason, tt.want)
@@ -622,7 +622,7 @@ func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 			ctr.Args = tt.argv
 			ctr.Env = []string{"PATH=/bin"}
 			mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
-			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
+			verdict, reason := p.checkSandbox(context.Background(), cfg, observedContainerOf(pod, ctr, testFloorImage, mounts))
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
 			}
@@ -859,7 +859,8 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
 	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
 	// fakeContainerd panics on Resolve.
-	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, mounts); verdict != verdictDeny {
+	hostBind := observedContainer{pod: pod, ctr: ctr, imageRef: "registry/repo:tag", mounts: mounts}
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, hostBind); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(host bind, no allowlist) = %d, want deny", verdict)
 	}
 }

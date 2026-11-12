@@ -681,8 +681,14 @@ func TestPodAdjustmentRoleComesFromTheFinalMountSet(t *testing.T) {
 		p.mesh = newMeshGate(*meshRoles(), discardLogger())
 		req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: declared, Adjust: adjust}
 		ctr, env := adjustedLaunchContainer(req)
-		mounts := p.adjustedMounts(req, ctr)
-		return p.gateMesh(t.Context(), req, ctr, "registry/repo@"+pushDigestB, env, mounts)
+		observed := observedContainer{
+			pod:      pod,
+			ctr:      ctr,
+			imageRef: "registry/repo@" + pushDigestB,
+			env:      env,
+			mounts:   p.adjustedMounts(req, ctr),
+		}
+		return p.gateMesh(t.Context(), req, observed)
 	}
 	moved := &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(source, "/tenant/certs")}}
 
