@@ -1302,71 +1302,49 @@ func mediumName(m corev1.StorageMedium) string {
 	return "default"
 }
 
-// volumeContainer is the workload's volume fetcher.
-//
-// A native sidecar ordered after c8s-cert-wait, like the secret fetcher and for
-// the same reason: it authenticates with the leaf that sidecar writes, and CDS
-// releases only once every main container is running.
 func volumeContainer(inj *injection, cfg Config) corev1.Container {
-	args := []string{
-		"get-volume",
-		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
-		"--cert=" + certPath(certFile),
-		"--key=" + certPath(keyFile),
-	}
+	container := releaseSidecar(inj, cfg, reservedVolumeContainerName, "get-volume")
 	for _, spec := range inj.Volumes.Specs {
-		args = append(args, "--volume="+spec)
+		container.Args = append(container.Args, "--volume="+spec)
 	}
-
-	always := corev1.ContainerRestartPolicyAlways
-	return corev1.Container{
-		Name:            reservedVolumeContainerName,
-		Image:           cfg.GetCertImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		RestartPolicy:   &always,
-		Args:            args,
-		Env:             getCertEnv(inj),
-		// It reads the leaf and talks to the node agent's socket; the volumes
-		// themselves are mounted into the workload, not into this.
-		VolumeMounts:    getCertVolumeMounts(inj),
-		SecurityContext: getCertSecurityContext(),
-	}
+	return container
 }
 
-// secretContainer is the workload's secret fetcher.
-//
-// A native sidecar (restartPolicy: Always), and ordered after c8s-cert-wait so
-// the leaf it authenticates with is already on disk. It cannot be a plain init
-// container: CDS releases only once every main container is running, so an init
-// container would be asking before its siblings exist and would deadlock the
-// pod it is gating (docs/secrets.md).
 func secretContainer(inj *injection, cfg Config) corev1.Container {
-	args := []string{
-		"get-secret",
-		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
-		"--cert=" + certPath(certFile),
-		"--key=" + certPath(keyFile),
-		"--out-dir=" + inj.Secrets.Dir,
-	}
+	container := releaseSidecar(inj, cfg, reservedSecretContainerName, "get-secret")
+	container.Args = append(container.Args, "--out-dir="+inj.Secrets.Dir)
 	for _, spec := range inj.Secrets.Specs {
-		args = append(args, "--secret="+spec)
+		container.Args = append(container.Args, "--secret="+spec)
 	}
+	// Released secrets are writable only by this fetcher.
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      secretsVolumeName,
+		MountPath: inj.Secrets.Dir,
+	})
+	return container
+}
 
+// Release sidecars follow c8s-cert-wait and run alongside the workload.
+func releaseSidecar(
+	inj *injection,
+	cfg Config,
+	name string,
+	command string,
+) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	return corev1.Container{
-		Name:            reservedSecretContainerName,
+		Name:            name,
 		Image:           cfg.GetCertImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		RestartPolicy:   &always,
-		Args:            args,
+		Args: []string{
+			command,
+			"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
+			"--cert=" + certPath(certFile),
+			"--key=" + certPath(keyFile),
+		},
 		Env:             getCertEnv(inj),
-		// The only container with write access: the shared directory is
-		// readable pod-wide by design, but a workload able to write it could
-		// replace a value another container has yet to read.
-		VolumeMounts: append(getCertVolumeMounts(inj), corev1.VolumeMount{
-			Name:      secretsVolumeName,
-			MountPath: inj.Secrets.Dir,
-		}),
+		VolumeMounts:    getCertVolumeMounts(inj),
 		SecurityContext: getCertSecurityContext(),
 	}
 }
