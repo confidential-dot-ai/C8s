@@ -197,6 +197,7 @@ func run(cfg config) error {
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RouterCertTTL:     cfg.routerCertTTL,
+			Routes:            allowlistWrites,
 			RequestTimeout:    cfg.requestTimeout,
 			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,

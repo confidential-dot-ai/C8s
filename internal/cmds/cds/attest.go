@@ -22,11 +22,13 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -92,6 +94,13 @@ type AttestHandler struct {
 	// first.
 	// Zero leaves router leaves uncapped.
 	RouterCertTTL time.Duration
+
+	// Routes is the stored route manifest. A router leaf also names
+	// *.<hostSuffix> for each of its pattern rules, so a client can reach an
+	// agent at <label>.<hostSuffix> and check the router's certificate by
+	// name. A router renews within RouterCertTTL, so a changed pattern set
+	// reaches its leaf without a restart. nil adds no names.
+	Routes routeStore
 
 	// SandboxDigests resolves a sandbox's inventory: its signing key and what
 	// the sandbox is running, over mutually-attested armTLS to a privileged
@@ -327,6 +336,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if router && h.RouterCertTTL > 0 {
 		ttl = min(ttl, h.RouterCertTTL)
 	}
+	var routerNames []string
+	if router {
+		routerNames = h.routerPatternNames()
+	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing, issuing := h.MeshCA.Current()
 	if !issuing {
@@ -347,6 +360,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		SandboxID:            sandbox.SandboxID,
 		MatchedWorkload:      matched,
 		ClientDocumentDigest: clientDocument,
+		ExtraDNSNames:        routerNames,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
 		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
@@ -376,7 +390,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// name reconstructs from the log alone.
 	issued := []any{
 		"cn", leafCN,
-		"sans", csr.DNSNames,
+		"sans", slices.Concat(csr.DNSNames, routerNames),
 		"serial", serialHex(serial),
 		"ttl", ttl,
 		"launch_digest", launchDigest,
@@ -397,6 +411,39 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
+}
+
+// routeStore is the stored signed route manifest, satisfied by
+// *allowlist.Handle.
+type routeStore interface {
+	LoadRoutes() (routes.Envelope, error)
+}
+
+// routerPatternNames returns *.<hostSuffix> for each pattern rule of the
+// stored route manifest. The manifest was validated and authorized when it was
+// stored; one that no longer loads costs the router only these names.
+func (h AttestHandler) routerPatternNames() []string {
+	if h.Routes == nil {
+		return nil
+	}
+	env, err := h.Routes.LoadRoutes()
+	if errors.Is(err, allowlist.ErrNoRoutes) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("router leaf without pattern names: route manifest unavailable", "error", err)
+		return nil
+	}
+	m, err := routes.Parse(env.Manifest)
+	if err != nil {
+		slog.Warn("router leaf without pattern names: stored route manifest does not parse", "error", err)
+		return nil
+	}
+	names := make([]string, 0, len(m.Patterns))
+	for _, p := range m.Patterns {
+		names = append(names, "*."+p.HostSuffix)
+	}
+	return names
 }
 
 // matchPinnedNodeImage holds the verified evidence to one node image this CDS
