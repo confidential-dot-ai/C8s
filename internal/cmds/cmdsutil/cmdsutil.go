@@ -136,7 +136,7 @@ func urlHost(ip string) (string, error) {
 }
 
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs
-// (fileutil.RequireRAMBacked). The flagName is interpolated into the error so
+// (fileutil.RequireRAMBackedRoot). The flagName is interpolated into the error so
 // callers needn't wrap. Shared by get-secret (--out-dir) and get-cert
 // (--key-out): each secret-writing sidecar gets the same refusal shape.
 func RequireRAMBackedDir(flagName, dir string) error {

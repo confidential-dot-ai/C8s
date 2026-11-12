@@ -21,6 +21,16 @@ func sectors(n int) []byte {
 	return b
 }
 
+func tempImage(t *testing.T) *os.File {
+	t.Helper()
+	out, err := os.Create(filepath.Join(t.TempDir(), "img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = out.Close() })
+	return out
+}
+
 func testKey() []byte {
 	k := make([]byte, KeyBytes)
 	for i := range k {
@@ -34,7 +44,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 	for _, n := range []int{1, 2, 17} {
 		plain := sectors(n)
 		var ct, back bytes.Buffer
-		if err := Encrypt(&ct, bytes.NewReader(plain), key); err != nil {
+		if err := encrypt(&ct, bytes.NewReader(plain), key); err != nil {
 			t.Fatalf("%d sectors: encrypt: %v", n, err)
 		}
 		if ct.Len() != len(plain) {
@@ -43,7 +53,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 		if bytes.Equal(ct.Bytes(), plain) {
 			t.Fatalf("%d sectors: ciphertext equals plaintext", n)
 		}
-		if err := Decrypt(&back, bytes.NewReader(ct.Bytes()), key); err != nil {
+		if err := decrypt(&back, bytes.NewReader(ct.Bytes()), key); err != nil {
 			t.Fatalf("%d sectors: decrypt: %v", n, err)
 		}
 		if !bytes.Equal(back.Bytes(), plain) {
@@ -58,7 +68,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 func TestEncryptTweaksPerSector(t *testing.T) {
 	plain := make([]byte, 4*SectorSize) // all zero: every sector identical
 	var ct bytes.Buffer
-	if err := Encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
+	if err := encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	out := ct.Bytes()
@@ -79,7 +89,7 @@ func TestEncryptMatchesRawXTSPerSectorTweak(t *testing.T) {
 	plain := sectors(3)
 
 	var got bytes.Buffer
-	if err := Encrypt(&got, bytes.NewReader(plain), key); err != nil {
+	if err := encrypt(&got, bytes.NewReader(plain), key); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
@@ -100,16 +110,16 @@ func TestEncryptMatchesRawXTSPerSectorTweak(t *testing.T) {
 // Padding an unaligned payload would change the bytes dm-verity was formatted
 // over, so it is refused instead.
 func TestEncryptRejectsUnalignedPayload(t *testing.T) {
-	var out bytes.Buffer
-	err := Encrypt(&out, strings.NewReader(strings.Repeat("x", SectorSize+7)), testKey())
+	out := tempImage(t)
+	err := EncryptAt(t.Context(), out, strings.NewReader(strings.Repeat("x", SectorSize+7)), testKey(), 1)
 	if !errors.Is(err, ErrUnaligned) {
 		t.Fatalf("got %v, want ErrUnaligned", err)
 	}
 }
 
 func TestEncryptRejectsWrongKeyLength(t *testing.T) {
-	var out bytes.Buffer
-	if err := Encrypt(&out, bytes.NewReader(sectors(1)), make([]byte, 32)); err == nil {
+	out := tempImage(t)
+	if err := EncryptAt(t.Context(), out, bytes.NewReader(sectors(1)), make([]byte, 32), 1); err == nil {
 		t.Fatal("accepted a 32-byte key")
 	}
 }
@@ -134,11 +144,11 @@ func TestGenerateKeyIsFreshAndFullLength(t *testing.T) {
 func TestDecryptWithWrongKeyDoesNotRecoverPlaintext(t *testing.T) {
 	plain := sectors(2)
 	var ct, back bytes.Buffer
-	if err := Encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
+	if err := encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	wrong := make([]byte, KeyBytes)
-	if err := Decrypt(&back, bytes.NewReader(ct.Bytes()), wrong); err != nil {
+	if err := decrypt(&back, bytes.NewReader(ct.Bytes()), wrong); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	if bytes.Equal(back.Bytes(), plain) {
@@ -155,7 +165,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var want bytes.Buffer
-	if err := Encrypt(&want, bytes.NewReader(plain), key); err != nil {
+	if err := encrypt(&want, bytes.NewReader(plain), key); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	for _, jobs := range []int{1, 2, 3, 8} {
@@ -172,7 +182,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, want.Bytes()) {
-			t.Fatalf("jobs=%d: output differs from Encrypt", jobs)
+			t.Fatalf("jobs=%d: output differs from the serial reference", jobs)
 		}
 	}
 	out, err := os.Create(filepath.Join(t.TempDir(), "img"))

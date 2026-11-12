@@ -35,10 +35,19 @@ func TestRunMainHelpDoesNotExit(t *testing.T) {
 	})
 }
 
+func ramBacked(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return fileutil.RequireRAMBackedRoot(root)
+}
+
 func TestRequireRAMBackedDir(t *testing.T) {
 	dir := t.TempDir()
 	err := RequireRAMBackedDir("--out-dir", dir)
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		if err != nil {
 			t.Fatalf("RAM-backed dir refused: %v", err)
 		}
@@ -52,7 +61,7 @@ func TestRequireRAMBackedDir(t *testing.T) {
 func TestOpenRAMBackedDir(t *testing.T) {
 	dir := t.TempDir()
 	root, err := OpenRAMBackedDir("--out-dir", dir)
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		if err != nil {
 			t.Fatalf("RAM-backed dir refused: %v", err)
 		}
