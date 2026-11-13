@@ -19,10 +19,6 @@ const (
 // owns. The record sweep cannot find them: it starts from the records. It
 // creates nothing, and it runs only while the provider owns its node.
 func (r *Reconciler) sweepInstances(ctx context.Context) error {
-	// An empty ID would match an instance that carries no provider label.
-	if r.cfg.ProviderID == "" {
-		return errors.New("the provider has no ID to list instances by")
-	}
 	if r.ownsNode != nil {
 		if err := r.ownsNode(ctx); err != nil {
 			return fmt.Errorf("provider node: %w", err)

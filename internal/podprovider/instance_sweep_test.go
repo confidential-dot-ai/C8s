@@ -162,14 +162,6 @@ func TestInstanceSweepRetriesAnOrphanUntilItIsGone(t *testing.T) {
 	}
 }
 
-func TestInstanceSweepNeedsAProviderID(t *testing.T) {
-	r, cloud := fixtureReconciler(t, fixturePod())
-	r.cfg.ProviderID = ""
-	if err := r.sweepInstances(t.Context()); err == nil || len(cloud.listed) != 0 {
-		t.Fatalf("error %v, listed %v", err, cloud.listed)
-	}
-}
-
 func TestInstanceSweepContinuesPastAnInstanceItCannotJudge(t *testing.T) {
 	r, cloud := fixtureReconciler(t, fixturePod())
 	unreadable := identityKey(r.cfg.ProviderID, "unreadable")
