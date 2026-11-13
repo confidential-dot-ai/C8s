@@ -71,7 +71,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 // The record belongs to this hook: a validator that does not answer fails the
 // create, and the wrapper reads the record before the start check runs.
 func (p *plugin) noteCapabilityGrant(ctx context.Context, observed observedContainer) {
-	launch := p.annotatedLaunch(ctx, observed)
+	launch := p.observedLaunch(ctx, observed)
 	id := observed.ctr.GetId()
 	if err := p.capGrants.note(id, p.policy.declaredCapabilities(launch)); err != nil {
 		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", id, "error", err)
@@ -95,7 +95,7 @@ func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, observed ob
 	if !cfg.Worker || !staticPod(observed.pod) {
 		return nil
 	}
-	if p.policy.baseAdmitsPinned(p.annotatedLaunch(ctx, observed)) {
+	if p.policy.baseAdmitsPinned(p.observedLaunch(ctx, observed)) {
 		return nil
 	}
 	return errors.New("a worker runs a static pod only on a launch a base entry pins")
