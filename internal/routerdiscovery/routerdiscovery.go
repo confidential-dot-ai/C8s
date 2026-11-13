@@ -35,7 +35,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,6 +44,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -198,7 +198,7 @@ func fetchDocument(ctx context.Context, client *http.Client, base *url.URL) ([]b
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: GET %s returned %d", ErrNoDiscovery, u.String(), resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDocumentBytes))
+	data, err := readutil.ReadAll(resp.Body, maxDocumentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read discovery document: %w", err)
 	}

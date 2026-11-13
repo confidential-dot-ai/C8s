@@ -481,3 +481,29 @@ func TestExplainSurfacesServerErrors(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A CDS answer past maxResponseBytes is refused where it is read, so neither
+// command acts on the part of it that arrived.
+func TestAnAnswerOverTheCapIsRefused(t *testing.T) {
+	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponseBytes+1))
+	}))
+	t.Cleanup(oversized.Close)
+	key := writeOperatorKey(t)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "put", args: []string{"put", "/a", "--url", oversized.URL, "--insecure", "--operator-key", key}},
+		{name: "explain", args: []string{"explain", "--sandbox", testSandboxID, "--url", oversized.URL, "--insecure", "--operator-key", key}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := run(t, "v", tc.args...); err == nil || !strings.Contains(err.Error(), "read response") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -20,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
 // A replica serves its clients and the operator on one port.
@@ -239,7 +239,7 @@ func postedDecree(
 		return cdsha.Delivered{}, err
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, maxReplicaReport))
+	answer, err := readutil.ReadAll(response.Body, maxReplicaReport)
 	if err != nil {
 		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
 	}
@@ -272,7 +272,7 @@ func replicaAnswer(
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", path, response.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit))
+	body, err := readutil.ReadAll(response.Body, limit)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)
 	}

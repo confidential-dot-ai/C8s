@@ -1,16 +1,22 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
@@ -101,5 +107,42 @@ func TestReplicasSharingAFrontDoorStayDistinct(t *testing.T) {
 		if got := reachedAs(tc.entry, tc.answering); !slices.Equal(got, tc.want) {
 			t.Errorf("reachedAs(%q) = %v, want %v", tc.entry, got, tc.want)
 		}
+	}
+}
+
+// A replica answering past the limit is refused where it is read, so no
+// truncated report or decree answer is parsed.
+func TestAReplicaAnswerOverTheLimitIsRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxReplicaReport+1))
+	}))
+	t.Cleanup(server.Close)
+
+	if _, err := replicaAnswer(context.Background(), server.Client(), server.URL, statusPath, maxReplicaReport); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("GET %s: %v", statusPath, err)
+	}
+	if _, err := postedDecree(context.Background(), server.Client(), server.URL, []byte("{}")); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("POST %s: %v", decreesPath, err)
+	}
+}
+
+// The signed routes are answered by any one replica, so an oversized answer
+// costs that replica its turn instead of the command.
+func TestAnOversizedAnswerMovesToTheNextReplica(t *testing.T) {
+	c := newReplicatedCluster(t)
+	replicas := c.replicasServing(t,
+		map[string]any{pinDecreePath: map[string]string{"pad": strings.Repeat("x", maxReplicaReport)}},
+		map[string]any{pinDecreePath: c.pinDecree(t, smp2Digest)},
+	)
+
+	address, body, err := signedStateOfAnyReplica(context.Background(), replicas, pinDecreePath, maxReplicaReport)
+	if err != nil {
+		t.Fatalf("signedStateOfAnyReplica: %v", err)
+	}
+	if address != replicas[1].address {
+		t.Fatalf("answered by %s, want the second replica %s", address, replicas[1].address)
+	}
+	if _, err := cdsdecree.Parse(body); err != nil {
+		t.Fatalf("parse the answer: %v", err)
 	}
 }

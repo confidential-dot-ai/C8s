@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -365,9 +365,9 @@ func doPeer(ctx context.Context, client *http.Client, method, url string, body [
 		return nil, nil, "", fmt.Errorf("attested request (image or channel not verified): %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	data, err := readutil.ReadAll(resp.Body, maxBody)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", fmt.Errorf("read %s: %w", url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body is peer-controlled; keep only its head in the error.

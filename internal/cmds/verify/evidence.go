@@ -25,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -389,7 +390,7 @@ func gatherFromEndpoint(ctx context.Context, base, serverName string, timeout ti
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, &connectError{err: fmt.Errorf("POST %s returned %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := readutil.ReadAll(resp.Body, 1<<20)
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("read response: %w", err)}
 	}

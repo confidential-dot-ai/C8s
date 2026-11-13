@@ -36,6 +36,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -829,5 +830,31 @@ func TestAssignmentRoutesAnswer503OnceThePodIdentityEnded(t *testing.T) {
 	s, _, _, _ := assignmentFixture(t)
 	if rec := serve(Handler{assignment: s, IdentityEnded: identity}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK || asked != 0 {
 		t.Fatalf("unassigned guest: %d, plugin asked %d times", rec.Code, asked)
+	}
+}
+
+// A guest or kubelet answer past maxBody is refused where it is read: a
+// truncated pod list or evidence response is never parsed.
+func TestAnAnswerOverTheLimitIsRefused(t *testing.T) {
+	guest := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxBody+1))
+	}))
+	t.Cleanup(guest.Close)
+	if _, _, err := postEvidence(t.Context(), guest.Client(), guest.URL, []byte("{}")); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("evidence: %v", err)
+	}
+
+	kubelet := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxBody+1))
+	}))
+	kubelet.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	kubelet.StartTLS()
+	t.Cleanup(kubelet.Close)
+	certFile := filepath.Join(t.TempDir(), "kubelet.crt")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: kubelet.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kubeletPods(kubelet.URL, certFile)(t.Context()); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("kubelet /pods: %v", err)
 	}
 }

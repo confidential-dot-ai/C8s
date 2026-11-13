@@ -1,12 +1,14 @@
 package podprovider
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +26,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
 func TestGuestReaderRefusesUnattestedStatusAndRemovesTrustFiles(t *testing.T) {
@@ -161,5 +164,17 @@ func TestStatusReadIsPinnedToTheAssignedServingKey(t *testing.T) {
 	}
 	if err := servingKeyIs(tls.ConnectionState{}, assigned); err == nil {
 		t.Fatal("connection without a certificate accepted")
+	}
+}
+
+// A guest answer past maxGuestBody is refused where it is read, so no status
+// projection is parsed out of its prefix.
+func TestGuestStatusReadRefusesAnOversizedAnswer(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxGuestBody+1))
+	}))
+	defer server.Close()
+	if _, err := get(t.Context(), server.Client(), server.URL+podstatus.PodPath); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("get = %v, want a refused read", err)
 	}
 }

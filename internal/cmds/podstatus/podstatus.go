@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -382,7 +383,11 @@ func kubeletPods(base, certFile string) func(context.Context) ([]byte, error) {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("kubelet /pods: %s", resp.Status)
 		}
-		return io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		pods, err := readutil.ReadAll(resp.Body, maxBody)
+		if err != nil {
+			return nil, fmt.Errorf("kubelet /pods: %w", err)
+		}
+		return pods, nil
 	}
 }
 
