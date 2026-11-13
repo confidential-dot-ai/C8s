@@ -282,8 +282,8 @@ jobs:
           cat "$SARIF_REPORT"
 
   # The CLI binaries the release carries as assets. The sign job lists their
-  # digests in the statement. The build is reproducible, so a retry gives the
-  # bytes the first run published; see docs/releases.md.
+  # digests in the statement. The build is reproducible for a given toolchain;
+  # see docs/releases.md.
   cli:
     name: Build release CLI
     needs: calculate
@@ -303,14 +303,29 @@ jobs:
 
       - uses: ./.github/actions/setup-go-c8s
 
+      # A first run builds with the Go patch setup-go-c8s installed. A re-run
+      # builds with the toolchain of a binary the first run published, so it
+      # gives the same bytes after a newer patch appears. The sign job compares
+      # the bytes, so a wrong choice here fails there.
       - name: Build release CLI
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
         run: |
           set -euo pipefail
 
+          toolchain="$(GOTOOLCHAIN=local go env GOVERSION)"
+          first="c8s-${RELEASE_CLI_PLATFORMS%% *}"
+          if timeout --kill-after=5s "$RELEASE_ASSET_TIMEOUT" \
+               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+               --dir "$RUNNER_TEMP/published" --pattern "$first"; then
+            toolchain="$(GOTOOLCHAIN=local go version "$RUNNER_TEMP/published/$first" | awk '{ print $NF }')"
+            echo "release $RELEASE_TAG already has $first, built with $toolchain"
+          fi
+
           # shellcheck disable=SC2086 # one argument per platform
-          .github/scripts/release-cli.sh "$RELEASE_TAG" dist $RELEASE_CLI_PLATFORMS
+          .github/scripts/release-cli.sh "$RELEASE_TAG" "$toolchain" dist $RELEASE_CLI_PLATFORMS
+          GOTOOLCHAIN=local go version dist/c8s-*
           (cd dist && sha256sum c8s-*)
           test "$(dist/c8s-linux-amd64 --version)" = "c8s version $RELEASE_TAG"
 
@@ -877,7 +892,10 @@ jobs:
             asset="c8s-$platform"
             if has_asset "$asset"; then
               gh_release_asset download "$RELEASE_TAG" --dir published --pattern "$asset"
-              cmp "cli/$asset" "published/$asset"
+              if ! cmp "cli/$asset" "published/$asset"; then
+                echo "::error::$asset on release $RELEASE_TAG is not the binary this run built; see Recovery in docs/releases.md"
+                exit 1
+              fi
             else
               missing+=("cli/$asset")
             fi

@@ -12,9 +12,8 @@ description: >-
   go.mod. The go.mod floor is still satisfied, so GOTOOLCHAIN never has to
   download a second toolchain.
 
-  The one exception is .github/scripts/release-cli.sh, which builds the released
-  CLI with exactly the `go` directive so that the binaries are reproducible.
-  Changing the directive changes those bytes.
+  The released CLI is built with the patch this action installs
+  (.github/scripts/release-cli.sh), so a release also picks up those fixes.
 
   Run this AFTER actions/checkout: a local (./) composite action cannot perform
   the checkout itself, because the action file must already be on disk before
