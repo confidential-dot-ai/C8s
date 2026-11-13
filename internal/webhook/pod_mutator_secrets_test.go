@@ -164,7 +164,7 @@ func TestReservedSecretsVolumeMustBeMemoryBacked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
 			pod.Spec.Volumes = []corev1.Volume{{Name: secretsVolumeName, VolumeSource: tc.source}}
-			err := rejectReservedSecretsVolume(pod)
+			err := rejectReservedVolumeShapes(pod)
 			if tc.wantOK && err != nil {
 				t.Fatalf("rejected a valid volume: %v", err)
 			}

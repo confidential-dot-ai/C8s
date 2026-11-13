@@ -45,15 +45,7 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 	if err := rejectReservedCertContainer(pod); err != nil {
 		return err
 	}
-	if err := rejectReservedCertVolume(pod, CertVolumeName); err != nil {
-		return err
-	}
-	// A hostPath for the released secrets or the opened volumes would write
-	// them to host-visible storage.
-	if err := rejectReservedSecretsVolume(pod); err != nil {
-		return err
-	}
-	if err := rejectReservedVolumeVolume(pod); err != nil {
+	if err := rejectReservedVolumeShapes(pod); err != nil {
 		return err
 	}
 	if err := rejectCredentialMounts(pod, CertVolumeName); err != nil {
@@ -245,51 +237,55 @@ func rejectUnpinnableSidecarVolumes(pod *corev1.Pod, inj *injection) error {
 	return nil
 }
 
-// rejectReservedSecretsVolume denies a pod that pre-declares the secrets volume
-// as anything but the expected memory-backed emptyDir. ensureVolume keeps an
-// existing same-named volume rather than overwriting it, so without this a pod
-// spec could point it at a hostPath and have a CDS-released secret written to
-// persistent, host-visible storage outside the TEE boundary. Omitting it is
+// rejectReservedVolumeShapes denies a pod that pre-declares a volume the
+// injector owns as anything but the emptyDir the injector creates. ensureVolume
+// keeps an existing same-named volume rather than overwriting it, so without
+// this a pod spec could point the credential or secrets volume at a hostPath
+// and have a private key or a CDS-released secret written to persistent,
+// host-visible storage outside the TEE boundary. Omitting a reserved volume is
 // fine — the webhook injects it.
-func rejectReservedSecretsVolume(pod *corev1.Pod) error {
-	for i := range pod.Spec.Volumes {
-		v := &pod.Spec.Volumes[i]
-		if v.Name != secretsVolumeName {
-			continue
-		}
-		if v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory {
-			return fmt.Errorf("%w: volume %q is reserved for released secrets; it must be a memory-backed emptyDir (medium: Memory) or omitted",
-				errInvalidInjectionAnnotation, secretsVolumeName)
+//
+// The opened volumes are reserved by prefix rather than by re-deriving names
+// from the annotation: the annotation is host-written, so a guard that reads it
+// can be steered away from the name it is meant to protect.
+func rejectReservedVolumeShapes(pod *corev1.Pod) error {
+	for _, reserved := range []struct {
+		matches func(name string) bool
+		medium  corev1.StorageMedium
+		refusal string
+	}{
+		{
+			matches: func(name string) bool {
+				return name == CertVolumeName
+			},
+			medium:  corev1.StorageMediumMemory,
+			refusal: "reserved for the injected in-memory cert store; it must be a memory-backed emptyDir (medium: Memory) or omitted",
+		},
+		{
+			matches: func(name string) bool {
+				return name == secretsVolumeName
+			},
+			medium:  corev1.StorageMediumMemory,
+			refusal: "reserved for released secrets; it must be a memory-backed emptyDir (medium: Memory) or omitted",
+		},
+		{
+			matches: func(name string) bool {
+				return strings.HasPrefix(name, volume.KubeVolumePrefix)
+			},
+			medium:  corev1.StorageMediumDefault,
+			refusal: "reserved for an encrypted volume; it must be a default-medium emptyDir or omitted (see openedVolume)",
+		},
+	} {
+		for _, v := range pod.Spec.Volumes {
+			if !reserved.matches(v.Name) {
+				continue
+			}
+			if v.EmptyDir == nil || v.EmptyDir.Medium != reserved.medium {
+				return fmt.Errorf("%w: volume %q is %s", errInvalidInjectionAnnotation, v.Name, reserved.refusal)
+			}
 		}
 	}
 	return nil
-}
-
-// rejectReservedVolumeVolume denies a pod that pre-declares any volume under
-// the reserved prefix as anything but the expected memory-backed emptyDir.
-// Reserved by prefix rather than by re-deriving names from the annotation: the
-// annotation is host-written, so a guard that reads it can be steered away from
-// the name it is meant to protect.
-func rejectReservedVolumeVolume(pod *corev1.Pod) error {
-	want := corev1.StorageMediumDefault
-	for i := range pod.Spec.Volumes {
-		v := &pod.Spec.Volumes[i]
-		if !strings.HasPrefix(v.Name, volume.KubeVolumePrefix) {
-			continue
-		}
-		if v.EmptyDir == nil || v.EmptyDir.Medium != want {
-			return fmt.Errorf("%w: volume %q is reserved for an encrypted volume; it must be a %s-medium emptyDir or omitted (see openedVolume)",
-				errInvalidInjectionAnnotation, v.Name, mediumName(want))
-		}
-	}
-	return nil
-}
-
-func mediumName(m corev1.StorageMedium) string {
-	if m == corev1.StorageMediumMemory {
-		return "Memory"
-	}
-	return "default"
 }
 
 // rejectReservedCertContainer denies an opted-in pod that parks a container
@@ -309,27 +305,6 @@ func rejectReservedCertContainer(pod *corev1.Pod) error {
 		if workloadclaims.IsInjectedContainerName(c.Name) {
 			return fmt.Errorf("%w: ephemeral container name %q is reserved for the containers c8s injects",
 				errInvalidInjectionAnnotation, c.Name)
-		}
-	}
-	return nil
-}
-
-// rejectReservedCertVolume denies a pod that pre-declares the reserved cert
-// volume as anything other than the expected memory-backed emptyDir (see
-// certsVolume). ensureVolume keeps an existing same-named volume instead of
-// overwriting it, so without this guard an author could point the cert volume
-// at a hostPath, PVC, or disk-backed emptyDir and have the injected sidecar
-// write private keys to persistent, host-visible storage outside the TEE
-// memory boundary. Omitting the volume is fine — the webhook injects it.
-func rejectReservedCertVolume(pod *corev1.Pod, volName string) error {
-	for i := range pod.Spec.Volumes {
-		v := &pod.Spec.Volumes[i]
-		if v.Name != volName {
-			continue
-		}
-		if v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory {
-			return fmt.Errorf("%w: volume %q is reserved for the injected in-memory cert store; it must be a memory-backed emptyDir (medium: Memory) or omitted",
-				errInvalidInjectionAnnotation, volName)
 		}
 	}
 	return nil
