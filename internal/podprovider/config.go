@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -102,6 +104,14 @@ func (c *Config) validate() error {
 		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
 	}
 	c.CloudURL = strings.TrimRight(c.CloudURL, "/")
+	// The ID names this provider's records, Node and Cloud instances; an empty
+	// one would claim objects that carry no provider label.
+	if c.ProviderID == "" {
+		return errors.New("providerID is required")
+	}
+	if errs := validation.IsValidLabelValue(c.ProviderID); len(errs) != 0 {
+		return fmt.Errorf("providerID must be a valid label value: %s", strings.Join(errs, "; "))
+	}
 	if c.Size == "" || c.Location == "" || c.ClusterID == "" {
 		return errors.New("size, location and clusterID are required")
 	}
