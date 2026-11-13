@@ -85,10 +85,10 @@ that satisfy its admission, image, and network policies.
   checks workload image digests, command lines, environment, and mounts against
   the configured allowlist policies. Entries can pin these values or leave
   command lines, environment, and mounts unconstrained. The measured base
-  policy also admits platform containers. In configured exempt namespaces,
-  only image digests recorded running there when the plugin first connects
-  receive the provider-platform exemption; see
-  [exemption scope](docs/getcert-workload-binding.md#corner-8--exempt-namespaces-admit-on-a-captured-digest-not-the-name).
+  policy also admits platform containers. In a configured exempt namespace, a
+  container is admitted when its image's repository sits under a prefix
+  configured for that namespace, at any version; see
+  [exemption scope](docs/getcert-workload-binding.md#corner-8--exempt-namespaces-admit-on-the-images-repository-not-the-name).
 
 - **Attestation-gated secrets.** CDS releases an application secret only once
   a pod's running containers resolve to a single allowlist entry carrying a
@@ -349,9 +349,9 @@ attestation and reports the operator keys it pins.
 | [`cmd/cds`](cmd/cds/) | Certificate Distribution Service - verifies TEE attestation evidence, signs workload CSRs with an in-process mesh CA, and serves the allowlist and secret-release APIs | [operator docs](docs/operator.md) |
 | [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm charts | [operator docs](docs/operator.md) |
 | [`cmd/get-cert`](cmd/get-cert/) | CLI tool and init-container for TEE-attested certificate provisioning | [README](cmd/get-cert/README.md) |
-| [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Transparent L4 proxy wrapping inter-node K8s traffic in armTLS | [README](cmd/armtls-mesh/README.md) |
+| [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Mesh endpoint of one pod (`c8s-mesh`) — carries the pod's captured TCP over armTLS | [README](cmd/armtls-mesh/README.md) |
 | [`cmd/nri-image-policy`](cmd/nri-image-policy/) | NRI plugin enforcing the image and argv allowlist on the host; also the node's admission inventory | [allowlist](docs/allowlist-and-capabilities.md) |
-| [`internal/cmds/volumed`](internal/cmds/volumed/) | Encrypted-volume agent — opens volumes into a pod's mount namespace as a node DaemonSet | [volumes](docs/volumes.md) |
+| [`internal/cmds/volumed`](internal/cmds/volumed/) | Encrypted-volume agent — opens volumes into a pod's mount namespace; a DaemonSet on `aks` and `gke`, a systemd service on the measured node image | [volumes](docs/volumes.md) |
 
 ## Libraries
 
@@ -572,8 +572,12 @@ than let you discover them:
   pod spec.** Each container's `command` prefix and `args` remainder are
   enforced against the effective argv, env values are enforced by both backends,
   and an `exact` mount policy pins each bind mount's destination and source
-  class; capabilities and the remaining pod-spec fields are not. Nothing enforces which images run
-  *together* — every running image must be allowlisted, but no gate requires
+  class. Capabilities, host ports, host namespaces, devices and hooks are
+  checked only where the node's host-privilege policy runs: on the measured
+  node image, and not on `aks` or `gke`, where `c8s install` renders it off
+  ([host privilege](docs/allowlist-and-capabilities.md#host-privilege)).
+  Nothing enforces which images run *together* — every running image must be
+  allowlisted, but no gate requires
   the set in one pod to match a single workload entry.
 
 - **Init containers cannot consume a released secret.** The secret volume is

@@ -45,7 +45,7 @@ echo 'PASS: CW namespace creation, exact labels, collision refusal, create error
 # cds_write: a CDS without persistence refuses operator tokens for
 # --jwt-clock-skew after it starts, so that refusal is retried with a fresh
 # token; any other outcome passes straight through.
-too_early='server returned 401: operator token issued too early for a CDS without persistence (Helm cds.persistence.enabled); wait --jwt-clock-skew (Helm cds.jwtClockSkew) after CDS start and mint a fresh one'
+too_early='server returned 401: operator token issued too early: this CDS keeps no record of tokens spent before it, or its replica set, last started; wait its --jwt-clock-skew (30s by default) after that start and mint a fresh one'
 errfile=$(mktemp)
 callfile=$(mktemp)
 sleepfile=$(mktemp)

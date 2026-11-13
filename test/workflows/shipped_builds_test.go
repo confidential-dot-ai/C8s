@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// devTag turns on the CDS replica set, which a release serves as the
-// singleton instead. A shipped binary that carried the tag would run as a
-// replica on a cluster nobody has rolled out yet.
+// devTag swaps the CDS replica set's timers for ones fast enough to test with
+// (internal/cmds/cds/ha_dev.go). A shipped binary that carried the tag would
+// run its elections and leases on those timers.
 const devTag = "c8s_dev"
 
 // shippedBuilds are the recipes that build a binary a CDS VM or a node

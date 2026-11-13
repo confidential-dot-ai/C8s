@@ -125,10 +125,12 @@ The node role keeps its existing admission path.
 
 A worker's kubelet answers no log request, so `kubectl logs` reads nothing
 there, and an exec probe or a lifecycle exec hook cannot pass, granted
-commands aside, so C8s renders none. A component that needs a health signal serves it: an HTTP, TCP or gRPC
-probe against a port it already listens on, or a small in-process endpoint when
-it otherwise listens only on a Unix socket, and it handles SIGTERM instead of
-carrying a `preStop` hook.
+commands aside, so C8s renders none. A component that needs a health signal
+serves it: a probe against a port it already listens on, or a small in-process
+endpoint when it otherwise listens only on a Unix socket, and it handles SIGTERM
+instead of carrying a `preStop` hook. A pod the `pod-injector` covers may carry
+only a plain-HTTP `httpGet` probe: both webhooks refuse `tcpSocket` and `grpc`
+probes, which the mesh endpoint cannot forward.
 
 ## Granted execs
 
