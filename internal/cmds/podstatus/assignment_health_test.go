@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +52,8 @@ func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 		{"no assignment", "pod-a", `{"pod_registered":true}`, http.StatusOK, false},
 		{"ended identity", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a","pod_ended":true}`, http.StatusOK, false},
 		{"malformed", "pod-a", "{", http.StatusOK, false},
+		{"health then a second document", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}{"pod_registered":true}`, http.StatusOK, false},
+		{"health padded past the cap", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}` + strings.Repeat(" ", 4096), http.StatusOK, false},
 		{"server error", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusInternalServerError, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

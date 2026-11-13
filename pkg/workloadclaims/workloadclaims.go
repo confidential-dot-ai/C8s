@@ -36,6 +36,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -548,8 +549,13 @@ func serveTokenRoute(ctx context.Context, l net.Listener, resolver SandboxResolv
 			http.Error(w, "inventory serves no sandbox tokens", status)
 			return
 		}
+		body, err := readutil.ReadAll(r.Body, maxSandboxRequestBytes)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read sandbox token request: %v", err), http.StatusBadRequest)
+			return
+		}
 		var req SandboxTokenRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, maxSandboxRequestBytes)).Decode(&req); err != nil {
+		if err := json.Unmarshal(body, &req); err != nil {
 			http.Error(w, fmt.Sprintf("decode sandbox token request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -745,8 +751,12 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 		}
 		return nil, fmt.Errorf("workloadclaims: inventory returned %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
+	data, err := readutil.ReadAll(resp.Body, maxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("workloadclaims: read inventory response: %w", err)
+	}
 	var out SignedSandboxToken
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("workloadclaims: decode inventory response: %w", err)
 	}
 	if len(out.Token) == 0 || len(out.Signature) == 0 {

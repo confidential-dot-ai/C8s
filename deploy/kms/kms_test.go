@@ -163,6 +163,37 @@ func TestReleasePolicy(t *testing.T) {
 	}
 }
 
+// The release request is one document: a request with another after it, or one
+// padded past maxRequest, is refused rather than read as a prefix.
+func TestReleaseRequestMustBeOneDocument(t *testing.T) {
+	c := newCDS(t)
+	_, clientKey, doc := newClient(t)
+	verifier, err := newVerifier(c.pin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{verifier: verifier, policy: testPolicy(clientKey, "agent-token"), secrets: mapSource{"agent-token": "s3cret"}, nonces: newNonceCache()}
+	request, err := json.Marshal(c.request(t, doc, "agent-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"request then a second one", append(bytes.Clone(request), request...)},
+		{"request padded past maxRequest", append(bytes.Clone(request), bytes.Repeat([]byte(" "), maxRequest)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(tc.body)))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 // TestLiveKeyVault runs the release against a real Azure Key Vault holding a
 // secret named agent-token. KMS_LIVE_KEY_VAULT_URL selects the vault; the
 // credential is the Azure CLI login.
