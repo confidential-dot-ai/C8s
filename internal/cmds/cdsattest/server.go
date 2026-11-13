@@ -994,10 +994,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sealed, ok := sealTunnelResponse(w, session.channel, resp, seq)
-	if !ok {
-		return
-	}
+	sealed := sealTunnelResponse(session.channel, resp, seq)
 	s.writeTunnelRecord(w, rc, sealed)
 }
 
@@ -1059,9 +1056,6 @@ func (s *Server) openTunnelRequest(w http.ResponseWriter, r *http.Request, rc *h
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "read record")
 		return types.TunnelRequest{}, 0, false
 	}
-	// The body reached EOF. An expired read deadline would cancel r's context
-	// mid-forward.
-	_ = rc.SetReadDeadline(time.Time{})
 	var rec overenc.Record
 	if err := cbor.Unmarshal(recBytes, &rec); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid record")
@@ -1102,23 +1096,21 @@ func (s *Server) forwardTunnelRequest(w http.ResponseWriter, r *http.Request, id
 	return resp, true
 }
 
-func sealTunnelResponse(w http.ResponseWriter, channel *overenc.Channel, resp types.TunnelResponse, seq uint64) ([]byte, bool) {
+func sealTunnelResponse(channel *overenc.Channel, resp types.TunnelResponse, seq uint64) []byte {
+	// seq is the sequence OpenRequest accepted, so never zero, and these types always encode.
 	respCBOR, err := cbor.Marshal(resp)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal response envelope")
-		return nil, false
+		panic("cdsattest: marshal response envelope: " + err.Error())
 	}
 	out, err := channel.SealResponse(respCBOR, seq)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "seal failed")
-		return nil, false
+		panic("cdsattest: seal tunnel response: " + err.Error())
 	}
 	outCBOR, err := cbor.Marshal(out)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
-		return nil, false
+		panic("cdsattest: marshal sealed record: " + err.Error())
 	}
-	return outCBOR, true
+	return outCBOR
 }
 
 // writeTunnelRecord writes record in chunks, each restarting the write

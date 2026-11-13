@@ -341,4 +341,28 @@ func TestTunnelIODeadlineFollowsProgress(t *testing.T) {
 			t.Fatalf("request context while the backend answered = %v, want it uncancelled", err)
 		}
 	})
+
+	t.Run("undeclared record, backend slower than the timeout", func(t *testing.T) {
+		forwarded := make(chan error, 1)
+		backend := backendFunc(func(outer *http.Request, _ types.TunnelRequest) (types.TunnelResponse, error) {
+			time.Sleep(2 * ioTimeout)
+			forwarded <- outer.Context().Err()
+			return types.TunnelResponse{Status: http.StatusOK}, nil
+		})
+		_, ts, _ := newTestServerWith(t, func(srv *Server) {
+			srv.cfg.TunnelIOTimeout = ioTimeout
+			srv.routes = testRouter{State: testRoutes(t).State, backendFunc: backend}
+		})
+		channel, sessionID := establishSession(t, ts.URL, make([]byte, 32))
+		record := sealedRecord(t, channel, types.TunnelRequest{Method: "GET", Path: "/slow-chunked"})
+
+		code := postTunnelRecord(t, ts.URL, sessionID, undeclaredBody{bytes.NewReader(record)})
+
+		if code != http.StatusOK {
+			t.Fatalf("chunked record to a slow backend = %d, want 200", code)
+		}
+		if err := <-forwarded; err != nil {
+			t.Fatalf("request context while the backend answered = %v, want it uncancelled", err)
+		}
+	})
 }
