@@ -107,7 +107,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodGet) {
 			if h.assignment == nil {
 				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
-			} else {
+			} else if !h.identityEnded(w, r) {
 				h.assignment.serveNonce(w, r)
 			}
 		}
@@ -115,7 +115,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodPost) {
 			if h.assignment == nil {
 				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
-			} else {
+			} else if !h.identityEnded(w, r) {
 				h.assignment.serveAssign(w, r)
 			}
 		}
@@ -131,6 +131,21 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Allow", method)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	return false
+}
+
+// identityEnded answers 503 on an assignment route of a guest whose pod
+// identity the plugin ended, before any assignment check. An unassigned guest
+// runs no plugin and is not asked; a plugin that cannot answer leaves the
+// route to its assignment checks.
+func (h Handler) identityEnded(w http.ResponseWriter, r *http.Request) bool {
+	if h.IdentityEnded == nil || h.assignment.assignedUID() == "" {
+		return false
+	}
+	if ended, err := h.IdentityEnded(r.Context()); err != nil || !ended {
+		return false
+	}
+	http.Error(w, "pod identity ended", http.StatusServiceUnavailable)
+	return true
 }
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {

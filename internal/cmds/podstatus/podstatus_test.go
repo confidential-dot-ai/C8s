@@ -803,3 +803,31 @@ func TestServeRefusesUnusableConfiguration(t *testing.T) {
 		t.Fatalf("assignment state outside a guest: %v", err)
 	}
 }
+
+// Once the plugin ended the pod identity, the assignment routes answer 503
+// before any assignment check. A live identity, or a plugin that cannot
+// answer, leaves an assigned guest's 409; an unassigned guest is not asked.
+func TestAssignmentRoutesAnswer503OnceThePodIdentityEnded(t *testing.T) {
+	ended, pluginErr, asked := true, error(nil), 0
+	identity := func(context.Context) (bool, error) { asked++; return ended, pluginErr }
+	h := Handler{assignment: assigned("u1"), IdentityEnded: identity}
+	codes := func() [2]int {
+		return [2]int{serve(h, http.MethodGet, AssignNoncePath).Code, serve(h, http.MethodPost, AssignPath).Code}
+	}
+	if got := codes(); got != [2]int{http.StatusServiceUnavailable, http.StatusServiceUnavailable} {
+		t.Fatalf("ended identity: %v", got)
+	}
+	ended = false
+	if got := codes(); got != [2]int{http.StatusConflict, http.StatusConflict} {
+		t.Fatalf("live identity: %v", got)
+	}
+	ended, pluginErr = true, errors.New("plugin unreachable")
+	if got := codes(); got != [2]int{http.StatusConflict, http.StatusConflict} {
+		t.Fatalf("unreachable plugin: %v", got)
+	}
+	asked = 0
+	s, _, _, _ := assignmentFixture(t)
+	if rec := serve(Handler{assignment: s, IdentityEnded: identity}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK || asked != 0 {
+		t.Fatalf("unassigned guest: %d, plugin asked %d times", rec.Code, asked)
+	}
+}

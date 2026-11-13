@@ -105,9 +105,27 @@ func newAssignmentService(ctx context.Context, doc *podlaunch.Document, store as
 
 func (s *assignmentService) assignedUID() string { s.mu.Lock(); defer s.mu.Unlock(); return s.uid }
 
+// writeHeld answers 409 naming the held Pod, so a provider replaying its own
+// assignment can tell that guest from one holding another Pod. The UID is not
+// secret: the public status route serves it too. The caller holds s.mu.
+func (s *assignmentService) writeHeld(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(struct {
+		UID string `json:"uid"`
+	}{s.uid})
+}
+
 func (s *assignmentService) serveNonce(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// An assigned guest accepts no further assignment, so a nonce from it would
+	// only let a launcher mistake it for an unassigned one.
+	if s.uid != "" {
+		s.writeHeld(w)
+		return
+	}
 	if len(s.issued) >= maxAssignmentNonces {
 		delete(s.nonces, s.issued[0])
 		s.issued = s.issued[1:]
@@ -140,15 +158,7 @@ func (s *assignmentService) serveAssign(w http.ResponseWriter, r *http.Request) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.uid != "" {
-		// Naming the held Pod lets a provider replaying its own assignment tell
-		// that guest from one holding another Pod. The UID is not secret: the
-		// public status route serves it too.
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(struct {
-			UID string `json:"uid"`
-		}{s.uid})
+		s.writeHeld(w)
 		return
 	}
 	req, err := podassign.Decode(data)
