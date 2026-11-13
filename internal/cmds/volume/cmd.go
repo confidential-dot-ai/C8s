@@ -49,8 +49,8 @@ an allowlist entry whose 'secrets' grant covers the key's path. 'create' prints
 the grant and the pod annotations to apply; it does not modify any workload.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins via 'c8s install
---operator-keys'.
+(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
+('c8s cds config new --operator-keys').
 
 Keys live in the CDS process and nowhere else, so a CDS restart makes every
 volume in the cluster unopenable until its key is written again. Keep the escrow
