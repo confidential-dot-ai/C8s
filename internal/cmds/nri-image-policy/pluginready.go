@@ -53,7 +53,7 @@ func runPluginReady(ctx context.Context, args []string) error {
 	addr := fs.String("addr", ":8080", "readiness listen address (host:port)")
 	check := fs.Bool("check", false, "scan once and exit non-zero if the plugin is not running, instead of serving")
 	procRoot := fs.String("proc-root", "/proc", "procfs to scan; the pod must share the host PID namespace")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 	if !path.IsAbs(*pluginPath) || path.Clean(*pluginPath) != *pluginPath {

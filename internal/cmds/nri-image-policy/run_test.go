@@ -232,6 +232,76 @@ func TestRun_MissingConfigFileErrors(t *testing.T) {
 	}
 }
 
+// The daemon and every helper verb take flags only, so a mistyped verb or a
+// stray word is refused instead of ignored.
+func TestRunRefusesAWordThatIsNotAFlag(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	running := fakeProc(t, kubeadmTree)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		firstWord string
+		status    int
+	}{
+		{
+			name:      "a mistyped verb",
+			args:      []string{"bogus-verb", "--config", absent},
+			firstWord: "bogus-verb",
+			status:    1,
+		},
+		{
+			name:      "a word after the daemon's flags",
+			args:      []string{"--config", absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after check-config's flags",
+			args:      []string{checkConfigVerb, "--config=" + absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word in place of check-containerd-config's flags",
+			args:      []string{checkContainerdConfigVerb, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-ready's flags",
+			args:      []string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", running, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-running's flags",
+			args:      []string{pluginRunningVerb, "--proc-root=" + running, "extra", "more"},
+			firstWord: "extra",
+			status:    pluginUnknownStatus,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runWithDeadline(t, 10*time.Second, tc.args)
+			want := fmt.Sprintf("unknown command %q", tc.firstWord)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Run(%q) = %v, want an error containing %s", tc.args, err, want)
+			}
+			if got := cmdsutil.ExitStatus(err); got != tc.status {
+				t.Errorf("Run(%q) exits %d, want %d", tc.args, got, tc.status)
+			}
+		})
+	}
+}
+
+// The removers read 1 as "not running", so an argv plugin-running cannot parse
+// answers unknown, which they count as running.
+func TestRunPluginRunningAnswersUnknownToAnUnknownFlag(t *testing.T) {
+	err := Run(t.Context(), []string{pluginRunningVerb, "--bogus-flag"})
+	if got := cmdsutil.ExitStatus(err); got != pluginUnknownStatus {
+		t.Fatalf("plugin-running --bogus-flag = %v (status %d), want status %d", err, got, pluginUnknownStatus)
+	}
+}
+
 // A valid config carries Run all the way to the NRI registration, whose
 // failure (no NRI socket here) must surface as the plugin error, proving no
 // earlier startup step misreported success as failure.

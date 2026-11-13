@@ -98,7 +98,7 @@ func Run(ctx context.Context, args []string) error {
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -128,6 +128,18 @@ func Run(ctx context.Context, args []string) error {
 		readTimeout:  *readTimeout,
 		writeTimeout: *writeTimeout,
 	})
+}
+
+// parseOnlyFlags parses args into fs and refuses a word left over: the daemon
+// and its helper verbs take flags only.
+func parseOnlyFlags(fs *flag.FlagSet, args []string) error {
+	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown command %q for %q", fs.Arg(0), fs.Name())
+	}
+	return nil
 }
 
 // runConfigured is the startup path after configuration validation.
