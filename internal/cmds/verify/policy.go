@@ -219,18 +219,13 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 
 	// The chain check runs before the ID is reported, so the note can never
 	// claim "verified" for a check that then failed.
-	if cfg.meshCA != "" {
+	if plan.meshCA != nil {
 		if ev.leaf == nil {
 			fail("--mesh-ca needs the target's leaf certificate (this evidence source carries none — use a cert, discovery, or attest-pq target)")
 			return
 		}
-		pool, err := meshCAPool(cfg.meshCA)
-		if err != nil {
-			fail("%v", err)
-			return
-		}
 		if _, err := ev.leaf.Verify(x509.VerifyOptions{
-			Roots:     pool,
+			Roots:     plan.meshCA,
 			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
 			fail("leaf does not chain to the --mesh-ca bundle: %v", err)
@@ -243,7 +238,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	// attested, which it is not.
 	if oc.Verified && ev.sandboxID != "" {
 		oc.SandboxID = ev.sandboxID
-		if cfg.meshCA == "" {
+		if plan.meshCA == nil {
 			oc.SandboxIDNote = sandboxIDUnverifiedNote
 		} else {
 			oc.SandboxIDNote = "verified: the leaf chains to the supplied mesh CA"
@@ -265,32 +260,22 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	}
 
 	checkServedPolicy(plan, servedMeasurements, fail)
-
-	// In the attested modes --operator-keys checks the published route
-	// manifest instead (routeCheck).
-	if !attestedMode(cfg) {
-		checkServedOperatorKeys(oc, cfg, opKeys, fail)
-	}
+	checkServedOperatorKeys(oc, plan.operatorKeysDigest, opKeys, fail)
 }
 
 // checkServedOperatorKeys compares the key set a kind=cds target serves at
-// /operator-keys with --operator-keys.
-func checkServedOperatorKeys(oc *Outcome, cfg config, opKeys operatorKeysReport, fail func(string, ...any)) {
-	// The served key list is authenticated by being fetched over the attested
-	// serving cert. A failed fetch fails closed when the operator asked for the
-	// check (a 404 is not an error — it maps to the empty-set digest in
-	// fetchOperatorKeyFingerprints).
-	expected, err := expectedOperatorKeysDigest(cfg)
-	if err != nil {
-		fail("%v", err)
-		return
-	}
+// /operator-keys with the --operator-keys digest the plan resolved.
+func checkServedOperatorKeys(oc *Outcome, expected []byte, opKeys operatorKeysReport, fail func(string, ...any)) {
 	if len(expected) == 0 {
 		if oc.Verified && len(opKeys.fingerprints) > 0 {
 			oc.OperatorKeysNote = "not pinned: the set the target reports, compared against nothing (pass --operator-keys to pin it)"
 		}
 		return
 	}
+	// The served key list is authenticated by being fetched over the attested
+	// serving cert. A failed fetch fails closed when the operator asked for the
+	// check (a 404 is not an error — it maps to the empty-set digest in
+	// fetchOperatorKeyFingerprints).
 	if opKeys.fetchErr != nil {
 		fail("could not fetch /operator-keys to check it against --operator-keys: %v", opKeys.fetchErr)
 		return

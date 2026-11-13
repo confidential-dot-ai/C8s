@@ -192,7 +192,7 @@ func TestApplyWorkloadPolicyPins(t *testing.T) {
 			t.Fatalf("loadHeldAllowlist: %v", err)
 		}
 		oc := Outcome{Verified: true}
-		applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+		applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 		applyWorkloadPolicy(&oc, cfg, ev, held)
 		return oc
 	}
@@ -286,7 +286,7 @@ func TestHeldAllowlistIsReadOnce(t *testing.T) {
 	cfg := config{allowlistFile: path, meshCA: caPath}
 	ev := &evidence{leaf: leaf, workload: matched}
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 	applyWorkloadPolicy(&oc, cfg, ev, held)
 	if !oc.Verified {
 		t.Fatalf("verdict re-read the file instead of using the loaded bytes: %s", oc.Error)

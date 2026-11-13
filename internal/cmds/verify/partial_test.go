@@ -96,7 +96,7 @@ func snpVerifiedOutcome(t *testing.T, cfg config, ev *evidence) Outcome {
 		Claims:         teetypes.Claims{LaunchDigest: launch},
 	}
 	oc := newOutcome(cfg, ev, result, nil, plan)
-	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 	return oc
 }
 
