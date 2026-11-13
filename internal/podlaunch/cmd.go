@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -51,9 +52,7 @@ launch-file-bound --cds-image-policy-file.`,
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
 	f.StringVar(&opts.CDSAddress, "cds-address", "", "external CDS host:port")
 	f.StringVar(&opts.CDSImagePolicyPath, "cds-image-policy-file", "", "measurements document binding the external CDS image to its exact launch file")
-	for _, name := range []string{"out", "cluster-id", "image-manifest", "name", "cds-address", "cds-image-policy-file"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "out", "cluster-id", "image-manifest", "name", "cds-address", "cds-image-policy-file")
 	return cmd
 }
 
@@ -76,8 +75,6 @@ func newStageCmd() *cobra.Command {
 	f.StringVar(&cfg.DocumentPath, "config", "", "required signed launch.yaml")
 	f.StringVar(&cfg.SignaturePath, "signature", "", "required detached launch.yaml.sig")
 	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the guest's RTMR[3] journal; the launch-key binding check replays it. Empty replays none")
-	for _, name := range []string{"platform", "config", "signature"} {
-		_ = stage.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(stage, "platform", "config", "signature")
 	return stage
 }
