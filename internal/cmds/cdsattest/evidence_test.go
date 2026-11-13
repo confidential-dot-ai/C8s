@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,66 +17,6 @@ type fixedEvidence struct{}
 
 func (fixedEvidence) Evidence(context.Context, []byte) (json.RawMessage, string, string, error) {
 	return json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), "snp", "genoa", nil
-}
-
-func writeTempFile(t *testing.T, name, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func TestLoadFixtureEvidenceBareObject(t *testing.T) {
-	raw := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
-	path := writeTempFile(t, "bare.json", raw)
-	p, err := LoadFixtureEvidence(path, "snp", "genoa")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(p.Raw) != raw || p.Platform != "snp" || p.Generation != "genoa" {
-		t.Fatalf("unexpected provider: %+v", p)
-	}
-	ev, platform, generation, err := p.Evidence(context.Background(), []byte("ignored"))
-	if err != nil || string(ev) != raw || platform != "snp" || generation != "genoa" {
-		t.Fatalf("Evidence() = %q, %q, %q, %v", ev, platform, generation, err)
-	}
-}
-
-func TestLoadFixtureEvidenceEnvelope(t *testing.T) {
-	inner := `{"attestation_report":"AAAA"}`
-	path := writeTempFile(t, "env.json", `{"platform":"tdx","evidence":`+inner+`}`)
-
-	// Empty platform argument takes the envelope's platform.
-	p, err := LoadFixtureEvidence(path, "", "genoa")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(p.Raw) != inner || p.Platform != "tdx" {
-		t.Fatalf("unexpected provider: %+v", p)
-	}
-
-	// An explicit platform argument wins over the envelope.
-	p, err = LoadFixtureEvidence(path, "snp", "genoa")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Platform != "snp" {
-		t.Fatalf("platform = %q, want snp", p.Platform)
-	}
-}
-
-func TestLoadFixtureEvidenceDefaultsPlatform(t *testing.T) {
-	// Non-envelope content with no platform argument defaults to snp.
-	path := writeTempFile(t, "list.json", `["not","an","envelope"]`)
-	p, err := LoadFixtureEvidence(path, "", "milan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Platform != "snp" {
-		t.Fatalf("platform = %q, want snp default", p.Platform)
-	}
 }
 
 func TestLiveEvidenceProvider(t *testing.T) {
@@ -128,6 +66,22 @@ func TestLiveEvidenceProviderPlatformFallback(t *testing.T) {
 	}
 	if platform != string(teetypes.PlatformSNP) {
 		t.Fatalf("platform = %q, want fallback %q", platform, teetypes.PlatformSNP)
+	}
+}
+
+func TestLiveEvidenceProviderDropsGenerationOffSNP(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(remote.AttestResponse{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{}`)})
+	}))
+	defer api.Close()
+
+	p := LiveEvidenceProvider{Client: remote.NewClient(api.URL), Platform: teetypes.PlatformTDX, Generation: "genoa"}
+	_, platform, generation, err := p.Evidence(context.Background(), []byte("rd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if platform != string(teetypes.PlatformTDX) || generation != "" {
+		t.Fatalf("Evidence() platform, generation = %q, %q, want %q with no generation", platform, generation, teetypes.PlatformTDX)
 	}
 }
 

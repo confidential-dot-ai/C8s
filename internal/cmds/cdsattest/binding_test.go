@@ -644,7 +644,7 @@ func TestWellKnownRequestHoldsTheBinding(t *testing.T) {
 	unmatched := httptest.NewRequest(http.MethodGet, wellKnownPrefix+"/nothing", nil)
 	unmatched.Header.Set(routing.ConnectionHeader, "7.1")
 	rec := httptest.NewRecorder()
-	(&Server{bindings: b, cfg: Config{DisableAttestEndpoints: true}}).Handler().ServeHTTP(rec, unmatched)
+	(&Server{bindings: b}).Handler().ServeHTTP(rec, unmatched)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unmatched path = %d, want %d", rec.Code, http.StatusNotFound)
 	}
