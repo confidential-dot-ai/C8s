@@ -211,9 +211,6 @@ type Config struct {
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
 	PublishRoutes bool
-	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
-	// unregistered, for a router that runs only the routing listener.
-	DisableAttestEndpoints bool
 	// SessionTTL is the idle TTL: a session unused for this long is dropped.
 	SessionTTL time.Duration
 	// SessionMaxAge is the absolute session lifetime from establishment,
@@ -352,9 +349,6 @@ func (s *Server) Handler() http.Handler {
 	// throttle the probe under externalTrafficPolicy: Cluster, which SNATs
 	// every client onto the node. The cache below is what bounds a flood.
 	r.Get("/readyz", s.handleReadyz)
-	if s.cfg.DisableAttestEndpoints {
-		return r
-	}
 	r.Method(http.MethodPost, wellKnownPrefix+"/attest-pq", s.establishing(http.HandlerFunc(s.handleAttestPQ)))
 	// The pre-client-first shape. Kept registered so a stale client gets the
 	// explicit 400 — never a 404 it might treat as transient, and never an

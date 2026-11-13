@@ -29,7 +29,6 @@ type config struct {
 	servingCertFile   string
 	expectedWorkload  string
 	measuredPolicies  string
-	evidenceFixture   string
 	attestationAPIURL string
 	platform          string
 	generation        string
@@ -44,10 +43,7 @@ type config struct {
 	frontDoorModeFile   string
 	acmeServingCertFile string
 
-	// attestOff unregisters attest-pq, attest-lb and the tunnel
-	// (--attest-endpoints=false). Negative so a zero config keeps them.
-	attestOff bool
-	routing   routingConfig
+	routing routingConfig
 }
 
 // NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
@@ -59,12 +55,10 @@ type config struct {
 // sidecar on loopback.
 func NewCmd() *cobra.Command {
 	var cfg config
-	attestEndpoints := true
 	cmd := &cobra.Command{
 		Use:   "cds-attest",
 		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg.attestOff = !attestEndpoints
 			return run(cmd.Context(), cfg)
 		},
 	}
@@ -76,7 +70,6 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; cds mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
-	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)"+cmdsutil.NodeAddressHelp)
 	f.StringVar(&cfg.platform, "platform", "", "REQUIRED: TEE platform: snp|az-snp|az-tdx|tdx")
 	f.StringVar(&cfg.generation, "generation", "genoa", "AMD processor generation for the browser's bare-SNP verifier (platform snp only, ignored otherwise): milan|genoa|turin")
@@ -88,7 +81,6 @@ func NewCmd() *cobra.Command {
 	f.IntVar(&cfg.establishBurst, "establish-burst", defaultEstablishBurst, "attest-pq and attest-lb requests a client address may make at once before --establish-rate applies")
 	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
 	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
-	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes")
 	bindRoutingFlags(f, &cfg.routing)
 	return cmd
 }
@@ -142,13 +134,9 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 
-	var provider EvidenceProvider
-	if !cfg.attestOff {
-		p, err := attestProvider(cfg, logger)
-		if err != nil {
-			return err
-		}
-		provider = p
+	provider, err := attestProvider(cfg)
+	if err != nil {
+		return err
 	}
 
 	watchCtx := cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
@@ -162,24 +150,23 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	srvCfg := Config{
-		Logger:                 logger,
-		Evidence:               provider,
-		FrontDoorMode:          cfg.frontDoorMode,
-		ServingCertFile:        cfg.servingCertFile,
-		MeshIdentityCertFile:   memberCertPath,
-		MeshIdentityKeyFile:    memberKeyPath,
-		MeshIdentityCAFile:     workloadclaims.MemberCAPath,
-		ExpectedWorkload:       cfg.expectedWorkload,
-		MeasuredPoliciesFile:   cfg.measuredPolicies,
-		Routes:                 engine.proxy,
-		Bindings:               bindings,
-		PublishRoutes:          cfg.routing.publish,
-		SessionTTL:             cfg.sessionTTL,
-		SessionMaxAge:          cfg.sessionMaxAge,
-		TunnelIOTimeout:        cfg.tunnelIOTimeout,
-		EstablishRate:          rate.Limit(cfg.establishRate),
-		EstablishBurst:         cfg.establishBurst,
-		DisableAttestEndpoints: cfg.attestOff,
+		Logger:               logger,
+		Evidence:             provider,
+		FrontDoorMode:        cfg.frontDoorMode,
+		ServingCertFile:      cfg.servingCertFile,
+		MeshIdentityCertFile: memberCertPath,
+		MeshIdentityKeyFile:  memberKeyPath,
+		MeshIdentityCAFile:   workloadclaims.MemberCAPath,
+		ExpectedWorkload:     cfg.expectedWorkload,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
+		Routes:               engine.proxy,
+		Bindings:             bindings,
+		PublishRoutes:        cfg.routing.publish,
+		SessionTTL:           cfg.sessionTTL,
+		SessionMaxAge:        cfg.sessionMaxAge,
+		TunnelIOTimeout:      cfg.tunnelIOTimeout,
+		EstablishRate:        rate.Limit(cfg.establishRate),
+		EstablishBurst:       cfg.establishBurst,
 	}
 	srv := NewServer(srvCfg)
 
@@ -194,7 +181,7 @@ func run(ctx context.Context, cfg config) error {
 	if err := engine.start(ctx, cfg.readHeaderTimeout, errc); err != nil {
 		return err
 	}
-	logger.Info("LB browser-facing endpoints listening", "addr", addr, "attest_endpoints", !cfg.attestOff)
+	logger.Info("LB browser-facing endpoints listening", "addr", addr)
 	go func() { errc <- srv.Serve(ctx, httpSrv) }()
 	err = <-errc
 	stop()
@@ -203,7 +190,7 @@ func run(ctx context.Context, cfg config) error {
 
 // attestProvider checks the flags the attestation endpoints need and returns
 // their evidence source.
-func attestProvider(cfg config, logger *slog.Logger) (EvidenceProvider, error) {
+func attestProvider(cfg config) (EvidenceProvider, error) {
 	// No default: serving attest-lb is a trust decision about where the
 	// serving key lives, so the deployer must state it.
 	switch cfg.frontDoorMode {
@@ -216,24 +203,11 @@ func attestProvider(cfg config, logger *slog.Logger) (EvidenceProvider, error) {
 	if cfg.platform == "" {
 		return nil, fmt.Errorf("--platform is required: snp, az-snp, az-tdx, or tdx")
 	}
-	switch {
-	case cfg.evidenceFixture != "":
-		fp, err := LoadFixtureEvidence(cfg.evidenceFixture, cfg.platform, cfg.generation)
-		if err != nil {
-			return nil, err
-		}
-		logger.Warn("serving recorded evidence fixture (DEV ONLY): report_data is not bound to live session keys",
-			"file", cfg.evidenceFixture)
-		return fp, nil
-	case cfg.attestationAPIURL != "":
-		return LiveEvidenceProvider{
-			Client:     armtls.NewAttestationClient(cfg.attestationAPIURL),
-			Platform:   teetypes.NormalizePlatform(cfg.platform),
-			Generation: cfg.generation,
-		}, nil
-	default:
-		return nil, fmt.Errorf("one of --attestation-api-url or --evidence-fixture is required")
-	}
+	return LiveEvidenceProvider{
+		Client:     armtls.NewAttestationClient(cfg.attestationAPIURL),
+		Platform:   teetypes.NormalizePlatform(cfg.platform),
+		Generation: cfg.generation,
+	}, nil
 }
 
 func newLogger(level string) *slog.Logger {

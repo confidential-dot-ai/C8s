@@ -158,8 +158,8 @@ envelope and with `Cache-Control: no-store`:
 {"manifest": "<standard padded base64 of the manifest bytes>", "token": "<write token>"}
 ```
 
-The path answers 404 when publication is off, before the first apply, and when
-the attestation endpoints are off. A manifest that has gone stale — the
+The path answers 404 when publication is off and before the first apply. A
+manifest that has gone stale — the
 `routes_stale` state above, where no poll has succeeded within `maxAgeSeconds` —
 is still the applied manifest, so it is still published and still routes.
 Publication is off by default because the manifest names hosts, backends and

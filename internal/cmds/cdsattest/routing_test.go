@@ -535,35 +535,11 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 	}
 }
 
-func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true, Bindings: NewBindings()})
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
-	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {
-		resp, err := http.Post(ts.URL+path, "application/json", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("POST %s with attest endpoints off = %d, want 404 or 405", path, resp.StatusCode)
-		}
-	}
-	resp, err := http.Get(ts.URL + "/readyz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /readyz with attest endpoints off = %d, want 200", resp.StatusCode)
-	}
-}
-
 func TestCheckRoutingFlags(t *testing.T) {
 	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := base
-		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
+		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
 		if edit != nil {
 			edit(&c)
 		}
@@ -578,23 +554,15 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
-		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
-		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
+		{"non-loopback routing host", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"routing port above 65535", routed(func(c *config) { c.routing.port = 65536 }), "--routing-port must be between"},
 		{"negative routing port", routed(func(c *config) { c.routing.port = -1 }), "--routing-port must be between"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
-		{"attest off without routing port", routed(func(c *config) { c.attestOff = true }), "--routing-port"},
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
 		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --cds-url"},
-		{"publish routes with attest off", routed(func(c *config) { c.routing.publish = true; c.attestOff = true; c.routing.port = 8802 }), "--publish-routes requires --attest-endpoints=true"},
 		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
-		{"measured policies with attest off", routed(func(c *config) {
-			c.measuredPolicies = "/run/nri/measured-policies"
-			c.attestOff = true
-			c.routing.port = 8802
-		}), "--measured-policies-file requires --attest-endpoints=true"},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
 		{"reserved path /Foo%7e", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/Foo%7e"} }), "--reserved-paths"},
@@ -689,7 +657,6 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"routing-port", "0"},
 		{"routing-host", "127.0.0.1"},
 		{"backend-timeout", "1h0m0s"},
-		{"attest-endpoints", "true"},
 		{"operator-keys-file", ""},
 	} {
 		f := flags.Lookup(tc.flag)
@@ -705,9 +672,9 @@ func TestRoutingFlagDefaults(t *testing.T) {
 	}
 }
 
-// TestRunRoutingListenerBeforeFirstApply runs cds-attest with routing on and
-// the attestation endpoints off, against a CDS that cannot be reached: the
-// routing listener answers 503 (A2) while readiness stays 200.
+// TestRunRoutingListenerBeforeFirstApply runs cds-attest against a CDS that
+// cannot be reached: the routing listener answers 503 (A2) while readiness
+// stays 200.
 func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
 	port, routingPort := freePort(t), freePort(t)
 	cfg := routedRunConfig(t, port)
@@ -740,9 +707,6 @@ func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
 	}
 	if got := get(port, "/readyz"); got != http.StatusOK {
 		t.Fatalf("GET /readyz before the first apply = %d, want %d (A2 leaves readiness alone)", got, http.StatusOK)
-	}
-	if got := get(port, "/.well-known/c8s/attest-lb"); got != http.StatusNotFound {
-		t.Fatalf("GET attest-lb with --attest-endpoints=false = %d, want %d", got, http.StatusNotFound)
 	}
 	cancel()
 	select {

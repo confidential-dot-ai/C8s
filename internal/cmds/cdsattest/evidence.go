@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -52,47 +51,4 @@ func (p LiveEvidenceProvider) Evidence(ctx context.Context, reportData []byte) (
 		generation = ""
 	}
 	return resp.Evidence, platform, generation, nil
-}
-
-// FixtureEvidenceProvider serves a recorded evidence file. DEV/DEMO ONLY: the
-// recorded report_data is fixed, so it cannot bind a live session key+nonce —
-// clients must run with freshness enforcement downgraded. It exists so the LB
-// can serve the full contract (and interoperate with the JS client) without a
-// TEE, mirroring C8s's test/mock-cds.
-type FixtureEvidenceProvider struct {
-	Raw        json.RawMessage
-	Platform   string
-	Generation string
-}
-
-// LoadFixtureEvidence reads a recorded evidence JSON file. The file may be the
-// bare SnpEvidence object or a {platform, evidence} envelope.
-func LoadFixtureEvidence(path, platform, generation string) (FixtureEvidenceProvider, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return FixtureEvidenceProvider{}, fmt.Errorf("read evidence fixture: %w", err)
-	}
-	var env struct {
-		Platform string          `json:"platform"`
-		Evidence json.RawMessage `json:"evidence"`
-	}
-	evidence := json.RawMessage(raw)
-	if err := json.Unmarshal(raw, &env); err == nil && len(env.Evidence) > 0 {
-		evidence = env.Evidence
-		if platform == "" {
-			platform = env.Platform
-		}
-	}
-	if platform == "" {
-		platform = "snp"
-	}
-	if platform != string(teetypes.PlatformSNP) {
-		generation = ""
-	}
-	return FixtureEvidenceProvider{Raw: evidence, Platform: platform, Generation: generation}, nil
-}
-
-// Evidence implements EvidenceProvider; reportData is ignored (see type doc).
-func (p FixtureEvidenceProvider) Evidence(_ context.Context, _ []byte) (json.RawMessage, string, string, error) {
-	return p.Raw, p.Platform, p.Generation, nil
 }
