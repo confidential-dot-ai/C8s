@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -217,23 +220,27 @@ func TestCraneDigestShellsOut(t *testing.T) {
 func TestEffectiveValuesExec(t *testing.T) {
 	values := "attestationApi:\n  enabled: true\n"
 
-	t.Run("set override beats the chart default", func(t *testing.T) {
+	t.Run("the computed values beat the chart default", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil,
-			[]string{"--set", "attestationApi.enabled=false"})
+		computed := computedValuesFile(t, map[string]any{
+			"attestationApi": map[string]any{
+				"enabled": false,
+			},
+		})
+		tree, err := effectiveValues(context.Background(), writeChart(t, values), []string{computed})
 		if err != nil {
 			t.Fatalf("effectiveValues: %v", err)
 		}
 		if boolAtPath(tree, "attestationApi.enabled") {
-			t.Error("override to false must win over the chart default true")
+			t.Error("the computed false must win over the chart default true")
 		}
 	})
 
 	t.Run("chart default stands without overrides", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil, nil)
+		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil)
 		if err != nil {
 			t.Fatalf("effectiveValues: %v", err)
 		}
@@ -245,18 +252,8 @@ func TestEffectiveValuesExec(t *testing.T) {
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
-		if _, err := effectiveValues(context.Background(), writeChart(t, values), nil, nil); err == nil {
+		if _, err := effectiveValues(context.Background(), writeChart(t, values), nil); err == nil {
 			t.Fatal("want error when helm fails")
-		}
-	})
-
-	t.Run("overlay conflict surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		_, err := effectiveValues(context.Background(), writeChart(t, values), nil,
-			[]string{"--set", "attestationApi=x", "--set", "attestationApi.enabled=false"})
-		if err == nil {
-			t.Fatal("want error for a scalar/map overlay conflict")
 		}
 	})
 }
@@ -270,7 +267,14 @@ func TestEffectiveValuesReplacesLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	resetCLIState(t)
-	tree, err := effectiveValues(context.Background(), writeChart(t, "{}\n"), []string{values}, []string{"--set-string", "w.containers[0].digest=b"})
+	computed := computedValuesFile(t, map[string]any{
+		"w": map[string]any{
+			"containers": []any{
+				map[string]any{"digest": "b"},
+			},
+		},
+	})
+	tree, err := effectiveValues(context.Background(), writeChart(t, "{}\n"), []string{values, computed})
 	if err != nil {
 		t.Fatalf("effectiveValues: %v", err)
 	}
@@ -418,30 +422,45 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	t.Run("resolves and pins the allowlist entry", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", fakeCrane(testDigest))
-		got, _, err := appendResolvedWorkloadImageArgs(context.Background(), nil, []adoptedWorkload{{
+		written, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template:         templateRunning("ghcr.io/acme/vllm:v1"),
 		}}, "")
+		got := written.values
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		p := "nriImagePolicy.bootstrapAllowlist.workloads.infer."
-		assertArgsEqual(t, got, []string{
-			"--set-string", p + "label=ws/deployment/vllm",
-			"--set-string", p + "containers[0].digest=" + testDigest,
-			"--set-string", p + "containers[0].image=ghcr.io/acme/vllm@" + testDigest,
-			"--set-string", p + "containers[0].command.policy=any",
-			"--set-string", p + "containers[0].args.policy=any",
-			"--set-string", p + "containers[0].env.policy=any",
-			"--set-string", p + "containers[0].mounts.policy=deny",
-		})
+		want := map[string]any{
+			"nriImagePolicy": map[string]any{
+				"bootstrapAllowlist": map[string]any{
+					"workloads": map[string]any{
+						"infer": map[string]any{
+							"label": "ws/deployment/vllm",
+							"containers": []any{
+								map[string]any{
+									"digest":  testDigest,
+									"image":   "ghcr.io/acme/vllm@" + testDigest,
+									"command": map[string]any{"policy": "any"},
+									"args":    map[string]any{"policy": "any"},
+									"env":     map[string]any{"policy": "any"},
+									"mounts":  map[string]any{"policy": "deny"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("resolvedWorkloadImageValues() = %#v, want %#v", got, want)
+		}
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/acme/vllm:v1")
 	})
 
 	t.Run("resolver failure aborts", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if _, _, err := appendResolvedWorkloadImageArgs(context.Background(), nil, []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
+		if _, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
 			t.Fatal("want error when crane fails")
 		}
 	})
@@ -946,7 +965,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 	t.Run("unparseable chart values", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		if _, err := effectiveValues(context.Background(), writeChart(t, "	"), nil, nil); err == nil {
+		if _, err := effectiveValues(context.Background(), writeChart(t, "	"), nil); err == nil {
 			t.Fatal("want the chart-values parse error")
 		}
 	})
@@ -955,7 +974,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		missing := []string{filepath.Join(t.TempDir(), "missing.yaml")}
-		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), missing, nil)
+		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), missing)
 		if err == nil || !strings.Contains(err.Error(), "read values file") {
 			t.Fatalf("want the read error, got %v", err)
 		}
@@ -968,7 +987,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 		if err := os.WriteFile(bad, []byte("\t"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), []string{bad}, nil)
+		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), []string{bad})
 		if err == nil || !strings.Contains(err.Error(), "parse values file") {
 			t.Fatalf("want the parse error, got %v", err)
 		}
@@ -1289,5 +1308,31 @@ func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 	}
 	if !slices.Equal(reads, want) {
 		t.Errorf("install read nodes as:\n%s\nwant:\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Cancelling a helm run interrupts helm rather than killing it, so helm's own
+// SIGINT handling runs.
+func TestInterruptOnCancelSendsSIGINT(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	helm := exec.CommandContext(ctx, "/bin/sh", "-c", `trap 'echo interrupted; exit 0' INT; echo ready; while :; do sleep 0.01; done`)
+	interruptOnCancel(helm)
+	stdout, err := helm.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	output := bufio.NewReader(stdout)
+	if _, err := output.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	rest, _ := io.ReadAll(output)
+	_ = helm.Wait() // reports the cancellation, whatever helm did with it
+	if !strings.Contains(string(rest), "interrupted") {
+		t.Fatalf("helm output after cancel = %q, want its SIGINT trap to run", rest)
 	}
 }

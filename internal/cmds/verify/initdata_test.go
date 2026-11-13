@@ -22,11 +22,11 @@ var (
 )
 
 // finalOutcome runs verifyEvidence's post-verification sequence: newOutcome,
-// the verdict policies, then applyInitDataNote on the final verdict.
+// the verdict policies, then applyFinalNotes on the final verdict.
 func finalOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) Outcome {
 	oc := newOutcome(cfg, ev, result, nil, plan)
 	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
-	applyInitDataNote(&oc, result, plan)
+	applyFinalNotes(&oc, ev, result, plan)
 	return oc
 }
 
@@ -271,7 +271,7 @@ func TestVerifyEvidence_InitDataUnpinnedIsLabelled(t *testing.T) {
 	}
 }
 
-// applyInitDataNote is the single source of truth for the init-data fields: a
+// applyFinalNotes is the single source of truth for the init-data fields: a
 // plan carrying --init-data takes the pinned note, an unpinned plan the
 // unpinned one, and a hard failure (oc.Error set) carries neither — the gate
 // that keeps JSON and text from disagreeing. On az-* the claim is the inner
@@ -297,7 +297,7 @@ func TestApplyInitDataNote(t *testing.T) {
 	// A hard failure past newOutcome (here a pre-set oc.Error) carries no note,
 	// even with a matching pin — the leak the gate closes.
 	failed := Outcome{Platform: "snp", Error: "a later policy failed"}
-	applyInitDataNote(&failed, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyFinalNotes(&failed, ev, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if failed.InitData != "" || failed.InitDataNote != "" {
 		t.Errorf("a failed verdict must carry no init-data fields, got %q / %q", failed.InitData, failed.InitDataNote)
 	}
@@ -324,7 +324,7 @@ func TestApplyInitDataNote(t *testing.T) {
 
 	// The az note leaks identically on a failed verdict without the gate.
 	azFailed := Outcome{Platform: "az-snp", Error: "a later policy failed"}
-	applyInitDataNote(&azFailed, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyFinalNotes(&azFailed, azEv, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if azFailed.InitDataNote != "" {
 		t.Errorf("a failed az verdict must carry no init-data note, got %q", azFailed.InitDataNote)
 	}

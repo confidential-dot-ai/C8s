@@ -113,7 +113,7 @@ func TestRunCreateDryRunBuildsAndEscrowsWithoutCDS(t *testing.T) {
 		t.Fatalf("escrow key: %v", err)
 	}
 	var plain bytes.Buffer
-	if err := Decrypt(&plain, bytes.NewReader(img), key); err != nil {
+	if err := decrypt(&plain, bytes.NewReader(img), key); err != nil {
 		t.Fatalf("decrypt with escrowed key: %v", err)
 	}
 	want := append(bytes.Repeat([]byte{0xA5}, fake.dataBytes), bytes.Repeat([]byte{0x5A}, fake.treeBytes)...)
@@ -280,7 +280,7 @@ func TestRunCreateMutableDryRunBuildsAndEscrows(t *testing.T) {
 		t.Fatalf("escrow key: %v", err)
 	}
 	var plain bytes.Buffer
-	if err := Decrypt(&plain, bytes.NewReader(img), key); err != nil {
+	if err := decrypt(&plain, bytes.NewReader(img), key); err != nil {
 		t.Fatalf("decrypt with escrowed key: %v", err)
 	}
 	if !bytes.Equal(plain.Bytes(), make([]byte, 20<<20)) {

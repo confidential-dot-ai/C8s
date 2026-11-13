@@ -467,6 +467,20 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 		t.Fatalf("ParseWorkloadJSON(%d containers) error = %v, want the evidence ceiling", fit+1, err)
 	}
 
+	// The budget is a write-path bound: a node reading a served document keeps
+	// the entry and charges its own retention against it.
+	doc := []byte(`{"schema":"` + Schema + `","workloads":{"w":` + string(entry(fit+1)) + `}}`)
+	if _, err := ParseJSON(doc); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxSandboxVariableEvidenceBytes)) {
+		t.Fatalf("ParseJSON(%d containers) error = %v, want the evidence ceiling", fit+1, err)
+	}
+	served, err := ParseServedJSON(doc)
+	if err != nil {
+		t.Fatalf("ParseServedJSON(%d containers) = %v, want the entry kept", fit+1, err)
+	}
+	if len(served.Workloads["w"].Containers) != fit+1 {
+		t.Fatalf("served containers = %d, want %d", len(served.Workloads["w"].Containers), fit+1)
+	}
+
 	// A node retains evidence for every container of a match-listed image at
 	// the same priority, whatever that container's own env policy. A match
 	// declaration can admit the container another declaration of its image

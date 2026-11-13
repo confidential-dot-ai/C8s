@@ -11,6 +11,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdslaunch"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -80,13 +81,7 @@ func NewCmd() *cobra.Command {
 
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of CDS's self-attested armTLS serving certificate")
 
-	for _, name := range []string{
-		"config",
-		"attestation-api-url",
-		"allowlist-db",
-	} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
 
 	// `c8s cds verify` — a shorthand for `c8s verify --kind cds`, sharing the
 	// same implementation. Running CDS (the server) stays `c8s cds`.

@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha512"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -82,7 +81,7 @@ func NewClient(baseURL string) Client {
 // NewClientWithHTTP creates a new client that reaches CDS through httpClient.
 // Evidence requests to the attestation-api keep only its timeout: they verify
 // the system roots, never httpClient's CDS verification, and never use a
-// proxy. [Client.WithAttestationHTTP] sets other attestation-api TLS settings.
+// proxy.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -91,41 +90,8 @@ func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	}
 }
 
-// WithAttestationHTTP returns c with evidence requests sent through
-// httpClient, for an attestation-api behind a private CA. A proxy httpClient
-// would use is still bypassed.
-func (c Client) WithAttestationHTTP(httpClient *http.Client) Client {
-	c.attestHTTP = withoutProxy(httpClient)
-	return c
-}
-
-// withoutProxy is c with proxy lookup disabled. A RoundTripper other than
-// *http.Transport cannot be inspected for one, so it is replaced by
-// [armtls.NewDirectHTTPClient].
-func withoutProxy(c *http.Client) *http.Client {
-	t, ok := c.Transport.(*http.Transport)
-	if !ok {
-		return armtls.NewDirectHTTPClient(c.Timeout)
-	}
-	if t.Proxy != nil {
-		t = t.Clone()
-		t.Proxy = nil
-	}
-	direct := *c
-	direct.Transport = t
-	return &direct
-}
-
-// GenerateEvidence calls the local attestation-api to generate TEE evidence
-// for the given report data. This is the same attestation-api call used
-// internally by ObtainCertificate, exposed for callers that need evidence
-// without the full CDS challenge-attest-certify flow.
-func (c Client) GenerateEvidence(attestationApiURL string, reportData []byte) (remote.AttestResponse, error) {
-	return c.GenerateEvidenceContext(context.Background(), attestationApiURL, reportData)
-}
-
-// GenerateEvidenceContext is GenerateEvidence with caller-controlled
-// cancellation. The request never goes through a proxy.
+// GenerateEvidenceContext calls the local attestation-api to generate TEE
+// evidence for the given report data. The request never goes through a proxy.
 func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL string, reportData []byte) (remote.AttestResponse, error) {
 	asClient := remote.NewClientWithHTTP(attestationApiURL, c.attestHTTP)
 	return asClient.Attest(contextOrBackground(ctx), remote.AttestRequest{
@@ -134,56 +100,14 @@ func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL s
 	})
 }
 
-// ObtainCertificate performs the full attestation flow and returns a signed
-// certificate chain.
-//
-// It:
-//  1. Requests a challenge nonce from CDS (POST /authenticate)
-//  2. Passes SHA-384(CSR public key || challenge) as report_data to the
-//     local attestation-api (POST /attest)
-//  3. Submits the evidence and caller-provided CSR to CDS (POST /attest)
-//     which verifies the evidence and returns a signed certificate chain
-func (c Client) ObtainCertificate(attestationApiURL, csrPEM string) (string, error) {
-	return c.ObtainCertificateWithContext(context.Background(), attestationApiURL, csrPEM)
-}
-
-// ObtainCertificateWithContext is ObtainCertificate with caller-controlled
-// cancellation.
-func (c Client) ObtainCertificateWithContext(ctx context.Context, attestationApiURL, csrPEM string) (string, error) {
-	result, err := c.ObtainCertificateWithEvidenceContext(ctx, attestationApiURL, csrPEM)
-	if err != nil {
-		return "", err
-	}
-	return result.Certificate, nil
-}
-
-// ObtainCertificateWithEvidence performs the full attestation flow and returns
-// both the issued certificate chain and the evidence used to obtain it.
-func (c Client) ObtainCertificateWithEvidence(attestationApiURL, csrPEM string) (CertificateResult, error) {
-	return c.ObtainCertificateWithEvidenceContext(context.Background(), attestationApiURL, csrPEM)
-}
-
-// ObtainCertificateWithEvidenceContext is ObtainCertificateWithEvidence with
-// caller-controlled cancellation across authenticate, local attest, and CDS
-// attest requests.
-func (c Client) ObtainCertificateWithEvidenceContext(ctx context.Context, attestationApiURL, csrPEM string) (CertificateResult, error) {
-	ctx = contextOrBackground(ctx)
-	// The plain flow fetches its own challenge; the sandbox flow has get-cert
-	// fetch it so one nonce binds both the token and the evidence.
-	challengeResp, err := c.AuthenticateContext(ctx)
-	if err != nil {
-		return CertificateResult{}, fmt.Errorf("authenticate: %w", err)
-	}
-	return c.ObtainCertificateWithSandboxContext(ctx, attestationApiURL, csrPEM, challengeResp.Challenge, nil)
-}
-
-// ObtainCertificateWithSandboxContext is ObtainCertificateWithEvidenceContext
-// that additionally forwards an inventory-signed sandbox token. challenge is
-// the base64 CDS challenge the caller already fetched (POST /authenticate); the
-// same nonce binds the evidence REPORTDATA and the sandbox token, so CDS checks
-// both against one single-use value. sandboxToken, when non-empty, is the
-// token JSON (workloadclaims.SignedSandboxToken) forwarded opaquely for CDS to
-// verify and stamp as the leaf's pod-sandbox-ID extension (armtls.OIDSandboxID).
+// ObtainCertificateWithSandboxContext performs the full attestation flow and
+// returns the issued chain with the evidence that authorized it, forwarding an
+// inventory-signed sandbox token. challenge is the base64 CDS challenge the
+// caller already fetched (POST /authenticate); the same nonce binds the
+// evidence REPORTDATA and the sandbox token, so CDS checks both against one
+// single-use value. sandboxToken, when non-empty, is the token JSON
+// (workloadclaims.SignedSandboxToken) forwarded opaquely for CDS to verify and
+// stamp as the leaf's pod-sandbox-ID extension (armtls.OIDSandboxID).
 //
 // The requester never reports its own container images: CDS resolves those
 // from the inventory named by the token (docs/armtls.md, "Sandbox identity").
@@ -229,7 +153,7 @@ func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attesta
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("invalid base64 in challenge: %w", err)
 	}
-	csr, err := parseCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
 		return CertificateResult{}, err
 	}
@@ -265,13 +189,7 @@ func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attesta
 	}, nil
 }
 
-// Authenticate requests an attestation challenge nonce.
-func (c Client) Authenticate() (types.ChallengeResponse, error) {
-	return c.AuthenticateContext(context.Background())
-}
-
-// AuthenticateContext requests an attestation challenge nonce with
-// caller-controlled cancellation.
+// AuthenticateContext requests an attestation challenge nonce.
 func (c Client) AuthenticateContext(ctx context.Context) (types.ChallengeResponse, error) {
 	body, err := c.do(ctx, http.MethodPost, "/authenticate", nil)
 	if err != nil {
@@ -286,14 +204,8 @@ func (c Client) AuthenticateContext(ctx context.Context) (types.ChallengeRespons
 
 type attestRequest = types.AttestRequestBody
 
-// Attest submits attestation evidence and receives a signed certificate chain
-// PEM.
-func (c Client) Attest(req attestRequest) (string, error) {
-	return c.AttestContext(context.Background(), req)
-}
-
-// AttestContext submits attestation evidence with caller-controlled
-// cancellation.
+// AttestContext submits attestation evidence and receives a signed
+// certificate chain PEM.
 func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -311,16 +223,6 @@ func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, e
 // over, the same channel that authenticates the CA trailing an issued chain.
 func (c Client) MeshCA(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/ca", nil)
-}
-
-// Healthz checks liveness of the CDS service.
-func (c Client) Healthz() (bool, error) {
-	return c.ok("/healthz")
-}
-
-// Readyz checks readiness of the CDS service.
-func (c Client) Readyz() (bool, error) {
-	return c.ok("/readyz")
 }
 
 // do sends method path with an optional JSON body and returns the response
@@ -350,39 +252,11 @@ func (c Client) do(ctx context.Context, method, path string, body []byte) ([]byt
 	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 }
 
-// ok reports whether a GET of path returned 2xx.
-func (c Client) ok(path string) (bool, error) {
-	resp, err := c.httpClient.Get(c.baseURL + path)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
-}
-
 func contextOrBackground(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()
 	}
 	return ctx
-}
-
-// parseCSR decodes a PEM certificate request and checks its self-signature,
-// so the key a profile binds is one the requester holds.
-func parseCSR(csrPEM string) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR signature invalid: %w", err)
-	}
-	return csr, nil
 }
 
 // nodeReportData is the node profile's binding, armtls.ReportDataForKey over

@@ -10,7 +10,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// credentialMounts bind-mounts what the node hands a credential client,
+// containerMounts bind-mounts what the node hands a credential client,
 // read-only: the inventory's socket directory at
 // workloadclaims.SidecarSocketDir into the socket consumers
 // (workloadclaims.IsSocketConsumer) of an injected pod, the node's CDS
@@ -24,13 +24,8 @@ import (
 // reads compiled paths, so a pod cannot name another source and the control
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
-func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
-	if p.cfg.podRole() {
-		if p.clientDocument == "" {
-			return nil, nil
-		}
-		return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
-	}
+func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
+	p := c.p
 	if fetchesRouteManifest(pod, ctr) {
 		if err := p.refusedUntilFirstDecree(); err != nil {
 			return nil, err
@@ -66,6 +61,14 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 		return nil, err
 	}
 	return &api.ContainerAdjustment{Mounts: mounts}, nil
+}
+
+// A Pod CVM's one guest bind is the client document.
+func (c podCVM) containerMounts(_ context.Context, _ *api.PodSandbox, _ *api.Container) (*api.ContainerAdjustment, error) {
+	if c.p.clientDocument == "" {
+		return nil, nil
+	}
+	return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(c.p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
 }
 
 // refusedUntilFirstDecree refuses immediately rather than waiting: the look
@@ -130,11 +133,11 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 // classifies them, so a declaration that pins a mount set is matched here too.
 // StartContainer re-reads the same fields from the final spec.
 func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) string {
-	imageRef, err := p.containerImage(pod, ctr)
+	imageRef, err := p.cvm().imageOf(pod, ctr)
 	if err != nil {
 		return ""
 	}
-	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
+	return p.roleOf(p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef)))
 }
 
 func readOnlyBind(source, destination string) *api.Mount {

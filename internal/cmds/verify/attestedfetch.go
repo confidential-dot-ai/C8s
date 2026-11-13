@@ -23,6 +23,17 @@ func fetchAttested(ctx context.Context, endpoint, serverName, certSHA256 string,
 	if req.URL.Scheme != "https" {
 		return nil, fmt.Errorf("attested fetch requires HTTPS")
 	}
+	tlsConfig := tlsPendingAttestation(serverName)
+	tlsConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("no peer certificate")
+		}
+		sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
+		if got := hex.EncodeToString(sum[:]); got != certSHA256 {
+			return fmt.Errorf("serving cert changed between attestation and fetch (got sha256 %s, attested %s)", got, certSHA256)
+		}
+		return nil
+	}
 	client := &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -30,21 +41,7 @@ func fetchAttested(ctx context.Context, endpoint, serverName, certSHA256 string,
 		},
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS13,
-				InsecureSkipVerify: true, //nolint:gosec // the attested leaf fingerprint authenticates the peer
-				ServerName:         serverName,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("no peer certificate")
-					}
-					sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
-					if got := hex.EncodeToString(sum[:]); got != certSHA256 {
-						return fmt.Errorf("serving cert changed between attestation and fetch (got sha256 %s, attested %s)", got, certSHA256)
-					}
-					return nil
-				},
-			},
+			TLSClientConfig:   tlsConfig,
 		},
 	}
 	return client.Do(req)

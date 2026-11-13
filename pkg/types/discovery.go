@@ -16,8 +16,8 @@ type DiscoveryDocument struct {
 
 // PublicTLSDiscovery describes the public-facing TLS identity (hostname + mode).
 type PublicTLSDiscovery struct {
-	Hostname string `json:"hostname"`
-	Mode     string `json:"mode"`
+	Hostname string        `json:"hostname"`
+	Mode     FrontDoorMode `json:"mode"`
 }
 
 // CDSTLSDiscovery carries the CDS-issued serving certificate and where it (and

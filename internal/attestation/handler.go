@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 
@@ -29,22 +28,6 @@ func HandleAuthenticate(challenges Challenges) http.HandlerFunc {
 	}
 }
 
-// ParseAndVerifyCSR decodes a PEM CSR and verifies its self-signature.
-func ParseAndVerifyCSR(csrPEM string) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR signature invalid: %w", err)
-	}
-	return csr, nil
-}
-
 // ECDSAPublicKeyFromCSR returns the CSR's ECDSA public key or an error if
 // the key is not ECDSA.
 func ECDSAPublicKeyFromCSR(csr *x509.CertificateRequest) (*ecdsa.PublicKey, error) {
@@ -53,16 +36,6 @@ func ECDSAPublicKeyFromCSR(csr *x509.CertificateRequest) (*ecdsa.PublicKey, erro
 		return nil, fmt.Errorf("CSR public key must be ECDSA, got %T", csr.PublicKey)
 	}
 	return pub, nil
-}
-
-// WriteError writes a JSON error response in the C8s error-envelope shape.
-func WriteError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(types.ErrorResponse{
-		Error:   code,
-		Message: message,
-	})
 }
 
 // ReadinessFunc is a function that returns whether the service is ready.

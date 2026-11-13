@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -1213,7 +1214,7 @@ func TestRunDiscoveryVerify_EndToEnd(t *testing.T) {
 
 	// The "router": serves the discovery doc unauthenticated at /v1/discovery.
 	lb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != defaultDiscoveryPath {
+		if r.URL.Path != routerdiscovery.DefaultPath {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -1519,7 +1520,7 @@ func TestGatherEvidence_AutoPrefersDiscovery(t *testing.T) {
 	certPEM, _ := selfSignedCertPEM(t)
 	doc := discoveryDocWith(t, certPEM, []byte("challenge"), `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`)
 	lb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != defaultDiscoveryPath {
+		if r.URL.Path != routerdiscovery.DefaultPath {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}

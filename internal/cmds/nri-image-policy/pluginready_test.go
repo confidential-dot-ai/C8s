@@ -260,11 +260,11 @@ func TestServePluginReady(t *testing.T) {
 
 func TestRunPluginReadyCheck(t *testing.T) {
 	running := fakeProc(t, kubeadmTree)
-	if err := Run([]string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", running}); err != nil {
+	if err := Run(t.Context(), []string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", running}); err != nil {
 		t.Errorf("--check with the plugin running = %v, want nil", err)
 	}
 	gone := fakeProc(t, map[int]fakeProcess{1: systemd})
-	if err := Run([]string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", gone}); !errors.Is(err, errPluginNotRunning) {
+	if err := Run(t.Context(), []string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", gone}); !errors.Is(err, errPluginNotRunning) {
 		t.Errorf("--check with the plugin gone = %v, want errPluginNotRunning", err)
 	}
 }
@@ -308,7 +308,7 @@ func TestRunPluginReadyRejectsBadFlags(t *testing.T) {
 		{"--plugin-path", "/opt/nri/../nri/plugins/x"},
 		{"--plugin-path", testPluginPath, "--addr", "8080"},
 	} {
-		if err := Run(append([]string{pluginReadyVerb}, args...)); err == nil {
+		if err := Run(t.Context(), append([]string{pluginReadyVerb}, args...)); err == nil {
 			t.Errorf("Run(%q) = nil, want a flag error", args)
 		}
 	}

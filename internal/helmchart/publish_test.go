@@ -183,7 +183,7 @@ func publishOverride(t *testing.T, repository string) {
 	}
 	dir := t.TempDir()
 	url, keyPath := operatorCDS(t, allowlistWrites, dir)
-	n := &node{client: allowlistclient.NewClient(url)}
+	n := &node{client: allowlistclient.NewClientWithHTTP(url, &http.Client{})}
 	n.pull(t)
 	served := n.version
 	if !admitsOperator(n.doc, before, args) {

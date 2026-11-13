@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestWorkerImageStaticPods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := slices.Sorted(maps.Keys(templates)), []string{"cilium.yaml", "coredns.yaml", "kube-proxy.yaml"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(templates)), []string{"cilium.yaml", "coredns.yaml", "dcgm-exporter.yaml", "kube-proxy.yaml", "nvidia-device-plugin.yaml"}; !slices.Equal(got, want) {
 		t.Fatalf("templates = %v, want %v", got, want)
 	}
 	for file, data := range templates {
@@ -62,6 +63,46 @@ func TestWorkerImageStaticPods(t *testing.T) {
 		if rendered.Name == "kube-proxy.yaml" && !slices.Contains(pod.Spec.Containers[0].Args, "--cluster-cidr=10.42.0.0/16") {
 			t.Errorf("kube-proxy args = %v, want this worker's pod range", pod.Spec.Containers[0].Args)
 		}
+	}
+}
+
+// The GPU pods render only on a node with an NVIDIA PCI function, and every
+// other template renders on any node.
+func TestWorkerStaticPodsGPUOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		vendors []string
+		want    []string
+	}{
+		{"no GPU", []string{"0x1af4"}, []string{"cilium.yaml", "coredns.yaml", "kube-proxy.yaml"}},
+		{"NVIDIA GPU", []string{"0x1af4", "0x10de"}, []string{"cilium.yaml", "coredns.yaml", "dcgm-exporter.yaml", "kube-proxy.yaml", "nvidia-device-plugin.yaml"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.CopyFS(filepath.Join(root, staticPodTemplates), os.DirFS(staticPodTree)); err != nil {
+				t.Fatal(err)
+			}
+			for i, vendor := range tc.vendors {
+				dir := filepath.Join(root, pciDevices, fmt.Sprintf("0000:00:%02x.0", i))
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "vendor"), []byte(vendor+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pods, err := staticPods(root, map[string]string{nodeservices.NodeNamePlaceholder: "n-10-0-0-7", nodeservices.PodCIDRPlaceholder: "10.42.0.0/16"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, pod := range pods {
+				got = append(got, pod.Name)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("static pods = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -82,7 +82,8 @@ attestationApi:
     digest: ""
   ## devices: the TEE device nodes the API reads evidence from, each a
   ## CharDevice hostPath, so a node that lacks one fails the pod. The stock
-  ## file sets them.
+  ## file sets them. Each basename, with "_" as "-", names the device's volume,
+  ## so it must be unique and neither "config" nor "socket-dir".
 
 ## The per-pod mesh endpoint the admission webhook injects into every pod it
 ## covers. Its ports, identity and packet rules are the node's measured policy,

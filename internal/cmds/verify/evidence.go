@@ -184,9 +184,7 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 func openARMTLS(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*tls.Conn, *evidence, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		// INVARIANT: PKI verification is intentionally skipped — the armTLS
-		// attestation in the cert extension is the trust anchor, verified below.
-		Config: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config:    tlsPendingAttestation(serverName),
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -344,7 +342,7 @@ func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*e
 // attestation in the payload, not PKI on the hop.
 func insecureClient(serverName string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		TLSClientConfig: tlsPendingAttestation(serverName),
 	}}
 }
 

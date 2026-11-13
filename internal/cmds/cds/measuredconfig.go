@@ -39,7 +39,7 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 		return err
 	}
 	slog.Info("serving a measured CDS configuration", "cluster_id", served.measured.ClusterID, "platform", platform)
-	return run(served)
+	return run(ctx, served)
 }
 
 // withMeasuredConfig returns cfg serving the document this VM was launched

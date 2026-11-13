@@ -195,7 +195,7 @@ func LoadECPrivateKeyFile(path string) (*ecdsa.PrivateKey, error) {
 }
 
 // ParseCertificatePEM parses a PEM-encoded certificate, returning the first
-// CERTIFICATE block found. Use [LoadCertificateFile] for file-based loading.
+// CERTIFICATE block found.
 func ParseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
@@ -204,13 +204,21 @@ func ParseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
-// LoadCertificateFile reads a PEM file and parses the first certificate.
-func LoadCertificateFile(path string) (*x509.Certificate, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+// ParseCSRPEM decodes a PEM certificate request and checks its self-signature,
+// so the key a certificate binds is one the requester holds.
+func ParseCSRPEM(csrPEM []byte) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("CSR must be a PEM-encoded certificate request")
 	}
-	return ParseCertificatePEM(data)
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CSR: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("CSR signature invalid: %w", err)
+	}
+	return csr, nil
 }
 
 // NewJSONLogger creates a JSON [slog.Logger] writing to stdout at the given
@@ -260,29 +268,6 @@ func ParsePEMCertificates(data []byte) ([]*x509.Certificate, error) {
 		return nil, fmt.Errorf("no CERTIFICATE blocks found")
 	}
 	return certs, nil
-}
-
-// TrimExpiredCABundle returns the subset of certs whose NotAfter is after
-// cutoff. The dropped certs are returned in dropped — callers typically log
-// their fingerprints. Order is preserved relative to the input.
-func TrimExpiredCABundle(certs []*x509.Certificate, cutoff time.Time) (kept, dropped []*x509.Certificate) {
-	for _, cert := range certs {
-		if cert.NotAfter.Before(cutoff) {
-			dropped = append(dropped, cert)
-			continue
-		}
-		kept = append(kept, cert)
-	}
-	return kept, dropped
-}
-
-// LoadPEMCertificatesFile reads a PEM file and parses all CERTIFICATE blocks.
-func LoadPEMCertificatesFile(path string) ([]*x509.Certificate, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	return ParsePEMCertificates(data)
 }
 
 // NewCATemplate returns an x509.Certificate template for a self-signed CA

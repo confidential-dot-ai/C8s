@@ -57,9 +57,9 @@ func (p *plugin) refuseSandbox(cfg *config, subject privilegeSubject, refusal er
 
 // hostPortRefusal is why a container of a pod that maps host ports may not run,
 // "" when it may; the caller downgrades a denial under audit mode.
-func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) string {
-	subject := containerSubject(hostPortRule, pod, ctr, imageRef)
-	mappings, err := p.sandboxHostPorts(ctx, pod)
+func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, observed observedContainer) string {
+	subject := containerSubject(hostPortRule, observed.pod, observed.ctr, observed.imageRef)
+	mappings, err := p.sandboxHostPorts(ctx, observed.pod)
 	switch {
 	// A sandbox containerd no longer has runs no container to refuse.
 	case errors.Is(err, errRecordGone):
@@ -71,7 +71,7 @@ func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, pod *api.PodS
 	if len(mappings) == 0 {
 		return ""
 	}
-	launch := p.observedLaunch(ctx, ctr, imageRef, env, mounts)
+	launch := p.observedLaunch(ctx, observed)
 	if platformClientRole(p.roleOf(launch)) || p.policy.grantsHostPorts(launch, mappings) {
 		return ""
 	}

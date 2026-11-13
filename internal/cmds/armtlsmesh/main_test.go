@@ -26,7 +26,7 @@ func TestRunRefusesAnEndpointItCannotRun(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Run(tc.args)
+			err := Run(t.Context(), tc.args)
 			if err == nil {
 				t.Fatalf("Run(%q) was accepted", tc.args)
 			}
