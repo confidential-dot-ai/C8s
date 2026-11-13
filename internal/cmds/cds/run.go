@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
@@ -172,7 +173,7 @@ func run(ctx context.Context, cfg config) error {
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
-	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
+	if enabled, why := haSecrets(cfg.measured.HA, pinned.Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
@@ -207,7 +208,20 @@ func run(ctx context.Context, cfg config) error {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
 	}
 
+	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
+	if err != nil {
+		return fmt.Errorf("armtls server config: %w", err)
+	}
+	var replica *cdsha.Replica
+	if cfg.measured.HA != nil {
+		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers); err != nil {
+			return err
+		}
+	}
+
 	deps := dependencies{
+		HA:          replica,
+		HAAuthorize: haAuthorizer(&allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second),
 		AttestHandler: AttestHandler{
 			Challenges:        &challengeStore,
 			AttestationClient: asClient,
@@ -224,7 +238,7 @@ func run(ctx context.Context, cfg config) error {
 			PolicySnapshots:   &policySnapshotCache{},
 			SandboxDigests:    sandboxDigests,
 			InventoryHosts:    inventoryHosts,
-			SandboxBindings:   sandboxBindings,
+			SandboxBindings:   haLedger(cfg.measured.HA, sandboxBindings),
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
@@ -266,10 +280,6 @@ func run(ctx context.Context, cfg config) error {
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
 
-	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
-	if err != nil {
-		return fmt.Errorf("armtls server config: %w", err)
-	}
 	srv.TLSConfig = tlsCfg
 
 	warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

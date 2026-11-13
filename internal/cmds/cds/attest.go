@@ -42,6 +42,10 @@ import (
 // claims the quote binds. Each gate is independent of the other and a set
 // that names no image admits nobody.
 type AttestHandler struct {
+	// Serving, set for a replica of a set, refuses issuance while the
+	// replica serves nothing.
+	Serving func(context.Context) error
+
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
 	MeshCA            *issuer.MeshCA
@@ -264,6 +268,13 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ttl := h.leafTTL(matched, router)
+	// A replica of a set signs only while it serves, checked last.
+	if h.Serving != nil {
+		if err := h.Serving(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing := h.MeshCA.Current()
 	clientDocument, clientDocumentDigest := profile.clientDocument()

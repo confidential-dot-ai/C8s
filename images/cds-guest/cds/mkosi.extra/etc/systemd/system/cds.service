@@ -6,7 +6,10 @@ Documentation=https://github.com/confidential-dot-ai/c8s
 # Without it the unit is skipped and nothing listens.
 ConditionPathExists=/run/confai/operator-pubkey
 Requires=attestation-api.service
-After=attestation-api.service network-online.target
+# A replica of a set (the config's ha block) on an etcd store reads the etcd
+# client file from the unmeasured cdsstore disk, when there is one.
+Wants=run-cds\x2dstore.mount
+After=attestation-api.service network-online.target run-cds\x2dstore.mount
 Wants=network-online.target
 # The trust root keeps retrying for as long as the VM runs: the route to AMD
 # or Intel can come up minutes after boot.
@@ -22,11 +25,14 @@ ExecStart=/usr/local/bin/c8s cds \
     --attestation-api-url=http://127.0.0.1:8400 \
     --allowlist-db=/run/cds/allowlist.db \
     --max-request-size=262144 \
-    --san-validation=false
+    --san-validation=false \
+    --ha-runtime-dir=/run/cds-store
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=cds
 NoNewPrivileges=yes
+# Nothing the CDS runs needs a capability.
+CapabilityBoundingSet=
 ProtectHome=yes
 ProtectSystem=strict
 

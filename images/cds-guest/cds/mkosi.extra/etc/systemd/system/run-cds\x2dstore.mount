@@ -1,0 +1,11 @@
+[Unit]
+Description=CDS replica runtime disk (its endpoint; not measured)
+# The host may rewrite it, which can only cost availability: a wrong
+# endpoint misplaces one vote.
+ConditionPathExists=/dev/disk/by-label/cdsstore
+
+[Mount]
+What=/dev/disk/by-label/cdsstore
+Where=/run/cds-store
+Type=iso9660
+Options=ro,nosuid,nodev,noexec

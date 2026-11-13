@@ -36,6 +36,9 @@ type Store struct {
 	// nodeDelay is how long after a write it takes effect on nodes
 	// (InEffect).
 	nodeDelay time.Duration
+	// nodeFloor is the lowest history position InEffect hands nodes
+	// (HoldNodes, FloorNodesAtHead).
+	nodeFloor int64
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -371,6 +374,10 @@ type OperatorWrite struct {
 	// Signature, when set, is the write token whose body hash binds the
 	// document's canonical bytes, stored as that document's signature.
 	Signature string
+	// SetVersion, when set, is the version the store takes instead of the
+	// next one: a CDS replica serves a chain's policy at the version every
+	// replica gives it.
+	SetVersion string
 }
 
 // ReplaceAll atomically swaps the entire allowlist for the given document and
@@ -406,7 +413,12 @@ func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist, write OperatorWrite) erro
 	if err := replaceContentsTx(tx, al); err != nil {
 		return err
 	}
-	if err := bumpVersionTx(tx); err != nil {
+	if write.SetVersion != "" {
+		_, err = tx.Exec("UPDATE allowlist_version SET version = ?", write.SetVersion)
+	} else {
+		err = bumpVersionTx(tx)
+	}
+	if err != nil {
 		return err
 	}
 	return s.commitTx(tx, documentSignature{token: write.Signature, document: signed}, latch)

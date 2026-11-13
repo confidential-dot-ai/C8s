@@ -41,6 +41,24 @@ type Config struct {
 	DNSSANPatterns []*regexp.Regexp
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
+	// HA is the replica set of a stateless CDS (docs/cds-ha.md), nil for a
+	// single CDS. A replica's slot is its endpoint's index.
+	HA *HA
+}
+
+// HA is a fixed replica set: 1, 3 or 5 distinct <host>:<port> endpoints.
+type HA struct {
+	Endpoints []string `yaml:"endpoints"`
+}
+
+func (h *HA) validate() error {
+	if h == nil {
+		return nil
+	}
+	if err := cmdsutil.ValidateCDSEndpoints(h.Endpoints); err != nil {
+		return fmt.Errorf("ha.endpoints: %w", err)
+	}
+	return nil
 }
 
 // wire mirrors the document. Workloads and Nodes keep the JSON wire schemas
@@ -57,6 +75,7 @@ type wire struct {
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
 	KMS                *kmsWire `yaml:"kms,omitempty"`
+	HA                 *HA      `yaml:"ha,omitempty"`
 }
 
 // Parse validates a CDS configuration document. It authenticates nothing:
@@ -114,7 +133,11 @@ func (w wire) parse() (*Config, error) {
 	if kms != nil && len(podImages) == 0 {
 		return nil, errors.New("kms: pod secret release needs a podImagePolicy")
 	}
+	if err := w.HA.validate(); err != nil {
+		return nil, err
+	}
 	cfg := &Config{
+		HA:             w.HA,
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
 		Workloads:      workloads,

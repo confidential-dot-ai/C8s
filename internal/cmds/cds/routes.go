@@ -8,6 +8,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
@@ -17,6 +18,10 @@ import (
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
+	// HA, set for a replica of a set, serves the HA API and gates the rest.
+	HA          *cdsha.Replica
+	HAAuthorize cdsha.Authorizer
+
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
@@ -55,6 +60,14 @@ func newRouter(deps dependencies) http.Handler {
 	deps.AttestHandler.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
+	if deps.HA != nil {
+		r.Use(haGate(deps.HA))
+		r.Handle("/ha/*", deps.HA.Handler(deps.HAAuthorize))
+		deps.AttestHandler.Serving = haServing(deps.HA)
+		deps.AllowlistHandler.Objects = deps.HA.Policy
+		ready := deps.ReadyFn
+		deps.ReadyFn = func() bool { return ready() && deps.HA.Status().Serving == "" }
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
