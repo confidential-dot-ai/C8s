@@ -7,22 +7,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RequireRAMBacked fails unless dir sits on tmpfs or ramfs. Callers staging
-// secrets (join tokens, private keys) use it to enforce "memory only" rather
-// than merely documenting it: on any other filesystem the bytes are readable
-// by the host.
-func RequireRAMBacked(dir string) error {
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", dir, err)
-	}
-	defer root.Close()
-	return RequireRAMBackedRoot(root)
-}
-
 // RequireRAMBackedRoot fails unless the directory held by root sits on tmpfs
-// or ramfs. The check uses the open handle rather than root.Name(), so a
-// pathname replacement cannot change the filesystem that is verified.
+// or ramfs. Callers staging secrets (join tokens, private keys) use it to
+// enforce "memory only" rather than merely documenting it: on any other
+// filesystem the bytes are readable by the host. The check uses the open
+// handle rather than root.Name(), so a pathname replacement cannot change the
+// filesystem that is verified.
 func RequireRAMBackedRoot(root *os.Root) error {
 	if root == nil {
 		return fmt.Errorf("cannot verify a nil directory root is RAM-backed")

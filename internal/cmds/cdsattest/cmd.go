@@ -7,10 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -67,9 +65,7 @@ func NewCmd() *cobra.Command {
 		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.attestOff = !attestEndpoints
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return run(ctx, cfg)
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()
@@ -133,13 +129,11 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
 		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
-	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
+	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
 	if err != nil {
 		return err
 	}
-	if fromNode {
-		cfg.routing.cdsURL = cmdsutil.CDSURL(address)
-	}
+	cfg.routing.cdsURL = cdsURL
 	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err

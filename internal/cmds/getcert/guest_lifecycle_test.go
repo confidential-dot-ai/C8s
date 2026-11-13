@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -58,7 +59,7 @@ func TestGuestRunRecoversRenewsAndWithdrawsOnShutdown(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		csr, err := attestation.ParseAndVerifyCSR(req.CSR)
+		csr, err := certutil.ParseCSRPEM([]byte(req.CSR))
 		if err != nil {
 			t.Error(err)
 			return

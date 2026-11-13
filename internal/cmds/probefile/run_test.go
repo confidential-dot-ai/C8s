@@ -1,6 +1,8 @@
 package probefile
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -60,7 +62,7 @@ func TestWaitForReturnsOnceFileAppears(t *testing.T) {
 
 	// interval <= 0 exercises the default-interval branch; it is clamped to
 	// 1s, so the file written above is seen on the second iteration.
-	if err := waitFor(path, 0, 10*time.Second); err != nil {
+	if err := waitFor(t.Context(), path, 0, 10*time.Second); err != nil {
 		t.Fatalf("waitFor(appearing file) = %v, want nil", err)
 	}
 }
@@ -68,7 +70,7 @@ func TestWaitForReturnsOnceFileAppears(t *testing.T) {
 func TestWaitForTimesOut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "never.pem")
 
-	err := waitFor(path, 10*time.Millisecond, 50*time.Millisecond)
+	err := waitFor(t.Context(), path, 10*time.Millisecond, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("waitFor(missing, timeout) = nil, want error")
 	}
@@ -80,7 +82,7 @@ func TestWaitForTimesOut(t *testing.T) {
 func TestWaitForClampsNonPositiveInterval(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "never.pem")
 	start := time.Now()
-	if err := waitFor(path, 0, 50*time.Millisecond); err == nil {
+	if err := waitFor(t.Context(), path, 0, 50*time.Millisecond); err == nil {
 		t.Fatal("waitFor(missing, timeout) = nil, want error")
 	}
 	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
@@ -95,7 +97,7 @@ func TestWaitForZeroTimeoutWaitsForFile(t *testing.T) {
 	path := filepath.Join(dir, "cert.pem")
 
 	done := make(chan error, 1)
-	go func() { done <- waitFor(path, 10*time.Millisecond, 0) }()
+	go func() { done <- waitFor(t.Context(), path, 10*time.Millisecond, 0) }()
 
 	select {
 	case err := <-done:
@@ -117,6 +119,25 @@ func TestWaitForZeroTimeoutWaitsForFile(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("waitFor did not return after the file appeared")
+	}
+}
+
+// A pod deleted while its gate waits stops the wait: the container exits
+// without waiting for the file or the kubelet's SIGKILL.
+func TestWaitForStopsWhenCancelled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "never.pem")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- waitFor(ctx, path, 10*time.Millisecond, 0) }()
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waitFor(cancelled) = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("waitFor did not return after its context was cancelled")
 	}
 }
 

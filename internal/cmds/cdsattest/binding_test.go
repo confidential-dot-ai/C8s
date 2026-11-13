@@ -437,6 +437,80 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 	}
 }
 
+// nginx's ssl_certificate skips a leading key block and serves the first
+// certificate in the file, so the sidecar commits that same leaf.
+func TestServingLeafReadsAFileWhoseKeyComesFirst(t *testing.T) {
+	_, leafDER := writeTestServingLeaf(t)
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(5),
+		Subject:      pkix.Name{CommonName: "acme"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Minute),
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cert.pem")
+	contents := bytes.Join([][]byte{
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+	}, nil)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{cfg: Config{ServingCertFile: path}}
+	cert, leaf, err := s.servingLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cert.Raw, leafDER) || !bytes.Equal(leaf.der, leafDER) {
+		t.Fatal("servingLeaf() committed another certificate than the one behind the key block")
+	}
+	if !leaf.expires.Equal(ca.NotAfter.Truncate(time.Second)) {
+		t.Fatalf("servingLeaf() expires %v, want the CA's earlier NotAfter %v", leaf.expires, ca.NotAfter)
+	}
+}
+
+func TestServingLeafRefusesAnUnusableFile(t *testing.T) {
+	_, leafDER := writeTestServingLeaf(t)
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	truncated := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER[:len(leafDER)/2]})
+	keyOnly := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: []byte("x")})
+	for _, tc := range []struct {
+		name string
+		file []byte
+	}{
+		{name: "no file"},
+		{name: "no certificate block", file: keyOnly},
+		{name: "leaf does not parse", file: truncated},
+		{name: "chain block does not parse", file: bytes.Join([][]byte{leafPEM, truncated}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cert.pem")
+			if tc.file != nil {
+				if err := os.WriteFile(path, tc.file, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := &Server{cfg: Config{ServingCertFile: path}}
+			if _, _, err := s.servingLeaf(); err == nil {
+				t.Fatal("servingLeaf() admitted an unusable serving-cert file")
+			}
+		})
+	}
+}
+
 func TestAttestLBBindsOnlyARelayedConnection(t *testing.T) {
 	rs := newRoutedServer(t)
 	rs.apply(t, 1, time.Hour)

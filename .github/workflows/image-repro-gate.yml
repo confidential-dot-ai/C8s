@@ -7,6 +7,9 @@
 name: image repro gate
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
@@ -19,6 +22,7 @@ concurrency:
 jobs:
   changes:
     # The gate build legs run on the-machine (self-hosted); never fork-trigger.
+    # A merge group can carry fork code, so `compare` passes it as not applicable.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:

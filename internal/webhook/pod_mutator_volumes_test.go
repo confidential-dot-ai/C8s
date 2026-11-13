@@ -180,7 +180,7 @@ func TestReservedVolumePrefixMustBeMemoryBacked(t *testing.T) {
 			Name:     name,
 			HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"},
 		}}
-		if err := rejectReservedVolumeVolume(pod); err == nil {
+		if err := rejectReservedVolumeShapes(pod); err == nil {
 			t.Errorf("%s: a hostPath under the reserved prefix was accepted", name)
 		}
 	}
@@ -188,10 +188,10 @@ func TestReservedVolumePrefixMustBeMemoryBacked(t *testing.T) {
 	// The shape the webhook itself injects is fine, as is omitting it.
 	pod := podWithApp()
 	pod.Spec.Volumes = []corev1.Volume{openedVolume("weights")}
-	if err := rejectReservedVolumeVolume(pod); err != nil {
+	if err := rejectReservedVolumeShapes(pod); err != nil {
 		t.Errorf("the injected shape was rejected: %v", err)
 	}
-	if err := rejectReservedVolumeVolume(podWithApp()); err != nil {
+	if err := rejectReservedVolumeShapes(podWithApp()); err != nil {
 		t.Errorf("an absent volume was rejected: %v", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestOpenedVolumeMediumFollowsTheShape(t *testing.T) {
 	{
 		pod := podWithApp()
 		pod.Spec.Volumes = []corev1.Volume{openedVolume("weights")}
-		if err := rejectReservedVolumeVolume(pod); err != nil {
+		if err := rejectReservedVolumeShapes(pod); err != nil {
 			t.Errorf("the injected shape was rejected: %v", err)
 		}
 	}

@@ -13,7 +13,7 @@ import (
 	"errors"
 	"reflect"
 
-	strictjson "sigs.k8s.io/json"
+	sigsjson "sigs.k8s.io/json"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -60,7 +60,7 @@ func Decode(data []byte) (Request, error) {
 	if len(data) > MaxBody {
 		return Request{}, ErrMalformed
 	}
-	strictErrors, err := strictjson.UnmarshalStrict(data, &wire)
+	strictErrors, err := sigsjson.UnmarshalStrict(data, &wire)
 	if err != nil || len(strictErrors) != 0 {
 		return Request{}, ErrMalformed
 	}

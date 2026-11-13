@@ -1,0 +1,42 @@
+# NVIDIA dcgm-exporter, on a worker with an NVIDIA GPU alone (stage skips a
+# confidential.ai/gpu-only template elsewhere). It serves the image's default
+# counters as Prometheus metrics on :9400 of the pod's address, which the
+# control plane's dcgm-exporter Service selects; nothing listens on the node's
+# addresses. DCGM 4.6.1, dcgm-exporter 4.8.4, as confos's general-purpose-gpu
+# profile.
+#
+# Privileged for the GPUs' device nodes: a static pod takes no device-plugin
+# allocation, and containerd ignores a pod's CDI annotations. NVML is the
+# node's driver library, bound read-only where the image's loader finds it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dcgm-exporter
+  namespace: kube-system
+  labels: {k8s-app: dcgm-exporter}
+  annotations: {confidential.ai/gpu-only: "true"}
+spec:
+  dnsPolicy: Default
+  enableServiceLinks: false
+  containers:
+  - name: dcgm-exporter
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.6.1-4.8.4@sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003
+    command: [/usr/bin/dcgm-exporter]
+    env:
+    # The image's.
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: SSL_CERT_FILE, value: /etc/ssl/certs/ca-certificates.crt}
+    - {name: OPENSSL_CONF, value: /etc/ssl/openssl-nofips.cnf}
+    - {name: OPENSSL_MODULES, value: /usr/lib/x86_64-linux-gnu/ossl-modules/}
+    - {name: LD_LIBRARY_PATH, value: /lib/distroless/}
+    - {name: NVIDIA_DRIVER_CAPABILITIES, value: 'compute,utility,compat32'}
+    - {name: NVIDIA_DISABLE_REQUIRE, value: 'true'}
+    - {name: NVIDIA_VISIBLE_DEVICES, value: all}
+    ports:
+    - {name: metrics, containerPort: 9400, protocol: TCP}
+    securityContext: {privileged: true}
+    volumeMounts:
+    - {name: nvml, mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, readOnly: true}
+  volumes:
+  - name: nvml
+    hostPath: {path: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, type: File}

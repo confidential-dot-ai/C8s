@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"os"
@@ -66,12 +67,17 @@ func TestNormalizeArgvAlias(t *testing.T) {
 }
 
 func TestWrapFlagBinary(t *testing.T) {
-	t.Run("forwards args verbatim and succeeds", func(t *testing.T) {
-		var got []string
-		cmd := wrapFlagBinary("x", "", func(args []string) error {
-			got = args
+	t.Run("forwards its context and args verbatim and succeeds", func(t *testing.T) {
+		var (
+			got    []string
+			gotCtx context.Context
+		)
+		cmd := wrapFlagBinary("x", "", func(ctx context.Context, args []string) error {
+			gotCtx, got = ctx, args
 			return nil
 		})
+		ctx := t.Context()
+		cmd.SetContext(ctx)
 		if !cmd.DisableFlagParsing {
 			t.Error("flag parsing must stay with the wrapped binary")
 		}
@@ -81,18 +87,21 @@ func TestWrapFlagBinary(t *testing.T) {
 		if !reflect.DeepEqual(got, []string{"--flag", "v"}) {
 			t.Fatalf("args = %v, want them forwarded verbatim", got)
 		}
+		if gotCtx != ctx {
+			t.Fatal("run did not get the command's context")
+		}
 	})
 
 	t.Run("propagates run errors", func(t *testing.T) {
 		boom := errors.New("boom")
-		cmd := wrapFlagBinary("x", "", func([]string) error { return boom })
+		cmd := wrapFlagBinary("x", "", func(context.Context, []string) error { return boom })
 		if err := cmd.RunE(cmd, nil); !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want the run error propagated", err)
 		}
 	})
 
 	t.Run("flag.ErrHelp exits clean", func(t *testing.T) {
-		cmd := wrapFlagBinary("x", "", func([]string) error { return flag.ErrHelp })
+		cmd := wrapFlagBinary("x", "", func(context.Context, []string) error { return flag.ErrHelp })
 		if err := cmd.RunE(cmd, nil); err != nil {
 			t.Fatalf("-h must not be an error, got %v", err)
 		}

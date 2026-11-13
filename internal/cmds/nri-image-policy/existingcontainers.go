@@ -19,11 +19,11 @@ func (p *plugin) shouldCheckExisting() bool {
 // existing container, checks what it can, and kills violations when
 // enforce_existing is set.
 func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	clear(p.podStarts)
 	cfg := p.cfg
-	if cfg.podRole() && p.podStartDisconnected.Load() {
-		return nil, errors.New("pod runtime connection ended")
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
+		return nil, err
 	}
 	// Seed the inventory's sandbox set now, even when the container check is
 	// deferred: sandbox existence needs no allowlist.
@@ -44,7 +44,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	if p.boot.check(ctx, p, pods, ctrs) {
 		p.bootRestart.Store(true)
 		p.endPodIdentity(errors.New("pod inventory was reconstructed after a plugin restart"))
-		p.stopPodContainers(ctx, pods, ctrs)
+		p.cvm().stopAfterRestart(ctx, pods, ctrs)
 	}
 
 	if cfg.podRole() && !p.bootRestart.Load() && (len(pods) != 0 || len(ctrs) != 0) {
@@ -117,7 +117,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		if pod == nil || !p.mesh.hosts(pod) {
 			continue
 		}
-		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
+		launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, ctr.GetAnnotations()[annotationImageName]))
 		role := p.roleOf(launch)
 		// Liveness is the running set, not the registration snapshot: a container
 		// that started in the deferral window is not CONTAINER_RUNNING in the
@@ -305,7 +305,7 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		}
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
-		imageRef, err := p.containerImage(c.pod, c.ctr)
+		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)
 		verdict, denial := verdictDeny, ""
 		if err == nil {
 			verdict, denial = p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
@@ -315,9 +315,7 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		if verdict != verdictDeny {
 			continue
 		}
-		if cfg.podRole() {
-			_ = p.denyContainer(c.pod.GetId(), errors.New(denial))
-		}
+		p.cvm().endIdentityForRefusal(c.pod, errors.New(denial))
 		if p.killRunning(ctx, c.pod, c.ctr, denial) {
 			killed++
 		} else {
@@ -340,16 +338,14 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	return true
 }
 
-// stopPodContainers stops every running container a plugin restart found on a
+// stopAfterRestart stops every running container a plugin restart found on a
 // Pod guest. The identity has ended, so no start of the Pod is admitted again;
 // stopping what already runs lets the kubelet report the Pod's containers
 // terminated instead of leaving a Pod that runs but can never renew its
 // credentials. Failures are logged: a container that stays up is still refused
 // every later start and issuance.
-func (p *plugin) stopPodContainers(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
-	if !p.cfg.podRole() {
-		return
-	}
+func (c podCVM) stopAfterRestart(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	p := c.p
 	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		if ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
@@ -367,7 +363,7 @@ func (p *plugin) stopPodContainers(ctx context.Context, pods []*api.PodSandbox, 
 // during Synchronize before the plugin was ready. Should be called after
 // SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	cfg := p.cfg
 
 	p.deferredMu.Lock()

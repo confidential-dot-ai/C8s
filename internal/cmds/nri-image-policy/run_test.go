@@ -180,7 +180,7 @@ func writeConfigYAML(t *testing.T, yaml string) string {
 func runWithDeadline(t *testing.T, timeout time.Duration, args []string) error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- Run(args) }()
+	go func() { done <- Run(t.Context(), args) }()
 	select {
 	case err := <-done:
 		return err

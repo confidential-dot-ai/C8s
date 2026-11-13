@@ -29,7 +29,7 @@ func execsPlugin(t *testing.T, argv []string) *plugin {
 		t.Fatal("the base grants no execs")
 	}
 	p := newTestPlugin(&config{Allowlist: allowlistConfig{Base: base}})
-	p.execGrants = &execGrants{dir: filepath.Join(privateDir(t), "grants")}
+	p.execGrants = newExecGrantRecords(filepath.Join(privateDir(t), "grants"))
 	return p
 }
 

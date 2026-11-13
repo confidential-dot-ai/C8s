@@ -36,7 +36,7 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	if err := v.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, false); handled {
+	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, validatingPodCVM{}); handled {
 		return response
 	}
 
@@ -53,7 +53,7 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	// The one place this holds, since the mutator rebuilds the label it
 	// stamps: a pod carrying the label the managed Services select on, without
 	// the matching annotation, is refused in or out of scope.
-	if err := validateWorkloadLabel(pod); err != nil {
+	if err := workloadclaims.ValidateWorkloadLabel(pod); err != nil {
 		l.Info("denying pod", "reason", err.Error())
 		return admission.Errored(http.StatusBadRequest, err)
 	}

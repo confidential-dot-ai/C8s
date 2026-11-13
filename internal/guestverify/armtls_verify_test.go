@@ -627,6 +627,17 @@ func TestVerifyServerCertSNPRejectsContradictoryClaims(t *testing.T) {
 	}
 }
 
+// The certificate arm follows the family the manifest pins, never the family
+// the leaf claims: an SNP gate refuses a genuine TDX armTLS leaf.
+func TestVerifyServerCertFollowsTheManifestFamily(t *testing.T) {
+	exp := snpTestPolicy(t, operatorPub(t))
+	stubVerify(t, nil, fmt.Errorf("the TDX arm must not run"))
+	err := verifyServerCert(attestedCert(t, teetypes.AttestationEvidence{Platform: "tdx"}), exp)
+	if err == nil || !strings.Contains(err.Error(), "the SNP trust gate pins launch-time HOSTDATA") {
+		t.Fatalf("verifyServerCert = %v, want the SNP arm's refusal of a non-snp leaf", err)
+	}
+}
+
 // A verifier refusal (bad evidence, KDS failure) must fail the dial closed.
 func TestVerifyServerCertSNPPropagatesVerifierError(t *testing.T) {
 	exp := snpTestPolicy(t, operatorPub(t))

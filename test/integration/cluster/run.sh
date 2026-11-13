@@ -21,6 +21,10 @@
 # signer (./optoken) and sent over plain curl; CDS still verifies the
 # operator token server-side.
 #
+# The operator's Pod CVM provider runs too, against a fake Cloud instance API
+# (test/mock-cloud) that starts no VM: the provider registers its node and
+# launches into the mock, and no pod CVM ever boots.
+#
 # What this deliberately is not: a confidential-cluster test. Nothing here
 # asserts TEE properties. See docs/integration-tests.md.
 #
@@ -41,10 +45,11 @@ mkdir -p "$WORKDIR"
 
 cleanup() {
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
-        echo "kept: kind cluster $CLUSTER, CDS container $CDS_CONTAINER, state in $WORKDIR"
+        echo "kept: kind cluster $CLUSTER, CDS container $CDS_CONTAINER, Cloud container $CLOUD_CONTAINER, state in $WORKDIR"
         return
     fi
     cds_stop
+    cloud_stop
     kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
@@ -67,6 +72,7 @@ docker build -q -f cmd/cds/Dockerfile               -t "ghcr.io/confidential-dot
 docker build -q -f cmd/nri-image-policy/Dockerfile  -t "ghcr.io/confidential-dot-ai/nri-image-policy:$IMAGE_TAG" . >/dev/null
 docker build -q -f cmd/armtls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/armtls-mesh:$IMAGE_TAG"       . >/dev/null
 docker build -q -f test/mock-attestation/Dockerfile -t "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" . >/dev/null
+docker build -q -f test/mock-cloud/Dockerfile       -t "ghcr.io/confidential-dot-ai/mock-cloud:$IMAGE_TAG"       . >/dev/null
 
 log "Building the c8s binary"
 make build-c8s >/dev/null
@@ -310,6 +316,19 @@ CDS_INSTALL_FLAGS=(--cds-address "$CDS_ADDRESS" --cds-pin "$WORKDIR/cds/cds-pin.
 cds_wait
 pass "CDS serves the cluster its own launch binds it to"
 
+log "Starting the mock Cloud and configuring the Pod CVM provider"
+# The operator mounts the provider's Secret from its first start, so the
+# Cloud it names and the Secret both exist before the install.
+cloud_start
+pod_cvm_secret
+# Every instance of the mock Cloud names a pod status endpoint in the
+# documentation range, where nothing answers. The node resets a connection to
+# it rather than leaving it to hang. The provider's attested request still
+# retries until its own timeout, so a reconcile of a pod with a running
+# instance takes tens of seconds here.
+node_exec iptables -I FORWARD -d 203.0.113.0/24 -p tcp -j REJECT --reject-with tcp-reset \
+    || fail "could not make the node refuse the mock Cloud's endpoint range"
+
 # --- Install ---
 
 log "c8s install"
@@ -359,6 +378,18 @@ NODE=$NODE
 NODE_IP=$NODE_IP
 WORKDIR=$WORKDIR
 EOF
+# The provider registers its node once the operator leads and renews the
+# node's heartbeat while the mock Cloud answers.
+kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=300s \
+    || fail "c8s-operator not Available"
+for _ in $(seq 1 120); do
+    [ "$(kubectl get node "$POD_CVM_NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && break
+    sleep 1
+done
+[ "$(kubectl get node "$POD_CVM_NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ] \
+    || fail "the Pod CVM provider's node $POD_CVM_NODE never became Ready"
+pass "Pod CVM provider registered its node against the mock Cloud"
+
 if [ "${C8S_IT_SETUP_ONLY:-}" = 1 ]; then
     echo "=== Stack installed; checks skipped (C8S_IT_SETUP_ONLY=1) ==="
     exit 0

@@ -21,7 +21,36 @@ import (
 // The same key labels and taints the provider's virtual node.
 const AnnotationPodCVM = "confidential.ai/pod-cvm"
 
-func handlePodCVM(req admission.Request, pod *corev1.Pod, decoder admission.Decoder, cfg Config, mutate bool) (admission.Response, bool) {
+// podCVMRouter is the half of Pod CVM admission the two webhooks answer
+// differently: the mutator adds the Pod's routing to the Pod CVM node and
+// answers with the patch, the validator requires the routing already there.
+type podCVMRouter interface {
+	admitRouting(req admission.Request, pod *corev1.Pod) admission.Response
+}
+
+type mutatingPodCVM struct{}
+
+type validatingPodCVM struct{}
+
+func (mutatingPodCVM) admitRouting(req admission.Request, pod *corev1.Pod) admission.Response {
+	if err := addPodCVMRouting(pod); err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+	raw, err := json.Marshal(pod)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	return admission.PatchResponseFromRaw(req.Object.Raw, raw)
+}
+
+func (validatingPodCVM) admitRouting(_ admission.Request, pod *corev1.Pod) admission.Response {
+	if err := requirePodCVMRouting(pod); err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+	return admission.Allowed("Pod CVM workload and scheduling are valid")
+}
+
+func handlePodCVM(req admission.Request, pod *corev1.Pod, decoder admission.Decoder, cfg Config, router podCVMRouter) (admission.Response, bool) {
 	old, opted, err := podCVMAdmission(req, pod, decoder)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err), true
@@ -38,17 +67,7 @@ func handlePodCVM(req admission.Request, pod *corev1.Pod, decoder admission.Deco
 	if old != nil && reflect.DeepEqual(old.Spec, pod.Spec) {
 		return admission.Allowed("Pod CVM workload unchanged"), true
 	}
-	if err := routePodCVM(pod, mutate); err != nil {
-		return admission.Errored(http.StatusBadRequest, err), true
-	}
-	if !mutate {
-		return admission.Allowed("Pod CVM workload and scheduling are valid"), true
-	}
-	raw, err := json.Marshal(pod)
-	if err != nil {
-		return admission.Errored(http.StatusInternalServerError, err), true
-	}
-	return admission.PatchResponseFromRaw(req.Object.Raw, raw), true
+	return router.admitRouting(req, pod), true
 }
 
 func podCVMAdmission(req admission.Request, pod *corev1.Pod, decoder admission.Decoder) (*corev1.Pod, bool, error) {
@@ -56,25 +75,25 @@ func podCVMAdmission(req admission.Request, pod *corev1.Pod, decoder admission.D
 	if err != nil {
 		return nil, false, err
 	}
-	var old *corev1.Pod
-	if req.Operation == admissionv1.Update {
-		if len(req.OldObject.Raw) == 0 {
-			if opted {
-				return nil, false, errors.New("pod CVM update requires the previous Pod")
-			}
-		} else {
-			old = &corev1.Pod{}
-			if err := decoder.DecodeRaw(req.OldObject, old); err != nil {
-				return nil, false, err
-			}
-			previous, err := podCVMOptedIn(old)
-			if err != nil {
-				return nil, false, err
-			}
-			if previous != opted {
-				return nil, false, errors.New("pod CVM execution mode is fixed when the Pod is created")
-			}
+	if req.Operation != admissionv1.Update {
+		return nil, opted, nil
+	}
+	if len(req.OldObject.Raw) == 0 {
+		if opted {
+			return nil, false, errors.New("pod CVM update requires the previous Pod")
 		}
+		return nil, opted, nil
+	}
+	old := &corev1.Pod{}
+	if err := decoder.DecodeRaw(req.OldObject, old); err != nil {
+		return nil, false, err
+	}
+	previous, err := podCVMOptedIn(old)
+	if err != nil {
+		return nil, false, err
+	}
+	if previous != opted {
+		return nil, false, errors.New("pod CVM execution mode is fixed when the Pod is created")
 	}
 	return old, opted, nil
 }
@@ -110,7 +129,7 @@ func validatePodCVMRequest(req admission.Request, old, pod *corev1.Pod, cfg Conf
 	if err := rejectNamespaceMismatch(pod, req.Namespace); err != nil {
 		return err
 	}
-	if err := validateWorkloadLabel(pod); err != nil {
+	if err := workloadclaims.ValidateWorkloadLabel(pod); err != nil {
 		return err
 	}
 	if hasInjectionDetailAnnotations(pod.Annotations) || pod.Annotations[AnnotationInjected] != "" {
@@ -185,33 +204,58 @@ func rejectPodCVMFieldRefChanges(old, pod *corev1.Pod) error {
 	return nil
 }
 
-func routePodCVM(pod *corev1.Pod, mutate bool) error {
+// podCVMToleration is the only toleration of the Pod CVM node a workload may
+// carry.
+func podCVMToleration() corev1.Toleration {
+	return corev1.Toleration{
+		Key:      AnnotationPodCVM,
+		Operator: corev1.TolerationOpEqual,
+		Value:    "true",
+		Effect:   corev1.TaintEffectNoSchedule,
+	}
+}
+
+// podCVMRouting reports which halves of the Pod CVM routing the Pod carries,
+// refusing a selector or a toleration that names the node on other terms.
+func podCVMRouting(pod *corev1.Pod) (hasSelector, hasToleration bool, err error) {
 	value, hasSelector := pod.Spec.NodeSelector[AnnotationPodCVM]
 	if hasSelector && value != "true" {
-		return errors.New("pod CVM node selector conflicts with the requested execution mode")
+		return false, false, errors.New("pod CVM node selector conflicts with the requested execution mode")
 	}
-	want := corev1.Toleration{Key: AnnotationPodCVM, Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule}
-	hasToleration := false
 	for _, toleration := range pod.Spec.Tolerations {
 		if toleration.Key != AnnotationPodCVM {
 			continue
 		}
-		if !reflect.DeepEqual(toleration, want) {
-			return errors.New("pod CVM requires its exact NoSchedule toleration")
+		if !reflect.DeepEqual(toleration, podCVMToleration()) {
+			return false, false, errors.New("pod CVM requires its exact NoSchedule toleration")
 		}
 		hasToleration = true
 	}
-	if !mutate && (!hasSelector || !hasToleration) {
-		return errors.New("pod CVM is missing its required node selector or toleration")
+	return hasSelector, hasToleration, nil
+}
+
+func addPodCVMRouting(pod *corev1.Pod) error {
+	_, hasToleration, err := podCVMRouting(pod)
+	if err != nil {
+		return err
 	}
-	if mutate {
-		if pod.Spec.NodeSelector == nil {
-			pod.Spec.NodeSelector = make(map[string]string)
-		}
-		pod.Spec.NodeSelector[AnnotationPodCVM] = "true"
-		if !hasToleration {
-			pod.Spec.Tolerations = append(pod.Spec.Tolerations, want)
-		}
+	if pod.Spec.NodeSelector == nil {
+		pod.Spec.NodeSelector = make(map[string]string)
+	}
+	pod.Spec.NodeSelector[AnnotationPodCVM] = "true"
+	if !hasToleration {
+		pod.Spec.Tolerations = append(pod.Spec.Tolerations, podCVMToleration())
+	}
+	return nil
+}
+
+func requirePodCVMRouting(pod *corev1.Pod) error {
+	hasSelector, hasToleration, err := podCVMRouting(pod)
+	if err != nil {
+		return err
+	}
+	if !hasSelector || !hasToleration {
+		return errors.New("pod CVM is missing its required node selector or toleration")
 	}
 	return nil
 }
