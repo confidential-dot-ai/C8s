@@ -575,13 +575,13 @@ func TestHandleMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := refvalues.Render(set)
+	nodes, err := newNodeSet(set)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := httptest.NewRecorder()
-	handleMeasurements(doc)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
+	handleMeasurements(nodes.document)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
@@ -593,12 +593,12 @@ func TestHandleMeasurements(t *testing.T) {
 		t.Errorf("served set = %+v, want the one pinned image", served)
 	}
 
-	empty, err := refvalues.Render(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
-	if err != nil {
+	// A replica set's nodes entry replaces the set served from the next request.
+	if err := nodes.set(refvalues.ReferenceValues{Family: teetypes.FamilySNP}); err != nil {
 		t.Fatal(err)
 	}
 	w = httptest.NewRecorder()
-	handleMeasurements(empty)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
+	handleMeasurements(nodes.document)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("empty set status = %d, want 200 (not a 404)", w.Code)
 	}

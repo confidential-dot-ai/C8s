@@ -92,6 +92,10 @@ func TestApply(t *testing.T) {
 		{"build binds no launch file", f.op, next(TypeAccepted, Accepted{Accepted: []Build{unbound}}), nil},
 		{"build twice", f.op, next(TypeAccepted, Accepted{Accepted: []Build{build, build}}), nil},
 		{"version not semver", f.op, next(TypeAccepted, Accepted{Accepted: []Build{{Measurements: build.Measurements, Version: "1.0"}}}), nil},
+		{"nodes bind no launch", f.op, next(TypeNodes, Nodes{Nodes: unbound.Measurements}), nil},
+		{"nodes name no image", f.op, next(TypeNodes, Nodes{Nodes: `{"schema_version":"2","tee":"sev-snp","measurements":[]}`}), nil},
+		{"nodes not a measurements document", f.op, next(TypeNodes, Nodes{Nodes: "{}"}), nil},
+		{"member writes nodes", f.member, next(TypeNodes, Nodes{Nodes: build.Measurements}), nil},
 		{"policy not canonical", f.op, next(TypePolicy, Policy{Allowlist: json.RawMessage(`{"workloads":{} }`)}), nil},
 		{"unknown type", f.op, next("raise-floor", Accepted{}), nil},
 		{"second genesis", f.op, next(TypeGenesis, Genesis{}), nil},
@@ -116,6 +120,10 @@ func TestApply(t *testing.T) {
 	raw := signRaw(t, f.op, []byte(`{"v":1,"cluster":"lane","seq":1,"prev":"`+f.state.Head.Hash.String()+`","type":"operator-keys","payload":{"keys":`+string(mustJSON(t, f.opPEM))+`}}`))
 	if _, err := f.state.Apply(raw); err != nil {
 		t.Fatalf("negative control (raw): %v", err)
+	}
+	e, _ = Sign(f.op, next(TypeNodes, Nodes{Nodes: build.Measurements}))
+	if s, err := f.state.Apply(e); err != nil || s.Nodes != build.Measurements {
+		t.Fatalf("a nodes entry binding its launch: %v", err)
 	}
 	e, _ = Sign(f.member, next(TypeMember, Member{Slot: 1, Key: stranger}))
 	if _, err := f.state.Apply(e); err != nil {

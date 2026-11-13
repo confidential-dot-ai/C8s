@@ -40,6 +40,8 @@ type writer struct {
 	url    string
 	client *http.Client
 	key    *ecdsa.PrivateKey
+	// chain is the chain the last verified read verified.
+	chain *verifiedChain
 }
 
 // writer writes with --operator-key through the replica of --url, or the
@@ -89,6 +91,7 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 		return nil, fmt.Errorf("the replica serves a chain without head %d, which was acknowledged before this read: the chain was rolled back, or the replica is behind", rec.Acknowledged.Seq)
 	}
 	w.o.cache(c)
+	w.chain = c
 	return state, nil
 }
 

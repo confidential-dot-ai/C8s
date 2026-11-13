@@ -55,10 +55,10 @@ type AttestHandler struct {
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Images are the node images permitted to obtain a signed leaf, each
-	// matched as one entry: its launch digest with the registers measured from
-	// the same build. Empty admits nobody.
-	Images []remote.ImagePin
+	// Images are the node images permitted to obtain a signed leaf, read per
+	// request, each matched as one entry: its launch digest with the
+	// registers measured from the same build. Empty admits nobody.
+	Images func() []remote.ImagePin
 
 	// PodImages grants only quote-bound Pod mesh issuance. It is never used
 	// for node callbacks, operator authorization, or node credential release.
@@ -385,10 +385,11 @@ func (h AttestHandler) leafTTL(matched *armtls.MatchedWorkload, router bool) tim
 // matchPinnedNodeImage holds the verified evidence to one pinned node image.
 // The platform and extension list the caller claims are judged against it.
 func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
-	if len(h.Images) == 0 {
+	images := h.Images()
+	if len(images) == 0 {
 		return errors.New("the configuration pins no node image")
 	}
-	return armtls.EnforceImages(verified, h.Images, claimedPlatform, claimedExtensions)
+	return armtls.EnforceImages(verified, images, claimedPlatform, claimedExtensions)
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,

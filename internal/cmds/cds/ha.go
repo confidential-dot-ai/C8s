@@ -50,7 +50,7 @@ type haConfig struct {
 
 // startHA builds this replica of the configured set over the CDS's mesh CA,
 // allowlist store and serving certificate, and starts its gossip.
-func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager) (*cdsha.Replica, error) {
+func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager, nodes *nodeSet, retireInventoryConns func()) (*cdsha.Replica, error) {
 	endpoints := cfg.measured.HA.Endpoints
 	self := cfg.ha.self
 	slot := slices.Index(endpoints, self)
@@ -67,6 +67,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		return nil, err
 	}
 	policy := chainPolicyServer(store, cfg.measured.Workloads)
+	servedNodes := ""
 	replica, err := cdsha.New(cdsha.Config{
 		Cluster: cfg.measured.ClusterID, Endpoints: endpoints, Self: slot,
 		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
@@ -84,6 +85,14 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		OnState: func(s *cdschain.State) {
 			if err := policy(s); err != nil {
 				slog.Error("CDS replica cannot serve the chain's allowlist", "version", s.PolicyVersion(), "error", err)
+			}
+			if s.Nodes != servedNodes {
+				if err := serveNodes(nodes, s.Nodes, cfg.measured.Nodes); err != nil {
+					slog.Error("CDS replica cannot certify the chain's node images; it keeps the set before", "error", err)
+				} else {
+					servedNodes = s.Nodes
+					retireInventoryConns()
+				}
 			}
 			if s.Routes != nil {
 				if err := store.ReplaceRoutes(routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token}, ""); err != nil && !errors.Is(err, allowlist.ErrRevisionNotGreater) {
@@ -164,6 +173,20 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 		return store.FloorNodesAtHead()
 	}
 	return nil
+}
+
+// serveNodes makes the chain's node images the set this CDS certifies; ""
+// is a chain without a nodes entry, which certifies the launch file's set.
+func serveNodes(nodes *nodeSet, measurements string, launch refvalues.ReferenceValues) error {
+	if measurements == "" {
+		return nodes.set(launch)
+	}
+	values, err := refvalues.Parse([]byte(measurements))
+	if err != nil {
+		return err
+	}
+	slog.Info("CDS certifies the chain's node images", "images", len(values.Images))
+	return nodes.set(values)
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.
