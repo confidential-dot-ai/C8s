@@ -145,6 +145,11 @@ func TestClockQuarantineSerializesEnqueueWithoutWaitingForApply(t *testing.T) {
 	if err := <-completed; err != nil {
 		t.Fatalf("admitted operation did not complete: %v", err)
 	}
+	// A read confirmation of the refresh worker appends a barrier of its own.
+	if !n.barriers.take(time.Now().Add(testTiming.Apply)) {
+		t.Fatal("a barrier of this leader was in flight for a whole read")
+	}
+	defer n.barriers.give()
 	before := n.raft.LastIndex()
 	for name, submit := range map[string]func() raft.Future{
 		"apply":     func() raft.Future { return n.raft.Apply(entry, testTiming.Apply) },
