@@ -199,6 +199,10 @@ cd c8s
 make install
 ```
 
+A release also carries the CLI as a binary for `linux-amd64` and
+`darwin-arm64`, with its SHA-256 in the signed release statement:
+[verify a CLI binary](docs/releases.md#verify-a-cli-binary).
+
 `c8s install` pins the component images to the digests of the `c8s-cloud`
 chart released at its own version, so build it from a release tag. A build of
 any other commit renders a chart directory and takes those digests from a
