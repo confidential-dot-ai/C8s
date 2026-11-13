@@ -406,6 +406,26 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 	}
 }
 
+// The injected sidecar only ever serves cds or webpki, so the annotation
+// refuses acme even though get-cert accepts it.
+func TestParseAnnotationsRefusesACMEDiscoveryPublicTLSMode(t *testing.T) {
+	_, err := parseAnnotations(&corev1.Pod{
+		Annotations: map[string]string{
+			AnnotationWorkload:               "api",
+			AnnotationDiscoveryVolume:        "discovery",
+			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
+			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryPublicTLSMode: "acme",
+		},
+	}, "")
+	if !errors.Is(err, errInvalidInjectionAnnotation) {
+		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
+	}
+	if !strings.Contains(err.Error(), `must be "cds" or "webpki", got "acme"`) {
+		t.Fatalf("error = %q, want it to name the two accepted modes", err)
+	}
+}
+
 func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{

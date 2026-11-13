@@ -32,8 +32,8 @@ protect tenant data within the TEE and authenticate data crossing its boundary.
    Report validation, remaining gaps and the PR URL.
 
 Keep comments that state non-obvious contracts or invariants. Remove comments
-that restate names. Write multi-parameter Go function definitions with one
-parameter per line, then run `gofmt`.
+that restate names. Keep a Go function signature on one line unless it has more
+than five parameters, then run `gofmt`.
 
 ## GitHub and handoff
 

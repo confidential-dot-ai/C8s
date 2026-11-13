@@ -103,7 +103,6 @@ func TestProducersWithoutJournalFires(t *testing.T) {
 	}{
 		{name: "self-signing server", literal: "armtls.ServerConfig{AttestFunc: f}", want: true},
 		{name: "self-signing client", literal: "&armtls.ClientConfig{Platform: p, AttestFunc: f}", want: true},
-		{name: "CDS client", literal: "cdsclient.Config{CDSURL: u}", want: true},
 		{name: "digests client", literal: "workloadclaims.DigestsClientConfig{AttestFunc: f}", want: true},
 		{name: "wired server", literal: "armtls.ServerConfig{AttestFunc: f, MeasuredPoliciesFile: j}"},
 		{name: "verify-only client", literal: "armtls.ClientConfig{Policy: p}"},
@@ -123,7 +122,7 @@ func TestProducersWithoutJournalFires(t *testing.T) {
 
 // producersWithoutJournal lists the producer config literals under root that
 // leave out MeasuredPoliciesFile: armTLS configs that self-sign (they key
-// AttestFunc), and the CDS and sandbox-digests clients, which always attest.
+// AttestFunc), and the sandbox-digests client, which always attests.
 // It reads keyed composite literals only: a field assigned after the literal
 // is not seen, either way.
 func producersWithoutJournal(t *testing.T, root string) []string {
@@ -148,7 +147,7 @@ func producersWithoutJournal(t *testing.T, root string) []string {
 			switch typ {
 			case "armtls.ServerConfig", "armtls.ClientConfig", "ServerConfig", "ClientConfig":
 				producer = keys["AttestFunc"]
-			case "cdsclient.Config", "workloadclaims.DigestsClientConfig":
+			case "workloadclaims.DigestsClientConfig":
 				producer = true
 			}
 			if producer && !keys["MeasuredPoliciesFile"] {

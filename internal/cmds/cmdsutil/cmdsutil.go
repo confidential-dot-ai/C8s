@@ -13,18 +13,31 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
+// SignalContext is the context a binary runs its command under. The first
+// SIGINT or SIGTERM cancels it; any later one ends the process.
+func SignalContext() (context.Context, context.CancelFunc) {
+	ctx, stopListening := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	context.AfterFunc(ctx, stopListening)
+	return ctx, stopListening
+}
+
 // RunMain is the body of the per-binary thin shim under cmd/<name>/main.go.
-// It calls run with os.Args[1:], prints any error to stderr, and exits with
-// ExitStatus. Each shim collapses to: cmdsutil.RunMain(pkg.Run).
-func RunMain(run func([]string) error) {
-	if err := run(os.Args[1:]); err != nil {
+// It calls run with the SignalContext and os.Args[1:], prints any error to
+// stderr, and exits with ExitStatus. Each shim collapses to:
+// cmdsutil.RunMain(pkg.Run).
+func RunMain(run func(context.Context, []string) error) {
+	ctx, stop := SignalContext()
+	defer stop()
+	if err := run(ctx, os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -136,7 +149,7 @@ func urlHost(ip string) (string, error) {
 }
 
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs
-// (fileutil.RequireRAMBacked). The flagName is interpolated into the error so
+// (fileutil.RequireRAMBackedRoot). The flagName is interpolated into the error so
 // callers needn't wrap. Shared by get-secret (--out-dir) and get-cert
 // (--key-out): each secret-writing sidecar gets the same refusal shape.
 func RequireRAMBackedDir(flagName, dir string) error {
@@ -208,10 +221,28 @@ func ServeInBackground(ctx context.Context, addr string, handler http.Handler, l
 }
 
 // Confirm writes prompt to out and reports whether the line read from in is
-// "y" or "yes", in any case.
-func Confirm(in io.Reader, out io.Writer, prompt string) bool {
+// "y" or "yes", in any case. A ctx that ends first is a no.
+func Confirm(ctx context.Context, in io.Reader, out io.Writer, prompt string) bool {
 	fmt.Fprintf(out, "%s [y/N] ", prompt)
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	return line == "y" || line == "yes"
+	select {
+	case <-ctx.Done():
+		return false
+	case line := <-readLine(in):
+		return isYes(line)
+	}
+}
+
+// readLine delivers the next line read from in, once it is typed.
+func readLine(in io.Reader) <-chan string {
+	line := make(chan string, 1)
+	go func() {
+		text, _ := bufio.NewReader(in).ReadString('\n')
+		line <- text
+	}()
+	return line
+}
+
+func isYes(answer string) bool {
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
 }

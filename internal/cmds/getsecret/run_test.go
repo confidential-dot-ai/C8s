@@ -12,11 +12,20 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
+func ramBacked(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return fileutil.RequireRAMBackedRoot(root)
+}
+
 // TestPrepareOutDir: the "must be memory-backed" invariant on --out-dir is
 // enforced, not merely documented.
 func TestPrepareOutDir(t *testing.T) {
 	dir := t.TempDir()
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		t.Skipf("%s is RAM-backed; no on-disk path to reject", dir)
 	}
 	out := filepath.Join(dir, "secrets")
@@ -284,7 +293,7 @@ func TestWriteAllStaysInVerifiedOutDirAfterPathReplacement(t *testing.T) {
 		t.Skipf("cannot create a temporary directory in /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	if err := fileutil.RequireRAMBacked(base); err != nil {
+	if err := ramBacked(base); err != nil {
 		t.Skipf("/dev/shm is not usable tmpfs: %v", err)
 	}
 
@@ -331,7 +340,7 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}
 }

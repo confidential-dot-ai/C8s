@@ -44,18 +44,6 @@ func GenerateKey() ([]byte, error) {
 	return key, nil
 }
 
-// Encrypt writes the ciphertext of src to dst, one sector at a time, with each
-// sector's index as its XTS tweak. This is byte-for-byte what dm-crypt
-// aes-xts-plain64 with a 512-bit key produces for the same input, which is what
-// lets the image be built without root, a loop device, or cryptsetup.
-//
-// src must be sector-aligned. Padding it here would change the bytes dm-verity
-// was formatted over, so an unaligned payload is refused rather than fixed.
-// Builds use EncryptAt, the parallel form.
-func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
-	return transform(dst, src, key, false)
-}
-
 // chunkSize is the unit EncryptAt hands to a worker and writes in one call: a
 // whole number of sectors and of 4 KiB pages, large enough to amortize syscalls.
 const chunkSize = 1 << 20
@@ -64,11 +52,18 @@ const chunkSize = 1 << 20
 // single reader and the writes to one file limit throughput, not the cipher.
 const maxDefaultJobs = 16
 
-// EncryptAt is Encrypt spread over jobs goroutines, with the same output byte
-// for byte. XTS sectors are independent, so each chunk is encrypted with its own
-// starting sector as the tweak base and written at its own offset; order does not
-// matter. jobs < 1 means min(GOMAXPROCS, maxDefaultJobs). Memory is jobs+1
-// chunks. Cancelling ctx stops the encryption.
+// EncryptAt writes the ciphertext of src to dst, one sector at a time with each
+// sector's index as its XTS tweak. This is byte-for-byte what dm-crypt
+// aes-xts-plain64 with a 512-bit key produces for the same input, which is what
+// lets the image be built without root, a loop device, or cryptsetup.
+//
+// src must be sector-aligned. Padding it here would change the bytes dm-verity
+// was formatted over, so an unaligned payload is refused rather than fixed.
+//
+// Sectors are independent, so the work spreads over jobs goroutines: each chunk
+// is encrypted with its own starting sector as the tweak base and written at its
+// own offset; order does not matter. jobs < 1 means min(GOMAXPROCS,
+// maxDefaultJobs). Memory is jobs+1 chunks. Cancelling ctx stops the encryption.
 func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
 	if len(key) != KeyBytes {
 		return fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
@@ -144,42 +139,4 @@ func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, 
 		return readErr
 	}
 	return ctx.Err()
-}
-
-// Decrypt is Encrypt's inverse, and exists so a build can prove its own output
-// round-trips before the plaintext is discarded.
-func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
-	return transform(dst, src, key, true)
-}
-
-func transform(dst io.Writer, src io.Reader, key []byte, decrypt bool) error {
-	if len(key) != KeyBytes {
-		return fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
-	}
-	cipher, err := xts.NewCipher(aes.NewCipher, key)
-	if err != nil {
-		return fmt.Errorf("volume: init xts: %w", err)
-	}
-
-	in := make([]byte, SectorSize)
-	out := make([]byte, SectorSize)
-	for sector := uint64(0); ; sector++ {
-		n, err := io.ReadFull(src, in)
-		switch {
-		case errors.Is(err, io.EOF):
-			return nil
-		case errors.Is(err, io.ErrUnexpectedEOF):
-			return fmt.Errorf("%w: trailing %d bytes", ErrUnaligned, n)
-		case err != nil:
-			return fmt.Errorf("volume: read sector %d: %w", sector, err)
-		}
-		if decrypt {
-			cipher.Decrypt(out, in, sector)
-		} else {
-			cipher.Encrypt(out, in, sector)
-		}
-		if _, err := dst.Write(out); err != nil {
-			return fmt.Errorf("volume: write sector %d: %w", sector, err)
-		}
-	}
 }

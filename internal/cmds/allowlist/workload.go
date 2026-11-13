@@ -168,7 +168,7 @@ func newEditCmd(o *options) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "~ %s\n", name)
 			printEntryDiff(cmd.OutOrStdout(), diffEntry(orig, *edited))
 
-			if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), fmt.Sprintf("apply changes to %q?", name)) {
+			if !cmdsutil.Confirm(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr(), fmt.Sprintf("apply changes to %q?", name)) {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 				return nil
 			}

@@ -28,6 +28,10 @@ env:
   # verifier that pins the main identity never accepts a beta.
   RELEASE_BETA_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta
   RELEASE_SIGNER_ISSUER: https://token.actions.githubusercontent.com
+  # A release asset moves more bytes than an API call does.
+  RELEASE_ASSET_TIMEOUT: 10m
+  # Platforms whose CLI binary is a release asset, each as <os>-<arch>.
+  RELEASE_CLI_PLATFORMS: linux-amd64 darwin-arm64
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
   RELEASE_WAIT_INTERVAL: 15s
@@ -277,6 +281,47 @@ jobs:
           test -s "$SARIF_REPORT"
           cat "$SARIF_REPORT"
 
+  # The CLI binaries the release carries as assets. The sign job lists their
+  # digests in the statement. The build is reproducible, so a retry gives the
+  # bytes the first run published; see docs/releases.md.
+  cli:
+    name: Build release CLI
+    needs: calculate
+    if: needs.calculate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # calculate requires target-sha to equal github.sha. Naming github.sha
+      # tells code scanning this unprivileged job builds the pushed commit.
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - name: Build release CLI
+        env:
+          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2086 # one argument per platform
+          .github/scripts/release-cli.sh "$RELEASE_TAG" dist $RELEASE_CLI_PLATFORMS
+          (cd dist && sha256sum c8s-*)
+          test "$(dist/c8s-linux-amd64 --version)" = "c8s version $RELEASE_TAG"
+
+      - name: Upload release CLI
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c8s-release-cli-${{ inputs.target-sha }}
+          path: dist/c8s-*
+          if-no-files-found: error
+          retention-days: 1
+
   chart:
     name: Build release chart
     needs: [calculate, images]
@@ -293,7 +338,7 @@ jobs:
           ref: ${{ inputs.target-sha }}
 
       - name: Setup Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.14.4
 
@@ -374,8 +419,8 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [calculate, images, chart]
-    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success'
+    needs: [calculate, images, chart, cli]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success' && needs.cli.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -407,7 +452,7 @@ jobs:
           version: ${{ env.ORAS_VERSION }}
 
       - name: Setup Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.14.4
 
@@ -661,16 +706,17 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-  # A keyless Sigstore signature over {repository, tag, commit, chart} lets
-  # downstream automation trust a tag, and the chart manifest it names, without
-  # trusting everyone who can push tags. Only
-  # this job holds an OIDC token. It neither checks out nor runs repository
-  # source.
+  # A keyless Sigstore signature over {repository, tag, commit, chart, cli}
+  # lets downstream automation trust a tag, the chart manifest it names and
+  # the CLI binaries it lists by sha256, without trusting everyone who can
+  # push tags. Only this job holds an OIDC token. It neither checks out nor
+  # runs repository source: it hashes and uploads the binaries the cli job
+  # built.
   sign:
     name: Sign release tag
-    needs: [calculate, publish]
+    needs: [calculate, publish, cli]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
@@ -704,6 +750,12 @@ jobs:
           chmod +x "$binary"
           "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
           echo "COSIGN_BIN=$binary" >> "$GITHUB_ENV"
+
+      - name: Download release CLI
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c8s-release-cli-${{ inputs.target-sha }}
+          path: cli
 
       # The statement names the commit that the published tag object points
       # at, read back from GitHub rather than taken from the caller. In a
@@ -752,20 +804,38 @@ jobs:
           test "$target_sha" = "$TARGET_SHA"
           [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
+          # The artifact must hold exactly one regular file per platform.
+          cli='{}'
+          count=0
+          for platform in $RELEASE_CLI_PLATFORMS; do
+            asset="c8s-$platform"
+            test -f "cli/$asset"
+            test ! -L "cli/$asset"
+            sha="$(sha256sum < "cli/$asset")"
+            cli="$(jq -c --arg p "$platform" --arg a "$asset" --arg s "${sha%% *}" \
+              '.[$p] = {asset: $a, sha256: $s}' <<< "$cli")"
+            count=$((count + 1))
+          done
+          test "$count" -gt 0
+          test "$(find cli -mindepth 1 | wc -l)" -eq "$count"
+
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
             --arg chart "$CHART_IMAGE@$CHART_DIGEST" \
-            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart}' \
+            --argjson cli "$cli" \
+            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart, cli: $cli}' \
             > "$STATEMENT"
           cat "$STATEMENT"
 
-      # A retry verifies existing assets instead of replacing them. The
-      # release is marked Latest only when this tag is the newest stable
-      # release, so a repair run for an older tag cannot take Latest back.
-      # A beta is always a GitHub prerelease and never Latest.
-      - name: Sign and publish or verify release statement
+      # A retry verifies existing assets instead of replacing them: a published
+      # binary must equal the rebuilt one, and a published statement must equal
+      # the one written above, which lists the rebuilt digests. The release is
+      # marked Latest only when this tag is the newest stable release, so a
+      # repair run for an older tag cannot take Latest back. A beta is always a
+      # GitHub prerelease and never Latest.
+      - name: Sign and publish or verify release statement and CLI
         run: |
           set -euo pipefail
 
@@ -780,6 +850,7 @@ jobs:
             timeout --kill-after=5s "$GH_API_TIMEOUT" \
               gh release "$@" --repo "$GITHUB_REPOSITORY"
           }
+          gh_release_asset() { GH_API_TIMEOUT="$RELEASE_ASSET_TIMEOUT" gh_release "$@"; }
           verify() {
             "$COSIGN_BIN" verify-blob \
               --bundle "$BUNDLE" \
@@ -787,44 +858,64 @@ jobs:
               --certificate-oidc-issuer "$RELEASE_SIGNER_ISSUER" \
               "$STATEMENT"
           }
+          has_asset() { grep -Fxq -- "$1" <<< "$assets"; }
 
-          if assets="$(gh_release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"; then
+          # view also finds a draft, which a create that was stopped before it
+          # published leaves behind.
+          release_exists=false
+          draft=false
+          assets=""
+          if release="$(gh_release view "$RELEASE_TAG" --json assets,isDraft)"; then
             release_exists=true
-          else
-            release_exists=false
+            draft="$(jq -r .isDraft <<< "$release")"
+            assets="$(jq -r '.assets[].name' <<< "$release")"
           fi
 
-          statement_published=false
-          bundle_published=false
-          if grep -Fxq -- "$STATEMENT" <<< "$assets"; then statement_published=true; fi
-          if grep -Fxq -- "$BUNDLE" <<< "$assets"; then bundle_published=true; fi
+          mkdir published
+          missing=()
+          for platform in $RELEASE_CLI_PLATFORMS; do
+            asset="c8s-$platform"
+            if has_asset "$asset"; then
+              gh_release_asset download "$RELEASE_TAG" --dir published --pattern "$asset"
+              cmp "cli/$asset" "published/$asset"
+            else
+              missing+=("cli/$asset")
+            fi
+          done
 
-          if [ "$statement_published" = true ] && [ "$bundle_published" = true ]; then
-            mkdir published
+          if has_asset "$STATEMENT" && has_asset "$BUNDLE"; then
             gh_release download "$RELEASE_TAG" --dir published \
               --pattern "$STATEMENT" --pattern "$BUNDLE"
             cmp "$STATEMENT" "published/$STATEMENT"
             cp "published/$BUNDLE" "$BUNDLE"
             verify
             echo "existing release statement for $RELEASE_TAG verified"
-            exit 0
-          fi
-          if [ "$statement_published" = true ] || [ "$bundle_published" = true ]; then
+          elif has_asset "$STATEMENT" || has_asset "$BUNDLE"; then
             echo "::error::release $RELEASE_TAG carries a statement without its bundle or the reverse; delete that asset and rerun"
             exit 1
+          else
+            "$COSIGN_BIN" sign-blob --yes --bundle "$BUNDLE" "$STATEMENT"
+            verify
+            missing+=("$STATEMENT" "$BUNDLE")
           fi
 
-          "$COSIGN_BIN" sign-blob --yes --bundle "$BUNDLE" "$STATEMENT"
-          verify
-
-          if [ "$release_exists" = true ]; then
-            gh_release upload "$RELEASE_TAG" "$STATEMENT" "$BUNDLE"
-          else
-            gh_release create "$RELEASE_TAG" \
+          if [ "$release_exists" = false ]; then
+            # gh publishes the release only after every asset is uploaded.
+            gh_release_asset create "$RELEASE_TAG" \
               --verify-tag \
               --latest="$UPDATE_LATEST" \
               --prerelease="$prerelease" \
               --title "$RELEASE_TAG" \
-              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT." \
-              "$STATEMENT" "$BUNDLE"
+              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT and the c8s binaries it lists." \
+              "${missing[@]}"
+            exit 0
+          fi
+          # One asset at a time, binaries first, so a visible statement never
+          # names a binary the release lacks.
+          for asset in "${missing[@]}"; do
+            gh_release_asset upload "$RELEASE_TAG" "$asset"
+          done
+          if [ "$draft" = true ]; then
+            gh_release edit "$RELEASE_TAG" --draft=false \
+              --latest="$UPDATE_LATEST" --prerelease="$prerelease"
           fi

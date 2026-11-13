@@ -262,18 +262,18 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		PodSandboxId: "sandbox",
 		Annotations:  proxy.Annotations,
 	}
-	if adjust, err := p.credentialMounts(context.Background(), pod, app); adjust != nil || err != nil {
+	if adjust, err := p.cvm().containerMounts(context.Background(), pod, app); adjust != nil || err != nil {
 		t.Errorf("a container outside the credentials identity got (%+v, %v), want nothing", adjust.GetMounts(), err)
 	}
 	app.User = &api.User{Uid: workloadclaims.CredentialsUID}
 	app.Args = []string{"/c8s", "operator"}
-	if _, err := p.credentialMounts(context.Background(), pod, app); err == nil {
+	if _, err := p.cvm().containerMounts(context.Background(), pod, app); err == nil {
 		t.Error("a container took the credentials identity without the role, so it would reach CDS unpinned")
 	}
 
 	// A nil User is uid 0, not the reserved identity.
 	proxy.User = nil
-	if adjust, err := p.credentialMounts(context.Background(), pod, proxy); adjust != nil || err != nil {
+	if adjust, err := p.cvm().containerMounts(context.Background(), pod, proxy); adjust != nil || err != nil {
 		t.Errorf("a container declaring no user got (%+v, %v), want nothing", adjust.GetMounts(), err)
 	}
 }
@@ -385,7 +385,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 // the cases where it must not be a refusal.
 func mustCredentialMounts(t *testing.T, p *plugin, pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
 	t.Helper()
-	adjustment, err := p.credentialMounts(context.Background(), pod, ctr)
+	adjustment, err := p.cvm().containerMounts(context.Background(), pod, ctr)
 	if err != nil {
 		t.Fatalf("container %q refused: %v", ctr.GetName(), err)
 	}

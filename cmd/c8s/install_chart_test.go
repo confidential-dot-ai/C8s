@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -86,12 +87,15 @@ func TestReleaseImagePinsReadOnlyRepositoryAndDigest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertArgsEqual(t, got, []string{
-				"--set-string", "image.repository=ghcr.io/x/op",
-				"--set-string", "image.digest=" + testDigest,
-				"--set-string", "volumed.image.repository=ghcr.io/x/volumed",
-				"--set-string", "volumed.image.digest=" + testDigest,
-			})
+			want := map[string]any{
+				"image": map[string]any{"repository": "ghcr.io/x/op", "digest": testDigest},
+				"volumed": map[string]any{
+					"image": map[string]any{"repository": "ghcr.io/x/volumed", "digest": testDigest},
+				},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("releaseImagePins = %#v, want %#v", got, want)
+			}
 		})
 	}
 }

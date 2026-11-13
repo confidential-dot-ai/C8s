@@ -47,7 +47,7 @@ func TestNodeImageRender(t *testing.T) {
 			out := t.TempDir()
 			cmd := newNodeImageCmd()
 			cmd.SetArgs([]string{
-				"render", "--hardware-platform", platform, "--kube-version", "v1.36.4",
+				"render", "--hardware-platform", platform, "--kube-version", "v1.36.6",
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
 				"--output-dir", out,

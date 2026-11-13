@@ -22,10 +22,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -129,7 +127,7 @@ consumers that read that volume.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setupLogging(cfg.Verbose)
 			applyCDSWatchDefault(&cfg, cmd.Flags())
-			return run(cfg)
+			return run(cmd.Context(), cfg)
 		},
 		SilenceUsage: true,
 	}
@@ -164,9 +162,7 @@ consumers that read that volume.`,
 
 	flags.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", workloadclaims.MeasuredPoliciesJournal, "The node's journal of allowlist policies extended into TDX RTMR[3], as mounted into this sidecar; a TDX CSR and attest request list it. Empty lists none")
 
-	for _, name := range []string{"attestation-api-url", "cert-path", "key-path", "ca-path"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "attestation-api-url", "cert-path", "key-path", "ca-path")
 	cmd.MarkFlagsOneRequired("san", "san-file", "no-san")
 	cmd.MarkFlagsMutuallyExclusive("san", "san-file", "no-san")
 
@@ -220,22 +216,17 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 }
 
 func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
 		})
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return pins, nil
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
 var obtainCertFn = obtainCert
 
-func run(cfg config) error {
+func run(ctx context.Context, cfg config) error {
 	san, err := resolveSAN(cfg)
 	if err != nil {
 		return err
@@ -247,13 +238,11 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
-	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(address)
-	}
+	cfg.CDSURL = cdsURL
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
 	}
@@ -284,8 +273,6 @@ func run(cfg config) error {
 	}
 	slog.Debug("credential volume validated")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
 	client, policyClient, err := newCDSClient(ctx, cfg)
@@ -560,7 +547,7 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.DiscoveryOutPath != "" {
 		switch discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) {
-		case "cds", "webpki", "acme":
+		case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 		default:
 			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
@@ -847,7 +834,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	}
 	names := strings.Fields(string(data))
 	if len(names) == 0 {
-		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != "cds" {
+		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeCDS {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: public TLS mode requires a hostname")
 		}
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
@@ -858,7 +845,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
 		}
 	}
-	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == "cds" {
+	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeCDS {
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
 	} else {
 		cfg.DiscoveryPublicTLSHostname = names[0]
@@ -866,9 +853,9 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	return nil
 }
 
-func discoveryPublicTLSMode(mode string) string {
+func discoveryPublicTLSMode(mode string) types.FrontDoorMode {
 	if mode == "" {
-		return "cds"
+		return types.FrontDoorModeCDS
 	}
-	return mode
+	return types.FrontDoorMode(mode)
 }

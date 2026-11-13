@@ -125,12 +125,7 @@ func decodePodRequest(body io.Reader) (secretbroker.PodRequest, error) {
 	if err != nil {
 		return req, err
 	}
-	if err := strictjson.Validate(raw); err != nil {
-		return req, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := strictjson.Unmarshal(raw, &req); err != nil {
 		return req, err
 	}
 	return req, secretbroker.ValidSecretName(req.Secret)

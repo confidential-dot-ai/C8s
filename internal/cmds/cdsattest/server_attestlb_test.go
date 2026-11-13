@@ -198,6 +198,11 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 	meshGarbageChain := func(t *testing.T, identity testMeshIdentity) string {
 		return appendTestPEMBlock(t, identity.certFile, []byte("not a certificate"))
 	}
+	keyOnlyLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path := filepath.Join(t.TempDir(), "key-only.pem")
+		writeTestPEM(t, path, "EC PRIVATE KEY", []byte("x"))
+		return path
+	}
 	// Same subject and key as the mesh leaf, but expired and self-signed.
 	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
 		tmpl := *identity.leaf
@@ -230,6 +235,7 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 			return otherLeaf(t, identity)
 		}},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
+		{name: "acme leaf file holds no certificate", mode: types.FrontDoorModeACME, serving: keyOnlyLeaf, wantErr: types.ErrorCodeBindingUnavailable},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme expired chain", mode: types.FrontDoorModeACME, serving: expiredChain, wantErr: types.ErrorCodeServingLeafRejected},
 		{name: "acme not-yet-valid leaf", mode: types.FrontDoorModeACME, serving: futureLeaf, wantErr: types.ErrorCodeServingLeafRejected},

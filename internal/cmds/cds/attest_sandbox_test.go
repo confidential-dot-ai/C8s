@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -99,7 +99,7 @@ func newSandboxTestEnv(t *testing.T, stubURL string) (AttestHandler, *workloadcl
 // (CDS re-checks the token nonce against the challenge it consumes).
 func signedSandboxToken(t *testing.T, signer *workloadclaims.SandboxTokenSigner, csrPEM, challenge, sandboxID string) json.RawMessage {
 	t.Helper()
-	csr, err := attestation.ParseAndVerifyCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +239,79 @@ func TestAttest_SandboxToken_RejectsHostOutsideNodeCIDRs(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+}
+
+// A refused sandbox token tells the caller nothing about the inventory it
+// names: whether CDS dialled it, reached it or got a key from it, the answer is
+// the same and the detail stays in the log.
+func TestAttest_SandboxToken_RefusalWithholdsInventoryDetail(t *testing.T) {
+	insideNodeRanges, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideNodeRanges, err := workloadclaims.ParseInventoryHosts([]string{"192.168.99.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := workloadclaims.NewSandboxTokenSigner(testInventoryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostor, err := workloadclaims.NewSandboxTokenSigner(testInventoryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answering := fakeDigests{key: inventory.PublicKey()}
+	unreachable := fakeDigests{}
+
+	var answers []string
+	for _, tc := range []struct {
+		name       string
+		nodeRanges workloadclaims.CIDRHosts
+		inventory  sandboxDigestSource
+	}{
+		{
+			name:       "host outside the node address ranges",
+			nodeRanges: outsideNodeRanges,
+			inventory:  answering,
+		},
+		{
+			name:       "inventory unreachable",
+			nodeRanges: insideNodeRanges,
+			inventory:  unreachable,
+		},
+		{
+			name:       "inventory answers with its own key",
+			nodeRanges: insideNodeRanges,
+			inventory:  answering,
+		},
+	} {
+		stub := newStubAttestationApi(t, testLaunchDigest)
+		h, _ := newSandboxTestEnv(t, stub.URL())
+		h.InventoryHosts = tc.nodeRanges
+		h.SandboxDigests = tc.inventory
+		csrPEM := sandboxCSR(t)
+		challenge := issueChallenge(t, h)
+
+		logs := captureSlog(t)
+		w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, impostor, csrPEM, challenge, testSandboxID))
+		wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+		detail, _ := logRecord(t, logs, "sandbox token rejected")["error"].(string)
+		if detail == "" {
+			t.Fatalf("%s: the log does not record why the token was rejected", tc.name)
+		}
+		for _, withheld := range []string{detail, testInventoryHost} {
+			if strings.Contains(w.Body.String(), withheld) {
+				t.Fatalf("%s: refusal %s carries %q", tc.name, w.Body.String(), withheld)
+			}
+		}
+		answers = append(answers, w.Body.String())
+	}
+	for _, answer := range answers[1:] {
+		if answer != answers[0] {
+			t.Fatalf("refusals differ by what CDS saw of the inventory: %q", answers)
+		}
+	}
 }
 
 // With no CIDRs configured CDS has no boundary to apply, so it refuses tokens

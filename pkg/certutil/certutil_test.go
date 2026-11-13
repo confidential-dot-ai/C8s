@@ -1,6 +1,7 @@
 package certutil
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -42,6 +43,17 @@ func selfSigned(t *testing.T, cn string, notAfter time.Time) (*x509.Certificate,
 		t.Fatalf("parse cert: %v", err)
 	}
 	return cert, der
+}
+
+func ecdsaCSRPEM(t *testing.T) []byte {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "test"},
+	}, newKey(t))
+	if err != nil {
+		t.Fatalf("create CSR: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
 func TestGenerateSerialWithinBound(t *testing.T) {
@@ -213,15 +225,59 @@ func TestParseCertificatePEMAndLoad(t *testing.T) {
 	if _, err := ParseCertificatePEM([]byte("not pem")); err == nil {
 		t.Fatal("expected error for non-PEM")
 	}
+}
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
-	os.WriteFile(path, pemBytes, 0o644)
-	if _, err := LoadCertificateFile(path); err != nil {
-		t.Fatalf("LoadCertificateFile: %v", err)
+func TestParseAndVerifyCSRValid(t *testing.T) {
+	csr, err := ParseCSRPEM(ecdsaCSRPEM(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := LoadCertificateFile(filepath.Join(dir, "nope.pem")); err == nil {
-		t.Fatal("expected error for missing file")
+	if csr == nil {
+		t.Fatal("expected non-nil CSR")
+	}
+	if csr.Subject.CommonName != "test" {
+		t.Fatalf("CN = %q, want test", csr.Subject.CommonName)
+	}
+}
+
+func TestParseAndVerifyCSRNotPEM(t *testing.T) {
+	if _, err := ParseCSRPEM([]byte("not a pem block")); err == nil {
+		t.Fatal("expected error for non-PEM input")
+	}
+}
+
+func TestParseAndVerifyCSRWrongPEMType(t *testing.T) {
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("xx")})
+	if _, err := ParseCSRPEM(block); err == nil {
+		t.Fatal("expected error for wrong PEM type")
+	}
+}
+
+func TestParseAndVerifyCSRMalformedBody(t *testing.T) {
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("garbage")})
+	if _, err := ParseCSRPEM(block); err == nil {
+		t.Fatal("expected error for malformed CSR body")
+	}
+}
+
+func TestParseAndVerifyCSRBadSignature(t *testing.T) {
+	// Take a valid CSR and tamper with the signed CertificationRequestInfo
+	// (TBS) region so the self-signature no longer verifies. ParseCertificate-
+	// Request still succeeds structurally, but CheckSignature fails.
+	block, _ := pem.Decode(ecdsaCSRPEM(t))
+	raw := make([]byte, len(block.Bytes))
+	copy(raw, block.Bytes)
+
+	// Mutate a byte well inside the TBS portion (the subject/key region near the
+	// front) rather than the trailing signature, so ParseCertificateRequest
+	// still accepts the structure but the signature check fails.
+	raw[40] ^= 0xff
+	corrupted := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
+
+	// Either parsing fails outright or the signature check fails; both are
+	// error returns from ParseCSRPEM, which is what we assert.
+	if _, err := ParseCSRPEM(corrupted); err == nil {
+		t.Fatal("expected error for corrupted CSR")
 	}
 }
 
@@ -257,44 +313,23 @@ func TestParsePEMCertificates(t *testing.T) {
 		t.Fatal("expected error for no CERTIFICATE blocks")
 	}
 
+	t.Run("leading non-certificate block", func(t *testing.T) {
+		keyFirst := append(other, EncodeCertPEM(der1)...)
+		certs, err := ParsePEMCertificates(keyFirst)
+		if err != nil {
+			t.Fatalf("ParsePEMCertificates: %v", err)
+		}
+		if len(certs) != 1 || !bytes.Equal(certs[0].Raw, der1) {
+			t.Fatalf("got %d certs, want the one behind the PRIVATE KEY block", len(certs))
+		}
+	})
+
 	t.Run("bad cert bytes", func(t *testing.T) {
 		bad := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})
 		if _, err := ParsePEMCertificates(bad); err == nil {
 			t.Fatal("expected parse error")
 		}
 	})
-}
-
-func TestTrimExpiredCABundle(t *testing.T) {
-	now := time.Now()
-	fresh, _ := selfSigned(t, "fresh", now.Add(time.Hour))
-	stale, _ := selfSigned(t, "stale", now.Add(-time.Hour))
-
-	kept, dropped := TrimExpiredCABundle([]*x509.Certificate{fresh, stale}, now)
-	if len(kept) != 1 || kept[0].Subject.CommonName != "fresh" {
-		t.Errorf("kept = %v, want [fresh]", kept)
-	}
-	if len(dropped) != 1 || dropped[0].Subject.CommonName != "stale" {
-		t.Errorf("dropped = %v, want [stale]", dropped)
-	}
-}
-
-func TestLoadPEMCertificatesFile(t *testing.T) {
-	_, der := selfSigned(t, "x", time.Now().Add(time.Hour))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bundle.pem")
-	os.WriteFile(path, EncodeCertPEM(der), 0o644)
-
-	certs, err := LoadPEMCertificatesFile(path)
-	if err != nil {
-		t.Fatalf("LoadPEMCertificatesFile: %v", err)
-	}
-	if len(certs) != 1 {
-		t.Errorf("got %d certs, want 1", len(certs))
-	}
-	if _, err := LoadPEMCertificatesFile(filepath.Join(dir, "missing")); err == nil {
-		t.Fatal("expected error for missing file")
-	}
 }
 
 func TestNewCATemplate(t *testing.T) {

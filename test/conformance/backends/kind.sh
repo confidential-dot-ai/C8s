@@ -35,6 +35,27 @@ teardown_backend() {
 
 scratch_encrypted() { echo no; }
 
+# The Pod CVM provider the harness configures (lib.sh, pod_cvm_secret) and the
+# mock Cloud it launches into. The allocation identity and the instance labels
+# are the provider's derivations (internal/podprovider/launch.go, identityKey
+# and signedRequest); a record is the Secret of that name in the release
+# namespace. The oversize quantity is one mebibyte more than a pod CVM's
+# memory less the provider's default reserve.
+pod_cvm_node() { echo "$POD_CVM_NODE"; }
+pod_cvm_max_pods() { echo "$POD_CVM_MAX_PODS"; }
+pod_cvm_deadline() { echo "$POD_CVM_VERIFICATION_SECONDS"; }
+pod_cvm_oversize_memory() { echo "$((POD_CVM_MEMORY_MIB - 1024 + 1))Mi"; }
+pod_cvm_allocation() { echo "podcvm-$(printf '%s\0%s' "$POD_CVM_PROVIDER" "$1" | sha256sum | cut -c1-40)"; }
+pod_cvm_labels() { jq -nc --arg p "$POD_CVM_PROVIDER" --arg a "${1#podcvm-}" '{"podcvm-provider": $p, "podcvm-uid": $a}'; }
+pod_cvm_record() {
+    local found
+    found="$(kubectl -n "$NS" get secret "$1" --ignore-not-found -o name)" || return
+    [ -n "$found" ] && echo yes || echo no
+}
+cloud_behaviour() { curl -fsS -X PUT --data-binary "$1" "$(cloud_url)/control/behaviour"; }
+cloud_calls() { curl -fsS "$(cloud_url)/control/calls"; }
+cloud_instances() { curl -fsS "$(cloud_url)/control/instances"; }
+
 node_name() {
     case "$1" in
         one) echo "$NODE" ;;

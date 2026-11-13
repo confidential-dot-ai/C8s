@@ -39,6 +39,9 @@ var constant = map[string]bool{
 	"exempt_namespace":                true,
 	"api_service_name":                true,
 	"cds_volatile":                    true,
+	"pod_cvm_node":                    true,
+	"pod_cvm_max_pods":                true,
+	"pod_cvm_deadline":                true,
 	"requester_source_is_own_address": true,
 }
 

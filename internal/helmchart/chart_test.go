@@ -698,22 +698,58 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec it was not granted), against
 	// the proxy's own health listener: the API's loopback bind is not
-	// kubelet-dialable, and this is the evidence path's only liveness signal.
-	for name, probe := range map[string]*corev1.Probe{"readiness": proxy.ReadinessProbe, "liveness": proxy.LivenessProbe} {
-		if probe == nil || probe.HTTPGet == nil {
-			t.Fatalf("attest-proxy must carry an HTTP %s probe; got %+v", name, probe)
-		}
-		if probe.HTTPGet.Path != "/healthz" || probe.HTTPGet.Port.StrVal != "health" {
-			t.Fatalf("attest-proxy %s probe = %+v, want GET /healthz on the health port", name, probe.HTTPGet)
-		}
-		// Kubelet's 1s default probe timeout would flap the healthcheck's 3s
-		// internal budget.
-		if probe.TimeoutSeconds != 5 {
-			t.Fatalf("attest-proxy %s probe timeoutSeconds = %d, want 5", name, probe.TimeoutSeconds)
-		}
-	}
-	if _, ok := findContainerPort(proxy, "health"); !ok {
+	// kubelet-dialable. Readiness covers the evidence path; each liveness
+	// covers only its own container.
+	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
+	health, ok := findContainerPort(proxy, "health")
+	if !ok {
 		t.Fatalf("attest-proxy must name its health port; got %+v", proxy.Ports)
+	}
+	// The API container has no port named "health", so its probes dial the
+	// proxy's port by number.
+	healthPort := intstr.FromInt32(health.ContainerPort)
+	for _, tc := range []struct {
+		name  string
+		probe *corev1.Probe
+		path  string
+		port  intstr.IntOrString
+	}{
+		{
+			name:  "attest-proxy readiness",
+			probe: proxy.ReadinessProbe,
+			path:  "/healthz",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attest-proxy liveness",
+			probe: proxy.LivenessProbe,
+			path:  "/livez",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attestation-api startup",
+			probe: api.StartupProbe,
+			path:  "/upstream/livez",
+			port:  healthPort,
+		},
+		{
+			name:  "attestation-api liveness",
+			probe: api.LivenessProbe,
+			path:  "/upstream/livez",
+			port:  healthPort,
+		},
+	} {
+		if tc.probe == nil || tc.probe.HTTPGet == nil {
+			t.Fatalf("%s must be an HTTP probe; got %+v", tc.name, tc.probe)
+		}
+		if tc.probe.HTTPGet.Path != tc.path || tc.probe.HTTPGet.Port != tc.port {
+			t.Fatalf("%s probe = %+v, want GET %s on %s", tc.name, tc.probe.HTTPGet, tc.path, tc.port.String())
+		}
+		// Kubelet's 1s default probe timeout would flap the handlers' 3s
+		// internal budget.
+		if tc.probe.TimeoutSeconds != 5 {
+			t.Fatalf("%s probe timeoutSeconds = %d, want 5", tc.name, tc.probe.TimeoutSeconds)
+		}
 	}
 	// uid 0 owns the socket (clients reject a foreign owner) and gid 65532 is
 	// the socket's group — the chgrp works by membership, all caps dropped.
@@ -727,11 +763,17 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Fatalf("attest-proxy must mount its root filesystem read-only; got %+v", sc.ReadOnlyRootFilesystem)
 	}
-	// An httpGet probe would never pass against the loopback bind, so the
-	// proxy's exec probe is the only health signal.
-	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
-	if api.ReadinessProbe != nil || api.LivenessProbe != nil {
-		t.Fatalf("attestation-api container must not carry kubelet probes against its loopback bind; got %+v / %+v", api.ReadinessProbe, api.LivenessProbe)
+	// The proxy's readiness already covers the API end to end.
+	if api.ReadinessProbe != nil {
+		t.Fatalf("attestation-api container must leave readiness to attest-proxy; got %+v", api.ReadinessProbe)
+	}
+	// The API's probes fail whenever attest-proxy is down, so one attest-proxy
+	// restart at the kubelet's 300s maximum backoff must not restart the API.
+	const maxRestartBackoff = 300
+	for name, probe := range map[string]*corev1.Probe{"startup": api.StartupProbe, "liveness": api.LivenessProbe} {
+		if window := probeWindow(probe); window <= maxRestartBackoff {
+			t.Errorf("attestation-api %s window = %ds, want over %ds", name, window, maxRestartBackoff)
+		}
 	}
 }
 
@@ -866,7 +908,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		var obj struct {
 			docMeta
 			Spec struct {
-				Template corev1.PodTemplateSpec `json:"template"`
+				Template    corev1.PodTemplateSpec `json:"template"`
+				JobTemplate struct {
+					Spec struct {
+						Template corev1.PodTemplateSpec `json:"template"`
+					} `json:"spec"`
+				} `json:"jobTemplate"`
 			} `json:"spec"`
 		}
 		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
@@ -875,6 +922,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		switch obj.Kind {
 		case "Deployment", "DaemonSet", "StatefulSet", "Job":
 			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.Template.Spec})
+		case "CronJob":
+			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.JobTemplate.Spec.Template.Spec})
+		default:
+			if len(obj.Spec.Template.Spec.Containers) > 0 {
+				t.Fatalf("renderedPodSpecs: %s %s carries a pod template this helper does not collect", obj.Kind, obj.Metadata.Name)
+			}
 		}
 		return false
 	})
@@ -928,9 +981,9 @@ func TestChartAttestationApiPrivileged(t *testing.T) {
 
 // TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
 // startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
-// bootstrap before /healthz is served, so without it liveness (~90s at the
-// defaults) can kill the operator mid-startup and, via failurePolicy=Fail,
-// block every pod admission while it restarts.
+// bootstrap before /healthz is served, so without it liveness can kill the
+// operator mid-startup and, via failurePolicy=Fail, block every pod admission
+// while it restarts.
 func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -4812,6 +4865,38 @@ func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 	}
 }
 
+// A volume name is a DNS label, so the TDX guest device's underscore becomes a
+// dash there while the mount and host paths keep it.
+func TestChartMountsTheTDXGuestDevice(t *testing.T) {
+	t.Parallel()
+	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		[]string{"--set-string", "attestationApi.devices[0]=/dev/tdx_guest"})
+	out, err := renderCloudChart(t, cloudChartDir, args...)
+	if err != nil {
+		t.Fatalf("helm template refused /dev/tdx_guest: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		`- name: tdx-guest\s+mountPath: /dev/tdx_guest\n`,
+		`- name: tdx-guest\s+hostPath:\s+path: /dev/tdx_guest\n`,
+	} {
+		if !regexp.MustCompile(want).MatchString(out) {
+			t.Errorf("rendered chart lacks %s:\n%s", want, out)
+		}
+	}
+
+	for _, devices := range []string{
+		`["/dev/tdx_guest","/dev/tdx-guest"]`,
+		`["/dev/config"]`,
+		`["/dev/socket-dir"]`,
+	} {
+		args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+			[]string{"--set-json", "attestationApi.devices=" + devices})
+		if out, err := renderCloudChart(t, cloudChartDir, args...); err == nil || !strings.Contains(out, "kind=attestation_devices") {
+			t.Errorf("helm template of devices %s = %v, want a kind=attestation_devices refusal:\n%s", devices, err, out)
+		}
+	}
+}
+
 // withoutPlatformKey is basePlatformArgs less the pair setting key.
 func withoutPlatformKey(key string) []string {
 	var args []string
@@ -4833,6 +4918,9 @@ func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 		{"unknown TEE family", "nriImagePolicy.platform=sev"},
 		{"unknown evidence platform", "router.attest.platform=gcp-snp"},
 		{"a device outside /dev", "attestationApi.devices[0]=/etc/shadow"},
+		{"a device name that starts with a dash", "attestationApi.devices[0]=/dev/-x"},
+		{"a device name that ends with an underscore", "attestationApi.devices[0]=/dev/x_"},
+		{"a device name longer than a DNS label", "attestationApi.devices[0]=/dev/" + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out, err := helmTemplate(t, "--set-string", tc.set); err == nil {

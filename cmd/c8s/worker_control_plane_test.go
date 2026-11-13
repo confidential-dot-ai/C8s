@@ -33,7 +33,7 @@ var workerChartDir = filepath.Join("..", "..", "charts", "worker")
 func workerRenderConfig() nodeImageRenderConfig {
 	return nodeImageRenderConfig{
 		platform:                  "sev-snp",
-		kubeVersion:               "v1.36.4",
+		kubeVersion:               "v1.36.6",
 		chartDir:                  workerChartDir,
 		imageDigest:               testDigest,
 		imageRepository:           "registry.example.com/c8s-operator",
