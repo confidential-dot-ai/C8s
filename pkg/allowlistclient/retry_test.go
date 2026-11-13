@@ -66,7 +66,7 @@ func emptyDocument() *allowlist.Allowlist {
 func TestWriteRetriesRateLimitAndUnavailable(t *testing.T) {
 	srv, seen := statusSequence(t, "0", http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusTooManyRequests)
 	auth := &countingAuth{}
-	if err := NewClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", auth); err != nil {
+	if err := newClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", auth); err != nil {
 		t.Fatalf("write refused twice with 429 and once with 503, then accepted: %v", err)
 	}
 	tokens, _ := seen()
@@ -88,7 +88,7 @@ func TestWriteGivesUpAfterMaxAttempts(t *testing.T) {
 		statuses[i] = http.StatusTooManyRequests
 	}
 	srv, seen := statusSequence(t, "0", statuses...)
-	err := NewClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", &countingAuth{})
+	err := newClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", &countingAuth{})
 	var se *operatorauth.StatusError
 	if !errors.As(err, &se) || se.Status != http.StatusTooManyRequests {
 		t.Fatalf("err = %v, want a 429 StatusError", err)
@@ -103,7 +103,7 @@ func TestWriteDoesNotRetryOtherRefusals(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
 		http.StatusPreconditionFailed, http.StatusUnprocessableEntity, http.StatusInternalServerError} {
 		srv, seen := statusSequence(t, "0", status)
-		err := NewClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", &countingAuth{})
+		err := newClient(srv.URL).ReplaceAll(context.Background(), emptyDocument(), "", &countingAuth{})
 		var se *operatorauth.StatusError
 		if !errors.As(err, &se) || se.Status != status {
 			t.Fatalf("status %d: err = %v", status, err)
@@ -119,7 +119,7 @@ func TestWriteRetryStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	err := NewClient(srv.URL).ReplaceAll(ctx, emptyDocument(), "", &countingAuth{})
+	err := newClient(srv.URL).ReplaceAll(ctx, emptyDocument(), "", &countingAuth{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the context's deadline", err)
 	}
@@ -151,7 +151,7 @@ func TestRetryWait(t *testing.T) {
 
 func TestReplaceAllSendsStrongIfMatch(t *testing.T) {
 	srv, seen := statusSequence(t, "")
-	c := NewClient(srv.URL)
+	c := newClient(srv.URL)
 	if err := c.ReplaceAll(context.Background(), emptyDocument(), "7", &countingAuth{}); err != nil {
 		t.Fatal(err)
 	}

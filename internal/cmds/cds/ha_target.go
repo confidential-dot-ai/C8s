@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // A replica serves its clients and the operator on one port.
@@ -58,7 +59,7 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 	f := cmd.Flags()
 	f.StringVar(&target.address, "target", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of the replica this decree is for (REQUIRED)")
 	f.StringVar(&target.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED)")
-	requireFlags(cmd, "target", "cds-pin")
+	cmdsutil.RequireFlags(cmd, "target", "cds-pin")
 }
 
 // bindDeliveryFlags names the replica a decree is posted to, which hands it to
@@ -68,7 +69,7 @@ func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	f := cmd.Flags()
 	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
 	f.StringVar(&to.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which the replica posted to is verified against (REQUIRED)")
-	requireFlags(cmd, "to", "cds-pin")
+	cmdsutil.RequireFlags(cmd, "to", "cds-pin")
 }
 
 func (r replica) status(ctx context.Context) (cdsha.Status, error) {

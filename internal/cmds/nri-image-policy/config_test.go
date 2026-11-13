@@ -72,6 +72,18 @@ func TestValidate_Valid(t *testing.T) {
 	}
 }
 
+// A config built in code names no sandbox policy, and sandboxMode reads an
+// unset one as off.
+func TestValidate_DefaultsTheSandboxPolicy(t *testing.T) {
+	cfg := validConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policy.Sandbox != SandboxEnforce {
+		t.Fatalf("policy.sandbox = %q, want %q", cfg.Policy.Sandbox, SandboxEnforce)
+	}
+}
+
 func TestValidate_AuditMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Policy.Mode = "audit"

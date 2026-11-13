@@ -34,6 +34,11 @@ graph() {
   CGO_ENABLED=0 go list -deps -f '{{.ImportPath}} {{join .Imports " "}}' "$@"
 }
 
+# go list does not type-check the node build; -gcflags=-e lists every error.
+node_build_compiles() {
+  CGO_ENABLED=0 go build -tags c8s_node -gcflags=-e -o /dev/null ./cmd/c8s
+}
+
 refuses() {
   local rule=$1 case=$2 graph=$3
   if [ -z "$("$rule" <<<"$graph")" ]; then
@@ -52,6 +57,10 @@ accepts() {
 
 case "${1:-}" in
 check)
+  if ! node_build_compiles; then
+    echo "the c8s_node build of ./cmd/c8s does not compile: add //go:build !c8s_node (as install.go has) to each cmd/c8s file the node binary does not need, and to its _test.go files; move code the node binary does need into a file without that tag" >&2
+    exit 1
+  fi
   shipped=$(graph ./cmd/...)
   node=$(graph -tags c8s_node ./cmd/c8s)
   test_found=$(printf '%s\n%s\n' "$shipped" "$node" | test_code | sort -u)

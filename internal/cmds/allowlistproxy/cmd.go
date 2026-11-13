@@ -13,10 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -64,8 +61,8 @@ func NewCmd() *cobra.Command {
 		Short:        "Proxy router allowlist requests to an armTLS-verified CDS",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return run(cfg)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()
@@ -79,9 +76,7 @@ func NewCmd() *cobra.Command {
 	return cmd
 }
 
-func run(cfg config) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func run(ctx context.Context, cfg config) error {
 	return runContext(ctx, cfg, net.Listen)
 }
 
@@ -164,10 +159,10 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 // verifier that decides them. All three come from one source: while the
 // enforcer mounts the node's endpoint, policy and attestation-api for a
 // credentials-role container, they are the only source and a flag naming
-// another is refused (cmdsutil.ResolveCDSAddress, cmdsutil.ResolveCDSPins,
+// another is refused (cmdsutil.ResolveCDSURL, cmdsutil.ResolveCDSPins,
 // cmdsutil.RequireNodeVerifier).
 func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
-	address, endpointFromNode, err := cmdsutil.ResolveCDSAddress(nodeAddressPath, cfg.cdsURL)
+	cdsURL, endpointFromNode, err := cmdsutil.ResolveCDSURL(nodeAddressPath, cfg.cdsURL)
 	if err != nil {
 		return cds{}, err
 	}
@@ -191,17 +186,11 @@ func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
 	if err != nil {
 		return cds{}, err
 	}
-	if endpointFromNode {
-		return cds{
-			url:  cmdsutil.CDSURL(address),
-			pins: pins,
-		}, nil
-	}
-	if cfg.cdsURL == "" {
+	if cdsURL == "" {
 		return cds{}, errors.New("--cds-url is required: no node hands this client a CDS endpoint")
 	}
 	return cds{
-		url:  cfg.cdsURL,
+		url:  cdsURL,
 		pins: pins,
 	}, nil
 }

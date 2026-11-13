@@ -199,6 +199,10 @@ cd c8s
 make install
 ```
 
+A release also carries the CLI as a binary for `linux-amd64` and
+`darwin-arm64`, with its SHA-256 in the signed release statement:
+[verify a CLI binary](docs/releases.md#verify-a-cli-binary).
+
 `c8s install` pins the component images to the digests of the `c8s-cloud`
 chart released at its own version, so build it from a release tag. A build of
 any other commit renders a chart directory and takes those digests from a
@@ -354,7 +358,6 @@ attestation and reports the operator keys it pins.
 | Package | Description |
 |---|---|
 | [`pkg/armtls`](pkg/armtls/) | armTLS library for hardware-attested mTLS (AMD SEV-SNP, Intel TDX) — see [docs/armtls.md](docs/armtls.md) |
-| [`pkg/armtls/cdsclient`](pkg/armtls/cdsclient/) | CDS attestation client for certificate provisioning |
 | [`pkg/attestclient`](pkg/attestclient/) | High-level client for the CDS attestation flow |
 | [`pkg/allowlistclient`](pkg/allowlistclient/) | CRUD client for the CDS allowlist API |
 | [`pkg/allowlist`](pkg/allowlist/) | Allowlist types, argv policy, and secret grants |

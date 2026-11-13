@@ -19,7 +19,6 @@
 package cdsdecree
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -123,13 +122,8 @@ type Signed struct {
 // encoding/json would otherwise reinterpret, so what a reader checks is
 // everything the object says.
 func Parse(object []byte) (Signed, error) {
-	if err := strictjson.Validate(object); err != nil {
-		return Signed{}, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(object))
-	decoder.DisallowUnknownFields()
 	var signed Signed
-	if err := decoder.Decode(&signed); err != nil {
+	if err := strictjson.Unmarshal(object, &signed); err != nil {
 		return Signed{}, fmt.Errorf("decode decree: %w", err)
 	}
 	return signed, nil

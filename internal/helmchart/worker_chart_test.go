@@ -111,6 +111,7 @@ func TestWorkerChartRendersItsObjects(t *testing.T) {
 		"Role/kube-system/c8s-worker-cilium-operator-lease",
 		"RoleBinding/kube-system/c8s-worker-cilium-operator-lease",
 		"Service/c8s-router/c8s-router",
+		"Service/kube-system/dcgm-exporter",
 		"Service/kube-system/kube-dns",
 		"ServiceAccount/c8s-router/c8s-router",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
@@ -517,5 +518,39 @@ func TestWorkerChartKubeDNSSelectsTheWorkersCoreDNS(t *testing.T) {
 		if pod.Labels[k] != v {
 			t.Fatalf("kube-dns selects %v, which the CoreDNS static pod's labels %v do not carry", service.Spec.Selector, pod.Labels)
 		}
+	}
+}
+
+// The dcgm-exporter Service selects the GPU workers' dcgm-exporter static pods
+// on the port they serve their metrics on.
+func TestWorkerChartDCGMExporterServiceSelectsTheStaticPods(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(workerChart + "/files/static-pods/dcgm-exporter.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pod corev1.Pod
+	if err := sigsyaml.Unmarshal(data, &pod); err != nil {
+		t.Fatal(err)
+	}
+	out, err := helmTemplateWorker(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var service corev1.Service
+	findDoc(t, out, "Service", "dcgm-exporter", &service)
+	if service.Namespace != pod.Namespace || len(service.Spec.Selector) == 0 {
+		t.Fatalf("dcgm-exporter Service = %+v, want a selector in the static pod's namespace %s", service, pod.Namespace)
+	}
+	for k, v := range service.Spec.Selector {
+		if pod.Labels[k] != v {
+			t.Fatalf("dcgm-exporter selects %v, which the static pod's labels %v do not carry", service.Spec.Selector, pod.Labels)
+		}
+	}
+	if len(service.Spec.Ports) != 1 || len(pod.Spec.Containers[0].Ports) != 1 {
+		t.Fatalf("dcgm-exporter ports: Service %+v, pod %+v, want one each", service.Spec.Ports, pod.Spec.Containers[0].Ports)
+	}
+	if target, served := service.Spec.Ports[0].TargetPort.String(), pod.Spec.Containers[0].Ports[0].Name; target != served {
+		t.Fatalf("dcgm-exporter Service targets port %s, and the static pod serves %s", target, served)
 	}
 }

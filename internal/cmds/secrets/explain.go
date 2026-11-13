@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -79,7 +80,7 @@ The sandbox ID is on the pod's certificate; 'c8s verify' prints it.`,
 	}
 	cmd.Flags().StringVar(&sandboxID, "sandbox", "", "sandbox ID to explain (required)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the raw report")
-	_ = cmd.MarkFlagRequired("sandbox")
+	cmdsutil.RequireFlags(cmd, "sandbox")
 	return cmd
 }
 

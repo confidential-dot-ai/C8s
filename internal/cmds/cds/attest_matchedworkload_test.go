@@ -3,7 +3,11 @@ package cds
 import (
 	"bytes"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"net/http"
+	"reflect"
+	"regexp"
 	"testing"
 	"time"
 
@@ -280,6 +284,67 @@ func TestAttest_RouterLeafTTL(t *testing.T) {
 	}
 	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, containersView(wlDigestA), tune).NotAfter); got < time.Hour {
 		t.Fatalf("non-router leaf expires in %v, want the named ~2h", got)
+	}
+}
+
+// RouterCertTTL caps a router leaf, so a router cap longer than the configured
+// TTL leaves it where it was.
+func TestAttest_RouterTTLOnlyShortens(t *testing.T) {
+	router := containersView(wlDigestA)
+	router[0].Role = workloadclaims.RouterRole
+	leaf := leafFromInventory(t, completeAPIStore(t), []string{wlDigestA}, router, func(h *AttestHandler) {
+		h.CertTTL = 30 * time.Minute
+		h.RouterCertTTL = 12 * time.Hour
+	})
+	if got := leaf.NotAfter.Sub(leaf.NotBefore); got > 35*time.Minute {
+		t.Fatalf("router leaf validity = %v, want the configured ~30m", got)
+	}
+}
+
+// A disputed name reconstructs from the issuance record alone, so a named
+// sandbox leaf's record carries every value it was granted under.
+func TestAttest_IssuanceRecordNamesTheGrantedIdentity(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h, signer := newSandboxTestEnv(t, stub.URL())
+	store := completeAPIStore(t)
+	h.AllowlistStore = store
+	h.SandboxDigests = fakeDigests{
+		digests:    map[string][]string{testSandboxID: {wlDigestA}},
+		containers: map[string][]workloadclaims.SandboxContainer{testSandboxID: containersView(wlDigestA)},
+		key:        signer.PublicKey(),
+	}
+	h.Policy.DNSSANPatterns = []*regexp.Regexp{regexp.MustCompile(`^[a-z]+\.mesh\.svc$`)}
+	h.CertTTL = 30 * time.Minute
+	csrPEM, _ := generateCSRWith(t, pkix.Name{}, []string{"api.mesh.svc"}, nil)
+
+	logs := captureSlog(t)
+	challenge := issueChallenge(t, h)
+	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	al, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowlistDigest, err := al.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record := logRecord(t, logs, issuanceRecordMsg)
+	for key, want := range map[string]any{
+		"sans":              []any{"api.mesh.svc"},
+		"ttl":               float64(30 * time.Minute),
+		"sandbox_id":        testSandboxID,
+		"inventory_addr":    testInventoryHost,
+		"workload":          "api",
+		"allowlist_version": "1",
+		"allowlist_digest":  hex.EncodeToString(allowlistDigest),
+	} {
+		if got := record[key]; !reflect.DeepEqual(got, want) {
+			t.Errorf("issuance record %s = %#v, want %#v", key, got, want)
+		}
 	}
 }
 

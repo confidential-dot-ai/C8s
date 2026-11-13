@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -71,12 +69,6 @@ func runDaemon(ctx context.Context, cfg config) error {
 	if err := validate(cfg); err != nil {
 		return err
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	return runNode(ctx, cfg)
 }
 

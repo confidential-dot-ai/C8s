@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -114,63 +115,8 @@ func rsaCSRPEM(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
 
-func TestParseAndVerifyCSRValid(t *testing.T) {
-	csr, err := attestation.ParseAndVerifyCSR(ecdsaCSRPEM(t))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if csr == nil {
-		t.Fatal("expected non-nil CSR")
-	}
-	if csr.Subject.CommonName != "test" {
-		t.Fatalf("CN = %q, want test", csr.Subject.CommonName)
-	}
-}
-
-func TestParseAndVerifyCSRNotPEM(t *testing.T) {
-	if _, err := attestation.ParseAndVerifyCSR("not a pem block"); err == nil {
-		t.Fatal("expected error for non-PEM input")
-	}
-}
-
-func TestParseAndVerifyCSRWrongPEMType(t *testing.T) {
-	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("xx")})
-	if _, err := attestation.ParseAndVerifyCSR(string(block)); err == nil {
-		t.Fatal("expected error for wrong PEM type")
-	}
-}
-
-func TestParseAndVerifyCSRMalformedBody(t *testing.T) {
-	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("garbage")})
-	if _, err := attestation.ParseAndVerifyCSR(string(block)); err == nil {
-		t.Fatal("expected error for malformed CSR body")
-	}
-}
-
-func TestParseAndVerifyCSRBadSignature(t *testing.T) {
-	// Take a valid CSR and tamper with the signed CertificationRequestInfo
-	// (TBS) region so the self-signature no longer verifies. ParseCertificate-
-	// Request still succeeds structurally, but CheckSignature fails.
-	valid := ecdsaCSRPEM(t)
-	block, _ := pem.Decode([]byte(valid))
-	raw := make([]byte, len(block.Bytes))
-	copy(raw, block.Bytes)
-
-	// Mutate a byte well inside the TBS portion (the subject/key region near the
-	// front) rather than the trailing signature, so ParseCertificateRequest
-	// still accepts the structure but the signature check fails.
-	raw[40] ^= 0xff
-	corrupted := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
-
-	// Either parsing fails outright or the signature check fails; both are
-	// error returns from ParseAndVerifyCSR, which is what we assert.
-	if _, err := attestation.ParseAndVerifyCSR(string(corrupted)); err == nil {
-		t.Fatal("expected error for corrupted CSR")
-	}
-}
-
 func TestECDSAPublicKeyFromCSRSuccess(t *testing.T) {
-	csr, err := attestation.ParseAndVerifyCSR(ecdsaCSRPEM(t))
+	csr, err := certutil.ParseCSRPEM([]byte(ecdsaCSRPEM(t)))
 	if err != nil {
 		t.Fatalf("parse CSR: %v", err)
 	}
@@ -187,7 +133,7 @@ func TestECDSAPublicKeyFromCSRSuccess(t *testing.T) {
 }
 
 func TestECDSAPublicKeyFromCSRNonECDSA(t *testing.T) {
-	csr, err := attestation.ParseAndVerifyCSR(rsaCSRPEM(t))
+	csr, err := certutil.ParseCSRPEM([]byte(rsaCSRPEM(t)))
 	if err != nil {
 		t.Fatalf("parse CSR: %v", err)
 	}
@@ -231,23 +177,5 @@ func TestHandleReadyzNotReady(t *testing.T) {
 	h(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-}
-
-func TestWriteError(t *testing.T) {
-	rec := httptest.NewRecorder()
-	attestation.WriteError(rec, http.StatusTeapot, "some_code", "some message")
-	if rec.Code != http.StatusTeapot {
-		t.Fatalf("status = %d, want 418", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("content-type = %q, want application/json", ct)
-	}
-	var out types.ErrorResponse
-	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if out.Error != "some_code" || out.Message != "some message" {
-		t.Fatalf("unexpected error envelope: %+v", out)
 	}
 }
