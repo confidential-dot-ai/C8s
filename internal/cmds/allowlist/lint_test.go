@@ -572,15 +572,12 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 					policy.env + `}`
 				// Use an init container as well as a main to exercise both lists.
 				file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
-				for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
-					args := append([]string{"lint", "--strict", file}, flags...)
-					out, _, err := runCmd(args...)
-					if (err != nil) != tc.refused {
-						t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
-					}
-					if tc.refused && !strings.Contains(out, "overlapping data mount") {
-						t.Fatalf("lint did not explain the search-path conflict: %s", out)
-					}
+				out, _, err := runCmd("lint", "--strict", file)
+				if (err != nil) != tc.refused {
+					t.Fatalf("lint error = %v, want refusal %v; output: %s", err, tc.refused, out)
+				}
+				if tc.refused && !strings.Contains(out, "overlapping data mount") {
+					t.Fatalf("lint did not explain the search-path conflict: %s", out)
 				}
 			})
 		}

@@ -94,8 +94,6 @@ earlier configuration, safe to delete once no pod runs it.`,
 	cmd.Flags().BoolVar(&online, "online", false, "also check each digest exists in its registry via crane")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero if there are any warnings")
 	cmd.Flags().StringVar(&seedPath, "seed", "", "the release's allowlist seed, to name stale chart-generated entries")
-	cmd.Flags().String("cvm-mode", "", "deprecated; has no effect")
-	_ = cmd.Flags().MarkDeprecated("cvm-mode", "mount and environment policies are enforced by NRI; this flag has no effect")
 	return cmd
 }
 
