@@ -209,10 +209,8 @@ func (h Handler) serveMeasurements(w http.ResponseWriter) {
 }
 
 func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
-	var req types.NonceRequest
-	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || len(req.Nonce) != 32 {
+	req, err := nonceRequest(r.Body)
+	if err != nil {
 		http.Error(w, "want {\"nonce\": <32 bytes, base64>}", http.StatusBadRequest)
 		return
 	}
@@ -236,6 +234,26 @@ func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set(BindingHeader, BindingVersion)
 	_, _ = w.Write(evidence)
+}
+
+func nonceRequest(body io.Reader) (types.NonceRequest, error) {
+	var req types.NonceRequest
+	data, err := readutil.ReadAll(body, 4096)
+	if err != nil {
+		return req, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return req, err
+	}
+	if dec.Decode(new(any)) != io.EOF {
+		return req, errors.New("trailing data after the nonce request")
+	}
+	if len(req.Nonce) != 32 {
+		return req, errors.New("nonce is not 32 bytes")
+	}
+	return req, nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

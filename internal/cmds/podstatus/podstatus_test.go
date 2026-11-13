@@ -403,6 +403,32 @@ func TestMeasurementsAndEvidenceRoutes(t *testing.T) {
 	}
 }
 
+// The evidence route reads one nonce request: a request with another document
+// after it, or one padded past the read cap, is refused rather than answered
+// with fresh evidence.
+func TestEvidenceRouteRefusesABodyThatIsNotOneDocument(t *testing.T) {
+	h := Handler{Evidence: func(context.Context, []byte) ([]byte, error) { return []byte(`{"platform":"tdx"}`), nil }}
+	request, err := json.Marshal(types.NonceRequest{Nonce: bytes.Repeat([]byte{7}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"request then a second one", append(bytes.Clone(request), request...)},
+		{"request padded past the cap", append(bytes.Clone(request), bytes.Repeat([]byte(" "), 4096)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, EvidencePath, bytes.NewReader(tc.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 // A quote taken on another connection (e.g. a host relaying to another
 // pod CVM with the same launch key) binds a different certificate key.
 func TestAttestRejectsEvidenceFromAnotherChannel(t *testing.T) {

@@ -25,6 +25,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -827,6 +828,8 @@ func TestServeTokensRejectsMalformedRequests(t *testing.T) {
 		{"not JSON", "{"},
 		{"public key is not PKIX", `{"public_key":"bm90LWtleQ==","nonce":"AAAA"}`},
 		{"missing nonce", `{"public_key":"","nonce":""}`},
+		{"request then a second one", tokenRequest(t) + tokenRequest(t)},
+		{"request past the cap", tokenRequest(t) + strings.Repeat(" ", maxSandboxRequestBytes)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := inventoryDo(context.Background(), "unix://"+sock, http.MethodPost, SandboxPath,
@@ -985,6 +988,57 @@ func TestServePendingTokens(t *testing.T) {
 	signer.Store(testSigner(t))
 	if _, err := FetchSandboxToken(t.Context(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce); err != nil {
 		t.Fatalf("FetchSandboxToken after signer = %v, want a token", err)
+	}
+}
+
+// tokenRequest is a request the route accepts, so appending to it tests only the extra bytes.
+func tokenRequest(t *testing.T) string {
+	t.Helper()
+	key, err := x509.MarshalPKIXPublicKey(&testRequesterKey(t).PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(SandboxTokenRequest{PublicKey: key, Nonce: testNonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// A token answer is one document: a second document after it, or a body past
+// maxResponseBytes, is refused rather than read as the token.
+func TestSandboxTokenAnswerMustBeOneDocument(t *testing.T) {
+	var answer atomic.Pointer[[]byte]
+	sock := filepath.Join(t.TempDir(), "wc.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(*answer.Load())
+	})}
+	t.Cleanup(func() { _ = server.Close() })
+	go func() { _ = server.Serve(listener) }()
+
+	token, err := json.Marshal(SignedSandboxToken{Token: []byte("token"), Signature: []byte("signature")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := testRequesterKey(t)
+	fetch := func() error {
+		_, err := FetchSandboxToken(t.Context(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce)
+		return err
+	}
+
+	trailing := append(bytes.Clone(token), token...)
+	answer.Store(&trailing)
+	if err := fetch(); err == nil {
+		t.Fatal("accepted a token with a second document after it")
+	}
+	oversized := append(bytes.Clone(token), bytes.Repeat([]byte(" "), maxResponseBytes)...)
+	answer.Store(&oversized)
+	if err := fetch(); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("token past the cap = %v, want a refused read", err)
 	}
 }
 

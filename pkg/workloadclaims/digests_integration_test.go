@@ -1,6 +1,7 @@
 package workloadclaims
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -470,6 +472,51 @@ func TestDigestsClientRejectsMalformedAnswers(t *testing.T) {
 			t.Fatal("accepted a non-ECDSA inventory key")
 		}
 	})
+}
+
+// An inventory answer is one document: a second document after it, or a body
+// past maxResponseBytes, is refused rather than read as the answer.
+func TestDigestsClientAnswersMustBeOneDocument(t *testing.T) {
+	answering := func(t *testing.T, body []byte) (*DigestsClient, string) {
+		t.Helper()
+		c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(body)
+		}))
+		// httptest's certificate names example.com, not the routable address.
+		c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+		return c, host
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := json.Marshal(InventoryIdentity{PublicKey: der})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := []byte(`{"digests":["` + digestA + `"]}`)
+	padding := bytes.Repeat([]byte(" "), maxResponseBytes)
+
+	c, host := answering(t, append(bytes.Clone(digests), digests...))
+	if _, err := c.Fetch(t.Context(), host, "sandbox-1"); err == nil {
+		t.Fatal("accepted a digests body with a second document after it")
+	}
+	c, host = answering(t, append(bytes.Clone(digests), padding...))
+	if _, err := c.Fetch(t.Context(), host, "sandbox-1"); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("digests body past the cap = %v, want a refused read", err)
+	}
+	c, host = answering(t, append(bytes.Clone(identity), identity...))
+	if _, err := c.InventoryKey(t.Context(), host); err == nil {
+		t.Fatal("accepted an identity body with a second document after it")
+	}
+	c, host = answering(t, append(bytes.Clone(identity), padding...))
+	if _, err := c.InventoryKey(t.Context(), host); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("identity body past the cap = %v, want a refused read", err)
+	}
 }
 
 // A body larger than what arrives with the headers must still be readable

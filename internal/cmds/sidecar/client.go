@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -103,10 +104,14 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
+		data, err := readutil.ReadAll(resp.Body, 1<<20)
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read secret response: %w", err)
+		}
 		var body struct {
 			Value string `json:"value"`
 		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		if err := json.Unmarshal(data, &body); err != nil {
 			return nil, resp.StatusCode, fmt.Errorf("decode secret response: %w", err)
 		}
 		value, err := base64.StdEncoding.DecodeString(body.Value)
@@ -191,8 +196,12 @@ func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, tim
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch challenge: %s", resp.Status)
 	}
+	data, err := readutil.ReadAll(resp.Body, 1<<16)
+	if err != nil {
+		return nil, fmt.Errorf("read challenge: %w", err)
+	}
 	var out types.ChallengeResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("decode challenge: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(out.Challenge)
