@@ -95,8 +95,8 @@ Replicas do not share it. The mesh CA issues the key a certificate:
 
 A KMS trusts a broker certificate because it chains to the mesh CA key the KMS
 pinned. A single CDS mints its mesh CA key at start; a replica set holds one
-for its life until a `rotate-key` decree ([cds-ha.md](cds-ha.md)). A KMS must
-re-pin when either changes. Pin the key you read from `GET /ca` over attested
+for the life of its chain, handed to every replica that joins, until it is
+re-rooted ([cds-ha.md](cds-ha.md)). A KMS must re-pin when either changes. Pin the key you read from `GET /ca` over attested
 TLS, as `c8s verify` does.
 
 ### Request

@@ -24,6 +24,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
@@ -149,6 +150,11 @@ func (d *Document) validate() error {
 	}
 	if _, err := d.CDS.Parse(); err != nil {
 		return err
+	}
+	if d.CDS.Chain != "" {
+		if _, err := cdschain.ParsePin(d.CDS.Chain); err != nil {
+			return fmt.Errorf("cds.chain: %w", err)
+		}
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")

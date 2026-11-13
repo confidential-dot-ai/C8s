@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -73,6 +74,8 @@ func TestHAGateRefusesOldWrites(t *testing.T) {
 		{http.MethodGet, "/readyz", http.StatusTeapot},
 		{http.MethodGet, "/ha/status", http.StatusTeapot},
 		{http.MethodGet, "/allowlist", http.StatusServiceUnavailable},
+		// A pod's secret release is brokered only while the replica serves.
+		{http.MethodPost, secretbroker.PodRoute, http.StatusServiceUnavailable},
 		// An allowlist document by digest: the client re-hashes it.
 		{http.MethodGet, "/allowlist/objects/sha256/" + strings.Repeat("ab", 32), http.StatusTeapot},
 	} {
@@ -346,16 +349,76 @@ func TestReplicaCertifiesTheChainsNodeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := serveNodes(nodes, string(worker), launch); err != nil {
+	if err := serveNodes(nodes, string(worker), launch, nil); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code != http.StatusOK {
 		t.Fatalf("a node the chain's nodes entry names: status %d", code)
 	}
-	if err := serveNodes(nodes, "", launch); err != nil {
+	if err := serveNodes(nodes, "", launch, nil); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code == http.StatusOK {
 		t.Fatal("a node certified after the chain dropped its nodes entry")
+	}
+}
+
+// A replica set's nodes and operator-keys entries are held to the launch
+// file's rule that a Pod launch key is no node or operator authority: a write
+// naming one is refused, and a nodes entry naming one certifies no node on
+// any replica.
+func TestAPodLaunchKeyIsNoNodeOrOperatorAuthorityOnTheChain(t *testing.T) {
+	keyPEM := func() string {
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := cdschain.PublicKeyPEM(&k.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	podKey, otherKey := keyPEM(), keyPEM()
+	pods := []remote.ImagePin{{Name: "pod", Anchor: []byte(podKey)}}
+	nodesDoc := func(anchor string) string {
+		doc, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: []remote.ImagePin{{
+			Name: "worker", Digest: bytes.Repeat([]byte{0x21}, refvalues.DigestSize), Anchor: []byte(anchor),
+			Registers: map[int][]byte{1: bytes.Repeat([]byte{0x22}, refvalues.DigestSize), 2: bytes.Repeat([]byte{0x23}, refvalues.DigestSize)},
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(doc)
+	}
+	body := func(typ cdschain.Type, payload any) cdschain.Body {
+		raw, _ := json.Marshal(payload)
+		return cdschain.Body{Type: typ, Payload: raw}
+	}
+	for _, tc := range []struct {
+		name    string
+		body    cdschain.Body
+		refused bool
+	}{
+		{"nodes naming the Pod launch key", body(cdschain.TypeNodes, cdschain.Nodes{Nodes: nodesDoc(podKey)}), true},
+		{"nodes naming another key", body(cdschain.TypeNodes, cdschain.Nodes{Nodes: nodesDoc(otherKey)}), false},
+		{"operator keys naming the Pod launch key", body(cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: otherKey + podKey}), true},
+		{"operator keys naming other keys", body(cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: otherKey}), false},
+	} {
+		if err := chainValidator(pods, nil, nil)(tc.body); (err != nil) != tc.refused {
+			t.Errorf("%s: %v, refused want %v", tc.name, err, tc.refused)
+		}
+	}
+	nodes, err := newNodeSet(refvalues.ReferenceValues{Family: teetypes.FamilyTDX})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for anchor, certified := range map[string]int{podKey: 0, otherKey: 1} {
+		if err := serveNodes(nodes, nodesDoc(anchor), refvalues.ReferenceValues{}, pods); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(nodes.images()); got != certified {
+			t.Errorf("a chain node set naming the %s key certifies %d images, want %d", map[bool]string{true: "Pod launch", false: "other"}[anchor == podKey], got, certified)
+		}
 	}
 }

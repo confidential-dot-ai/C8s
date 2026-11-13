@@ -87,7 +87,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 				slog.Error("CDS replica cannot serve the chain's allowlist", "version", s.PolicyVersion(), "error", err)
 			}
 			if s.Nodes != servedNodes {
-				if err := serveNodes(nodes, s.Nodes, cfg.measured.Nodes); err != nil {
+				if err := serveNodes(nodes, s.Nodes, cfg.measured.Nodes, cfg.measured.PodImages); err != nil {
 					slog.Error("CDS replica cannot certify the chain's node images; it keeps the set before", "error", err)
 				} else {
 					servedNodes = s.Nodes
@@ -101,7 +101,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			}
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 		},
-		Validate: func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
+		Validate: chainValidator(cfg.measured.PodImages, mesh, store),
 	}, chainStore)
 	if err != nil {
 		return nil, err
@@ -176,8 +176,10 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 }
 
 // serveNodes makes the chain's node images the set this CDS certifies; ""
-// is a chain without a nodes entry, which certifies the launch file's set.
-func serveNodes(nodes *nodeSet, measurements string, launch refvalues.ReferenceValues) error {
+// is a chain without a nodes entry, which certifies the launch file's set. A
+// set that names a Pod launch key as a node authority certifies no node, on
+// every replica alike.
+func serveNodes(nodes *nodeSet, measurements string, launch refvalues.ReferenceValues, pods []remote.ImagePin) error {
 	if measurements == "" {
 		return nodes.set(launch)
 	}
@@ -185,8 +187,51 @@ func serveNodes(nodes *nodeSet, measurements string, launch refvalues.ReferenceV
 	if err != nil {
 		return err
 	}
+	if err := cdsconfig.ValidatePodNodeAuthorities(pods, values.Images); err != nil {
+		slog.Error("CDS replica certifies no node: the chain's node images name a Pod launch key", "error", err)
+		return nodes.set(refvalues.ReferenceValues{Family: values.Family})
+	}
 	slog.Info("CDS certifies the chain's node images", "images", len(values.Images))
 	return nodes.set(values)
+}
+
+// chainValidator checks an entry's payload beyond the chain's own rules
+// before any replica takes it.
+func chainValidator(pods []remote.ImagePin, mesh *issuer.MeshCA, store *allowlist.Store) func(cdschain.Body) error {
+	return func(b cdschain.Body) error {
+		if err := validatePodAuthorities(b, pods); err != nil {
+			return err
+		}
+		return validateRoutes(b, mesh, store)
+	}
+}
+
+// validatePodAuthorities refuses a nodes or operator-keys entry naming a Pod
+// launch key of the launch file as a node or operator authority.
+func validatePodAuthorities(b cdschain.Body, pods []remote.ImagePin) error {
+	switch b.Type {
+	case cdschain.TypeNodes:
+		var p cdschain.Nodes
+		if err := cdschain.DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		values, err := refvalues.Parse([]byte(p.Nodes))
+		if err != nil {
+			return err
+		}
+		return cdsconfig.ValidatePodNodeAuthorities(pods, values.Images)
+	case cdschain.TypeOperatorKeys:
+		var p cdschain.OperatorKeys
+		if err := cdschain.DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		keys, err := operatorauth.ParsePublicKeysPEM([]byte(p.Keys))
+		if err != nil {
+			return err
+		}
+		return cdsconfig.ValidatePodOperatorAuthorities(pods, keys)
+	}
+	return nil
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.

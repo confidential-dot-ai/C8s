@@ -403,3 +403,20 @@ func TestRenderPodRuntimeCarriesTheClientDocument(t *testing.T) {
 		t.Fatalf("client_document = %v", got)
 	}
 }
+
+// A pod CVM whose document pins a CDS replica set's chain follows it: its
+// floor's pull carries the pin, as a worker's does.
+func TestRenderPodRuntimeCarriesTheCDSChainPin(t *testing.T) {
+	root := preparePodRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(podFloor))
+	assigned := assignedPod(t, podManifest)
+	assigned.CDS.Chain = "0:" + strings.Repeat("ab", 32)
+	runtime, err := RenderPodRuntime(root, assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull := renderedPolicy(t, runtime)["allowlist"].(map[string]any)["pull"].(map[string]any)
+	if pull["cds_chain"] != assigned.CDS.Chain {
+		t.Fatalf("pod CDS pull = %v, want cds_chain %s", pull, assigned.CDS.Chain)
+	}
+}

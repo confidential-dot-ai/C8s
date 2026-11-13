@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -36,16 +37,19 @@ const (
 // Config is trusted operator configuration. Paths name mounted files, never
 // tenant annotations. LoadConfig reads their contents once before registration.
 type Config struct {
-	ProviderID                 string   `json:"providerID"`
-	NodeName                   string   `json:"nodeName"`
-	Namespace                  string   `json:"namespace"`
-	CloudURL                   string   `json:"cloudURL"`
-	CloudTokenFile             string   `json:"cloudTokenFile"`
-	Image                      string   `json:"image"`
-	ImageManifestFile          string   `json:"imageManifestFile"`
-	LaunchKeyFile              string   `json:"launchKeyFile"`
-	CDSAddress                 string   `json:"cdsAddress"`
-	CDSImagePolicyFile         string   `json:"cdsImagePolicyFile"`
+	ProviderID         string `json:"providerID"`
+	NodeName           string `json:"nodeName"`
+	Namespace          string `json:"namespace"`
+	CloudURL           string `json:"cloudURL"`
+	CloudTokenFile     string `json:"cloudTokenFile"`
+	Image              string `json:"image"`
+	ImageManifestFile  string `json:"imageManifestFile"`
+	LaunchKeyFile      string `json:"launchKeyFile"`
+	CDSAddress         string `json:"cdsAddress"`
+	CDSImagePolicyFile string `json:"cdsImagePolicyFile"`
+	// CDSChain, "<seq>:<hash>", pins a CDS replica set by an entry of its
+	// chain; every pod CVM's document carries it.
+	CDSChain                   string   `json:"cdsChain,omitempty"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -127,6 +131,11 @@ func (c *Config) validate() error {
 	if _, _, err := cmdsutil.SplitCDSAddress(c.CDSAddress); err != nil {
 		return fmt.Errorf("cdsAddress %w", err)
 	}
+	if c.CDSChain != "" {
+		if _, err := cdschain.ParsePin(c.CDSChain); err != nil {
+			return fmt.Errorf("cdsChain: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -165,7 +174,7 @@ func (c *Config) loadTrust() error {
 	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
 		return fmt.Errorf("CDS image policy: %w", err)
 	}
-	c.cds = cmdsutil.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
+	c.cds = cmdsutil.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy), Chain: c.CDSChain}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err

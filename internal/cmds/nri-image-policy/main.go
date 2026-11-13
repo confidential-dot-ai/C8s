@@ -199,7 +199,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 	var podSecretsClient *http.Client
 	if cfg.PullEnabled() && cfg.podRole() {
-		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cfg.Mesh.Resolver, chain, plugin.podLeafCertificate); err != nil {
 			return fmt.Errorf("create Pod secrets client: %w", err)
 		}
 	}
@@ -374,14 +374,25 @@ func allowlistPullHTTPClient(cfg pullConfig, clusterDNS netip.Addr) (*http.Clien
 	return client, nil
 }
 
-// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert as
-// its TLS client certificate.
-func cdsHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
-	client, err := allowlistPullHTTPClient(cfg, clusterDNS)
+// cdsHTTPClientWithLeaf is a CDS client presenting clientCert as its TLS
+// client certificate. Its pins are read on every handshake: the chain's once
+// chain has followed it, else the launch pins, so it follows the builds the
+// replica set accepts.
+func cdsHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, chain *chainPins, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
+	launch := cfg.CDSMeasurementsConfig
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) {
+		pinCfg := cfg
+		pinCfg.CDSMeasurementsConfig = chain.pinsPath(launch)
+		set, err := pinCfg.policySet()
+		return armtls.Pins(set.Policy()), err
+	}, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
-	client.Transport.(*http.Transport).TLSClientConfig.GetClientCertificate = clientCert
+	transport := client.Transport.(*http.Transport)
+	transport.DialContext = clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
+	transport.TLSClientConfig.GetClientCertificate = clientCert
+	client.Timeout = cfg.Timeout
 	return client, nil
 }
 
