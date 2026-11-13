@@ -965,38 +965,14 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 // envelope, forwards the reconstructed request by the applied route manifest,
 // and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
-	// A refusal before the body is read closes the connection, so net/http
-	// does not wait on the unread body.
-	refuse := func(status int, code, msg string) {
-		w.Header().Set("Connection", "close")
-		writeErr(w, status, code, msg)
-	}
 	id := r.Header.Get(sessionHeader)
-	session, ok := s.useSession(id)
+	session, release, ok := s.admitTunnelSession(w, r, id)
 	if !ok {
-		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
-		return
-	}
-	channel := session.channel
-	if r.ContentLength > tunnelBodyLimit {
-		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
-		return
-	}
-	// Budget goes only to a request naming a live session. Anyone can open
-	// one, so the per-client share is what bounds a single client.
-	recordBytes := r.ContentLength
-	if recordBytes < 0 {
-		recordBytes = tunnelBodyLimit
-	}
-	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
-	if !ok {
-		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 		return
 	}
 	defer release()
 	rc := http.NewResponseController(w)
-	ioDeadline := func() time.Time { return time.Now().Add(s.cfg.TunnelIOTimeout) }
-	if err := errors.Join(rc.SetReadDeadline(ioDeadline()), rc.SetWriteDeadline(ioDeadline())); err != nil {
+	if err := errors.Join(rc.SetReadDeadline(s.tunnelIODeadline()), rc.SetWriteDeadline(s.tunnelIODeadline())); err != nil {
 		s.log.Error("tunnel deadlines unsupported", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "tunnel deadlines unsupported")
 		return
@@ -1010,19 +986,78 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		_ = rc.SetWriteDeadline(time.Time{})
 	}()
 
+	env, seq, ok := s.openTunnelRequest(w, r, rc, session.channel)
+	if !ok {
+		return
+	}
+	resp, ok := s.forwardTunnelRequest(w, r, id, env, session.bound)
+	if !ok {
+		return
+	}
+	sealed, ok := sealTunnelResponse(w, session.channel, resp, seq)
+	if !ok {
+		return
+	}
+	s.writeTunnelRecord(w, rc, sealed)
+}
+
+func (s *Server) tunnelIODeadline() time.Time {
+	return time.Now().Add(s.cfg.TunnelIOTimeout)
+}
+
+// admitTunnelSession returns the acquired tunnel budget's release, non-nil
+// whenever it admits.
+func (s *Server) admitTunnelSession(w http.ResponseWriter, r *http.Request, id string) (establishedSession, func(), bool) {
+	// A refusal before the body is read closes the connection, so net/http
+	// does not wait on the unread body.
+	refuse := func(status int, code, msg string) {
+		w.Header().Set("Connection", "close")
+		writeErr(w, status, code, msg)
+	}
+	session, ok := s.useSession(id)
+	if !ok {
+		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
+		return establishedSession{}, nil, false
+	}
+	if r.ContentLength > tunnelBodyLimit {
+		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
+		return establishedSession{}, nil, false
+	}
+	// Budget goes only to a request naming a live session. Anyone can open
+	// one, so the per-client share is what bounds a single client.
+	recordBytes := r.ContentLength
+	if recordBytes < 0 {
+		recordBytes = tunnelBodyLimit
+	}
+	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
+	if !ok {
+		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		return establishedSession{}, nil, false
+	}
+	return session, release, true
+}
+
+// openTunnelRequest returns the request envelope the sealed record carries,
+// under the sequence the response must echo.
+func (s *Server) openTunnelRequest(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, channel *overenc.Channel) (types.TunnelRequest, uint64, bool) {
 	// MaxBytesReader, unlike a LimitReader, fails an oversized body and makes
 	// net/http close the connection rather than drain the rest with no
 	// deadline while the budget is held.
-	body := deadlineReader{ReadCloser: r.Body, extend: func() error { return rc.SetReadDeadline(ioDeadline()) }}
+	body := deadlineReader{
+		ReadCloser: r.Body,
+		extend: func() error {
+			return rc.SetReadDeadline(s.tunnelIODeadline())
+		},
+	}
 	recBytes, err := io.ReadAll(http.MaxBytesReader(w, body, tunnelBodyLimit))
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
 		writeErr(w, http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
-		return
+		return types.TunnelRequest{}, 0, false
 	case err != nil:
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "read record")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
 	// The body reached EOF. An expired read deadline would cancel r's context
 	// mid-forward.
@@ -1030,63 +1065,76 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var rec overenc.Record
 	if err := cbor.Unmarshal(recBytes, &rec); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid record")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
 	plaintext, err := channel.OpenRequest(rec)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "decrypt failed")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
-
 	var env types.TunnelRequest
 	if err := cbor.Unmarshal(plaintext, &env); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid request envelope")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
 	// The backend trusts this header to name the channel the request arrived
 	// on, so a client-supplied value is dropped, never forwarded.
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
+	return env, rec.Seq, true
+}
 
-	resp, err := s.routes.Forward(r, env, session.bound)
+// forwardTunnelRequest returns the response to seal: the backend's, or the 502
+// a forwarding failure becomes.
+func (s *Server) forwardTunnelRequest(w http.ResponseWriter, r *http.Request, id string, env types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, bool) {
+	resp, err := s.routes.Forward(r, env, bound)
 	var changed *routing.BindingChangedError
 	if errors.As(err, &changed) {
 		// The client attests again rather than ride a session it did not verify.
 		s.endSession(id)
 		writeErr(w, http.StatusServiceUnavailable, changed.Code, "the router no longer routes by what this session attested; attest again")
-		return
+		return types.TunnelResponse{}, false
 	}
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
-		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
+		return types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}, true
 	}
+	return resp, true
+}
 
+func sealTunnelResponse(w http.ResponseWriter, channel *overenc.Channel, resp types.TunnelResponse, seq uint64) ([]byte, bool) {
 	respCBOR, err := cbor.Marshal(resp)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal response envelope")
-		return
+		return nil, false
 	}
-	out, err := channel.SealResponse(respCBOR, rec.Seq)
+	out, err := channel.SealResponse(respCBOR, seq)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "seal failed")
-		return
+		return nil, false
 	}
 	outCBOR, err := cbor.Marshal(out)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
-		return
+		return nil, false
 	}
+	return outCBOR, true
+}
+
+// writeTunnelRecord writes record in chunks, each restarting the write
+// deadline, so a client that keeps reading is never cut off.
+func (s *Server) writeTunnelRecord(w http.ResponseWriter, rc *http.ResponseController, record []byte) {
 	w.Header().Set("Content-Type", "application/cbor")
-	w.Header().Set("Content-Length", strconv.Itoa(len(outCBOR)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(record)))
 	w.WriteHeader(http.StatusOK)
-	for len(outCBOR) > 0 {
-		n := min(len(outCBOR), tunnelWriteChunk)
-		_ = rc.SetWriteDeadline(ioDeadline())
+	for len(record) > 0 {
+		n := min(len(record), tunnelWriteChunk)
+		_ = rc.SetWriteDeadline(s.tunnelIODeadline())
 		// A failed write has no one left to tell.
-		if _, err := w.Write(outCBOR[:n]); err != nil || rc.Flush() != nil {
+		if _, err := w.Write(record[:n]); err != nil || rc.Flush() != nil {
 			return
 		}
-		outCBOR = outCBOR[n:]
+		record = record[n:]
 	}
 }
 
