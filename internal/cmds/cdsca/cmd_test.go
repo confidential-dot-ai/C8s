@@ -246,3 +246,25 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 		})
 	}
 }
+
+// ca parses --operator-key and --insecure though it reads neither.
+func TestReadsWithTheFlagsItIgnores(t *testing.T) {
+	ca := testutil.MeshCA(t, "cds-m")
+	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
+
+	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--operator-key", "/nonexistent", "--insecure")
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if stdout != string(testutil.PEMCerts(ca)) {
+		t.Fatalf("stdout is not the served certificate: %q", stdout)
+	}
+}
+
+func TestHelpListsOnlyTheFlagsCARead(t *testing.T) {
+	stdout, _, err := run(t, "--help")
+	if err != nil {
+		t.Fatalf("--help: %v", err)
+	}
+	testutil.CheckHelpFlags(t, stdout, []string{"--url", "--image-policy-file", "--timeout", "--out"}, []string{"--operator-key", "--insecure"})
+}

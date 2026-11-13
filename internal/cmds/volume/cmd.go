@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -58,9 +59,10 @@ file 'create' writes.`,
 	}
 	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
 	cmd.AddCommand(newCreateCmd(o))
-	// attach/detach run on the node and never speak to CDS; they inherit the
-	// connection flags without requiring them.
-	cmd.AddCommand(newAttachCmd(Attacher{}), newDetachCmd(Attacher{}))
+	attach, detach := newAttachCmd(Attacher{}), newDetachCmd(Attacher{})
+	cmdsutil.HideUnreadFlags(attach, cmd.PersistentFlags())
+	cmdsutil.HideUnreadFlags(detach, cmd.PersistentFlags())
+	cmd.AddCommand(attach, detach)
 	return cmd
 }
 

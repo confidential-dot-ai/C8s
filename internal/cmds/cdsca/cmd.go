@@ -109,6 +109,8 @@ first.`,
 		},
 	}
 	cdsconn.BindFlags(cmd.Flags(), o)
+	_ = cmd.Flags().MarkHidden("operator-key")
+	_ = cmd.Flags().MarkHidden("insecure")
 	cmd.Flags().StringVar(&out, "out", "", "write the bundle here instead of stdout")
 	return cmd
 }
