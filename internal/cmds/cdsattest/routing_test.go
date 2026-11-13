@@ -131,7 +131,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	}
 	srvCfg := Config{
 		Logger:          slog.New(slog.DiscardHandler),
-		Evidence:        FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
+		Evidence:        fixedEvidence{},
 		FrontDoorMode:   types.FrontDoorModeCDS,
 		ServingCertFile: volumeFile(meshDir, "tls.crt"),
 		// The attestation endpoints bind the leaf the router dials with, as
@@ -580,6 +580,8 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
+		{"routing port above 65535", routed(func(c *config) { c.routing.port = 65536 }), "--routing-port must be between"},
+		{"negative routing port", routed(func(c *config) { c.routing.port = -1 }), "--routing-port must be between"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},

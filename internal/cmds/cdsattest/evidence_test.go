@@ -14,6 +14,13 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
+// fixedEvidence returns the same SNP evidence whatever report_data it is asked to bind.
+type fixedEvidence struct{}
+
+func (fixedEvidence) Evidence(context.Context, []byte) (json.RawMessage, string, string, error) {
+	return json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), "snp", "genoa", nil
+}
+
 func writeTempFile(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)

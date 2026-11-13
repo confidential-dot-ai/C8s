@@ -2,16 +2,19 @@ package cdsattest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -48,17 +51,7 @@ func TestNewCmdHasNoMeshIdentityFlags(t *testing.T) {
 	}
 }
 
-func writeFixtureFile(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "evidence.json")
-	if err := os.WriteFile(path, []byte(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func TestRunErrors(t *testing.T) {
-	fixture := writeFixtureFile(t)
 	tests := []struct {
 		name    string
 		cfg     config
@@ -66,17 +59,17 @@ func TestRunErrors(t *testing.T) {
 	}{
 		{
 			name:    "front-door mode is required",
-			cfg:     config{evidenceFixture: fixture},
+			cfg:     config{},
 			wantSub: "--front-door-mode",
 		},
 		{
 			name:    "unknown front-door mode",
-			cfg:     config{frontDoorMode: "public", evidenceFixture: fixture},
+			cfg:     config{frontDoorMode: "public"},
 			wantSub: "--front-door-mode",
 		},
 		{
 			name:    "missing platform",
-			cfg:     config{frontDoorMode: types.FrontDoorModeCDS, evidenceFixture: fixture},
+			cfg:     config{frontDoorMode: types.FrontDoorModeCDS},
 			wantSub: "--platform is required",
 		},
 		{
@@ -173,6 +166,50 @@ func TestRunReturnsListenError(t *testing.T) {
 	}
 }
 
+func TestRunReturnsRoutingListenError(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.routing.port = l.Addr().(*net.TCPAddr).Port // already taken
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "routing listener:") {
+		t.Fatalf("run() on an occupied routing port = %v, want the routing listener's bind error", err)
+	}
+}
+
+func TestAttestProviderAsksTheAttestationAPI(t *testing.T) {
+	var asked remote.AttestRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
+			t.Error(err)
+		}
+		json.NewEncoder(w).Encode(remote.AttestResponse{Evidence: json.RawMessage(`{}`)})
+	}))
+	defer api.Close()
+	cfg := config{
+		frontDoorMode:     types.FrontDoorModeCDS,
+		platform:          "snp",
+		generation:        "genoa",
+		attestationAPIURL: api.URL,
+	}
+	provider, err := attestProvider(cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, platform, generation, err := provider.Evidence(t.Context(), []byte("report-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(asked.ReportData) != "report-data" || asked.Platform != teetypes.PlatformSNP {
+		t.Fatalf("attestation-api asked %+v, want report_data %q for platform %q", asked, "report-data", teetypes.PlatformSNP)
+	}
+	if platform != "snp" || generation != "genoa" {
+		t.Fatalf("Evidence() platform, generation = %q, %q, want snp, genoa", platform, generation)
+	}
+}
+
 func TestNewLoggerLevels(t *testing.T) {
 	ctx := context.Background()
 	if !newLogger("debug").Enabled(ctx, slog.LevelDebug) {
@@ -199,14 +236,11 @@ func freePort(t *testing.T) int {
 }
 
 func TestRunServesUntilSignalled(t *testing.T) {
-	fixture := writeFixtureFile(t)
-
 	port := freePort(t)
 	cfg := routedRunConfig(t, port)
 	cfg.attestOff = false
 	cfg.logLevel = "not-a-level" // exercises the newLogger fallback too
 	cfg.frontDoorMode = types.FrontDoorModeCDS
-	cfg.evidenceFixture = fixture
 	cfg.platform = "snp"
 	cfg.generation = "genoa"
 	cfg.sessionTTL = time.Minute

@@ -26,21 +26,12 @@ import (
 
 // countingEvidence reports how many attestation reports the endpoints minted.
 type countingEvidence struct {
-	inner FixtureEvidenceProvider
 	calls atomic.Int64
 }
 
 func (c *countingEvidence) Evidence(ctx context.Context, reportData []byte) (json.RawMessage, string, string, error) {
 	c.calls.Add(1)
-	return c.inner.Evidence(ctx, reportData)
-}
-
-func testFixture() FixtureEvidenceProvider {
-	return FixtureEvidenceProvider{
-		Raw:        json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`),
-		Platform:   "snp",
-		Generation: "genoa",
-	}
+	return fixedEvidence{}.Evidence(ctx, reportData)
 }
 
 // newMeteredTestServer returns the sidecar, the httptest server in front of it
@@ -70,7 +61,7 @@ func newBurstTestServer(t *testing.T, burst int) (*Server, *httptest.Server, *co
 func newTestServerWith(t *testing.T, tune func(*Server)) (*Server, *httptest.Server, *countingEvidence) {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
-	evidence := &countingEvidence{inner: testFixture()}
+	evidence := &countingEvidence{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             evidence,
@@ -188,7 +179,7 @@ func TestAttestLBIsMetered(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
-		Evidence:             testFixture(),
+		Evidence:             fixedEvidence{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
@@ -1041,7 +1032,7 @@ func TestReadyzIsCached(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
-		Evidence:             testFixture(),
+		Evidence:             fixedEvidence{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ExpectedWorkload:     "some-workload",
 		MeshIdentityCertFile: identity.certFile,
