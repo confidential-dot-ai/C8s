@@ -8,8 +8,10 @@ import (
 	"errors"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 )
 
 type assignmentSession interface {
@@ -42,6 +44,21 @@ func (r *Reconciler) assignmentTarget(ctx context.Context, rec *record, address 
 	return verify(ctx, rec, address)
 }
 
+// livePod reads the pod again and requires what the record froze: the same
+// UID, no deletion in progress and an unchanged specification. The pod a
+// reconciliation started from may be seconds old by the time a guest is
+// verified, and nothing is signed or sent for a pod the cluster no longer has.
+func (r *Reconciler) livePod(ctx context.Context, rec *record) (*corev1.Pod, error) {
+	pod := &corev1.Pod{}
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: rec.Namespace, Name: rec.Name}, pod); err != nil {
+		return nil, err
+	}
+	if pod.DeletionTimestamp != nil {
+		return nil, errors.New("the Pod is being deleted")
+	}
+	return pod, matchesPod(rec, pod)
+}
+
 // assignmentPayload is the frozen pod, entries and peer list of the record.
 func assignmentPayload(rec *record) ([]byte, []byte, []byte, error) {
 	peers := rec.MeshPeers
@@ -72,6 +89,15 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 		return context.DeadlineExceeded
 	}
 	if len(rec.Assignment) == 0 {
+		// The pod rules also judge labels and annotations, which the frozen
+		// specification does not cover.
+		live, err := r.livePod(ctx, rec)
+		if err != nil {
+			return err
+		}
+		if err := podlaunch.ValidateProviderPod(live); err != nil {
+			return err
+		}
 		manifest, entries, peers, err := assignmentPayload(rec)
 		if err != nil {
 			return err
@@ -100,6 +126,9 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 	}
 	if r.verificationExpired(rec) {
 		return context.DeadlineExceeded
+	}
+	if _, err := r.livePod(ctx, rec); err != nil {
+		return err
 	}
 	uid, err := target.Send(ctx, rec.Assignment)
 	var held *podstatus.AlreadyAssignedError

@@ -79,9 +79,11 @@ func TestLateOrCancelledVerifiedReplyCannotPublishReady(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "deadline", true: "leader-cancelled"}[cancelled], func(t *testing.T) {
 			pod := fixturePod()
-			r, cloud := fixtureReconciler(t, pod)
+			r, cloud, guest := fixture(t, pod)
 			now := time.Now()
 			r.now = func() time.Time { return now }
+			// Status is read only once an assignment saved the serving key.
+			runToAssignmentAttempt(t, r, pod, guest)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {

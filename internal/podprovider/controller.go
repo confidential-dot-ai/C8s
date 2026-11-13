@@ -199,7 +199,7 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", err)
 	}
-	projection, err := r.guest(callCtx, rec, address)
+	projection, err := r.guestStatus(callCtx, rec, address)
 	if ctx.Err() != nil {
 		return ctrl.Result{}, ctx.Err()
 	}
@@ -232,9 +232,6 @@ func (r *Reconciler) running(ctx, callCtx context.Context, pod *corev1.Pod, rec 
 	}
 	if r.verificationExpired(rec) {
 		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
-	}
-	if len(rec.Assignment) == 0 {
-		return r.stop(ctx, pod, rec, secret, "UnexpectedAssignedGuest")
 	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
 		rec.TerminalStatus = &status

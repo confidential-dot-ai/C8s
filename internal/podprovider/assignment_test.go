@@ -208,11 +208,14 @@ func TestAssignmentRefusalsNeverPublishUnauthorizedBytes(t *testing.T) {
 	}
 }
 
-// Matching guest status is not enough: a pod the provider never recorded an
-// assignment for was assigned by someone else, and the pod stops.
+// Matching guest status is not enough. A record without a saved assignment
+// has no serving key to read status from, so a guest that already runs the
+// pod is never read and never adopted, and the pod fails at its deadline.
 func TestStatusCannotInventAnUnpublishedAssignment(t *testing.T) {
 	pod := fixturePod()
 	r, cloud, guest := fixture(t, pod)
+	now := time.Now()
+	r.now = func() time.Time { return now }
 	runToRunning(t, r, pod)
 	rec, secret, err := r.loadRecord(t.Context(), identityKey(r.cfg.ProviderID, string(pod.UID)))
 	if err != nil {
@@ -222,12 +225,32 @@ func TestStatusCannotInventAnUnpublishedAssignment(t *testing.T) {
 	if err := r.save(t.Context(), rec, secret); err != nil {
 		t.Fatal(err)
 	}
+	reads := guest.reads
 	if err := reconcile(t, r, pod); err != nil {
 		t.Fatal(err)
 	}
 	current := getPod(t, r, pod)
-	if current.Status.Phase != corev1.PodFailed || current.Status.Reason != "UnexpectedAssignedGuest" || cloud.deleteCalls != 1 || guest.sends != 1 {
-		t.Fatal("matching guest status invented missing assignment authority")
+	if current.Status.Reason != "AttestationUnavailable" || cloud.deleteCalls != 0 || guest.sends != 1 || guest.prepares != 1 || guest.reads != reads {
+		t.Fatalf("reason %s deletes %d sends %d prepares %d reads %d: matching guest status invented missing assignment authority",
+			current.Status.Reason, cloud.deleteCalls, guest.sends, guest.prepares, guest.reads-reads)
+	}
+	now = *getRecord(t, r, pod).VerificationDeadline
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	current = getPod(t, r, pod)
+	if current.Status.Phase != corev1.PodFailed || current.Status.Reason != verificationTimeoutReason || cloud.deleteCalls != 1 || guest.reads != reads {
+		t.Fatalf("phase %s reason %s deletes %d", current.Status.Phase, current.Status.Reason, cloud.deleteCalls)
+	}
+}
+
+func TestGuestStatusNeedsTheSavedServingKey(t *testing.T) {
+	r := &Reconciler{guest: func(context.Context, *record, string) (podstatus.PodProjection, error) {
+		t.Error("a guest was read without a saved serving key")
+		return podstatus.PodProjection{}, nil
+	}}
+	if _, err := r.guestStatus(t.Context(), &record{}, "192.0.2.1"); !errors.Is(err, errNoServingKey) {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -373,5 +396,130 @@ func TestAssignmentCarriesTheFrozenClientDocument(t *testing.T) {
 	}
 	if err := podassign.Verify(&r.cfg.key.PublicKey, &guest.key.PublicKey, req); err != nil {
 		t.Fatalf("signature does not cover the client document: %v", err)
+	}
+}
+
+// The pod read at the start of a reconciliation may be gone or changed by the
+// time the guest is verified. Nothing is signed or sent for a pod that is
+// being deleted, was edited, or no longer passes the pod rules.
+func TestAssignmentRereadsTheLivePodBeforeSigningAndSending(t *testing.T) {
+	deletePod := func(t *testing.T, r *Reconciler, pod *corev1.Pod) {
+		if err := r.client.Delete(t.Context(), getPod(t, r, pod)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	editSpec := func(t *testing.T, r *Reconciler, pod *corev1.Pod) {
+		live := getPod(t, r, pod)
+		live.Spec.Containers[0].Args = append(live.Spec.Containers[0].Args, "--changed")
+		if err := r.client.Update(t.Context(), live); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An annotation is outside the frozen specification; only the pod rules
+	// judge it.
+	spoilAnnotation := func(t *testing.T, r *Reconciler, pod *corev1.Pod) {
+		live := getPod(t, r, pod)
+		live.Annotations[workloadclaims.AnnotationClientDocument] = "not base64!"
+		if err := r.client.Update(t.Context(), live); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		change        func(*testing.T, *Reconciler, *corev1.Pod)
+		beforeSigning bool
+	}{
+		{"deleted before signing", deletePod, true},
+		{"edited before signing", editSpec, true},
+		{"pod rules broken before signing", spoilAnnotation, true},
+		{"deleted before sending", deletePod, false},
+		{"edited before sending", editSpec, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := fixturePod()
+			r, _, guest := fixture(t, pod)
+			changed := false
+			hook := func() {
+				if !changed {
+					changed = true
+					tc.change(t, r, pod)
+				}
+			}
+			if tc.beforeSigning {
+				guest.onVerify = hook
+			} else {
+				guest.afterPrepare = hook
+			}
+			// The pass in which the pod changes may end in a write conflict;
+			// what matters is what reached the guest during it.
+			for range 8 {
+				err := reconcile(t, r, pod)
+				if changed {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !changed {
+				t.Fatal("the provider never reached the guest")
+			}
+			// A change before signing leaves nothing prepared or saved; one
+			// after it leaves the saved assignment unsent.
+			saved, wantPrepares := len(getRecord(t, r, pod).Assignment) != 0, 1
+			if tc.beforeSigning {
+				wantPrepares = 0
+			}
+			if guest.prepares != wantPrepares || guest.sends != 0 || saved == tc.beforeSigning {
+				t.Fatalf("prepares %d sends %d saved assignment %t", guest.prepares, guest.sends, saved)
+			}
+		})
+	}
+}
+
+// A saved assignment is not replayed to a pod that is being deleted.
+func TestReplayRereadsTheLivePod(t *testing.T) {
+	pod := fixturePod()
+	r, _, guest := fixture(t, pod)
+	guest.failBeforeCommit = true
+	runToAssignmentAttempt(t, r, pod, guest)
+	guest.failBeforeCommit = false
+	guest.onVerify = func() {
+		if live := getPod(t, r, pod); live.DeletionTimestamp == nil {
+			if err := r.client.Delete(t.Context(), live); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_ = reconcile(t, r, pod) // may end in a write conflict with the deletion
+	if guest.sends != 1 || guest.prepares != 1 {
+		t.Fatalf("sends %d prepares %d: the assignment was replayed for a pod being deleted", guest.sends, guest.prepares)
+	}
+}
+
+// Status is read from the serving key, so a record that kept the key and lost
+// its assignment, or the reverse, is not a record to act on.
+func TestRecordHoldsAnAssignmentAndItsServingKeyTogether(t *testing.T) {
+	for name, strip := range map[string]func(*record){
+		"key without assignment": func(rec *record) { rec.Assignment = nil },
+		"assignment without key": func(rec *record) { rec.ServingKey = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := fixturePod()
+			r, _, _ := fixture(t, pod)
+			runToRunning(t, r, pod)
+			key := identityKey(r.cfg.ProviderID, string(pod.UID))
+			rec, secret, err := r.loadRecord(t.Context(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			strip(rec)
+			if err := r.save(t.Context(), rec, secret); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.loadRecord(t.Context(), key); err == nil {
+				t.Fatal("a record holding half of its assignment was read")
+			}
+		})
 	}
 }
