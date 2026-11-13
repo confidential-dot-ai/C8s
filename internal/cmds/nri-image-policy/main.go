@@ -167,12 +167,22 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		wlClient      allowlistclient.Client
 		pull          *allowlistPull
 		cdsHTTPClient *http.Client
+		chain         *chainPins
 	)
+	if cfg.PullEnabled() && cfg.Allowlist.Pull.CDSChain != "" {
+		if chain, err = followChainAtStart(cfg, logger); err != nil {
+			return err
+		}
+	}
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
 		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.Mesh.Resolver)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
+		}
+		if chain != nil {
+			chain.pull.Store(httpClient.Transport.(*http.Transport))
+			httpClient.Transport = chain
 		}
 		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient).ForNodes()
@@ -213,6 +223,9 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
+	}
+	if chain != nil {
+		chain.podPins = plugin.cdsPins
 	}
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
@@ -256,7 +269,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath, chain); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
@@ -322,6 +335,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 				timeout:  cfg.Allowlist.Pull.Timeout,
 				etag:     initialETag,
 				logger:   logger,
+				refresh:  chain.refresher(),
 			})
 		}()
 	}
@@ -520,8 +534,9 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
-// mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
+// mutually-attested armTLS (docs/armtls.md, "Sandbox identity"). With a
+// followed chain, the CDS builds it admits follow the chain's accepted ones.
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner, chain *chainPins) error {
 	set, err := cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		return err
@@ -533,17 +548,21 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
+	digests, err := workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, armtls.Pins(set.Policy()), journal)
+	if err == nil && chain != nil {
+		chain.attachDigests(digests)
+	}
+	return err
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
 // Without pull config there is no CDS in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string, chain *chainPins) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -562,7 +581,7 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
 	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, resolver, s)
+		return startSandboxDigests(ctx, logger, cfg, resolver, s, chain)
 	})
 	return nil
 }

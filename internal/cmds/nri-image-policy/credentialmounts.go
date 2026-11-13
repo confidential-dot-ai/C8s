@@ -83,16 +83,21 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerCDSMount is the CDS endpoint alone: the router polls the signed route
-// manifest from the one CDS its node admits, and takes its pins from the
-// measured base the chart renders rather than from a node document.
+// routerCDSMount is the CDS endpoint and the node's CDS pins: the router polls
+// the signed route manifest from the one CDS its node admits, under the pins
+// the node rewrites as the replica set accepts other builds.
 func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
-	if p.cdsAddress == "" {
+	var mounts []*api.Mount
+	if p.cdsPins != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
+	}
+	if p.cdsAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
+	}
+	if mounts == nil {
 		return nil
 	}
-	return &api.ContainerAdjustment{
-		Mounts: []*api.Mount{readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath)},
-	}
+	return &api.ContainerAdjustment{Mounts: mounts}
 }
 
 // injectedCredentialSidecar reports the webhook's own shape: a reserved

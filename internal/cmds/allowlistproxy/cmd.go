@@ -147,7 +147,12 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
+	// resolveCDS checked the pins once; the client re-reads them per
+	// handshake to follow a CDS upgrade.
+	httpClient, err := armtls.NewFollowingHTTPClient(cmdsutil.CDSPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}), cfg.attestationAPIURL)
+	if err == nil {
+		httpClient, err = cmdsutil.NodeCDSChain(httpClient, workloadclaims.CDSAddressPath)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}

@@ -135,6 +135,16 @@ func ClientCDSPins(nodePolicy string, source ImagePolicySource) (armtls.Pins, er
 	return armtls.Pins(policy), nil
 }
 
+// CDSPins resolves the pins as ResolveCDSPins does, on every call: a client
+// calling it per handshake follows the node's pins, which the node rewrites
+// in place when its CDS replica set accepts other builds.
+func CDSPins(nodePolicy string, source ImagePolicySource) func() (armtls.Pins, error) {
+	return func() (armtls.Pins, error) {
+		policy, _, err := ResolveCDSPins(nodePolicy, source)
+		return armtls.Pins(policy), err
+	}
+}
+
 // cdsPinSource names where the refused pins came from, so a client is told
 // which input to fix.
 func cdsPinSource(nodePolicy string, fromNode bool, source ImagePolicySource) string {
