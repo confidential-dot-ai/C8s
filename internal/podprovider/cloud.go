@@ -17,6 +17,9 @@ import (
 
 const cloudTimeout = 20 * time.Second
 
+// maxListPages bounds one listing of the provider's instances.
+const maxListPages = 1000
+
 var errCloudNotFound = errors.New("cloud instance not found")
 
 // cloudProblem is a Cloud response outside 2xx: its HTTP status and the
@@ -186,6 +189,7 @@ type instance struct {
 type cloudAPI interface {
 	Create(context.Context, string, createRequest) (*instance, error)
 	Find(context.Context, string) (*instance, error)
+	List(context.Context, string) ([]instance, error)
 	Get(context.Context, string) (*instance, error)
 	Delete(context.Context, string) error
 	Ping(context.Context) error
@@ -232,6 +236,33 @@ func (c *cloudClient) Find(ctx context.Context, key string) (*instance, error) {
 		return nil, nil
 	}
 	return &out.Items[0], nil
+}
+
+// List returns every instance labelled with the provider, following every
+// page. Without a status filter Cloud leaves terminated instances out.
+func (c *cloudClient) List(ctx context.Context, provider string) ([]instance, error) {
+	query := url.Values{"label": {providerLabel + "=" + provider}}
+	seen := map[string]bool{}
+	var all []instance
+	for range maxListPages {
+		var out struct {
+			Items         []instance `json:"items"`
+			NextPageToken string     `json:"nextPageToken"`
+		}
+		if err := c.do(ctx, http.MethodGet, "/v1/instances?"+query.Encode(), "", nil, &out); err != nil {
+			return nil, err
+		}
+		all = append(all, out.Items...)
+		if out.NextPageToken == "" {
+			return all, nil
+		}
+		if seen[out.NextPageToken] {
+			return nil, errors.New("cloud instance listing repeated a page token")
+		}
+		seen[out.NextPageToken] = true
+		query.Set("pageToken", out.NextPageToken)
+	}
+	return nil, errors.New("cloud instance listing has too many pages")
 }
 
 func (c *cloudClient) Get(ctx context.Context, id string) (*instance, error) {
