@@ -52,8 +52,7 @@ type Options struct {
 	DisableStatusMirror bool
 
 	// MeshImage is the armtls-mesh image the admission webhook injects as the
-	// pod's mesh endpoint. Empty leaves the node DaemonSet as the mesh. See
-	// webhook.Config.
+	// pod's mesh endpoint. It and GetCertImage are set together or not at all.
 	MeshImage string
 
 	// GetCertImage is the c8s multi-mode binary image the admission webhook
