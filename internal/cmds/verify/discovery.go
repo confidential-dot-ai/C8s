@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -127,7 +128,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, "", &connectError{err: fmt.Errorf("GET %s returned %d: %s", u.String(), resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := readutil.ReadAll(resp.Body, 1<<20)
 	if err != nil {
 		return nil, "", &connectError{err: fmt.Errorf("read discovery: %w", err)}
 	}

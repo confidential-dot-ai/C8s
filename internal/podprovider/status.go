@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -138,7 +138,7 @@ func get(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGuestBody))
+	data, err := readutil.ReadAll(resp.Body, maxGuestBody)
 	if err != nil {
 		return nil, err
 	}
