@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
 )
 
 // fetchAttested gets an HTTPS response bound to the previously attested leaf.
@@ -23,7 +25,7 @@ func fetchAttested(ctx context.Context, endpoint, serverName, certSHA256 string,
 	if req.URL.Scheme != "https" {
 		return nil, fmt.Errorf("attested fetch requires HTTPS")
 	}
-	tlsConfig := tlsPendingAttestation(serverName)
+	tlsConfig := pendingattestation.TLSConfig(serverName)
 	tlsConfig.VerifyConnection = func(cs tls.ConnectionState) error {
 		if len(cs.PeerCertificates) == 0 {
 			return fmt.Errorf("no peer certificate")

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -42,7 +43,7 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 	var servingLeaf []byte
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    tlsPendingAttestation(serverName),
+		Config:    pendingattestation.TLSConfig(serverName),
 	}
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
 		// The evidence must come from the connection it binds.
