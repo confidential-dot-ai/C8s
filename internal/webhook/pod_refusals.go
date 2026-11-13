@@ -207,32 +207,18 @@ func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 	return reserved
 }
 
-// rejectUnpinnableSidecarVolumes refuses a discovery volume of a kind the
-// get-cert sidecar's exact mount rules cannot admit (the chart's
-// c8s.injectedShapes): discovery is an emptyDir rule. Admitting the pod would
-// only have the node refuse the sidecar at container creation. A disk-backed
-// emptyDir passes: the rule admits it on the measured node image, whose
-// kubelet volumes sit on encrypted scratch, and the webhook cannot tell that
-// node from one without it, where the node refuses the sidecar
-// (docs/secrets.md#fixed-sidecar-mounts).
 func rejectUnpinnableSidecarVolumes(pod *corev1.Pod, inj *injection) error {
-	for _, ref := range []struct {
-		annotation, name, want string
-		admits                 func(corev1.VolumeSource) bool
-	}{
-		{AnnotationDiscoveryVolume, inj.Discovery.Volume, "an emptyDir (medium: Memory unless the node has encrypted scratch)", func(v corev1.VolumeSource) bool { return v.EmptyDir != nil }},
-	} {
-		if ref.name == "" {
-			continue
-		}
-		i := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == ref.name })
-		if i < 0 {
-			return fmt.Errorf("%w: %s %q names no volume of the pod", errInvalidInjectionAnnotation, ref.annotation, ref.name)
-		}
-		if !ref.admits(pod.Spec.Volumes[i].VolumeSource) {
-			return fmt.Errorf("%w: %s %q must be %s: the get-cert sidecar's mount rules admit no other kind there, so the node would refuse it",
-				errInvalidInjectionAnnotation, ref.annotation, ref.name, ref.want)
-		}
+	name := inj.Discovery.Volume
+	if name == "" {
+		return nil
+	}
+	i := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%w: %s %q names no volume of the pod", errInvalidInjectionAnnotation, AnnotationDiscoveryVolume, name)
+	}
+	if pod.Spec.Volumes[i].EmptyDir == nil {
+		return fmt.Errorf("%w: %s %q must be an emptyDir (medium: Memory unless the node has encrypted scratch): the get-cert sidecar's mount rules admit no other kind there, so the node would refuse it",
+			errInvalidInjectionAnnotation, AnnotationDiscoveryVolume, name)
 	}
 	return nil
 }
