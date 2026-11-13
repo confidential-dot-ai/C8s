@@ -175,20 +175,59 @@ func countErrors(findings []finding) int {
 // CDS access. Its entries are assumed already parsed and validated.
 func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	var warnings []finding
+	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+		warnings = append(warnings, workloadFindings(name, al.Workloads[name])...)
+	}
+	warnings = append(warnings, unconstrainedDigestFindings(al)...)
+	warnings = append(warnings, indistinguishableEntries(al)...)
+	warnings = append(warnings, shadowedEntries(al)...)
+	warnings = append(warnings, searchPathFindings(al)...)
+	return warnings
+}
 
-	// digest -> set of distinct entry names; and whether some occurrence admits
-	// an unconstrained launch.
+// workloadFindings reports what one entry carries on its own: its shape, its
+// image references, and what its secret grant leaves to the host.
+func workloadFindings(name string, w pkgallowlist.Workload) []finding {
+	var out []finding
+	if len(w.InitContainers) == 0 && len(w.Containers) == 0 {
+		out = append(out, warnf("workload %q has no init or main containers", name))
+	}
+	if w.Label != "" && isTagForm(w.Label) {
+		out = append(out, warnf("workload %q label %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, w.Label))
+	}
+	for _, c := range allContainers(w) {
+		d := c.Digest.String()
+		if argvPolicyName(c.Command) == pkgallowlist.PolicyDeny {
+			out = append(out, warnf("workload %q container %s command is deny; the effective argv must be empty, so the container can never start", name, d))
+		}
+		out = append(out, componentFindings(name, c)...)
+		if c.Image != "" && isTagForm(c.Image) {
+			out = append(out, warnf("workload %q container %s image %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, d, c.Image))
+		}
+	}
+	if w.Secrets == nil {
+		return out
+	}
+	for _, c := range allContainers(w) {
+		if pinsNoEnvValue(c.Env) {
+			out = append(out, warnf("workload %q grants secrets without pinning environment values for container %s", name, c.Digest))
+		}
+	}
+	for _, g := range slices.Concat(w.Secrets.Read, w.Secrets.Write) {
+		if g == "/**" {
+			out = append(out, warnf("workload %q grants the root secret subtree %q (every secret in the store)", name, g))
+		}
+	}
+	return out
+}
+
+// unconstrainedDigestFindings reports each digest several entries admit while one
+// leaves its launch to the host: admission is the union across entries, so the
+// digest runs unconstrained whatever the other entries pin.
+func unconstrainedDigestFindings(al *pkgallowlist.Allowlist) []finding {
 	entriesByDigest := map[string]map[string]bool{}
 	fullyAny := map[string]bool{}
-
-	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
-		w := al.Workloads[name]
-		if len(w.InitContainers) == 0 && len(w.Containers) == 0 {
-			warnings = append(warnings, warnf("workload %q has no init or main containers", name))
-		}
-		if w.Label != "" && isTagForm(w.Label) {
-			warnings = append(warnings, warnf("workload %q label %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, w.Label))
-		}
+	for name, w := range al.Workloads {
 		for _, c := range allContainers(w) {
 			d := c.Digest.String()
 			if entriesByDigest[d] == nil {
@@ -198,38 +237,15 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 			if c.IsUnconstrained() {
 				fullyAny[d] = true
 			}
-			if argvPolicyName(c.Command) == pkgallowlist.PolicyDeny {
-				warnings = append(warnings, warnf("workload %q container %s command is deny; the effective argv must be empty, so the container can never start", name, d))
-			}
-			warnings = append(warnings, componentFindings(name, c)...)
-			if c.Image != "" && isTagForm(c.Image) {
-				warnings = append(warnings, warnf("workload %q container %s image %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, d, c.Image))
-			}
-		}
-		if w.Secrets != nil {
-			for _, c := range allContainers(w) {
-				if pinsNoEnvValue(c.Env) {
-					warnings = append(warnings, warnf("workload %q grants secrets without pinning environment values for container %s", name, c.Digest))
-				}
-			}
-			for _, g := range append(append([]string{}, w.Secrets.Read...), w.Secrets.Write...) {
-				if g == "/**" {
-					warnings = append(warnings, warnf("workload %q grants the root secret subtree %q (every secret in the store)", name, g))
-				}
-			}
 		}
 	}
-
+	var out []finding
 	for _, d := range slices.Sorted(maps.Keys(fullyAny)) {
 		if len(entriesByDigest[d]) > 1 {
-			warnings = append(warnings, warnf("digest %s appears in %d entries and one grants 'any'; the effective admission for that digest is 'any' (union across entries)", d, len(entriesByDigest[d])))
+			out = append(out, warnf("digest %s appears in %d entries and one grants 'any'; the effective admission for that digest is 'any' (union across entries)", d, len(entriesByDigest[d])))
 		}
 	}
-
-	warnings = append(warnings, indistinguishableEntries(al)...)
-	warnings = append(warnings, shadowedEntries(al)...)
-	warnings = append(warnings, searchPathFindings(al)...)
-	return warnings
+	return out
 }
 
 // staleShapes names each generated entry of al that seed lacks while seed
