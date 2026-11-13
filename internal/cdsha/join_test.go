@@ -18,15 +18,15 @@ func TestAReplicaTheLeaderHasNotReachedDoesNotJoin(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(1)
 	leader := c.leader()
+	leader.resolve.onlyHolds(leader.peerAddress())
 	joiner := c.start()
-	leader.resolve.holds(leader.peerAddress())
 
 	time.Sleep(20 * testTiming.Tick)
 	if leader.node.memberOfCluster(string(joiner.node.member)) {
 		t.Fatal("the leader took in a replica it has not reached")
 	}
 
-	c.resolveEachOther()
+	leader.resolve.onlyHolds(c.peerAddresses()...)
 	c.joined(2)
 }
 

@@ -53,6 +53,15 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	}
 }
 
+// No test host mounts a CDS endpoint, so --cds-url is the only source left and
+// its absence is refused before the rest of the configuration is validated.
+func TestRunRequiresACDSEndpoint(t *testing.T) {
+	err := run(t.Context(), config{NoSAN: true})
+	if err == nil || err.Error() != "--cds-url is required: no node hands this client a CDS endpoint" {
+		t.Fatalf("error = %v, want the missing-endpoint refusal", err)
+	}
+}
+
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := cdsHTTPClient(t.Context(), config{
 		CDSURL:                 "https://cds:8443",
@@ -144,6 +153,21 @@ func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	}
 	if !errors.Is(err, errInvalidDiscoveryPublicTLSMode) {
 		t.Fatalf("error = %v, want discovery public TLS mode error", err)
+	}
+}
+
+// get-cert reports acme in discovery, where the webhook's annotation refuses
+// it.
+func TestValidateConfigAcceptsACMEDiscoveryPublicTLSMode(t *testing.T) {
+	err := validateConfig(config{
+		CDSURL:                 "http://cds:8443",
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "confidential-gke.confidential.ai",
+		DiscoveryOutPath:       "/tmp/discovery.json",
+		DiscoveryPublicTLSMode: "acme",
+	})
+	if err != nil {
+		t.Fatalf("validateConfig = %v, want acme accepted", err)
 	}
 }
 
@@ -1148,7 +1172,7 @@ func TestObtainCertWithRetryNoTimeoutTriesOnce(t *testing.T) {
 }
 
 func TestRunValidationError(t *testing.T) {
-	if err := run(config{CDSURL: "", AttestationApiURL: "http://a", SAN: "h"}); err == nil {
+	if err := run(t.Context(), config{CDSURL: "", AttestationApiURL: "http://a", SAN: "h"}); err == nil {
 		t.Fatal("run succeeded, want validation error")
 	}
 }
@@ -1162,7 +1186,7 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 		t.Skipf("%s exists on this host", workloadclaims.SidecarSocketDir)
 	}
 	dir := ramBackedDir(t)
-	err := run(config{
+	err := run(t.Context(), config{
 		CDSURL:                 "https://cds:8443",
 		MeasurementsConfigJSON: testCDSPin,
 		AttestationApiURL:      "http://attestation-api:8400",
@@ -1183,7 +1207,7 @@ func TestRunFailsOnACDSPinWithoutALaunchBinding(t *testing.T) {
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
 	})
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("error = %v, want a launch-binding refusal", err)
 	}
 }
@@ -1198,7 +1222,7 @@ func TestRunFailsOnUnwritableOutputPath(t *testing.T) {
 	cfg.CertPath = filepath.Join(missing, "tls.crt")
 	cfg.KeyPath = filepath.Join(missing, "tls.key")
 	cfg.CAPath = filepath.Join(missing, "ca.crt")
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "does not exist") {
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("error = %v, want missing output directory error", err)
 	}
 }
@@ -1210,7 +1234,7 @@ func TestRunRejectsASplitCredentialVolume(t *testing.T) {
 		SAN:               "host.example.com",
 	})
 	cfg.CAPath = filepath.Join(t.TempDir(), "ca.crt")
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "one directory") {
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "one directory") {
 		t.Fatalf("error = %v, want the one-directory requirement", err)
 	}
 }
@@ -1223,7 +1247,7 @@ func TestRunOnceReturnsInitialError(t *testing.T) {
 		SAN:                 "host.example.com",
 		InitialRetryTimeout: 0,
 	})
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("run succeeded, want initial certificate request error")
 	}
 }
@@ -1454,7 +1478,7 @@ func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 		http.Error(w, "denied", http.StatusForbidden)
 	})
 
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("run succeeded without a workload identity assertion")
 	}
 	if _, err := os.Stat(cfg.CertPath); !errors.Is(err, os.ErrNotExist) {

@@ -30,8 +30,8 @@ HELM_LINUX_AMD64_SHA256="a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c
 # The runtime, each from its own upstream release. Bump a version with the
 # sha256 the release publishes beside the artifact; the kubelet's is the
 # .sha256 file next to the binary, containerd's and runc's the .sha256sum.
-KUBERNETES_VERSION="v1.36.4"
-KUBELET_LINUX_AMD64_SHA256="cf2562db46c48ab84cc3791540778ee7fb1a0a008529adbb434723dd02ed8b4b"
+KUBERNETES_VERSION="v1.36.6"
+KUBELET_LINUX_AMD64_SHA256="cf8baae869b810d84338f8c7111e2bb32733e992c0c08107cf6692120f5e229f"
 CONTAINERD_VERSION="2.3.4"
 CONTAINERD_STATIC_LINUX_AMD64_SHA256="1d0eccd52471ab75e8d4645b538f73dc635f905cd2be776366eb1036a0089595"
 RUNC_VERSION="v1.4.3"

@@ -566,8 +566,8 @@ type releaseRender struct {
 	chart       renderChart
 	kubeVersion string
 	valuesFiles []string
-	setArgs     []string
-	// computed is the file setArgs are written to, the last -f helm reads.
+	// computed is the file the computed values are written to, the last -f
+	// helm reads.
 	computed string
 	// adoptedEntries are the allowlist entries written for adopted workloads.
 	adoptedEntries map[string]adoptedEntry
@@ -599,15 +599,15 @@ func renderRelease(
 	valuesFiles := orderedValuesFiles(chart.path, installPlatform, installValues)
 	// The computed values reach helm as the last -f, so they win over the
 	// operator's files on the keys they set.
-	valueArgs, err := buildValueArgs(chart.imagePins)
+	values, err := buildComputedValues(chart.imagePins)
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
-	setArgs, adoptedEntries, err := appendResolvedWorkloadImageArgs(ctx, valueArgs, adopted, installUpstream)
+	adoption, err := resolvedWorkloadImageValues(ctx, adopted, installUpstream)
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
-	computed, err := writeComputedValues(setArgs)
+	computed, err := writeComputedValues(helmchart.MergeValues(values, adoption.values))
 	if err != nil {
 		return releaseRender{}, nil, err
 	}
@@ -615,9 +615,8 @@ func renderRelease(
 		chart:          chart,
 		kubeVersion:    kubeVersion,
 		valuesFiles:    valuesFiles,
-		setArgs:        setArgs,
 		computed:       computed,
-		adoptedEntries: adoptedEntries,
+		adoptedEntries: adoption.entries,
 	}
 	removeComputed := func() {
 		os.Remove(computed)
@@ -651,7 +650,7 @@ func preflightCluster(
 	}
 	// The values the release will actually render with (chart defaults + -f
 	// + computed), read once and shared by the checks below.
-	values, err := effectiveValues(ctx, release.chart.path, release.valuesFiles, release.setArgs)
+	values, err := effectiveValues(ctx, release.chart.path, append(slices.Clone(release.valuesFiles), release.computed))
 	if err != nil {
 		return installPlan{}, err
 	}
@@ -723,6 +722,12 @@ func planUpstreamRoutes(values map[string]any, upstream string) (upstreamRoutes,
 	return upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}, cdsURL, nil
 }
 
+// interruptOnCancel stops helm with SIGINT when hc's context ends, as a
+// Ctrl-C would, so helm can wind down its release operation itself.
+func interruptOnCancel(hc *exec.Cmd) {
+	hc.Cancel = func() error { return hc.Process.Signal(os.Interrupt) }
+}
+
 // applyRelease is the only step that changes the cluster.
 func applyRelease(
 	ctx context.Context,
@@ -739,6 +744,7 @@ func applyRelease(
 	helmArgs := buildInstallHelmArgs(release.chart.path, release.computed, release.valuesFiles, installWait)
 	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
 	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	interruptOnCancel(hc)
 	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
 	if err := hc.Run(); err != nil {
 		return fmt.Errorf("helm install failed: %w", err)
@@ -850,14 +856,10 @@ func buildInstallHelmArgs(chartPath, computedValues string, valueFiles []string,
 	return helmArgs
 }
 
-// writeComputedValues turns the computed --set/--set-string pairs into a
-// values.yaml in a tmpfile and returns its path (caller removes it). install
-// passes it as a -f instead of shelling a pile of --set flags.
-func writeComputedValues(setArgs []string) (string, error) {
-	values, err := valueArgsToTree(setArgs)
-	if err != nil {
-		return "", err
-	}
+// writeComputedValues writes the computed values as a values.yaml in a
+// tmpfile and returns its path (caller removes it). install passes it as a -f
+// instead of shelling a pile of --set flags.
+func writeComputedValues(values map[string]any) (string, error) {
 	out, err := yaml.Marshal(values)
 	if err != nil {
 		return "", fmt.Errorf("marshal computed values: %w", err)
@@ -891,25 +893,11 @@ func validateHardwarePlatform(hardwarePlatform string) error {
 	return nil
 }
 
-// appendVolumedInstallArgs turns on the node agent that opens encrypted volumes
-// (docs/volumes.md) for --volumes.
-func appendVolumedInstallArgs(setArgs []string, volumes bool) []string {
-	if !volumes {
-		return setArgs
-	}
-	return append(setArgs, "--set", "volumed.enabled=true")
-}
-
 // effectiveValues resolves the values tree the release will actually render
-// with, in helm's precedence order: chart defaults < -f files in order <
-// --set. Callers that decide on a value the operator may have overridden must
-// read this, not the defaults.
-func effectiveValues(
-	ctx context.Context,
-	chartPath string,
-	valuesFiles []string,
-	setArgs []string,
-) (map[string]any, error) {
+// with, in helm's precedence order: chart defaults < -f files in order, the
+// computed values last. Callers that decide on a value the operator may have
+// overridden must read this, not the defaults.
+func effectiveValues(ctx context.Context, chartPath string, valuesFiles []string) (map[string]any, error) {
 	tree, err := chartValues(ctx, chartPath)
 	if err != nil {
 		return nil, err
@@ -921,13 +909,7 @@ func effectiveValues(
 		}
 		helmchart.MergeValues(tree, overlay)
 	}
-	// The computed values reach helm as the last -f file, which replaces
-	// lists rather than merging their elements.
-	computed, err := valueArgsToTree(setArgs)
-	if err != nil {
-		return nil, err
-	}
-	return helmchart.MergeValues(tree, computed), nil
+	return tree, nil
 }
 
 func init() {

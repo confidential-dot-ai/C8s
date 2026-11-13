@@ -370,7 +370,7 @@ given the digests the worker image's own release published:
 
 ```sh
 c8s node-image render --output-dir seed \
-    --hardware-platform sev-snp --kube-version v1.36.4 \
+    --hardware-platform sev-snp --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
     --armtls-mesh-image-digest sha256:<armTLS mesh digest>
 c8s cds config new --allowlist-seed seed/allowlist-seed.json ...

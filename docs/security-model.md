@@ -156,7 +156,8 @@ node is out of scope. Pin every container of an entry that holds a grant.
 
 - **Serve other bytes under a release tag**: a release publishes
   `release-statement.json` with a Sigstore bundle signed keyless through GitHub
-  Actions, naming the commit, the tag, and each allowlist seed's SHA-256
+  Actions, naming the commit, the tag, the chart digest, and each CLI binary's
+  SHA-256
   ([releases.md](releases.md#verify-a-release));
   [Anyone can verify it](guarantees.md#anyone-can-verify-it).
 - **Move a tag under a running cluster**: every admission decision keys on the

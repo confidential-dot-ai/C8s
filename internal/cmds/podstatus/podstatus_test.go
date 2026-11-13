@@ -262,7 +262,12 @@ func TestAttestBindsMeasuredDigests(t *testing.T) {
 	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("expected set mismatch: %v", err)
 	}
-	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
+	_, client, err := Attest(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("attest: %v", err)
+	}
+	defer client.CloseIdleConnections()
+	if body, _, _, err := doPeer(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil || !strings.Contains(string(body), `"app"`) {
 		t.Fatalf("get: %s %v", body, err)
 	}
 }
@@ -320,6 +325,44 @@ func TestServeExitsWhenTheLaunchKeyIsNotConfirmed(t *testing.T) {
 				t.Fatalf("got %v", err)
 			}
 		})
+	}
+}
+
+// `pod-status serve` runs Serve under the context it is executed with:
+// cancelling it stops a Serve still waiting for its launch key.
+func TestServeCommandStopsWithItsContext(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "config.json")
+	doc, err := json.Marshal(stagedPodDocument(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := loadMeasuredLaunchKey
+	t.Cleanup(func() { loadMeasuredLaunchKey = old })
+	loading := make(chan struct{})
+	loadMeasuredLaunchKey = func(ctx context.Context, _, _ string) ([]byte, error) {
+		close(loading)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := NewCmd()
+	cmd.SetArgs([]string{"serve", "--platform=tdx", "--staged=" + staged})
+	cmd.SetErr(io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	<-loading
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serve = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop after its context was cancelled")
 	}
 }
 
@@ -442,10 +485,10 @@ func TestAttestPinsTheServingKey(t *testing.T) {
 	other.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
 	other.StartTLS()
 	t.Cleanup(other.Close)
-	if _, err := do(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+	if _, _, _, err := doPeer(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
 		t.Fatalf("read from another guest: %v", err)
 	}
-	if _, err := do(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
+	if _, _, _, err := doPeer(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
 		t.Fatalf("read from the attested guest: %v", err)
 	}
 }
@@ -534,7 +577,7 @@ func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
 func TestDoRequiresTLS(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
 	t.Cleanup(srv.Close)
-	if _, err := do(context.Background(), srv.Client(), http.MethodGet, srv.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "did not arrive over TLS") {
+	if _, _, _, err := doPeer(context.Background(), srv.Client(), http.MethodGet, srv.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "did not arrive over TLS") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -596,9 +639,6 @@ func TestAttestRefusesInvalidConfiguration(t *testing.T) {
 			tc.edit(&cfg)
 			if report, client, err := Attest(t.Context(), cfg); err == nil || report != nil || client != nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("attest: %v, want %q", err, tc.want)
-			}
-			if body, err := Get(t.Context(), cfg); err == nil || body != nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("get: %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -724,7 +764,7 @@ func TestAttestedReadsRefuseFailedAnswers(t *testing.T) {
 	if _, _, err := postEvidence(t.Context(), client, srv.URL, []byte("{}")); err == nil || !strings.Contains(err.Error(), `binding is ""`) {
 		t.Fatalf("evidence without binding: %v", err)
 	}
-	if _, err := do(t.Context(), client, "BAD METHOD", srv.URL, nil); err == nil {
+	if _, _, _, err := doPeer(t.Context(), client, "BAD METHOD", srv.URL, nil); err == nil {
 		t.Fatal("request with an invalid method sent")
 	}
 }

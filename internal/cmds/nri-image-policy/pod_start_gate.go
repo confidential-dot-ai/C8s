@@ -35,16 +35,6 @@ func (p *plugin) listenPodStarts() (net.Listener, error) {
 // NRI disconnect must revoke authority without waiting for an active callback.
 func (p *plugin) disconnectPodStarts() { p.podStartDisconnected.Store(true) }
 
-// refuseDisconnectedPod refuses an admission mutation on a Pod guest once its
-// runtime connection ended: a callback still queued from the dropped session
-// grants nothing. Callers hold podMu.
-func (p *plugin) refuseDisconnectedPod() error {
-	if p.cfg.podRole() && p.podStartDisconnected.Load() {
-		return errors.New("pod runtime connection ended")
-	}
-	return nil
-}
-
 func (p *plugin) runWithPodStarts(ctx context.Context, listener net.Listener) error {
 	if listener == nil {
 		return p.Run(ctx)
@@ -75,13 +65,11 @@ func podStartShutdownError(err error) error {
 	return err
 }
 
-// finishPodStart follows final checks and history recording on both ready paths.
-func (p *plugin) finishPodStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, source string) error {
-	if err := p.afterPodStart(pod, source); err != nil {
+// finishStart follows final checks and history recording on both ready paths.
+func (c podCVM) finishStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, source string) error {
+	p := c.p
+	if err := c.afterStart(pod, source); err != nil {
 		return err
-	}
-	if !p.cfg.podRole() {
-		return nil
 	}
 	request := podstart.Request{ContainerID: ctr.GetId(), SandboxID: pod.GetId(), PID: ctr.GetPid()}
 	if err := p.requirePodStart(ctx, request); err != nil {
@@ -101,7 +89,7 @@ func (p *plugin) finishPodStart(ctx context.Context, pod *api.PodSandbox, ctr *a
 }
 
 func (p *plugin) consumePodStart(ctx context.Context, request podstart.Request) error {
-	defer p.lockPodAdmission()()
+	defer p.cvm().lockAdmission()()
 	grant, exists := p.podStarts[request.ContainerID]
 	if !exists || grant.request != request || !time.Now().Before(grant.expires) {
 		return errors.New("pod start has no matching current admission")

@@ -27,12 +27,12 @@ var containerdRoots = []string{
 // being admitted. Handlers must compare these identifiers exactly; a path that
 // merely looks like kubelet or containerd state is untrusted.
 type MountContext struct {
-	PodUID     string
-	SandboxID  string
-	Pod        *api.PodSandbox
-	Container  *api.Container
-	Storage    mountStorageInspector
-	NodeMounts nodeMounts
+	PodUID         string
+	SandboxID      string
+	Pod            *api.PodSandbox
+	Container      *api.Container
+	Storage        mountStorageInspector
+	EnforcerMounts enforcerMounts
 }
 
 func (c MountContext) valid() bool {
@@ -48,10 +48,10 @@ type mountHandler interface {
 type mountObserver struct {
 	handlers []mountHandler
 	storage  mountStorageInspector
-	own      nodeMounts
+	own      enforcerMounts
 }
 
-func newMountObserver(storage mountStorageInspector, own nodeMounts) mountObserver {
+func newMountObserver(storage mountStorageInspector, own enforcerMounts) mountObserver {
 	return mountObserver{
 		storage: defaultStorage(storage),
 		own:     own,
@@ -67,12 +67,12 @@ func newMountObserver(storage mountStorageInspector, own nodeMounts) mountObserv
 
 func (o mountObserver) Observe(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	ctx := MountContext{
-		PodUID:     pod.GetUid(),
-		SandboxID:  pod.GetId(),
-		Pod:        pod,
-		Container:  ctr,
-		Storage:    o.storage,
-		NodeMounts: o.own,
+		PodUID:         pod.GetUid(),
+		SandboxID:      pod.GetId(),
+		Pod:            pod,
+		Container:      ctr,
+		Storage:        o.storage,
+		EnforcerMounts: o.own,
 	}
 	out := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
 	for _, m := range ctr.GetMounts() {
@@ -129,7 +129,7 @@ func defaultStorage(s mountStorageInspector) mountStorageInspector {
 type injectedNodeMountHandler struct{}
 
 func (injectedNodeMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
-	if !ctx.valid() || !isInjectedNodeMount(ctx.Pod, ctx.Container, m, ctx.NodeMounts) {
+	if !ctx.valid() || !isInjectedNodeMount(ctx.Pod, ctx.Container, m, ctx.EnforcerMounts) {
 		return allowlist.ObservedMount{}, false
 	}
 	mount := observed(m, allowlist.MountPlatform, allowlist.MountUnknown)

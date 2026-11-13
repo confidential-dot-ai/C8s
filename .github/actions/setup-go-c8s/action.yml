@@ -12,6 +12,10 @@ description: >-
   go.mod. The go.mod floor is still satisfied, so GOTOOLCHAIN never has to
   download a second toolchain.
 
+  The one exception is .github/scripts/release-cli.sh, which builds the released
+  CLI with exactly the `go` directive so that the binaries are reproducible.
+  Changing the directive changes those bytes.
+
   Run this AFTER actions/checkout: a local (./) composite action cannot perform
   the checkout itself, because the action file must already be on disk before
   `uses:` can resolve it.

@@ -74,25 +74,30 @@ func TestALeaderWhoseBarriersRaftRefusesEndsItsRun(t *testing.T) {
 	c.genesis(3)
 	leader := c.leader()
 	follower := c.follower()
-	term := leader.node.following().term
-	now := time.Now()
+	// The refusals are the test's own: no worker of the cluster records on them.
+	wedging := &Node{
+		cfg:  leader.node.cfg,
+		fsm:  leader.node.fsm,
+		raft: leader.node.raft,
+	}
+	term := wedging.following().term
 
-	if err := leader.node.wedged(); err != nil {
+	if err := wedging.wedged(); err != nil {
 		t.Fatalf("a leader whose barriers pass: %v", err)
 	}
-	leader.node.refusals.run.Store(&barrierRun{
+	wedging.refusals.run.Store(&barrierRun{
 		term:  term,
-		since: now.Add(-c.timing.DeadAfter / 2),
+		since: time.Now().Add(-c.timing.DeadAfter / 2),
 	})
-	if err := leader.node.wedged(); err != nil {
+	if err := wedging.wedged(); err != nil {
 		t.Fatalf("a leader whose barriers Raft has refused for half a DeadAfter: %v", err)
 	}
-	leader.node.refusals.run.Store(&barrierRun{
+	wedging.refusals.run.Store(&barrierRun{
 		term:  term,
-		since: now.Add(-2 * c.timing.DeadAfter),
+		since: time.Now().Add(-2 * c.timing.DeadAfter),
 	})
 
-	err := leader.node.wedged()
+	err := wedging.wedged()
 	if !errors.Is(err, ErrLeftItsCluster) {
 		t.Errorf("a leader whose every barrier Raft refuses answers %v, want it leaving its cluster", err)
 	}

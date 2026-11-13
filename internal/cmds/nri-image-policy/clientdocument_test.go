@@ -50,7 +50,7 @@ func TestPodClientDocumentIsBoundIntoEveryContainer(t *testing.T) {
 	if err := p.prepareClientDocument(); err != nil || p.clientDocument != "" {
 		t.Fatalf("a Pod without a client document prepared %q: %v", p.clientDocument, err)
 	}
-	if adjust, err := p.credentialMounts(t.Context(), pod, &api.Container{Name: "app"}); err != nil || adjust != nil {
+	if adjust, err := p.cvm().containerMounts(t.Context(), pod, &api.Container{Name: "app"}); err != nil || adjust != nil {
 		t.Fatalf("a Pod without a client document got %v: %v", adjust, err)
 	}
 
@@ -64,7 +64,7 @@ func TestPodClientDocumentIsBoundIntoEveryContainer(t *testing.T) {
 	}
 	for _, name := range []string{"app", workloadclaims.MeshContainerName} {
 		ctr := &api.Container{Name: name, PodSandboxId: pod.Id}
-		adjust, err := p.credentialMounts(t.Context(), pod, ctr)
+		adjust, err := p.cvm().containerMounts(t.Context(), pod, ctr)
 		if err != nil || adjust == nil || len(adjust.Mounts) != 1 {
 			t.Fatalf("%s adjustment %v: %v", name, adjust, err)
 		}
@@ -77,7 +77,7 @@ func TestPodClientDocumentIsBoundIntoEveryContainer(t *testing.T) {
 		if len(observed) != 1 || observed[0].Class != allowlist.MountPlatform || !observed[0].ReadOnly {
 			t.Fatalf("%s observed %+v", name, observed)
 		}
-		if foreign := hostBinds(pod, ctr, p.nodeMounts(), observed, nil, cdiExpansion{}); len(foreign) != 0 {
+		if foreign := hostBinds(pod, ctr, p.cvm().enforcerMounts(), observed, nil, cdiExpansion{}); len(foreign) != 0 {
 			t.Fatalf("%s client document read as a host bind: %v", name, foreign)
 		}
 	}

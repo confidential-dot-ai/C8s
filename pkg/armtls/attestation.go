@@ -60,10 +60,7 @@ const (
 //	1.3.6.1.4.1.66378.1.7 - CDS HA peer member id (internal/cdsha)
 //
 // .1.3 was the armTLS config-claims extension; it is retired, not reusable.
-var (
-	OIDConfidentialTEE   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1}
-	OIDARMTLSAttestation = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 1}
-)
+var OIDARMTLSAttestation = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 1}
 
 // MarshalExtension encodes att as the X.509 extension under OIDARMTLSAttestation.
 func MarshalExtension(att *Attestation) (pkix.Extension, error) {

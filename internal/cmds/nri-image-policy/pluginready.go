@@ -11,13 +11,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -49,7 +47,7 @@ var errPluginNotRunning = errors.New("plugin not running")
 // that is alive but hung still reads as ready. An HTTP endpoint rather than an
 // exec probe because the locked node image denies every runc exec it was not granted
 // (docs/node-exec-mode.md).
-func runPluginReady(args []string) error {
+func runPluginReady(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+pluginReadyVerb, flag.ContinueOnError)
 	pluginPath := fs.String("plugin-path", "", "absolute path containerd launches the plugin from (its argv[0])")
 	addr := fs.String("addr", ":8080", "readiness listen address (host:port)")
@@ -74,9 +72,6 @@ func runPluginReady(args []string) error {
 	if _, _, err := net.SplitHostPort(*addr); err != nil {
 		return fmt.Errorf("--addr %q must be host:port: %w", *addr, err)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	return servePluginReady(ctx, *addr, *procRoot, *pluginPath)
 }
 

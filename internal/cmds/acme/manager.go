@@ -343,10 +343,8 @@ func (m *manager) frontDoorReady(ctx context.Context) error {
 	}
 }
 
-// issue runs the RFC 8555 HTTP-01 flow for the configured domain set and
-// installs the key in keyDir and the full chain in certDir.
-func (m *manager) issue(ctx context.Context) error { return m.issueDomains(ctx, m.domains) }
-
+// issueDomains runs the RFC 8555 HTTP-01 flow and installs the key in keyDir
+// and the full chain in certDir.
 func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 	if m.httpPort != 0 {
 		if err := m.frontDoorReady(ctx); err != nil {

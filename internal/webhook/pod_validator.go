@@ -36,7 +36,7 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	if err := v.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, false); handled {
+	if response, handled := handlePodCVM(req, pod, v.decoder, v.cfg, validatingPodCVM{}); handled {
 		return response
 	}
 

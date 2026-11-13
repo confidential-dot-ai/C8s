@@ -799,6 +799,22 @@ func TestClassifyVerifyErrorDoesNotEchoUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestAttest_RejectsMalformedRequestJSON(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+
+	for name, body := range map[string]string{
+		"duplicate key": `{"challenge":"AA==","challenge":"AA=="}`,
+		"null body":     `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(body))))
+			wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
+		})
+	}
+}
+
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
@@ -886,6 +902,52 @@ func TestAttest_RequestTimeoutRefusesASlowAttestationApi(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadGateway, types.ErrorCodeAttestationApiUnreachable)
+}
+
+// captureSlog routes the default logger to a buffer for the test's duration.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+const issuanceRecordMsg = "certificate issued (in-process)"
+
+// logRecord returns the attributes of the captured record carrying msg.
+func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		record := map[string]any{}
+		if json.Unmarshal([]byte(line), &record) != nil {
+			continue
+		}
+		if record["msg"] == msg {
+			return record
+		}
+	}
+	t.Fatalf("no %q record: %s", msg, logs.String())
+	return nil
+}
+
+// A CDS that holds no mesh CA between the gate and the signature answers
+// unavailable, so a requester retries instead of treating it as a refusal.
+func TestAttest_NoIssuingMeshCAIsUnavailable(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.MeshCA = noMeshCA{}
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, issueChallenge(t, h), csrPEM), http.StatusServiceUnavailable, types.ErrorCodeInternal)
+}
+
+// noMeshCA is a replica that stopped serving.
+type noMeshCA struct{}
+
+func (noMeshCA) Current() (issuer.CurrentCA, bool) {
+	return issuer.CurrentCA{}, false
 }
 
 // The issuance record is the only durable trace that a mesh identity was

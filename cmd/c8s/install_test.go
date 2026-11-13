@@ -174,13 +174,26 @@ func TestCloudPlatformsHaveStockFiles(t *testing.T) {
 }
 
 func TestAppendVolumedInstallArgsDisabledIsNoOp(t *testing.T) {
-	got := appendVolumedInstallArgs([]string{"upgrade"}, false)
-	assertArgsEqual(t, got, []string{"upgrade"})
+	resetCLIState(t)
+	got, err := buildComputedValues(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if volumed, ok := got["volumed"]; ok {
+		t.Fatalf("computed volumed = %v without --volumes, want no volumed key", volumed)
+	}
 }
 
 func TestAppendVolumedInstallArgsEnablesTheNodeAgent(t *testing.T) {
-	got := appendVolumedInstallArgs([]string{"upgrade"}, true)
-	assertArgsEqual(t, got, []string{"upgrade", "--set", "volumed.enabled=true"})
+	resetCLIState(t)
+	installVolumes = true
+	got, err := buildComputedValues(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]any{"enabled": true}; !reflect.DeepEqual(got["volumed"], want) {
+		t.Fatalf("computed volumed = %v, want %v", got["volumed"], want)
+	}
 }
 
 func TestParseWorkloadRef(t *testing.T) {
@@ -537,7 +550,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		return "", nil
 	}
 	scratch := corev1.VolumeMount{Name: "scratch", MountPath: "/scratch/"}
-	got, entries, err := buildWorkloadImageArgs([]string{"upgrade"}, []adoptedWorkload{
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{
 		{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
@@ -552,44 +565,50 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 			}},
 		},
 	}, "", io.Discard, resolve)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs: %v", err)
+		t.Fatalf("buildWorkloadImageValues: %v", err)
 	}
-	container := func(field string, i int, digest, ref string, mounts ...string) []string {
-		p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.infer.%s[%d].", field, i)
-		policy := "exact"
-		if len(mounts) == 0 {
-			policy = "deny"
+	container := func(digest, ref string, mounts ...string) map[string]any {
+		c := map[string]any{
+			"digest":  digest,
+			"image":   ref,
+			"command": map[string]any{"policy": "any"},
+			"args":    map[string]any{"policy": "any"},
+			"env":     map[string]any{"policy": "any"},
+			"mounts":  map[string]any{"policy": "deny"},
 		}
-		args := []string{
-			"--set-string", p + "digest=" + digest,
-			"--set-string", p + "image=" + ref,
-			"--set-string", p + "command.policy=any",
-			"--set-string", p + "args.policy=any",
-			"--set-string", p + "env.policy=any",
-			"--set-string", p + "mounts.policy=" + policy,
+		if len(mounts) > 0 {
+			var rules []any
+			for _, m := range mounts {
+				rules = append(rules, map[string]any{"destination": m, "kind": "emptyDir"})
+			}
+			c["mounts"] = map[string]any{"policy": "exact", "rules": rules}
 		}
-		for i, m := range mounts {
-			r := fmt.Sprintf("%smounts.rules[%d].", p, i)
-			args = append(args, "--set-string", r+"destination="+m, "--set-string", r+"kind=emptyDir")
-		}
-		return args
+		return c
 	}
-	want := []string{"upgrade", "--set-string", "nriImagePolicy.bootstrapAllowlist.workloads.infer.label=ws/deployment/vllm"}
-	want = append(want, container("containers", 0, dB, "ghcr.io/acme/router@"+dB)...)
-	want = append(want, container("containers", 1, dA, "ghcr.io/acme/engine@"+dA, "/scratch")...)
-	want = append(want, container("initContainers", 0, dC, "docker.io/library/busybox@"+dC)...)
-	assertArgsEqual(t, got, want)
-	if slices.ContainsFunc(got, func(a string) bool { return strings.HasSuffix(a, "mounts.policy=any") }) {
-		t.Fatal("an adopted workload's entry admits any mount")
+	want := map[string]any{
+		"nriImagePolicy": map[string]any{
+			"bootstrapAllowlist": map[string]any{
+				"workloads": map[string]any{
+					"infer": map[string]any{
+						"label": "ws/deployment/vllm",
+						"containers": []any{
+							container(dB, "ghcr.io/acme/router@"+dB),
+							container(dA, "ghcr.io/acme/engine@"+dA, "/scratch"),
+						},
+						"initContainers": []any{container(dC, "docker.io/library/busybox@"+dC)},
+					},
+				},
+			},
+		},
 	}
-	// install hands these args to helm as a values file, so they must build
-	// one, and the entry in it must be one CDS accepts.
-	tree, err := valueArgsToTree(got[1:])
-	if err != nil {
-		t.Fatalf("valueArgsToTree: %v", err)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildWorkloadImageValues() = %#v, want %#v", got, want)
 	}
-	workloads, _ := nestedMap(tree, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	// install hands these values to helm as a values file, so the entry in
+	// them must be one CDS accepts.
+	workloads, _ := nestedMap(got, "nriImagePolicy", "bootstrapAllowlist", "workloads")
 	raw, err := json.Marshal(workloads["infer"])
 	if err != nil {
 		t.Fatal(err)
@@ -637,9 +656,10 @@ func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
 		},
 		Containers: []corev1.Container{{Name: "app", Image: busybox}},
 	}}
-	_, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	entries := workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs() = %v, want an entry", err)
+		t.Fatalf("buildWorkloadImageValues() = %v, want an entry", err)
 	}
 	e := entries["web"]
 	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 1 {
@@ -681,9 +701,9 @@ func TestBuildWorkloadImageArgsRefusesUnmodelledMounts(t *testing.T) {
 		"secrets":                 secrets,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
+			_, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
 			if err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
-				t.Fatalf("buildWorkloadImageArgs() = %v, want the refusal", err)
+				t.Fatalf("buildWorkloadImageValues() = %v, want the refusal", err)
 			}
 		})
 	}
@@ -702,9 +722,10 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 		{workloadAdoption: workloadAdoption{cwID: "infer"}, template: templateRunning("example/infer@sha256:" + strings.Repeat("d", 64))},
 	}
 	var warn bytes.Buffer
-	args, entries, err := buildWorkloadImageArgs(nil, adopted, "infer", &warn, nil)
+	workloadAllowlist, err := buildWorkloadImageValues(adopted, "infer", &warn, nil)
+	values, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs(upstream infer) = %v, want nil", err)
+		t.Fatalf("buildWorkloadImageValues(upstream infer) = %v, want nil", err)
 	}
 	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "a route to it trusts those mounts") {
 		t.Fatalf("warning = %q, want one warning that a route to web trusts its mounts", warn.String())
@@ -715,12 +736,14 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	if _, ok := entries["infer"]; !ok {
 		t.Fatalf("entries = %v, want infer", slices.Sorted(maps.Keys(entries)))
 	}
-	web := "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0]."
-	if !slices.Contains(args, web+"digest=sha256:"+strings.Repeat("c", 64)) || !slices.Contains(args, web+"mounts.policy=any") {
-		t.Fatalf("args = %q, want a web container admitting any mounts", args)
+	workloads, _ := nestedMap(values, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	web, _ := nestedMap(workloads, "web")
+	container, _ := web["containers"].([]any)[0].(map[string]any)
+	if container["digest"] != "sha256:"+strings.Repeat("c", 64) || !reflect.DeepEqual(container["mounts"], map[string]any{"policy": "any"}) {
+		t.Fatalf("values = %#v, want a web container admitting any mounts", values)
 	}
-	if _, _, err := buildWorkloadImageArgs(nil, adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
-		t.Fatalf("buildWorkloadImageArgs(upstream web) = %v, want the refusal", err)
+	if _, err := buildWorkloadImageValues(adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
+		t.Fatalf("buildWorkloadImageValues(upstream web) = %v, want the refusal", err)
 	}
 }
 
@@ -749,14 +772,16 @@ func TestAdoptMeFixtureGetsAnEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	adoption := workloadAdoption{cwID: "web", ref: workloadRef{namespace: "adopted", kind: "deployment", name: "web"}}
-	got, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs(adopt-me) = %v", err)
+		t.Fatalf("buildWorkloadImageValues(adopt-me) = %v", err)
 	}
-	if !slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.policy=deny") || slices.ContainsFunc(got, func(arg string) bool {
-		return strings.Contains(arg, "mounts.rules[")
-	}) {
-		t.Fatalf("adopt-me entry = %v, want empty mounts", got)
+	workloads, _ := nestedMap(got, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	web, _ := nestedMap(workloads, "web")
+	container, _ := web["containers"].([]any)[0].(map[string]any)
+	if !reflect.DeepEqual(container["mounts"], map[string]any{"policy": "deny"}) {
+		t.Fatalf("adopt-me entry = %#v, want empty mounts", got)
 	}
 	// The NRI plugin's tests match this entry against the mounts it observes
 	// on the injected container.
@@ -841,11 +866,8 @@ func TestCheckAdoptedEntries(t *testing.T) {
 			for _, id := range slices.Sorted(maps.Keys(tc.adopt)) {
 				adopted = append(adopted, adoptedWorkload{workloadAdoption: workloadAdoption{cwID: id}, template: tc.adopt[id]})
 			}
-			args, entries, err := buildWorkloadImageArgs(nil, adopted, "", io.Discard, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			computed, err := valueArgsToTree(args)
+			workloadAllowlist, err := buildWorkloadImageValues(adopted, "", io.Discard, nil)
+			computed, entries := workloadAllowlist.values, workloadAllowlist.entries
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -864,7 +886,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 }
 
 func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
-	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
 		return "", errTestResolve
 	})
 	if err == nil {
@@ -877,7 +899,7 @@ func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
 // since the NRI allowlist keys on sha256 only.
 func TestBuildWorkloadImageArgsRejectsNonSHA256Digest(t *testing.T) {
 	sha512Image := "busybox@sha512:ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff"
-	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
 		t.Fatal("resolve must not run for an already-digested image")
 		return "", nil
 	})
@@ -1122,7 +1144,7 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// Default (no -f): volumed reads as disabled.
-	tree, err := effectiveValues(context.Background(), chartPath, nil, nil)
+	tree, err := effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
 		t.Fatalf("effectiveValues (defaults): %v", err)
 	}
@@ -1131,7 +1153,7 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// With the -f file: volumed reads as enabled.
-	tree, err = effectiveValues(context.Background(), chartPath, []string{vf}, nil)
+	tree, err = effectiveValues(context.Background(), chartPath, []string{vf})
 	if err != nil {
 		t.Fatalf("effectiveValues (-f): %v", err)
 	}
@@ -1716,7 +1738,7 @@ func TestEveryPlatformExemptionReachesThePreflight(t *testing.T) {
 
 	for _, platform := range cloudPlatforms {
 		t.Run(platform, func(t *testing.T) {
-			values, err := effectiveValues(context.Background(), chartPath, orderedValuesFiles(chartPath, platform, nil), nil)
+			values, err := effectiveValues(context.Background(), chartPath, orderedValuesFiles(chartPath, platform, nil))
 			if err != nil {
 				t.Fatalf("read the platform's values: %v", err)
 			}

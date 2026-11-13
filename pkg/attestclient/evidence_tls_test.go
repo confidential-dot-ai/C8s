@@ -1,6 +1,7 @@
 package attestclient
 
 import (
+	"context"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -14,10 +15,10 @@ import (
 )
 
 // An attestation-api with a certificate the system roots trust verifies even
-// though the client reaches CDS over armTLS, as cdsclient and get-cert build
-// it: the CDS verification refuses any ordinary certificate. The system roots
-// are read once per process, so the check runs in a child whose SSL_CERT_FILE
-// holds the test server's CA; httptest serves the same certificate in both.
+// though the client reaches CDS over armTLS, as get-cert builds it: the CDS
+// verification refuses any ordinary certificate. The system roots are read
+// once per process, so the check runs in a child whose SSL_CERT_FILE holds the
+// test server's CA; httptest serves the same certificate in both.
 func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -47,7 +48,7 @@ func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 		t.Fatal("the armTLS client accepted an ordinary certificate; the test proves nothing")
 	}
 	c := NewClientWithHTTP("https://cds.invalid", cds)
-	if _, err := c.GenerateEvidence(srv.URL, []byte("report-data")); err != nil {
-		t.Fatalf("GenerateEvidence beside an armTLS CDS client: %v", err)
+	if _, err := c.GenerateEvidenceContext(context.Background(), srv.URL, []byte("report-data")); err != nil {
+		t.Fatalf("GenerateEvidenceContext beside an armTLS CDS client: %v", err)
 	}
 }
