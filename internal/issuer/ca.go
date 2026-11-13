@@ -59,6 +59,23 @@ func NewMeshCA(commonName string, validity time.Duration) (*MeshCA, error) {
 	return mesh, nil
 }
 
+// Adopt replaces the key and certificate with a CA handed over from another
+// replica of a set, whose key must be want (the chain's CA key).
+func (m *MeshCA) Adopt(certPEM, keyPEM []byte, want *ecdsa.PublicKey) error {
+	ca, err := LoadCA(certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	if !ca.Key.PublicKey.Equal(want) {
+		return fmt.Errorf("mesh ca: the handed key is not the chain's CA key")
+	}
+	m.renew.Lock()
+	defer m.renew.Unlock()
+	m.key = ca.Key
+	m.current.Store(&CurrentCA{CA: ca, CertPEM: certutil.EncodeCertPEM(ca.Cert.Raw)})
+	return nil
+}
+
 // Current reads the published certificate; one read serves a whole issuance.
 func (m *MeshCA) Current() CurrentCA {
 	return *m.current.Load()
