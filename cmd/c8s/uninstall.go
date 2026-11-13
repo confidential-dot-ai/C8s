@@ -84,27 +84,26 @@ var uninstallCmd = &cobra.Command{
 	Long: `Removes the release 'c8s install' deployed and sweeps the host-side
 NRI, mesh and volume-attach artifacts off every node.
 
-'helm uninstall' unwinds the release resources (operator, CDS,
-attestation-api, armtls-mesh, router, webhook configuration) and the mesh
-traffic interception (preStop hook). It leaves every node enforcing: taking
+The uninstall first deletes the NRI image-policy installer DaemonSet, so no
+installer run re-adds the plugin the sweep removes. 'helm uninstall' then
+removes every other resource the release deployed, among them the operator
+and its admission webhooks, the router and its namespace, the attestation-api
+DaemonSet and, when enabled, volumed. It leaves every node enforcing: taking
 the NRI image-policy host plugin off a node is the host sweep's job alone.
 
-The preStop hook is bounded by the pod's termination grace period (and the
-runtime restart it triggers can kill the pod mid-cleanup), and it knows
-nothing about the c8s-side artifacts. The sweep runs on every uninstall because the host state below is not confined to the release's own
-shape: a previous install on the same host may have had a different shape,
-and leftovers brick or degrade the next cluster. After the
-release is gone the sweep runs a short-lived privileged DaemonSet on every
-linux node — with the release's NRI plugin image, which the fail-closed
-plugin already admits (the sweep is what removes the plugin) — and removes,
-idempotently:
+The sweep removes all of the host state below, not only what this release's
+shape put there: a previous install on the same host may have had a different
+shape, and leftovers brick or degrade the next cluster. After the release is
+gone the sweep runs a short-lived privileged DaemonSet on every linux node —
+with the release's NRI plugin image, which the fail-closed plugin already
+admits (the sweep is what removes the plugin) — and removes, idempotently:
 
   - the NRI image-policy host plugin: its containerd registration, the plugin
-    binary, its config/cache/runtime dirs
-  - the armtls-mesh netfilter state: the ARMTLS-MESH chains and their
-    base-chain jumps in iptables and ip6tables, and the ARMTLS-MESH-* ipsets
-    (the mesh's own preStop deliberately keeps the fail-closed guard, so this
-    survives every healthy uninstall too)
+    binary, its config/cache/runtime dirs. The sweep restarts containerd on
+    a node where it removed that registration or the plugin still runs
+  - the netfilter state of a node-level armtls-mesh from an earlier install:
+    the ARMTLS-MESH chains and their base-chain jumps in iptables and
+    ip6tables, and the ARMTLS-MESH-* ipsets
   - the LIO loopback disks 'c8s volume attach' built: only a backstore whose
     unit serial is c8s-vol-<name> and the target attach derived for it, torn
     down as 'c8s volume detach' does. A disk that has a holder (an open
@@ -124,8 +123,7 @@ chart's defaults.
 
 The sweep pod runs on the node's network. Where a node's kubelet starts no
 sweep container, the uninstall names that node, the state its sweep is in, and
-the removal to run on the node itself. It deletes the NRI image-policy
-installer first, so no installer run re-adds the plugin the sweep removes.
+the removal to run on the node itself.
 
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so

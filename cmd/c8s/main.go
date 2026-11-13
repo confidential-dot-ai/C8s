@@ -1,10 +1,6 @@
-// Command c8s is the operator-side binary for the confidential Kubernetes
-// stack. Subcommands:
-//
-//   - c8s operator    — controller-manager + admission webhook
-//   - c8s install     — client-side: helm install c8s + CRDs
-//   - c8s uninstall   — client-side: helm uninstall + host sweep
-//   - c8s get-cert    — certificate bootstrap and renewal
+// Command c8s is the single binary of the confidential Kubernetes stack: the
+// operator's CLI and the C8s components the cluster and its nodes run, each a
+// subcommand that 'c8s --help' lists.
 //
 // Installed as c8s-runc it is instead the measured OCI runtime wrapper
 // (internal/cmds/c8srunc), dispatched by basename before any flag parsing.
@@ -32,8 +28,15 @@ attestation, and day-2 operations.
 
 Typical bootstrap flow on a fresh cluster:
 
-    c8s install             # deploy operator + CRDs + component charts
-    kubectl apply -f cwl.yaml
+    c8s install <install flags> --allowlist-seed-out seed.json
+    c8s cds config new --allowlist-seed seed.json --out cds ...
+    # launch the CDS VM on cds/cds-config.yaml, then:
+    c8s install <install flags> --cds-address <host:port> --cds-pin cds/cds-pin.json
+
+Both installs take the same flags, such as --platform, -f values.yaml and
+--workload-ref, which adopts a workload. Any other workload opts in with the
+confidential.ai/cw pod annotation and an allowlist entry ('c8s allowlist').
+README.md's Install section has the whole flow.
 
 See 'c8s <subcommand> --help' for details.`,
 	Version:       version.Version,

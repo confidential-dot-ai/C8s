@@ -78,7 +78,7 @@ that satisfy its admission, image, and network policies.
   format with dm-verity. TDX nodes can also record
   applied allowlist policy digests in runtime measurement register RTMR[3].
   For verifying the running allowlist policy and its history, use
-  [`c8s verify --pin-policy` or `--trust-operator`](docs/measurements.md#policy-history).
+  [`c8s verify --pin-policy` or `--trust-operator --trust-operator-keys`](docs/measurements.md#policy-history).
   Policy measurement is disabled by default in the stock baked image.
 
 - **Container image and command-line allowlisting.** The node NRI plugin

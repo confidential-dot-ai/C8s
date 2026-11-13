@@ -64,8 +64,8 @@ public keys you trust. 'show' verifies against them when given; 'add' and
 routes.
 
 Point --url at CDS itself, with no path, because the router does not relay
-/routes. A port-forward to the CDS Service works; pin the CDS launch digest
-with --measurements.`,
+/routes, and pin CDS with --image-policy-file cds-pin.json, the pin
+'c8s cds config new' wrote.`,
 		SilenceUsage: true,
 	}
 	pf := cmd.PersistentFlags()
