@@ -97,7 +97,7 @@ func run(ctx context.Context, cfg config) error {
 	nodeImages := separatePodAuthorities(back.NodeImages(), cfg.measured.PodImages)
 	logNodeImages(nodeImages.Current())
 
-	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
+	cnPattern, err := compilePattern("allowed CN pattern", cfg.allowedCNPattern)
 	if err != nil {
 		return err
 	}
@@ -273,7 +273,6 @@ func clientAddress(cfg config) string {
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {
-	cfg = normalizeHTTPServerConfig(cfg)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -342,45 +341,8 @@ func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims
 	}
 }
 
-func normalizeHTTPServerConfig(cfg config) config {
-	if cfg.readTimeout == 0 {
-		cfg.readTimeout = defaultHTTPReadTimeout
-	}
-	if cfg.readHeaderTimeout == 0 {
-		cfg.readHeaderTimeout = defaultHTTPReadHeaderTimeout
-	}
-	if cfg.writeTimeout == 0 {
-		cfg.writeTimeout = defaultHTTPWriteTimeout
-	}
-	if cfg.idleTimeout == 0 {
-		cfg.idleTimeout = defaultHTTPIdleTimeout
-	}
-	if cfg.maxHeaderBytes == 0 {
-		cfg.maxHeaderBytes = defaultHTTPMaxHeaderBytes
-	}
-	return cfg
-}
-
-// newSecretsStore builds the store from sizing flags validateSecretsConfig has
-// already checked: NewMemoryStore panics on a pair validateSecretsConfig
-// refuses.
 func newSecretsStore(cfg config) *secrets.MemoryStore {
 	return secrets.NewMemoryStore(cfg.secretsMaxPaths, cfg.secretsMaxPathsPerWorkload, cfg.secretsMaxValueBytes)
-}
-
-// validateSecretsConfig checks the bounds on secret storage. What secrets are
-// released to is policy, not configuration — see secretsEnabled.
-func validateSecretsConfig(cfg config) error {
-	if cfg.secretsMaxPaths <= 0 || cfg.secretsMaxPathsPerWorkload <= 0 || cfg.sandboxLedgerMax <= 0 {
-		return fmt.Errorf("--secrets-max-paths, --secrets-max-paths-per-workload and --sandbox-ledger-max-entries must be positive")
-	}
-	if cfg.secretsMaxPathsPerWorkload >= cfg.secretsMaxPaths {
-		return fmt.Errorf("--secrets-max-paths-per-workload (%d) must be below --secrets-max-paths (%d), or one workload can fill the store", cfg.secretsMaxPathsPerWorkload, cfg.secretsMaxPaths)
-	}
-	if cfg.secretsMaxValueBytes < secrets.GeneratedValueBytes {
-		return fmt.Errorf("--secrets-max-value-bytes (%d) must be at least %d, the size of every value CDS generates", cfg.secretsMaxValueBytes, secrets.GeneratedValueBytes)
-	}
-	return nil
 }
 
 // secretsEnabled reports whether CDS serves /secrets, and why not when it does
@@ -432,55 +394,14 @@ func validateConfig(cfg config) error {
 	if err := cfg.measured.ValidatePodAuthorities(); err != nil {
 		return fmt.Errorf("--config: %w", err)
 	}
-	for _, timeout := range []struct {
-		name  string
-		value time.Duration
-	}{
-		{"--read-timeout", cfg.readTimeout},
-		{"--read-header-timeout", cfg.readHeaderTimeout},
-		{"--write-timeout", cfg.writeTimeout},
-		{"--idle-timeout", cfg.idleTimeout},
-	} {
-		if timeout.value < 0 {
-			return fmt.Errorf("%s must be non-negative", timeout.name)
-		}
-	}
-	if cfg.maxHeaderBytes < 0 {
-		return fmt.Errorf("--max-header-bytes must be non-negative")
-	}
 	if skew := time.Duration(cfg.jwtClockSkew) * time.Second; 2*skew >= allowlist.SpentTokenMargin {
 		return fmt.Errorf("--jwt-clock-skew must stay under half of %v, so an operator token the verifier accepts is never refused as a replay", allowlist.SpentTokenMargin)
-	}
-	// Not "0 disables": this is the stale-identity bound for a named leaf, and
-	// 0 is the disable idiom elsewhere in the chart, so a zero here would read
-	// as "no bound" while silently meaning issuer.MaxNamedLeafTTL.
-	if cfg.namedCertTTL <= 0 {
-		return fmt.Errorf("--named-cert-ttl must be positive (it bounds how long a leaf may keep asserting a workload name; it cannot be disabled)")
-	}
-	if cfg.namedCertTTL > issuer.MaxNamedLeafTTL {
-		return fmt.Errorf("--named-cert-ttl must not exceed %v (issuer.MaxNamedLeafTTL, the documented stale-identity bound); it can only shorten that ceiling", issuer.MaxNamedLeafTTL)
 	}
 	if cfg.routerCertTTL <= 0 || cfg.routerCertTTL >= cfg.allowlistNodeDelay {
 		return fmt.Errorf("--router-cert-ttl (%v) must be positive and shorter than --allowlist-node-delay (%v)", cfg.routerCertTTL, cfg.allowlistNodeDelay)
 	}
 	if cfg.maxRequestSize <= 0 {
 		return fmt.Errorf("--max-request-size must be positive")
-	}
-	if cfg.readinessInterval <= 0 {
-		return fmt.Errorf("--readiness-interval must be positive")
-	}
-	if cfg.minCAValidity <= 0 {
-		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")
-	}
-	// Renewal starts at half the certificate's lifetime and is retried once
-	// per check interval, so this is what makes "renewed before the remaining
-	// validity falls below --min-ca-validity" hold by construction.
-	if cfg.caCertValidity/2 <= cfg.minCAValidity+caRenewalCheckInterval {
-		return fmt.Errorf("--ca-cert-validity (%v) must exceed 2 x (--min-ca-validity %v + %v renewal check interval)",
-			cfg.caCertValidity, cfg.minCAValidity, caRenewalCheckInterval)
-	}
-	if err := validateSecretsConfig(cfg); err != nil {
-		return err
 	}
 	return nil
 }
@@ -524,8 +445,8 @@ func caKeyID(cert *x509.Certificate) string {
 // renewMeshCAWhenDue renews the mesh CA certificate under the key the process
 // keeps and republishes it to meshPeers, the pool that verifies client leaves;
 // a nil meshPeers is a listener with no such pool. A failed renewal is retried
-// on the next tick, and readiness drops once the current certificate no longer
-// holds --min-ca-validity.
+// on the next tick, and readiness drops once the current certificate has less
+// than minCAValidity left.
 func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Duration, meshPeers *armtls.CertManager) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
@@ -556,9 +477,8 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 	}
 }
 
-// pastHalfLife is the renewal trigger: half the certificate's lifetime, which
-// --ca-cert-validity guarantees leaves room for renewal to retry in before
-// readiness fails.
+// pastHalfLife is the renewal trigger: half the certificate's lifetime, leaving
+// the rest of it for renewal to retry in before readiness fails.
 func pastHalfLife(cert *x509.Certificate, now time.Time) bool {
 	return now.After(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2))
 }

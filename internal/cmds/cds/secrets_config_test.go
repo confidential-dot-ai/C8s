@@ -3,8 +3,6 @@ package cds
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -12,39 +10,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-// The shipped flag defaults must satisfy the relation CDS starts on.
-func TestSecretsPathQuotaFlagIsWired(t *testing.T) {
-	flags := NewCmd().Flags()
-	quota := flags.Lookup("secrets-max-paths-per-workload")
-	if quota == nil {
-		t.Fatal("missing --secrets-max-paths-per-workload flag")
-	}
-	ceiling := flags.Lookup("secrets-max-paths")
-	if ceiling == nil {
-		t.Fatal("missing --secrets-max-paths flag")
-	}
-	value := flags.Lookup("secrets-max-value-bytes")
-	if value == nil {
-		t.Fatal("missing --secrets-max-value-bytes flag")
-	}
-	cfg := secretsSizingConfig()
-	cfg.secretsMaxPaths = mustAtoi(t, ceiling.DefValue)
-	cfg.secretsMaxPathsPerWorkload = mustAtoi(t, quota.DefValue)
-	cfg.secretsMaxValueBytes = mustAtoi(t, value.DefValue)
-	if err := validateSecretsConfig(cfg); err != nil {
-		t.Fatalf("the shipped flag defaults refuse to start CDS: %v", err)
-	}
-}
-
-func mustAtoi(t *testing.T, s string) int {
-	t.Helper()
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		t.Fatalf("flag default %q is not an int: %v", s, err)
-	}
-	return n
-}
 
 // The store the handlers share carries each flag to the bound it names.
 func TestNewSecretsStoreCarriesEachBound(t *testing.T) {
@@ -82,16 +47,6 @@ func TestNewSecretsStoreCarriesEachBound(t *testing.T) {
 	// own quota answers for.
 	if _, _, err := s.PutIfAbsent(ctx, "/api/4", make([]byte, 8), api); !errors.Is(err, secrets.ErrHolderQuota) {
 		t.Fatalf("a holder at its quota against a full store = %v, want ErrHolderQuota", err)
-	}
-}
-
-// secretsSizingConfig holds the bounds validateSecretsConfig checks.
-func secretsSizingConfig() config {
-	return config{
-		secretsMaxPaths:            16,
-		secretsMaxPathsPerWorkload: 8,
-		secretsMaxValueBytes:       64,
-		sandboxLedgerMax:           16,
 	}
 }
 
@@ -140,77 +95,5 @@ func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 				t.Fatalf("reason %q does not mention %q", why, tc.want)
 			}
 		})
-	}
-}
-
-func TestSecretsSizingMustBePositive(t *testing.T) {
-	for _, tc := range []struct {
-		flag string
-		brk  func(*config)
-	}{
-		{"--secrets-max-paths", func(c *config) { c.secretsMaxPaths = 0 }},
-		{"--secrets-max-paths-per-workload", func(c *config) { c.secretsMaxPathsPerWorkload = 0 }},
-		{"--secrets-max-value-bytes", func(c *config) { c.secretsMaxValueBytes = 0 }},
-		{"--sandbox-ledger-max-entries", func(c *config) { c.sandboxLedgerMax = 0 }},
-	} {
-		t.Run(tc.flag, func(t *testing.T) {
-			cfg := secretsSizingConfig()
-			tc.brk(&cfg)
-			err := validateSecretsConfig(cfg)
-			if err == nil {
-				t.Fatalf("%s was accepted at zero", tc.flag)
-			}
-			if !strings.Contains(err.Error(), tc.flag) {
-				t.Fatalf("%s at zero reported %q, want the flag named", tc.flag, err)
-			}
-		})
-	}
-	if err := validateSecretsConfig(secretsSizingConfig()); err != nil {
-		t.Fatalf("valid bounds refused: %v", err)
-	}
-}
-
-func TestSecretsQuotaMustStayBelowTheCeiling(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		quota func(ceiling int) int
-	}{
-		{"at the ceiling", func(ceiling int) int { return ceiling }},
-		{"above the ceiling", func(ceiling int) int { return ceiling + 1 }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := secretsSizingConfig()
-			cfg.secretsMaxPathsPerWorkload = tc.quota(cfg.secretsMaxPaths)
-			err := validateSecretsConfig(cfg)
-			if err == nil {
-				t.Fatalf("--secrets-max-paths-per-workload=%d was accepted against --secrets-max-paths=%d", cfg.secretsMaxPathsPerWorkload, cfg.secretsMaxPaths)
-			}
-			if want := "--secrets-max-paths-per-workload (%d) must be below --secrets-max-paths"; !strings.Contains(err.Error(), fmt.Sprintf(want, cfg.secretsMaxPathsPerWorkload)) {
-				t.Fatalf("err = %q, want the quota/ceiling check", err)
-			}
-		})
-	}
-	cfg := secretsSizingConfig()
-	cfg.secretsMaxPathsPerWorkload = cfg.secretsMaxPaths - 1
-	if err := validateSecretsConfig(cfg); err != nil {
-		t.Fatalf("a quota one below the ceiling refused: %v", err)
-	}
-}
-
-// Generate always mints GeneratedValueBytes, so a smaller cap turns every
-// workload's first POST into a 500 rather than refusing at startup.
-func TestSecretsValueBoundHoldsAGeneratedValue(t *testing.T) {
-	cfg := secretsSizingConfig()
-	cfg.secretsMaxValueBytes = secrets.GeneratedValueBytes - 1
-	err := validateSecretsConfig(cfg)
-	if err == nil {
-		t.Fatalf("--secrets-max-value-bytes=%d was accepted below a generated value", cfg.secretsMaxValueBytes)
-	}
-	if !strings.Contains(err.Error(), "--secrets-max-value-bytes") {
-		t.Fatalf("err = %q, want the value-bytes check", err)
-	}
-	cfg.secretsMaxValueBytes = secrets.GeneratedValueBytes
-	if err := validateSecretsConfig(cfg); err != nil {
-		t.Fatalf("a cap exactly fitting a generated value refused: %v", err)
 	}
 }

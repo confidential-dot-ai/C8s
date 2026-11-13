@@ -27,7 +27,7 @@ const (
 
 // NewCmd returns the cobra subcommand.
 func NewCmd() *cobra.Command {
-	var cfg config
+	cfg := builtInConfig()
 	cmd := &cobra.Command{
 		Use:   "cds",
 		Short: "Run the Certificate Distribution Service (CDS)",
@@ -44,42 +44,15 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
 	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of this VM's own attestation-api (REQUIRED); it must name a loopback address")
-	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
-	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
 
 	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
-	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "TTL of an issued mesh leaf, capped at 24h; a named leaf is further capped by --named-cert-ttl")
-	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
 	flags.DurationVar(&cfg.routerCertTTL, "router-cert-ttl", 20*time.Second, "TTL of a leaf issued to a router sandbox; must be shorter than --allowlist-node-delay, so every router advertises an allowlist write before it takes effect")
 	flags.DurationVar(&cfg.allowlistNodeDelay, "allowlist-node-delay", 30*time.Second, "how long after it is written an allowlist write takes effect on nodes; a write replaced before then never does")
-	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "how long an attestation nonce CDS hands out stays redeemable")
-	flags.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request /attest timeout (0 disables)")
 	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, "max request body bytes on /attest, /authenticate and the workload secret routes")
-	flags.DurationVar(&cfg.readTimeout, "read-timeout", defaultHTTPReadTimeout, "HTTP server read timeout")
-	flags.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultHTTPReadHeaderTimeout, "HTTP server read-header timeout")
-	flags.DurationVar(&cfg.writeTimeout, "write-timeout", defaultHTTPWriteTimeout, "HTTP server write timeout")
-	flags.DurationVar(&cfg.idleTimeout, "idle-timeout", defaultHTTPIdleTimeout, "HTTP server idle timeout")
-	flags.IntVar(&cfg.maxHeaderBytes, "max-header-bytes", defaultHTTPMaxHeaderBytes, "maximum HTTP request header bytes")
 
 	flags.BoolVar(&cfg.sanValidation, "san-validation", true, "require CSR IP SANs to equal the request source IP (false rejects CSRs carrying IP SANs)")
-	flags.StringVar(&cfg.allowedCNPattern, "allowed-cn-pattern", "", "regex the CSR Subject CN must match in full (empty disables)")
-	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "how often /readyz probes the attestation-api health; must be positive")
-	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
-
-	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
-	flags.IntVar(&cfg.rateBurst, "rate-burst", 20, "max burst size per source IP")
-	flags.IntVar(&cfg.rateLimiterMax, "rate-limiter-max-entries", 10000, "max entries in the per-IP rate limiter; once full, a new source evicts the least recently seen one")
-	flags.DurationVar(&cfg.rateLimiterEvictInterval, "rate-limiter-evict-interval", time.Minute, "interval for per-IP rate limiter eviction sweep")
-	flags.DurationVar(&cfg.rateLimiterIdleTimeout, "rate-limiter-idle-timeout", 5*time.Minute, "idle duration before a per-IP rate limiter entry is evicted")
-
-	flags.IntVar(&cfg.secretsMaxPaths, "secrets-max-paths", 1024, "max distinct secret paths held in memory across every workload")
-	flags.IntVar(&cfg.secretsMaxPathsPerWorkload, "secrets-max-paths-per-workload", secrets.DefaultMaxPathsPerHolder, "max secret paths one allowlist entry may hold")
-	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
-	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
-
-	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of CDS's self-attested armTLS serving certificate")
 
 	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
 
@@ -103,6 +76,39 @@ func NewCmd() *cobra.Command {
 	cmd.AddCommand(newHACmd())
 
 	return cmd
+}
+
+// builtInConfig holds the server settings no launch chooses; NewCmd's flags
+// set the rest.
+func builtInConfig() config {
+	return config{
+		caCommonName:             issuer.DefaultCACommonName,
+		caCertValidity:           issuer.DefaultCAValidity,
+		namedCertTTL:             issuer.MaxNamedLeafTTL,
+		challengeTTL:             60 * time.Second,
+		requestTimeout:           5 * time.Second,
+		readTimeout:              defaultHTTPReadTimeout,
+		readHeaderTimeout:        defaultHTTPReadHeaderTimeout,
+		writeTimeout:             defaultHTTPWriteTimeout,
+		idleTimeout:              defaultHTTPIdleTimeout,
+		maxHeaderBytes:           defaultHTTPMaxHeaderBytes,
+		allowedCNPattern:         "",
+		readinessInterval:        10 * time.Second,
+		minCAValidity:            time.Hour,
+		armtlsCertTTL:            24 * time.Hour,
+		rateLimit:                10,
+		rateBurst:                20,
+		rateLimiterMax:           10000,
+		rateLimiterEvictInterval: time.Minute,
+		rateLimiterIdleTimeout:   5 * time.Minute,
+
+		// INVARIANT: unchanged across releases; every replica of a cluster holds the same.
+		certTTL:                    24 * time.Hour,
+		secretsMaxPaths:            1024,
+		secretsMaxPathsPerWorkload: secrets.DefaultMaxPathsPerHolder,
+		secretsMaxValueBytes:       4096,
+		sandboxLedgerMax:           10000,
+	}
 }
 
 type config struct {

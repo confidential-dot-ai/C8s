@@ -86,6 +86,6 @@ The `--san` flag accepts either an IP address or a hostname. get-cert automatica
 
 ## Certificate TTL
 
-Certificate lifetime is set server-side by cds: `--cert-ttl` (default and cap 24h) for a leaf with no matched-workload stamp, and `--named-cert-ttl` (default and cap 6h) for a named leaf. get-cert does not set the TTL.
+Certificate lifetime is set server-side by cds: 24h for a leaf with no matched-workload stamp, and 6h for a named leaf. get-cert does not set the TTL.
 
 For long-running pods, set `--renew-interval` shorter than the server-side TTL. When the workload is not nginx, pass `--reload-nginx=false` and have the workload reload the republished cert files using its own mechanism.

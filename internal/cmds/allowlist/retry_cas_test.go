@@ -17,8 +17,8 @@ import (
 )
 
 // rateLimitedCDS is the fake CDS behind the limiter CDS meters allowlist
-// writes with, at its defaults (cds --rate-limit 10 --rate-burst 20). Reads
-// are not metered, as in CDS.
+// writes with, at its rate of 10 a second in bursts of 20. Reads are not
+// metered, as in CDS.
 func rateLimitedCDS(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeCDS) {
 	t.Helper()
 	f := newFakeCDS(pinned)

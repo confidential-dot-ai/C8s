@@ -31,14 +31,10 @@ one releases nothing, so writing the grant is what turns release on; it is
 operator-signed policy and takes effect without a restart —
 [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 
-The store is bounded per entry (`--secrets-max-paths-per-workload`, default 64)
-and overall (`--secrets-max-paths`, default 1024); the chart sets both. One
-value is bounded by `--secrets-max-value-bytes`, default 4096 and never below
-32, which the chart leaves unset. An operator-written path counts against the
-store bound only, never against an entry's. A path bound refuses the write and
-evicts nothing — a path holds the only copy of its value — and names the bound
-that stopped it. Raising one needs a restart, which empties the store — see
-[Restarts](#restarts).
+The store holds at most 64 paths per entry and 1024 overall, and a value of at
+most 4096 bytes. An operator-written path counts against the store bound only,
+never against an entry's. A path bound refuses the write and evicts nothing — a
+path holds the only copy of its value — and names the bound that stopped it.
 
 ## What CDS checks
 

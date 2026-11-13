@@ -17,55 +17,14 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
-
-// shippedConfig holds the server settings `c8s cds` runs with when no flag
-// sets them.
-func shippedConfig(t *testing.T) config {
-	t.Helper()
-	flags := NewCmd().Flags()
-	return config{
-		caCommonName:               flagValue(t, flags.GetString, "ca-common-name"),
-		caCertValidity:             flagValue(t, flags.GetDuration, "ca-cert-validity"),
-		certTTL:                    flagValue(t, flags.GetDuration, "cert-ttl"),
-		namedCertTTL:               flagValue(t, flags.GetDuration, "named-cert-ttl"),
-		challengeTTL:               flagValue(t, flags.GetDuration, "challenge-ttl"),
-		requestTimeout:             flagValue(t, flags.GetDuration, "request-timeout"),
-		readTimeout:                flagValue(t, flags.GetDuration, "read-timeout"),
-		readHeaderTimeout:          flagValue(t, flags.GetDuration, "read-header-timeout"),
-		writeTimeout:               flagValue(t, flags.GetDuration, "write-timeout"),
-		idleTimeout:                flagValue(t, flags.GetDuration, "idle-timeout"),
-		maxHeaderBytes:             flagValue(t, flags.GetInt, "max-header-bytes"),
-		allowedCNPattern:           flagValue(t, flags.GetString, "allowed-cn-pattern"),
-		readinessInterval:          flagValue(t, flags.GetDuration, "readiness-interval"),
-		minCAValidity:              flagValue(t, flags.GetDuration, "min-ca-validity"),
-		armtlsCertTTL:              flagValue(t, flags.GetDuration, "armtls-cert-ttl"),
-		rateLimit:                  flagValue(t, flags.GetFloat64, "rate-limit"),
-		rateBurst:                  flagValue(t, flags.GetInt, "rate-burst"),
-		rateLimiterMax:             flagValue(t, flags.GetInt, "rate-limiter-max-entries"),
-		rateLimiterEvictInterval:   flagValue(t, flags.GetDuration, "rate-limiter-evict-interval"),
-		rateLimiterIdleTimeout:     flagValue(t, flags.GetDuration, "rate-limiter-idle-timeout"),
-		secretsMaxPaths:            flagValue(t, flags.GetInt, "secrets-max-paths"),
-		secretsMaxPathsPerWorkload: flagValue(t, flags.GetInt, "secrets-max-paths-per-workload"),
-		secretsMaxValueBytes:       flagValue(t, flags.GetInt, "secrets-max-value-bytes"),
-		sandboxLedgerMax:           flagValue(t, flags.GetInt, "sandbox-ledger-max-entries"),
-	}
-}
-
-// flagValue reads a flag's value, failing the test when the flag is missing.
-func flagValue[T any](t *testing.T, get func(string) (T, error), name string) T {
-	t.Helper()
-	value, err := get(name)
-	if err != nil {
-		t.Fatalf("--%s: %v", name, err)
-	}
-	return value
-}
 
 // The CDS server's settings that no launch chooses. The store bounds are read
 // from the stores they bound.
 func TestServerSettingsShipped(t *testing.T) {
-	cfg := shippedConfig(t)
+	cfg := builtInConfig()
 	cfg.allowlistDB = filepath.Join(t.TempDir(), "allowlist.db")
 	st, err := openStores(cfg)
 	if err != nil {
@@ -111,6 +70,23 @@ func TestServerSettingsShipped(t *testing.T) {
 				t.Fatalf("%s = %v (%T), want %v (%T)", tc.setting, tc.got, tc.got, tc.want, tc.want)
 			}
 		})
+	}
+}
+
+// The built-in settings stay inside the bounds other code holds them to.
+func TestBuiltInSettingsFitTheirBounds(t *testing.T) {
+	cfg := builtInConfig()
+	if cfg.certTTL > issuer.MaxLeafTTL {
+		t.Errorf("leaf TTL %v exceeds the %v every leaf is clamped to", cfg.certTTL, issuer.MaxLeafTTL)
+	}
+	if cfg.namedCertTTL > issuer.MaxNamedLeafTTL {
+		t.Errorf("named leaf TTL %v exceeds the %v every named leaf is clamped to", cfg.namedCertTTL, issuer.MaxNamedLeafTTL)
+	}
+	if cfg.secretsMaxValueBytes < secrets.GeneratedValueBytes {
+		t.Errorf("secret value bound %d is below the %d bytes CDS generates", cfg.secretsMaxValueBytes, secrets.GeneratedValueBytes)
+	}
+	if renewalStart := cfg.caCertValidity / 2; renewalStart <= cfg.minCAValidity+caRenewalCheckInterval {
+		t.Errorf("mesh CA renewal starts with %v left, not more than the %v readiness needs plus one %v check", renewalStart, cfg.minCAValidity, caRenewalCheckInterval)
 	}
 }
 

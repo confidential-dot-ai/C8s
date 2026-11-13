@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -363,7 +364,7 @@ func TestRouter_OperatorKeysEndpoint(t *testing.T) {
 }
 
 func TestNewHTTPServerSetsTimeouts(t *testing.T) {
-	defaultSrv := newHTTPServer(":0", http.NewServeMux(), config{})
+	defaultSrv := newHTTPServer(":0", http.NewServeMux(), builtInConfig())
 	if defaultSrv.ReadTimeout != defaultHTTPReadTimeout {
 		t.Errorf("default ReadTimeout = %v, want %v", defaultSrv.ReadTimeout, defaultHTTPReadTimeout)
 	}
@@ -408,19 +409,10 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
-		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
-		maxHeaderBytes:             1,
-		namedCertTTL:               issuer.MaxNamedLeafTTL,
-		routerCertTTL:              20 * time.Second,
-		allowlistNodeDelay:         30 * time.Second,
-		maxRequestSize:             1,
-		secretsMaxPaths:            1024,
-		secretsMaxPathsPerWorkload: 64,
-		secretsMaxValueBytes:       4096,
-		sandboxLedgerMax:           10000,
-		readinessInterval:          time.Second,
-		minCAValidity:              time.Hour,
-		caCertValidity:             365 * 24 * time.Hour,
+		measured:           measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
+		routerCertTTL:      20 * time.Second,
+		allowlistNodeDelay: 30 * time.Second,
+		maxRequestSize:     1,
 	}
 	if err := validateConfig(valid); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
@@ -429,38 +421,12 @@ func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 		name string
 		edit func(*config)
 	}{
-		{name: "negative read timeout", edit: func(c *config) { c.readTimeout = -time.Second }},
-		{name: "negative read header timeout", edit: func(c *config) { c.readHeaderTimeout = -time.Second }},
-		{name: "negative write timeout", edit: func(c *config) { c.writeTimeout = -time.Second }},
-		{name: "negative idle timeout", edit: func(c *config) { c.idleTimeout = -time.Second }},
-		{name: "negative max header bytes", edit: func(c *config) { c.maxHeaderBytes = -1 }},
-		{name: "zero named cert ttl", edit: func(c *config) { c.namedCertTTL = 0 }},
-		{name: "negative named cert ttl", edit: func(c *config) { c.namedCertTTL = -time.Hour }},
-		{name: "named cert ttl above the ceiling", edit: func(c *config) { c.namedCertTTL = issuer.MaxNamedLeafTTL + time.Hour }},
+		{name: "no measured configuration", edit: func(c *config) { c.measured = nil }},
+		{name: "no operator key", edit: func(c *config) { c.measured = &cdsconfig.Config{} }},
+		{name: "jwt clock skew at half the spent-token margin", edit: func(c *config) { c.jwtClockSkew = int64(allowlist.SpentTokenMargin / 2 / time.Second) }},
 		{name: "router cert ttl not under the node delay", edit: func(c *config) { c.routerCertTTL = c.allowlistNodeDelay }},
 		{name: "zero max request size", edit: func(c *config) { c.maxRequestSize = 0 }},
 		{name: "negative max request size", edit: func(c *config) { c.maxRequestSize = -1 }},
-		{name: "zero readiness interval", edit: func(c *config) { c.readinessInterval = 0 }},
-		{name: "negative readiness interval", edit: func(c *config) { c.readinessInterval = -time.Second }},
-		{
-			name: "zero min ca validity",
-			edit: func(c *config) { c.minCAValidity = 0 },
-		},
-		{
-			name: "negative min ca validity",
-			edit: func(c *config) { c.minCAValidity = -time.Hour },
-		},
-		// Renewal starts at half the CA certificate's lifetime, so this pair
-		// would let the certificate fall under --min-ca-validity before
-		// renewal had a tick to replace it.
-		{
-			name: "ca validity too short for the renewal window",
-			edit: func(c *config) { c.caCertValidity = 2 * (time.Hour + caRenewalCheckInterval) },
-		},
-		{
-			name: "ca validity below min ca validity",
-			edit: func(c *config) { c.caCertValidity = 30 * time.Minute },
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := valid

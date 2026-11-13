@@ -37,9 +37,9 @@ const (
 	// a tls.crt chain block nginx cannot load, get
 	// ErrorCodeBindingUnavailable.
 	ErrorCodeServingLeafRejected = "serving_leaf_rejected"
-	// ErrorCodeSecretHolderQuota: the caller is at --secrets-max-paths-per-workload.
+	// ErrorCodeSecretHolderQuota: the caller holds as many secret paths as one entry may.
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
-	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
+	// ErrorCodeSecretStoreFull: the store holds as many secret paths as it may.
 	ErrorCodeSecretStoreFull = "secret_store_full"
 	// ErrorCodeStateCapacity: the replicated state is near what a snapshot can
 	// hold, so writes that grow it are refused until it shrinks.

@@ -2,38 +2,36 @@ package cds
 
 import (
 	"testing"
+	"time"
 )
 
-// TestNewCmdDurationFlagDefaults pins the shipped default for every duration
-// flag: these values are operational contracts (cert lifetimes, rotation
+// TestNewCmdDurationFlagDefaults pins the built-in value of every duration
+// setting: these values are operational contracts (cert lifetimes, rotation
 // cadence, timeouts), so a silent change must fail a test.
 func TestNewCmdDurationFlagDefaults(t *testing.T) {
-	flags := NewCmd().Flags()
+	cfg := builtInConfig()
 	for _, tc := range []struct {
-		flag string
-		want string
+		setting string
+		value   time.Duration
+		want    string
 	}{
-		{"ca-cert-validity", "8760h0m0s"},
-		{"cert-ttl", "24h0m0s"},
-		{"challenge-ttl", "1m0s"},
-		{"request-timeout", "5s"},
-		{"read-timeout", "10s"},
-		{"read-header-timeout", "5s"},
-		{"write-timeout", "10s"},
-		{"idle-timeout", "20s"},
-		{"readiness-interval", "10s"},
-		{"min-ca-validity", "1h0m0s"},
-		{"rate-limiter-evict-interval", "1m0s"},
-		{"rate-limiter-idle-timeout", "5m0s"},
-		{"armtls-cert-ttl", "24h0m0s"},
+		{"ca-cert-validity", cfg.caCertValidity, "8760h0m0s"},
+		{"cert-ttl", cfg.certTTL, "24h0m0s"},
+		{"challenge-ttl", cfg.challengeTTL, "1m0s"},
+		{"request-timeout", cfg.requestTimeout, "5s"},
+		{"read-timeout", cfg.readTimeout, "10s"},
+		{"read-header-timeout", cfg.readHeaderTimeout, "5s"},
+		{"write-timeout", cfg.writeTimeout, "10s"},
+		{"idle-timeout", cfg.idleTimeout, "20s"},
+		{"readiness-interval", cfg.readinessInterval, "10s"},
+		{"min-ca-validity", cfg.minCAValidity, "1h0m0s"},
+		{"rate-limiter-evict-interval", cfg.rateLimiterEvictInterval, "1m0s"},
+		{"rate-limiter-idle-timeout", cfg.rateLimiterIdleTimeout, "5m0s"},
+		{"armtls-cert-ttl", cfg.armtlsCertTTL, "24h0m0s"},
 	} {
-		t.Run(tc.flag, func(t *testing.T) {
-			f := flags.Lookup(tc.flag)
-			if f == nil {
-				t.Fatalf("missing --%s flag", tc.flag)
-			}
-			if f.DefValue != tc.want {
-				t.Fatalf("default --%s = %q, want %q", tc.flag, f.DefValue, tc.want)
+		t.Run(tc.setting, func(t *testing.T) {
+			if got := tc.value.String(); got != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.setting, got, tc.want)
 			}
 		})
 	}

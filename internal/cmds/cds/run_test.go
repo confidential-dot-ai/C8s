@@ -68,43 +68,6 @@ func TestCompilePattern(t *testing.T) {
 	})
 }
 
-func TestNormalizeHTTPServerConfig_FillsZeroDefaults(t *testing.T) {
-	got := normalizeHTTPServerConfig(config{})
-	if got.readTimeout != defaultHTTPReadTimeout {
-		t.Errorf("readTimeout = %v, want %v", got.readTimeout, defaultHTTPReadTimeout)
-	}
-	if got.readHeaderTimeout != defaultHTTPReadHeaderTimeout {
-		t.Errorf("readHeaderTimeout = %v, want %v", got.readHeaderTimeout, defaultHTTPReadHeaderTimeout)
-	}
-	if got.writeTimeout != defaultHTTPWriteTimeout {
-		t.Errorf("writeTimeout = %v, want %v", got.writeTimeout, defaultHTTPWriteTimeout)
-	}
-	if got.idleTimeout != defaultHTTPIdleTimeout {
-		t.Errorf("idleTimeout = %v, want %v", got.idleTimeout, defaultHTTPIdleTimeout)
-	}
-	if got.maxHeaderBytes != defaultHTTPMaxHeaderBytes {
-		t.Errorf("maxHeaderBytes = %d, want %d", got.maxHeaderBytes, defaultHTTPMaxHeaderBytes)
-	}
-}
-
-func TestNormalizeHTTPServerConfig_PreservesNonZero(t *testing.T) {
-	in := config{
-		readTimeout:       time.Second,
-		readHeaderTimeout: 2 * time.Second,
-		writeTimeout:      3 * time.Second,
-		idleTimeout:       4 * time.Second,
-		maxHeaderBytes:    99,
-	}
-	got := normalizeHTTPServerConfig(in)
-	if got.readTimeout != in.readTimeout ||
-		got.readHeaderTimeout != in.readHeaderTimeout ||
-		got.writeTimeout != in.writeTimeout ||
-		got.idleTimeout != in.idleTimeout ||
-		got.maxHeaderBytes != in.maxHeaderBytes {
-		t.Fatalf("normalizeHTTPServerConfig altered non-zero config: got %+v, want %+v", got, in)
-	}
-}
-
 // operatorKeyPair generates an operator EC key and returns it with the PEM
 // bundle pinning its public half, as a CDS configuration carries it.
 func operatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte) {
@@ -142,39 +105,30 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 // validRunConfig returns a config that passes run()'s validation, with an
 // in-tempdir allowlist DB and hermetic endpoints. The cluster it serves is the
 // measured configuration; pass another with measuredConfig to vary the
-// operator keys or the workloads.
+// operator keys or the workloads. Settings it does not name are built in.
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
-	return config{
-		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
-		host:                       "127.0.0.1",
-		port:                       0,
-		logLevel:                   "error",
-		attestationApiURL:          attestationURL,
-		caCommonName:               "test ca",
-		caCertValidity:             24 * time.Hour,
-		jwtClockSkew:               30,
-		certTTL:                    time.Hour,
-		namedCertTTL:               issuer.MaxNamedLeafTTL,
-		routerCertTTL:              20 * time.Second,
-		allowlistNodeDelay:         30 * time.Second,
-		challengeTTL:               time.Minute,
-		requestTimeout:             time.Second,
-		maxRequestSize:             65536,
-		secretsMaxPaths:            1024,
-		secretsMaxPathsPerWorkload: 64,
-		secretsMaxValueBytes:       4096,
-		sandboxLedgerMax:           10000,
-		readinessInterval:          50 * time.Millisecond,
-		minCAValidity:              time.Hour,
-		allowlistDB:                filepath.Join(t.TempDir(), "allowlist.db"),
-		rateLimit:                  1000,
-		rateBurst:                  1000,
-		rateLimiterMax:             1000,
-		rateLimiterEvictInterval:   time.Minute,
-		rateLimiterIdleTimeout:     5 * time.Minute,
-		armtlsPlatform:             teetypes.FamilySNP,
-	}
+	cfg := builtInConfig()
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}})
+	cfg.host = "127.0.0.1"
+	cfg.port = 0
+	cfg.logLevel = "error"
+	cfg.attestationApiURL = attestationURL
+	cfg.caCommonName = "test ca"
+	cfg.caCertValidity = 24 * time.Hour
+	cfg.jwtClockSkew = 30
+	cfg.certTTL = time.Hour
+	cfg.routerCertTTL = 20 * time.Second
+	cfg.allowlistNodeDelay = 30 * time.Second
+	cfg.requestTimeout = time.Second
+	cfg.maxRequestSize = 65536
+	cfg.readinessInterval = 50 * time.Millisecond
+	cfg.allowlistDB = filepath.Join(t.TempDir(), "allowlist.db")
+	cfg.rateLimit = 1000
+	cfg.rateBurst = 1000
+	cfg.rateLimiterMax = 1000
+	cfg.armtlsPlatform = teetypes.FamilySNP
+	return cfg
 }
 
 func freePort(t *testing.T) int {
@@ -203,8 +157,8 @@ func TestRun_ErrorPaths(t *testing.T) {
 		},
 		{
 			name:    "invalid config",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.namedCertTTL = 0 },
-			wantSub: "--named-cert-ttl",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.maxRequestSize = 0 },
+			wantSub: "--max-request-size",
 		},
 		{
 			name:    "rate limiter max entries",
@@ -243,7 +197,7 @@ func TestRun_ErrorPaths(t *testing.T) {
 		{
 			name:    "invalid cn pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.allowedCNPattern = "(" },
-			wantSub: "--allowed-cn-pattern",
+			wantSub: "allowed CN pattern",
 		},
 		{
 			name:    "unsupported armtls platform",
@@ -418,8 +372,8 @@ func TestRun_LogsNodeImagePinning(t *testing.T) {
 		t.Fatalf("read captured logs: %v", err)
 	}
 
-	if runErr == nil || !strings.Contains(runErr.Error(), "--allowed-cn-pattern") {
-		t.Fatalf("run() error = %v, want --allowed-cn-pattern failure", runErr)
+	if runErr == nil || !strings.Contains(runErr.Error(), "allowed CN pattern") {
+		t.Fatalf("run() error = %v, want allowed CN pattern failure", runErr)
 	}
 	if !strings.Contains(string(logged), "node image pinning enabled") {
 		t.Fatalf("startup log missing pinning-enabled line:\n%s", logged)
