@@ -16,17 +16,15 @@ func TestReservedVolumeValidationBoundaries(t *testing.T) {
 		wantError string
 	}{
 		{
-			name:   "certificates",
-			volume: "custom-certs",
-			check: func(pod *corev1.Pod) error {
-				return rejectReservedCertVolume(pod, "custom-certs")
-			},
+			name:      "certificates",
+			volume:    CertVolumeName,
+			check:     rejectReservedVolumeShapes,
 			wantError: "invalid c8s injection annotation: volume %q is reserved for the injected in-memory cert store; it must be a memory-backed emptyDir (medium: Memory) or omitted",
 		},
 		{
 			name:      "secrets",
 			volume:    secretsVolumeName,
-			check:     rejectReservedSecretsVolume,
+			check:     rejectReservedVolumeShapes,
 			wantError: "invalid c8s injection annotation: volume %q is reserved for released secrets; it must be a memory-backed emptyDir (medium: Memory) or omitted",
 		},
 	} {
